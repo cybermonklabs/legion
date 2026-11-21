@@ -422,11 +422,11 @@ func TestReadyWithoutACapabilityReportTellsTheDaemonNothing(t *testing.T) {
 	}
 }
 
-// A boot's ready carries no capability report, and it is what sends the claim its first task
-// (supervise's sendPending, which the machine runs when it takes the ready). So the route queues
-// the publication of the issue's role sessions (Options.RoleHoldersChanged) before the machine
-// takes the ready: the hook is told of the claim once, while the claim is still registered, with
-// its issue and its role, and the ready is then taken as before.
+// A boot's ready carries no capability report, and a claim takes no task until it has taken its
+// ready (supervise.HoldNotReady). So the route queues the publication of the issue's role
+// sessions (Options.RoleHoldersChanged) before the machine takes the ready: the hook is told of
+// the claim once, while the claim is still registered, with its issue and its role, and the ready
+// is then taken as before.
 func TestABootReadyQueuesTheRolePublicationBeforeTheMachineTakesIt(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleTester)
@@ -452,8 +452,9 @@ func TestABootReadyQueuesTheRolePublicationBeforeTheMachineTakesIt(t *testing.T)
 	}
 }
 
-// A ready that carries a capability report is a live session's report at an idle tick, not a boot
-// and not a role-regain, so it queues no publication: the boot's ready already did.
+// A ready that carries a capability report is a live session's report at an idle tick, not a
+// boot's ready (a regain of the role sends no ready; it reads claims/task), so it queues no
+// publication: the boot's ready already did.
 func TestAReadyWithACapabilityReportQueuesNothing(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
@@ -476,18 +477,16 @@ func TestAReadyWithACapabilityReportQueuesNothing(t *testing.T) {
 }
 
 // A ready whose publication the daemon could not queue is refused with 503, before the machine
-// takes it: the claim stays registered and the task it holds is not sent, so no worker starts
-// before its role is on its way to Dispatch. The plugin tries the ready again, and the ready
-// after the store takes the queue is taken and sends the task.
+// takes it: the claim stays registered, so the take of the task it holds is refused as not ready,
+// and no worker starts before its role is on its way to Dispatch. The plugin tries the ready
+// again, and once the ready after the store takes the queue is taken, the take of that task is
+// accepted.
 func TestAReadyWhoseQueueFailsIsRefusedAndTakesNoTask(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleTester)
 	registered := h.registered(boot, "ses_tester")
-	conn := connected(h, token)
-	machine, _ := h.supervisor.Machine(token)
-	if err := machine.Handle(h.ctx, supervise.RequestDeliver{Claim: token, Task: "test LEGION-208", ID: "outbox:7", Generation: 1}); err != nil {
-		t.Fatalf("deliver the tester's task: %v", err)
-	}
+	tester := takeClaim{token: token, boot: boot, session: "ses_tester", secret: registered.Secret, generation: registered.Generation}
+	value := h.deliverTask(supervise.RequestDeliver{Claim: token, Task: "test LEGION-208", Generation: 1})
 	*h.roleHoldersErr = errors.New("the store refused the outbox write")
 	ready := claim.ReadyRequest{
 		ClaimToken: token, SessionID: "ses_tester", Secret: registered.Secret, Generation: registered.Generation,
@@ -502,8 +501,10 @@ func TestAReadyWhoseQueueFailsIsRefusedAndTakesNoTask(t *testing.T) {
 	if stored := h.stored(token); stored.State != supervise.StateRegistered {
 		t.Fatalf("stored state %s, want the claim still registered", stored.State)
 	}
-	if prompts := conn.Prompts(); len(prompts) != 0 {
-		t.Fatalf("the connection was sent %#v, want nothing: the refused ready takes no task", prompts)
+	refused := claim.TakeResponse{Outcome: string(supervise.TakeOutcomeRefused), Hold: supervise.HoldNotReady}
+	if recorder, answer := h.postTake(takeOf(tester, value)); recorder.Code != http.StatusOK || answer != refused {
+		t.Fatalf("the take after the refused ready = %d %+v (body %s), want it refused %q: the refused ready takes no task",
+			recorder.Code, answer, recorder.Body, supervise.HoldNotReady)
 	}
 
 	*h.roleHoldersErr = nil
@@ -511,9 +512,12 @@ func TestAReadyWhoseQueueFailsIsRefusedAndTakesNoTask(t *testing.T) {
 		t.Fatalf("the ready tried again = %d %q, want 204", recorder.Code, recorder.Body)
 	}
 	settled(h, token)
-	if prompts := conn.Prompts(); len(prompts) != 1 || prompts[0].DeliveryID != "outbox:7" {
-		t.Fatalf("the connection was sent %#v, want the tester's one task", prompts)
+	current, held := h.taskValues().Value(token)
+	if !held || current.Number != value.Number {
+		t.Fatalf("after the ready the bucket holds %+v (held %t), want the tester's task %d", current, held, value.Number)
 	}
+	recorder, answer := h.postTake(takeOf(tester, claim.TaskValue{Number: current.Number, Epoch: current.Epoch, Revision: current.Revision}))
+	wantAccepted(t, recorder, answer, "test LEGION-208")
 	if got := *h.roleHolders; len(got) != 2 {
 		t.Fatalf("RoleHoldersChanged was told of %d readies, want both", len(got))
 	}

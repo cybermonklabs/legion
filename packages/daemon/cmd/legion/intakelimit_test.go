@@ -35,12 +35,12 @@ func TestConfigCheckNamesTheIntakeHandlerLimitOnlyWhenTheWindowDerivesOne(t *tes
 		{
 			"a window the ten-minute floor covers names no limit",
 			"worker_rpc_timeout_seconds: 5\nprojects:\n  DEMO: {}\n",
-			demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable,
+			demoCheckConfigOKNoNATS + tmuxCapabilityGaps + tmuxPauseUnavailable,
 		},
 		{
 			"a window that derives a limit above the floor names it",
 			"worker_rpc_timeout_seconds: 200\nprojects:\n  DEMO: {}\n",
-			demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable + derivedIntakeHandlerLimitLine,
+			demoCheckConfigOKNoNATS + tmuxCapabilityGaps + tmuxPauseUnavailable + derivedIntakeHandlerLimitLine,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {

@@ -73,7 +73,7 @@ func TestDecideAwaitsTable(t *testing.T) {
 			v.Run = record.RoleRun{Claim: &record.RoleClaim{State: supervise.StateWorking, Pending: &supervise.Delivery{}}}
 		}, actStay, "not taken its task"},
 		{"an architect working the task it took", func(v *awaitView) {
-			v.Run = record.RoleRun{Claim: &record.RoleClaim{State: supervise.StateWorking, Pending: &supervise.Delivery{ConfirmedAt: confirmed}}}
+			v.Run = record.RoleRun{Claim: &record.RoleClaim{State: supervise.StateWorking, Pending: &supervise.Delivery{ConfirmedAt: confirmed, TurnStarted: true}}}
 		}, actEnter, "awaiting an answer"},
 		{"a person who already acted after the hand-back", func(v *awaitView) { v.Asks[0].PersonSeq = 7 }, actTellInPlace, "already acted"},
 		{"a person who acted before it", func(v *awaitView) { v.Asks[0].PersonSeq = 4 }, actEnter, "awaiting an answer"},

@@ -18,11 +18,10 @@ import (
 // The resume of a root a person answered raises the architect's entry in the same run
 // (workflow.Engine.ResumeAwaitedRoot), and its task is what the architect owes now: which ask was
 // answered and where to read it (dispatch://INFRA-2614 R3, R4). Here the architect's claim still
-// holds the root's first task, entry 1, unconfirmed: it was sent and acknowledged, and the
-// architect's process ended before any turn took it, which ends the wait for that prompt's result
-// with the process (supervise's letGo). The root's record is put in its wait directly, as
-// answeredResumePath puts it. The resume's start reaches the relaunching claim, and the first
-// prompt the architect is sent once it comes up is the resume's task, not entry 1's.
+// holds the root's first task, entry 1, untaken: its value was written under its number, and the
+// architect's process ended before any take of it was accepted. The root's record is put in its
+// wait directly, as answeredResumePath puts it. The resume's start reaches the relaunching claim,
+// and the first task the architect takes once it comes up is the resume's task, not entry 1's.
 func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *testing.T) {
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
@@ -31,8 +30,8 @@ func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *
 	r.bringUp()
 	machine := r.machine()
 	held := machine.Claim().Pending
-	if held == nil || held.Generation != 1 || held.Entry != 1 || !held.Prompted || !held.ConfirmedAt.IsZero() {
-		t.Fatalf("the architect's first task = %#v, want entry 1 of generation 1, sent and unconfirmed", held)
+	if held == nil || held.Generation != 1 || held.Entry != 1 || held.Number == 0 || !held.ConfirmedAt.IsZero() {
+		t.Fatalf("the architect's first task = %#v, want entry 1 of generation 1, numbered and untaken", held)
 	}
 	if err := machine.Handle(r.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
 		Locator: *machine.Claim().Locator, Kind: runtime.Gone, At: time.Now()}}); err != nil {
@@ -75,7 +74,7 @@ func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *
 // names that decision, and its publish tells the architect.
 //
 // The root here is the red test's, with a person's decision on it while it waited for its slot:
-// the generation-1 start names that decision, its task is sent and never confirmed, the root is
+// the generation-1 start names that decision, its task is written and never taken, the root is
 // parked and its architect suspended, and the hand-back re-admits it at generation 2.
 func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.T) {
 	r := newMainPathRig(t, true)
@@ -85,8 +84,8 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	r.runStarts()
 	r.bringUp()
 	held := r.machine().Claim().Pending
-	if held == nil || held.Generation != 1 || !strings.Contains(held.Task, ref) || !held.Prompted || !held.ConfirmedAt.IsZero() {
-		t.Fatalf("the architect's task before the park = %#v, want its generation-1 task naming %s, sent and unconfirmed", held, ref)
+	if held == nil || held.Generation != 1 || !strings.Contains(held.Task, ref) || held.Number == 0 || !held.ConfirmedAt.IsZero() {
+		t.Fatalf("the architect's task before the park = %#v, want its generation-1 task naming %s, numbered and untaken", held, ref)
 	}
 	if kept := keptDecisions(t, r.pool, r.records, r.key); len(kept) != 1 || kept[0].HeldBy.Delivery != held.ID {
 		t.Fatalf("%s keeps %#v, want %s held by %s", r.key, kept, ref, held.ID)
@@ -109,7 +108,7 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	sent := len(r.prompts())
 	r.bringUp()
 	if prompts := r.prompts()[sent:]; len(prompts) == 0 || prompts[0].DeliveryID != pending.ID {
-		t.Fatalf("the re-admitted architect was prompted %+v, want generation 2's task %s first", prompts, pending.ID)
+		t.Fatalf("the re-admitted architect took %+v, want generation 2's task %s first", prompts, pending.ID)
 	}
 	ready := r.machine().Claim()
 	w := &workflowRuntime{pool: r.pool, records: r.records, handlers: r.runner.handlers}

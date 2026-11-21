@@ -20,11 +20,15 @@
 #   LEGION_E2E_IMAGE=<worker image@sha256> bash scripts/e2e/share-volumes-kind.sh
 # with docker, go, kubectl, curl, zstd, a tar that supports --zstd, and kind (LEGION_E2E_KIND names
 # the binary when it is not on PATH) installed. The kind node's own mount.nfs mounts the share, as a
-# GKE node's does. The cluster is lib/kind-sandbox.sh's, the run's own, and every kubectl call names
-# its kubeconfig and context, so the caller's kubeconfig is never read. The cluster is deleted on
-# any exit; SHARE_VOLUMES_EVIDENCE_DIR (default a fresh /tmp directory, kept and printed) keeps the
-# transcript, the legion.yaml files, the issue pod's manifest as the API server holds it, and each
-# probe-boot's output.
+# GKE node's does. The run also starts a JetStream nats-server (LEGION_E2E_NATS_BIN names the
+# binary; without it the pinned one is installed with `go install`) in a container on the kind
+# network, because `legion probe-boot` opens the daemon's task bucket on Envoy's NATS before it
+# probes the image: every case's legion.yaml names that server, and the driver creates the
+# notification stream on it. The cluster is lib/kind-sandbox.sh's, the run's own, and every kubectl
+# call names its kubeconfig and context, so the caller's kubeconfig is never read. The cluster and
+# the nats-server are deleted on any exit; SHARE_VOLUMES_EVIDENCE_DIR (default a fresh /tmp
+# directory, kept and printed) keeps the transcript, the legion.yaml files, the issue pod's
+# manifest as the API server holds it, the nats-server's log, and each probe-boot's output.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -41,6 +45,12 @@ transcript_to "$evidence/transcript.log"
 # The NFS server: NFS-Ganesha as the Kubernetes SIG Storage's nfs-provisioner image ships it, run
 # with a configuration of the proof's own (two exports, NFSv4.0, no grace period).
 nfs_image=registry.k8s.io/sig-storage/nfs-provisioner@sha256:c825f3d5e28bde099bd7a3daace28772d412c9157ad47fa752a9ad0baafc118d
+
+# The nats-server the run installs when the caller names none: the hub's v2.15.1, the server the
+# daemon's own NATS tests run (packages/daemon/internal/testnats/nats.go, Image), as
+# lib/live-daemon-proof.sh pins it. The daemon's boot refuses a nats-server below v2.11.12,
+# v2.12.4 or v2.14.0 (packages/envoy/natsversion).
+nats_version=v2.15.1
 
 cluster=legion-share-volumes-$$
 work=$(mktemp -d "/tmp/legion-e2e-share-volumes.$$.XXXXXXXX")
@@ -78,7 +88,7 @@ release_shares() {
 
 cleanup() {
   local status=$?
-  docker rm -f "$cluster-driver" "$cluster-probe" >/dev/null 2>&1 || true
+  docker rm -f "$cluster-driver" "$cluster-probe" "$cluster-nats" >/dev/null 2>&1 || true
   release_shares "$status"
   kind_sandbox_teardown "$status" "$evidence"
   rm -rf "$work"
@@ -116,6 +126,21 @@ begin binaries
 CGO_ENABLED=0 go -C "$root/packages/daemon" test -c -tags e2e -o "$work/share-volumes.test" ./internal/daemon
 CGO_ENABLED=0 go -C "$root/packages/daemon" build -o "$work/legion" ./cmd/legion
 note "$("$work/legion" version | head -1)"
+nats_bin=${LEGION_E2E_NATS_BIN:-}
+if [ -z "$nats_bin" ]; then
+  note "LEGION_E2E_NATS_BIN names none; installing nats-server $nats_version into this run's own GOBIN"
+  # The toolchain's own go, under its own GOROOT, as lib/live-daemon-proof.sh installs it: mise's
+  # go shim replaces a caller's GOBIN, and an activated shell exports mise's Go's GOROOT, whose
+  # compiler a newer toolchain's go refuses. The binary runs in a busybox container, so it is
+  # built static.
+  goroot=$(go env GOROOT) &&
+    CGO_ENABLED=0 GOBIN="$work/bin" GOROOT=$goroot "$goroot/bin/go" install "github.com/nats-io/nats-server/v2@$nats_version" ||
+    fail "could not install nats-server $nats_version; name a binary in LEGION_E2E_NATS_BIN instead"
+  nats_bin=$work/bin/nats-server
+fi
+[ -x "$nats_bin" ] || fail "no executable nats-server at $nats_bin"
+cp "$nats_bin" "$work/nats-server"
+note "nats-server $("$work/nats-server" --version)"
 pass
 
 begin cluster
@@ -128,6 +153,28 @@ pass
 
 begin gvisor
 kind_sandbox_install_gvisor "$work"
+pass
+
+begin broker
+# Envoy's NATS for this run, on the kind network so the probe containers below reach it by name:
+# `legion probe-boot` opens the daemon's task bucket there before it probes the image, and a file
+# naming a server nothing answers on would refuse every probe on NATS instead of on its shares.
+mkdir -p "$work/nats-store"
+: >"$evidence/nats.log"
+docker run -d --name "$cluster-nats" --cpus 1 --memory 1g --network kind --user "$(id -u):$(id -g)" \
+  -v "$work:$work" -e HOME=/tmp mirror.gcr.io/library/busybox:1.37 \
+  "$work/nats-server" -js -a 0.0.0.0 -p 4222 -sd "$work/nats-store" >/dev/null ||
+  fail "the nats-server container did not start"
+for _ in $(seq 1 120); do
+  docker logs "$cluster-nats" >"$evidence/nats.log" 2>&1 || true
+  grep -q 'Server is ready' "$evidence/nats.log" && break
+  [ "$(docker inspect -f '{{.State.Running}}' "$cluster-nats" 2>/dev/null)" = true ] ||
+    fail "the nats-server exited at startup; see $evidence/nats.log"
+  sleep 0.5
+done
+grep -q 'Server is ready' "$evidence/nats.log" || fail "the nats-server was not ready within 60s; see $evidence/nats.log"
+nats_url=nats://$cluster-nats:4222
+note "JetStream at $nats_url on the kind network, store $work/nats-store, log $evidence/nats.log"
 pass
 
 begin images
@@ -214,7 +261,7 @@ result=$work/result
 on_kind driver \
   -e LEGION_E2E_KUBECONFIG="$work/kubeconfig-internal" -e LEGION_E2E_KUBE_CONTEXT="$kind_context" \
   -e LEGION_E2E_IMAGE="$image" -e LEGION_E2E_WORK="$work" -e LEGION_E2E_RESULT="$result" \
-  -e LEGION_E2E_SHARE_SERVER="$server" \
+  -e LEGION_E2E_SHARE_SERVER="$server" -e LEGION_E2E_NATS_URL="$nats_url" \
   mirror.gcr.io/library/busybox:1.37 sh -c 'LEGION_E2E_STREAM_HOST=$(ip -4 -o addr show eth0 | awk "{print \$4}" | cut -d/ -f1) exec "$0" -test.count=1 -test.timeout=30m -test.v -test.run "^TestShareVolumesMountInAnIssuePodLive\$"' "$work/share-volumes.test" ||
   fail "the launch driver failed"
 read -r _ pod _ < <(awk '$1 == "shares"' "$result")
@@ -299,10 +346,12 @@ begin probe-mounts-shares
 # The shares file's probe pod mounts both shares and runs the image's probe container, whose own
 # verdict is the image's: the run's agents have no model route, so the image refuses on its
 # agents' models, and that refusal, never a `cannot mount`, is the evidence that the probe
-# passed every share.
+# passed every share. Reaching the image at all is the evidence that the probe opened the task
+# bucket on the run's nats-server first, the step before it (probeTaskBucket).
 probe shares 'worker image ' 'failed its probe: pod ' ' Failed (container probe terminated'
 [[ $probed != *"cannot mount"* && $probed != *"over its mounts"* ]] || fail "probe-boot refused the mountable shares: $(tail -3 <<<"$probed")"
-note "shares: probe-boot exit 1 on the image's own verdict, no share refused: $(grep -m1 -o 'failed its probe: pod [^ ]* [A-Za-z]*' <<<"$probed")"
+[[ $probed != *"the task bucket"* ]] || fail "probe-boot refused the task bucket on $nats_url: $(tail -3 <<<"$probed")"
+note "shares: probe-boot opened the task bucket on $nats_url, then exit 1 on the image's own verdict, no share refused: $(grep -m1 -o 'failed its probe: pod [^ ]* [A-Za-z]*' <<<"$probed")"
 pass
 
 

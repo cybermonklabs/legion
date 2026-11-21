@@ -37,8 +37,8 @@ import (
 // The state seeded here is the one the window leaves: a start row whose task reached the claim
 // and which is back in the outbox unleased, which is what RetryOutbox leaves behind for any
 // failure that follows the delivery, and a worker that is not taking the task now — its shim is
-// not connected here, as a worker is handed nothing while the wake pacing holds back the relaunch
-// that replaces its process, until the pacing lets that launch run (supervise's sendPending,
+// not connected here, as a worker's take is refused while the wake pacing holds back the
+// relaunch that replaces its process, until the pacing lets that launch run (supervise's takeable,
 // launchWaits). The phase is then entered again, as a tester's fail or a worker's backward move
 // enters one, and the transition writes its start through workflow.StartOrOwe
 // exactly as the engine does.

@@ -765,9 +765,9 @@ func (m *Machine) HoldsItsSession(ctx context.Context) error {
 
 // warnRefusal writes a refused hold's Warn line unless it is the line this machine wrote last
 // (Machine.refusalLogged). A claim that does not hold its session is asked again at every decision
-// that would send its process anything, sendPending at every sweep among them, and each such line
-// says nothing the first did not (review round 13 of #4220). A hold admitted clears it, so a
-// refusal after an admission is written again.
+// that would let its process work, offerPending's takeable at every sweep among them, and each
+// such line says nothing the first did not (review round 13 of #4220). A hold admitted clears it,
+// so a refusal after an admission is written again.
 func (m *Machine) warnRefusal(msg string, args ...any) {
 	line := fmt.Sprint(append([]any{msg}, args...)...)
 	if line == m.refusalLogged {

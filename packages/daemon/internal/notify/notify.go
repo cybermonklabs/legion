@@ -191,6 +191,12 @@ func New(baseURL, token string) *HTTPPublisher {
 // It sends keep: false, so the listener keeps nothing for a role no live session holds, and its
 // 404 for a role nobody holds is ErrNoHolder. PublishKept is the other choice: it asks the
 // listener to keep the message for the role's next live holder.
+//
+// A claim's task value in the task bucket (legiontasks.Bucket, which the daemon writes through
+// internal/daemon's taskBucket) goes through neither: it is no message and no second keeper of
+// anything, but the delivered copy of the daemon's record of the claim's task, which the record
+// writes, repairs from itself and deletes, and which the listener relays to the session holding
+// the claim's role. The record stays the one keeper of the task.
 func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
 	_, err := p.publish(ctx, topic, message, payload, dedupeKey, false)
 	return err

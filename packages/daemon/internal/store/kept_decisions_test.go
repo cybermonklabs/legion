@@ -107,11 +107,11 @@ func (r *keptRig) row(ref string) (stands bool, claimedBy int64, heldBy, heldDel
 	return true, claimedBy, heldBy, heldDelivery
 }
 
-// A confirmation the machine takes back (a prompt refused busy after a turn of the agent's own
-// confirmed it, a late refusal) writes the delivery back unconfirmed. The confirmation's write
-// told the decision the delivery held and deleted it; the architect never read it, so the write
-// back puts it back, held by the delivery again, and its resend names it. A second telling is the
-// worst case, never a loss.
+// An accepted take the machine takes back (given back before its turn started — a compaction,
+// the second wait, a let-go of a take that awaited its turn) writes the delivery back
+// unconfirmed. The accepted take's write told the decision the delivery held and deleted it; the
+// architect never ran that text, so the write back puts it back, held by the delivery again, and
+// the task's next accepted take names it. A second telling is the worst case, never a loss.
 func TestADeliveryWrittenBackUnconfirmedHoldsWhatItsConfirmationTold(t *testing.T) {
 	r := newKeptRig(t)
 	const tree, ref = "LEGION-300", "dispatch://LEGION-300/ask/ask-1"
@@ -137,7 +137,7 @@ func TestADeliveryWrittenBackUnconfirmedHoldsWhatItsConfirmationTold(t *testing.
 	stands, _, heldBy, heldDelivery := r.row(ref)
 	if !stands || heldBy != string(architect.Token) || heldDelivery != d.ID {
 		t.Fatalf("%s after the confirmation was taken back: stands %t, held by %q/%q; want it standing again, held by %s/%s, "+
-			"so the resend names it rather than losing it", ref, stands, heldBy, heldDelivery, architect.Token, d.ID)
+			"so the task's next accepted take names it rather than losing it", ref, stands, heldBy, heldDelivery, architect.Token, d.ID)
 	}
 }
 
@@ -173,9 +173,10 @@ func TestADeliveryRewriteDoesNotTakeARowAnotherTreeHolds(t *testing.T) {
 		t.Fatalf("queue the new tree's task: %v", err)
 	}
 
-	// The old tree's task is taken back under a new id after its process died.
+	// The old tree's task is written again after its process died: the same delivery under its
+	// own id, marked interrupted (supervise's interrupted).
 	takenBack := oldTask
-	takenBack.ID = "outbox:1-interrupted"
+	takenBack.Interrupted = true
 	if err := r.store.PutDelivery(r.ctx, oldArchitect.Token, takenBack); err != nil {
 		t.Fatalf("take the old task back: %v", err)
 	}

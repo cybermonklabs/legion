@@ -82,6 +82,14 @@ const RequestTimeout = 10 * time.Second
 // (Bounded; the lookup changes nothing, so a dropped one leaves nothing behind). A reconnect hook
 // gives it the run's context, so a lookup sent on a connection that then drops ends the hook at
 // the drop.
+//
+// A lookup the server refuses under the connection's grant ends with that refusal as soon as the
+// server reports it, as EnsureKeyValue's lookup does (readsRefusals): an error naming
+// ErrPublishDenied and the subject, `bus: NATS denied the publish to
+// "$JS.API.STREAM.INFO.KV_<bucket>": ...`, where the server's silence would otherwise read as a
+// bare timeout at the end of js's MaxWait. So a caller that opens a bucket its grant may not cover
+// - the listener's task relay, which reads a bucket only some listener users may read - names the
+// subject the grant is missing.
 func OpenKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string) (KeyValue, error) {
 	js = readsRefusals(conn, js)
 	kv, _, err := Bounded(ctx, func() (nats.KeyValue, error) { return js.KeyValue(bucket) })
@@ -154,7 +162,7 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	}
 	var watch jetstream.KeyValue
 	if created {
-		watch, err = awaitBucketApplied(ctx, kv.Bucket(), bucketMissing, open)
+		watch, err = awaitBucketApplied(ctx, kv.Bucket(), BucketMissing, open)
 	} else {
 		watch, err = open()
 	}

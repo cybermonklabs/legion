@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -254,6 +255,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 			PluginContract:     DaemonAPIVersion,
 			PluginRelaunchable: relaunchable,
 			RefreshGate:        supervise.NewRefreshGate(0),
+			TaskValues:         supervisetest.NewTaskValues(),
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
 			TreeClosable: func(ctx context.Context, c supervise.Claim) (bool, error) {
 				var issue *record.Issue
@@ -453,8 +455,8 @@ func (h *harness) registered(bootToken, session string) claim.RegisterResponse {
 }
 
 // ready registers session on the claim's latest launch and has its agent say it is ready, at the
-// generation that launch carried.
-func (h *harness) ready(token claim.Token, session string, generation uint64) {
+// generation that launch carried. It answers what the registration told the agent.
+func (h *harness) ready(token claim.Token, session string, generation uint64) claim.RegisterResponse {
 	h.t.Helper()
 	registered := h.registered(h.bootToken(token), session)
 	if recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
@@ -462,6 +464,7 @@ func (h *harness) ready(token claim.Token, session string, generation uint64) {
 	}, nil); recorder.Code != http.StatusNoContent {
 		h.t.Fatalf("ready %s at generation %d = %d; body %s", token, generation, recorder.Code, recorder.Body)
 	}
+	return registered
 }
 
 // registerContract registers session on the launch bootToken names, declaring contract as the
@@ -567,5 +570,57 @@ func (h *harness) openTree(t *testing.T, project, tree string) {
 		return err
 	}); err != nil {
 		t.Fatalf("open the tree lifecycle of %s: %v", tree, err)
+	}
+}
+
+// acceptTake is the claim's worker taking the task its claim holds, as its plugin does once its host
+// is idle: the take of the pending number at the value the bucket holds, which must be accepted.
+func acceptTake(t *testing.T, machine *supervise.Machine) {
+	t.Helper()
+	answer := takePending(t, machine)
+	if answer.Outcome != supervise.TakeOutcomeAccepted {
+		t.Fatalf("the take of %s's task = %+v, want it accepted", machine.Claim().Token, answer)
+	}
+}
+
+// takePending is the claim's worker taking the task its claim holds: the take of the pending
+// number at the value the bucket holds, answered however the claim's machine decides it.
+func takePending(t *testing.T, machine *supervise.Machine) supervise.TakeAnswer {
+	t.Helper()
+	c := machine.Claim()
+	if c.Pending == nil {
+		t.Fatalf("%s holds no task to take", c.Token)
+	}
+	current, err := machine.CurrentTask(context.Background())
+	if err != nil {
+		t.Fatalf("read the task value of %s: %v", c.Token, err)
+	}
+	request := supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: c.Pending.Number}
+	if current.Value != nil {
+		request.Revision = supervise.TaskRevision{Epoch: current.Value.Epoch, Revision: current.Value.Revision}
+	}
+	answer, err := machine.Take(context.Background(), request)
+	if err != nil {
+		t.Fatalf("the take of task %d on %s: %v", c.Pending.Number, c.Token, err)
+	}
+	return answer
+}
+
+// finishTurn ends the turn of the claim's taken task as its worker does: the agent_end, and behind
+// it the turn-outcome report naming the task, which is what finishes it. The report is the first
+// its producer makes at the claim's generation (sequence 1), so it is for a claim no turn has been
+// reported of yet.
+func finishTurn(t *testing.T, machine *supervise.Machine) {
+	t.Helper()
+	c := machine.Claim()
+	if err := machine.Handle(context.Background(), supervise.StreamTurnEnd{Claim: c.Token}); err != nil {
+		t.Fatalf("end the turn of %s: %v", c.Token, err)
+	}
+	if c.Pending == nil {
+		return
+	}
+	if err := machine.Handle(context.Background(), supervise.RequestTurnOutcome{Claim: c.Token, Generation: c.Generation,
+		Sequence: 1, Task: c.Pending.Number}); err != nil {
+		t.Fatalf("report the turn of task %d on %s: %v", c.Pending.Number, c.Token, err)
 	}
 }

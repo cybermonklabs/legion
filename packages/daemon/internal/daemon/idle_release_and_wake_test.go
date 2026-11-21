@@ -67,7 +67,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 	// the topic the subscribed pod's session takes, as `envoy_subscribe` does, and how each
 	// just-released pod's process ends. The stuck pod's plan is left alone until its own subtest,
 	// which can set it then, since TakeTurn is read at each task (idleRigPlan): a session that
-	// acknowledges a task and takes no turn has a turn due, which is a pod the rule keeps.
+	// takes a task and starts no turn has a turn due, which is a pod the rule keeps.
 	endsAsReleased := idleRigPlan{TakeTurn: true, ExitsAsReleasedInProduction: true}
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{
 		idleRigSubscribed:         {TakeTurn: true, Topics: []string{idleRigSubscribedTopic}},
@@ -122,14 +122,14 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		}
 	})
 
-	// The task each role was given at the rig's start is its phase's own: the daemon's boot
-	// starts the implementer of an issue at `implementing`, whose phase it is, and the task it
-	// gives names that phase. The daemon adopts the working copy for such a task, once, before it
-	// sends it, so each start task came behind exactly one adopt-working-copy frame, which the
-	// role's own process recorded before it answered it (idleRigAdoption.Ahead). That the task
-	// names its phase is read from the daemon's own account of the adoption — the line it logs
-	// once the shim answers ok, naming the task's delivery and its phase — so this holds for the
-	// phase task itself and not for a frame some other send happened to bring.
+	// The task each role took at the rig's start is its phase's own: the daemon's boot starts the
+	// implementer of an issue at `implementing`, whose phase it is, and the task it gives names
+	// that phase. The daemon adopts the working copy for such a task, once, during its take, so
+	// each start task came behind exactly one adopt-working-copy frame, which the role's own
+	// process recorded before it answered it (idleRigAdoption.Ahead). That the task names its phase
+	// is read from the daemon's own account of the adoption — the line it logs once the shim
+	// answers ok, naming the task's number and its phase — so this holds for the phase task itself
+	// and not for a frame some other take happened to bring.
 	t.Run("APhaseTaskReachesItsRoleBehindOneAdoption", func(t *testing.T) {
 		for _, issue := range rig.issues {
 			prompts := rig.agents.prompts(issue.key, string(issue.role))
@@ -143,10 +143,10 @@ func TestIdleReleaseAndWake(t *testing.T) {
 					issue.name, len(ahead), ahead)
 			}
 			if adopted := rig.logged(idleRigAdoptedLine, map[string]string{
-				"claim": string(rig.token(issue)), "delivery": start.Delivery, "phase": string(phase.Implementing),
+				"claim": string(rig.token(issue)), "task": start.Task, "phase": string(phase.Implementing),
 			}); adopted != 1 {
-				t.Errorf("the daemon logged %d adoptions of the working copy for %s's start task %q of phase %s, want one",
-					adopted, issue.name, start.Delivery, phase.Implementing)
+				t.Errorf("the daemon logged %d adoptions of the working copy for %s's start task %s of phase %s, want one",
+					adopted, issue.name, start.Task, phase.Implementing)
 			}
 		}
 	})
@@ -269,7 +269,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 
 	t.Run("AResumeWithNoFirstTurnAfterTenMinutesIsWarnedAndRecordedStuck", func(t *testing.T) {
 		issue := rig.issue(idleRigStuck)
-		// From here its session acknowledges the task its wake gives it and takes no turn.
+		// From here its session takes the task its wake gives it and starts no turn.
 		rig.agents.setPlan(issue.key, string(issue.role), idleRigPlan{TakeTurn: false})
 		// A role message, because R5's resume is what the daemon records for a wake it answered
 		// (store.RecordPodWakeTx); a delivery the daemon already held is its own account of why
@@ -287,8 +287,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		})
 		// The clock the stuck pass reads is the resume's stuck clock against the daemon's now
 		// (warnStuckResumes), so the test moves the wake and its clock ten minutes into the past.
-		// The role process acknowledged its task and started no turn, so no first turn was ever
-		// stamped.
+		// The role process took its task and started no turn, so no first turn was ever stamped.
 		rig.ageResume(issue, 11*time.Minute)
 		idleRigEventually(t, idleRigWarningWait, "the warning about the resume with no first turn", func() bool {
 			return rig.logged("wake: a released pod's resume has had no first turn since its wake",

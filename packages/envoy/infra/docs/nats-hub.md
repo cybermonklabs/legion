@@ -138,7 +138,8 @@ The hub refuses these before it registers anything, with an error naming the inp
   listener's own `machineId`: the set names that machine's durable consumer and queue group.
 - `listenerMachineId`: the user of one listener alone, which no session shares, granted
   `ListenerHostPermissions(listenerMachineId)`: the listener's own set, the session consumers'
-  calls included, with a plain `notifications.>` subscribe nothing uses any more. Give it that
+  calls and the task bucket's reads included, with a plain `notifications.>` subscribe nothing
+  uses any more. Give it that
   listener's `machineId`. Use it where the listener's process is the only one holding the seed,
   so it keeps its sessions' consumers; a host whose sessions connect as the same user takes
   `machineId` instead, since a session holding this set could create, pull and delete any
@@ -147,7 +148,11 @@ The hub refuses these before it registers anything, with an error naming the inp
   `DispatchPermissions(dispatchMachineId)`. Give it that listener's `machineId`, since the set
   names its durable consumer and queue group.
 - `daemon: true`: the dedicated user of one Legion daemon, granted `DaemonPermissions()` (see
-  [Permission sets](../README.md#permission-sets)). Its seed belongs only to that daemon.
+  [Permission sets](../README.md#permission-sets)). Its seed belongs only to that daemon. Beside
+  the notification stream's calls, the set creates, reads, writes and watches the task bucket
+  `legion_tasks`, whose one writer is the daemon: JetStream's account info, the info, create and
+  update of the bucket's stream, its gets, `$KV.legion_tasks.>`, the purge of its stream that
+  drops a key's old delete markers, and its watch's consumer calls.
 - `permissions`: `{publish, subscribe}`, each a `nats:Rules`, an `allow` list and an optional
   `deny` list of subject patterns, for any other client.
 
@@ -195,6 +200,14 @@ every registration that asks for consumer delivery `503 no_grant`, so a session 
 through it is not registered at all and receives nothing until its listener's grant carries the
 session consumers. Every set above subscribes to the role lanes in the queue group every listener
 shares, `envoy-roles`, beside the machine's own, since each user runs a listener.
+
+`ListenerPermissions` and `ListenerHostPermissions`, and no other set, also hold the reads of the
+task bucket `legion_tasks`, the delivered copy of each Legion daemon's record of each claim's
+current task: its stream's info, its direct and stored-message gets, its watch's consumer create
+and delete and their flow-control replies, with which a listener that gives consumer delivery
+relays each claim's value to the session holding the claim's role. They hold no create, update or
+write of the bucket, which the daemon alone writes. The bucket is not one of the listener's
+buckets, so a `machineId`, `dispatchMachineId` or `sessionUser` user holds nothing of it.
 
 `nkey` is the public key `envoy-infra seed generate` prints, and the seed stays in the secret
 store it wrote (see [NATS seeds](../README.md#nats-seeds)): a host's listener reads it from there
@@ -752,6 +765,12 @@ neither variable for a hub that sets neither input, so such a hub keeps its VM. 
 or removing either input changes the listener's `docker run` command in the cloud-config, so it
 replaces the VM once, with the outage below, and the new VM's listener starts with every sender's
 count full.
+The release that adds the Legion task bucket `legion_tasks` adds the bucket's reads to
+`ListenerPermissions`, and so to `ListenerHostPermissions`, and the bucket's create, update,
+reads, writes and purge to `DaemonPermissions`, while `HostPermissions`, `DispatchPermissions`
+and `SessionPermissions` gain nothing of it; that changes the rendered users of every hub with a
+`listener`, a `listenerMachineId` or a `daemon: true` user: upgrading such a hub to it replaces
+its VM once, with the outage below, and a hub with none of them keeps its VM.
 The cloud-config is the instance
 template's `user-data`, and a template cannot change. The group then replaces its VM at once
 (`PROACTIVE`, minimal action `REPLACE`), deleting it before it creates the next (`RECREATE`, no

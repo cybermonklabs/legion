@@ -31,7 +31,7 @@
 // (handoffClaimant). The issues, their pull requests, their trees' slots and the claims the boot
 // relaunches are seeded through the store, as every daemon test seeds its fixture; every
 // assertion is a read of GET /legion/v1/state, of a route's answer, of what the CLI printed, of
-// Dispatch's own routes, or of the task a started worker's shim was prompted with.
+// Dispatch's own routes, or of the task a started worker took.
 package daemon
 
 import (
@@ -48,7 +48,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -434,18 +433,18 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	r.note("POST /legion/v1/handoff/complete as %s naming %s (verdict pass): %d", tester.session, rewritten.id, status)
 	// The tester's turn ends with its completion, as a worker's does. Main's supervision holds a
 	// phase task while another role of the issue is in a turn, since the two would share the
-	// working copy (supervise's sendPending), so the reviewer is prompted only once it has.
+	// working copy (supervise's take, hold issue-in-turn), so the reviewer takes it only once it has.
 	tester.endTurn()
 	got := r.waitPhase(r.a7, phase.Reviewing)
 	r.note("read back: %s is in %s", r.a7, got.Phase)
 
 	reviewer := r.claimant(claim.RoleReviewer, r.a7, "ses_a7_reviewer")
-	task := reviewer.awaitPrompt()
+	task := reviewer.awaitTask()
 	want := handoffLine(r.a7, "test", rewritten.version)
-	if !strings.Contains(task.Message, want) {
-		t.Fatalf("the reviewer was prompted %q, want it to name %q", task.Message, want)
+	if !strings.Contains(task.Text, want) {
+		t.Fatalf("the reviewer took %q, want it to name %q", task.Text, want)
 	}
-	r.note("the reviewer's shim was prompted: %q", task.Message)
+	r.note("the reviewer's worker took: %q", task.Text)
 	meta, _ = r.read(reviewer.session, r.a7, "test", "--version", strconv.Itoa(rewritten.version))
 	if !strings.Contains(meta, fmt.Sprintf("version %d (id %s)", rewritten.version, rewritten.id)) || !strings.Contains(meta, tester.session) {
 		t.Fatalf("the reviewer's handoff-read says %q, want version %d (id %s) by %s", meta, rewritten.version, rewritten.id, tester.session)
@@ -468,14 +467,14 @@ func (r *handoffRecordsLive) notNew() {
 	}
 	r.note("POST /legion/v1/handoff/complete as %s naming %s: %d", implementer.session, first.id, status)
 	// The implementer's turn ends with its completion, as the tester's does below: the tester's
-	// task is held while another role of the issue is in a turn (supervise's sendPending).
+	// task is held while another role of the issue is in a turn (supervise's take, hold issue-in-turn).
 	implementer.endTurn()
 	r.waitPhase(r.renew, phase.Testing)
 	r.note("read back: %s is in testing", r.renew)
 
 	tester := r.claimant(claim.RoleTester, r.renew, "ses_renew_tester")
-	task := tester.awaitPrompt()
-	r.note("the tester's shim was prompted: %q", task.Message)
+	task := tester.awaitTask()
+	r.note("the tester's worker took: %q", task.Text)
 	test := r.write(tester.session, r.renew, "test", r.smallBody(r.renew, "test", "round 1 fails"))
 	r.note("handoff-write as %s: %s", tester.session, test.line)
 	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "a criterion fails", Verdict: "fail", HandoffID: test.id, HandoffVersion: test.version})
@@ -486,8 +485,8 @@ func (r *handoffRecordsLive) notNew() {
 	r.note("POST /legion/v1/handoff/complete as %s naming %s (verdict fail): %d", tester.session, test.id, status)
 	r.waitPhase(r.renew, phase.Implementing)
 	r.note("read back: %s is back in implementing", r.renew)
-	task = implementer.awaitPrompt()
-	r.note("the implementer's shim was prompted: %q", task.Message)
+	task = implementer.awaitTask()
+	r.note("the implementer's worker took: %q", task.Text)
 
 	status, failure = implementer.complete(api.HandoffCompleteRequest{Summary: "implemented round 2", Commit: "round-1-" + r.renew, HandoffID: first.id, HandoffVersion: first.version})
 	if status != http.StatusConflict || failure.Code != "HANDOFF_NOT_NEW" || !strings.Contains(failure.Error, first.id) {
@@ -894,8 +893,9 @@ func digest(b []byte) string {
 }
 
 // handoffClaimant is one role's claim as its pane reaches it: the shim connected with the launch's
-// boot token, the session registered and ready, and a reader that answers what the daemon asks of
-// the shim and hands each prompt to the step, starting its turn as the agent would.
+// boot token, the session registered and ready, a reader that answers what the daemon asks of
+// the shim, and the plugin that takes each task as its value comes and starts the turn that works
+// it, handing the task to the step (takeDriver.watch).
 type handoffClaimant struct {
 	r       *handoffRecordsLive
 	token   claim.Token
@@ -903,9 +903,8 @@ type handoffClaimant struct {
 	session string
 	secret  string
 	sh      *shim
-	mu      sync.Mutex
-	turn    bool
-	prompts chan shimwire.Prompt
+	worker  *takeDriver
+	tasks   chan takenTask
 }
 
 // claimant waits for the daemon to launch role's claim on issue and brings it to ready as session.
@@ -925,7 +924,7 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 	r.built.mu.Lock()
 	address := r.built.address
 	r.built.mu.Unlock()
-	c := &handoffClaimant{r: r, token: token, issue: issue, session: session, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
+	c := &handoffClaimant{r: r, token: token, issue: issue, session: session, sh: dialShim(t, address, launch.BootToken), tasks: make(chan takenTask, 8)}
 	testwait.Eventually(t, "the shim of "+string(token)+" connected", func() bool {
 		return r.d.claim(token).State == string(supervise.StateShimConnected)
 	})
@@ -941,7 +940,9 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
+	c.worker = r.d.takeDriver(c.sh, token, session, registered.Secret, launch.Generation)
 	c.sh.serve(c.serve)
+	c.worker.watch(t, func(task takenTask) { c.tasks <- task })
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
 	}, false); status != http.StatusNoContent {
@@ -954,8 +955,7 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 
 // serve reads every frame the daemon sends the shim until the connection closes or the test ends
 // it (shim.serve): it answers the protocol negotiation and the state probe (idle, or streaming
-// while a turn runs), and takes each prompt - answering it and starting the turn, as Oh My Pi
-// does - for the step to read.
+// while a turn runs).
 func (c *handoffClaimant) serve() {
 	// The reader dialShim read the hello_ack through, which may already hold the frames after it.
 	reader := c.sh.lines
@@ -972,66 +972,50 @@ func (c *handoffClaimant) serve() {
 		case shimwire.NegotiateProtocol:
 			c.send(shimwire.Response{ID: f.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
 		case shimwire.GetState:
-			c.mu.Lock()
-			streaming := c.turn
-			c.mu.Unlock()
+			streaming := c.worker.inATurn()
 			data, _ := json.Marshal(shimwire.StateData{IsStreaming: &streaming})
 			c.send(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
-		case shimwire.Prompt:
-			c.send(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true})
-			c.mu.Lock()
-			c.turn = true
-			c.mu.Unlock()
-			c.send(shimwire.AgentStart{DeliveryID: f.DeliveryID})
-			select {
-			case c.prompts <- f:
-			case <-c.sh.stopping:
-				return
-			}
 		}
 	}
 }
 
-// send writes one frame to the daemon; the reader and the step both write.
+// send writes one frame to the daemon.
 func (c *handoffClaimant) send(frame shimwire.Frame) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if err := c.sh.writer.WriteFrame(frame); err != nil {
 		c.r.t.Errorf("send %s for %s: %v", frame.FrameType(), c.token, err)
 	}
 }
 
-// endTurn ends the turn the last prompt started, when one is running, as the agent's turn ends.
+// endTurn ends the turn the last task taken started, when one is running, as the agent's turn
+// ends: the agent_end and the report naming the task, which finishes it.
 func (c *handoffClaimant) endTurn() {
-	c.mu.Lock()
-	running := c.turn
-	c.turn = false
-	c.mu.Unlock()
-	if running {
-		c.send(shimwire.AgentEnd{})
+	c.r.t.Helper()
+	if c.worker.inATurn() {
+		c.worker.mustEndTurn(c.r.t)
 	}
 }
 
-// awaitPrompt waits for the next task the daemon prompts this claim with whose message holds each
-// of want, and returns it. A prompt before it that does not is noted and passed over, so a caller
-// that names its round's task reads that task and no other message the daemon sent the claim; a
-// caller naming nothing takes the next prompt. It waits two minutes, or what is left of the test
-// binary's deadline less a second when that is sooner (testwait.Bounded), and its failure names
-// the bound it waited.
-func (c *handoffClaimant) awaitPrompt(want ...string) shimwire.Prompt {
+// awaitTask waits for the next task this claim's worker takes whose text holds each of want, and
+// returns it. A task before it that does not is noted, its turn ended, and passed over, so a
+// caller that names its round's task reads that task and no other task the claim took, and the
+// worker is idle again to take the next; a caller naming nothing takes the next task. It waits two
+// minutes, or what is left of the test binary's deadline less a second when that is sooner
+// (testwait.Bounded), and its failure names the bound it waited.
+func (c *handoffClaimant) awaitTask(want ...string) takenTask {
 	c.r.t.Helper()
 	bound := testwait.Bounded(c.r.t, 2*time.Minute, time.Second)
 	deadline := time.After(bound)
 	for {
 		select {
-		case prompt := <-c.prompts:
-			if holdsAll(prompt.Message, want) {
-				return prompt
+		case task := <-c.tasks:
+			if holdsAll(task.Text, want) {
+				return task
 			}
-			c.r.note("%s was first prompted with another task: %q", c.token, prompt.Message)
+			c.r.note("%s first took another task: %q", c.token, task.Text)
+			c.endTurn()
 		case <-deadline:
-			c.r.t.Fatalf("%s was prompted with no task holding %q within %s", c.token, want, bound)
-			return shimwire.Prompt{}
+			c.r.t.Fatalf("%s took no task holding %q within %s", c.token, want, bound)
+			return takenTask{}
 		}
 	}
 }

@@ -2596,10 +2596,12 @@ func TestRoleRunsSkipsAnotherRolesUndecodableRow(t *testing.T) {
 // stands under is absent from the answer, which is the nil claim RoleRuns reports for it. The
 // task a claim holds comes with it, as it does through RoleRuns, and so do the update round
 // the claim is in (RoleClaim.UpdateRound), the record of its agent's last step
-// (RoleClaim.Step) and what its own session last reported it was doing (RoleClaim.ActivityAt,
+// (RoleClaim.Step), what its own session last reported it was doing (RoleClaim.ActivityAt,
 // ActivityBackground, ActivityNextReminderAt), which a rule over a run reads to tell a worker
 // whose round prompts it, whose agent is still moving, or whose own process will prompt it,
-// from one nothing will prompt (workflow.SilentPhaseWorker).
+// from one nothing will prompt (workflow.SilentPhaseWorker), and its session beside its task
+// numbers (RoleClaim.Session, TaskWritten, TaskFinished, TaskFinishedSession), which tell a
+// worker that finished its task in the session it runs from one owed it.
 func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2607,9 +2609,10 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	tester := claim.Token("legion-legion-legion-208-tester")
 	held := supervise.Claim{Token: tester, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleTester,
 		Generation: 1, State: supervise.StateRetired, LastStartRow: 17, Session: "ses_tester", SessionFile: "/tmp/tester.jsonl",
-		UpdateRound: supervise.PodRound("a-pod-uid")}
+		UpdateRound: supervise.PodRound("a-pod-uid"),
+		TaskWritten: 3, TaskTaken: 3, TaskFinished: 2, TaskFinishedSession: "ses_tester_before"}
 	task := supervise.Delivery{ID: "outbox:17", Task: "Test it.", Generation: 1, Phase: phase.Testing,
-		QueuedAt: time.Now(), DeliveredAt: time.Now(), ConfirmedAt: time.Now()}
+		QueuedAt: time.Now(), ConfirmedAt: time.Now()}
 	if err := st.PutClaimAndDelivery(ctx, held, task); err != nil {
 		t.Fatalf("record the tester's claim and the task it holds: %v", err)
 	}
@@ -2661,10 +2664,71 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 			t.Fatalf("the activity of the tester's claim = %s, background %v, reminder %s, want the report of background work at %s with its reminder due at %s",
 				read.ActivityAt, read.ActivityBackground, read.ActivityNextReminderAt, reported, reminder)
 		}
+		if read.Session != "ses_tester" || read.TaskWritten != 3 || read.TaskFinished != 2 || read.TaskFinishedSession != "ses_tester_before" {
+			t.Fatalf("the tester's claim reads session %q, written task %d, finished task %d in %q; want the session and the numbers the fixture wrote",
+				read.Session, read.TaskWritten, read.TaskFinished, read.TaskFinishedSession)
+		}
 		if _, found := claims[merger]; found {
 			t.Fatalf("the answer holds %s, a role the store has no claim of", merger)
 		}
 	})
+}
+
+// RoleClaims reads whether an accepted take's turn started, and not the text the take was
+// answered with: its readers ask only where the take stands (supervise's Delivery.StillWorked),
+// which turn_started says alone, and the text stays on the row through the take's turn, so a read
+// of it would carry every running task's text on every admission pass. StillWorked answers from
+// the read as it answers from the record: a take awaiting its turn still works the task on an
+// idle claim, and a take whose turn started does not, whether its text stands or no record kept
+// it — a confirmed row the task numbers' migration filled with no text, whose turn_started it set.
+//
+// The negative control is the read of the text put back (taken_text selected into the task's
+// TakenText): the task then reads back a text the reader has no use for.
+func TestRoleClaimsReadsWhetherATakesTurnStartedAndNotItsText(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	const text = "Your last turn was interrupted.\n\nTest it. Issue: LEGION-208. Phase: testing."
+	for _, tc := range []struct {
+		name, text  string
+		turnStarted bool
+		role        claim.Role
+	}{
+		{name: "a take awaiting its turn", text: text, role: claim.RoleTester},
+		{name: "a take whose turn started", text: text, turnStarted: true, role: claim.RoleImplementer},
+		{name: "a migrated take whose turn started, its text kept by no record", turnStarted: true, role: claim.RoleReviewer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			token := claim.Token("legion-legion-legion-208-" + string(tc.role))
+			held := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
+				Role: tc.role, Generation: 1, State: supervise.StateIdle, TaskWritten: 1, TaskTaken: 1}
+			task := supervise.Delivery{ID: "outbox:17", Task: "Test it.", Generation: 1, Phase: phase.Testing,
+				Number: 1, QueuedAt: time.Now(), ConfirmedAt: time.Now(), TakenText: tc.text, TurnStarted: tc.turnStarted}
+			if err := st.PutClaimAndDelivery(ctx, held, task); err != nil {
+				t.Fatalf("record the claim and the task its take holds: %v", err)
+			}
+			inTx(t, st, func(tx pgx.Tx) {
+				claims, err := records.RoleClaims(ctx, tx, []claim.Token{token})
+				if err != nil {
+					t.Fatalf("read the claim = %v", err)
+				}
+				read := claims[token]
+				if read == nil || read.Pending == nil {
+					t.Fatalf("the claim reads %+v, want it holding the task the fixture wrote", read)
+				}
+				if read.Pending.TakenText != "" || read.Pending.TurnStarted != tc.turnStarted {
+					t.Fatalf("the task reads taken text %q and turn started %v, want no text and turn started %v: the read says where the take stands and carries no text",
+						read.Pending.TakenText, read.Pending.TurnStarted, tc.turnStarted)
+				}
+				if got, want := read.Pending.StillWorked(1, phase.Testing, read.State), task.StillWorked(1, phase.Testing, held.State); got != want {
+					t.Fatalf("StillWorked over the read = %v, want %v, as over the record", got, want)
+				}
+				if got := read.Pending.StillWorked(1, phase.Testing, read.State); got == tc.turnStarted {
+					t.Fatalf("StillWorked over the read = %v, want %v for %s on an idle claim", got, !tc.turnStarted, tc.name)
+				}
+			})
+		})
+	}
 }
 
 // A root keeps one relayed decision per Dispatch reference, the newest by its time: a later one

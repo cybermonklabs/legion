@@ -26,12 +26,13 @@
 // and the one that publishes the merge forward's messages (record.MergeForwardMessage) among
 // them. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS stream
 // for the push onto the base, the implementer's push and its synchronize; the daemon's own HTTP
-// routes for each role's registration, readiness, grants and completions; and the daemon's worker
-// stream for each role's turns, which this driver speaks as `legion worker-shim` does (shimwire
-// frames). Every assertion is a read of GET /legion/v1/state, of the operator's claim listing, of
-// what the daemon published to the Envoy listener stand-in, of what it sent — or did not send — to
-// a role's own connection, of what the fake runtime was asked to suspend, or of the lines the
-// daemon logged for its decisions (recordingLog). The store is read only for what no route shows:
+// routes for each role's registration, readiness, task takes, grants and completions; and the
+// daemon's worker stream for each role's turns, which this driver speaks as `legion worker-shim`
+// does (shimwire frames), each role's plugin taking its task as the package's takeDriver does.
+// Every assertion is a read of GET /legion/v1/state, of the operator's claim listing, of what the
+// daemon published to the Envoy listener stand-in, of what it sent — or did not send — to a role's
+// own connection, of what the fake runtime was asked to suspend, or of the lines the daemon logged
+// for its decisions (recordingLog). The store is read only for what no route shows:
 // the outbox rows of the second read and of the merge forward, and the tester's phases row, which a
 // refused completion must leave unwritten.
 //
@@ -245,26 +246,29 @@ func (c *liveClaimant) silent(within time.Duration) {
 	}
 }
 
-// Step 1. The seeded implementer completes implementing, naming a handoff record of its own,
-// which hands the testing phase to the tester with an assignment of its own and starts it. The
-// tester registers, takes that task and works it: a claim working a delivery it confirmed, which is
-// the turn the conflict of the steps after it must leave alone.
+// Step 1. The seeded implementer registers and takes the task its readiness left pending, as its
+// plugin takes a value at once while it is idle, and in that task's turn completes implementing,
+// naming a handoff record of its own, which hands the testing phase to the tester with an
+// assignment of its own and starts it. The tester registers, takes that task and works it: a claim
+// working a delivery it confirmed, which is the turn the conflict of the steps after it must leave
+// alone.
 func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 	t := r.t
 	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
-	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch")
-	r.imp.startTurn("")
+	resume := r.imp.takeTask("Phase: implementing")
+	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch, and took the task its readiness left pending (%s)",
+		firstLine(resume.Text))
 	if status, failure := r.imp.complete("implemented it", conflictFirstHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.imp.endTurn()
-	r.note("drove POST /legion/v1/handoff/complete for the implementer at %s, naming its implement record, then its agent_end: 200", conflictFirstHead)
+	r.note("drove POST /legion/v1/handoff/complete for the implementer at %s, naming its implement record, then its agent_end and the turn's report: 200", conflictFirstHead)
 	got := r.waitFor("the issue in testing", func(got api.Issue) bool { return got.Phase == phase.Testing })
 	r.note("read back: %s is in %s, status %s", r.key, got.Phase, got.Status)
 
 	r.test = r.claimant(claim.RoleTester, "ses_tester")
-	prompt := r.test.takeTask("Phase: testing")
-	r.note("read back: the tester was launched, registered and prompted its testing task (%s)", firstLine(prompt.Message))
+	task := r.test.takeTask("Phase: testing")
+	r.note("read back: the tester was launched, registered and took its testing task (%s)", firstLine(task.Text))
 	working := r.d.claim(r.test.token)
 	if working.State != string(supervise.StateWorking) || working.Pending == nil || working.Pending.ConfirmedAt == nil {
 		t.Fatalf("the tester is %s holding %+v, want working on a confirmed delivery of its testing task", working.State, working.Pending)
@@ -320,24 +324,39 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 // implementer is asked, on its own role topic, to merge the base forward (record.MergeForwardAsk),
 // the tester is told, on its own, to hold while the merge runs (MergeForwardHold), and the
 // architect is told once, in a checks-red notice naming testing, the phase the issue stays in. The
-// tester's connection is sent nothing at all — no abort, no prompt — its claim stays working on the
-// delivery it confirmed in step 1, and nothing is suspended. Nothing repeats once it is sent.
+// ask, the hold and the notice name the read of GitHub the act rests on (dispatch://INFRA-2833
+// R3): GitHub's merge state for h1 as the second read logs GitHub's answer, and the time of the
+// second read, which the daemon logs with its ask, a time after the first read was logged and
+// before the second read's own line. The tester's connection is sent nothing at all — no abort and
+// no prompt, both frames gone — its claim stays working on the task it took in step 1, and nothing
+// is suspended. Nothing repeats once it is sent.
 func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	t := r.t
 	bound := testwait.Bounded(t, conflictSecondReadBound, time.Second)
 	second := r.awaitLogged(conflictSecondReadLine, r.key, bound)
 	first := r.loggedFor(conflictFirstReadLine, r.key)[0]
-	r.note("read back: the second read ran %s after the first was logged: the daemon logged %q for %s, GitHub answering %v for head %v",
-		second.at.Sub(first.at).Round(time.Second), second.Message, r.key, second.Attrs["mergeable"], second.Attrs["readHead"])
+	r.note("read back: the second read ran %s after the first was logged: the daemon logged %q for %s, GitHub answering %v, merge state %v, for head %v",
+		second.at.Sub(first.at).Round(time.Second), second.Message, r.key, second.Attrs["mergeable"], second.Attrs["mergeState"], second.Attrs["readHead"])
 	asked := r.awaitLogged(conflictAskedLine, r.key, bound)
 	if asked.Attrs["why"] != string(record.ConflictCheckNotGreen) || asked.Attrs["phase"] != string(phase.Testing) || asked.Attrs["head"] != conflictFirstHead {
 		t.Fatalf("the daemon logged %q for %s with %v, want the merge forward of %s asked in testing for %s",
 			asked.Message, r.key, asked.Attrs, conflictFirstHead, record.ConflictCheckNotGreen)
 	}
-	r.note("read back: the daemon logged %q for %s: head %v, phase %v, why %v", asked.Message, r.key, asked.Attrs["head"], asked.Attrs["phase"], asked.Attrs["why"])
+	// A time attribute reaches the recording log as time.Time's String (decodeAttr).
+	readAt, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", fmt.Sprint(asked.Attrs["stateReadAt"]))
+	if err != nil || readAt.Before(first.at) || readAt.After(second.at) {
+		t.Fatalf("the daemon logged %q for %s with the read time %v (%v), want the second read's: after the first read's line at %s and before the second read's at %s",
+			asked.Message, r.key, asked.Attrs["stateReadAt"], err, first.at.UTC().Format(time.RFC3339Nano), second.at.UTC().Format(time.RFC3339Nano))
+	}
+	r.note("read back: the daemon logged %q for %s: head %v, phase %v, why %v, merge state %q, read at %s",
+		asked.Message, r.key, asked.Attrs["head"], asked.Attrs["phase"], asked.Attrs["why"], asked.Attrs["mergeState"], readAt.UTC().Format(time.RFC3339Nano))
 
+	// The merge state the ask and the hold name is GitHub's answer as the second read logged it
+	// (conflictConfirm), the read the workflow applied, not the daemon's own line of its ask.
+	answered := record.MergeState(fmt.Sprint(second.Attrs["mergeState"]))
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictFirstHead,
-		Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: record.ConflictCheckNotGreen}
+		Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: record.ConflictCheckNotGreen,
+		MergeState: answered, StateReadAt: readAt}
 	if told := r.awaitHeard(claim.RoleImplementer, 1, bound); told[0].Message != ask.Message(r.key, liveRepo) {
 		t.Fatalf("the implementer was told %q, want the merge forward's ask %q", told[0].Message, ask.Message(r.key, liveRepo))
 	}
@@ -348,18 +367,20 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 		t.Fatalf("the tester was told %q, want the merge forward's hold %q", told[0].Message, hold.Message(r.key, liveRepo))
 	}
 	r.note("read back: one message on the tester's role topic — %s", hold.Message(r.key, liveRepo))
+	named := "; " + record.AnsweredMergeState(answered, readAt, conflictFirstHead)
 	var notices []record.Notice
 	testwait.WithinPolling(t, bound, testwait.Poll, "the architect's notice of the merge forward", func() bool {
 		notices = r.architectNoticesSince()
 		return len(notices) > 0
 	})
-	if len(notices) != 1 || notices[0].Kind != "checks-red" || notices[0].Phase != phase.Testing {
-		t.Fatalf("the architect was told %+v after the second read, want one checks-red notice naming testing", notices)
+	if len(notices) != 1 || notices[0].Kind != "checks-red" || notices[0].Phase != phase.Testing || !strings.HasSuffix(notices[0].Reason, named) {
+		t.Fatalf("the architect was told %+v after the second read, want one checks-red notice naming testing whose reason ends naming the read it rests on, %q",
+			notices, named)
 	}
 	r.note("read back: one notice on the architect's role topic, checks-red naming %s — %s", notices[0].Phase, notices[0].Reason)
 
 	r.test.silent(liveSettle)
-	r.note("read back over %s: the daemon sent the tester's connection nothing at all — no abort (the frame is gone), no shutdown, no prompt", liveSettle)
+	r.note("read back over %s: the daemon sent the tester's connection nothing at all — no abort and no prompt (both frames are gone), no shutdown", liveSettle)
 	want := maps.Clone(r.heard)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleArchitect} {
 		want[role]++

@@ -96,7 +96,7 @@ func openRoleLane(urls []string, queue string, handler nats.MsgHandler, options 
 		client.Close()
 		return nil, fmt.Errorf("flush: %w", err)
 	}
-	if after := client.Conn.LastError(); !sameError(after, before) {
+	if after := client.Conn.LastError(); !SameError(after, before) {
 		client.Close()
 		if refusal, ok := readSubscriptionRefusal(after); ok && refusal.subject == subject && refusal.queue == queue {
 			return nil, fmt.Errorf("%w in queue group %q: %w", errRoleLaneRefused, queue, after)

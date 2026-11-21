@@ -213,11 +213,8 @@ pane_gone() {
   ! grep -qxF "$1" <<<"$listed"
 }
 report_panes() { note "tmux list-panes answered: $(tm list-panes -a -F '#{pane_id}' 2>&1 | tr '\n' ' ')"; }
-# log_count MSG [DELIVERY]: how many JSON lines of the daemon log carry MSG (and that delivery id).
-log_count() {
-  jq -R --arg m "$1" --arg d "${2:-}" 'fromjson? | select(.msg == $m and ($d == "" or .delivery == $d))' \
-    "$daemon_log" | jq -s length
-}
+# log_count MSG: how many JSON lines of the daemon log carry MSG.
+log_count() { jq -R --arg m "$1" 'fromjson? | select(.msg == $m)' "$daemon_log" | jq -s length; }
 # user_turns FILE MARKER: how many user messages in an OMP session file carry MARKER — the turns
 # a task started.
 user_turns() {
@@ -555,16 +552,18 @@ jq -e --arg s "$session1" '.issues["S2-1"].architect | .state == "ready" and .se
 note "legion state: .issues[\"S2-1\"].architect = $(jq -c '.issues["S2-1"].architect | {session, state, locator: .locator.tmux}' "$work/state-ready.json")"
 pass
 
-# ---- delivery: queued before ready, sent once; a retried frame starts no second turn --------------
+# ---- delivery: a task queued before ready is taken once -------------------------------------------
 
 begin task-queued-before-ready-runs-once
 marker1="S2E-TASK-$RANDOM$RANDOM"
 spawned=$(claims spawn --json --tree S2-1 --issue S2-2 --role implementer --prompt-file "$work/worker.md" \
   --task "Reply with the single word pong. ($marker1)")
 c2=$(jq -r .token <<<"$spawned")
-jq -e '.pending.id != null and .pending.deliveredAt == null and (.state | IN("queued", "launching", "shim_connected"))' \
+# The spawn answers the operator's view of the claim (api's DeliveryView): a task the worker has not
+# taken yet carries no confirmedAt.
+jq -e '.pending.id != null and .pending.confirmedAt == null and (.state | IN("queued", "launching", "shim_connected"))' \
   <<<"$spawned" >/dev/null || fail "the spawn did not queue its task before the agent was ready: $spawned"
-note "spawned $c2 in state $(jq -r .state <<<"$spawned") holding delivery $(jq -r .pending.id <<<"$spawned"), not yet sent"
+note "spawned $c2 in state $(jq -r .state <<<"$spawned") holding delivery $(jq -r .pending.id <<<"$spawned"), not yet taken"
 until_true 300 "claim $c2's task to run and end" claim_is "$c2" '.state == "idle" and .pending == null'
 c2_json=$(claim_json "$c2")
 session_file2=$(jq -r .sessionFile <<<"$c2_json")
@@ -592,36 +591,6 @@ if [ -n "$key_command" ]; then
 else
   note "the route is the operator's own Oh My Pi login, no key command ($work/model-gateway/box-login.route)"
 fi
-pass
-
-begin retried-frame-starts-no-second-turn
-# The daemon re-sends a delivery under the same id when a send is lost in transit. Stopping the
-# shim makes every send go unanswered: each times out (worker_rpc_timeout_seconds), the delivery
-# waits, and the next sweep sends the same frame again. Resumed, the shim hands OMP the first
-# prompt and answers every repeat from its dedupe record.
-pane2_pid=$(incarnation_of "$c2_json") || fail "claim $c2's pane process is not the one its locator names: $(jq -c .locator <<<"$c2_json")"
-# The shim is the pane's process's one child (child_of, lib/process-tree.sh), and its argv[1] is
-# worker-shim, as every reader of a Legion process tree takes it, never one naming it in a later
-# argv word. It is stopped only while it is that process (freeze_if, lib/process-tree.sh).
-shim2=$(child_of "$pane2_pid") || fail "pane process $pane2_pid: $shim2"
-shim2_start=$(proc_start "$shim2")
-shim2_args=()
-process_args "$shim2" shim2_args && [ "${shim2_args[1]-}" = worker-shim ] ||
-  fail "the child of pane process $pane2_pid is not the shim"
-freeze_if "$shim2" "$shim2_start" STOP || fail "shim $shim2 is no longer the process that started at $shim2_start"
-marker2="S2E-RETRY-$RANDOM$RANDOM"
-delivery2=$(claims deliver --json --claim "$c2" --task "Reply with the single word pong. ($marker2)" | jq -r .pending.id)
-lost_msg="supervise: the prompt was lost to the transport; the delivery waits"
-until_true 90 "the daemon to send delivery $delivery2 twice into the stopped shim" \
-  sh -c "[ \"\$(jq -R --arg m '$lost_msg' --arg d '$delivery2' 'fromjson? | select(.msg == \$m and .delivery == \$d)' '$daemon_log' | jq -s length)\" -ge 2 ]"
-sends=$(log_count "$lost_msg" "$delivery2")
-freeze_if "$shim2" "$shim2_start" CONT || fail "shim $shim2 is no longer the process that started at $shim2_start"
-note "shim $shim2 stopped; delivery $delivery2 sent $sends times, every send unanswered; shim resumed"
-until_true 180 "claim $c2's retried delivery to run and end" claim_is "$c2" '.state == "idle" and .pending == null'
-turns=$(user_turns "$session_file2" "$marker2")
-[ "$turns" = 1 ] || fail "delivery $delivery2, sent $sends+ times, reached the agent $turns times"
-jq -e '.budgets.promptFailures == 0' <<<"$(claim_json "$c2")" >/dev/null || fail "a transport loss was charged as a prompt failure"
-note "the agent's session file holds the task $turns time; promptFailures 0"
 pass
 
 # ---- the process: death, suspension, resumption ---------------------------------------------------
@@ -785,7 +754,8 @@ for pair in "$c1:$before1" "$c2:$before2"; do
   done
 done
 [ "$(panes)" = "$panes_before" ] || fail "the restart opened or closed a pane: $(panes | tr '\n' ' ') (before: $(tr '\n' ' ' <<<"$panes_before"))"
-# The shim's reconnect hello is what carries a task now: a task delivered after the restart runs.
+# A task delivered after the restart is a value the worker takes, over the listener's relay or at
+# its next read of the claim's value, so it runs once.
 marker3="S2E-READOPT-$RANDOM$RANDOM"
 until_true 60 "claim $c1 to be ready on the restarted daemon" claim_is "$c1" '.state == "ready" or .state == "idle"'
 claims deliver --claim "$c1" --task "Reply with the single word ready. ($marker3)" >/dev/null
@@ -795,7 +765,7 @@ turns=$(user_turns "$session_file1" "$marker3")
 restart_line=$(grep -n '^=== boot' "$daemon_log" | tail -1 | cut -d: -f1)
 grep -qF 'rejected hello' <<<"$(tail -n +"$restart_line" "$daemon_log")" && fail "the restarted daemon rejected a hello"
 note "boots $boots_before → $boots; $c1 and $c2 kept generation, incarnation $(jq -r .locator.incarnation <<<"$before1") / $(jq -r .locator.incarnation <<<"$before2"), and pane; no pane opened or closed"
-note "the shims' reconnect hellos were accepted: a task sent after the restart ran $turns time"
+note "the shims' reconnect hellos were accepted: a task delivered after the restart ran $turns time"
 pass
 
 begin omp-child-environment

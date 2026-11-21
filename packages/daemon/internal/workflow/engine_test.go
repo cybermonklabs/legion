@@ -548,8 +548,9 @@ func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testin
 }
 
 // superviseRequests counts the enqueued supervise requests of one operation by issue/role. A
-// phase worker's start is one row, which carries the worker's task (StartOrOwe); a child's own
-// architect's plain start (childArchitectStart) carries none.
+// phase worker's start is one row, which carries the worker's task (StartOrOwe); two starts this
+// package writes carry none: the boot's resume of a claim that finished its last task in the
+// session it holds (booted), and a child's own architect's plain start (childArchitectStart).
 func superviseRequests(t *testing.T, pool *pgxpool.Pool, op string) map[string]int {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select issue, payload->>'role' from outbox

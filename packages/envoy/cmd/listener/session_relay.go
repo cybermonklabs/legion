@@ -718,6 +718,9 @@ func (m *sessionRelays) listConsumers() map[string]*jetstream.ConsumerInfo {
 	listed, err := m.delivery.consumers.ListSessionConsumers(ctx)
 	switch {
 	case err == nil:
+		// The list is one of the session consumers' calls, which only a listener that gives
+		// consumer delivery may make, so its answer says this one does (the task relay waits on it).
+		m.delivery.holdsConsumerGrant()
 		return listed
 	case consumerGrantRefused(err):
 		if !m.listRefusedLogged {
@@ -1092,6 +1095,28 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 		Reply:   m.replyPrefix + token,
 		Header:  header,
 		Data:    msg.Data,
+	})
+}
+
+// taskFrameReplyToken is the token of every task frame's reply subject under the listener's reply
+// inbox (publishTaskFrame). The task relay asks nothing of the session, and a client that knows
+// task frames answers none; one that does not refuses a frame without the session relay's headers
+// by answering it done (packages/envoy-client's consumer delivery). That answer reaches onReply,
+// which acts on a token only when a session frame awaits it, and no session frame's token holds a
+// dot (publishFrame's are base 36, which has none), so the answer finds no frame and is ignored: it
+// acks no message of the session's consumer.
+const taskFrameReplyToken = "task.frame"
+
+// publishTaskFrame publishes a frame of the task relay (taskRelay.publish), header and data as
+// that relay built them, on sessionID's relay subject, on the session-consumer connection the
+// session's own frames go out on (publishFrame), with a reply subject under the listener's reply
+// inbox whose answers are ignored (taskFrameReplyToken).
+func (m *sessionRelays) publishTaskFrame(ctx context.Context, sessionID string, header nats.Header, data []byte) error {
+	return m.delivery.consumers.Publish(ctx, &nats.Msg{
+		Subject: bus.DeliverSubject(sessionID),
+		Reply:   m.replyPrefix + taskFrameReplyToken,
+		Header:  header,
+		Data:    data,
 	})
 }
 

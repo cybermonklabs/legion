@@ -187,6 +187,8 @@ async function runSessionChild(config: ChildConfig): Promise<never> {
       },
       gap: (notice) => say({ event: "gap", message: notice.message }),
       log: (message, error) => say({ event: "failed", what: message, error: String(error) }),
+      // The scenario's session serves no Legion claim, so a task frame is dropped.
+      onTaskValue: () => undefined,
     },
     publish: (reply, body) => nats.publish(reply, codec.encode(body)),
     persist: () => true,

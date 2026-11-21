@@ -321,6 +321,10 @@ type pauseDaemonRig struct {
 	mu    sync.Mutex
 	sup   *supervisor
 	apply func(ctx context.Context, source, eventID string, fact intake.Fact) (intake.Result, error)
+	// drivers is the plugin behind each shim the rig dialed, which takes its claim's task over
+	// the daemon's routes (takeDriver): the boot form for a worker's shim (dialShim), and the
+	// registered controller's secret form (controllerUp).
+	drivers map[*shim]*takeDriver
 }
 
 // newPauseDaemonRig readies every part of the rig and the configuration its daemon boots with;
@@ -473,6 +477,14 @@ func (r *pauseDaemonRig) unfinished(issue string, role claim.Role) supervise.Cla
 func inPodRound(c supervise.Claim, opened time.Time) supervise.Claim {
 	c.UpdateRound = supervise.PodRound("pod-" + strings.ToLower(c.Issue))
 	c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt = "the pod runs an image the deployment has moved on from", &opened, &opened
+	return c
+}
+
+// inTakesTurn is c, a running claim seeded working, in the turn of its accepted take of task, its
+// first numbered task: the claim's value was written under task's number and its take accepted
+// under it.
+func inTakesTurn(c supervise.Claim, task supervise.Delivery) supervise.Claim {
+	c.Pending, c.TaskWritten, c.TaskTaken = &task, task.Number, task.Number
 	return c
 }
 
@@ -741,8 +753,10 @@ func (r *pauseDaemonRig) linesAfter(mark int, msg string) []map[string]any {
 
 // dialShim is dialShim (daemon_test.go) over the worker stream a Kubernetes daemon binds, a TCP
 // address its pods' launchers dial (prepareSandbox): it connects, says hello with bootToken and
-// returns once the daemon's hello_ack arrives.
-func (r *pauseDaemonRig) dialShim(bootToken string) *shim {
+// returns once the daemon's hello_ack arrives. The plugin behind it takes its claim's task in the
+// routes' boot form, at generation, that of the launch the token was minted for, as the Claude
+// Code bridge does (drivers); a session that registers swaps it for its own (controllerUp).
+func (r *pauseDaemonRig) dialShim(bootToken string, generation uint64) *shim {
 	r.t.Helper()
 	r.built.mu.Lock()
 	address := r.built.address
@@ -757,18 +771,48 @@ func (r *pauseDaemonRig) dialShim(bootToken string) *shim {
 	if frame := s.next(); frame.FrameType() != shimwire.TypeHelloAck {
 		r.t.Fatalf("the daemon answered the hello with %#v, want hello_ack", frame)
 	}
+	driver := newTakeDriver(r.d.post, s.writer.WriteFrame, claim.AgentCaller{}, generation)
+	driver.boot = claim.BootCaller{BootToken: bootToken}
+	r.mu.Lock()
+	if r.drivers == nil {
+		r.drivers = map[*shim]*takeDriver{}
+	}
+	r.drivers[s] = driver
+	r.mu.Unlock()
 	return s
+}
+
+// dialWorkerShim is dialShim of token's running claim, on the boot token and the generation the
+// rig seeds its launch with (pauseRigBootToken, running), whose plugin waits for the daemon to
+// read the start of each turn of a take it began (takeDriver.started, turnRead).
+func (r *pauseDaemonRig) dialWorkerShim(token claim.Token) *shim {
+	r.t.Helper()
+	sh := r.dialShim(pauseRigBootToken(token), 1)
+	r.driver(sh).started = r.d.turnRead(token)
+	return sh
+}
+
+// driver is the plugin behind sh (drivers).
+func (r *pauseDaemonRig) driver(sh *shim) *takeDriver {
+	r.t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	driver, ok := r.drivers[sh]
+	if !ok {
+		r.t.Fatal("the rig dialed no such shim")
+	}
+	return driver
 }
 
 // controllerUp brings the daemon's own controller up: its launch's shim says hello, its agent
 // registers with the launch's boot token and says it is ready, and it takes the start message the
 // daemon hands it in a turn that ends, as controllerLaunched and registeredLaunch drive it
-// (controller_launch_test.go). It answers the shim the daemon prompts the controller on.
+// (controller_launch_test.go). It answers the shim whose plugin takes the controller's tasks.
 func (r *pauseDaemonRig) controllerUp() *shim {
 	r.t.Helper()
 	token := r.controller()
 	launch := controllerLaunched(r.t, r.rt.Runtime, token)
-	sh := r.dialShim(launch.BootToken)
+	sh := r.dialShim(launch.BootToken, launch.Generation)
 	r.awaitState(token, supervise.StateShimConnected, "the controller's shim said hello")
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: "ses_controller", OmpSessionFile: "/sessions/ses_controller.jsonl",
@@ -786,32 +830,50 @@ func (r *pauseDaemonRig) controllerUp() *shim {
 	}, false); status != http.StatusNoContent {
 		r.t.Fatalf("the controller's ready = %d; body %s", status, body)
 	}
+	driver := r.d.takeDriver(sh, token, "ses_controller", registration.Secret, launch.Generation)
+	r.mu.Lock()
+	r.drivers[sh] = driver
+	r.mu.Unlock()
 	r.takeTurn(sh, ControllerStartMessage)
 	r.awaitState(token, supervise.StateIdle, "the controller's start turn has ended")
 	return sh
 }
 
-// takeTurn is the agent behind sh taking the next prompt, which must be want, in a turn that runs
-// and ends, as Oh My Pi answers one: the prompt acknowledged, the turn's start and end, and the
-// prompt's result.
+// takeTurn is the plugin behind sh taking its claim's next task, whose text must be want, in a
+// turn that runs and ends, as the plugin takes one (takeDriver): the take, the turn's start, and
+// the turn's end with the report naming the task's number, which finishes it.
 func (r *pauseDaemonRig) takeTurn(sh *shim, want string) {
 	r.t.Helper()
-	prompt := r.startTurn(sh, want)
-	sh.send(shimwire.AgentEnd{})
-	sh.send(shimwire.PromptResult{ID: prompt.ID, AgentInvoked: true})
+	r.startTurn(sh, want)
+	r.driver(sh).mustEndTurn(r.t)
 }
 
-// startTurn is the agent behind sh taking the next prompt, which must end with want, and starting
-// its turn on it. It answers the prompt.
-func (r *pauseDaemonRig) startTurn(sh *shim, want string) shimwire.Prompt {
+// endSeededTurn ends the turn of the accepted take of task number that token's claim was seeded
+// working in (inTakesTurn), as the claim's plugin at the daemon's contract ends one: the end frame,
+// and behind it the turn's report naming the number, which is what finishes that task. The
+// report is the first of the launch's generation, in the routes' boot form on the boot token the
+// rig seeds the launch with (pauseRigBootToken), since no shim of the claim was dialed.
+func (r *pauseDaemonRig) endSeededTurn(token claim.Token, number uint64) {
 	r.t.Helper()
-	prompt := sh.prompt()
-	if !strings.HasSuffix(prompt.Message, want) {
-		r.t.Fatalf("the agent was prompted %q, want a prompt ending %q", prompt.Message, want)
+	r.handle(token, supervise.StreamTurnEnd{Claim: token})
+	plugin := newTakeDriver(r.d.post, nil, claim.AgentCaller{}, 1)
+	plugin.boot = claim.BootCaller{BootToken: pauseRigBootToken(token)}
+	if err := plugin.report(claim.TurnOutcomeRequest{Outcome: claim.TurnClean, Task: number}); err != nil {
+		r.t.Fatalf("%s's report of the turn of task %d: %v", token, number, err)
 	}
-	sh.send(shimwire.Response{ID: prompt.ID, Command: shimwire.TypePrompt, Success: true})
-	sh.send(shimwire.AgentStart{})
-	return prompt
+}
+
+// startTurn is the plugin behind sh taking its claim's next task, whose text must end with want,
+// and starting its turn on it. It answers the take.
+func (r *pauseDaemonRig) startTurn(sh *shim, want string) takenTask {
+	r.t.Helper()
+	driver := r.driver(sh)
+	taken := driver.mustTake(r.t, "take the task ending "+want)
+	if !strings.HasSuffix(taken.Text, want) {
+		r.t.Fatalf("the agent took %q, want a task ending %q", taken.Text, want)
+	}
+	driver.mustStartTurn(r.t)
+	return taken
 }
 
 // deliver is the operator's `legion claims deliver` of task to token, through the operator's

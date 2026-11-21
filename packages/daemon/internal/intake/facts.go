@@ -1240,9 +1240,9 @@ type VolumeNearFull struct {
 
 func (f VolumeNearFull) namedIssue() (string, bool) { return f.Issue, true }
 
-// ClaimReady is a claim ready to be prompted, from either of two sources: the supervision
-// observation of a launch's ready, its agent having taken its Envoy role and said it can be
-// prompted (workflowRuntime.applyTerminal), and a start the outbox runs that finds an architect
+// ClaimReady is a claim ready to take its task, from either of two sources: the supervision
+// observation of a launch's ready, its agent having taken its Envoy role and said it is ready to
+// take one (workflowRuntime.applyTerminal), and a start the outbox runs that finds an architect
 // already running, whose launch has no second ready (the outbox's start). Launch is the claim's
 // launch generation the ready belongs to, the running one for the second source.
 type ClaimReady struct {
@@ -1263,8 +1263,8 @@ type ClaimReady struct {
 	// (supervise's forgetSession). The first source alone sets it, from the claim its ready wrote
 	// (the daemon's applyTerminal): an architect's catch-up opens with it (workflow's
 	// QueueCatchUp), because the first turn of a relaunched architect can be that catch-up's
-	// rather than its prompt's. The catch-up's copy tells nothing: the record is told by the
-	// prompt the claim's machine sends, at that prompt's confirmation.
+	// rather than its take's. The catch-up's copy tells nothing: the record is told by the
+	// accepted take whose text carries the sentence (supervise's accept).
 	Relaunch string
 }
 
@@ -1332,10 +1332,12 @@ func (DaemonBooted) namedIssue() (string, bool) { return "", false }
 // CutoverMergerRepair is the one-time boot repair of the mergers the `awaiting_merge` cutover
 // left stopped (dispatch://INFRA-3274/spec R2): an earlier build's idle release stopped the
 // merger's pod while its issue waited in `awaiting_merge`, which no role worked, so it armed no
-// backstop, and the migration that moved the issue to `merging` gave the merger no task. It is
-// never decoded from an event. The boot applies it once per Dispatch project, under a fixed
-// event id (`cutover-merger-repair:<project>`), before the consumers start, so processed_events
-// is its once-only record: a later boot's apply is a duplicate, and no handler runs.
+// backstop, and the migration that moved the issue to `merging` gave the merger no task. A merger
+// the cutover left live is owed its merging task by the same repair, since its record says it
+// finished the task it holds (dispatch://INFRA-2811 R4). It is never decoded from an event. The
+// boot applies it once per Dispatch project, under a fixed event id
+// (`cutover-merger-repair:<project>`), before the consumers start, so processed_events is its
+// once-only record: a later boot's apply is a duplicate, and no handler runs.
 type CutoverMergerRepair struct{}
 
 func (CutoverMergerRepair) namedIssue() (string, bool) { return "", false }

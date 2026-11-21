@@ -16,6 +16,7 @@ package daemon
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -58,13 +59,13 @@ func TestPodUpdateEndsARoundOverAPodItsClaimsNoLongerRecord(t *testing.T) {
 	waitingToken := rig.driftingIssue(waiting, waitingPod)
 
 	// The implementer's next phase task, which the round it answered holds back from it.
+	const task = "Carry the implementation on."
 	implementer := rig.tokens[claim.RoleImplementer]
 	rig.handle(claim.RoleImplementer, supervise.RequestDeliver{Claim: implementer, ID: held,
-		Task: "Carry the implementation on.", Phase: phase.Implementing, Generation: 1})
+		Task: task, Phase: phase.Implementing, Generation: 1})
 	rig.settle(claim.RoleImplementer)
-	conn := rig.workers[claim.RoleImplementer]
-	if sent := promptsOf(conn, held); len(sent) != 0 {
-		t.Fatalf("the implementer was sent %+v while it stood in the round it answered, want the task held", sent)
+	if answer := rig.take(claim.RoleImplementer); answer.Outcome != supervise.TakeOutcomeRefused || answer.Hold != supervise.HoldUpdateRound {
+		t.Fatalf("the implementer's take while it stood in the round it answered = %+v, want it refused by %q", answer, supervise.HoldUpdateRound)
 	}
 
 	rig.tick()
@@ -84,8 +85,8 @@ func TestPodUpdateEndsARoundOverAPodItsClaimsNoLongerRecord(t *testing.T) {
 		}
 	}
 	rig.settle(claim.RoleImplementer)
-	if sent := promptsOf(conn, held); len(sent) == 0 {
-		t.Fatalf("the implementer was sent %+v once its round ended, want the task the round held back", conn.Prompts())
+	if answer := rig.take(claim.RoleImplementer); answer.Outcome != supervise.TakeOutcomeAccepted || !strings.HasSuffix(answer.Text, task) {
+		t.Fatalf("the implementer's take once its round ended = %+v, want the task the round held back accepted", answer)
 	}
 	if messages := rig.messages(); len(messages) != 0 {
 		t.Errorf("the issue was written %q; the one member of the round had answered before its pod went", messages)

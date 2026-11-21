@@ -46,9 +46,9 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 		`"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"held","status":"in_progress","workers":{}}`
 	// A root whose transition raised an entry the daemon has still to deliver, which reads as
 	// behind and is no failure. Beside it three roots whose fields alone look like each arm — a
-	// task queued twenty minutes ago that no turn confirmed, a failed architect claim, two hours at
-	// admitted with no design gate registered — and for which the state names no arm: the daemon's
-	// reading is what names a root, so the line names none of the four.
+	// task queued twenty minutes ago with no take of it accepted, a failed architect claim, two
+	// hours at admitted with no design gate registered — and for which the state names no arm: the
+	// daemon's reading is what names a root, so the line names none of the four.
 	unnamed := fmt.Sprintf(`"LEGION-300":{"key":"LEGION-300","generation":1,"phase":"admitted","status":"in_progress","tree":"LEGION-300",`+
 		`"workers":{},"architect":{"session":"ses_architect_300","state":"working","pluginContract":81},`+
 		`"phaseEntry":2,"givenEntry":1,"slot":{"index":0,"admittedAt":%q},`+

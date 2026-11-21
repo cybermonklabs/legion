@@ -123,9 +123,10 @@ func TestIdleReleaseReleasesASessionWithNothingRunning(t *testing.T) {
 	rig.kube.requireServed(t)
 }
 
-// awaitStartTask waits until the issue's role has been given its start task, the phase task the
-// daemon's boot sends the implementer of an issue at `implementing`. The role process takes its
-// turn and reports as soon as it has recorded the task (idleRigRoleProcess.prompted).
+// awaitStartTask waits until the issue's role has taken its start task, the phase task the
+// daemon's boot writes for the implementer of an issue at `implementing`. The role process
+// records the take, works its turn where the rig's plan says so, and reports
+// (idleRigRoleProcess.took).
 func (r *idleWakeRig) awaitStartTask(issue idleRigIssue) {
 	r.t.Helper()
 	idleRigEventually(r.t, idleRigRecordWait, "the start task of "+issue.key+"'s role", func() bool {

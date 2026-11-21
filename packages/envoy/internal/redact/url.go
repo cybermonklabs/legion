@@ -52,6 +52,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/internal/nettimeout"
 	"github.com/sjawhar/envoy/internal/tlsalert"
 )
 
@@ -496,7 +497,6 @@ const (
 func class(err error, server string) string {
 	var ue *url.Error
 	var dns *net.DNSError
-	var timeout interface{ Timeout() bool }
 	var re *oauth2.RetrieveError
 	var worded *classified
 	switch {
@@ -508,7 +508,7 @@ func class(err error, server string) string {
 		return ClassNameResolution
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return ClassRefused
-	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout():
+	case nettimeout.InChain(err):
 		return ClassTimedOut
 	case tlsFailure(err):
 		return ClassTLS

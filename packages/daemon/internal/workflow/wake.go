@@ -90,14 +90,15 @@ type Pods interface {
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current
-// generation, naming no phase, carrying the task that says why the pod came back. It is the same
-// row a phase start writes, which is the point — the outbox's start executor already resumes a
-// suspended claim by rule (RequestRuleResume), already records the start that cancels a release
-// still in flight (StartedBy, read by store.IssueReleaseStop), and already delivers the row's
-// task once the relaunched agent is ready. Naming no phase keeps the row out of every phase
-// fence: the issue's phase may move between the wake and the relaunch, and the wake's task is
-// never the phase's work. It is queued as every worker's task is (queuedRow), so a woken reviewer
-// of an issue in reviewing is told the entry of its round too (WakeTask says why).
+// generation, naming no phase, carrying the task that says why the pod came back, under a
+// wake's origin. It is the same row a phase start writes, which is the point — the outbox's
+// start executor already resumes a suspended claim by rule (RequestRuleResume), already records
+// the start that cancels a release still in flight (StartedBy, read by store.IssueReleaseStop),
+// and already queues the row's task, whose value the relaunched agent takes once it is ready.
+// Naming no phase keeps the row out of every phase fence: the issue's phase may move between the
+// wake and the relaunch, and the wake's task is never the phase's work. Every wake writes it, the
+// backstop's among them (wakeReleased). It is queued as every worker's task is (queuedRow), so a
+// woken reviewer of an issue in reviewing is told the entry of its round too (WakeTask says why).
 //
 // The row is marked with the wake's kind, so the start finishes without acting once a park, a
 // close or a moved phase has taken the role over while the row waited (decision 10 of
@@ -106,7 +107,7 @@ type Pods interface {
 // or not (record's outboxPauseFree).
 func wakeRow(issue record.Issue, role claim.Role, kind string, pause int64, task string) record.SuperviseRequest {
 	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task,
-		WakeKind: kind, Pause: pause}
+		Origin: supervise.OriginWake, WakeKind: kind, Pause: pause}
 }
 
 // PauseWakeRow is the start a project's pause owes a role it stopped with a launch owed: the row
@@ -114,7 +115,8 @@ func wakeRow(issue record.Issue, role claim.Role, kind string, pause int64, task
 // dispatch://INFRA-3759), in wakeRow's shape, marked with the wake's kind and the pause, so it
 // finishes without acting once a park, a close or a moved phase has taken the role over (decision
 // 10). The outbox holds it while a pause stands, as it holds every start of a paused project. It
-// carries no task: the task the role holds pending, if any, is what its launch delivers.
+// carries no task: the task the role holds pending, if any, keeps its number, and the relaunched
+// worker takes it from its value once it is ready (supervise's take).
 func PauseWakeRow(issue record.Issue, role claim.Role, pause int64) record.SuperviseRequest {
 	return wakeRow(issue, role, pods.WakePause, pause, "")
 }

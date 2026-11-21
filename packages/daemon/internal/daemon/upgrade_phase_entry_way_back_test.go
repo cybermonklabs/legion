@@ -58,6 +58,8 @@ const (
 	claimHandshakeMigrationFile          = "internal/store/migrations/20261114020537_claim_entry_handshake.up.sql"
 	entryVerbatimMigrationFile           = "internal/store/migrations/20261114061900_phase_entry_verbatim.up.sql"
 	reviewedHeadMigrationFile            = "internal/store/migrations/20261116234034_phase_reviewed_head.up.sql"
+	pullRequestStatusesMigrationFile     = "internal/store/migrations/20261117112334_pull_request_statuses.up.sql"
+	stepRecordsRollForwardFile           = "internal/store/migrations/20261117064152_step_starts_roll_forward.up.sql"
 	// wayBackExtract, the copy of the phase entry's block, and architectEntryWayBackExtract, the
 	// copy of contract 146's, are read from this package's own directory, where each file sits
 	// beside the code it is about and needs no declared read of its own.
@@ -75,6 +77,13 @@ const (
 	// begin and its commit. The header, the guide and this test all call them the eleven, so a
 	// block holding another number is one that at least one of the three no longer describes.
 	wayBackRecoveryStatements = 11
+	// taskNumbersMigration is the one migration above the phase entry that the contract 87
+	// release does not record (preEntryNewestMigration), and taskNumbersMigrationFile its file. A
+	// rollback to that release runs its way back first, from the block its own header carries,
+	// and the phase entry's after it (upgradeRecoveryReadsAnswer); internal/store's own tests
+	// hold that block to its count and to its copy in the guide.
+	taskNumbersMigration     = 20261113175649
+	taskNumbersMigrationFile = "internal/store/migrations/20261113175649_task_numbers.up.sql"
 )
 
 // wayBackBlockOfTheHeader is the recovery block of the header of file, a migration under
@@ -354,6 +363,34 @@ func wayBackBlockDifference(header, extract string) string {
 // current is the next helper's
 // (upgradeRollForwardSweepsTheLostTask).
 //
+// The rollback to contract 87 also crosses two migrations of later releases than the phase
+// entry's that the release it targets cannot read past: this release's
+// 20261113175649_task_numbers, which drops the pending delivery's read marks (delivered_at,
+// marked_by and prompted) that the claim read of every release before it names, and contract
+// 152's 20261116234034_phase_reviewed_head, whose start rows carry a key (`roundNamed`) the
+// release before decodes strictly and would refuse. Each header carries its way back in the same
+// form, and so does the header of contract 152's 20261117112334_pull_request_statuses, whose way
+// back no earlier release needs, since none names pull_requests.statuses, and which
+// docs/kubernetes.md has an operator run all the same, so that the roll-forward adds that column
+// again empty. Contract 152's step records carry a way back too, in the header of
+// 20261117064152_step_starts_roll_forward (migrations.WayBack): it keeps each issue's witness,
+// which reads phases.entry, so it runs before the phase entry's block drops that column, and it
+// re-arms the roll forward; its 20261117000528_outbox_kinds_with_the_step_record and
+// 20261117004117_step_starts need no statement, and neither does contract 168's
+// 20261117023932_outbox_kinds_with_the_plan_record, whose kind the check keeps after the
+// rollback: that release's way back is outbox deletes alone, of the queued writes of the plans
+// and the ratings (docs/kubernetes.md). An operator runs them by release, newest first:
+// the task numbers', then the step records', then the commit statuses', then the reviewed
+// commit's, then this one (docs/kubernetes.md). So this helper does the same: each later block is
+// read from its header (wayBackBlockOfTheHeader, and migrations.WayBack for the step records')
+// and sent the same way, before the phase entry's. The task numbers' block is run, and held to its
+// copy in the guide, by internal/store's migration_20261113175649_test.go; the step records' is
+// run by internal/store's test of 20261117064152 and held to the guide's copy by
+// internal/textcheck's step_records_way_back_doc_test.go; the reviewed commit's is run by
+// internal/admit's architect_upgrade_test.go (headerWayBack), and no test compares it with the
+// guide's copy; and the commit statuses' block stands in its header alone. So the four are run
+// here and not counted.
+//
 // What this cannot show is that daemon running: no binary of it is here to boot against the
 // recovered schema, so that it then mints a fresh token at each role's next start is not
 // asserted, and neither is the decode this copies — what the copy shows is that the payloads the
@@ -361,13 +398,24 @@ func wayBackBlockDifference(header, extract string) string {
 func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Token, issue string) {
 	t.Helper()
 	ctx := context.Background()
-	// A rollback past the phase entry runs, before the phase entry's own block, the way back of
-	// the reviewed commit's migration (docs/kubernetes.md, the migrations recorded above this
-	// one): it deletes the key this release writes on a reviewer's start row (`roundNamed`),
-	// which the release before decodes strictly and would refuse.
-	newer := strings.Split(strings.TrimSuffix(wayBackBlockOfTheHeader(t, reviewedHeadMigrationFile), "\n"), "\n")
-	if _, err := pool.Exec(ctx, strings.Join(newer[1:len(newer)-1], "\n"), pgx.QueryExecModeSimpleProtocol); err != nil {
-		t.Fatalf("run the way back's block of %s as the one transaction an operator runs: %v", reviewedHeadMigrationFile, err)
+	headerBlock := func(file string) string {
+		block := strings.Split(strings.TrimSuffix(wayBackBlockOfTheHeader(t, file), "\n"), "\n")
+		return strings.Join(block[1:len(block)-1], "\n") + "\n"
+	}
+	stepRecords, err := migrations.WayBack(migrations.StepRecordsRollForward)
+	if err != nil {
+		t.Fatalf("read the way back of %s: %v", stepRecordsRollForwardFile, err)
+	}
+	for _, later := range []struct{ file, recovery string }{
+		{taskNumbersMigrationFile, headerBlock(taskNumbersMigrationFile)},
+		{stepRecordsRollForwardFile, stepRecords},
+		{pullRequestStatusesMigrationFile, headerBlock(pullRequestStatusesMigrationFile)},
+		{reviewedHeadMigrationFile, headerBlock(reviewedHeadMigrationFile)},
+	} {
+		if _, err := pool.Exec(ctx, later.recovery, pgx.QueryExecModeSimpleProtocol); err != nil {
+			t.Fatalf("run the way back's block of %s, which a rollback to contract 87 runs before the phase entry's: %v\nthe block is:\n%s",
+				later.file, err, later.recovery)
+		}
 	}
 	recovery := wayBackRecovery(t, wayBackBlockOfTheHeader(t, phaseEntryMigrationFile))
 	if _, err := pool.Exec(ctx, recovery, pgx.QueryExecModeSimpleProtocol); err != nil {
@@ -498,25 +546,29 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
 	var armed, recorded int
-	if err := pool.QueryRow(ctx, "select count(*) from schema_version where version = $1::bigint", phaseEntryMigration).Scan(&armed); err != nil {
-		t.Fatalf("read whether the phase entry migration is still recorded: %v", err)
+	if err := pool.QueryRow(ctx, "select count(*) from schema_version where version = any($1::bigint[])",
+		[]int64{phaseEntryMigration, taskNumbersMigration}).Scan(&armed); err != nil {
+		t.Fatalf("read whether the phase entry migration and the task numbers migration are still recorded: %v", err)
 	}
 	if armed != 0 {
-		t.Fatalf("schema_version holds %d rows of the phase entry migration after the recovery, want none: its row is what store.apply reads to decide the migration is taken, and the roll-forward has to run it again", armed)
+		t.Fatalf("schema_version holds %d rows of the phase entry migration and the task numbers migration after the recovery, want none: a migration's row is what store.apply reads to decide it is taken, and the roll-forward has to run both again", armed)
 	}
 	if err := pool.QueryRow(ctx, "select count(*) from schema_version").Scan(&recorded); err != nil {
 		t.Fatalf("count the versions recorded after the recovery: %v", err)
 	}
-	// The two deletes are the phase entry block's and the reviewed commit's way back, run before it.
-	if recorded != len(all)-2 {
-		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: the two ways back each delete one version, and store.apply decides each migration on its own row",
-			recorded, len(all)-2)
+	// The five deletes are the phase entry block's and the ways back run before it, the reviewed
+	// commit's, the commit statuses', the step records' and the task numbers'.
+	if recorded != len(all)-5 {
+		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: the five ways back each delete one version, and store.apply decides each migration on its own row",
+			recorded, len(all)-5)
 	}
 }
 
 // upgradeRollForwardSweepsTheLostTask is the roll-forward that follows the way back: the newer
-// image comes back, Migrate runs this migration a second time because the way back deleted its
-// version row, and the daemon's ordinary sweep runs over what the second fill left.
+// image comes back, Migrate runs this migration a second time, and 20261113175649_task_numbers,
+// 20261116234034_phase_reviewed_head, 20261117064152_step_starts_roll_forward and
+// 20261117112334_pull_request_statuses after it, because each way back deleted its own version
+// row, and the daemon's ordinary sweep runs over what the second fill left.
 //
 // The role it is read on is one whose task the older daemon lost while it ran, which is the
 // window the re-arm exists for. The shape written here is a start finished without acting: that
@@ -594,8 +646,8 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 	if err != nil {
 		t.Fatalf("roll forward onto the record the older daemon left: %v", err)
 	}
-	if applied != 2 {
-		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration and the reviewed commit's run a second time: each way back deletes its version row, and store.apply decides each migration on its own row",
+	if applied != 5 {
+		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration, the task numbers migration, the reviewed commit's, the step records' roll forward and the commit statuses' each run a second time: each way back deletes its own version row, and store.apply decides each migration on its own row",
 			applied)
 	}
 	var entry int64

@@ -97,7 +97,7 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	// Every field but the times is compared whole, so a field added to the delivery is read back
 	// or this fails; the times are compared below as instants.
 	untimed := func(d supervise.Delivery) supervise.Delivery {
-		d.QueuedAt, d.DeliveredAt, d.ConfirmedAt, d.CheckLook.OpenedAt = time.Time{}, time.Time{}, time.Time{}, time.Time{}
+		d.QueuedAt, d.ConfirmedAt, d.CheckLook.OpenedAt = time.Time{}, time.Time{}, time.Time{}
 		return d
 	}
 	if !reflect.DeepEqual(untimed(*gotPending), untimed(*wantPending)) {
@@ -108,7 +108,6 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 		got, want time.Time
 	}{
 		{"QueuedAt", gotPending.QueuedAt, wantPending.QueuedAt},
-		{"DeliveredAt", gotPending.DeliveredAt, wantPending.DeliveredAt},
 		{"ConfirmedAt", gotPending.ConfirmedAt, wantPending.ConfirmedAt},
 		{"CheckLook.OpenedAt", gotPending.CheckLook.OpenedAt, wantPending.CheckLook.OpenedAt},
 	} {
@@ -141,11 +140,7 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 		Generation:  4,
 		CheckLook:   supervise.CheckLook{Look: 2, OpenedAt: at(3)},
 		QueuedAt:    at(1),
-		DeliveredAt: at(2),
 		Interrupted: true,
-		// The prompt that set the mark, since re-queued under delivery-1: a restart judges a late
-		// refusal against it.
-		MarkedBy: "delivery-0",
 	}
 
 	if err := store.PutClaim(ctx, want); err != nil {
@@ -158,12 +153,12 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
-// The record of this task's sends that never reached a turn round-trips with the delivery: how
-// many failed, when the last of them failed and the error it failed with. A restart rebuilds
-// every claim from this table, so a record lost here is a claim that has waited days on a send
-// which never lands and says nothing of it after the next restart (INFRA-1480). The last
-// failure's time is compared as an instant: Postgres hands a timestamptz back in the session's
-// zone, not the one it was written in.
+// The record of this task's takes whose adoption of the working copy failed round-trips with the
+// delivery: how many failed, when the last of them failed and the error it failed with. A restart
+// rebuilds every claim from this table, so a record lost here is a claim that has waited days on
+// an adoption which never lands and says nothing of it after the next restart (INFRA-1480). The
+// last failure's time is compared as an instant: Postgres hands a timestamptz back in the
+// session's zone, not the one it was written in.
 func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -187,15 +182,15 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 	}
 	if got.SendFailures != failing.SendFailures || !got.LastSendFailureAt.Equal(failing.LastSendFailureAt) ||
 		got.LastSendError != failing.LastSendError {
-		t.Fatalf("delivery read back = %+v, want %d failed sends, the last at %v, with its error",
+		t.Fatalf("delivery read back = %+v, want %d failed adoptions, the last at %v, with its error",
 			got, failing.SendFailures, failing.LastSendFailureAt)
 	}
 
-	// The send that reached a turn clears all three (supervise's confirm), through the same
-	// upsert: a delivery read back still counting failures an earlier turn got past would name a
-	// stall that is over.
+	// The accepted take clears all three (supervise's accept), through the same upsert: a
+	// delivery read back still counting failures an earlier take got past would name a stall
+	// that is over.
 	confirmed := failing
-	confirmed.DeliveredAt, confirmed.MarkedBy, confirmed.ConfirmedAt = at(6), failing.ID, at(7)
+	confirmed.ConfirmedAt = at(7)
 	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""
 	if err := store.PutDelivery(ctx, c.Token, confirmed); err != nil {
 		t.Fatalf("put the confirmed delivery: %v", err)
@@ -207,13 +202,13 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 	}
 }
 
-// The text of a failed send is the far side's own: the wedged command's stderr, relayed by the
-// shim, or Oh My Pi's `error` decoded from JSON, where a `\u0000` becomes a NUL byte. This column
-// holds only what its server encoding can read, and the store's text rule is what makes such a
-// text fit: the NUL is stored as U+FFFD, and every other character as it was written.
+// The text of a failed adoption of the working copy is the far side's own: the wedged command's
+// stderr, relayed by the shim, where a `\u0000` in it can become a NUL byte. This column holds
+// only what its server encoding can read, and the store's text rule is what makes such a text
+// fit: the NUL is stored as U+FFFD, and every other character as it was written.
 //
 // Pinned here against the real server. A write of this text once failed, and that failure
-// returned before the refused adoption was charged, so the send was re-sent with no bound
+// returned before the refused adoption was charged, so the adoption was tried again with no bound
 // (INFRA-1480). The raw text is taken now and reads back whole, with U+FFFD where the NUL was, so
 // the diagnosis an operator reads survives a restart.
 func TestADeliverysSendErrorWithANULRoundTripsWithAReplacementCharacter(t *testing.T) {
@@ -270,10 +265,11 @@ func TestARePutDeliveryCarriesItsInterruption(t *testing.T) {
 
 // The fact that a reviewer's task ends with the daemon's two sentences of its review round
 // (supervise.Delivery.RoundNamed) reaches the store with the delivery and comes back from it, in
-// both directions, through a re-put that replaces the delivery: a restarted daemon sends what it
-// reads back, and a fact lost on the way would send a task of this release with the daemon's
-// sentences naming nothing after its own, or keep one the release before queued from them. A
-// delivery the release before wrote, which names no such column, reads back without the fact.
+// both directions, through a re-put that replaces the delivery: a restarted daemon answers a take
+// with what it reads back, and a fact lost on the way would hand a task of this release the
+// daemon's sentences naming nothing after its own, or keep one the release before queued from
+// them. A delivery the release before wrote, which names no such column, reads back without the
+// fact.
 func TestADeliveryCarriesTheFactThatItNamesItsReviewRound(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -305,35 +301,36 @@ func TestADeliveryCarriesTheFactThatItNamesItsReviewRound(t *testing.T) {
 }
 
 // The phase a task was queued for is what says the task is still the work to do, and it has to
-// survive the path that rewrites the delivery: a prompt refused or unanswered is re-put under a
-// new id, and a restart then reads the delivery back from this table. A phase lost on either side
-// of that round trip brings back the drop this column exists to make: the daemon would send a
-// finished phase's task to a worker that had moved on, silently, after every restart.
+// survive the path that rewrites the delivery: a task taken back is re-put under its own id and
+// number, unconfirmed, and a restart then reads the delivery back from this table. A phase lost on
+// either side of that round trip brings back the drop this column exists to make: the daemon
+// would give a finished phase's task to a worker that had moved on, silently, after every restart.
 func TestARePutDeliveryKeepsThePhaseItWasQueuedFor(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-211-implementer")
-	queued := supervise.Delivery{ID: "outbox:42", Task: "Continue. Phase: implementing.", Phase: phase.Implementing, QueuedAt: at(1)}
+	taken := supervise.Delivery{ID: "outbox:42", Task: "Continue. Phase: implementing.", Phase: phase.Implementing,
+		QueuedAt: at(1), Number: 1, ConfirmedAt: at(2), TakenText: "Continue. Phase: implementing."}
 	if err := store.PutClaim(ctx, c); err != nil {
 		t.Fatalf("put claim: %v", err)
 	}
-	if err := store.PutDelivery(ctx, c.Token, queued); err != nil {
+	if err := store.PutDelivery(ctx, c.Token, taken); err != nil {
 		t.Fatalf("put delivery: %v", err)
 	}
 
-	// What promptFailed does: the same task under a new id, unconfirmed.
-	rotated := queued
-	rotated.ID = "S4YXQ2F7TDNX"
-	if err := store.PutDelivery(ctx, c.Token, rotated); err != nil {
-		t.Fatalf("re-put the delivery under its new id: %v", err)
+	// What a take-back does: the same task under its own id and number, unconfirmed.
+	takenBack := taken
+	takenBack.ConfirmedAt, takenBack.TakenText, takenBack.Interrupted = time.Time{}, "", true
+	if err := store.PutDelivery(ctx, c.Token, takenBack); err != nil {
+		t.Fatalf("re-put the delivery taken back: %v", err)
 	}
 
 	read := onlyClaim(t, store)
 	if read.Pending == nil {
 		t.Fatal("the restarted daemon read no pending delivery")
 	}
-	if read.Pending.ID != rotated.ID || read.Pending.Phase != phase.Implementing {
-		t.Fatalf("delivery read back = %+v, want %s queued for %s", read.Pending, rotated.ID, phase.Implementing)
+	if read.Pending.ID != taken.ID || read.Pending.Phase != phase.Implementing || !read.Pending.ConfirmedAt.IsZero() {
+		t.Fatalf("delivery read back = %+v, want %s queued for %s, unconfirmed", read.Pending, taken.ID, phase.Implementing)
 	}
 }
 
@@ -341,7 +338,7 @@ func TestARePutDeliveryKeepsThePhaseItWasQueuedFor(t *testing.T) {
 // which step the next send waits, and the sentence is what that send puts in front of the task
 // (dispatch://INFRA-956 R2). The claim's own run of such turns is beside them, because that is
 // what the controller's notice is counted from, and neither a restart nor a re-put of the
-// delivery under a new id may lose either.
+// delivery may lose either.
 func TestAProviderErrorsLadderAndItsRunRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -604,7 +601,6 @@ func TestADeliveryIsPutConfirmedAndRetired(t *testing.T) {
 	c.Pending = &delivery
 	sameClaim(t, onlyClaim(t, store), c)
 
-	delivery.DeliveredAt = at(4)
 	delivery.ConfirmedAt = at(5)
 	if err := store.PutDelivery(ctx, c.Token, delivery); err != nil {
 		t.Fatalf("put the confirmed delivery: %v", err)
@@ -652,10 +648,10 @@ func TestRetireDeliveryRefusesADeliveryTheClaimDoesNotHold(t *testing.T) {
 // on the claim rather than on the delivery, and the daemon answers them in opposite ways. The
 // row holds no delivery at all: the retirement this caller already committed, whose answer a
 // broken connection lost, which supervise reads as its own write made good. Or the row holds a
-// delivery under another id: a write that rotated the id committed after its answer was cut
-// off, which is no retirement of anything and fails the decision. Only the row can tell them
-// apart, so the store does, in the transaction the delete found nothing in, and the second
-// refusal names both ids — the one asked for and the one the row holds — since an operator
+// delivery under another id: a write of another delivery under the claim committed after its
+// answer was cut off, which is no retirement of anything and fails the decision. Only the row can
+// tell them apart, so the store does, in the transaction the delete found nothing in, and the
+// second refusal names both ids — the one asked for and the one the row holds — since an operator
 // reading it has no other way to learn which delivery is stranded.
 func TestRetireDeliveryTellsARetirementAlreadyMadeFromARetirementUnderAnotherId(t *testing.T) {
 	ctx := context.Background()
@@ -673,11 +669,11 @@ func TestRetireDeliveryTellsARetirementAlreadyMadeFromARetirementUnderAnotherId(
 		t.Fatalf("the refusal of a row holding nothing also reads as one holding another delivery: %v", err)
 	}
 
-	// The rotation committed after its answer was cut off: the row holds the new delivery while
-	// the caller is retiring the old one.
-	rotated := supervise.Delivery{ID: "delivery-rotated", Task: "review it again", QueuedAt: at(8)}
-	if err := store.PutDelivery(ctx, c.Token, rotated); err != nil {
-		t.Fatalf("put the rotated delivery: %v", err)
+	// A write of another delivery committed after its answer was cut off: the row holds that
+	// delivery while the caller is retiring the old one.
+	other := supervise.Delivery{ID: "delivery-other", Task: "review it again", QueuedAt: at(8)}
+	if err := store.PutDelivery(ctx, c.Token, other); err != nil {
+		t.Fatalf("put the other delivery: %v", err)
 	}
 
 	err = store.RetireDelivery(ctx, c, "delivery-old")
@@ -687,7 +683,7 @@ func TestRetireDeliveryTellsARetirementAlreadyMadeFromARetirementUnderAnotherId(
 	if errors.Is(err, supervise.ErrNoSuchDelivery) {
 		t.Fatalf("the refusal reads as a retirement already made, which would drop the delivery its caller holds: %v", err)
 	}
-	for _, want := range []string{"delivery-old", rotated.ID} {
+	for _, want := range []string{"delivery-old", other.ID} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not name %q: %v", want, err)
 		}
@@ -695,7 +691,7 @@ func TestRetireDeliveryTellsARetirementAlreadyMadeFromARetirementUnderAnotherId(
 
 	// Neither refusal wrote anything: the claim it carried went back with the delete, and the
 	// delivery the row holds is where it was.
-	c.Pending = &rotated
+	c.Pending = &other
 	sameClaim(t, onlyClaim(t, store), c)
 }
 
@@ -725,7 +721,7 @@ func TestPutClaimAndDeliveryWritesBothOrNeither(t *testing.T) {
 	// A generation no bigint holds: the delivery's write is refused, inside the transaction that
 	// carries the claim's.
 	confirmed := supervise.Delivery{ID: "delivery-1", Task: "test it", QueuedAt: at(1),
-		DeliveredAt: at(2), ConfirmedAt: at(3), Generation: math.MaxUint64}
+		ConfirmedAt: at(3), Generation: math.MaxUint64}
 	if err := store.PutClaimAndDelivery(ctx, working, confirmed); err == nil {
 		t.Fatal("wrote a delivery whose generation no bigint holds")
 	}

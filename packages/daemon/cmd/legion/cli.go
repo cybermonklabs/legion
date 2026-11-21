@@ -28,6 +28,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 		newStartCommand(stderr),
 		newStopCommand(stdout, stderr),
 		newStateCommand(stdout, stderr),
+		newTaskCostCommand(stdout, stderr),
 		newLegionsCommand(stdout, stderr),
 		newStatusCommand(stdout, stderr),
 		group(&cobra.Command{Use: "issue", Short: "the operator's hand on an issue's Dispatch status"},

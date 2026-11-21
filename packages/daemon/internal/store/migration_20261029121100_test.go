@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -56,5 +57,86 @@ func TestAClaimsTurnOutcomesRoundTrip(t *testing.T) {
 	if got.RefusedRun() != 1 || got.LastRefusal() != "the provider refused the turn" {
 		t.Fatalf("the claim read back derives a run of %d ending %q, want 1 and the provider's message",
 			got.RefusedRun(), got.LastRefusal())
+	}
+}
+
+// A report whose write failed is kept in the window marked Unapplied, and the mark survives a
+// restart: a new pool and a new store over the same database, with nothing of the first carried
+// in memory (reopenStore). The mark is what tells the producer's repeat of that report, under the
+// same key, from a report already applied (supervise's turnOutcome), so a daemon that read the
+// window back without it would take the repeat for a report it had applied and leave undone what
+// the report says of the claim's task.
+func TestAnUnappliedTurnOutcomeRoundTripsMarked(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	c.TurnOutcomes = []supervise.TurnOutcome{
+		{Generation: 1, Sequence: 6, Refused: false},
+		{Generation: 1, Sequence: 7, Refused: true, Message: "the provider refused the turn", Unapplied: true},
+	}
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the claim with a report never applied: %v", err)
+	}
+
+	got := onlyClaim(t, reopenStore(t, store))
+	if len(got.TurnOutcomes) != 2 || got.TurnOutcomes[0].Unapplied || !got.TurnOutcomes[1].Unapplied {
+		t.Fatalf("the window read back after a restart = %+v, want the second report alone marked unapplied", got.TurnOutcomes)
+	}
+	sameClaim(t, got, c)
+}
+
+// A report's task number and the provider error it carried, with that error's status and the
+// ladder step it made, are kept with the window and survive a restart, so a restarted daemon
+// reads what an applied report did to the claim's pending task (supervise's owedReport). An entry
+// an older daemon stored without them reads back with none of them, as a report that named no
+// task and no provider error, which is how that daemon read it.
+func TestTaskNumberAndProviderErrorOfAClaimsTurnOutcomesAreKept(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	c.TurnOutcomes = []supervise.TurnOutcome{
+		{Generation: 1, Sequence: 6, Task: 4, ProviderError: true, ProviderErrorStatus: 529, ProviderErrorRetries: 2},
+		{Generation: 1, Sequence: 7, Task: 4},
+	}
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the claim with its reports: %v", err)
+	}
+	reopened := reopenStore(t, store)
+	got := onlyClaim(t, reopened)
+	sameClaim(t, got, c)
+
+	if _, err := reopened.Pool().Exec(ctx, `update claims set turn_outcomes = $2::jsonb where token = $1`, string(c.Token),
+		`[{"generation": 1, "sequence": 7, "refused": true, "message": "the provider refused the turn"}]`); err != nil {
+		t.Fatalf("store a window an older daemon wrote: %v", err)
+	}
+	want := []supervise.TurnOutcome{{Generation: 1, Sequence: 7, Refused: true, Message: "the provider refused the turn"}}
+	if got := onlyClaim(t, reopened).TurnOutcomes; !slices.Equal(got, want) {
+		t.Fatalf("the window an older daemon wrote reads back %+v, want %+v", got, want)
+	}
+}
+
+// The window's watermark, the newest key the window dropped to keep to its bound, carried on its
+// oldest entry, is kept with the window and survives a restart, so a restarted daemon still
+// answers a report sent again after newer reports pushed it out of the window as the repeat it
+// is (supervise's recordTurnOutcome). It needs no column of its own: it is a field of an entry
+// in the window's own array, which a window an older daemon stored reads back without (above).
+func TestTheTurnOutcomeWindowsWatermarkIsKept(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	mark := supervise.TurnOutcomeKey{Generation: 2, Sequence: 4}
+	c.TurnOutcomes = []supervise.TurnOutcome{
+		{Generation: 2, Sequence: 5, Watermark: mark},
+		{Generation: 2, Sequence: 6},
+		{Generation: 2, Sequence: 7, Task: 3},
+	}
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the claim with its window and its watermark: %v", err)
+	}
+
+	got := onlyClaim(t, reopenStore(t, store))
+	sameClaim(t, got, c)
+	if kept := got.TurnOutcomes; len(kept) != 3 || kept[0].Watermark != mark {
+		t.Fatalf("the window read back after a restart = %+v, want its oldest entry carrying the watermark %+v", kept, mark)
 	}
 }

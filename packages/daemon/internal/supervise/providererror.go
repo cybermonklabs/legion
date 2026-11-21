@@ -2,16 +2,17 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 )
 
-// A turn that ends in a provider error does not retire its task (dispatch://INFRA-956 R2). The
-// work is still owed: the claim used to go idle holding nothing, and the only way to give the
-// task back was an edit of the daemon's store. The task is kept here, and the same session is
-// prompted with it again after a wait that grows to a limit, with no attempt limit and no new
+// A turn that ends in a provider error does not finish its task (dispatch://INFRA-956 R2). The
+// work is still owed, and a claim left idle holding nothing could be given it back only by an
+// edit of the daemon's store. The task is kept here, under its number, and its value is written
+// again for the same session after a wait that grows to a limit, with no attempt limit and no new
 // session.
 //
 // Two bounds and one count make that up, and this file holds all three.
@@ -27,10 +28,10 @@ const (
 	providerErrorRunTold = 6
 )
 
-// promptRetryDelay is the wait before the attempt-th send of a task a provider error took back,
-// from attempt 1: 30 s, 60 s, 120 s, 240 s, 480 s, and 10 minutes from the sixth send on. There
-// is no jitter — the ladder is one claim's own, not a herd's — and no attempt limit, so it
-// flattens at the top rather than ending.
+// promptRetryDelay is the wait before the value of a task a provider error took back is written
+// again, for the attempt-th time, from attempt 1: 30 s, 60 s, 120 s, 240 s, 480 s, and 10 minutes
+// from the sixth on. There is no jitter — the ladder is one claim's own, not a herd's — and no
+// attempt limit, so it flattens at the top rather than ending.
 //
 // The shift is clamped before it is taken, as internal/backoff clamps its own: five doublings of
 // 30 seconds is already 16 minutes, past the cap, and a shift any wider than that leaves int64
@@ -40,44 +41,71 @@ func promptRetryDelay(attempt int) time.Duration {
 	return min(promptRetryFirst<<min(max(attempt-1, 0), 5), promptRetryMax)
 }
 
-// providerErrored is a turn that ran and ended in a provider error. The task is kept whatever the
-// decision: it goes back unconfirmed under a new id, keeping its read mark, because the turn ran
-// and the agent read it. No prompt budget is charged — chargePrompt retires and then fails a
-// claim past Limits.PromptFailures, which would fail every claim at once in a provider outage,
-// and R2 forbids an attempt limit — so the claim counts its own run of such turns instead, and a
-// turn that ends with no error puts that run back to zero (promptResulted).
+// providerErrored is a task's turn reported over with a provider error (reportedTask). The task
+// is kept whatever the decision: it is taken back under its number, its take gone (takeToLadder) and
+// the claim's TaskTaken kept, because the turn ran and the agent read it. No prompt budget is
+// charged — chargePrompt retires and then fails a claim past Limits.PromptFailures, which would
+// fail every claim at once in a provider outage, and R2 forbids an attempt limit — so the claim
+// counts its own run of such turns instead, and a turn that ends with no error puts that run back
+// to zero (reportedTask).
 //
-// What that turn's confirmation told goes back to untold with it (takeBackPending, moveTelling),
-// so the re-sent task carries the abandoned session's sentence, the record of the last let-go, or
-// both, again. A provider error is a model call that failed — often the turn's first, whose model
-// never read the prompt — so the sentence may have reached nobody, and where an earlier call of
-// the turn did read it, it is told twice rather than lost.
+// What the take told goes back to untold with it (takeToLadder, giveBackTake), so the task's next
+// accepted take carries the abandoned session's sentence, the record of the last let-go, or both,
+// again. A provider error is a model call that failed — often the turn's first, whose model never
+// read the take's text — so the sentence may have reached nobody, and where an earlier call of
+// the turn did read it, it is told twice rather than lost. The claim's handshake keeps its
+// confirmation of the take's entry: the turn started on the take's text.
 //
-// The decision is made here, from this prompt's own result and nothing else
+// The decision is made here, from this turn's own report and nothing else
 // (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d): the status the provider
-// answered either holds the issue (holdsTheIssue) or the task goes to the same session again on
-// the ladder. Oh My Pi's Retryable flag is logged and read by nothing: the status alone decides.
+// answered either holds the issue (holdsTheIssue) or the task is given to the same session again
+// on the ladder. The agent's Retryable flag is logged and read by nothing: the status alone
+// decides.
 //
-// The cause is named once here and handed to whoever writes it down, since one failed turn has
-// one cause and the words are the same in the claim's failure, in the prompt the task goes
-// behind and in the controller's notice.
-func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
-	cause := providerErrorCause(r.HTTPStatus)
+// The cause is named once (takeToLadder) and handed to whoever writes it down, since one failed
+// turn has one cause and the words are the same in the claim's failure, in the note the next take
+// carries and in the controller's notice.
+func (m *Machine) providerErrored(ctx context.Context, pe ProviderError) error {
 	m.claim.ProviderErrorRun++
-	m.log.Warn("supervise: the turn this task's prompt ran ended in a provider error; the task is kept and sent again",
-		"delivery", r.DeliveryID, "retryable", r.Retryable, "httpStatus", r.HTTPStatus,
-		"provider", r.Provider, "model", r.Model, "providerErrorRun", m.claim.ProviderErrorRun)
-	m.tellControllerOfProviderErrors(r.Model, cause)
-	// The prompt's turn ran and is over, and its result has ended the wait for results
-	// (promptResulted), so nothing of the task is left outstanding.
-	if err := m.takeBackPending(ctx, taskRead); err != nil {
-		return err
+	m.log.Warn("supervise: the turn of this task ended in a provider error; the task is kept and given again",
+		"task", m.claim.Pending.Number, "retryable", pe.Retryable, "httpStatus", pe.Status,
+		"provider", pe.Provider, "model", pe.Model, "providerErrorRun", m.claim.ProviderErrorRun)
+	m.tellControllerOfProviderErrors(pe.Model, providerErrorCause(pe.Status))
+	return m.takeToLadder(ctx, pe.Status)
+}
+
+// takeToLadder is what a provider error's turn does to the task whose take it ran on, once the
+// claim's run of such turns counts it (providerErrored): the take goes back, and the status
+// either holds the issue, failing the claim, or puts the task on the ladder
+// (providerErrorClears).
+//
+// On the ladder the take-back is written with the ladder's step and the claim's run of
+// provider-error turns in one store call (takeBackInMemory, providerErrorClears), so they land
+// together or not at all: a take-back written alone, with the step's write refused after it,
+// would leave a task a restarted daemon reads as taken back with no step — owing nothing, it
+// would be given again with no note and its sends uncounted — and the report that decided it is
+// applied, so its worker's report sent again is a repeat that decides nothing.
+//
+// Each step holds in memory whether or not its write lands, as the take-back does: a take-back
+// whose write the store refused is still a take-back, which the next decision writes (settle,
+// repair), so that refusal is no reason to leave the task without its ladder step and wait —
+// with no wait, that next decision's offer would give the task again at once (offerPending) — or
+// to leave running a claim the provider refused for good. A daemon that starts before any of it
+// is written does it from the record (Claim.owedReport, Machine.ladderOwed).
+func (m *Machine) takeToLadder(ctx context.Context, status int) error {
+	cause := providerErrorCause(status)
+	if holdsTheIssue(status) {
+		err := m.takeBack(ctx, takenBackProviderError)
+		return errors.Join(err, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause))
 	}
-	if holdsTheIssue(r.HTTPStatus) {
-		return m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause)
-	}
+	m.takeBackInMemory(takenBackProviderError)
 	return m.providerErrorClears(ctx, cause)
 }
+
+// ladderOwedLine is the line of a claim a daemon start restored over a provider error's report
+// whose take-back the store never took, at Warn, logged as its first decision makes that
+// take-back (settle, Machine.ladderOwed): the report's own decision wrote nothing of it.
+const ladderOwedLine = "supervise: a provider error's report was applied before this daemon started and its take-back never written; the task goes to the ladder now"
 
 // holdsTheIssue is whether an error of this HTTP status fails the claim, so that the workflow
 // holds the issue for its architect: a client error, 400 to 499, that is none of 401, 403, 408
@@ -92,11 +120,11 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 //     (tellControllerOfProviderErrors);
 //   - no status at all is a turn that ends with nothing but a message, two kinds among them.
 //     A content-filter refusal clears because the plugin has already moved the session down its
-//     model chain, so the next prompt goes to another model. A turn whose provider key could not
-//     be read (a `!command` apiKey that printed nothing, such as `!cat` of a token file not yet
-//     mounted, or, from Oh My Pi 18.18.6-sami.20261119-162325 on, stored credentials that cannot
-//     serve for a while) ends with the error of its last auto-retry, `retryable` and with no
-//     status; the plugin reads it as a provider error and moves nothing, and the key, like a
+//     model chain, so the next take's turn goes to another model. A turn whose provider key could
+//     not be read (a `!command` apiKey that printed nothing, such as `!cat` of a token file not
+//     yet mounted, or, from Oh My Pi 18.18.6-sami.20261119-162325 on, stored credentials that
+//     cannot serve for a while) ends with the error of its last auto-retry, `retryable` and with
+//     no status; the plugin reads it as a provider error and moves nothing, and the key, like a
 //     401 or a 403, is the fleet's to restore, so the task goes again on the same model. A
 //     Claude Code worker's bridge names a status only for a result Claude Code marked api_error
 //     (internal/claudebridge's result), so its statusless turns go again here too.
@@ -109,31 +137,34 @@ func holdsTheIssue(status int) bool {
 }
 
 // providerErrorClears keeps the task on the claim and arms the next step of the ladder for it:
-// the delivery counts one more send, carries the sentence the re-sent prompt is given
-// (Delivery.ProviderErrorNote), and is written with the claim's run of provider-error turns in
-// one transaction. Its timer's firing is what sends it (promptRetryDue); until then sendPending
-// holds it, and a newer task queued meanwhile replaces it rather than waiting behind it (queue).
+// the delivery counts one more attempt, carries the sentence the next accepted take of it is
+// given (Delivery.ProviderErrorNote), and is written with the take-back that came before it and
+// the claim's run of provider-error turns in one store call (takeToLadder). Its timer's firing is
+// what writes the value again (promptRetryDue); until then a take of it is refused (claimHold),
+// and a newer task queued meanwhile replaces it rather than waiting behind it (queue). The step
+// and its wait stand whether or not the write lands: a write the store refused leaves the
+// delivery unsaved and the claim write owed, and the next decision makes it (settle, repair) —
+// the wait's own firing, at the latest.
 func (m *Machine) providerErrorClears(ctx context.Context, cause string) error {
 	p := m.claim.Pending
 	p.ProviderErrorRetries++
 	p.ProviderErrorNote = providerErrorTask(cause)
-	if err := m.saved(m.deps.Store.PutClaimAndDelivery(ctx, m.stored(), *p)); err != nil {
-		return err
-	}
+	err := m.putClaimAndPendingOwed(ctx)
 	after := promptRetryDelay(p.ProviderErrorRetries)
 	m.arm(TimerPromptRetry, after, p.ID)
 	m.log.Info("supervise: this provider error can clear; the task goes to the same session again after a wait",
 		"delivery", p.ID, "attempt", p.ProviderErrorRetries, "wait", after, "cause", cause)
-	return nil
+	return err
 }
 
-// promptRetryDue is the ladder's wait over: the task goes to the same session again. A claim
-// still working the turn whose error armed this is handed nothing here, and the end of that turn
-// sends it (turnEnded). What sendPending drops rather than sends, it drops here as well.
+// promptRetryDue is the ladder's wait over: the task's value is written again for the same session
+// (offerPending), where its take had been accepted or refused at the latest revision. A claim
+// still working the turn whose error armed this writes nothing here, and the end of that turn
+// offers it (turnEnded). What a take would drop, it drops here as well.
 func promptRetryDue(m *Machine, ctx context.Context, _ Event) error {
-	m.log.Info("supervise: the wait after a provider error is over; the task goes again",
-		"delivery", pendingID(m.claim.Pending))
-	return m.sendPending(ctx)
+	m.log.Info("supervise: the wait after a provider error is over; the task is given again",
+		"task", pendingNumber(m.claim.Pending))
+	return m.offerPending(ctx)
 }
 
 // providerErrorCause names what ended the turn, in words built from the status alone: the HTTP
@@ -149,10 +180,10 @@ func providerErrorCause(status int) string {
 	return "a provider error"
 }
 
-// providerErrorTask is the sentence a task taken back by a provider error is sent behind, as the
-// relaunch's sentence is the one a task taken back from a turn its process could not finish is
-// sent behind (relaunchSentence, interruptedTask). Another agent reads it, so it follows
-// ASD-STE100: one instruction per sentence, and active voice.
+// providerErrorTask is the sentence the next accepted take of a task a provider error took back
+// carries, as the relaunch's sentence is the one the next accepted take of a task taken back from
+// a turn its process could not finish carries (relaunchSentence, interruptedTask). Another agent
+// reads it, so it follows ASD-STE100: one instruction per sentence, and active voice.
 func providerErrorTask(cause string) string {
 	return "Your previous turn on this task stopped because of " + cause + ". Your work did not cause it. " +
 		"The daemon sends you the task again. Read what that turn already did in your workspace and on the " +
@@ -179,50 +210,35 @@ func (m *Machine) tellControllerOfProviderErrors(model, cause string) {
 	m.deps.ProviderErrorRunReached(m.current(), reason)
 }
 
-// waitsForProviderError is whether the ladder's wait is armed for the delivery of this id.
-// sendPending holds such a task until its timer fires; a task no wait names goes at once.
+// waitsForProviderError is whether the ladder's wait is armed for the delivery of this id. A take
+// of such a task is refused until its timer fires; a task no wait names is taken at once.
 func (m *Machine) waitsForProviderError(delivery string) bool {
 	a, armed := m.timers[TimerPromptRetry]
 	return armed && a.deliveryID == delivery
 }
 
 // replaceable is whether a newer task takes this pending task's place rather than waiting behind
-// it (queue). Two deliveries answer true. One is the task the ladder's wait stands for
-// (waitsForProviderError), which the claim owes with nothing working it and with a wait that
-// the next provider error only makes longer. R2 has a newer task replace it. The other is the
-// daemon's own delivery of a relaunch's record (relaunchTask, queueRelaunch) while no prompt of
-// it is waiting on a result (Machine.outstanding): it holds no work of the claim's, only the
-// record's sentence, which the newer task carries in front of itself while the record is untold
-// (Delivery.message). Once Oh My Pi has acknowledged a prompt of it, that prompt's turn is the
-// session's next, and the newer task waits for it as for any task's.
+// it (queue). Two deliveries answer true while no take of them is accepted. One is the task the
+// ladder's wait stands for (waitsForProviderError), which the claim owes with nothing working it
+// and with a wait that the next provider error only makes longer. R2 has a newer task replace it.
+// The other is the daemon's own delivery of a relaunch's record (Delivery.Relaunch,
+// queueRelaunch): it holds no work of the claim's, only the record's sentence, which the newer
+// task carries in front of itself while the record is untold (Delivery.message).
 //
 // Every other pending task waits for its turn, the task a provider error took back on a claim
 // the operator stopped among them: the ladder's wait went with the claim's timers (letGo), and
-// the claim still owes that task, so the phase's restart task waits behind it until the turn
-// the retry's fresh session takes on it retires it (R3, scripts/e2e/provider-error-retry.sh
-// step 5). An update round's ask is never the newer task here: the daemon publishes it to the
-// role's Envoy topic (internal/daemon's openPodUpdate) and queues no task for it. A task whose
-// turn is running, or whose prompt is in flight, is work in flight and is never replaced either.
-//
-// The mark ends at the send it allows, so it does not outlive it: the timer that fires the
-// ladder's wait is deleted before its action runs (machine.go's Handle). Without that, the
-// window between the prompt's acknowledgement and its turn would answer true — the send is
-// over (machine.go's fenceOutcome clears it), the task is not confirmed yet, and the wait for
-// its turn is armed — so a newer task would take the place of a task already in the agent's
-// hands: that task's agent_start would confirm the task that replaced it, and the turn's end
-// would retire that one unsent, with the outbox row that gave it already recorded as delivered.
-// The relaunch's delivery is held to the same rule by its outstanding prompt, which that
-// acknowledgement records (acked) and which stands until Oh My Pi answers that prompt or the
-// turn it ran is over for the machine (Machine.outstanding).
+// the claim still owes that task, so the phase's restart task waits behind it until the take the
+// retry's fresh session makes of it finishes it (R3, scripts/e2e/provider-error-retry.sh step 5).
+// An update round's ask is never the newer task here: the daemon publishes it to the role's Envoy
+// topic (internal/daemon's openPodUpdate) and queues no task for it. A task a take holds is work
+// in flight and is never replaced either, the relaunch's delivery among them: the turn of its
+// accepted take is the session's next, and a newer task waits for it as for any task's.
 func (m *Machine) replaceable(p *Delivery) bool {
-	if !p.ConfirmedAt.IsZero() || m.send != nil {
-		return false
-	}
-	return m.waitsForProviderError(p.ID) || (relaunchTask(p.ID) && !m.awaitsResult())
+	return !p.taken() && (m.waitsForProviderError(p.ID) || p.Relaunch())
 }
 
 // replaceOwedTask has a newer task take the place of a pending delivery a newer task replaces
-// (replaceable) — the task a provider error took back, or the daemon's own unprompted delivery of
+// (replaceable) — the task a provider error took back, or the daemon's own untaken delivery of
 // a relaunch's record — and reports whether it did. Both places a newer task arrives at a claim
 // that holds one run it: the task queue is given (queue), and the operator's task that runs a
 // launch the pacing parked (runParkedLaunchNow). A pending task no newer one replaces is replaced
@@ -230,9 +246,8 @@ func (m *Machine) replaceable(p *Delivery) bool {
 // it. The delivery it replaces is the one the claim holds (m.claim.Pending), which is the one
 // either caller could mean, and a claim holding none replaces none.
 //
-// The replaced task's row ends as any other retirement ends it, and the question a restart armed
-// for that task is answered in the same step (dropPending), so the task that takes its place is
-// never taken for the running turn's.
+// The replaced task's row ends as any other retirement ends it (retirePending), and the value the
+// newer task's queue writes is what the worker is handed next.
 //
 // Nothing is logged here: what the two callers have to say of a replacement differs, so each
 // writes its own line when this reports one.
@@ -241,7 +256,7 @@ func (m *Machine) replaceOwedTask(ctx context.Context) (bool, error) {
 	if pending == nil || !m.replaceable(pending) {
 		return false, nil
 	}
-	if err := m.dropPending(ctx); err != nil {
+	if err := m.retirePending(ctx); err != nil {
 		return false, err
 	}
 	return true, nil

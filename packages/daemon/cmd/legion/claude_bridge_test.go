@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,11 +110,11 @@ func TestClaudeBridgeExitsOnceTheShimHasReadEveryFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer shim.Close()
-	// The stand-in takes the turn's prompt, answers it, and exits 0.
-	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nread -r prompt\ncat "+turn+"\n", stdout)
+	// The stand-in takes the turn's user message, answers it, and exits 0.
+	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nread -r message\ncat "+turn+"\n", stdout)
 	// The bridge holds its own copy: the shim's end reads to its end once the bridge exits.
 	_ = stdout.Close()
-	p.send(shimwire.Prompt{ID: "p1", DeliveryID: "d-p1", Message: "go"})
+	p.deliver("ev1", "go")
 	// A shim that reads, slowly: 4 KiB every 25 ms, so the 256 KiB frame takes it over 1.5 s.
 	var read bytes.Buffer
 	chunk := make([]byte, 4<<10)
@@ -145,7 +146,7 @@ func TestClaudeBridgeExitsOnceTheShimHasReadEveryFrame(t *testing.T) {
 		}
 		types = append(types, frame.Type)
 	}
-	if want := []string{"response", "agent_start", "tool_execution_start", "agent_end", "prompt_result"}; !slices.Equal(types, want) {
+	if want := []string{"agent_start", "tool_execution_start", "agent_end"}; !slices.Equal(types, want) {
 		t.Errorf("the shim read frames %q, want %q:\n%s", types, want, p.logged())
 	}
 	if len(left) > 0 {
@@ -165,18 +166,38 @@ func goneShim(t *testing.T) *os.File {
 	return stdout
 }
 
-// The bridge's own lines pass the URL rule. A turn's outcome that cannot be reported is logged
-// with the error of the post, which quotes the daemon's URL as the pane names it
-// (LEGION_DAEMON_URL), user name and query included: the line keeps the URL's host and path, and
-// neither the user name nor the query reaches the pane.
+// The bridge's own lines pass the URL rule. A turn's outcome whose post fails in its transport is
+// logged with the error of the post, which quotes the daemon's URL as the pane names it
+// (LEGION_DAEMON_URL), user name and query included, before the report is sent again: the line
+// keeps the URL's host and path, and neither the user name nor the query reaches the pane.
 func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stdout.Close()
-	// A port nothing listens on, so the report's post fails at its dial.
-	const daemon = "127.0.0.1:1"
+	// Something in the daemon's place that answers no HTTP, so the report's post fails in its
+	// transport with an error naming the URL. A refused dial would not do: the bridge names it in
+	// words of its own ("the connection was refused") and quotes no error.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = conn.Read(make([]byte, 4096))
+				_, _ = conn.Write([]byte("an answer that is no HTTP\r\n\r\n"))
+			}()
+		}
+	}()
+	daemon := listener.Addr().String()
 	bootToken := filepath.Join(t.TempDir(), "boot-token")
 	if err := os.WriteFile(bootToken, []byte("boot-token\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -188,7 +209,7 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 		"LEGION_DAEMON_URL=http://legion-reader@"+daemon+"/daemon?token=planted-query-token-3",
 		"LEGION_BOOT_TOKEN_FILE="+bootToken, "LEGION_GENERATION=4")
 	p.await("the failed report logged", func() bool {
-		return strings.Contains(p.logged(), "could not report the outcome of turn 1")
+		return strings.Contains(p.logged(), "got no answer from the daemon (the transport failed: ")
 	})
 	p.hangUp()
 	logged := p.logged()
@@ -290,6 +311,25 @@ func (p *claudeBridgeProcess) send(f shimwire.Frame) {
 		p.t.Fatal(err)
 	}
 	if _, err := p.stdin.Write(append(line, '\n')); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+// deliver writes one Envoy delivery to the bridge's inbox, as claude-envoy's channel server does,
+// over a connection of its own that stays open until the test ends. Between turns it starts a turn
+// of the bridge's own with content as its user message.
+func (p *claudeBridgeProcess) deliver(id, content string) {
+	p.t.Helper()
+	sockets, _ := filepath.Glob(filepath.Join(p.tmp, "legion-claude-*", "inbox.sock"))
+	if len(sockets) != 1 {
+		p.t.Fatalf("the bridge's inboxes are %q, want one", sockets)
+	}
+	conn, err := net.Dial("unix", sockets[0])
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	p.t.Cleanup(func() { _ = conn.Close() })
+	if err := json.NewEncoder(conn).Encode(claudebridge.InboxDelivery{ID: id, Content: content}); err != nil {
 		p.t.Fatal(err)
 	}
 }

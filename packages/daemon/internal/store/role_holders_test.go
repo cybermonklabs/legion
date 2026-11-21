@@ -130,7 +130,7 @@ func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testin
 	}, queued)
 	step("the registration of the admitted claim", put(holderClaim(supervise.StateRegistered, "ses-2")), queued)
 
-	task := supervise.Delivery{ID: "delivery-1", Task: "test it", QueuedAt: at(1), DeliveredAt: at(2), ConfirmedAt: at(3), Generation: 1}
+	task := supervise.Delivery{ID: "delivery-1", Task: "test it", QueuedAt: at(1), ConfirmedAt: at(3), Generation: 1}
 	step("a confirmed task", func() error {
 		return s.PutClaimAndDelivery(ctx, holderClaim(supervise.StateWorking, "ses-2"), task)
 	}, none)
@@ -419,7 +419,7 @@ func TestAClaimWriteAndThePublicationItQueuesCommitTogether(t *testing.T) {
 	s := publishingStore(t)
 	openHolderTree(t, s)
 	idle := holderClaim(supervise.StateIdle, "ses-1")
-	task := supervise.Delivery{ID: "delivery-1", Task: "test it", QueuedAt: at(1), DeliveredAt: at(2), ConfirmedAt: at(3), Generation: 1}
+	task := supervise.Delivery{ID: "delivery-1", Task: "test it", QueuedAt: at(1), ConfirmedAt: at(3), Generation: 1}
 	if err := s.PutClaimAndDelivery(ctx, idle, task); err != nil {
 		t.Fatalf("seed the idle claim with its task: %v", err)
 	}

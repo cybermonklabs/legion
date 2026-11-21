@@ -452,9 +452,9 @@ type ParkedDecision struct {
 }
 
 // DeliveryHold is the claim token and delivery id of a start's task queued on an architect's
-// claim, which holds what that task names until that delivery is confirmed (the rows are told),
-// retired (the hold is cleared and the rows are KEPT again) or taken back under a new id (the
-// hold moves to it). The zero value is no hold.
+// claim, which holds what that task names until that delivery is confirmed (the rows are told) or
+// retired (the hold is cleared and the rows are KEPT again). A task taken back keeps its delivery
+// id, and with it the hold. The zero value is no hold.
 type DeliveryHold struct {
 	Claim    string
 	Delivery string
@@ -1963,7 +1963,7 @@ type Store interface {
 	// it (the claim store's RetireDelivery).
 	ReleaseHeldDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, marks []DecisionMark) ([]string, error)
 	// HeldKeptRefs is the reference of every decision the delivery of claim token still holds: what
-	// a held task may still name when it is about to be sent (workflow's RootTask). A reference it
+	// a held task may still name when a take of it is decided (workflow's RootTask). A reference it
 	// named that is gone from here was told by something else, or replaced by a newer decision on
 	// the same reference, and this task names it no longer.
 	HeldKeptRefs(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string) ([]string, error)
@@ -2433,16 +2433,18 @@ type QueuedSupervise struct {
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
 // is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
 // in (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
-// it was last given work of (given_entry), the moment its agent last said it was ready
-// (last_ready), its handshake of the last entry it was queued a task of (handshake_entry,
+// it was last given work of (given_entry), its session and its task numbers (session,
+// task_written, task_finished, task_finished_session), the moment its agent last said it was
+// ready (last_ready), its handshake of the last entry it was queued a task of (handshake_entry,
 // handshake_generation, handshake_queued_at, handshake_confirmed_at), the moment its agent last
 // stepped (step_at, turn_started_at), what its own session last reported it was doing
 // (activity_at, activity_background, activity_next_reminder_at), and the task it holds, nil for
 // none, with the task's delivery id, generation, phase, entry, the moments it was queued and
-// confirmed, and whether a let-go took it back from a turn (interrupted). The id is what says the
-// task is the daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch), which a
-// reader of a run reads as no work of the claim's (supervise.HoldsTask: workflow's owed and
-// readyWorkerTask).
+// confirmed, whether a let-go took it back from a turn (interrupted) and whether that take's turn
+// started (turn_started), and not the text the take was answered with. The id is what says the
+// task is the daemon's own delivery of a relaunch's record
+// (supervise.Delivery.Relaunch), which a reader of a run reads as no work of the claim's
+// (supervise.HoldsTask: workflow's owed and readyWorkerTask).
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
@@ -2502,6 +2504,17 @@ type RoleClaim struct {
 	// Its reader is the admission pass, which tells a claim behind the entry its role's phases
 	// row names — one owed that entry's work — from one already holding it.
 	GivenEntry int64
+	// Session is the session the claim's agent registered (supervise.Claim.Session), "" for one
+	// none has. TaskWritten is the highest task number the claim's record has queued, and
+	// TaskFinished and TaskFinishedSession the number of the last task whose turn finished and
+	// the session the claim had when it did (supervise.Claim's fields of those names), each zero
+	// for a claim that has been queued or has finished no numbered task. Together they are what
+	// tells a ready worker that has finished its task, in the session it still runs, from one
+	// that has not or whose session is a fresh one, which has read nothing of that task.
+	Session             string
+	TaskWritten         uint64
+	TaskFinished        uint64
+	TaskFinishedSession string
 	// LastReady is when the claim's agent last said it could be prompted (supervise.Claim.LastReady,
 	// last_ready), and the zero time for a claim whose agent never has. The ready of every launch
 	// writes it, a relaunch's included (supervise's ready). Its readers are the first stall arm
@@ -2513,15 +2526,15 @@ type RoleClaim struct {
 	LastReady time.Time
 	// Handshake is the claim's handshake of the last entry it was queued a task of
 	// (supervise.Claim.Handshake): that entry, the run its task was of, when a task of it was
-	// first queued to the claim and when a turn first confirmed one, the zero value where the
-	// claim was queued no task carrying an entry. The claim's machine writes the queued moment
+	// first queued to the claim and when a take of one was first accepted, the zero value where
+	// the claim was queued no task carrying an entry. The claim's machine writes the queued moment
 	// at the first queue of an entry and keeps it through every later task of the same entry and
-	// run, a re-send after an unconfirmed retirement among them (supervise's EntryHandshake
-	// queued), where the task's own QueuedAt is that later task's, and it keeps the first
-	// confirmation through every later relaunch, but for one a refusal or a let-go says no turn
-	// of the worker made (supervise's EntryHandshake unconfirmed). Its readers are the first
-	// stall arm (admit's architectTookNothing), which counts the task of an entry from when that
-	// entry was first queued, as R7 says (dispatch://INFRA-2614), and the third (admit's
+	// run, a task queued again after an unconfirmed retirement among them (supervise's
+	// EntryHandshake queued), where the task's own QueuedAt is that later task's, and it keeps the
+	// first confirmation through every later relaunch, but for one a take-back says no turn of the
+	// worker ran (supervise's EntryHandshake unconfirmed). Its readers are the first stall arm
+	// (admit's architectTookNothing), which counts the task of an entry from when that entry was
+	// first queued, as R7 says (dispatch://INFRA-2614), and the third (admit's
 	// architectSlowBeforeGate), which counts its bound from no earlier than that first
 	// confirmation where there is one.
 	Handshake supervise.EntryHandshake

@@ -238,7 +238,10 @@ func recordedContractAtOrBelow(n int) int {
 // no `setting`, `pause` or `lastPause`. Both follow strip, as every band of stateNarrowings
 // does, and placedByPod places the caller of both by its pod, so a band here reaches the caller
 // of a pod as the state's do. A plain refusal, a claim.Refusal or a Failure, carries no key of
-// that contract and is the identity at every contract.
+// that contract and is the identity at every contract. One row more takes keys off below
+// supervise.TaskTakeContract, which added `task` and `finished` to the registration's answer: the
+// registration's row serves a caller below it the answer without both (withoutTaskReading). It
+// follows strip as well, and placedByPod places its caller by its pod too.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in (withFixAttempts, withMaxFixAttempts). A settings key no reader
@@ -287,16 +290,27 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		default:
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
-	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
+	case AnswerRegister:
+		registration, isRegistration := body.(claim.RegisterResponse)
+		if !isRegistration {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < supervise.TaskTakeContract {
+			return withoutTaskReading(registration), took
+		}
+		return registration, took
+	case AnswerHealth, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
+		AnswerTask, AnswerTake:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
-		// contract records any of the three at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
+		// AnswerTask and AnswerTake arrived whole at supervise.TaskTakeContract, so no older
+		// contract records any of the five at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -558,6 +572,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: supervise.TaskTakeContract, state: withoutUnseenTaskValues, dropped: "unseenTaskValues"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -586,6 +601,7 @@ var valueStrips = []valueStrip{
 	{state: withoutUnadmittedStrandedStates, dropped: droppedStrandedState},
 	{issue: withoutUnadmittedWaitAnswer, dropped: droppedWaitAnswer},
 	{issue: withoutWaitingOnIssue, dropped: droppedLineKind},
+	{issue: withoutNeverReconnected, dropped: droppedFailureCause},
 }
 
 // recordShaping writes the daemon's own record of what it left out of the state it answered: one
@@ -643,15 +659,16 @@ func (s *server) recordShaping(r *http.Request, id AnswerID, at placement, took 
 // carries it too, since that decision follows restore as a value strip does (refusedAfterTheStop).
 const followsRestore = "the contract the caller states, else its pod's lowest, which a value follows where a key follows the stated contract, else the pod's highest"
 
-// droppedStrandedState, droppedWaitAnswer and droppedLineKind are what the rows of valueStrips
-// name as dropped. They are named rather than written in the rows because the tests that read
-// the daemon's log and the mixed pod's body name a row by them (narrowing_test.go,
-// shaped_answers_test.go). Each names what its row takes by the table's rule rather than by
-// today's value, so the line stays true of a value the table declares later.
+// droppedStrandedState, droppedWaitAnswer, droppedLineKind and droppedFailureCause are what the
+// rows of valueStrips name as dropped. They are named rather than written in the rows because the
+// tests that read the daemon's log and the mixed pod's body name a row by them
+// (narrowing_test.go, shaped_answers_test.go). Each names what its row takes by the table's rule
+// rather than by today's value, so the line stays true of a value the table declares later.
 const (
 	droppedStrandedState = "the entries of strandedClaims in a state this caller does not admit"
 	droppedWaitAnswer    = "the answeredAt and answeredBy of each wait answered by a value this caller does not admit"
 	droppedLineKind      = "the waiting line's kind of every member of a kind this caller does not admit"
+	droppedFailureCause  = "each claim view's failure cause and pendingCause this caller does not admit, served as a cause it does"
 )
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1396,6 +1413,58 @@ func withoutWaitingOnIssue(issue Issue, restore int) (Issue, bool) {
 	return issue, true
 }
 
+// withoutNeverReconnected is the issue whose claim views name no failure cause restore's reader
+// does not admit, in `failure.cause` or in `pendingCause`: each such word is served as the cause
+// that reader names for the same event (olderCause). It follows the declared table (answers.go's
+// failureCauses) and takes any word the table holds back from restore (fieldArrivals.heldBack
+// says which words and why): today the `never_reconnected` of supervise.TaskTakeContract, a claim
+// a daemon start restored ready, idle or working whose shim never said hello again, and tomorrow
+// any word the table gives a later arrival. It is named for the one word it takes today.
+//
+// The word is rewritten where every other strip drops what it takes. A plugin from
+// recordFieldsContract up to the word's arrival reads both fields through a strict enum
+// (`LEGION_FAILURE_CAUSES` in `packages/contracts/src/legion-api.ts`), so one word it does not
+// name refuses the whole state body, every claim of the project included; and a key dropped would
+// say the claim's failure has no cause or that nothing failed its relaunching process, where the
+// nearest word such a reader knows says what happened.
+//
+// The views are copied (withEachClaimView), and the failure record too where it is written, so
+// the state the source answered is left as it was. It reports whether it rewrote a word, which is
+// what the log line of this strip is written from (tookOff). A caller whose strip is below
+// recordFieldsContract has lost both keys before this runs (shapeIssue), so it finds nothing to
+// take there and writes no line.
+func withoutNeverReconnected(issue Issue, restore int) (Issue, bool) {
+	served := func(cause supervise.FailureCause) supervise.FailureCause {
+		if cause == "" || !failureCauseArrivals.heldBack(string(cause), restore) {
+			return cause
+		}
+		return olderCause(cause)
+	}
+	return withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.PendingCause = served(view.PendingCause)
+		if failure := view.Failure; failure != nil {
+			if cause := served(failure.Cause); cause != failure.Cause {
+				older := *failure
+				older.Cause = cause
+				view.Failure = &older
+			}
+		}
+		return view
+	})
+}
+
+// olderCause is the cause a reader that does not admit cause is served in its place.
+// `never_reconnected` is served as `never_registered`, a process that never said hello before
+// its deadline, the nearest cause such a reader knows. A word the table names no older cause for
+// is served as `unrecorded`, which every reader since the field's arrival reads as a failure
+// whose cause it is not told.
+func olderCause(cause supervise.FailureCause) supervise.FailureCause {
+	if cause == supervise.CauseNeverReconnected {
+		return supervise.CauseNeverRegistered
+	}
+	return supervise.CauseUnrecorded
+}
+
 // fieldArrivals is one enumerated field of the declared table as a value strip reads it: the
 // contract the field itself arrived at, and the contract each of its values did (arrivalsOf).
 type fieldArrivals struct {
@@ -1442,16 +1511,18 @@ func (f fieldArrivals) heldBack(value string, restore int) bool {
 	return arrival > f.field && restore < arrival
 }
 
-// strandedStateArrivals, waitAnswerArrivals and lineKindArrivals are the arrivals of
-// `strandedClaims[].state`, of `answeredBy` and of the waiting line's `kind`, read once from the
-// list the table itself is written from (answers.go's strandedStates, waitAnswers and
-// lineKinds). The state's row answers for the record's too: an issue's field is one field at
-// two key paths (answers.go's enumeratedFields), both rows take the one list, and shapeIssue
-// shapes the issue behind both answers.
+// strandedStateArrivals, waitAnswerArrivals, lineKindArrivals and failureCauseArrivals are the
+// arrivals of `strandedClaims[].state`, of `answeredBy`, of the waiting line's `kind` and of a
+// claim view's failure cause, read once from the list the table itself is written from
+// (answers.go's strandedStates, waitAnswers, lineKinds and failureCauses). The state's row
+// answers for the record's too: an issue's field is one field at two key paths (answers.go's
+// enumeratedFields), both rows take the one list, and shapeIssue shapes the issue behind both
+// answers.
 var (
 	strandedStateArrivals = arrivalsOf(strandedStates)
 	waitAnswerArrivals    = arrivalsOf(waitAnswers)
 	lineKindArrivals      = arrivalsOf(lineKinds)
+	failureCauseArrivals  = arrivalsOf(failureCauses)
 )
 
 // arrivalsOf is one list of the declared table as the arrivals of its field: each value under
@@ -1601,6 +1672,42 @@ func withoutClaimRoundReport(issue Issue) (Issue, bool) {
 	})
 }
 
+// withoutUnseenTaskValues is state with no `unseenTaskValues`, the one key
+// supervise.TaskTakeContract added to the state: every running claim whose task value nobody
+// reported seeing for a whole first bound. The key is left off rather than emptied, because a
+// strict reader before the contract refuses it as surely when it is empty as when it names a
+// claim, which is why State.MarshalJSON writes the key on every body but this one
+// (State.unseenTaskValuesHidden), as withoutWakesWaiting leaves off `wakesWaiting`. The flag is
+// set on a value of the state's own, so the state the source answered is left as it was. The band
+// reports a move on every body it serves, as withoutWakesWaiting does.
+func withoutUnseenTaskValues(state State) (State, bool) {
+	state.UnseenTaskValues, state.unseenTaskValuesHidden = nil, true
+	return state, true
+}
+
+// registrationBeforeTheTake is a registration's answer as a reader below
+// supervise.TaskTakeContract reads it: the answer with no `task` and no `finished`, the two keys
+// that contract added to it (withoutTaskReading). Its two fields shadow the embedded answer's of
+// the same names: a field of the outer struct is shallower than the embedded one's, so
+// encoding/json writes the outer one, and a nil pointer under `omitempty` writes no key at all.
+type registrationBeforeTheTake struct {
+	claim.RegisterResponse
+	Task     *struct{} `json:"task,omitempty"`
+	Finished *struct{} `json:"finished,omitempty"`
+}
+
+// withoutTaskReading is a registration's answer with no `task` and no `finished`, the claim's
+// task value and the number of the last task it finished, which supervise.TaskTakeContract added
+// so a worker holds its value before its ready. A plugin before that contract waits for a task the
+// daemon pushes, reads neither key, and one built before sjawhar/legion#2788 refuses the whole
+// answer for a key it does not name, which would cost its launch; the claim's value reaches no
+// such worker anyway, since it takes no task (supervise.TakesNoTask). Both keys are written on
+// every answer of this contract, `task` null where the bucket holds no value, so the band leaves
+// both off every answer it serves.
+func withoutTaskReading(registration claim.RegisterResponse) registrationBeforeTheTake {
+	return registrationBeforeTheTake{RegisterResponse: registration}
+}
+
 // withoutLeakCheckCause is the issue with no claim view carrying `leakCheckCause`, the one key
 // leakCheckCauseContract added to this route; nothing else of that contract is on it.
 func withoutLeakCheckCause(issue Issue) (Issue, bool) {
@@ -1748,17 +1855,18 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 }
 
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
-// by the claims of its pod: true for the release records and for a refusal whose body is a
-// PauseFailure, and false for every other answer. Those two answers' shapes moved at
-// pauseContract, and their writers answer from no snapshot of their own, so writeAnswer reads the
-// claims for them (placingClaims). Every other answer writeAnswer writes is the identity at every
-// contract, and so is a plain refusal (a claim.Refusal or a Failure), so a read of the claims for
-// one of them would decide nothing. A serving-down added to one of them reaches the caller of a
-// pod only once this answers true for it. The state and the record are no question for it: their
-// routes hand in their own snapshot's claims (writeAnswerFrom).
+// by the claims of its pod: true for the release records, for a refusal whose body is a
+// PauseFailure and for a registration, and false for every other answer. The first two answers'
+// shapes moved at pauseContract and the registration's at supervise.TaskTakeContract, and their
+// writers answer from no snapshot of their own, so writeAnswer reads the claims for them
+// (placingClaims). Every other answer writeAnswer writes is the identity at every contract, and
+// so is a plain refusal (a claim.Refusal or a Failure), so a read of the claims for one of them
+// would decide nothing. A serving-down added to one of them reaches the caller of a pod only once
+// this answers true for it. The state and the record are no question for it: their routes hand
+// in their own snapshot's claims (writeAnswerFrom).
 func placedByPod(id AnswerID, body any) bool {
 	switch id {
-	case AnswerReleaseRecords:
+	case AnswerReleaseRecords, AnswerRegister:
 		return true
 	case AnswerRefusal:
 		_, pause := body.(PauseFailure)

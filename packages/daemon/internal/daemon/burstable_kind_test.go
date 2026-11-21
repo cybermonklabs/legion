@@ -42,6 +42,12 @@ var burstableLiveRepository = ghrepo.MustParse("octocat/Hello-World")
 // kubectl to read and nothing dials a model, Dispatch or NATS.
 var burstableLiveStub = []string{"/bin/sh", "-c", "exec sleep infinity", "burstable-stub"}
 
+// burstableLiveNoNATS is the nats_urls entry of a case that dials no NATS: a host nothing answers
+// on, as the other hosts in these files are. A case whose script runs `legion probe-boot` names a
+// running server instead, since the probe opens the task bucket before it probes the image
+// (share_volumes_live_test.go, scripts/e2e/share-volumes-kind.sh).
+const burstableLiveNoNATS = "nats://nats.internal.example:4222"
+
 // burstableLiveCases are the two deployments the proof launches: the issue pod requesting 8Gi of
 // memory under a 32Gi limit, which must be Burstable, and a file with no `resources` block, whose
 // issue pod must stay Guaranteed at the daemon's defaults.
@@ -69,11 +75,15 @@ var burstableLiveCases = []struct {
 
 // writeBurstableLiveConfig writes the case's legion.yaml, and the token files it names, under
 // dir: the worker stream bound at streamHost, the worker image, the cluster as kubeconfig's
-// kubeContext, and extra appended to its runtime.kubernetes block (a `resources` block here, the
-// share proof's `pod` block in share_volumes_kind_test.go). Its project names no repository in the
-// file, which the loader refuses; the repository the proof launches on is the runtime's cache set
-// (burstableLiveRuntime). The hosts no stub dials are documentation placeholders.
-func writeBurstableLiveConfig(t *testing.T, dir, project, streamHost, image, kubeconfig, kubeContext, extra string) string {
+// kubeContext, natsURL as the Envoy NATS the daemon's task bucket lives on, and extra appended to
+// its runtime.kubernetes block (a `resources` block here, the share proof's `pod` block in
+// share_volumes_kind_test.go). A case that boots nothing and probes nothing names
+// burstableLiveNoNATS, a host nothing answers on, since nothing it drives dials NATS; a case whose
+// script runs `legion probe-boot` names a server that answers, because the probe opens the task
+// bucket on it before it probes the image (probeTaskBucket). Its project names no repository in
+// the file, which the loader refuses; the repository the proof launches on is the runtime's cache
+// set (burstableLiveRuntime). The other hosts no stub dials are documentation placeholders.
+func writeBurstableLiveConfig(t *testing.T, dir, project, streamHost, image, kubeconfig, kubeContext, natsURL, extra string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -93,7 +103,7 @@ envoy_token_file: ./envoy-token
 operator_token_file: ./operator-token
 dispatch_url: https://dispatch.internal.example
 dispatch_token_file: ./dispatch-token
-nats_urls: [nats://nats.internal.example:4222]
+nats_urls: [%[8]s]
 worker_boot_timeout_seconds: 300
 projects:
   %[1]s: {}
@@ -109,7 +119,7 @@ runtime:
     context: %[6]s
     session_store: postgres
     session_dsn_secret: SESSION_DSN
-%[7]s`, project, filepath.Join(dir, "state"), streamHost, image, kubeconfig, kubeContext, extra)
+%[7]s`, project, filepath.Join(dir, "state"), streamHost, image, kubeconfig, kubeContext, extra, natsURL)
 	path := filepath.Join(dir, "legion.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -215,7 +225,7 @@ func TestTheBurstableKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := writeBurstableLiveConfig(t, filepath.Join(dir, tc.name), tc.project, "192.0.2.10",
-				"ghcr.io/cybermonklabs/legion-worker@sha256:"+strings.Repeat("a", 64), kubeconfig, "test", tc.resources)
+				"ghcr.io/cybermonklabs/legion-worker@sha256:"+strings.Repeat("a", 64), kubeconfig, "test", burstableLiveNoNATS, tc.resources)
 			cfg, err := config.LoadForValidation(path, nil)
 			if err != nil {
 				t.Fatalf("load %s: %v", path, err)

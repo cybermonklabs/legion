@@ -74,11 +74,9 @@ func (s *server) refuse(w http.ResponseWriter, r *http.Request, status int, mess
 // shape every credential and workflow refusal takes. The claim and operator routes refuse with
 // their sentence alone (requireFields).
 func (s *server) requireFailureFields(w http.ResponseWriter, r *http.Request, fields ...field) bool {
-	for _, f := range fields {
-		if strings.TrimSpace(f.value) == "" {
-			s.writeFailure(w, r, http.StatusBadRequest, "MISSING_FIELD", f.name+" is required")
-			return false
-		}
+	if name, blank := blankField(fields...); blank {
+		s.writeFailure(w, r, http.StatusBadRequest, "MISSING_FIELD", name+" is required")
+		return false
 	}
 	return true
 }

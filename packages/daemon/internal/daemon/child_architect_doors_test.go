@@ -88,7 +88,7 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 		{Token: mustClaimToken(t, doorRoot, claim.RoleImplementer), Project: "legion", Tree: doorRoot, TreeEpoch: 1, Issue: doorRoot, Role: claim.RoleImplementer,
 			State: supervise.StateWorking, Generation: 1, Session: "ses-root-implementer", SessionFile: "/sessions/root-implementer.jsonl",
 			Pending: &supervise.Delivery{ID: "outbox:1", Task: "Continue root. Issue: LEGION-1. Phase: implementing.", Generation: 1,
-				Phase: phase.Implementing, QueuedAt: time.Now(), DeliveredAt: time.Now(), ConfirmedAt: time.Now()}},
+				Phase: phase.Implementing, QueuedAt: time.Now(), ConfirmedAt: time.Now(), TurnStarted: true}},
 	} {
 		if err := st.PutClaim(ctx, c); err != nil {
 			t.Fatalf("seed the claim %s: %v", c.Token, err)
@@ -205,8 +205,8 @@ func (r *childArchitectRig) architectStarts(issue string) int {
 
 // boot is the launched agent of issue's claim of role saying hello, registering session and saying
 // it is ready, at the launch the claim is on, over a connection of its own: the ready is the
-// daemon's fact of it (workflowRuntime.terminal), which queues an architect's catch-up and sends a
-// worker the task it holds.
+// daemon's fact of it (workflowRuntime.terminal), which queues an architect's catch-up. A worker's
+// task is a value its worker takes, which no ready sends.
 func (r *childArchitectRig) boot(issue string, role claim.Role, session string) *supervise.Machine {
 	r.t.Helper()
 	machine := r.machine(issue, role)

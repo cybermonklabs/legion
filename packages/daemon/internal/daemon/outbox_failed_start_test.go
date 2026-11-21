@@ -20,7 +20,7 @@ import (
 // A retry revives a failed claim with fresh budgets and sends the task it was working, so a row
 // that retried such a claim before the slot came put the worker back to work with no slot — the
 // one thing the cap counts. There is nothing left to come behind this row: it carries the task,
-// so the retry and the task arrive together, and the worker is prompted once.
+// so the retry and the task arrive together, and the worker takes the task once.
 func TestTheStartRowRetriesAFailedClaimOnFreshBudgets(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)

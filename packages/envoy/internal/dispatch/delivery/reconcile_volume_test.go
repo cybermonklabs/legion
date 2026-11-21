@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -306,6 +310,29 @@ func searchNode(number int, merged string) map[string]any {
 		"url":    fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
 		"author": map[string]any{"login": "octocat"}, "createdAt": merged, "mergedAt": merged,
 		"labels": map[string]any{"nodes": []any{map[string]any{"name": "non-task"}}},
+	}
+}
+
+// TestAGitHubPageReadThatTimedOutIsAskedAgainInEitherShape holds the timeout rule of
+// retryGitHubPage to both shapes net/http gives one read that timed out, as its transport decides
+// by a race between its read and write loops: the read's own error directly under the client's
+// *url.Error, or that error wrapped first as "readLoopPeekFailLocked: %w". *url.Error's own
+// Timeout asks only the error it directly wraps, so a rule that stops at the *url.Error misses
+// the second shape, and the page is then not asked again. A probe of 400 timed-out reads through
+// the Legion Claude Code bridge's client met the second shape 1 to 2 times.
+func TestAGitHubPageReadThatTimedOutIsAskedAgainInEitherShape(t *testing.T) {
+	read := &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ETIMEDOUT)}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "the read's own error", err: &url.Error{Op: "Get", URL: "https://api.github.com/x", Err: read}},
+		{name: "the read's error wrapped by the transport's read loop", err: &url.Error{Op: "Get", URL: "https://api.github.com/x",
+			Err: fmt.Errorf("readLoopPeekFailLocked: %w", read)}},
+	} {
+		if !retryGitHubPage(context.Background(), 1, 0, tc.err) {
+			t.Errorf("%s (%v): retryGitHubPage = false, want true: a page read that timed out is asked again", tc.name, tc.err)
+		}
 	}
 }
 

@@ -132,8 +132,8 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 
 // A stall alone runs the sweep. The project is quiet — no Dispatch event, no completion, no tick
 // of the controller — and its one root's architect holds the task of its entry, queued twenty
-// minutes ago, with no turn of its claim confirming it. That architect is owed nothing the pass
-// sends: the daemon writes no second start while that task stands (workflow's
+// minutes ago, with no take of it by its claim's worker accepted. That architect is owed nothing
+// the pass sends: the daemon writes no second start while that task stands (workflow's
 // ArchitectStartPending). So the gate the runtime asks before each sweep must open for the stall
 // itself (admit's OwesEntryWork): a gate that asked only whether a role is owed its entry's work
 // would apply no fact, and the controller would hear of the stall at the project's next fact,
@@ -195,7 +195,7 @@ const quietStallProject = "ARCHSTALL"
 
 // seedQuietArchitectStall records the one root of quietStallProject and answers it: at admitted,
 // holding its slot, its architect's phases row at entry 2, and an architect claim given that
-// entry that holds its task, queued twenty minutes ago and confirmed by no turn. That is the
+// entry that holds its task, queued twenty minutes ago with no take of it accepted. That is the
 // first arm of the architect-stalled reading, past its ten minutes, and no role of the project is
 // owed anything the pass sends: the daemon writes no second start while that task stands.
 func seedQuietArchitectStall(t *testing.T, pool *store.Pool) record.Issue {

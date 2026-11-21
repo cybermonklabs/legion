@@ -3,8 +3,8 @@ package daemon
 // The note a role gets when its pod ran out of memory, end to end over the real supervision: a
 // real Postgres, real machines and a faked runtime, as the update-round tests run (the rig is
 // podupdate_test.go's). The note is written on the delivery the end took back, so the daemon that
-// sends the task again may be another one entirely — which is what the delivery's own column is
-// for, and why this test restarts the daemon before it reads what the worker is sent.
+// answers the task's next take may be another one entirely — which is what the delivery's own
+// column is for, and why this test restarts the daemon before its worker takes the task again.
 
 import (
 	"strings"
@@ -21,13 +21,13 @@ import (
 // is what the note sends the role to read.
 const outOfMemoryTools = "skill://legion-worker/references/tools.md"
 
-// A role whose turn ended with its pod running out of memory is told so with the task it is sent
-// again: the agent is given no reason by the kubelet that killed its container, so the task's
-// prompt carries the note and the pointer to the reference that says what an issue pod does not
+// A role whose turn ended with its pod running out of memory is told so with the task it takes
+// again: the agent is given no reason by the kubelet that killed its container, so the take's
+// text carries the note and the pointer to the reference that says what an issue pod does not
 // run. The note belongs to the task the end cut off and to nothing else, so the role that held no
-// task is sent nothing. It survives a restart of the daemon, because the end is written on the
+// task is given nothing. It survives a restart of the daemon, because the end is written on the
 // delivery in the store and the daemon that relaunches the role may not be the one that saw the
-// end: this test posts the end to one daemon and reads the prompt the next one sends.
+// end: this test posts the end to one daemon and reads the text the next one answers the take with.
 func TestAnOutOfMemoryEndTellsTheRoleWhoseTurnItCutAcrossARestart(t *testing.T) {
 	const task = "Continue Workflow. Issue: LEGION-484. Phase: implementing."
 	worked, idle := claim.RoleImplementer, claim.RoleTester
@@ -35,6 +35,9 @@ func TestAnOutOfMemoryEndTellsTheRoleWhoseTurnItCutAcrossARestart(t *testing.T) 
 
 	rig.handle(worked, supervise.RequestDeliver{Claim: rig.tokens[worked], Task: task, ID: "outbox:1229",
 		Phase: phase.Implementing, Generation: 1})
+	if answer := rig.take(worked); answer.Outcome != supervise.TakeOutcomeAccepted {
+		t.Fatalf("the %s's take of its task = %+v, want it accepted", worked, answer)
+	}
 	rig.handle(worked, supervise.StreamTurnStart{Claim: rig.tokens[worked]})
 	if c := rig.claimOf(worked); c.Pending == nil || c.Pending.ConfirmedAt.IsZero() {
 		t.Fatalf("the %s holds %+v in state %s, want a confirmed delivery it is working", worked, c.Pending, c.State)
@@ -67,22 +70,22 @@ func TestAnOutOfMemoryEndTellsTheRoleWhoseTurnItCutAcrossARestart(t *testing.T) 
 		next.settle(role)
 	}
 
-	prompts := next.workers[worked].Prompts()
-	if len(prompts) != 1 {
-		t.Fatalf("the relaunched %s was sent %+v, want its task once", worked, prompts)
+	answer := next.take(worked)
+	if answer.Outcome != supervise.TakeOutcomeAccepted {
+		t.Fatalf("the relaunched %s's take = %+v, want its task accepted", worked, answer)
 	}
-	sent := prompts[0].Message
+	sent := answer.Text
 	switch {
 	case !strings.Contains(sent, task):
-		t.Errorf("the re-sent prompt does not carry the task %q: %q", task, sent)
+		t.Errorf("the take's text does not carry the task %q: %q", task, sent)
 	case !strings.HasPrefix(sent, "Your previous turn on this task was interrupted"):
-		t.Errorf("the re-sent prompt does not begin with the interrupted sentence: %q", sent)
+		t.Errorf("the take's text does not begin with the interrupted sentence: %q", sent)
 	case !strings.Contains(sent, "ran out of memory"):
-		t.Errorf("the re-sent prompt does not say the pod ran out of memory: %q", sent)
+		t.Errorf("the take's text does not say the pod ran out of memory: %q", sent)
 	case !strings.Contains(sent, outOfMemoryTools):
-		t.Errorf("the re-sent prompt does not point at %s: %q", outOfMemoryTools, sent)
+		t.Errorf("the take's text does not point at %s: %q", outOfMemoryTools, sent)
 	}
-	if sent := next.workers[idle].Prompts(); len(sent) != 0 {
-		t.Fatalf("the %s, which held no task, was sent %+v; the note belongs to the turn the end cut off", idle, sent)
+	if held := next.claimOf(idle).Pending; held != nil {
+		t.Fatalf("the %s, which held no task, holds %+v; the note belongs to the turn the end cut off", idle, held)
 	}
 }

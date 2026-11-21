@@ -691,10 +691,20 @@ func deploysIgnoredLine(key string) string {
 // demoProductionCheck is the production-check line of the one DEMO project workflowConfig and
 // kubernetesCheckConfig declare, which names no `production_check`
 // (TestConfigCheckPrintsEachProjectsProductionCheck); demoCheckConfigOK is it after the OK
-// line, which is what every check here prints before its first capability line.
+// line, which is what every check of a file that names NATS prints before its first capability
+// line, and demoCheckConfigOKNoNATS what a check of a file that names none prints there.
 var demoProductionCheck = productionCheckTesterLine("DEMO")
 
 var demoCheckConfigOK = "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck
+
+var demoCheckConfigOKNoNATS = "Config OK: project=DEMO design-gate-steps=spec\n" + noNATSLine + demoProductionCheck
+
+// noNATSLine is the line `legion config check` prints after Config OK and its warnings for a file
+// that names no NATS (daemon.NoNATSLine), written out here rather than built from that function
+// for the reason derivedIntakeHandlerLimitLine is: what an operator reads is the point of the
+// line, so a change to its words fails here and is read by a person before it ships.
+const noNATSLine = "nats: nats_urls names no NATS, so this daemon has no task bucket (legion_tasks) to hand a worker its task through: " +
+	"it launches no worker, and refuses every spawn, retry and resume of one until nats_urls names Envoy's NATS\n"
 
 // tmuxCheckKeys are the top-level keys of a tmux legion.yaml `legion config check`
 // passes: the Stage 1 keys, the operator bearer and the github_apps a file with projects must
@@ -791,7 +801,7 @@ func TestConfigCheckWarnsForEveryProjectThatStillSetsDeploys(t *testing.T) {
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 	want := "Config OK: project=DEMO design-gate-steps=spec\n" + deploysIgnoredLine("DEMO") + deploysIgnoredLine("OTHER") +
-		demoProductionCheck + productionCheckTesterLine("OTHER") + tmuxCapabilityGaps + tmuxPauseUnavailable
+		noNATSLine + demoProductionCheck + productionCheckTesterLine("OTHER") + tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -829,7 +839,7 @@ func TestConfigCheckPrintsEachProjectsProductionCheck(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProductionCheck +
+	want := demoCheckConfigOKNoNATS +
 		"projects.OTHER.production_check: off — a merge that closes one of its issues opens no production check\n" +
 		tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
@@ -1163,7 +1173,9 @@ func TestConfigCheckReadsTheLaunchSecretsAsBootDoes(t *testing.T) {
 			}
 			want := demoCheckConfigOK
 			if tc.key == seedKey {
-				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + demoProductionCheck
+				// The pane seed is the daemon's own NATS user too, which its boot is refused for
+				// at the task bucket's open (paneSeedLine).
+				want = "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + public + "\n" + paneSeedLine + demoProductionCheck
 			}
 			want += tmuxCapabilityGaps + tmuxPauseUnavailable
 			if tc.refusal == nil {

@@ -557,6 +557,36 @@
   },
   {
     "answer": "state",
+    "keyPath": "unseenTaskValues.*.role",
+    "values": [
+      {
+        "value": "architect",
+        "since": 207
+      },
+      {
+        "value": "implementer",
+        "since": 207
+      },
+      {
+        "value": "merger",
+        "since": 207
+      },
+      {
+        "value": "planner",
+        "since": 207
+      },
+      {
+        "value": "reviewer",
+        "since": 207
+      },
+      {
+        "value": "tester",
+        "since": 207
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "controllerLocator.runtime",
     "values": [
       {
@@ -754,6 +784,10 @@
         "since": 75
       },
       {
+        "value": "never_reconnected",
+        "since": 207
+      },
+      {
         "value": "never_registered",
         "since": 75
       },
@@ -786,6 +820,10 @@
       {
         "value": "launch_refused",
         "since": 75
+      },
+      {
+        "value": "never_reconnected",
+        "since": 207
       },
       {
         "value": "never_registered",
@@ -822,6 +860,10 @@
         "since": 75
       },
       {
+        "value": "never_reconnected",
+        "since": 207
+      },
+      {
         "value": "never_registered",
         "since": 75
       },
@@ -854,6 +896,10 @@
       {
         "value": "launch_refused",
         "since": 75
+      },
+      {
+        "value": "never_reconnected",
+        "since": 207
       },
       {
         "value": "never_registered",
@@ -1630,6 +1676,10 @@
         "since": 75
       },
       {
+        "value": "never_reconnected",
+        "since": 207
+      },
+      {
         "value": "never_registered",
         "since": 75
       },
@@ -1662,6 +1712,10 @@
       {
         "value": "launch_refused",
         "since": 75
+      },
+      {
+        "value": "never_reconnected",
+        "since": 207
       },
       {
         "value": "never_registered",
@@ -1698,6 +1752,10 @@
         "since": 75
       },
       {
+        "value": "never_reconnected",
+        "since": 207
+      },
+      {
         "value": "never_registered",
         "since": 75
       },
@@ -1730,6 +1788,10 @@
       {
         "value": "launch_refused",
         "since": 75
+      },
+      {
+        "value": "never_reconnected",
+        "since": 207
       },
       {
         "value": "never_registered",

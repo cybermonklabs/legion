@@ -23,14 +23,14 @@ import (
 // sent it the task it owes again, or nothing when it owes none (supervise's compactEnded). So
 // this answer always carries the claim back, whatever it says of the compaction, and the CLI
 // prints both halves of it in one line (cmd/legion's printCompaction). What it promises of the
-// owed task is that nothing of the daemon's is left holding it: either the send ran, or the
-// claim came back into something whose own end sends it, and none of those ends leaves the
-// worker stopped. There are two shapes of that. A turn Oh My Pi started under the compaction
-// leaves the claim working for it and the end sends nothing at all: that turn's end gives the
-// claim back and sends the task (supervise's compactEnded, turnEnded). Where the end does
-// reach the send, the send itself can hold the task back — the paced turn of a launch parked
-// over the process, an open update round the worker has answered — and each of those ends of
-// the daemon's own accord with the task sent (supervise's sendPending).
+// owed task is that nothing of the daemon's is left holding it: either its value was written
+// again, or the claim came back into something whose own end writes it, and none of those ends
+// leaves the worker stopped. There are two shapes of that. A turn Oh My Pi started under the
+// compaction leaves the claim working for it and the end writes nothing at all: that turn's end
+// gives the claim back and writes the task's value (supervise's compactEnded, turnEnded). Where
+// the end does reach the write, a hold can still refuse the take — the paced turn of a launch
+// parked over the process, an open update round the worker has answered — and each of those ends
+// of the daemon's own accord with the value written again (supervise's offerPending).
 //
 // Every other outcome is a failure status and gives the claim back nothing here: a refusal made
 // before anything was asked — a claim in no state to be compacted, a Claude Code claim, a role
@@ -296,11 +296,13 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 	case errors.Is(err, supervise.ErrCompactSuspended):
 		// The compaction ran, and the end of it found a suspension held over the claim: the
 		// hold ran there and left the claim suspended, or the claim is working for a turn Oh
-		// My Pi started under the compaction and the hold waits for that turn's end. The claim
-		// was given back to neither its agent nor its task, so the caller is told that rather
-		// than a recovery that landed. What becomes of the owed task is the hold's own, written
-		// once on supervise.ErrCompactSuspended, and the answer carries none of it: what the
-		// caller asked for did not happen, and the claim's own state says what it is now.
+		// My Pi started under the compaction and the hold waits for that turn's end, or the
+		// claim is idle and the hold waits for the report of a take's turn that ended before the
+		// compaction. The claim was given back to neither its agent nor its task, so the caller
+		// is told that rather than a recovery that landed. What becomes of the owed task is the
+		// hold's own, written once on supervise.ErrCompactSuspended, and the answer carries none
+		// of it: what the caller asked for did not happen, and the claim's own state says what it
+		// is now.
 		s.log.Warn("api: a suspension held over the claim ended its compaction", "claim", token)
 		s.writeFailure(w, r, http.StatusConflict, compactionFailed, fmt.Sprintf(
 			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. %s", token, askAgainLater))

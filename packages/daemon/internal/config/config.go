@@ -115,14 +115,27 @@ type Config struct {
 	WorkerBootRegistrationDeadlineIntervals int
 	WorkerRPCTimeout                        time.Duration
 	WorkerStopTimeout                       time.Duration
-	TreeStopTimeout                         time.Duration
-	SlowCommandTimeout                      time.Duration
+	// WorkerTakeTimeout is R5's first bound (`worker_take_timeout_seconds`, five minutes by
+	// default): how long a ready, idle worker under no hold that reported its task's value seen
+	// has to ask to take it before it is charged, and how often a value nobody reported seeing
+	// is written again (supervise.Timeouts.Take). WorkerTurnStartTimeout is R5's second bound
+	// (`worker_turn_start_timeout_seconds`, twenty-five minutes by default): how long after an
+	// accepted take its turn has to start before the worker is charged and the task taken back
+	// (supervise.Timeouts.TurnStart). The second's default is twice the compaction timeout and
+	// the longest launch-to-turn the fleet measured, added (2 × (10 min + 150 s), INFRA-2811's
+	// decision 13); it is not a floor, and both are refused only when not a positive integer.
+	WorkerTakeTimeout      time.Duration
+	WorkerTurnStartTimeout time.Duration
+	TreeStopTimeout        time.Duration
+	SlowCommandTimeout     time.Duration
 	// ProbeInterval is how often the runtime sweeps every recorded process.
 	ProbeInterval time.Duration
 
 	// The supervision budgets: launches that failed (and, under the same limit, deaths of a ready
-	// agent while it had work outstanding), prompts acknowledged without a turn, and panes retired
-	// for those, each before the claim is failed.
+	// agent while it had work outstanding), the charges a worker earns where it did not act (R5's
+	// two waits passed — a value it reported seeing and asked no take of, an accepted take with no
+	// turn — and a take whose adoption the shim refused), and panes retired for those charges, each
+	// before the claim is failed.
 	LaunchFailureLimit int
 	PromptFailureLimit int
 	PromptRetireLimit  int

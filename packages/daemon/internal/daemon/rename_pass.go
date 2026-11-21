@@ -412,9 +412,11 @@ func stillInstalledOn(apps appInstallations, from string) string {
 
 // renameAtBoot runs the rename pass over every issue of the project at boot, under rt's live-pod
 // rule (bootKeep): after supervision opened and the worker image passed its probe, so the runtime
-// answers for the pods it holds, and before the consumers open, so no fact and no launch reads a
-// record while the pass writes it. After a pass that wrote a row, the refresher reads the live
-// records again (wakeLive), so the cache set and the heard set name the new names.
+// answers for the pods it holds, and before the consumers run (workflowRuntime.run), so no fact
+// and no launch reads a record while the pass writes it. The consumers are opened before
+// supervision, at the boot's attempt at NATS (connectNATS), and already hear each configured
+// pair's both names (heardRepositories). After a pass that wrote a row, the refresher reads the
+// live records again (wakeLive), so the cache set and the heard set name the new names.
 func (w *workflowRuntime) renameAtBoot(ctx context.Context, rt runtime.Runtime) {
 	if w.renamePass(bootKeep(rt, w.stateDir)).run(ctx, nil) {
 		w.wakeLive()

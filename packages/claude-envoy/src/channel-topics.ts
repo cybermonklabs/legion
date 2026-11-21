@@ -1,6 +1,6 @@
-import type { RelayHeaders } from "@legion/envoy-client/consumer-delivery"
 import { DedupeIdentitySchema } from "@legion/envoy-client/delivery"
 import { natsFailureReason } from "@legion/envoy-client/errors"
+import type { RelayHeaders } from "@legion/envoy-client/relay-frame"
 import { expandSubscriptionTopics } from "@legion/envoy-client/transport"
 import { z } from "zod"
 

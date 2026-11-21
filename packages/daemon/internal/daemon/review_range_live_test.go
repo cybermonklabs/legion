@@ -1,7 +1,7 @@
 //go:build e2e
 
-// The live proof's driver for the commit a later review round is told: the task the daemon prompts
-// the reviewer with in its second review round holds ` Last reviewed commit: <sha>.`, the head the
+// The live proof's driver for the commit a later review round is told: the task the reviewer takes
+// in its second review round holds ` Last reviewed commit: <sha>.`, the head the
 // reviewer's own deciding review of the first round read, a review whose footer names the entry of
 // that round (record.PhaseRow.ReviewedHead, which workflow's review writes and workflow's
 // namingTheReviewRound names), and the task of the first round names `none` in that sentence.
@@ -11,8 +11,8 @@
 // The rig is the handoff records proof's (startOnDispatch, in handoff_records_live_test.go): the
 // real Dispatch server of the checkout on a database of its own, the whole daemon booted with
 // dispatch_url at it, the real `dispatch` CLI writing each role's handoff under the session its
-// claim registered, and each claim driven over the daemon's worker stream as its pane's shim drives
-// it (handoffClaimant), the task it is prompted with read as the shim reads it. The reviewer's
+// claim registered, and each claim driven over the daemon's routes as its pane's plugin drives it
+// (handoffClaimant, over takeDriver), the task it takes read as the plugin reads it. The reviewer's
 // review is the review App's own, published on the ENVOY_NOTIFICATIONS stream as Envoy relays
 // GitHub's webhook (publishReviewAs), before the reviewer completes, as the reviewer posts it.
 // Its Legion footer names the pull request's head, a commit id of 40 lowercase hexadecimal
@@ -21,8 +21,8 @@
 // round as in every later one (workflow's byReviewer, with the session the claims record holds
 // for the claim the daemon starts the reviewer under): only the reviewer's own review decides the
 // round, and a review of another session at the same head is set aside and records none. The
-// footer also names the entry of its round, which the stand-in reviewer reads from the task the
-// daemon delivered its shim, as an agent reads its task (entryNamedIn): only a review that names
+// footer also names the entry of its round, which the stand-in reviewer reads from the task its
+// worker took, as an agent reads its task (entryNamedIn): only a review that names
 // the entry the reviewer's phases row stands at records its head as the commit the reviewer read,
 // and no time is compared. The implementer's push and GitHub's synchronize move that head before
 // the second round (publishPushOf, publishSynchronizeOf), so the commit the second round is told is
@@ -78,8 +78,8 @@ type reviewRangeIssue struct {
 	// the head the implementer pushes in the second round.
 	first, second    string
 	tester, reviewer *handoffClaimant
-	// task is the reviewer's task of the round it was last prompted in, as the daemon delivered it
-	// to the reviewer's shim; each review the stand-in reviewer writes names the entry it ends with.
+	// task is the reviewer's task of the round it last took, as the daemon answered its take; each
+	// review the stand-in reviewer writes names the entry it ends with.
 	task string
 }
 
@@ -126,8 +126,8 @@ func (r *reviewRangeLive) newIssue(name, title string, number int) *reviewRangeI
 		first: headCommit(key, "review round 1"), second: headCommit(key, "review round 2")}
 }
 
-// Check round-1-names-no-commit. The walked issue reaches reviewing, and the task the daemon prompts
-// the reviewer with names no reviewed commit: ` Last reviewed commit: none.` (namesNoCommit).
+// Check round-1-names-no-commit. The walked issue reaches reviewing, and the task the reviewer
+// takes names no reviewed commit: ` Last reviewed commit: none.` (namesNoCommit).
 func (r *reviewRangeLive) roundOneNamesNoCommit() {
 	task := r.roundOne(r.walked)
 	r.namesNoCommit("the reviewer's task of round 1", task)
@@ -148,7 +148,7 @@ func (r *reviewRangeLive) namesNoCommit(what, task string) {
 
 // Check round-2-names-the-commit-of-round-1. The reviewer requests changes at the walked issue's
 // first head; the implementer pushes the second head and completes, and the tester passes; the task
-// the daemon prompts the reviewer with names the first head as the last reviewed commit.
+// the reviewer takes names the first head as the last reviewed commit.
 func (r *reviewRangeLive) roundTwoNamesTheCommitOfRoundOne() {
 	issue := r.walked
 	r.requestChanges(issue)
@@ -221,17 +221,17 @@ func (r *reviewRangeLive) otherSessionRecordsNoCommit() {
 	r.note("phases.reviewed_head of %s's reviewer reads \"\" after the review of another session", issue.key)
 }
 
-// roundOne walks issue's first review round: the seeded tester, which the boot relaunched, is
-// prompted to resume its phase, writes its handoff and passes; the daemon moves the issue to
-// reviewing, and the reviewer it starts registers and is prompted. It returns that task, held to be
-// the reviewing task naming the tester's handoff of round 1, and keeps it as issue's task.
+// roundOne walks issue's first review round: the seeded tester, which the boot relaunched, takes
+// the task to resume its phase, writes its handoff and passes; the daemon moves the issue to
+// reviewing, and the reviewer it starts registers and takes its task. It returns that task, held to
+// be the reviewing task naming the tester's handoff of round 1, and keeps it as issue's task.
 func (r *reviewRangeLive) roundOne(issue *reviewRangeIssue) string {
 	issue.tester = r.claimant(claim.RoleTester, issue.key, "ses_"+issue.name+"_tester")
-	issue.tester.awaitPrompt("Phase: testing.", "Resume the existing phase work.")
+	issue.tester.awaitTask("Phase: testing.", "Resume the existing phase work.")
 	test := r.pass(issue, 1)
 	issue.reviewer = r.claimant(claim.RoleReviewer, issue.key, "ses_"+issue.name+"_reviewer")
-	issue.task = issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
-	r.note("round 1: the reviewer's shim was prompted: %q", issue.task)
+	issue.task = issue.reviewer.awaitTask("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Text
+	r.note("round 1: the reviewer's worker took: %q", issue.task)
 	return issue.task
 }
 
@@ -271,12 +271,12 @@ func (r *reviewRangeLive) entryNamedIn(task string) int64 {
 
 // roundTwo walks issue's second round from implementing: the implementer pushes the second head,
 // which GitHub's synchronize moves the pull request to, writes its handoff and completes at that
-// head; the tester passes; and the reviewer is prompted again. It returns that task, held to be the
-// reviewing task naming the tester's handoff of round 2.
+// head; the tester passes; and the reviewer takes its task again. It returns that task, held to be
+// the reviewing task naming the tester's handoff of round 2.
 func (r *reviewRangeLive) roundTwo(issue *reviewRangeIssue) string {
 	t := r.t
 	implementer := r.claimant(claim.RoleImplementer, issue.key, "ses_"+issue.name+"_implementer")
-	implementer.awaitPrompt("Phase: implementing.")
+	implementer.awaitTask("Phase: implementing.")
 	r.pulls.head(issue.key, issue.second)
 	r.publishPushOf(issue.key, issue.first, issue.second)
 	r.publishSynchronizeOf(issue.number, issue.key, issue.second, "main", "the pull request of "+issue.key, time.Now())
@@ -292,16 +292,16 @@ func (r *reviewRangeLive) roundTwo(issue *reviewRangeIssue) string {
 	implementer.endTurn()
 	r.waitPhase(issue.key, phase.Testing)
 	r.note("the implementer completed at %s naming %s; read back: %s is in testing", issue.second, implement.line, issue.key)
-	issue.tester.awaitPrompt("Phase: testing.", handoffLine(issue.key, "implement", implement.version))
+	issue.tester.awaitTask("Phase: testing.", handoffLine(issue.key, "implement", implement.version))
 	test := r.pass(issue, 2)
-	issue.task = issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
-	r.note("round 2: the reviewer's shim was prompted: %q", issue.task)
+	issue.task = issue.reviewer.awaitTask("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Text
+	r.note("round 2: the reviewer's worker took: %q", issue.task)
 	return issue.task
 }
 
 // pass has issue's tester write its handoff of round and complete with a pass, and waits for the
 // issue to reach reviewing. Its turn ends with its completion, as a worker's does: the reviewer's
-// task is held while another role of the issue is in a turn (supervise's sendPending).
+// task is held while another role of the issue is in a turn (supervise's take, hold issue-in-turn).
 func (r *reviewRangeLive) pass(issue *reviewRangeIssue, round int) handoffWritten {
 	t := r.t
 	t.Helper()

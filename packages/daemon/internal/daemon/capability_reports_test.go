@@ -59,7 +59,8 @@ func sessionReport(c supervise.Claim, incarnation string) capabilities.Report {
 }
 
 // supervisorOf is a supervisor over machines for claims, as restore would build them, with nothing
-// fed to them: deployment reads each machine's published claim.
+// fed to them: deployment reads each machine's published claim. A restored claim that has a
+// process arms the deadline its reconnect is held to, on a clock that never fires here.
 func supervisorOf(t *testing.T, claims ...supervise.Claim) *supervisor {
 	t.Helper()
 	deps := supervise.Deps{
@@ -67,6 +68,7 @@ func supervisorOf(t *testing.T, claims ...supervise.Claim) *supervisor {
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
 		RefreshGate:    supervise.NewRefreshGate(0),
+		Clock:          stillClock{},
 	}
 	all := make([]*supervise.Machine, 0, len(claims))
 	for _, c := range claims {

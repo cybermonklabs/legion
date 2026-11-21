@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -44,8 +45,8 @@ type rootHearsCall struct {
 	hears    bool
 }
 
-// rootHearsCalls records every such question, so a test can hold the prompt it allowed to the
-// answer that allowed it.
+// rootHearsCalls records every such question, so a test can hold each task the architect took to
+// the answer that allowed it.
 type rootHearsCalls struct {
 	mu    sync.Mutex
 	calls []rootHearsCall
@@ -108,6 +109,8 @@ type mainPathRig struct {
 	ran  int64
 	seq  int64
 	tick int
+	// taken is every take of the architect's worker the daemon accepted, in order.
+	taken []acceptedTake
 }
 
 func newMainPathRig(t *testing.T, wired bool) *mainPathRig {
@@ -335,15 +338,16 @@ func (r *mainPathRig) bringUp() {
 	}
 	r.waitMachine()
 	if got := machine.Claim().State; !supervise.SaidReady(got) {
-		r.t.Fatalf("the architect after its ready = %s, want a claim that can be prompted", got)
+		r.t.Fatalf("the architect after its ready = %s, want a claim that can take its task", got)
 	}
 }
 
-// takeTheTask is the architect working the task it has been given: the turn its prompt starts,
-// that turn's end, and the prompt's own result, after which the claim holds no delivery. A path
-// that goes on past a start runs it, because an agent given a task works it, and a claim still
-// holding one is refused the next (supervise's queue, ErrDeliveryPending). It does nothing for a
-// claim that holds no task.
+// takeTheTask is the architect working the task it has been given: its worker takes the task
+// (prompts), the turn the take answers starts and ends, and the turn-outcome report naming the
+// task's number behind that end finishes it, after which the claim holds no delivery. A path that
+// goes on past a start runs it, because an agent given a task works it, and a claim still holding
+// one is refused the next (supervise's queue, ErrDeliveryPending). It does nothing for a claim that
+// holds no task.
 func (r *mainPathRig) takeTheTask() {
 	r.t.Helper()
 	machine := r.machine()
@@ -351,10 +355,14 @@ func (r *mainPathRig) takeTheTask() {
 	if pending == nil {
 		return
 	}
+	r.prompts()
+	if taken := machine.Claim().Pending; taken == nil || taken.ID != pending.ID || taken.ConfirmedAt.IsZero() {
+		r.t.Fatalf("the architect's take of %#v was not accepted; it holds %#v", pending, taken)
+	}
 	for _, ev := range []supervise.Event{
-		supervise.StreamTurnStart{Claim: r.token, DeliveryID: pending.ID},
+		supervise.StreamTurnStart{Claim: r.token},
 		supervise.StreamTurnEnd{Claim: r.token},
-		supervise.StreamPromptResult{Claim: r.token, DeliveryID: pending.ID, AgentInvoked: true},
+		supervise.RequestTurnOutcome{Claim: r.token, Generation: machine.Claim().Generation, Sequence: turnSequence.Add(1), Task: pending.Number},
 	} {
 		if err := machine.Handle(r.ctx, ev); err != nil {
 			r.t.Fatalf("handle %T for the architect: %v", ev, err)
@@ -362,7 +370,7 @@ func (r *mainPathRig) takeTheTask() {
 	}
 	r.waitMachine()
 	if got := machine.Claim().Pending; got != nil {
-		r.t.Fatalf("the architect holds %#v after the turn its task ran, want the task retired", got)
+		r.t.Fatalf("the architect holds %#v after the turn its task ran, want the task finished", got)
 	}
 }
 
@@ -383,13 +391,33 @@ func (r *mainPathRig) waitMachine() {
 	}
 }
 
-func (r *mainPathRig) prompts() []fake.Prompt { return r.conn.Prompts() }
+// prompts is every task the architect's worker took, in order. The rig's worker takes the task the
+// claim holds whenever the test reads what reached it, as a worker takes once its host is idle; a
+// take a hold refuses leaves the task where it is.
+func (r *mainPathRig) prompts() []acceptedTake {
+	r.t.Helper()
+	if machine, found := r.sup.Machine(r.token); found {
+		c := machine.Claim()
+		if p := c.Pending; p != nil && p.ConfirmedAt.IsZero() && (c.State == supervise.StateReady || c.State == supervise.StateIdle) {
+			answer, err := machine.Take(r.ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: p.Number})
+			if err != nil {
+				r.t.Fatalf("the architect's take of task %d: %v", p.Number, err)
+			}
+			machine.Wait()
+			if answer.Outcome == supervise.TakeOutcomeAccepted {
+				r.taken = append(r.taken, acceptedTake{DeliveryID: p.ID, Message: answer.Text})
+			}
+		}
+	}
+	return slices.Clone(r.taken)
+}
 
 // mainPath is one way main's own code gives a tree-root architect a task of a run that names no
 // phase, which is the only delivery Deps.RootHears is asked about.
 type mainPath struct {
 	name string
-	// run drives the path and returns the text the one prompt it causes must carry.
+	// run drives the path and returns the text the one task it causes the architect to take must
+	// carry.
 	run func(r *mainPathRig) string
 }
 
@@ -537,7 +565,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 					}
 				}
 				if len(prompts) == 0 || carried != 1 || !strings.Contains(prompts[len(prompts)-1].Message, want) {
-					t.Fatalf("RootHears wired=%t: the architect was prompted %d times with %+v, want its last prompt, and only it, carrying %q",
+					t.Fatalf("RootHears wired=%t: the architect took %d tasks, %+v, want its last take, and only it, carrying %q",
 						wired, len(prompts), prompts, want)
 				}
 				sent[wired] = len(prompts)
@@ -549,7 +577,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 				}
 				asked := rig.asked.about(prompts[len(prompts)-1].DeliveryID)
 				if len(asked) == 0 {
-					t.Fatalf("the task prompted as %s was never put to RootHears; every root architect's task of a run is",
+					t.Fatalf("the task taken as %s was never put to RootHears; every root architect's task of a run is",
 						prompts[len(prompts)-1].DeliveryID)
 				}
 				for _, call := range asked {
@@ -559,8 +587,8 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 				}
 			}
 			if sent[true] != sent[false] {
-				t.Fatalf("the architect was prompted %d times with RootHears wired and %d times with main's own behaviour; "+
-					"a task of a root that has an architect to hear it is sent either way", sent[true], sent[false])
+				t.Fatalf("the architect took %d tasks with RootHears wired and %d with main's own behaviour; "+
+					"a task of a root that has an architect to hear it is taken either way", sent[true], sent[false])
 			}
 		})
 	}
@@ -577,11 +605,11 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 		rig.park()
 		rig.bringUp()
 		pending := rig.machine().Claim().Pending
-		if pending == nil || !strings.Contains(pending.Task, ref) || !pending.DeliveredAt.IsZero() {
-			t.Fatalf("the parked root's task = %#v, want it pending and unsent on the ready claim", pending)
+		if pending == nil || !strings.Contains(pending.Task, ref) || !pending.ConfirmedAt.IsZero() {
+			t.Fatalf("the parked root's task = %#v, want it pending and untaken on the ready claim", pending)
 		}
 		if got := rig.prompts(); len(got) != 0 {
-			t.Fatalf("the architect of a parked root was prompted %+v, want nothing: no run of the root owns it", got)
+			t.Fatalf("the architect of a parked root took %+v, want nothing: no run of the root owns it", got)
 		}
 		refused := rig.asked.about(pending.ID)
 		if len(refused) == 0 {
@@ -596,9 +624,9 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 		// A person hands the root back. The re-admission's start carries the root's task of
 		// generation 2 at a newer entry: the first act again, since the architect took nothing of
 		// generation 1 (workflow.ArchitectStartTask's last rule). That task supersedes the held one
-		// (supervise's supersedes), so the start does not send the held task first
-		// (supervise.Machine.StartedBy), its delivery retires the held task unsent, and the
-		// architect's first prompt is the re-admission's own task (dispatch://INFRA-2614 R3, R4).
+		// (supervise's supersedes), so the start does not offer the held task first
+		// (supervise.Machine.StartedBy), its delivery retires the held task untaken, and the
+		// architect's first take is of the re-admission's own task (dispatch://INFRA-2614 R3, R4).
 		// The decision the held task named is released with it, so no delivery holds it, and the
 		// catch-up the start writes for the running architect (the outbox's start, workflow's
 		// claimReady) names it and claims it.
@@ -607,7 +635,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 		prompts := rig.prompts()
 		if len(prompts) != 1 || prompts[0].DeliveryID == pending.ID ||
 			!strings.Contains(prompts[0].Message, workflow.ArchitectFreshTreeLabel+" 2") || strings.Contains(prompts[0].Message, ref) {
-			t.Fatalf("after the re-admission the architect was prompted %+v, want generation 2's own task alone, not the held task %s",
+			t.Fatalf("after the re-admission the architect took %+v, want generation 2's own task alone, not the held task %s",
 				prompts, pending.ID)
 		}
 		if now := rig.machine().Claim().Pending; now == nil || now.ID != prompts[0].DeliveryID || now.Generation != 2 {

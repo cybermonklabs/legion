@@ -242,12 +242,17 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 
 	// The earlier release: the implementer works that task and completes, which ends its turn,
 	// moves the issue to testing, clears the tester's last handoff and raises the tester's entry,
-	// whose run it starts and counts nowhere.
+	// whose run it starts and counts nowhere. The task the implementer's pane took before the
+	// rollback is that release's prompt, and the end of its turn ends its delivery, so the
+	// implementer's pending task goes with it: left standing, the take this release accepted would
+	// read at the reboot as a take whose turn never started, and hold the tester's take of the
+	// working copy they share (supervise.HoldIssueInTurn).
 	testerRow := r.phaseOf(claim.RoleTester)
 	if testerRow.CompletedAt.IsZero() || testerRow.HandoffRecord == "" {
 		t.Fatalf("at the rollback the tester's row is %+v, want its first round completed: a clear of nothing proves nothing", testerRow)
 	}
 	implementer.endTurnUnseen()
+	r.exec(`delete from pending_task_deliveries where claim_token = $1`, string(r.token(claim.RoleImplementer)))
 	earlierStart := time.Now().UTC().Truncate(time.Millisecond)
 	r.exec(`update issues set phase = 'testing' where key = $1`, r.key)
 	r.exec(`update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, verdict = '', summary = '', decision = null,

@@ -158,7 +158,7 @@ func takeSlotAt(t *testing.T, pool *pgxpool.Pool, key string, at time.Time) {
 }
 
 // putArchitectTask records the task an architect's claim holds: the entry it is of, the moment
-// it was queued, where confirmed is set the moment a turn of the claim confirmed it, and where
+// it was queued, where confirmed is set the moment the daemon accepted a take of it, and where
 // interrupted is set the mark a let-go's take-back leaves on it (supervise.Delivery.Interrupted).
 // Those are the handshake the first arm reads (record.RoleClaim.Pending).
 func putArchitectTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, generation uint64, entry int64, queued time.Time,
@@ -278,7 +278,7 @@ func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) 
 			change: func(f *architectWakeFixture) {
 				f.queuedAt, f.confirmed = fixedNow.Add(-pastTheHandshake), false
 			},
-			why: "the task of its entry has stood queued to the claim past the bound with no turn confirming it, and the daemon writes no second start while it stands",
+			why: "the task of its entry has stood queued to the claim past the bound with no take of it accepted, and the daemon writes no second start while it stands",
 		},
 		{
 			name: "the architect's claim failed", arm: record.ArchitectClaimUnreachable,
@@ -345,7 +345,7 @@ func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) 
 }
 
 // A root two arms read raises both, each once: its architect's claim failed, and that same claim
-// holds the task of its entry queued past the bound with no turn confirming it. The two arms are
+// holds the task of its entry queued past the bound with no take of it accepted. The two arms are
 // marked apart (the arm is part of the mark's key), so neither case hides the other, and a
 // second pass adds nothing.
 func TestARootTwoArchitectWakeArmsReadRaisesBothOfThem(t *testing.T) {
@@ -379,7 +379,7 @@ func TestARootTwoArchitectWakeArmsReadRaisesBothOfThem(t *testing.T) {
 // entry's task", so the first arm reads nothing of it. The arms are read after the pass's sends,
 // so an arm that read the task the claim was given would tell the controller, in the pass that
 // writes the start, that the daemon writes no second start. Each task here was queued past the
-// bound and no turn confirmed it:
+// bound and no take of it stands accepted:
 //
 //   - a root at admitted, re-admitted at generation 2, its row at the entry the re-admission's
 //     promotion raised, whose claim was given the entry before and still holds that entry's task
@@ -555,16 +555,16 @@ func TestNoArchitectWakeIsRaisedForARootThatIsMovingAlong(t *testing.T) {
 }
 
 // The first arm counts a task a let-go took back from a turn (supervise.Delivery.Interrupted) only
-// while the claim's agent can take a prompt, and from the later of the task's queueing and that
+// while the claim's agent can take a task, and from the later of the task's queueing and that
 // agent's last ready (record.RoleClaim.LastReady). Every relaunch takes the claim's task back so:
-// the task keeps the moment it was queued, loses its confirmation and waits for the relaunched
+// the task keeps the moment it was queued, loses its accepted take and waits for the relaunched
 // agent. Each case is a root whose architect's claim holds the task of the entry it was given,
 // queued forty minutes ago, unconfirmed and taken back:
-//   - the claim launching: the relaunch has brought up no agent that could take the task, and a
-//     turn of the architect did confirm it before the let-go, so no arm holds and the pass writes
-//     no wake and no mark;
+//   - the claim launching: the relaunch has brought up no agent that could take the task, and the
+//     daemon accepted the architect's take of it before the let-go, so no arm holds and the pass
+//     writes no wake and no mark;
 //   - the claim ready, its agent ready eleven minutes ago: the relaunched agent has been able to
-//     take the task for more than the bound and no turn has confirmed it, so the arm holds and
+//     take the task for more than the bound and no take of it is accepted, so the arm holds and
 //     the controller is woken;
 //   - the claim ready, its agent ready nine minutes ago: that is inside the bound, so no arm holds.
 func TestTheTookNothingArchitectWakeCountsATakenBackTaskFromTheRelaunchedAgentsReady(t *testing.T) {
@@ -583,7 +583,7 @@ func TestTheTookNothingArchitectWakeCountsATakenBackTaskFromTheRelaunchedAgentsR
 		{
 			name: "a relaunched claim whose agent was ready past the bound", state: supervise.StateReady,
 			lastReady: fixedNow.Add(-pastTheHandshake), want: []record.ArchitectStallArm{record.ArchitectTookNothing},
-			why: "the relaunched agent could take the task for longer than the bound and no turn confirmed it",
+			why: "the relaunched agent could take the task for longer than the bound and no take of it stands accepted",
 		},
 		{
 			name: "a relaunched claim whose agent was ready inside the bound", state: supervise.StateReady,
@@ -626,10 +626,10 @@ func TestTheTookNothingArchitectWakeCountsATakenBackTaskFromTheRelaunchedAgentsR
 // claim, as R7 says ("its entry's task was first queued more than 10 minutes ago",
 // dispatch://INFRA-2614), which the claim's own handshake keeps (supervise.Claim.Handshake,
 // record.RoleClaim.Handshake), and not from the queueing of the delivery the claim holds now. A
-// task retired unconfirmed puts its entry back, and the sweep sends that entry again as a new
+// task retired untaken puts its entry back, and the sweep sends that entry again as a new
 // delivery queued at that send, while the handshake keeps the first queueing through it. Each case
 // is a root whose claim holds such a task of the entry its row names, queued again five minutes
-// ago and confirmed by no turn, beside the handshake of that entry:
+// ago with no take of it accepted, beside the handshake of that entry:
 //   - first queued fifteen minutes ago: past the bound, so the arm names it, and its reason gives
 //     that first moment;
 //   - first queued nine minutes ago: inside the bound, so nothing is named.
@@ -644,7 +644,7 @@ func TestTheTookNothingArchitectWakeCountsFromTheEntrysFirstQueueing(t *testing.
 		{
 			name: "an entry first queued fifteen minutes ago", first: fixedNow.Add(-15 * time.Minute),
 			want: []record.ArchitectStallArm{record.ArchitectTookNothing},
-			why:  "the entry's task was first queued past the bound and no turn has confirmed a task of it since",
+			why:  "the entry's task was first queued past the bound and no take of a task of it stands accepted",
 		},
 		{
 			name: "an entry first queued nine minutes ago", first: fixedNow.Add(-9 * time.Minute),

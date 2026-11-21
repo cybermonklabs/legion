@@ -1,8 +1,8 @@
 // Package reviewround writes the two sentences that end each task a reviewer is given: the
 // commit the reviewer's newest recorded deciding review read, and the entry of its round. Two
 // places write them, and both through Sentences: the workflow, onto each task of the reviewer it
-// queues (workflow's namingTheReviewRound), and the claim's send of a task that no such queue
-// named, a task the release before this one queued or an operator wrote (supervise's
+// queues (workflow's namingTheReviewRound), and the text of an accepted take of a task that no such
+// queue named, a task the release before this one queued or an operator wrote (supervise's
 // Delivery.message), which names neither.
 package reviewround
 

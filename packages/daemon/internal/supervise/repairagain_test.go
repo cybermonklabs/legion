@@ -19,9 +19,9 @@ func TestWhenTheRepairFailsAgainTheDecisionStillGoesOn(t *testing.T) {
 	written := len(h.records.of(owedWriteLine))
 	attempted := counted.mark()
 
-	// The store is still refusing claim writes. The task's own write is of the delivery, which
-	// the outage is not on, so this decision has work it can finish.
-	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	// The store is still refusing claim writes. A tool call's own write is the step's narrow one
+	// (PutClaimStep), which the outage is not on, so this decision has work it can finish.
+	h.stepped("bash", "toolu_turn1_0", toolArgs, false)
 
 	if h.m.owedWrite == nil {
 		t.Fatal("the repair that failed again dropped the mark; the write would be lost with it")
@@ -38,23 +38,19 @@ func TestWhenTheRepairFailsAgainTheDecisionStillGoesOn(t *testing.T) {
 			t.Fatalf("the owed line carries no %s; a reader follows the write by it", key)
 		}
 	}
-	if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"PutClaim", "PutDelivery"}) {
-		t.Fatalf("the decision asked for %v, want the repair's refused claim write and the task's own delivery write", asked)
+	if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"PutClaim"}) {
+		t.Fatalf("the decision asked for %v, want the repair's refused claim write alone: the step's own write is no claim write", asked)
 	}
-	if p := h.claim().Pending; p == nil || p.Task != "the task" {
-		t.Fatalf("pending = %+v, want the task the deliver carried: the event was applied, not dropped", p)
-	}
-	if _, ok := h.store.delivery(testToken); !ok {
-		t.Fatal("the task's delivery was not written; the decision stopped at the failed repair")
+	if step := h.store.step(testToken); step.CallID != "toolu_turn1_0" {
+		t.Fatalf("the stored step is %+v, want the call the step carried: the event was applied, not dropped", step)
 	}
 }
 
-// A turn start that confirms a task writes the claim and the delivery in one transaction, so a
+// The start of an accepted take's turn writes the claim and the delivery in one transaction, so a
 // failure leaves both unwritten and both owed. The repair makes that one write again — not the
-// claim alone, which would leave a working claim whose delivery is unconfirmed, and not two
-// writes, which would leave the row in between — and it makes the report the confirming decision
-// owed. Before this change that half of the turn start had its delivery written again by settle
-// and never made its report, so the daemon was never told the woken role took its work.
+// claim alone, which would leave a working claim whose delivery still awaits its turn, and not two
+// writes, which would leave the row in between — and it makes the report the turn start owed, so
+// the daemon is told the woken role took its work.
 func TestAConfirmOwedWriteIsMadeWholeWithItsReport(t *testing.T) {
 	h, counted := newCountedHarness(t)
 	reports := watchReports(h)
@@ -91,8 +87,8 @@ func TestAConfirmOwedWriteIsMadeWholeWithItsReport(t *testing.T) {
 	if stored.State != StateWorking {
 		t.Fatalf("the repaired row reads %s, want working", stored.State)
 	}
-	if stored.Pending == nil || stored.Pending.ID != delivery || stored.Pending.ConfirmedAt.IsZero() {
-		t.Fatalf("the stored delivery is %+v, want %s written confirmed beside the working claim", stored.Pending, delivery)
+	if stored.Pending == nil || stored.Pending.ID != delivery || !stored.Pending.turnStarted() {
+		t.Fatalf("the stored delivery is %+v, want %s written with its turn started beside the working claim", stored.Pending, delivery)
 	}
 	if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady, StateWorking}) {
 		t.Fatalf("the daemon was told %v, want the confirmation's owed working made when its write landed", seen)

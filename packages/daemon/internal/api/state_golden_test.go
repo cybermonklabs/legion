@@ -65,6 +65,8 @@ worker_boot_timeout_seconds: 180
 worker_boot_registration_deadline_intervals: 2
 worker_rpc_timeout_seconds: 8
 worker_stop_timeout_seconds: 30
+worker_take_timeout_seconds: 240
+worker_turn_start_timeout_seconds: 1800
 tree_stop_timeout_seconds: 90
 slow_command_timeout_seconds: 600
 probe_interval_seconds: 20
@@ -239,7 +241,7 @@ func populatedState(t *testing.T) State {
 	heldSlot, noSlot := true, false
 	// LEGION-208's architect's handshake, which is the pair of times a tree's own root carries in
 	// every phase it stands in (internal/projection): the task of the architect's last entry was
-	// queued to its claim, and a turn of it confirmed that task.
+	// queued to its claim, and the daemon accepted a take of that task by its worker.
 	entryQueued := time.Date(2026, 9, 22, 8, 58, 14, 0, time.UTC)
 	entryConfirmed := time.Date(2026, 9, 22, 8, 58, 51, 0, time.UTC)
 	// What the two reviewing issues' rounds wait on from GitHub (api.MergeWaitView). LEGION-218's
@@ -468,7 +470,7 @@ func populatedState(t *testing.T) State {
 				// reviewers are too; LEGION-211 below is the other case. The two times beside them
 				// are not the implementer's: a tree's own root carries its architect's handshake in
 				// every phase it stands in (internal/projection), so they say when the task of the
-				// architect's last entry was queued to its claim and when a turn of it confirmed it.
+				// architect's last entry was queued to its claim and when the daemon accepted a take of it.
 				// LEGION-210, LEGION-212 and LEGION-207 carry none of the four. The projection writes
 				// neither number because no role works held, awaiting_person or done (phase.RoleFor).
 				// It writes neither time because the times are an architect claim's, which it shows
@@ -581,15 +583,17 @@ func populatedState(t *testing.T) State {
 				DefaultBranch: "main",
 				Workers: map[claim.Role]PhaseView{
 					// A released claim keeps the task it was holding through its suspension, and
-					// the two sends that never reached a turn are on it: the diagnosis record a
-					// stalled claim is read by, with no budget spent on either.
+					// the two takes of it whose adoption of the working copy the shim refused are
+					// on it: the diagnosis record that says why the task has not run.
 					claim.RoleImplementer: {Claim: ClaimView{
 						Session:     "ses_implementer_211",
 						State:       "suspended",
 						UpdateState: UpdateStateNone,
 						PendingTask: &PendingTaskView{
 							Phase: phase.Implementing, QueuedAt: time.Date(2026, 9, 22, 8, 54, 20, 0, time.UTC),
-							SendFailures: 2, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+							SendFailures: 2, LastSendError: "worker-stream: legion-legion-legion-211-implementer refused adopt-working-copy: " +
+								"Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-211/.git/index.lock " +
+								"was last written 31m ago",
 						},
 					}, Rounds: 1},
 				},
@@ -917,6 +921,13 @@ func populatedState(t *testing.T) State {
 		// the pacing is holding now, which is the pair a reader of a running wave needs
 		// (contract 73).
 		ClaimsToRefresh: 4,
+		// One claim whose task value went a first bound with nobody reporting it seen: the relay to
+		// LEGION-209's tester failed, so the daemon wrote task 2 again at the bound and charged
+		// nobody (R5 of dispatch://INFRA-2811).
+		UnseenTaskValues: []UnseenTaskValue{
+			{Claim: "legion-legion-legion-209-tester", Issue: "LEGION-209", Role: claim.RoleTester,
+				Task: 2, WrittenAt: time.Date(2026, 9, 22, 9, 15, 30, 0, time.UTC)},
+		},
 		// The controller paused the project nine minutes before this read (decision 25 of
 		// dispatch://INFRA-3759), built through pausedViewOf from the store's own rows as the
 		// state's read builds it (PauseStateTx). LEGION-208's implementer is still in the turn the
@@ -1421,8 +1432,9 @@ func golden(t *testing.T, name string, value any) {
 	}
 }
 
-// The register response is what the plugin reads its claim, its secret and the task agents its
-// role's prompts dispatch from.
+// The register response is what the plugin reads its claim, its secret, the task agents its
+// role's prompts dispatch and its claim's current task from: a claim holding task 4 at revision
+// 12 of the bucket's epoch, having finished task 3.
 func TestRegisterResponseGolden(t *testing.T) {
 	golden(t, "register.json", claim.RegisterResponse{
 		ClaimToken:   "legion-legion-legion-208-architect",
@@ -1432,7 +1444,25 @@ func TestRegisterResponseGolden(t *testing.T) {
 		Generation:   3,
 		Secret:       "U3VwZXJ2aXNlZEJ5TGVnaW9u",
 		PromptAgents: []string{"deep-worker", "oracle", "plan-gap-analyst", "plan-reviewer", "thermonuclear-code-quality", "thermonuclear-deep-review"},
+		Task:         &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 12},
+		Finished:     3,
 	})
+}
+
+// What `claims/task` answers a claim whose bucket holds no value: `task` is null, never absent,
+// beside the number of the last task the claim finished. The register golden above holds the
+// value's own shape.
+func TestTaskResponseGolden(t *testing.T) {
+	golden(t, "task.json", claim.TaskResponse{Finished: 4})
+}
+
+// What `claims/take` answers, one fixture for each outcome: the accepted take's text, the hold a
+// refused take met, and a dropped take, which carries neither.
+func TestTakeResponseGolden(t *testing.T) {
+	golden(t, "take-accepted.json", claim.TakeResponse{Outcome: string(supervise.TakeOutcomeAccepted),
+		Text: "Implement LEGION-209 on its branch, then complete the phase with legion handoff_complete."})
+	golden(t, "take-refused.json", claim.TakeResponse{Outcome: string(supervise.TakeOutcomeRefused), Hold: supervise.HoldStalePlugin})
+	golden(t, "take-dropped.json", claim.TakeResponse{Outcome: string(supervise.TakeOutcomeDropped)})
 }
 
 // The ready request is what the plugin posts once its session can be prompted, and again carrying
@@ -1609,7 +1639,7 @@ func TestErrorResponseGolden(t *testing.T) {
 
 // operatorClaim carries every optional an operator's view of a claim has.
 func operatorClaim() OperatorClaim {
-	delivered := time.Date(2026, 9, 22, 9, 31, 4, 0, time.UTC)
+	confirmed := time.Date(2026, 9, 22, 9, 31, 4, 0, time.UTC)
 	lastSendFailure := time.Date(2026, 9, 22, 9, 31, 2, 0, time.UTC)
 	return OperatorClaim{
 		Token:       "legion-legion-legion-209-implementer",
@@ -1632,15 +1662,17 @@ func operatorClaim() OperatorClaim {
 			ID:          "OVXA3ZC6BPIKTOQHKXHRZ7TYVB",
 			Task:        "Implement the plan recorded on the issue, which `dispatch handoff-read --issue LEGION-208 --phase plan` reads.",
 			QueuedAt:    time.Date(2026, 9, 22, 9, 30, 58, 0, time.UTC),
-			DeliveredAt: &delivered,
-			ConfirmedAt: &delivered,
+			ConfirmedAt: &confirmed,
 			Interrupted: true,
-			// The record of the sends that failed, carried here beside the confirmation the way
-			// this fixture carries every other optional at once. A live delivery shows one or
-			// the other: the send that confirms a task clears all three (supervise's confirm).
+			// The record of the adoptions that failed, carried here beside the confirmation the
+			// way this fixture carries every other optional at once. A live delivery shows one or
+			// the other: the accepted take that confirms a task clears all three (supervise's
+			// accept).
 			SendFailures:      2,
 			LastSendFailureAt: &lastSendFailure,
-			LastSendError:     "prompt the agent: context deadline exceeded",
+			LastSendError: "worker-stream: legion-legion-legion-209-implementer refused adopt-working-copy: " +
+				"Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-209/.git/index.lock " +
+				"was last written 31m ago",
 		},
 		SuspensionHeld: true,
 		// A plugin round an earlier daemon opened over this claim, whose process speaks a plugin

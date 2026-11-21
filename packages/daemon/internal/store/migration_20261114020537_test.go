@@ -13,12 +13,13 @@ const claimHandshakeVersion = 20261114020537
 
 // 20261114020537 adds the four columns a claim keeps its handshake in (supervise.Claim.Handshake):
 // the last entry it was queued a task of, that task's run, when a task of that entry was first
-// queued and when a turn first confirmed one. Every claim the table holds before it reads back
-// with no handshake, which is what lets the state read a root of the release before this one with
-// both times absent: here the architect claim of a root the architect upgrade settled at entry 1,
-// queued and confirming it with no task and no times. A handshake written after it reads back as
-// it was written, first with no confirmation and then with one, and through a store reopened as a
-// daemon restart reopens it, since a restarted daemon builds every claim from this table.
+// queued and when the daemon first accepted a take of one. Every claim the table holds before it
+// reads back with no handshake, which is what lets the state read a root of the release before
+// this one with both times absent: here the architect claim of a root the architect upgrade
+// settled at entry 1, queued and confirming it with no task and no times. A handshake written
+// after it reads back as it was written, first with no confirmation and then with one, and
+// through a store reopened as a daemon restart reopens it, since a restarted daemon builds every
+// claim from this table.
 func TestTheClaimHandshakeMigrationLeavesEveryClaimWithNoneAndTheHandshakeRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)

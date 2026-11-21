@@ -61,8 +61,8 @@ func RelaunchSentence(ended EndedWork) string { return relaunchSentence(ended, f
 // off, as they were then.
 //
 // The words of the background work are the three kinds the store keeps (backgroundKind); a kind
-// it does not know is not read into the prompt, and a report that named none of them is said as
-// background work of no named kind.
+// it does not know is not read into the task's text, and a report that named none of them is said
+// as background work of no named kind.
 func relaunchSentence(ended EndedWork, task bool) string {
 	cutTask := task && ended.TaskTurn
 	process := "Your previous process"
@@ -74,9 +74,9 @@ func relaunchSentence(ended EndedWork, task bool) string {
 		because = process + " ended because " + ended.Cause + "."
 	}
 	// A record of the task's turn with no turn running is one whose let-go's own decision took the
-	// task back while the claim was in no turn, as from a turn that ended before its prompt's result
-	// came (recordEnd): the task's turn is the one cut off, and it is told as one, as a task's
-	// interruption always was (interruptedTask).
+	// task back from its turn while the claim read as in no turn (recordEnd, endState): the task's
+	// turn is the one cut off, and it is told as one, as a task's interruption always was
+	// (interruptedTask).
 	turn := ended.Turn || ended.TaskTurn
 	var said []string
 	switch {
@@ -134,9 +134,11 @@ func relaunchSentence(ended EndedWork, task bool) string {
 
 // inFrontOf is the record as the sentence in front of task d tells it (Delivery.message). The
 // turn of the claim's task the record says was cut off (EndedWork.TaskTurn) is d's own only where
-// d is the task the let-go took back from that turn (Delivery.Interrupted, interrupted): a let-go
-// that takes nothing back leaves the task a turn confirmed to settle, which retires it, and a
-// confirmed task is never sent again. So any other task was never in that turn: the operator's
+// d is the task the let-go took back from that turn (Delivery.Interrupted, interrupted): a task
+// whose turn ran and that no let-go took back is finished (settle, finishTask) — by its end frame
+// for a plugin below TaskTakeContract, by its report for one that names its number — or, where
+// no report comes for such a plugin, taken back as a cut turn and so Interrupted after all; and a
+// finished task is never taken again. So any other task was never in that turn: the operator's
 // retry of a worker a stop cut off in its task's turn is the case, since the stop retires that
 // task and the retry gives the claim a new task of its phase (api's retryStart). In front of such
 // a task the turn cut off is told as the sentence alone tells it (RelaunchSentence): as the turn
@@ -181,15 +183,15 @@ func backgroundKind(kind string) string {
 // claim holding no task what its relaunch ended (queueRelaunch); a fresh word of its own completes
 // it (relaunchTaskID). The prefix is the delivery's whole identity: it is what says the delivery
 // carries the record's sentence as its text rather than in front of a task (Delivery.message),
-// and that a newer task may take its place while no prompt of it is waiting on a result
-// (replaceable). It is kept across every take-back, as an update round's ask keeps its round
-// (rotateTaskID).
+// and that a newer task may take its place while no take of it is accepted (replaceable). Its
+// origin is no such mark: OriginNotice names the root architect's start task too. A delivery id
+// never changes, so the prefix stands across every take-back, as an update round's ask keeps its
+// round.
 const relaunchTaskPrefix = "relaunch:"
 
 // relaunchTaskID is the id of one delivery of the daemon's own that tells a relaunch's record.
-// Its word is random, as an operator's own delivery id is (queue), for the reason updateTaskID
-// gives: the shim answers a prompt whose id it holds from its own record without prompting the
-// agent, so each delivery and each take-back needs an id the shim has not seen.
+// Its word is random, as an operator's own delivery id is (queue), so no two such deliveries of a
+// claim share an id.
 func relaunchTaskID() string { return relaunchTaskPrefix + rand.Text() }
 
 // relaunchTask is whether delivery id is the daemon's own delivery of a relaunch's record.
@@ -213,25 +215,50 @@ func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
 func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relaunch() }
 
 // queueRelaunch gives a claim that holds no delivery at its ready a delivery of the daemon's own
-// that carries the sentence of its untold record alone (RelaunchSentence), so the next prompted
-// turn of the new process reads what the last one ended at once, whatever the role: a root
-// architect's goal-red-team reading that died while it held nothing is the measured case
+// that carries the sentence of its untold record alone (RelaunchSentence), so the new process's
+// next accepted take reads what the last one ended at once, whatever the role: a root architect's
+// goal-red-team reading that died while it held nothing is the measured case
 // (dispatch://INFRA-3276 R3). A claim that holds a delivery needs none: its task carries the
 // sentence in front of it (Delivery.message).
 //
+// The delivery is a numbered task like any other, of origin notice (OriginNotice): queue gives it
+// the claim's next number and writes the claim's value, the worker takes it, and the report that
+// names its number finishes it, or the end of its turn for a plugin below TaskTakeContract
+// (finishTask, endFrameFinishes). So it is queued only where the
+// record shows the let-go ended work that was running — a turn, the task's turn, or background
+// work a report named (EndedWork.ranWork) — and never for a record that says only that the
+// daemon holds no report of the process (dispatch://INFRA-2811, departure D2): a value written
+// to a worker that had finished its task, at every relaunch that ended nothing, is the write
+// that worker's phase stands waiting through. Such a record is still told, in front of the next
+// task the claim takes and in a root architect's catch-up (intake.ClaimReady.Relaunch).
+//
 // The delivery has no phase, no run, no entry and no look, so nothing holds it back
-// (phaseHolds, asksRoot), no working copy is adopted for it (adopts), and its confirmation and
-// retirement leave what the claim is serving alone and end no phase (serving, settle). Its id is
-// relaunchTaskID's. The record is told when a turn confirms a prompt of it (confirm), as a task's
-// would be, and its text is the record as it stands when the prompt goes (Delivery.message).
+// (phaseHolds, asksRoot), no working copy is adopted for it (adopts), and its take and its finish
+// leave what the claim is serving alone and end no phase (serving, settle). Its id is
+// relaunchTaskID's. The record is told when a take of it is accepted (accept), as a task's would
+// be, and its text is the record as it stands at that take (Delivery.message).
 //
 // It is queued by finishReady after the ready's durable write and report, which the workflow reads
 // synchronously (Machine.OnDurableState, the daemon's applyTerminal): the workflow's ready reads
-// the claim holding nothing, so a phase worker is still queued its resume task
-// (workflow's readyWorkerTask), and that task takes this delivery's place while no prompt of it is
-// waiting on a result, or waits for its turn to end (queue, replaceable). It is queued again where
-// sendPending drops the task a claim held and leaves it holding nothing (relaunchAfterDrop), since
-// the task that would have carried the sentence is gone.
+// the claim holding nothing, so a phase worker the workflow still owes a resume task is queued it
+// (workflow's readyWorkerTask), and that task takes this delivery's place while no take of it is
+// accepted, or waits behind that take (queue, replaceable). It is queued again where takeable drops
+// the task a claim held and leaves it holding nothing — its phase gone, an older daemon's ask of an
+// update round, or a root architect's held task left naming nothing (currentRootTask) — since the
+// task that would have carried the sentence is gone, and the ready that queues it for a claim
+// holding nothing ran before that drop, while the claim still held the task.
+//
+// Nothing there recurses: this queues the delivery and writes its value (queue), and offers
+// nothing. The delivery has no phase, no round and no run, so neither the phase check nor the
+// round's drops it, it asks no root (asksRoot), and it is queued only while its record tells, so
+// it is not spent either; its worker takes it as it takes any task.
+//
+// One order costs a turn and loses nothing. A newer task that queue refuses because the claim
+// holds an untaken task offers that task first (queue, offerPending), and when that offer drops
+// the held task the delivery queued here takes the slot. The newer task, retried by its row, then
+// replaces that delivery while no take of it is accepted (replaceable) and carries the sentence
+// in front of itself; once a take of it is accepted, the newer task waits for that take's turn as
+// behind any task taken.
 //
 // One claim is given none: the daemon-launched controller. Its keeper sends its start message at
 // every ready and only logs a refusal of it (the daemon's controllerKeeper.ready), so a delivery
@@ -242,10 +269,11 @@ func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relau
 // the abandoned session's sentence and then the record's (Delivery.message).
 func (m *Machine) queueRelaunch(ctx context.Context) error {
 	ended := m.claim.EndedWork
-	if !ended.Tells() || m.claim.Pending != nil || m.claim.Role == claim.RoleController {
+	if !ended.Tells() || !ended.ranWork() || m.claim.Pending != nil || m.claim.Role == claim.RoleController {
 		return nil
 	}
 	m.log.Info("supervise: the claim holds no task; a delivery of the daemon's own tells its agent what the relaunch ended",
 		"cause", ended.Cause, "ended", ended.Generation)
-	return m.queue(ctx, RequestDeliver{Claim: m.claim.Token, ID: relaunchTaskID(), Task: RelaunchSentence(ended)})
+	return m.queue(ctx, RequestDeliver{Claim: m.claim.Token, ID: relaunchTaskID(), Task: RelaunchSentence(ended),
+		Origin: OriginNotice})
 }

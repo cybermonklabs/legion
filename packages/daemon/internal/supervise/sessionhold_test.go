@@ -155,15 +155,15 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 	// one a daemon from before the hold enrolled, ready on a session the store now holds for
 	// another claim. That process keeps its enrollment's file and renewer across connections, so
 	// the enrollment is revoked at the broker rather than only withheld from the new connection; a
-	// task for it is held back unsent and a compaction of its session is not taken, since either
+	// task for it is refused at its take and a compaction of its session is not taken, since either
 	// would put that process to work under the other claim's session. The refusal asked again at
 	// each sweep is written at Warn once.
 	//
 	// The controls (the pull request records the runs): the handover in ensureEnrolled without its
 	// holdRecorded check hands the enrollment over again and revokes nothing; one that only
-	// withholds it revokes nothing; sendPending without its check sends the task; compactStart
-	// without its check compacts the session; holdRecorded writing every refusal writes the Warn
-	// line at each sweep.
+	// withholds it revokes nothing; takeable without its check lets the worker take the task;
+	// compactStart without its check compacts the session; holdRecorded writing every refusal writes
+	// the Warn line at each sweep.
 	t.Run("a live claim whose session another claim holds is sent nothing", func(t *testing.T) {
 		h := newHarness(t)
 		broker := h.withSecrets()
@@ -197,7 +197,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		h.observe(runtime.Alive)
 		h.wantPrompts(base)
 		if p := h.pending(); p.Task != "the task" || !p.ConfirmedAt.IsZero() {
-			t.Fatalf("pending %+v, want the task held back unsent", p)
+			t.Fatalf("pending %+v, want the task untaken", p)
 		}
 		if err := h.m.Compact(h.ctx, testCompactInstructions); !errors.Is(err, ErrCompactNotTaken) {
 			t.Fatalf("a compaction of the claim's session answered %v, want ErrCompactNotTaken: the claim does not hold %s", err, session)

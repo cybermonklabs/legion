@@ -8,12 +8,15 @@ import * as ts from "typescript";
 import { z } from "zod";
 import {
   createLegionDaemonClient,
+  DAEMON_ANSWER_TIMEOUT_MS,
+  DAEMON_RESTART_FIRST_DELAY_MS,
   daemonUnreachable,
   LegionDaemonApiError,
   type LegionDaemonClient,
   LegionDaemonContractError,
   type ReadyInput,
   retryWhileDaemonRestarts,
+  sendUntilAnswered,
 } from "./daemon-client";
 import { type ClaimCapability, executePhaseOp } from "./legion-phase-ops";
 
@@ -364,6 +367,38 @@ test("a state read hands fetch its caller's signal, and an abort ends a read the
   controller.abort(late);
 
   await expect(read).rejects.toBe(late);
+  expect(handed).toEqual([controller.signal]);
+});
+
+test("a turn-outcome report hands fetch its caller's signal, so a sender's bound ends an attempt the daemon never answers", async () => {
+  const handed: (AbortSignal | null | undefined)[] = [];
+  const hung = (async (_input, init) => {
+    handed.push(init?.signal);
+    const { promise, reject } = Promise.withResolvers<Response>();
+    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    return promise;
+  }) as typeof fetch;
+  const controller = new AbortController();
+  const bound = new Error("the attempt's bound passed");
+
+  const report = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: hung,
+  }).turnOutcome(
+    {
+      claimToken: "legion-legion-legion-208-implementer",
+      sessionId: "session-1",
+      secret: "secret-1",
+      generation: 1,
+      sequence: 1,
+      outcome: "clean",
+      task: 1,
+    },
+    { signal: controller.signal }
+  );
+  controller.abort(bound);
+
+  await expect(report).rejects.toBe(bound);
   expect(handed).toEqual([controller.signal]);
 });
 
@@ -742,6 +777,202 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(retried).toMatchObject({ status: 502, code: "DISPATCH_FAILED" });
   expect(attempts).toBe(1);
   expect(waits).toEqual([]);
+});
+
+test("reads the claim's task value and finished number over claims/task, in either caller form", async () => {
+  const value = daemonFixture("register.json").task;
+  const answers = [daemonFixture("task.json"), { task: value, finished: 3 }];
+  const { fetch, requests } = daemon(() => Response.json(answers.shift()));
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
+  const agent = {
+    claimToken: "legion-legion-legion-208-architect",
+    sessionId: "ses_architect_208",
+    secret: CLAIM_SECRET,
+    generation: 3,
+  };
+
+  await expect(client.task(agent)).resolves.toEqual({ task: null, finished: 4 });
+  await expect(client.task({ bootToken: "boot-1", generation: 3 })).resolves.toEqual({
+    task: value as never,
+    finished: 3,
+  });
+  expect(requests).toEqual([
+    { method: "POST", url: "http://daemon.test/legion/v1/claims/task", body: agent },
+    {
+      method: "POST",
+      url: "http://daemon.test/legion/v1/claims/task",
+      body: { bootToken: "boot-1", generation: 3 },
+    },
+  ]);
+});
+
+test("reports a task value seen and takes it, reading every take answer the daemon's golden tests wrote, with the caller's signal", async () => {
+  const taken = {
+    claimToken: "legion-legion-legion-209-implementer",
+    sessionId: "ses_implementer_209",
+    secret: "U2VjcmV0",
+    generation: 3,
+    number: 4,
+    epoch: "2026-11-13T16:21:44.123456789Z",
+    revision: 12,
+  };
+  const answers = [
+    new Response(null, { status: 204 }),
+    Response.json(daemonFixture("take-accepted.json")),
+    Response.json(daemonFixture("take-refused.json")),
+    Response.json(daemonFixture("take-dropped.json")),
+  ];
+  const signals: (AbortSignal | null | undefined)[] = [];
+  const requests: Recorded[] = [];
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: (async (input, init) => {
+      requests.push({
+        method: init?.method ?? "GET",
+        url: input.toString(),
+        body: JSON.parse(String(init?.body)),
+      });
+      signals.push(init?.signal);
+      return answers.shift();
+    }) as typeof fetch,
+  });
+  const abort = new AbortController();
+
+  await expect(client.taskSeen(taken, { signal: abort.signal })).resolves.toBeUndefined();
+  await expect(client.take(taken, { signal: abort.signal })).resolves.toEqual(
+    daemonFixture("take-accepted.json") as never
+  );
+  await expect(client.take(taken)).resolves.toEqual({ outcome: "refused", hold: "stale-plugin" });
+  await expect(client.take(taken)).resolves.toEqual({ outcome: "dropped" });
+
+  expect(requests.map(({ url }) => url)).toEqual([
+    "http://daemon.test/legion/v1/claims/task-seen",
+    "http://daemon.test/legion/v1/claims/take",
+    "http://daemon.test/legion/v1/claims/take",
+    "http://daemon.test/legion/v1/claims/take",
+  ]);
+  expect(requests.every(({ body }) => JSON.stringify(body) === JSON.stringify(taken))).toBe(true);
+  expect(signals[0]).toBe(abort.signal);
+  expect(signals[1]).toBe(abort.signal);
+
+  // A seen report is answered 204 and nothing else, and a take a body the contract does not
+  // describe.
+  const talkative = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: daemon(() => Response.json({ outcome: "postponed" })).fetch,
+  });
+  await expect(talkative.taskSeen(taken)).rejects.toBeInstanceOf(LegionDaemonContractError);
+  await expect(talkative.take(taken)).rejects.toBeInstanceOf(LegionDaemonContractError);
+  // A request the contract does not describe never leaves the pane.
+  expect(() => client.take({ ...taken, number: 0 })).toThrow();
+});
+
+// A request sent until it is answered is sent again after any failure that carries no HTTP
+// status, whatever the transport names it: a fetch's NetworkError, which names no code, and a code
+// no list holds are no answer from the daemon, so each is sent again after the first wait of the
+// one back-off pair. A refusal that names a code is the daemon's answer and is handed back, sent
+// once; so is a success whose body the contract does not describe, and a request the contract does
+// not describe, which never leaves the pane.
+test("a request sent until it is answered is sent again after a failure with no HTTP status, and an answer or a malformed request is handed back", async () => {
+  const send = async (failure: Error) => {
+    const waits: number[] = [];
+    let attempts = 0;
+    const answer = await sendUntilAnswered(
+      "claims/take",
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw failure;
+        return "answered";
+      },
+      {
+        stop: new AbortController().signal,
+        warn: () => undefined,
+        // Each attempt's bound passes only when its attempt is aborted; a wait between attempts
+        // passes at once.
+        wait: (ms, signal) => {
+          if (ms === DAEMON_ANSWER_TIMEOUT_MS) {
+            const bound = Promise.withResolvers<boolean>();
+            signal.addEventListener("abort", () => bound.resolve(false), { once: true });
+            return bound.promise;
+          }
+          waits.push(ms);
+          return Promise.resolve(true);
+        },
+      }
+    ).catch((error: unknown) => error);
+    return { answer, attempts, waits };
+  };
+
+  const networkError = Object.assign(new Error("Network request failed"), { name: "NetworkError" });
+  const unlisted = Object.assign(new TypeError("FailedToOpenSocket: the socket did not open"), {
+    code: "FailedToOpenSocket",
+  });
+  for (const failure of [networkError, unlisted]) {
+    expect(await send(failure)).toEqual({
+      answer: "answered",
+      attempts: 2,
+      waits: [DAEMON_RESTART_FIRST_DELAY_MS],
+    });
+  }
+  const coded = new LegionDaemonApiError(
+    "POST",
+    "/legion/v1/claims/take",
+    409,
+    "TASK_NOT_OWED",
+    "refused"
+  );
+  expect(await send(coded)).toEqual({ answer: coded, attempts: 1, waits: [] });
+  const undescribed = new LegionDaemonContractError(
+    "POST",
+    "/legion/v1/claims/take",
+    200,
+    CONTRACT,
+    CONTRACT,
+    "not JSON"
+  );
+  expect(await send(undescribed)).toEqual({ answer: undescribed, attempts: 1, waits: [] });
+  const malformed = LegionReadyRequest.safeParse({}).error;
+  expect(malformed).toBeDefined();
+  expect(await send(malformed as Error)).toEqual({ answer: malformed, attempts: 1, waits: [] });
+});
+
+// A proxy in front of the daemon answers in its place with a 502, a 503 or a 504 that names no
+// Legion error code, and both senders read the same three as the daemon's having given no answer
+// (`proxyAnswered`): the restart retry as an attempt that may have reached the daemon, and
+// `sendUntilAnswered` as one to send again. A coded answer of any of them is the daemon's own,
+// and so is any other uncoded 5xx. The negative control is the two rules written apart again, the
+// restart retry's naming 502 and 503 alone, under which a gateway's 504 ends a call that was to
+// wait out the restart.
+test("both senders read a proxy's uncoded 502, 503 and 504 as no answer, and nothing else", async () => {
+  const send = async (failure: Error) => {
+    let attempts = 0;
+    await sendUntilAnswered(
+      "the take",
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw failure;
+        return "answered";
+      },
+      { stop: new AbortController().signal, warn: () => {}, wait: async () => true }
+    ).catch(() => undefined);
+    return attempts;
+  };
+  const proxyAnswer = (status: number, code: string | undefined) =>
+    new LegionDaemonApiError("POST", "/legion/v1/claims/take", status, code, "an answer");
+  for (const status of [502, 503, 504]) {
+    const proxied = proxyAnswer(status, undefined);
+    expect(daemonUnreachable(proxied)).toBe("dropped");
+    expect(await send(proxied)).toBe(2);
+    const coded = proxyAnswer(status, "DAEMON_DRAINING");
+    expect(daemonUnreachable(coded)).toBeUndefined();
+    expect(await send(coded)).toBe(1);
+  }
+  const other = proxyAnswer(500, undefined);
+  expect(daemonUnreachable(other)).toBeUndefined();
+  expect(await send(other)).toBe(1);
 });
 
 /** A daemon that answers `body` with `contract` in its `Legion-Daemon-Contract` header, and
@@ -1757,14 +1988,19 @@ test("a field of an answer schema the declared read set does not name is optiona
     );
   expect(required).toEqual([]);
 
-  // The two fields that stay required whether or not the read set names them are the
-  // discriminators, exempted above by what the union itself declares. Were that reading to stop
+  // The fields that stay required whether or not the read set names them are the
+  // discriminators, exempted above by what the union itself declares: a pause actor's `kind`, a
+  // locator's `runtime` and a take answer's `outcome` (contract 207). Were that reading to stop
   // working the list would empty, and the case would hold nothing.
   const discriminators = fields
     .filter((field) => field.discriminator)
     .map((field) => `${field.schema}.${field.path}`);
   expect(discriminators.length).toBeGreaterThan(0);
-  expect([...new Set(discriminators.map(endOfPath))].sort()).toEqual(["kind", "runtime"]);
+  expect([...new Set(discriminators.map(endOfPath))].sort()).toEqual([
+    "kind",
+    "outcome",
+    "runtime",
+  ]);
 });
 
 /** How a consumer source names a read of one field: `<parent>.<field>` where the field sits

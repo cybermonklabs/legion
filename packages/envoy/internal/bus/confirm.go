@@ -140,7 +140,7 @@ func confirmPublished(conn *nats.Conn, subject string, before connState) error {
 	if !after.connected || after.reconnects != before.reconnects {
 		return fmt.Errorf("bus: %w: NATS disconnected during the publish to %q", ErrPublishUnconfirmed, subject)
 	}
-	if sameError(after.lastError, before.lastError) {
+	if SameError(after.lastError, before.lastError) {
 		return nil
 	}
 	if denied := publishDenial(after.lastError, subject); denied != nil {
@@ -167,12 +167,13 @@ func publishDenial(err error, subject string) error {
 	return nil
 }
 
-// sameError reports whether a and b are the same error value. nats.go records each permissions
+// SameError reports whether a and b are the same error value. nats.go records each permissions
 // violation as a new error (processErr), so a denial never equals the error it replaced; a shared
 // nats.go value recorded again (confirmPublished names the one that matters) does. A value that
 // cannot be compared - a struct holding a slice in an interface field, say - counts as different
-// rather than panicking.
-func sameError(a, b error) bool {
+// rather than panicking. A caller that reads a connection's last error before a call and again
+// after it tells by it whether the call drew an error of its own (the listener's task relay).
+func SameError(a, b error) bool {
 	if a == nil || b == nil {
 		return a == b
 	}

@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2023"],
+    "lib": ["ES2024"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "baseUrl": ".",
@@ -30,6 +30,8 @@
     "extensions/legion-commit-trailers-omp.test.ts",
     "extensions/legion-session-activity-omp.test.ts",
     "extensions/legion-stall-watchdog-omp.test.ts",
+    "extensions/claim-boot-order-omp.test.ts",
+    "extensions/controller-start-omp.test.ts",
     "test/*.ts",
     "../pi-shared/src/omp-host.d.ts",
     "../pi-shared/src/text-modules.d.ts",

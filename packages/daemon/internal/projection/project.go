@@ -275,15 +275,15 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
 		}
 		// Beside them the two times of a handshake: when a task of an entry was first queued to a
-		// claim and when a turn of its worker first confirmed one (api.Issue.EntryQueuedAt and
-		// EntryConfirmedAt), read from the claim's own record of it (supervise.Claim.Handshake),
-		// which outlasts the turn that confirmed the task. A tree's own root carries its
-		// architect's whatever phase it stands in: in awaiting_person, where no role works, and in
-		// each phase a phase role works, where the two numbers are that role's and the times are
-		// still the architect's. Any other issue carries the handshake of the role of its current
-		// phase, and none in a phase no role works. Either is shown for the issue's current
-		// generation alone (handshakeTimes), so a re-admitted root carries neither until its new
-		// architect entry is queued.
+		// claim and when the daemon first accepted a take of one by its worker
+		// (api.Issue.EntryQueuedAt and EntryConfirmedAt), read from the claim's own record of it
+		// (supervise.Claim.Handshake), which outlasts the turn of the accepted take. A tree's own
+		// root carries its architect's whatever phase it stands in: in awaiting_person, where no
+		// role works, and in each phase a phase role works, where the two numbers are that role's
+		// and the times are still the architect's. Any other issue carries the handshake of the
+		// role of its current phase, and none in a phase no role works. Either is shown for the
+		// issue's current generation alone (handshakeTimes), so a re-admitted root carries neither
+		// until its new architect entry is queued.
 		handshakeRole := role
 		if claim.IsTreeRoot(issue.Key, issue.Tree) {
 			handshakeRole = claim.RoleArchitect

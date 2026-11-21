@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/nettimeout"
 	"github.com/sjawhar/envoy/internal/serverwait"
 	"github.com/sjawhar/envoy/internal/tlsalert"
 )
@@ -350,11 +351,10 @@ func transportFailure(ctx context.Context, err error) string {
 	var op *net.OpError
 	var certificate *tls.CertificateVerificationError
 	var record tls.RecordHeaderError
-	var timeout interface{ Timeout() bool }
 	switch {
 	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 		return "was cancelled before it answered"
-	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout():
+	case nettimeout.InChain(err):
 		return "did not answer in time"
 	case errors.As(err, &dns):
 		return "could not be resolved"

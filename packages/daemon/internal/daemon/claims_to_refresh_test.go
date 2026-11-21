@@ -62,22 +62,23 @@ func refreshCountState(t *testing.T, cfg config.Config, st *store.Store, view *s
 // `GET /legion/v1/state` says how many claims the stale-plugin lane still has to relaunch onto
 // this daemon's plugin, and the set it counts is the one the lane's own pass walks
 // (refreshStalePlugins, claimsToRefresh): a claim with a recorded session, whose process holds a
-// capability, whose recorded contract is not this daemon's, in no pod update round, and whose
-// launch installs a plugin.
+// capability, whose recorded contract is not this daemon's, in no pod update round unless its
+// plugin takes no task, and whose launch installs a plugin.
 //
 // Each claim the count leaves out is here for a reason of its own, because the lane leaves it
 // out for a reason of its own: a claim already at this contract has nothing to refresh; a
 // suspended one has no process to replace, and the one its next launch starts speaks this
-// contract by itself; a claim in a pod round is passed over by the pass, which leaves it to the
-// replacement that round is carrying; a claim whose launch installs no plugin can never be
-// refreshed by a relaunch at all; and a claim with no recorded session has no process the lane
-// could read a contract from.
+// contract by itself; a claim in a pod round whose plugin takes tasks — here one ahead of this
+// daemon — is passed over by the pass, which leaves it to the replacement that round is
+// carrying; a claim whose launch installs no plugin can never be refreshed by a relaunch at all;
+// and a claim with no recorded session has no process the lane could read a contract from.
 //
 // A claim in a plugin round is counted, because the pass posts it: the boot's own de-round pass
 // has taken such a claim out of that round a moment before, and one machine's inbox is FIFO, so
 // the relaunch is the lane's work and a count that left it out would hide that work at the one
-// boot it exists to be read over (endPluginRounds, staleForTheLane).
-//
+// boot it exists to be read over (endPluginRounds, staleForTheLane). So is a claim in a pod round
+// whose plugin takes no task, below supervise.TaskTakeContract: the round asks it a task it
+// cannot take, so the pass relaunches it inside the round (staleForTheLane).
 // The count is read a second time with every claim brought onto this contract, because 0 is the
 // answer an operator reads a drained wave by and a count that can only rise says nothing.
 func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T) {
@@ -104,7 +105,12 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 				c.UpdateRound = supervise.PluginRoundPrefix + strconv.Itoa(api.DaemonAPIVersion)
 			}},
 		{issue: cfg.Project + "-8", role: claim.RoleImplementer, state: supervise.StateIdle,
-			shape: func(c *supervise.Claim) { c.UpdateRound = supervise.PodRound("6f1c0c2a-1d1e-4a44-9d2c-0b7c1f3a9e55") }},
+			shape: func(c *supervise.Claim) {
+				c.PluginContract = api.DaemonAPIVersion + 1
+				c.UpdateRound = supervise.PodRound("6f1c0c2a-1d1e-4a44-9d2c-0b7c1f3a9e55")
+			}},
+		{issue: cfg.Project + "-11", role: claim.RoleImplementer, state: supervise.StateIdle, counted: true,
+			shape: func(c *supervise.Claim) { c.UpdateRound = supervise.PodRound("0d8e2b71-5c3a-4f19-b6e4-7a1c9d2f3e80") }},
 		{issue: cfg.Project + "-9", role: claim.RoleReviewer, state: supervise.StateIdle},
 		{issue: cfg.Project + "-10", role: claim.RoleImplementer, state: supervise.StateIdle,
 			shape: func(c *supervise.Claim) { c.Session = "" }},

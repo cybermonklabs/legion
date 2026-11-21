@@ -83,17 +83,20 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
-// narrowingState is the state golden with one more member of the waiting line, LEGION-213, a
-// started issue that gave its slot back to wait on another issue (waitingOnIssueContract): the
-// golden itself stands no member of that kind, so without it the strip of the waiting line's
-// `kind` would find nothing to take and write no line, and the rows below could not say that
-// every strip writes its own.
+// narrowingState is the state golden with two more issues: LEGION-213, a member of the waiting
+// line, a started issue that gave its slot back to wait on another issue
+// (waitingOnIssueContract), and LEGION-214, whose claims carry the failure cause
+// never_reconnected (supervise.TaskTakeContract's word). The golden itself stands neither, so
+// without them the strips of the waiting line's `kind` and of the failure cause would find
+// nothing to take and write no line, and the rows below could not say that every strip writes
+// its own.
 func narrowingState(t *testing.T) State {
 	t.Helper()
 	state := populatedState(t)
-	issues := make(map[string]Issue, len(state.Issues)+1)
+	issues := make(map[string]Issue, len(state.Issues)+2)
 	maps.Copy(issues, state.Issues)
 	issues["LEGION-213"] = waitingOnIssueMember()
+	issues["LEGION-214"] = neverReconnectedIssue()
 	state.Issues = issues
 	return state
 }

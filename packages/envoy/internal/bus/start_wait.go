@@ -172,7 +172,7 @@ func awaitStream(ctx context.Context, js nats.JetStreamContext, step streamStep,
 			behind = fmt.Sprintf("the stream's read drew no answer within %s", wait)
 		case unanswered(err):
 			behind = "the stream's read drew no answer: " + err.Error()
-		case step.awaitsApply() && bucketMissing(err):
+		case step.awaitsApply() && BucketMissing(err):
 			behind = "the member has not applied the create yet: " + err.Error()
 		case err != nil:
 			return fmt.Errorf("%s %s: read the stream: %w", step, stream, err)

@@ -137,7 +137,7 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 	// lookUpBucket is the one lookup this call makes, here and again while it waits a member out,
 	// so the two are the same request, and it names its own error rather than leave each caller
 	// to name it. The name wraps the server's answer with %w (namedRequest), so awaitBucketApplied
-	// still reads the member's "bucket not found" through it (bucketMissing) and the switch below
+	// still reads the member's "bucket not found" through it (BucketMissing) and the switch below
 	// still reads nats.ErrBucketNotFound.
 	lookUpBucket := func() (nats.KeyValue, error) {
 		kv, err := readAgain(ctx, lookup, readLimitOf(ctx), func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
@@ -179,7 +179,7 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			// again until the member holds it, the second is sent again. A lost send here would
 			// end the start the create above has just carried through.
 			createdElsewhere = true
-			kv, err = awaitBucketApplied(ctx, config.Bucket, bucketMissing, lookUpBucket)
+			kv, err = awaitBucketApplied(ctx, config.Bucket, BucketMissing, lookUpBucket)
 		} else if unanswered(err) || ctx.Err() != nil {
 			// No answer, or the wait ended: the server refused nothing, so no setting is named.
 			err = namedRequest(create, err)
@@ -282,10 +282,11 @@ func awaitBucketApplied[T any](ctx context.Context, bucket string, missing func(
 	}
 }
 
-// bucketMissing reports whether err is a member's answer that the bucket's stream is not there,
-// however the legacy or the jetstream package names it: the answer a member that has not applied
-// a create of it gives (bucketAppliedInterval).
-func bucketMissing(err error) bool {
+// BucketMissing reports whether err is an answer that the bucket's stream is not there, however
+// the legacy or the jetstream package names it: the answer a member that has not applied a create
+// of it gives (bucketAppliedInterval), and the answer to the lookup of a bucket nobody has created
+// yet (the listener's task relay, which never creates the bucket it opens).
+func BucketMissing(err error) bool {
 	return errors.Is(err, nats.ErrBucketNotFound) || errors.Is(err, jetstream.ErrBucketNotFound) ||
 		errors.Is(err, nats.ErrStreamNotFound) || errors.Is(err, jetstream.ErrStreamNotFound)
 }

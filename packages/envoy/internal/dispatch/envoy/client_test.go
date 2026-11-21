@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -122,6 +127,30 @@ func TestSendDoesNotCallAConnectFailureAReceiptTimeout(t *testing.T) {
 	}
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("connect failure = %v, want it still reported as a listener failure", err)
+	}
+}
+
+// A send whose request was written and whose answer's read then timed out is a receipt timeout,
+// in either shape net/http gives that one read: the read's own error directly under the client's
+// *url.Error, or that error wrapped first by the transport's read loop as
+// "readLoopPeekFailLocked: %w", which its transport picks by a race between its read and write
+// loops. *url.Error's own Timeout asks only the error it directly wraps, so a rule that stops at
+// it reads the second shape as no timeout, and the send then does not tell a person the message
+// may already be published. A probe of 400 timed-out reads through a real net/http client in
+// dispatch://INFRA-2811's fourth test round met the second shape 1 to 2 times.
+func TestASentRequestWhoseReadTimedOutIsAReceiptTimeoutInEitherShape(t *testing.T) {
+	read := &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ETIMEDOUT)}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "the read's own error", err: &url.Error{Op: "Post", URL: "http://listener/v1/messages/send", Err: read}},
+		{name: "the read's error wrapped by the transport's read loop", err: &url.Error{Op: "Post", URL: "http://listener/v1/messages/send",
+			Err: fmt.Errorf("readLoopPeekFailLocked: %w", read)}},
+	} {
+		if err := sendTransportError(tc.err, true); !errors.Is(err, ErrReceiptTimeout) {
+			t.Errorf("%s (%v): sendTransportError = %v, want ErrReceiptTimeout: a written send whose answer's read timed out may already be published", tc.name, tc.err, err)
+		}
 	}
 }
 

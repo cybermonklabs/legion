@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -15,13 +16,6 @@ var (
 	_ runtime.Conn  = (*Conn)(nil)
 	_ runtime.Conns = (*Conns)(nil)
 )
-
-// Prompt is one prompt frame the daemon sent, recorded whether the agent took it or refused it:
-// a refused send is still a send, and the budget that counts them has to see it.
-type Prompt struct {
-	DeliveryID string
-	Message    string
-}
 
 // Adoption is one working-copy adoption the daemon asked the agent's side to perform.
 type Adoption struct {
@@ -46,7 +40,6 @@ type Compaction struct {
 type Conn struct {
 	seq         uint64
 	mu          sync.Mutex
-	prompts     []Prompt
 	adoptions   []Adoption
 	bundled     []Bundling
 	compactions []Compaction
@@ -59,8 +52,9 @@ type Conn struct {
 	tokenReads   int
 	shutdowns    int
 	state        runtime.ConnState
-	unresulted   string
-	failures     map[string]error
+	// asks is the id of every get_state the connection answered, in order (GetState, LastAsk).
+	asks     []string
+	failures map[string]error
 }
 
 // NewConn is a connection that accepts everything and reports no turn in flight.
@@ -82,37 +76,29 @@ func (c *Conn) registered(seq uint64) {
 	c.seq = seq
 }
 
-func (c *Conn) Prompt(_ context.Context, deliveryID, message string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.prompts = append(c.prompts, Prompt{DeliveryID: deliveryID, Message: message})
-	if err := c.failures["Prompt"]; err != nil {
-		return err
-	}
-	c.unresulted = deliveryID
-	return nil
-}
-
-// TakePromptResult is the agent reporting how one prompt's work ended, which Oh My Pi writes as a
-// prompt_result frame behind the agent_end of the turn that prompt ran (shimwire.PromptResult).
-// It answers the delivery of the prompt this connection acknowledged and has not reported the end
-// of yet, once, and false when there is none: a prompt the connection refused reaches no turn and
-// reports no result, and a turn the daemon never prompted ends with none behind it.
-func (c *Conn) TakePromptResult() (string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delivery := c.unresulted
-	c.unresulted = ""
-	return delivery, delivery != ""
-}
-
+// GetState answers the state the test set (SetStreaming) under an ask id of its own, "ask-1",
+// "ask-2" and on, as the stream's answer names the get_state it answers (runtime.ConnState.Ask).
 func (c *Conn) GetState(_ context.Context) (runtime.ConnState, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.failures["GetState"]; err != nil {
 		return runtime.ConnState{}, err
 	}
-	return c.state, nil
+	state := c.state
+	state.Ask = fmt.Sprintf("ask-%d", len(c.asks)+1)
+	c.asks = append(c.asks, state.Ask)
+	return state, nil
+}
+
+// LastAsk is the id of the last get_state the connection answered, "" for none: the id the
+// worker stream's event of that answer would name, for a test that delivers it.
+func (c *Conn) LastAsk() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.asks) == 0 {
+		return ""
+	}
+	return c.asks[len(c.asks)-1]
 }
 
 func (c *Conn) Shutdown(_ context.Context) error {
@@ -278,13 +264,6 @@ func (c *Conn) TokenReads() int {
 	return c.tokenReads
 }
 
-// Prompts is every prompt frame sent over this connection, in order.
-func (c *Conn) Prompts() []Prompt {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]Prompt(nil), c.prompts...)
-}
-
 // Adoptions is every working-copy adoption asked over this connection, in order.
 func (c *Conn) Adoptions() []Adoption {
 	c.mu.Lock()
@@ -312,25 +291,6 @@ func (c *Conn) SetStreaming(streaming bool) {
 	defer c.mu.Unlock()
 	c.state.IsStreaming = streaming
 }
-
-// FailPrompt makes every later Prompt return err: the transport failing under the frame.
-// FailPrompt(nil) clears it, and clears a scripted refusal too.
-func (c *Conn) FailPrompt(err error) { c.fail("Prompt", err) }
-
-// RefusePrompt makes every later Prompt the agent refusing the frame with reason: an error that is
-// runtime.ErrPromptRefused and carries reason (runtime.RefusalReason), as the stream's connection
-// answers `success: false`.
-func (c *Conn) RefusePrompt(reason string) {
-	c.fail("Prompt", promptRefusal{reason: reason})
-}
-
-// promptRefusal is the fake agent's `success: false` answer to a prompt, as stream.RefusedError is
-// the real one's.
-type promptRefusal struct{ reason string }
-
-func (r promptRefusal) Error() string         { return r.reason + ": " + runtime.ErrPromptRefused.Error() }
-func (r promptRefusal) Is(target error) bool  { return target == runtime.ErrPromptRefused }
-func (r promptRefusal) RefusalReason() string { return r.reason }
 
 // FailGetState makes every later GetState return err.
 func (c *Conn) FailGetState(err error) { c.fail("GetState", err) }

@@ -47,6 +47,7 @@ import {
 } from "@legion/envoy-client/envoy-settings"
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
 import { machineID } from "@legion/envoy-client/machine"
+import type { RelayTaskValue } from "@legion/envoy-client/relay-frame"
 import {
   type SessionConfigFile,
   sessionConfigFile,
@@ -123,7 +124,12 @@ import {
   startLegionClaim,
   stopPane,
 } from "./legion-claim"
-import { createInboxNotifier, INBOX_CAPABILITIES, INBOX_VARIABLE } from "./legion-inbox"
+import {
+  createInboxNotifier,
+  INBOX_CAPABILITIES,
+  INBOX_VARIABLE,
+  type LegionInbox,
+} from "./legion-inbox"
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_TOOL_NAME,
@@ -310,8 +316,9 @@ export interface ChannelSession {
    * Sets the one hook the heartbeat runs after it re-establishes this session as its held role's
    * live holder: `"reclaimed"` when the listener had stopped naming this session and a soft claim
    * took the role back, `"reregistered"` on the first healthy tick after a failed registration,
-   * when the listener may have answered "no holder" meanwhile. The Legion claim sends its daemon
-   * ready again from it. The hook runs detached from the heartbeat; a rejection is logged.
+   * when the listener may have answered "no holder" meanwhile. The Legion claim reads its task
+   * value again from it (`claims/task`). The hook runs detached from the heartbeat; a rejection is
+   * logged.
    */
   onRoleRegained(hook: RoleRegainHook): void
   /**
@@ -443,6 +450,24 @@ export interface ChannelSessionOptions {
    * `@sjawhar/codex-envoy` under Codex, the package each host's sessions update.
    */
   readonly pluginName: string
+  /**
+   * Where the claim's task values go (`ChannelTaskValues`): a Legion pane's claim, which hands
+   * them to the bridge. A session that serves no Legion claim leaves it out, and a task frame
+   * reaching it is dropped.
+   */
+  readonly taskValues?: ChannelTaskValues
+}
+
+/**
+ * What the session's relay tells a Legion pane's claim of its task value (dispatch://INFRA-2811):
+ * each value a task frame relays (`relayed`, the relay's `onTaskValue`), and the relay beginning a
+ * new epoch (`epoch`, the first registration answer of each), after which a frame the listener
+ * relayed while the session was not subscribed is lost, so the claim reads its value from the
+ * daemon instead.
+ */
+export interface ChannelTaskValues {
+  readonly relayed: (value: RelayTaskValue) => void
+  readonly epoch: () => void
 }
 
 // The shared tool contract builds schemas from each host's Zod API. Claude's
@@ -1098,6 +1123,13 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
             `envoy-channel: ${message}${error === undefined ? "" : ` — ${messageFor(error)}`}\n`,
           )
         },
+        // A claim's task value, which the listener relays to the session holding the claim's
+        // role: a Legion pane's claim hands it to the bridge. A relay this session has closed, or
+        // one draining in while the session shuts down, hands over nothing.
+        onTaskValue: (value) => {
+          if (shuttingDown || relay !== owner) return
+          options.taskValues?.relayed(value)
+        },
       },
       // The connection held as the answer goes out: one that replaced a connection closed for
       // good answers what the closed one could not.
@@ -1247,10 +1279,16 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * What a registration's answer says of consumer delivery, for the id it registered and the
    * relay it asked for. An answer for an id this process has left, or for a relay since closed,
    * changes nothing.
+   *
+   * The first answer of each epoch of the relay (its first subscription, a NATS reconnect) tells
+   * the session's task values that the relay began again: a task frame the listener relayed while
+   * the session was not subscribed is lost, so a Legion pane's claim reads its value from the
+   * daemon. It goes once the listener has answered, which is when it relays to this session's
+   * subject again.
    */
   const takeDeliveryAnswer = (sessionID: string, asked: Relay, result: SubscribeResult): void => {
     if (sessionID !== identity.id || relay !== asked) return
-    asked.delivery.answered(result.delivery)
+    if (asked.delivery.answered(result.delivery)) options.taskValues?.epoch()
   }
 
   // Nothing is subscribed per topic: this holds the followed set a registration carries, and
@@ -2504,8 +2542,20 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The plugin's own bundle, which Claude Code runs from its plugin cache when installed.
   const bundlePath = process.argv[1] ?? ""
   // One connection to the bridge carries every line this server writes into the session: each
-  // Envoy delivery, and the reminders and notices the phase endpoint writes.
+  // Envoy delivery, the reminders and notices the phase endpoint writes, and the claim's task
+  // values, ready line and finished numbers (`./legion-claim`).
   const inbox = inboxSocket === undefined ? undefined : createInboxNotifier(inboxSocket)
+  /** Writes `what`, one line of the claim's, to the bridge: a pane that names no inbox, and a
+   *  line the bridge refused, are logged, and nothing waits for the answer. */
+  const toBridge = (what: string, write: (bridge: LegionInbox) => Promise<void>): void => {
+    if (inbox === undefined) {
+      logLegion(`${what} reaches no bridge: this pane names no ${INBOX_VARIABLE}`)
+      return
+    }
+    write(inbox).catch((error: unknown) => {
+      logLegion(`the bridge did not take ${what}: ${messageFor(error)}`)
+    })
+  }
 
   const server = new Server(MCP_SERVER_INFO, {
     capabilities: { tools: {} },
@@ -2536,26 +2586,6 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The claim's boot, for the endpoint's resume reminder and its recreated-workspace notice: both
   // need the claim, and the claim starts further down, once the channel session exists.
   const claimBooted = Promise.withResolvers<void>()
-  // The other way round: the hook endpoint is built here, before the claim, and the boot's
-  // first-turn signal fills this slot. The endpoint calls it at every `UserPromptSubmit`, this
-  // process's only sight of a turn starting; the call reports that turn and claims nothing, and
-  // the boot's own claim step, which runs after `claims/ready`, is what takes the Envoy name —
-  // inside a running turn rather than ahead of the daemon's task (INFRA-1573).
-  //
-  // A slot, rather than a promise that remembers every prompt this process ever saw, because on
-  // this host the first prompt is always the bridge's seeding `/rename`
-  // (`packages/daemon/internal/claudebridge`), which runs before the claim exists — it is what
-  // writes the transcript the boot waits for, so no registration can precede it. A signal kept
-  // from before the boot filled this slot would take the name the moment `claims/ready` answers,
-  // ahead of the daemon's task, which is the ordering this defers.
-  //
-  // The boot fills the slot as soon as `claims/register` has answered, before the ready that
-  // follows, so a prompt that arrives while that ready is still being retried — the daemon took
-  // the first one and its answer was lost, and its task reaches Claude Code meanwhile — is this
-  // session's first turn and the name is taken as soon as ready answers, rather than at the
-  // bound. A pane given no task at all is the bound's to cover, and a later prompt costs
-  // nothing — the step itself claims once however often it runs.
-  let reportFirstTurn: (() => void) | undefined
   const phaseHook =
     pane === undefined || daemon === undefined
       ? undefined
@@ -2563,7 +2593,6 @@ export async function runEnvoyChannelServer(): Promise<void> {
           stateFile: phaseStallFile(pane.configDir, identity.id),
           claim: () => claim?.capability(),
           booted: claimBooted.promise,
-          firstTurnStarted: () => reportFirstTurn?.(),
           readRecord: (issue, signal) => daemon.record(issue, { signal }),
           reportActivity: (input) => daemon.activity(input),
           inbox: inbox === undefined ? undefined : (text) => inbox.notification({ content: text }),
@@ -2837,6 +2866,15 @@ export async function runEnvoyChannelServer(): Promise<void> {
         ...(stamping ? { stampTitle } : {}),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
+        // A Legion pane's claim, which starts further down, hands each value to the bridge.
+        ...(pane === undefined
+          ? {}
+          : {
+              taskValues: {
+                relayed: (value) => claim?.relayed(value),
+                epoch: () => void claim?.readTask(),
+              },
+            }),
         ...(followSession === undefined ? {} : { followSession }),
         // The live view follows a `/clear` the mod reported before it began listening.
         adopted: (previous, next) => agentStream?.sessionAdopted(previous, next),
@@ -2911,16 +2949,19 @@ export async function runEnvoyChannelServer(): Promise<void> {
         daemon,
         client,
         clientInstanceID,
+        task: (value) =>
+          toBridge(`task ${value.number}'s value at revision ${value.revision}`, (bridge) =>
+            bridge.task(value),
+          ),
+        ready: () => toBridge("the claim's ready line", (bridge) => bridge.ready()),
+        finished: (finished) =>
+          toBridge(`the claim's finished number ${finished}`, (bridge) =>
+            bridge.finished(finished),
+          ),
         session,
         signal: booting.signal,
         log: logLegion,
         stop: endPane,
-        // The signal goes in the slot the phase hook's `UserPromptSubmit` calls. The boot fills
-        // it when `claims/register` has answered, which is after the bridge's seed: that prompt
-        // found the slot empty and reported nothing.
-        onFirstTurn: (started) => {
-          reportFirstTurn = started
-        },
       })
       // What `claimSession.bootstrap` returning is to the Oh My Pi host: the point the phase
       // endpoint may read the claim, arm its resume reminder and tell the worker its workspace

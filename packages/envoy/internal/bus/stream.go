@@ -126,6 +126,10 @@ func ListenerDurable(machineID string) string {
 // ListenerQueue is the queue group the listener of machine machineID subscribes the role lanes in,
 // so NATS hands each role message to one of the machine's listeners while a rolling deploy runs two.
 // A space in the machine id is a hyphen in the name.
+//
+// A claim's task value (legiontasks.Bucket) is no role message and travels on no role lane: it is
+// the delivered copy of the daemon's record of the claim's task, which the listener relays to the
+// session that holds the claim's role, and the record stays its one keeper.
 func ListenerQueue(machineID string) string {
 	return "envoy-listener-" + strings.ReplaceAll(machineID, " ", "-")
 }
@@ -145,7 +149,10 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 // session publishes each message of its consumer (SessionConsumerName) on, and the session
 // subscribes to. Every message a session on NATS gets travels on it: no session takes a message
 // from a plain NATS subscription of its own (packages/envoy/docs/architecture.md, "Session
-// consumers" under "Runtime shape").
+// consumers" under "Runtime shape"). The same listener publishes a Legion claim's task frame on
+// it too (cmd/listener's taskRelay): that frame is the delivered copy of the Legion daemon's
+// record of the claim's task, not a message of the consumer and not a second keeper of one, so it
+// is no second delivery design beside it.
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
 }

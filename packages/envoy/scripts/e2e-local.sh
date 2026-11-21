@@ -482,7 +482,7 @@ start_session_standin() {
       for await (const message of frames) {
         // The send route probes a target whose entry records consumer delivery on this subject
         // with the one header Envoy-Probe: 1 and no body (bus.ConnectionProbeHeader, and
-        // RelayHeader.probe in packages/envoy-client/src/consumer-delivery.ts). It is no frame,
+        // RelayHeader.probe in packages/envoy-client/src/relay-frame.ts). It is no frame,
         // so it is answered done, as a plugin answers it before it decodes anything, and is
         // written to no file.
         if (message.headers?.get("Envoy-Probe") === "1") {

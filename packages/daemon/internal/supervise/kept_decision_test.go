@@ -15,7 +15,7 @@ const keptDecision = `{"decisions":[{"ref":"dispatch://LEGION-208/ask/ask-1","at
 	`"issue":"LEGION-208","decision":"ask-answered","actor":"user:alice"}]}`
 
 // A person's recorded decision is claimed by the start row that names it and told by the
-// confirmation of the delivery that carries it (the claim store's putDelivery, the outbox's
+// accepted take of the delivery that carries it (the claim store's putDelivery, the outbox's
 // settleKept), so the claim must be given that row's task exactly once: a second queueing would
 // tell the decision a second time, and nothing after the telling re-places the row.
 //
@@ -34,7 +34,7 @@ func TestAKeptDecisionOfAStartRowReachesItsClaimOnce(t *testing.T) {
 
 	if p := h.pending(); !bytes.Equal(p.Kept, []byte(keptDecision)) {
 		t.Fatalf("the queued delivery names %q of the tree's kept decisions, want the %q the row recorded: "+
-			"its confirmation is what tells them", p.Kept, keptDecision)
+			"its accepted take is what tells them", p.Kept, keptDecision)
 	}
 	if rows := h.claim().DeliveredRows; !slices.Equal(rows, []int64{40}) {
 		t.Fatalf("the claim records rows %v as queued, want the one row 40 it was given a task from", rows)
@@ -52,13 +52,13 @@ func TestAKeptDecisionOfAStartRowReachesItsClaimOnce(t *testing.T) {
 	}
 	h.wantPrompts(prompts)
 
-	// The turn takes the task. The write that records the confirmation carries what the row
-	// named, which is the write that tells it.
+	// The worker took the task when it was queued; its turn starts. The write that recorded the
+	// take carries what the row named, which is the write that tells it, and the turn keeps it.
 	h.must(StreamTurnStart{Claim: testToken})
 
 	stored, ok := h.store.delivery(testToken)
 	if !ok || stored.ConfirmedAt.IsZero() || !bytes.Equal(stored.Kept, []byte(keptDecision)) {
-		t.Fatalf("the stored delivery after the turn started = %+v (held %t), want it confirmed and still naming %q",
+		t.Fatalf("the stored delivery after the turn started = %+v (held %t), want it taken and still naming %q",
 			stored, ok, keptDecision)
 	}
 

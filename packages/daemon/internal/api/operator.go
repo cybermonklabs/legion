@@ -187,10 +187,9 @@ func BudgetsViewOf(b supervise.Budgets) BudgetsView {
 	}
 }
 
-// DeliveryView is the claim's pending task (`supervise.Delivery`): DeliveredAt is the latest
-// acknowledgement of this task's prompt, cleared when that prompt is refused, and ConfirmedAt the
-// turn a send started; each absent until it happens. SendFailures, LastSendFailureAt and
-// LastSendError stand beside them as the record of the sends that did not get that far.
+// DeliveryView is the claim's pending task (`supervise.Delivery`): ConfirmedAt is when the task
+// was recorded as taken, absent until it is. SendFailures, LastSendFailureAt and LastSendError
+// stand beside it as the record of the takes of it whose adoption of the working copy failed.
 type DeliveryView struct {
 	ID   string `json:"id"`
 	Task string `json:"task"`
@@ -199,21 +198,21 @@ type DeliveryView struct {
 	// do, so an operator reading a claim can see it rather than infer it from the task's prose.
 	Phase       phase.Phase `json:"phase,omitempty"`
 	QueuedAt    time.Time   `json:"queuedAt"`
-	DeliveredAt *time.Time  `json:"deliveredAt,omitempty"`
 	ConfirmedAt *time.Time  `json:"confirmedAt,omitempty"`
-	// Interrupted is a task a process died in a turn of: it is sent behind the sentence saying so
+	// Interrupted is a task a turn of which was running when the claim's process was let go: its
+	// next accepted take carries the sentence saying so in front of it
 	// (`supervise.Delivery.Interrupted`). Absent for every other task.
 	Interrupted bool `json:"interrupted,omitempty"`
-	// SendFailures, LastSendFailureAt and LastSendError are how many sends of this task came
-	// back from their own send goroutine without reaching a turn, when the last of them failed
-	// and the error it failed with (`supervise.Delivery.SendFailures` and its two companions).
-	// They are a diagnosis record rather than a budget: the budget is the claim's
-	// `promptFailures` and `promptRetires`, which only a charged failure spends, while these
-	// count every send that failed there, charged or not — a send lost to the transport is
-	// charged nothing and retried for ever, and that is the stall this exists to name. A prompt
-	// the agent acknowledged and then refused is charged and read in the budget instead. A send
-	// that reaches a turn clears all three, so a pending task no send has failed for carries
-	// none of them on the wire.
+	// SendFailures, LastSendFailureAt and LastSendError are how many takes of this task failed to
+	// adopt the working copy, when the last of them failed by the daemon's clock and the error it
+	// failed with (`supervise.Delivery.SendFailures` and its two companions). They are a
+	// diagnosis record rather than a budget: the budget is the claim's `promptFailures` and
+	// `promptRetires`, which, of the adoptions that fail, only a refused one — the shim's answer
+	// about this workspace — spends (the two take waits charge it too), while these count every
+	// adoption that failed, charged or not; an adoption lost to
+	// the transport is charged nothing and waits for the next take, and that is the stall this
+	// exists to name. An accepted take clears all three, so a pending task no adoption has failed
+	// for carries none of them on the wire.
 	SendFailures      int        `json:"sendFailures,omitempty"`
 	LastSendFailureAt *time.Time `json:"lastSendFailureAt,omitempty"`
 	LastSendError     string     `json:"lastSendError,omitempty"`
@@ -329,7 +328,7 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{
 			ID: p.ID, Task: p.Task, Phase: p.Phase, QueuedAt: p.QueuedAt,
-			DeliveredAt: instant(p.DeliveredAt), ConfirmedAt: instant(p.ConfirmedAt), Interrupted: p.Interrupted,
+			ConfirmedAt: instant(p.ConfirmedAt), Interrupted: p.Interrupted,
 			SendFailures: p.SendFailures, LastSendFailureAt: instant(p.LastSendFailureAt), LastSendError: p.LastSendError,
 		}
 	}
@@ -454,7 +453,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Task != "" {
-		if err := m.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: req.Task}); err != nil {
+		if err := m.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: req.Task, Origin: supervise.OriginOperator}); err != nil {
 			s.operatorFailure(w, r, "deliver", token, err)
 			return
 		}
@@ -560,7 +559,7 @@ func (s *server) deliverEvent(w http.ResponseWriter, r *http.Request, c supervis
 	if s.refusedWhilePaused(w, r, "deliver", c) {
 		return nil, false
 	}
-	return supervise.RequestDeliver{Claim: c.Token, Task: req.Task}, true
+	return supervise.RequestDeliver{Claim: c.Token, Task: req.Task, Origin: supervise.OriginOperator}, true
 }
 
 func suspendEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (supervise.Event, bool) {

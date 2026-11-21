@@ -2549,10 +2549,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// under that claim and delivery id, and the write recording the turn's confirmation
 		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). So does the
 		// fact that a reviewer's task ends with the daemon's two sentences of its review round
-		// (record.SuperviseRequest.RoundNamed): the one place each prompt is composed reads it
-		// there, and gives a reviewer's task of a row that lacks it, which only a row of the
-		// release before this one can be, those sentences naming no commit and no entry
-		// (supervise's Delivery.message).
+		// (record.SuperviseRequest.RoundNamed): the one place the text of each accepted take is
+		// composed reads it there, and gives a reviewer's task of a row that lacks it, which only
+		// a row of the release before this one can be, those sentences naming no commit and no
+		// entry (supervise's Delivery.message).
 		var task *supervise.RequestDeliver
 		if payload.Task != "" {
 			kept, err := keptJSON(payload.Kept)
@@ -2562,7 +2562,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			task = &supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: payload.RoundNamed,
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}
+				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, Origin: payload.Origin}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
@@ -2661,8 +2661,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// claim finishes the turn it is in; its completion of the earlier entry is refused
 			// 409 with nothing recorded, which is right, since the phase was entered again. A
 			// failed claim is in no turn at all: the state switch above relaunched it
-			// (supervise.RequestRetry), and the relaunch hands it the earlier entry's task,
-			// which it still holds unconfirmed (supervise's sendPending), so its first
+			// (supervise.RequestRetry), and the relaunch's worker takes the earlier entry's
+			// task, which it still holds untaken (supervise's Take), so its first
 			// completion is the one refused instead. Either way the admission pass sends the
 			// row's own entry's task on the first pass after that task is retired, since it
 			// passes over a claim whose pending delivery is still worked (admit's
@@ -2777,6 +2777,19 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByReleased}); err != nil {
 			return fmt.Errorf("release claim %s: %w", token, err)
 		}
+		// A claim stopped inside its pod's update round leaves that round with the stop. The
+		// release's save ran before any stop and took the workspace's unpushed work, which the
+		// pod that replaces this one restores, and this pod goes with the release, so the round
+		// has nothing left to ask of the claim. The idle rule makes its release over an open round
+		// for a Claude Code role whose plugin takes no task (workflow.IdleRelease's old plugin),
+		// which could never answer it. Left in the round, the claim would come back in
+		// the new pod as a member that never answered, and the sweep would tell the issue that
+		// its work went with the pod (podWentWithoutItsRound).
+		if round := machine.Claim().UpdateRound; supervise.IsPodRound(round) {
+			if err := machine.Handle(ctx, supervise.PodUpdateEnded{Claim: token, Round: round}); err != nil {
+				return fmt.Errorf("end the update round of released claim %s: %w", token, err)
+			}
+		}
 		// The claim is suspended as `released`, so the release's mark records it: it is that set
 		// the cancel resumes, the teardown records as the release's roles, and a later row reads
 		// to tell a claim this release suspended that something resumed since from one still in
@@ -2836,11 +2849,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 }
 
 // keepsStartTask says whether held still holds a task of this start's phase and run that it will
-// work: one not yet confirmed — a failed claim keeps the task it held, and a death in a turn takes
-// the task back unconfirmed — or one confirmed in the turn the claim is working
-// (supervise.Delivery.StillWorked). A confirmed task on a claim not working is over: the claim's
-// next decision retires it. A start naming no phase holds none, which is what a production check's
-// look is: each look's task is delivered whatever the claim holds.
+// work: one whose turn is still to come — untaken, taken back, or taken and awaiting its turn; a
+// failed claim keeps the task it held, and a death in a turn takes the task back — or one whose
+// turn the claim is working (supervise.Delivery.StillWorked). A task whose turn started on a claim
+// not working is over: its report finishes it, or the end of its turn for a plugin below
+// supervise.TaskTakeContract, and a take whose report never comes goes back as a cut turn. A start
+// naming no phase holds none, which is what a production check's look is: each look's task is
+// delivered whatever the claim holds.
 func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool {
 	pending := held.Pending
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)

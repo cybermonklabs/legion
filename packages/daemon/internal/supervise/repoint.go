@@ -23,7 +23,7 @@ import (
 // A relaunch the runtime refuses is charged as any launch failure is. The process runs on, so a
 // compaction of its session runs on with it: the end of one gives the claim back as it would have
 // without the repoint, and the task that end owes waits for the relaunch's turn rather than going
-// to a process that turn replaces (ownsCompaction, sendPending). A compaction asked for after the
+// to a process that turn replaces (ownsCompaction, claimHold). A compaction asked for after the
 // relaunch is parked is refused before anything is sent (compactStart). The launch lets the
 // process go as one whose address changed (endRepointed), and records what it ended there:
 // in this decision, or at the turn of the wake the pacing parks it on, since the process runs
@@ -50,19 +50,19 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // (`runtime.tmux.take_over`) and cannot see. The observation's detail names which. The process did
 // nothing wrong, so it is recovered as repoint recovers a stale one: nothing is charged, neither a
 // launch failure nor a death with work outstanding, and the claim's session is relaunched at once
-// (replaceProcess). A turn the process was in is lost, and its task goes back to waiting, sent
-// again once the session resumes; a held suspension ends in a suspension. The process is gone, so
-// a compaction running over it is dropped before this runs and its end gives the claim back
-// nothing (judge, compactionLostProcess). It is the one recovery that carries an out-of-memory
-// end's note (runtime.Observation.OutOfMemory), since a pod the daemon replaced can also have run
-// out of memory before the replacement landed, and the role whose turn that end cut off is told
-// so wherever the end is recovered.
+// (replaceProcess). A turn the process was in is lost, and its task is taken back under its
+// number, which the resumed session takes again; a held suspension ends in a suspension. The
+// process is gone, so a compaction running over it is dropped before this runs and its end gives
+// the claim back nothing (judge, compactionLostProcess). It is the one recovery that carries an
+// out-of-memory end's note (runtime.Observation.OutOfMemory), since a pod the daemon replaced can
+// also have run out of memory before the replacement landed, and the role whose turn that end cut
+// off is told so wherever the end is recovered.
 //
 // What the displacement ended is recorded first, as a death's is (died): the process is gone
-// whatever the replacement goes on to do, and the take-back it begins with changes the task the
-// record reads (recordGoneEnd, endDisplaced). That take-back comes whatever the claim's state, so
-// a confirmed task is marked as taken by this decision before the record is read
-// (Machine.cutTurnOf), and the record says its turn was cut off.
+// whatever the replacement goes on to do, and its take-back, made at once or at the turn of a
+// launch the wake pacing parks (replaceNow), changes the task the record reads (recordEnd,
+// endDisplaced). A task whose take's turn was running is still taken
+// there, so the record says its turn was cut off.
 func (m *Machine) displaced(ctx context.Context, observation runtime.Observation) error {
 	// Guarded as repoint's own read is, and for the reason its comment gives
 	// (backstopStalledTurn, noProcessRecorded).
@@ -72,7 +72,7 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 	}
 	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged",
 		"incarnation", incarnation, "process", process, "observed", string(observation.Kind), "detail", observation.Detail)
-	m.recordGoneEnd(ctx, endDisplaced)
+	m.recordEnd(ctx, endDisplaced)
 	_, err := m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon or it another runtime's process this daemon takes over", observation.OutOfMemory, endDisplaced)
 	return err
 }
@@ -95,23 +95,25 @@ type ProcessEnd string
 
 const (
 	// EndNotMade is the claim still holding the process the replacement found, and its turn with
-	// it, with no launch queued: the take-back that replacement begins with was refused
-	// (interrupted), or the take-back landed and the launch's own lifecycle recheck refused
-	// (relaunchRefused). No process was let go and none is coming, so the next sweep posts over
+	// it, with no launch queued: the launch's own lifecycle recheck, which a replacing launch makes
+	// before any take-back, refused it (launchReplacing, relaunchRefused), or the take-back made
+	// right before the process is let go — a launch that runs now, a held suspension's end — was
+	// refused (interrupted). No process was let go and none is coming, so the next sweep posts over
 	// the claim again, which is why it is the one end told to nobody (TellsOwner).
 	EndNotMade ProcessEnd = "not made"
 	// EndRelaunched is the process let go and stopped and the claim's session brought back on a
 	// new one, which the claim records (launchNow).
 	EndRelaunched ProcessEnd = "relaunched"
-	// EndRelaunchParked is the turn's task taken back (interrupted) and the launch that replaces
-	// the process parked by the wake pacing until its turn (reserveWake, parkWake). The claim
-	// still records the process and still runs it until that turn, which is where the launch
-	// stops it and brings the session back (wakeNow, launchNow) — unless a suspension held
-	// meanwhile ends the claim there instead (endHeld), the lifecycle recheck that turn makes
+	// EndRelaunchParked is the launch that replaces the process parked by the wake pacing until
+	// its turn (reserveWake, parkWake), with no take-back made at the park: the claim still records
+	// the process and still runs it, its turn and the task that turn serves with it, until that
+	// wake's turn, which is where the take-back is made and the launch stops the process and
+	// brings the session back (launchReplacing, runWake, wakeNow, launchNow) — unless a suspension
+	// held meanwhile ends the claim there instead (endHeld), the lifecycle recheck that turn makes
 	// first refuses the launch and leaves the process as it is (runWake, relaunchRefused), or the
 	// tree's close has dropped the wake with the process (letGo). It is an end of its own because
-	// something has happened to this worker — the task it was serving is owed to it
-	// again — while nothing has been relaunched yet, and the two sentences are not the same news.
+	// something has happened to this worker — a launch that replaces it is queued — while nothing
+	// has been relaunched yet, and the two sentences are not the same news.
 	EndRelaunchParked ProcessEnd = "relaunch parked"
 	// EndRelaunchPending is the process let go and stopped with nothing in its place: the
 	// launch's own write was refused and the same launch waits on the probe interval
@@ -156,10 +158,12 @@ func (e ProcessEnd) TellsOwner() bool { return e != EndNotMade }
 
 // replaceProcess is the recovery a process ended or found stale through no fault of its own
 // (repoint's stale address, refreshPlugin's stale plugin contract, displaced's replaced pod)
-// shares once logged: a task whose turn the process was running goes back to waiting first
-// (interrupted), the same recovery a death in a turn gets; a held suspension ends here as it does
-// for a death (endHeld), suspended rather than relaunched; otherwise the claim is relaunched at
-// once through the launch path a death uses (launch), a Resume of its recorded session or a Spawn
+// shares once logged: a task whose turn the process was running goes back to waiting where the
+// process is let go (interrupted, replaceNow) — at once for a launch that runs now or a held
+// suspension, and at the wake's turn for a launch the wake pacing parks — the same recovery a
+// death in a turn gets; a held suspension ends here as it does for a death (endHeld), suspended
+// rather than relaunched; otherwise the claim is relaunched at once through the launch path a
+// death uses (launch), a Resume of its recorded session or a Spawn
 // over its existing Sandbox when it has not registered yet. interruption is the sentence the
 // turn's recovery is logged with, and outOfMemory says whether the end that cut that turn off was
 // the pod running out of memory: only a displacement can carry one, since the other callers
@@ -188,20 +192,30 @@ func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOf
 
 // replaceNow is the replacement itself, whose end replaceProcess reads off the claim it leaves.
 //
-// Its first step can end the replacement where it stands: a take-back the store refuses returns
-// here with the claim's process kept, nothing relaunched and no wake raised (interrupted). A
-// stale-plugin relaunch that ends there is raised again by the next pass, which reads the claim
-// as stale as it left it (refreshStalePlugins in internal/daemon). A take-back that lands marks
-// the task as taken from that process's turn, which the let-go that follows records
-// (Machine.cutTurnOf), here or at the parked launch's turn.
+// The take-back of a task the process holds is made where the process is let go, and not
+// before. A launch that runs now takes the task back first and then lets the process go, so a
+// take-back the store refuses ends the replacement where it stands: the claim's process kept,
+// nothing relaunched and no wake raised (interrupted). A launch the wake pacing parks makes no
+// take-back here: the process it replaces runs on until the wake's turn, and a turn it starts in
+// the wait is the take's turn, which the take-back the wake's turn makes cuts off or finds over
+// (runWake) — this replacement's own take-back, carried on the wake with interruption and
+// outOfMemory (launchReplacing), so a parked displacement still tells of an out-of-memory end.
+// Taking the task back at the park would leave that process running a turn that is no
+// take's, and the process the launch starts taking the number again: two runs of one task. A
+// stale-plugin relaunch that ends at a refused take-back is raised again by the next pass, which
+// reads the claim as stale as it left it (refreshStalePlugins in internal/daemon). A take-back
+// that lands marks the task as taken from that process's turn, which the let-go that follows
+// records (Machine.cutTurnOf). A held suspension ends the process here, with no launch to park,
+// so its take-back is made first.
 func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemory bool, ending string) error {
-	if err := m.interrupted(ctx, interruption, outOfMemory); err != nil {
-		return err
-	}
+	takeBack := func(ctx context.Context) error { return m.interrupted(ctx, interruption, outOfMemory) }
 	if m.held != nil {
+		if err := takeBack(ctx); err != nil {
+			return err
+		}
 		return m.endHeld(ctx, false, stopOwed)
 	}
-	return m.launch(ctx, ending)
+	return m.launchReplacing(ctx, ending, takeBack)
 }
 
 // endReached is the end a replacement made, read from the claim it left beside found, the

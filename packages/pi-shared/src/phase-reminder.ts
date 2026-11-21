@@ -30,13 +30,14 @@ import type { StallLimits } from "./stall-limits";
  *
  * The first reminder of a run is the `session_stop` continuation, which the host turns into one
  * more turn of the same session, and it is the only one of that run: every one after it is a
- * timer, so the run settles and the daemon sees the turn end, can deliver a queued task and can
- * land a held suspension. A turn the provider refused earns no continuation, since the worker
- * never read the last reminder and the next turn would be refused the same way; it earns one
- * timer instead, so a single transient refusal cannot leave the worker idle. The host's timer
- * cannot be cancelled (`SessionContext.setTimeout` returns void and there is no clearTimeout), so
- * a monotonic generation, bumped by everything that makes an armed timer stale, is the whole
- * defence against two timers sending two reminders.
+ * timer, so the run settles, the host is idle again and its take can ask for a task the daemon
+ * queued (`./task-take`), and the daemon sees the turn end and can land a held suspension. A turn
+ * the provider refused earns no continuation, since the worker never read the last reminder and
+ * the next turn would be refused the same way; it earns one timer instead, so a single transient
+ * refusal cannot leave the worker idle. The host's timer cannot be cancelled
+ * (`SessionContext.setTimeout` returns void and there is no clearTimeout), so a monotonic
+ * generation, bumped by everything that makes an armed timer stale, is the whole defence against
+ * two timers sending two reminders.
  */
 
 /**
@@ -477,11 +478,14 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // The provider refused this turn, so the worker read nothing and said nothing: the state
         // stands, and this settle returns no continuation, because the host would turn it into
         // one more turn at once and the provider would refuse that one too. One timer is armed
-        // all the same: the task the refused turn carried ended with it, the daemon counts the
-        // turn rather than failing the claim while the run is short of `launch_failure_limit`,
-        // and nothing else would wake this worker, so a single transient refusal would leave its
-        // issue idle. By the time the timer fires the daemon has had every refusal of the run
-        // reported (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
+        // all the same: a refused turn that carried no task leaves nothing else to wake this
+        // worker, so a single transient refusal would leave its issue idle, and the daemon counts
+        // that turn toward `launch_failure_limit`. A task's refused turn is woken by the daemon as
+        // well: its provider-error wait keeps the task and writes its value again once the wait is
+        // over, unless the provider answered a 4xx other than 401, 403, 408 and 429, which the
+        // wait cannot wait out and which fails the claim. By the time the timer fires the daemon
+        // has had every refusal of the run reported
+        // (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
         // and the record check the timer runs drops the reminder, which is what stops the
         // reminding of a session the provider refuses for ever — the whole of
         // dispatch://INFRA-264.

@@ -130,18 +130,25 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 
 	// The order is what this one holds, so the reports it owes and the report the landing
 	// decision makes of its own are of different transitions: a reader of the three can tell
-	// which came first. The claim owes a ready and a working under an outage on the claims
-	// table; a task queued while the agent is in its turn gives it a pending delivery, written
-	// to a table the outage is not on; then the outage moves to that delivery's table, so the
-	// repair — which writes the claim and the delivery together where one is pending — is
-	// refused at the head of the next decision, while that decision's own claim-only write
-	// lands. The write that lands is the repair, so it makes the two owed reports before the
-	// report of its own transition. Left to a later repair, the daemon would hear the newest
-	// fact first and the two older ones behind it, which is the order nothing lived.
+	// which came first. A task is queued before the outage, which gives the claim a pending
+	// delivery; the claim then owes a ready and a working under an outage on the claims table;
+	// then the outage moves to the delivery's table, so the repair — which writes the claim and
+	// the delivery together where one is pending — is refused at the head of the next decision,
+	// while that decision's own claim-only write lands. The write that lands is the repair, so it
+	// makes the two owed reports before the report of its own transition. Left to a later repair,
+	// the daemon would hear the newest fact first and the two older ones behind it, which is the
+	// order nothing lived.
 	t.Run("a repair that fails at the head of a decision whose own write lands reports the owed first", func(t *testing.T) {
 		h, counted := newCountedHarness(t)
+		h.manualTakes()
 		reports := watchReports(h)
 		h.reach(StateRegistered)
+		// The task is queued before the agent is ready, so nothing takes it: the claim holds a
+		// pending delivery, which is what makes the repair a write of both rows.
+		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+		if h.claim().Pending == nil {
+			t.Fatal("the queued task left no pending delivery; a repair of both rows is what this test needs")
+		}
 		h.store.fail("PutClaim", brokenConnection())
 
 		if err := h.handle(RequestReady{Claim: testToken, Generation: h.generation(), Session: session}); err == nil {
@@ -151,21 +158,12 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 			t.Fatal("the turn start whose write failed returned no error")
 		}
 		h.wantState(StateWorking)
-		// The task is queued while the agent is in a turn, so nothing is sent and the only write
-		// is the delivery's own, which this outage is not on: the claim comes to hold a pending
-		// delivery with its claim write still owed, which is what makes the repair a write of
-		// both rows.
-		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
-		if h.claim().Pending == nil {
-			t.Fatal("the queued task left no pending delivery; a repair of both rows is what this test needs")
-		}
 		if h.m.owedWrite == nil {
-			t.Fatal("the delivery's own write cleared the mark the two failed decisions left")
+			t.Fatal("the two failed decisions left no mark")
 		}
 		if seen := reports(); len(seen) != 0 {
 			t.Fatalf("the daemon was told %v while the writes were still owed", states(seen))
 		}
-
 		// The outage moves from the claims table to the deliveries table.
 		h.store.fail("PutClaim", nil)
 		h.store.fail("PutDelivery", brokenConnection())
@@ -266,10 +264,10 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		h.store.fail("PutClaim", refusal)
 		attempted := counted.mark()
 
-		// A task queued while the agent is in its turn: the repair runs at the head of that
-		// decision and is refused there, while the decision's own write is of the delivery, a
-		// table the refusal is not on.
-		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+		// A tool call of the agent's turn: the repair runs at the head of that decision and is
+		// refused there, while the decision's own write is the step's narrow one (PutClaimStep),
+		// a write the refusal is not on.
+		h.stepped("bash", "toolu_turn1_0", toolArgs, false)
 
 		if h.m.owedWrite != nil {
 			t.Fatal("the repair the server refused kept the mark; that write would be made again at every decision for the life of the daemon")
@@ -303,11 +301,11 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		}
 
 		// The decision went on to its own row rather than being dropped behind the refusal.
-		if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"PutClaim", "PutDelivery"}) {
-			t.Fatalf("the decision asked for %v, want the refused repair and then the task's own delivery write", asked)
+		if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"PutClaim"}) {
+			t.Fatalf("the decision asked for %v, want the refused repair alone: the step's own write is no claim write", asked)
 		}
-		if p := h.claim().Pending; p == nil || p.Task != "the task" {
-			t.Fatalf("pending = %+v, want the task the deliver carried: the event was applied, not dropped", p)
+		if step := h.store.step(testToken); step.CallID != "toolu_turn1_0" {
+			t.Fatalf("the stored step is %+v, want the call the step carried: the event was applied, not dropped", step)
 		}
 
 		// Nor does a later write make them true. The store takes claim writes again, the turn

@@ -611,6 +611,8 @@ RULES = {
         Read(f"{DAEMON}/cmd/legion/testdata/gh-help/**", "internal/runtime/tmux/tmux_real_test.go:1843,1850")],
     f"{DAEMON}/internal/stream/integration_test.go": [legion_build("internal/stream/integration_test.go:157 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/workerbin/workerbin_test.go": reads((f"{DAEMON}/docker/gh", "internal/runtime/workerbin/workerbin_test.go:99")),
+    f"{DAEMON}/internal/supervise/costreading_test.go": reads(
+        ("docs/site/src/content/docs/legion/task-delivery-cost.md", "internal/supervise/costreading_test.go:75 (TestDocExampleTaskCost)")),
     f"{DAEMON}/internal/textcheck/design_approved_wake_test.go": reads(
         (f"{DAEMON}/internal/workflow/design_approved_wake_extract.txt", "internal/textcheck/design_approved_wake_test.go:25-26 reads the phrase from it, in place of importing internal/workflow"),
         ("skills/legion-architect/references/wake-routing.md", "internal/textcheck/design_approved_wake_test.go:32-38 reads it under ../../../.."),

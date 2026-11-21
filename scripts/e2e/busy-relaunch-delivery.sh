@@ -1,35 +1,26 @@
 #!/usr/bin/env bash
-# The live proof that a worker in a turn is sent its task once and again only after that turn, that
-# the turn which serves a task settles it, and that a relaunched process reads what the relaunch
-# ended in the first prompt it is sent (dispatch://INFRA-3276 R4 and R3). The whole daemon is
-# booted by the function `legion start` calls, over a real PostgreSQL and a real nats-server, and
-# five real `omp --mode rpc` panes run under it — the real `legion worker-shim`, this checkout's
-# `legion`, and this checkout's @sjawhar/pi-envoy and @sjawhar/pi-legion in an Oh My Pi profile of
-# the run's own — against HTTP model stand-ins of the driver's own and, for one pane, a Hindsight
-# memory stand-in whose held recall is the measured wait between Oh My Pi's acknowledgement of a
-# prompt and that prompt's turn (packages/daemon/internal/daemon/busy_relaunch_live_test.go, which
-# this script builds with `-tags e2e`, and packages/daemon/internal/daemon/localruntime_live_test.go,
-# the runtime that starts a pane with no tmux). Each step prints `== <name>`, what it observed and
-# `ok <name>`, or `FAIL <name> at <assertion>`; each runs on its own, so one that fails does not
-# keep the next from running, and the run fails when any step failed.
+# The live proof that a relaunched process reads what the relaunch ended in the first prompt it
+# runs, the text of the first take its plugin had accepted (dispatch://INFRA-3276 R3, carried onto
+# the take by dispatch://INFRA-2811). The whole daemon is booted by the function `legion start`
+# calls, over a real PostgreSQL and a real nats-server, and three real `omp --mode rpc` panes run
+# under it — the real `legion worker-shim`, this checkout's `legion`, and this checkout's
+# @sjawhar/pi-envoy and @sjawhar/pi-legion in an Oh My Pi profile of the run's own — against HTTP
+# model stand-ins of the driver's own (packages/daemon/internal/daemon/busy_relaunch_live_test.go,
+# which this script builds with `-tags e2e`, and
+# packages/daemon/internal/daemon/localruntime_live_test.go, the runtime that starts a pane with
+# no tmux). Each step prints `== <name>`, what it observed and `ok <name>`, or `FAIL <name> at
+# <assertion>`; each runs on its own, so one that fails does not keep the next from running, and
+# the run fails when any step failed. INFRA-3276's R4 steps, which measured how a worker in a turn
+# was sent its task, went with the prompt frame: a worker takes its task while its host is idle,
+# and a take into a turn is refused.
 #
-#   busy-late-turn               a phase worker's task whose prompt waits on a held recall past the
-#                                daemon's five-second wait for its turn: at most one busy answer,
-#                                the late turn confirms the task, its result retires it, nothing is
-#                                sent after it, and no prompt result of the claim is dropped as stale
-#   busy-own-turn                a task queued while a turn of Oh My Pi's own runs — the one an
-#                                `async` bash job's result starts — is answered busy at most once
-#                                and sent only after that turn ends
-#   newer-task                   a task `legion claims deliver` queues during a late turn is taken
-#                                and sent after that turn ends
-#   idle-control                 a worker in no turn is sent its task at once
 #   relaunch-subagent-worker     a phase worker holding no task dies while a `task` subagent runs:
 #                                the relaunched process's first prompt names the subagent and the
 #                                death, and the claim row's ended_work records it
 #   relaunch-subagent-architect  the same for a root architect, holding no task and then holding
 #                                one in its turn, with the catch-up notice opening with the sentence
 #   relaunch-task                a worker dies in its task's turn with an `async` bash job running:
-#                                the claim row records the turn and the job, and the task is sent
+#                                the claim row records the turn and the job, and the task is taken
 #                                again behind the sentence naming both
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
@@ -62,17 +53,23 @@
 # of <rev> is taken with `git archive` into a directory of the run's own under TMPDIR (removed on
 # any exit), this checkout's driver file is laid over it, `bun install --frozen-lockfile` gives it
 # node_modules of its own, and the same run is made there: the driver, `legion` and both plugins
-# are built from that tree. The driver names no Go symbol the base lacks — it reads the new claim
-# column through SQL and the relaunch sentence as literals — so it builds there. The control passes
-# when that run fails and each of five steps fails at the assertion it names: busy-late-turn at
-# stale-result (the base drops the late turn's result and sends the task again), newer-task at
-# accepted (`a delivery is already pending`), relaunch-subagent-worker and
-# relaunch-subagent-architect at sentence (the base names no work in what it sends a relaunched
-# process), and relaunch-task at claim-row (the base's schema has no ended_work); what
-# busy-own-turn and idle-control did there is printed as it came. A proof.log an earlier run left
-# in BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR is removed before the base run, so only that run's steps
-# are read. Its last line is `busy relaunch delivery negative control: PASS|FAIL …` with the base
-# run's evidence directory.
+# are built from that tree. The driver names no Go symbol of INFRA-3276's — it reads the new claim
+# column through SQL and the relaunch sentence as literals — but its seed numbers each claim's
+# task (supervise.Claim.TaskWritten, supervise.Delivery.Number), so <rev> must carry INFRA-2811's
+# take and not INFRA-3276's record of a let-go. 4b5621b7c882, INFRA-2811's head before the
+# forward merge that brought cybermonklabs/legion#3983 in, is such a commit. It is in the history
+# of cybermonklabs/legion#3993's branch alone, never main's, since GitHub squash-merges a pull
+# request; GitHub keeps that pull request's head as refs/pull/3993/head, whose history holds it.
+# So a <rev> this checkout does not hold is fetched first, as refs/pull/3993/head of
+# https://github.com/cybermonklabs/legion.git: a fetch that fails ends the run with exit 1,
+# naming its log, and a <rev> still missing after it is refused with exit 2. Over a commit without
+# the take the driver does not build, and the control fails with the run reaching no step. The
+# control passes when that run fails and each of the three steps fails at the assertion it names:
+# relaunch-subagent-worker and relaunch-subagent-architect at sentence (the base names no work in
+# what it gives a relaunched process), and relaunch-task at claim-row (the base's schema has no
+# ended_work). A proof.log an earlier run left in BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR is removed
+# before the base run, so only that run's steps are read. Its last line is `busy relaunch delivery
+# negative control: PASS|FAIL …` with the base run's evidence directory.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -115,13 +112,15 @@ fi
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
 
-test_name=TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive
+test_name=TestARelaunchSaysWhatItEndedLive
 driver_file=packages/daemon/internal/daemon/busy_relaunch_live_test.go
+# Where a --base-commit this checkout does not hold is fetched from: the head of the pull request
+# whose branch carries 4b5621b7c882, which GitHub keeps after the squash merge.
+control_repository=https://github.com/cybermonklabs/legion.git
+control_ref=refs/pull/3993/head
 
 # The steps the base must fail, each with the assertion it must fail at (the driver's `fails`).
 base_failures=(
-  'busy-late-turn stale-result'
-  'newer-task accepted'
   'relaunch-subagent-worker sentence'
   'relaunch-subagent-architect sentence'
   'relaunch-task claim-row'
@@ -165,8 +164,13 @@ negative_control() {
   unset PGHOSTADDR PGSERVICE PGSERVICEFILE
   require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and drops a database there" ||
     refuse "$db_host"
+  if ! git -C "$root" rev-parse --quiet --verify "$base_commit^{commit}" >/dev/null; then
+    note "--base-commit '$base_commit' is not in this checkout; fetching $control_ref from $control_repository"
+    git -C "$root" fetch --no-tags "$control_repository" "$control_ref" >"$base_evidence/fetch-base.log" 2>&1 ||
+      fail "--base-commit '$base_commit' is not in this checkout, and fetching $control_ref from $control_repository failed; see $base_evidence/fetch-base.log"
+  fi
   base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
-    refuse "--base-commit '$base_commit' names no commit of this repository"
+    refuse "--base-commit '$base_commit' names no commit of this repository, nor of $control_ref"
   base_work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-busy-relaunch-delivery-base.XXXXXXXX")
   git -C "$root" archive "$base_sha" | tar -x -C "$base_work" ||
     fail "could not take the tree of $base_sha"
@@ -217,10 +221,6 @@ negative_control() {
     ' "$base_evidence/proof.log")
     note "$line"
     note "  ${detail#"${detail%%[![:space:]]*}"}"
-  done
-  for step in busy-own-turn idle-control; do
-    line=$(grep -m1 -E "^(ok|FAIL) $step " "$base_evidence/proof.log") || line="no outcome for $step"
-    note "as it came: $line"
   done
   pass
 }

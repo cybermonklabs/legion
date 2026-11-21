@@ -1,5 +1,8 @@
-import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound";
-import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import {
+  type ClaimCaller,
+  claimCaller,
+  type LegionDaemonClient,
+} from "@legion/pi-shared/daemon-client";
 import {
   exportJjSessionAttribution,
   type PaneAttribution,
@@ -11,6 +14,12 @@ import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
+import {
+  type ClaimTaskTake,
+  type TaskTake,
+  type TaskTakeDeps,
+  takeClaimTask,
+} from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import { requiredEnvironment, requiredSecret } from "./classify";
@@ -23,14 +32,22 @@ export interface ClaimSession {
   /** The claim `sessionID` registered, or undefined: before its registration, and for any other
    * session. */
   readonly capability: (sessionID: string) => ClaimCapability | undefined;
-  /** A turn of this pane's session has started, whatever started it: the daemon's task, an Envoy
-   * card, the phase reminder (`legion.ts` calls it from `agent_start`, never for a `task`
-   * subagent's event). It is the boot's first-turn signal: the deferred role claim runs now
-   * instead of waiting out its bound. Calling it costs nothing once the name is taken, before the
-   * boot has registered its claim step (the start is remembered and the step runs the moment it
-   * registers), or in a session that boots no claim of its own, such as the controller's, which
-   * claims its role for itself (`src/controller-session.ts`). */
-  readonly firstTurnStarted: () => void;
+  /** The take of this pane's claim (`@legion/pi-shared/task-take`), whose hooks `legion.ts` calls
+   * for a run of the claim's session (`agent_start` and `agent_end`, never a `task` subagent's
+   * event) and for the daemon's refusal of that run's report (`src/turn-outcome.ts`): the first
+   * run after an accepted take's text was handed to the idle host is that task's turn, and its end
+   * the report naming its number.
+   * Undefined for any other session than the one the claim registered, which a switch, a branch
+   * or a tree navigation can leave the pane on (`afterSessionChange` in `legion.ts`): a run of
+   * that session neither starts nor ends the take's turn, as its end reports nothing
+   * (`capability`). Undefined before the claim is registered. */
+  readonly take: (sessionID: string) => TaskTake | undefined;
+}
+
+/** The take of this pane's claim (`takeClaimTask`), and the caller it takes for: the claim's
+ * registration, made for the session the boot ran in. */
+interface Taking extends ClaimTaskTake {
+  readonly caller: ClaimCaller;
 }
 
 /**
@@ -56,45 +73,52 @@ export function attributionInputs(
 
 /**
  * Owns a root architect's or a phase worker's claim: the boot, through the claim boot every
- * harness shares (`bootLegionClaim`, `@legion/pi-shared/legion-claim-core`), and the capability it
- * registered. A Legion pane boots as its own Oh My Pi process and holds exactly one claim for its
- * whole lifetime, so the capability is plain closure state, set before `claims/ready`: the
- * daemon's task can arrive the moment ready answers, and the phase-stall hook reads the capability
- * when it does. The ready carries no capability report: the session's capability rows are
- * measured later, on its own interval.
+ * harness shares (`bootLegionClaim`, `@legion/pi-shared/legion-claim-core`), the capability it
+ * registered, and the take of the claim's task (`takeClaimTask`, `@legion/pi-shared/task-take`).
+ * A Legion pane boots as its own Oh My Pi process and holds exactly one claim for its whole
+ * lifetime, so both are plain closure state, set before `claims/ready`. The ready carries no
+ * capability report: the session's capability rows are measured later, on its own interval.
  *
- * The Envoy name is taken last, after `claims/ready` has answered and at the session's first
- * turn (INFRA-1573): the listener keeps a message published to a role no session holds and hands
- * the whole kept lane over the moment the role is claimed, so a name taken before the daemon's
- * task lets that lane take the session's first turn while the task waits for it to end, and a
- * name taken as a turn starts puts the lane inside a turn that is already running. The signal is
- * {@link ClaimSession.firstTurnStarted}, which `legion.ts` calls from `agent_start`, and the
- * bound the boot falls back to is this session's own `claimFirstTurnBoundMs`, so a role brought
- * back with no task of its own still takes its name and still hears what waited for it. Only the
- * claim is deferred: the boot itself is still awaited inside `session_start`, where no turn of
- * this session can begin.
+ * The take holds the claim's value from the registration's answer on, which is also when it sets
+ * the task-turn mark, and takes the value the boot reads again once the ready has answered, which
+ * holds any value the ready decision wrote, both before the role is claimed; it takes each value
+ * the Envoy entry hands over from a task frame the listener relayed, and reads the value again
+ * from the daemon whenever the session's relay begins a new epoch and whenever the heartbeat
+ * regains the role. From the registration until the read after the ready has answered, the take
+ * holds the mark whatever value it holds (`TaskTake.awaitRead`): the session's agent subject is
+ * open from its start, and a card addressed to it in that window, which the ready decision's
+ * value may not have reached yet, waits like every other. The Envoy name is taken right after
+ * that read, so the session is addressable from its ready on, and the lane the listener kept for
+ * the role arrives while the mark holds its cards back where a task is owed.
+ *
+ * The take asks only from a timer that fires once `session_start` has returned: Oh My Pi holds a
+ * send made from `session_start` until its startup is over, and runs a send made while its
+ * startup drains its sends inside that drain, while RPC mode reads no command at all, so a task's
+ * turn started there would keep the daemon's shim from reaching the session for the whole turn.
+ * The timer is a macrotask, and the drain's end, up to the return of the host's extension
+ * startup, runs in microtasks (`packages/pi-envoy/src/card-wake.ts`, "The startup phase"). An
+ * accepted take's text goes to `runTask`.
  *
  * The transcript is recorded as the bootstrapped session before the registration; the jj
  * attribution (`exportJjSessionAttribution`) runs once it answered, before the capability is set.
- * A 4xx registration refusal, and any failure after a registration, exit the process.
+ * A 4xx registration refusal, and any failure after a registration but the read after the ready,
+ * exit the process.
  */
 export function createClaimSession(deps: {
   readonly daemon: () => LegionDaemonClient;
   readonly persistedTranscript: (
     context: SessionContext
   ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
+  /** An accepted take's text to the host (`TaskTakeDeps.run`). */
+  readonly runTask: TaskTakeDeps["run"];
   readonly exitProcess: (code: number) => never;
 }): ClaimSession {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
-  // The boot's first-turn signal, held from the moment the boot registers it, and whether a turn
-  // of this session has started. Calling it reports a turn and claims nothing: the claim step the
-  // boot runs after `claims/ready` is what takes the name. The two arrive in either order and both
-  // orders take the name exactly once: a turn that starts before the boot registers the signal is
-  // remembered here and reported the moment it registers, and a second turn reports a turn already
-  // reported, which does nothing (`listenForFirstTurn`, `@legion/pi-shared/legion-claim-core`).
-  let reportFirstTurn: (() => void) | undefined;
-  let turnStarted = false;
+  let taking: Taking | undefined;
+  // Ends the take's hold on its mark, kept until the read after the ready has answered
+  // (`afterReadyRead`).
+  let readAnswered: (() => void) | undefined;
 
   const boot = async (
     context: SessionContext,
@@ -104,7 +128,7 @@ export function createClaimSession(deps: {
   ): Promise<void> => {
     const { sessionFile, agentId } = await deps.persistedTranscript(context);
     recordBootstrappedSession(sessionFile);
-    await bootLegionClaim({
+    const claimBoot = await bootLegionClaim({
       daemon,
       registration: {
         bootToken,
@@ -113,7 +137,11 @@ export function createClaimSession(deps: {
         agentId,
         pluginContract: pkg.legion.daemonApiVersion,
       },
-      afterRegister: async () => {
+      afterRegister: async (claim) => {
+        const caller = claimCaller(claim, sessionID);
+        taking = { ...takeClaimTask({ daemon, caller, run: deps.runTask, log: logger }), caller };
+        taking.take.read(claim);
+        readAnswered = taking.take.awaitRead();
         const { sessionId, stateDir, ...pane } = attributionInputs(sessionFile, process.env);
         if (sessionId) await exportJjSessionAttribution(sessionId, stateDir, pane);
       },
@@ -121,21 +149,20 @@ export function createClaimSession(deps: {
         capability = registered;
       },
       // The claim's role topic is where the daemon sends every notice for an architect (the
-      // notice executor, packages/daemon/internal/daemon/outbox.go): no issue topic carries one,
-      // so no claim subscribes to one.
+      // notice executor, packages/daemon/internal/daemon/outbox.go), and where the listener
+      // relays the claim's task value: no issue topic carries one, so no claim subscribes to one,
+      // and no phase worker is woken by an architect's notice.
       claimRole: (role) => claimEnvoyRole(sessionID, role, context),
-      onFirstTurn: (started) => {
-        reportFirstTurn = started;
-        if (turnStarted) started();
-      },
-      // The pane's own bound, read from its environment as both watches of this entry read
-      // theirs (`stallLimits` in `extensions/legion.ts`).
-      firstTurnBoundMs: claimFirstTurnBoundMs(process.env, logger),
+      taskValue: (reading) => taking?.take.read(reading),
+      afterReadyRead: () => readAnswered?.(),
       onRoleRegained: onEnvoyRoleRegained,
       log: (line) => console.error(`[legion] ${line}`),
       stopping: "exiting so the daemon launches it again",
       stop: () => deps.exitProcess(1),
     });
+    if (claimBoot === undefined) return;
+    const take = taking?.take;
+    setImmediate(() => take?.ready());
   };
 
   const bootstrap = async (context: SessionContext): Promise<void> => {
@@ -156,9 +183,6 @@ export function createClaimSession(deps: {
   return {
     bootstrap,
     capability: (sessionID) => (capability?.sessionID === sessionID ? capability : undefined),
-    firstTurnStarted: () => {
-      turnStarted = true;
-      reportFirstTurn?.();
-    },
+    take: (sessionID) => (taking?.caller.sessionId === sessionID ? taking.take : undefined),
   };
 }

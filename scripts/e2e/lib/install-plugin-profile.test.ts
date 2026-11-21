@@ -16,7 +16,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // `mise where`, and answers `omp plugin list`. An `omp` wrapper sits on PATH beside it, as an
 // operator's does: the installer must run the install's own bin/omp by its absolute path instead.
 const dir = temporaryDirectory("install-plugin-profile-test");
-const repoPin = "github:sjawhar/oh-my-pi@18.12.2-sami.20261025-144204";
+const repoPin = "github:cybermonklabs/oh-my-pi@18.18.6-sami.20261117-013345";
 
 let runs = 0;
 function install(extra: string[]) {

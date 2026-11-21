@@ -338,32 +338,18 @@ func TestDeliverRefusesATaskWithNULThatTheMachineStoresAsReplacementCharacter(t 
 
 // The operator's delivery of a task that holds a NUL reaches the agent as the task is stored. The
 // stored delivery reads U+FFFD where the request had the NUL, and a restart reads that copy back,
-// so the operator's listing and the prompt the agent is sent before any restart read it too; the
-// deliver route answers a body holding a NUL with its decoder's 400, so the same delivery is handed
-// to the claim's machine below the API. A claim that keeps the request's own text hands the agent,
-// and the operator's listing, a NUL the store never shows.
+// so the operator's listing and the text the agent's take of the task is answered with before any
+// restart read it too; the deliver route answers a body holding a NUL with its decoder's 400, so
+// the same delivery is handed to the claim's machine below the API. A claim that keeps the
+// request's own text hands the agent, and the operator's listing, a NUL the store never shows.
 func TestADeliveredTaskWithNULReachesTheAgentAsItIsStored(t *testing.T) {
 	h := newHarness(t)
-	token, boot := h.launch("LEGION-208", claim.RoleTester)
-	registered := h.registered(boot, "ses_tester")
-	conn := connected(h, token)
-	if recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
-		ClaimToken: token, SessionID: "ses_tester", Secret: registered.Secret, Generation: registered.Generation,
-	}, nil); recorder.Code != http.StatusNoContent {
-		t.Fatalf("ready = %d %q, want 204", recorder.Code, recorder.Body)
-	}
-	settled(h, token)
+	tester := h.readyClaim("LEGION-208", claim.RoleTester)
+	token := tester.token
 
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/deliver",
 		DeliverRequest{Task: "Review\x00 the plan."}), http.StatusBadRequest, "invalid request body: "+nulError("task", 7))
-	machine, ok := h.supervisor.Machine(token)
-	if !ok {
-		t.Fatalf("no machine for %s", token)
-	}
-	if err := machine.Handle(h.ctx, supervise.RequestDeliver{Claim: token, Task: "Review\x00 the plan."}); err != nil {
-		t.Fatalf("deliver below the API: %v", err)
-	}
-	settled(h, token)
+	value := h.deliverTask(supervise.RequestDeliver{Claim: token, Task: "Review\x00 the plan."})
 
 	const want = "Review\uFFFD the plan."
 	var stored string
@@ -377,8 +363,10 @@ func TestADeliveredTaskWithNULReachesTheAgentAsItIsStored(t *testing.T) {
 	if listed := listedClaim(t, h, token); listed.Pending == nil || listed.Pending.Task != want {
 		t.Errorf("the operator's listing answers the pending task %+v, want %q, the task as stored", listed.Pending, want)
 	}
-	if prompts := conn.Prompts(); len(prompts) != 1 || prompts[0].Message != want {
-		t.Errorf("the agent was sent %q, want one prompt of %q, the task as stored", prompts, want)
+	recorder, answer := h.postTake(takeOf(tester, value))
+	wantAccepted(t, recorder, answer, want)
+	if taken := h.stored(token).Pending; taken == nil || taken.TakenText != want {
+		t.Errorf("the stored take is %+v, want its text %q, the task as stored", taken, want)
 	}
 }
 

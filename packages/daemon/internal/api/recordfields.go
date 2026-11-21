@@ -77,6 +77,17 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "GivenEntry", Column: ColumnAgents, Keys: []string{"givenEntry"},
 		Reason: "the entry the role's claim was last queued a task of, which its issue carries beside the entry that role's phases row stands on (api.Issue.GivenEntry): the pair says whether the daemon has still to send that role the entry's own work"},
 	{Field: "ServedEntry", Column: ColumnWithheld, Reason: BookkeepingReason},
+	// The claim's task numbers and the bucket marks beside them: a worker reads its task from its
+	// own value and takes it there, so no reader of these surfaces acts on the record's copy. The
+	// text an accepted take was answered with stands on the pending delivery and is withheld with
+	// the task's own text (`Pending`).
+	{Field: "TaskWritten", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskTaken", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskFinished", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskFinishedSession", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskSeenRevision", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskTakeState", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "TaskWrittenRevision", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Handshake", Column: ColumnWithheld,
 		Reason: "no claim view carries it: the issue's own view serves its two times as `entryQueuedAt` and `entryConfirmedAt` (api.Issue.EntryQueuedAt), which for a tree's own root are its architect's whatever phase it stands in, and its entry and generation are only what the projection reads to decide which issue shows them"},
 	{Field: "ServingCheckLook", Column: ColumnWithheld, Reason: BookkeepingReason},
@@ -103,7 +114,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "PendingCause", Column: ColumnAgents, Keys: []string{"pendingCause"},
 		Reason: "names the cause of the death whose relaunch is in flight, which an architect reads while `failure` is still empty"},
 	{Field: "Pending", Column: ColumnAgents, Keys: []string{"pendingTask"},
-		Reason: "reduced to what a reader decides on — that one is held, its phase, when it was queued, how many sends failed and the last send error — and never its text, which the operator route serves whole"},
+		Reason: "reduced to what a reader decides on — that one is held, its phase, when it was queued, how many of its takes failed to adopt the working copy and the last such error — and never its text, which the operator route serves whole"},
 	{Field: "BootTokenHash", Column: ColumnWithheld,
 		Reason: "a secret: the hash the shim's hello and the agent's registration are resolved by"},
 	{Field: "CapabilityHash", Column: ColumnWithheld,

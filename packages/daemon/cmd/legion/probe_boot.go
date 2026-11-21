@@ -15,11 +15,12 @@ import (
 )
 
 // newProbeBootCommand is `legion probe-boot --config <legion.yaml>`: the part of a Kubernetes
-// daemon's boot its worker pod can refuse, run from the daemon's own configuration with nothing
-// the workflow needs (daemon.ProbeBoot). The configuration is read through the loader that runs
-// neither App's private_key_command; then come boot's reads of the files it names, the cluster's
-// refusals, and the daemon's own image probe Sandbox, under the credentials runtime.kubernetes
-// names (in a pod, the pod's ServiceAccount). It prints one OK line on a pass and exits 0, or the
+// daemon's boot its worker pod and its NATS grant can refuse, run from the daemon's own
+// configuration with nothing the workflow needs (daemon.ProbeBoot). The configuration is read
+// through the loader that runs neither App's private_key_command; then come boot's reads of the
+// files it names, the cluster's refusals, the open of the task bucket as the daemon's own NATS
+// user, and the daemon's own image probe Sandbox, under the credentials runtime.kubernetes names
+// (in a pod, the pod's ServiceAccount). It prints one OK line on a pass and exits 0, or the
 // refusal and exits 1. A configuration change to the worker pod is proven with it before the
 // daemon restarts on it. A refusal passes the URL rule (redact.URLCredentials) on its way to
 // stderr, as every error `legion start` writes there does: a cluster read that never reaches the
@@ -27,7 +28,7 @@ import (
 func newProbeBootCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "probe-boot",
-		Short: "run a Kubernetes daemon's cluster check and worker image probe from legion.yaml, with no workflow, and exit",
+		Short: "run a Kubernetes daemon's cluster check, task bucket open and worker image probe from legion.yaml, with no workflow, and exit",
 		Args:  configOnly,
 	}
 	configPath := cmd.Flags().String("config", defaultConfigPath, "path to legion.yaml")

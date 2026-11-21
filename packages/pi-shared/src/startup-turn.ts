@@ -4,8 +4,9 @@ import { envoyPluginInterface, readEnvoyPluginInterface } from "./interface";
 // not started while its start is due or on the way: the start message the operator-launched
 // controller's `/legion-controller-start` sends after Oh My Pi's startup (due from that session's
 // `session_start`, `markStartupTurnPending`), the start message the Legion entry sends to an idle
-// session, or the start prompt the daemon delivers once its controller reports ready. The Legion
-// entry marks it sent right before that start (`markStartupTurnSent`) and clears it from that
+// session, or the start task the daemon writes as the value its controller takes once that
+// controller reports ready. The Legion entry marks it sent right before that start
+// (`markStartupTurnSent`) and clears it from that
 // session's `agent_start` and `session_shutdown`, and an unsent one when the start command's claim
 // fails before the send or hands over to a new session (`clearStartupTurn`). A start message
 // queued as a follow-up behind a turn the operator already started is never marked sent: that run,

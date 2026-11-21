@@ -28,8 +28,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -1388,11 +1386,11 @@ func TestHandoffCompleteAppliesAfterReadmissionTheCompletionALingeringTreeRefuse
 	}
 }
 
-// A worker told to wait replies WAITING and its turn ends, which retires the delivery. A notice
-// then wakes it — Envoy starts that turn itself — and the completion it reports there is still the
-// run's whose task it took: a tester waiting on CI, an implementer waiting on a review, a merger
-// waiting on a person. So the claim keeps the run it is serving past the turn that ended, and
-// only a claim that has taken no task at all is refused.
+// A worker told to wait replies WAITING and its turn ends, which finishes the task it took. A
+// notice then wakes it — Envoy starts that turn itself — and the completion it reports there is
+// still the run's whose task it took: a tester waiting on CI, an implementer waiting on a review,
+// a merger waiting on a person. So the claim keeps the run it is serving past the turn that ended,
+// and only a claim that has taken no task at all is refused.
 func TestHandoffCompleteAcceptsACompletionFromATurnNoDeliveryBacks(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, _ := newHandoffHarness(t, github, nil, nil)
@@ -1402,12 +1400,10 @@ func TestHandoffCompleteAcceptsACompletionFromATurnNoDeliveryBacks(t *testing.T)
 	if !ok {
 		t.Fatal("no machine for the tester")
 	}
-	// The WAITING turn ends; its delivery is retired with it.
-	if err := machine.Handle(context.Background(), supervise.StreamTurnEnd{Claim: tester.token}); err != nil {
-		t.Fatalf("end the waiting turn: %v", err)
-	}
+	// The WAITING turn ends and the worker reports it; its task is finished with it.
+	finishTurn(t, machine)
 	if pending := machine.Claim().Pending; pending != nil {
-		t.Fatalf("pending after the turn = %+v, want it retired", pending)
+		t.Fatalf("pending after the turn = %+v, want it finished", pending)
 	}
 
 	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
@@ -1473,7 +1469,8 @@ func TestAStaleCompletionDoesNotTakeTheNewRunsKey(t *testing.T) {
 	if message := refused(t, complete(), http.StatusConflict, "HANDOFF_STALE_GENERATION"); !strings.Contains(message, id) || !strings.Contains(message, "the same handoff_complete in its turn") {
 		t.Fatalf("the refusal with generation 2's task queued = %q, want it to name %s and the same completion in that task's turn", message, id)
 	}
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester.token, DeliveryID: id}); err != nil {
+	acceptTake(t, machine)
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester.token}); err != nil {
 		t.Fatalf("start generation 2's turn: %v", err)
 	}
 	if recorder := complete(); recorder.Code != http.StatusOK {
@@ -1564,7 +1561,8 @@ func TestAMoveBacksCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) {
 	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: implementer.token, Task: "put the migration back", ID: "outbox:move-back", Generation: 1}); err != nil {
 		t.Fatalf("deliver the move back's task: %v", err)
 	}
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: implementer.token, DeliveryID: "outbox:move-back"}); err != nil {
+	acceptTake(t, machine)
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: implementer.token}); err != nil {
 		t.Fatalf("start the move back's turn: %v", err)
 	}
 
@@ -1596,9 +1594,9 @@ func TestTheRunAClaimServesSurvivesARestart(t *testing.T) {
 	if !ok {
 		t.Fatal("no machine for the tester")
 	}
-	if err := machine.Handle(context.Background(), supervise.StreamTurnEnd{Claim: tester.token}); err != nil {
-		t.Fatalf("end the task's turn: %v", err)
-	}
+	// The turn ends as the worker ends it: the agent_end and the report naming the task behind
+	// it, which finishes the task and leaves the claim serving its run.
+	finishTurn(t, machine)
 
 	if restarted := h.supervisor.restart(t, tester.token); restarted.Claim().ServingGeneration != 1 {
 		t.Fatalf("the rebuilt claim serves generation %d, want 1", restarted.Claim().ServingGeneration)
@@ -1611,12 +1609,12 @@ func TestTheRunAClaimServesSurvivesARestart(t *testing.T) {
 	}
 }
 
-// Oh My Pi's own agent_start names no prompt, and a turn's completion can reach the route before
-// the machine has read any start that would confirm the task, so the claim holds its task
-// acknowledged and unconfirmed. A worker on its first task has no earlier run to fall back on,
-// and its completion would be refused; the task it holds is the only run it can be working, so
-// that is what the completion is attributed to.
-func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testing.T) {
+// A worker on its first task took it, and reports its completion before this daemon saw that
+// take's turn start — the turn's start frame still on its way, or a daemon restarted in between.
+// It has no earlier run to fall back on, and the task it took is the only run it can be working:
+// the claim serves that take's run (serving's rule 3, the number taken), so that is what the
+// completion is attributed to.
+func TestACompletionFromATakenTaskWhoseTurnTheDaemonHasNotSeenNamesItsRun(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
@@ -1636,213 +1634,32 @@ func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testin
 	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: "the task", ID: id, Generation: 1}); err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
-	// The prompt is acknowledged and its turn has not been read to start: should the wait for it
-	// run out, the task is taken back keeping the mark, because the turn that has not started may
-	// still be this task's, and the late start confirms it once it is read (supervise's
-	// turnStarted). Until then the task is delivered and unconfirmed, which is the state this
-	// completion arrives in.
-	if err := machine.Handle(ctx, supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
-		t.Fatalf("acknowledge the prompt: %v", err)
-	}
-	// The wait for the turn is left armed: running out, it takes the task back keeping the mark and
-	// the confirmation unset, which is the state the acknowledgement leaves too. The take-back
-	// itself is driven below, with a clock this file fires (turnClock,
-	// TestACompletionInALateTurnWithABusyResendIsAccepted).
-	if p := machine.Claim().Pending; p == nil || p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending after the acknowledgement = %+v, want it delivered and unconfirmed", p)
-	}
+	acceptTake(t, machine)
 
 	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
-		t.Fatalf("completion from the late turn = %d, want 200; body %s", recorder.Code, recorder.Body)
+		t.Fatalf("completion from the take's turn = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
 		t.Fatalf("completion generation = %d, want the task's 1", completion.Generation)
 	}
 }
 
-// turnClock is the route harness's still clock with timers a test fires: a test whose claim must
-// see the wait for an acknowledged prompt's turn run out (supervise's TimerTurn, armed for the RPC
-// timeout) fires the timers armed for that wait, and every other wait stays armed and never due,
-// as stillClock leaves it. It is the daemon package's heldClock, cut down to that one use.
-type turnClock struct {
-	stillClock
-	mu     sync.Mutex
-	timers []*turnTimer
-}
-
-type turnTimer struct {
-	clock *turnClock
-	after time.Duration
-	f     func()
-	done  bool
-}
-
-func (c *turnClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	timer := &turnTimer{clock: c, after: d, f: f}
-	c.timers = append(c.timers, timer)
-	return timer
-}
-
-func (t *turnTimer) Stop() bool {
-	t.clock.mu.Lock()
-	defer t.clock.mu.Unlock()
-	if t.done {
-		return false
-	}
-	t.done = true
-	return true
-}
-
-// fire runs, once each, every timer armed for after that has neither fired nor been stopped, and
-// reports how many it ran.
-func (c *turnClock) fire(after time.Duration) int {
-	c.mu.Lock()
-	var due []*turnTimer
-	for _, timer := range c.timers {
-		if !timer.done && timer.after == after {
-			timer.done = true
-			due = append(due, timer)
-		}
-	}
-	c.mu.Unlock()
-	for _, timer := range due {
-		timer.f()
-	}
-	return len(due)
-}
-
-// dispatch://INFRA-2947's case, which the specification makes R4's own acceptance
-// (dispatch://INFRA-3276): a worker whose turn the daemon's task starts, and whose first call in
-// it is handoff_complete, is accepted. The tester served an entry of its phase before this one, so
-// the completion is the new task's only once the turn confirms that task. The task's prompt is
-// acknowledged, Oh My Pi's pre-turn work outlasts the daemon's five-second wait, which takes the
-// task back under a new id, and the turn starts late; a busy re-send of the task lands while it
-// runs. Before, the late start confirmed nothing and every completion was refused as the earlier
-// task's (HANDOFF_STALE_ASSIGNMENT when the case was measured, HANDOFF_STALE_ENTRY since) until a
-// relaunch. Now the start is matched to the first prompt, still
-// outstanding (supervise's Machine.outstanding), and the re-send's busy answer takes back nothing
-// of that turn, in both orders the harness can give one event at a time: the re-send refused at
-// its send after the turn's start, and the re-send acknowledged and then answered busy, by a late
-// refusal or by its result.
-func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
-	for _, tc := range []struct {
-		name string
-		// resend is the busy re-send of the task under id, landing in the late turn.
-		resend func(t *testing.T, machine *supervise.Machine, token claim.Token, id string)
-	}{
-		{name: "the re-send refused at its send, after the turn's start", resend: func(t *testing.T, machine *supervise.Machine, token claim.Token, id string) {
-			t.Helper()
-			refusal := &stream.RefusedError{Claim: token, Command: shimwire.TypePrompt, Reason: busy}
-			if err := machine.Handle(context.Background(), supervise.PromptRefused{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id, Err: refusal}); err != nil {
-				t.Fatalf("refuse the re-send: %v", err)
-			}
-		}},
-		{name: "the re-send acknowledged, then refused late", resend: func(t *testing.T, machine *supervise.Machine, token claim.Token, id string) {
-			t.Helper()
-			if err := machine.Handle(context.Background(), supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
-				t.Fatalf("acknowledge the re-send: %v", err)
-			}
-			if err := machine.Handle(context.Background(), supervise.StreamLateRefusal{Claim: token, DeliveryID: id, Error: busy}); err != nil {
-				t.Fatalf("refuse the re-send late: %v", err)
-			}
-		}},
-		{name: "the re-send acknowledged, then answered busy by its result", resend: func(t *testing.T, machine *supervise.Machine, token claim.Token, id string) {
-			t.Helper()
-			if err := machine.Handle(context.Background(), supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
-				t.Fatalf("acknowledge the re-send: %v", err)
-			}
-			if err := machine.Handle(context.Background(), supervise.StreamPromptResult{Claim: token, DeliveryID: id, Error: busy}); err != nil {
-				t.Fatalf("answer the re-send busy: %v", err)
-			}
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
-			clock := &turnClock{}
-			h.supervisor.deps.Clock = clock
-			seedIssueAt(t, h, "LEGION-208", phase.Testing)
-			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
-			machine, ok := h.supervisor.Machine(tester.token)
-			if !ok {
-				t.Fatal("no machine for the tester")
-			}
-			ctx := context.Background()
-			// The tester worked an earlier entry, whose turn ended and retired its task.
-			takeTask(t, h, tester.token, "outbox:41", "test the first head", 1, 1)
-			if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: tester.token}); err != nil {
-				t.Fatalf("end the earlier entry's turn: %v", err)
-			}
-			// The phase hands the tester its next entry, and the daemon sends its task.
-			seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
-			first := "outbox:42"
-			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: tester.token, Task: "test the new head", ID: first, Generation: 1, Entry: 2}); err != nil {
-				t.Fatalf("deliver the new entry's task: %v", err)
-			}
-			if err := machine.Handle(ctx, supervise.PromptAcked{Claim: tester.token, Generation: machine.Claim().Generation, DeliveryID: first}); err != nil {
-				t.Fatalf("acknowledge the task's prompt: %v", err)
-			}
-			if fired := clock.fire(h.supervisor.deps.Timeouts.RPC); fired != 1 {
-				t.Fatalf("fired %d waits for the prompt's turn, want the one its acknowledgement armed", fired)
-			}
-			resend := machine.Claim().Pending.ID
-			if resend == first {
-				t.Fatalf("pending after the wait ran out is still %s, want the task taken back under an id of its own", first)
-			}
-
-			if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester.token}); err != nil {
-				t.Fatalf("start the task's late turn: %v", err)
-			}
-			tc.resend(t, machine, tester.token, resend)
-			// The late turn confirmed the new entry's task, and the busy answer took none of that
-			// back: that confirmation is what makes the completion the new task's.
-			if p := machine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Entry != 2 {
-				t.Fatalf("pending in the late turn after the busy re-send = %+v, want the new entry's task confirmed", p)
-			}
-
-			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-				HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("the completion from the late turn = %d, want 200; body %s", recorder.Code, recorder.Body)
-			}
-		})
-	}
-}
-
-// A task the agent refused is not a task it read, whichever way it refused. In a turn of its own
-// ("Agent is already processing", the d9194522 sequence) it never saw this prompt; with no turn
-// running (a provider answering "No API key found" before any turn began) the prompt did not run
-// at all. Either way the refusal leaves the claim serving no run, and what becomes of a
-// completion arriving in whatever turn follows is decided by the task the claim still holds
-// rather than by the refusal: a task the route can place in the issue's current work — its own
-// generation and its own phase — carries the run and the entry that completion is recorded
-// against, and a claim holding anything else is refused HANDOFF_NO_RUN. The two refused cases
-// here hold a task that names no phase, which places it in no phase's work; the third holds a
-// task of the issue's own generation and phase, and the worker that went on and did that phase's
-// work in the turn after the refusal is not made to lose it.
-func TestACompletionInAForeignTurnIsNotTheRefusedTasksRun(t *testing.T) {
+// A task the worker has not taken is not a task it read: a turn of the agent's own that runs
+// meanwhile — an Envoy notice's — never saw it, and the claim serves no run of it. What becomes of
+// a completion arriving in that turn is decided by the task the claim still holds: a task the
+// route can place in the issue's current work — its own generation and its own phase — carries the
+// run and the entry that completion is recorded against, and a claim holding anything else is
+// refused HANDOFF_NO_RUN. The first case holds a task that names no phase, which places it in no
+// phase's work; the second holds a task of the issue's own generation and phase, and the worker
+// that went on and did that phase's work in the turn before its take is not made to lose it.
+func TestACompletionInAForeignTurnIsNotTheUntakenTasksRun(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
-		refusal   string
-		turnFirst bool
 		taskPhase phase.Phase
 		accepted  bool
 	}{
-		{
-			name:      "refused in a turn of the agent's own",
-			refusal:   "Agent is already processing. Use steer() or followUp() to queue messages",
-			turnFirst: true,
-		},
-		{name: "refused with no turn running", refusal: "No API key found for provider anthropic"},
-		{
-			name:      "refused in a turn of the agent's own, holding the issue's own phase's task",
-			refusal:   "Agent is already processing. Use steer() or followUp() to queue messages",
-			turnFirst: true,
-			taskPhase: phase.Testing,
-			accepted:  true,
-		},
+		{name: "an untaken task that names no phase"},
+		{name: "an untaken task of the issue's own phase", taskPhase: phase.Testing, accepted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
@@ -1860,33 +1677,14 @@ func TestACompletionInAForeignTurnIsNotTheRefusedTasksRun(t *testing.T) {
 			if err := machine.Handle(ctx, supervise.RequestReady{Claim: token, Generation: machine.Claim().Generation, Session: session}); err != nil {
 				t.Fatalf("ready: %v", err)
 			}
-			// The claim has confirmed no task: run 1's prompt was acknowledged and its turn was
-			// never seen. The child re-entered at run 2, whose task is delivered and acknowledged.
-			// The phase the task names is the case's own: none, or the one the issue is in.
-			second := "outbox:42"
-			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: "run 2's task", ID: second, Generation: 2, Phase: tc.taskPhase}); err != nil {
+			// The claim has taken no task. The child re-entered at run 2, whose task is queued;
+			// the phase it names is the case's own: none, or the one the issue is in. The notice's
+			// turn — the one the completion is reported from — starts before any take.
+			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: "run 2's task", ID: "outbox:42", Generation: 2, Phase: tc.taskPhase}); err != nil {
 				t.Fatalf("deliver run 2's task: %v", err)
 			}
-			if err := machine.Handle(ctx, supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: second}); err != nil {
-				t.Fatalf("acknowledge run 2's prompt: %v", err)
-			}
-			// The busy refusal is the agent already being in a turn, so that turn starts first;
-			// the provider's refusal arrives with no turn running at all, and the notice's turn —
-			// the one the completion is reported from — starts after it.
-			notice := func() {
-				t.Helper()
-				if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
-					t.Fatalf("the notice's turn: %v", err)
-				}
-			}
-			if tc.turnFirst {
-				notice()
-			}
-			if err := machine.Handle(ctx, supervise.StreamLateRefusal{Claim: token, DeliveryID: second, Error: tc.refusal}); err != nil {
-				t.Fatalf("refuse run 2's prompt: %v", err)
-			}
-			if !tc.turnFirst {
-				notice()
+			if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+				t.Fatalf("the notice's turn: %v", err)
 			}
 
 			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
@@ -1895,7 +1693,7 @@ func TestACompletionInAForeignTurnIsNotTheRefusedTasksRun(t *testing.T) {
 				return
 			}
 			if recorder := h.complete(request); recorder.Code != http.StatusOK {
-				t.Fatalf("the completion of the refused task's own run and phase = %d, want 200; body %s", recorder.Code, recorder.Body)
+				t.Fatalf("the completion of the held task's own run and phase = %d, want 200; body %s", recorder.Code, recorder.Body)
 			}
 			if completion := lastCompletion(t, facts); completion.Generation != 2 {
 				t.Fatalf("the completion names generation %d, want the held task's 2", completion.Generation)
@@ -1927,7 +1725,8 @@ func TestAnOperatorsTaskLeavesTheRunTheClaimIsServing(t *testing.T) {
 	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: tester.token, Task: "say it again", ID: operator}); err != nil {
 		t.Fatalf("deliver the operator's task: %v", err)
 	}
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester.token, DeliveryID: operator}); err != nil {
+	acceptTake(t, machine)
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester.token}); err != nil {
 		t.Fatalf("start the operator's turn: %v", err)
 	}
 	if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: tester.token}); err != nil {
@@ -1942,12 +1741,11 @@ func TestAnOperatorsTaskLeavesTheRunTheClaimIsServing(t *testing.T) {
 	}
 }
 
-// A confirmation a busy refusal takes back names a turn the delivery never had: the pane was
-// working something else, which is the sequence this branch saw live at `d9194522`. The next
-// run's task has not been taken, so a completion arriving in that foreign turn is still the old
-// run's — and the route refuses it as stale, rather than crediting the new run with a completion
-// of a task nobody has read.
-func TestATakenBackConfirmationDoesNotMoveTheRunTheClaimIsServing(t *testing.T) {
+// A task the worker has not taken names no turn of its own: the pane is working something else.
+// The next run's task has not been taken, so a completion arriving in a foreign turn is still the
+// old run's — and the route refuses it as stale, rather than crediting the new run with a
+// completion of a task nobody has read.
+func TestATaskNotYetTakenDoesNotMoveTheRunTheClaimIsServing(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
 	// The tester served run 1, and the child is re-entered at run 2 once that turn ends.
@@ -1964,20 +1762,16 @@ func TestATakenBackConfirmationDoesNotMoveTheRunTheClaimIsServing(t *testing.T) 
 	}
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "LEGION-208",
 		Phase: phase.Testing, Generation: 2, Status: "in_progress"})
-	// The next run's task is sent, a foreign turn confirms it, and the agent refuses it as busy.
+	// The next run's task is queued and a foreign turn starts before the worker takes it.
 	id := "outbox:99"
 	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: tester.token, Task: "the next run's task", ID: id, Generation: 2}); err != nil {
 		t.Fatalf("deliver the next run's task: %v", err)
 	}
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester.token, DeliveryID: id}); err != nil {
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester.token}); err != nil {
 		t.Fatalf("start the foreign turn: %v", err)
 	}
-	if err := machine.Handle(ctx, supervise.StreamLateRefusal{Claim: tester.token, DeliveryID: id,
-		Error: "Agent is already processing. Use steer() or followUp() to queue messages"}); err != nil {
-		t.Fatalf("refuse the task: %v", err)
-	}
-	if p := machine.Claim().Pending; p == nil || !p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending after the refusal = %+v, want it waiting unconfirmed", p)
+	if p := machine.Claim().Pending; p == nil || p.ID != id || !p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending during the foreign turn = %+v, want the next run's task untaken", p)
 	}
 
 	// The completion is the old run's, so it is refused as stale before any fact is applied:
@@ -2023,12 +1817,11 @@ func untaskedClaim(t *testing.T, h *harness, issue string, role claim.Role) live
 	return liveClaim{h: h, token: token, session: session, secret: registration.Secret, tree: issue, issue: issue}
 }
 
-// holdingTask hands c the task and leaves it holding it: the prompt is never acknowledged and no
-// turn confirms it. That is the state a lost prompt, a busy refusal, a late refusal or a failed
-// adoption leaves behind, and the one the completion route takes the run and the entry from
-// — a claim that has served no older work answers for the task it holds (supervise's serving,
-// rule 3), which is what these tests are about, so the held task's own run and entry are
-// what the claim serves here.
+// holdingTask hands c the task and leaves it holding it untaken: no take of it was accepted. That
+// is the state a take a hold refused, a failed adoption or a worker whose host has not been idle
+// leaves behind. The claim serves no run of it (supervise's serving, rule 3, the number taken),
+// so what a completion of such a worker is credited to is the completion route's own fallback to
+// the held task, which is what these tests are about.
 func holdingTask(t *testing.T, h *harness, c liveClaim, task supervise.RequestDeliver) {
 	t.Helper()
 	machine, ok := h.supervisor.Machine(c.token)
@@ -2040,17 +1833,18 @@ func holdingTask(t *testing.T, h *harness, c liveClaim, task supervise.RequestDe
 		t.Fatalf("deliver %s to %s: %v", task.ID, c.token, err)
 	}
 	held := machine.Claim()
-	if held.Pending == nil || !held.Pending.DeliveredAt.IsZero() || !held.Pending.ConfirmedAt.IsZero() {
-		t.Fatalf("the pending task = %+v, want it held unacknowledged and unconfirmed", held.Pending)
+	if held.Pending == nil || !held.Pending.ConfirmedAt.IsZero() {
+		t.Fatalf("the pending task = %+v, want it held untaken", held.Pending)
 	}
-	if run, entry := held.ServingRun(), held.ServingEntry(); run != task.Generation || entry != task.Entry {
-		t.Fatalf("the claim serves run %d and entry %d, want the held task's %d and %d", run, entry, task.Generation, task.Entry)
+	if run, entry := held.ServingRun(), held.ServingEntry(); run != 0 || entry != 0 {
+		t.Fatalf("the claim serves run %d and entry %d, want none: no take of the held task was accepted", run, entry)
 	}
 }
 
-// A worker whose task was sent and never acknowledged — a lost prompt, a refusal the agent made
-// in a turn of its own, an adoption that failed — does the phase's work anyway, in whatever turn
-// follows, and its claim serves no run to attribute the completion to. Refusing it costs the
+// A worker whose claim holds a task no take of which stands accepted — a value it has not taken
+// yet, a take refused while it was in a turn of its own, a take whose adoption failed — does the
+// phase's work anyway, in whatever turn follows, and its claim serves no run to attribute the
+// completion to. Refusing it costs the
 // issue a phase for nothing, so the route takes the run and the entry from the task the
 // claim is holding when that task is the issue's own current generation and phase: the completion
 // is recorded against that task's run, not refused and not credited to some other one. The
@@ -2087,9 +1881,14 @@ func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *tes
 		role       claim.Role
 		generation uint64
 		pending    *supervise.RequestDeliver
-		// confirmed is whether a turn confirmed the held delivery, as the turn that reads it does.
+		// confirmed is whether the worker took the held delivery and its turn started, as the
+		// turn that reads it does.
 		confirmed bool
-		says      []string
+		// tells is whether the claim's record of its last let-go still tells, as the relaunch
+		// that queued the daemon's own delivery of it leaves it: a take of that delivery is
+		// dropped once the record no longer tells (supervise's takeable).
+		tells bool
+		says  []string
 	}{
 		{
 			name: "no task at all", at: phase.Testing, role: claim.RoleTester, generation: 1,
@@ -2103,17 +1902,18 @@ func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *tes
 			says:    []string{"this claim holds no task, only the daemon's own delivery of what its relaunch ended (relaunch:WORD), and LEGION-208 is on generation 1 in testing"},
 		},
 		{
-			// The same delivery confirmed by the turn that read it: the claim still serves no run,
-			// since the delivery carries none, and the reason is still what the claim holds.
-			name: "the daemon's own delivery of a relaunch's record, confirmed by its turn", at: phase.Testing, role: claim.RoleTester, generation: 1,
+			// The same delivery taken, its turn started: the claim still serves no run, since the
+			// delivery carries none, and the reason is still what the claim holds.
+			name: "the daemon's own delivery of a relaunch's record, taken and its turn started", at: phase.Testing, role: claim.RoleTester, generation: 1,
 			pending:   &supervise.RequestDeliver{Task: "Your previous process ended because its pod was replaced.", ID: "relaunch:WORD"},
 			confirmed: true,
+			tells:     true,
 			says:      []string{"this claim holds no task, only the daemon's own delivery of what its relaunch ended (relaunch:WORD), and LEGION-208 is on generation 1 in testing"},
 		},
 		{
-			// An operator's own task the agent's turn confirmed: it carries no run, so the claim
-			// serves none, and the refusal says what the task is rather than giving no reason.
-			name: "an operator's own task, confirmed by its turn", at: phase.Testing, role: claim.RoleTester, generation: 1,
+			// An operator's own task the worker took, its turn started: it carries no run, so the
+			// claim serves none, and the refusal says what the task is rather than giving no reason.
+			name: "an operator's own task, taken and its turn started", at: phase.Testing, role: claim.RoleTester, generation: 1,
 			pending:   &supervise.RequestDeliver{Task: "look at the flaky test", ID: "operator:77"},
 			confirmed: true,
 			says:      []string{"the task this claim holds (operator:77) is no run's (an operator's own task carries no generation), and LEGION-208 is on generation 1"},
@@ -2140,16 +1940,27 @@ func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *tes
 				setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Generation = tc.generation })
 			}
 			worker := untaskedClaim(t, h, "LEGION-208", tc.role)
+			if tc.tells {
+				machine, _ := h.supervisor.Machine(worker.token)
+				ended := machine.Claim()
+				ended.EndedWork = supervise.EndedWork{At: time.Date(2026, 11, 2, 11, 0, 0, 0, time.UTC),
+					Cause: "its pod was replaced", Background: true, Kinds: []string{"subagent"}, Reported: true}
+				if err := h.store.PutClaim(context.Background(), ended); err != nil {
+					t.Fatalf("record what the relaunch of %s ended: %v", worker.token, err)
+				}
+				h.supervisor.restart(t, worker.token)
+			}
 			if tc.pending != nil {
 				holdingTask(t, h, worker, *tc.pending)
 			}
 			if tc.confirmed {
 				machine, _ := h.supervisor.Machine(worker.token)
-				if err := machine.Handle(context.Background(), supervise.StreamTurnStart{Claim: worker.token, DeliveryID: tc.pending.ID}); err != nil {
+				acceptTake(t, machine)
+				if err := machine.Handle(context.Background(), supervise.StreamTurnStart{Claim: worker.token}); err != nil {
 					t.Fatalf("start the turn of %s: %v", tc.pending.ID, err)
 				}
-				if held := machine.Claim().Pending; held == nil || held.ConfirmedAt.IsZero() {
-					t.Fatalf("the pending delivery = %+v, want it confirmed by its turn", held)
+				if held := machine.Claim().Pending; held == nil || held.ID != tc.pending.ID || held.ConfirmedAt.IsZero() {
+					t.Fatalf("the pending delivery = %+v, want %s taken and its turn started", held, tc.pending.ID)
 				}
 			}
 			request := HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "the work is done", Commit: headSHA}
@@ -2246,15 +2057,22 @@ func TestHandoffCompleteCarriesTheRunOfTheTaskBeingWorked(t *testing.T) {
 			if err := machine.Handle(context.Background(), supervise.RequestDeliver{Claim: tester.token, Task: "the task", ID: id, Generation: delivered}); err != nil {
 				t.Fatalf("deliver: %v", err)
 			}
-			if err := machine.Handle(context.Background(), supervise.StreamTurnStart{Claim: tester.token, DeliveryID: id}); err != nil {
+			acceptTake(t, machine)
+			if err := machine.Handle(context.Background(), supervise.StreamTurnStart{Claim: tester.token}); err != nil {
 				t.Fatalf("start the turn: %v", err)
 			}
 			if tc.relaunch {
 				// The claim's own launch counter moves — a crash relaunch, a resume — while the
-				// run it is serving does not. A suspension is held for the agent's turn, so the turn
-				// ends first.
+				// run it is serving does not. A suspension is held for the agent's turn and then for
+				// the report that finishes a current worker's task, so the turn ends and is reported
+				// first, as its worker reports it (the second turn of this process, naming the task).
+				number := machine.Claim().Pending.Number
 				if err := machine.Handle(context.Background(), supervise.StreamTurnEnd{Claim: tester.token}); err != nil {
 					t.Fatalf("end the turn: %v", err)
+				}
+				if err := machine.Handle(context.Background(), supervise.RequestTurnOutcome{Claim: tester.token,
+					Generation: machine.Claim().Generation, Sequence: 2, Task: number}); err != nil {
+					t.Fatalf("report the turn of task %d: %v", number, err)
 				}
 				if err := machine.Handle(context.Background(), supervise.RequestSuspend{Claim: tester.token, By: supervise.SuspendedByOperator}); err != nil {
 					t.Fatalf("suspend: %v", err)

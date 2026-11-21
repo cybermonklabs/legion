@@ -53,14 +53,16 @@ func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record
 // The merge forward is a message, not a phase start (dispatch://INFRA-4374 R1), so nothing else
 // brings the implementer to the merge: its row wakes a released implementer, waits while no
 // session holds the role, and publishes once one does, on the role's own topic under the row's
-// key. A message about an ask the record no longer holds at that head (a newer ask replaced it,
-// or the workflow dropped it), an ask or a hold still queued once the merge landed, a message of a
-// pull request that is not open, and a message to a claim that will never hold its role again end
-// with nothing published (workflow.MergeForwardAt); a landed still queued once the merge landed is
+// key, naming the read of GitHub the ask rests on as the row carries it (dispatch://INFRA-2833 R3).
+// A message about an ask the record no longer holds at that head (a newer ask replaced it, or the
+// workflow dropped it), an ask or a hold still queued once the merge landed, a message of a pull
+// request that is not open, and a message to a claim that will never hold its role again end with
+// nothing published (workflow.MergeForwardAt); a landed still queued once the merge landed is
 // delivered.
 func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
+	read := time.Date(2026, 11, 19, 1, 1, 0, 0, time.UTC)
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
-		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
+		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen, MergeState: record.MergeStateDirty, StateReadAt: read}
 	asked := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
 
@@ -93,7 +95,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		_, delivered := publisher.snapshot()
 		if len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != ask.Message("LEGION-208", "acme/widgets") ||
 			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
-			t.Fatalf("delivered %+v, want the ask once to %s under its row's key", delivered, topic)
+			t.Fatalf("delivered %+v, want the ask once to %s under its row's key, naming the read it rests on", delivered, topic)
 		}
 		if left := outboxRows(t, pool); left != 0 {
 			t.Fatalf("outbox rows left = %d, want the delivered row finished", left)
@@ -107,7 +109,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 	landed := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: record.ConflictCheckNotGreen,
 		AskedAt: time.Now(), Landed: "sha-2"}
 	hold := record.MergeForwardMessage{Role: claim.RoleTester, Step: record.MergeForwardHold, Head: "sha-1", Base: "main",
-		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
+		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen, MergeState: record.MergeStateDirty, StateReadAt: read}
 	for _, tc := range []struct {
 		name    string
 		state   record.PullRequestState

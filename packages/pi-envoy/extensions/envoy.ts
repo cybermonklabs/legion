@@ -190,6 +190,7 @@ import {
   type SessionIdentityContext,
   subagentSessionCheck,
 } from "@legion/pi-shared/subagent-session";
+import { publishTaskSignal } from "@legion/pi-shared/task-values";
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
@@ -1358,13 +1359,14 @@ export default function envoyExtension(hostApi: PiApi): void {
 
   // How a card that starts a turn goes, and the wake for one the host folds into the context with
   // no turn (`../src/card-wake`). A card the host's dispose flushes at shutdown wakes nothing. The
-  // start-turn mark the Legion entry keeps, as published at this build's interface version, holds
-  // the startup phase while it names the session open here (`sessionOpen`: this instance's own and
-  // the host's live one), never a `task` subagent's.
+  // start-turn mark and the task-turn mark the Legion entry keeps, as published at this build's
+  // interface version, each hold an idle card back while it names the session open here
+  // (`sessionOpen`: this instance's own and the host's live one), never a `task` subagent's.
   const cardWake = new CardWake({
     now: () => Date.now(),
     sendMessage: (message, options) => pi.sendMessage(message, options),
     startupTurn: () => publishedInterface?.startupTurn,
+    taskTurnPending: () => publishedInterface?.taskTurnPending,
     isOwnSession: (session) => sessionOpen(session),
   });
 
@@ -2240,9 +2242,18 @@ export default function envoyExtension(hostApi: PiApi): void {
             const injectionSessionID = sessionID;
             noteInjectedUserTurn(injectionSessionID, turn.body, turn.messageId);
             notedSessionIDs.add(injectionSessionID);
-            pi.sendUserMessage(
-              delivery.content,
-              turn.mode === "aside" ? { deliverAs: "aside" } : undefined
+            // Oh My Pi rejects a prompt it dropped before its turn began
+            // (`PiApi.sendUserMessage`): the drop is logged.
+            void Promise.resolve(
+              pi.sendUserMessage(
+                delivery.content,
+                turn.mode === "aside" ? { deliverAs: "aside" } : undefined
+              )
+            ).catch((error: unknown) =>
+              scrubbedConsole.warn(
+                `[envoy] Oh My Pi dropped the message ${turn.messageId} before its turn began`,
+                error
+              )
             );
             markPicturesShown(shownPictures(injectionSessionID), delivery.shown);
             // Done once the host writes the user message its text is found as, or at the run's
@@ -2573,6 +2584,11 @@ export default function envoyExtension(hostApi: PiApi): void {
    *  pass while that session has no relay yet (the start's dial failed before one existed). */
   let passFailure: { readonly sessionID: string; readonly text: string } | undefined;
 
+  // The Legion entry's taker of the task values throwing is that entry's failure, not the
+  // relay's: it is logged, and the relay goes on.
+  const logTaker = (message: string, error: unknown): void =>
+    logger.warn(`envoy: ${message}`, { error: messageFor(error) });
+
   // A relay frame for a session the host is no longer on (a switch, before the next pass closes
   // its relay), or one that drains in while the session shuts down, is one the session cannot
   // take: `nak`, so the listener sends it again to whoever takes the session next.
@@ -2605,6 +2621,14 @@ export default function envoyExtension(hostApi: PiApi): void {
             `envoy: ${message}`,
             error === undefined ? undefined : { error: messageFor(error) }
           ),
+        // A claim's task value, which the listener relays to the session holding the claim's
+        // role: handed to the Legion entry's claim through the interface, whose take decides what
+        // to do with it (`@legion/pi-shared/task-values`). A relay this instance has closed, or
+        // one that drains in while the session shuts down, hands over nothing.
+        onTaskValue: (value) => {
+          if (shuttingDown || relay?.delivery !== delivery) return;
+          publishTaskSignal(publishedInterface, { kind: "value", session: id, value }, logTaker);
+        },
       },
       publish: (reply, body) => {
         if (connection === undefined) throw new Error("no NATS connection");
@@ -2764,13 +2788,20 @@ export default function envoyExtension(hostApi: PiApi): void {
   // What a registration's answer says of consumer delivery, for the session it registered and
   // the relay it asked for. An answer for a session this instance has left, or for a relay since
   // closed, changes nothing.
+  //
+  // The first answer of each epoch of the relay (its first subscription, a resubscribe, a NATS
+  // reconnect) tells the Legion entry's claim that its relay began again: a task frame the
+  // listener relayed while this session was not subscribed is lost, so the claim reads its value
+  // from the daemon (`@legion/pi-shared/task-values`). It goes once the listener has answered,
+  // which is when it relays to this session's subject again.
   const takeDeliveryAnswer = (
     registeredSession: string,
     asked: Relay,
     result: SubscribeResult
   ): void => {
     if (sessionID !== registeredSession || relay !== asked) return;
-    asked.delivery.answered(result.delivery);
+    if (!asked.delivery.answered(result.delivery)) return;
+    publishTaskSignal(publishedInterface, { kind: "epoch", session: asked.sessionID }, logTaker);
   };
 
   // The live agent conversation stream (LEGION-232). This session's own turns, tool calls and
@@ -4137,7 +4168,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       const regained = regain === undefined ? undefined : legionRoleClaimBridge().regained;
       if (regain !== undefined && regained !== undefined) {
         // Detached from the heartbeat chain: the hook is a daemon round-trip this side cannot
-        // bound (`claims/ready`, retried on a 5xx or a transport failure), and the chain's
+        // bound (a Legion claim's `claims/task` read, which no timeout bounds), and the chain's
         // `healing` latch must release as soon as registration and the claim are settled, or the
         // next tick could never register. `Promise.resolve().then` also catches a synchronous
         // throw.

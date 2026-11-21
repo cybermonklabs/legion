@@ -205,11 +205,19 @@ const legionPacedWake = {
  * list to `fixtures/daemon-api/failure-causes.json`, and `legion-api.test.ts` holds this list
  * equal to the file, so a word added on either side alone fails a test. It matters because the
  * enum below is strict: a cause this list does not name refuses the whole state body at every
- * plugin that reads it. */
+ * plugin that reads it.
+ *
+ * `never_reconnected` is the eighth word, which contract 207 added: the shim of a claim a daemon
+ * start restored never said hello again, and the relaunches that followed ran out. The `held`
+ * and `worker-died` notices carry it raw, as the claim holds it, whatever plugin reads them
+ * (the workflow's `noticeFailure`); only the state body narrows it (below). Beside
+ * `never_registered`, it is a cause the relaunch a release makes does not meet again: the
+ * relaunched process is a new one, whose shim says hello to the daemon that launched it. */
 export const LEGION_FAILURE_CAUSES = [
   "launch_refused",
   "died",
   "never_registered",
+  "never_reconnected",
   "stale_plugin",
   "prompt_retires_exhausted",
   "provider_error",
@@ -218,7 +226,11 @@ export const LEGION_FAILURE_CAUSES = [
 
 /** The one word the site that failed a claim chose (`supervise.FailureCause`). A claim view
  * carries it twice over: in `failure.cause`, why the claim failed, and in `pendingCause`, what
- * failed the process whose relaunch is in flight. */
+ * failed the process whose relaunch is in flight. A caller below contract 207, the contract its
+ * plugin states, else the lowest its pod's claims record, is served `never_registered` in both
+ * where the daemon holds `never_reconnected`, the word contract 207 added (the daemon's value
+ * strip `withoutNeverReconnected` in `internal/api/shaping.go`), since its enum names no such word
+ * and would refuse the whole body for it. */
 const legionFailureCause = z.enum(LEGION_FAILURE_CAUSES);
 
 /** `api.ClaimFailureView` — why a claim failed: `cause`, the one word the site that failed it
@@ -250,8 +262,9 @@ const legionClaimFailureView = z.object({
 /** `api.PendingTaskView` — the task a claim holds, as an agent surface shows it: the key's own
  * presence says one is held, `phase` is the issue phase it was queued for (absent for a task of
  * no phase, an operator's own or an architect's), `queuedAt` when it was queued, and
- * `sendFailures` with `lastSendError` the sends that never reached a turn, absent for a task no
- * send has failed for.
+ * `sendFailures` with `lastSendError` how many takes of it failed to adopt the working copy and
+ * the error the last of them failed with, absent for a task no adoption has failed for, since an
+ * accepted take clears both.
  *
  * The task's own text is never here, and this is the difference from `legionDeliveryView`, which
  * the operator routes answer with: what a reader of the state decides on is that a worker holds
@@ -713,6 +726,21 @@ const legionWakeWaiting = z.object({
   dueAt: timestamp,
 });
 
+/** `api.UnseenTaskValue` — one claim whose task value nobody reported seeing for a whole first
+ * bound (`worker_take_timeout_seconds`): the claim, its issue and role, `task`, the number its
+ * value names, and `writtenAt`, when the daemon last wrote that value. The relay to that worker
+ * failed, so the daemon charges nobody and writes the value again once per bound, moving
+ * `writtenAt` with each write (R5 of dispatch://INFRA-2811). */
+const legionUnseenTaskValue = z.object({
+  // No plugin code reads the list — the `legion` command's state line does — so every field of
+  // an entry is optional (LEGION_ANSWER_READS), and one that is there is still held to its type.
+  claim: nonEmptyString.optional(),
+  issue: issueKey.optional(),
+  role: z.enum(LEGION_ROLES).optional(),
+  task: z.number().int().positive().optional(),
+  writtenAt: timestamp.optional(),
+});
+
 /** `api.AssignmentView` — one experiment's answer for an issue (contract 141): the name the
  * project declares the experiment under, the arm the draw gave the unit, the mode in force at
  * that draw and the instant of it. `variant` and `mode` are strings and not enums: the arms are
@@ -833,31 +861,32 @@ const legionIssue = z.object({
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
   /** The two times of a claim's handshake of the last entry it was queued a task of (contract
-   * 146): when a task of that entry was first queued to the claim, and when a turn of that
-   * claim's worker first confirmed one. The claim keeps both in a record of its own, so they
-   * outlast the task, which the end of the confirming turn retires. A tree's own root carries its
-   * architect's handshake whatever phase it stands in — through `awaiting_person` and the phases
-   * a phase role works, where `phaseEntry` and `givenEntry` are that role's — and any other issue
-   * the handshake of the role of its current phase. Both are absent where no entry was queued to
-   * that claim in the issue's current generation — a role the daemon holds no claim row of, a
-   * re-admitted root whose new architect entry is not queued yet, and a root of the release
+   * 146): when a task of that entry was first queued to the claim, and when the daemon first
+   * accepted a take of one by that claim's worker. The claim keeps both in a record of its own, so
+   * they outlast the task, which the end of the accepted take's turn retires. A tree's own root
+   * carries its architect's handshake whatever phase it stands in — through `awaiting_person` and
+   * the phases a phase role works, where `phaseEntry` and `givenEntry` are that role's — and any
+   * other issue the handshake of the role of its current phase. Both are absent where no entry was
+   * queued to that claim in the issue's current generation — a role the daemon holds no claim row
+   * of, a re-admitted root whose new architect entry is not queued yet, and a root of the release
    * before contract 146, which carries the two numbers and no handshake — and `entryConfirmedAt`
-   * alone is absent while no turn has confirmed a task of the entry. A daemon before contract
-   * 146 writes neither, and a caller in a pod whose plugin declares a contract below 146 is
-   * served the state with neither (the daemon's `withoutEntryTimes`), which is why a reader takes
-   * both as optional. */
+   * alone is absent until the daemon accepts a take of a task of the entry, and again once a take
+   * that awaited its turn is taken back. A daemon before contract 146 writes neither, and a
+   * caller in a pod whose plugin declares a contract below 146 is served the state with neither
+   * (the daemon's `withoutEntryTimes`), which is why a reader takes both as optional. */
   entryQueuedAt: timestamp.optional(),
   entryConfirmedAt: timestamp.optional(),
   /** For a tree's own root, every arm of the daemon's architect-stalled reading that holds for its
    * architect at this read, in the order the controller is told them (contract 146):
    * `took-nothing`, the task of the entry its `phases` row names was first queued to its claim more
-   * than ten minutes ago and no turn confirmed it, counted from that first queueing however many
-   * times the daemon sent that entry's task again, where a task whose turn ended with the claim's
-   * process (a death, or a replacement the daemon made) counts only while the claim is ready,
-   * working or idle, and from the relaunched agent's ready where that is later, and where a task
-   * the root's own record has superseded — one that carries an entry, of a run before its
-   * generation or of an entry the row has moved past — raises the arm not at all, nor does a task
-   * of no entry, such as a wake's; `claim-unreachable`, the claim is failed or
+   * than ten minutes ago and no take of it by that claim's worker stands accepted, counted from
+   * that first queueing however many times the daemon wrote that entry's task again, where a task
+   * whose turn ended with the claim's process (a death, or a replacement the daemon made) counts
+   * only while the claim is ready, working or idle, and from the relaunched agent's ready where
+   * that is later, and where a task the root's own record has superseded — one that carries an
+   * entry, of a run before its generation or of an entry the row has moved past — raises the arm
+   * not at all, nor does a task of no entry, such as a wake's; `claim-unreachable`, the claim is
+   * failed or
    * retired and no start of the root's run is the daemon's next move for it (a start the outbox is
    * running is, and so is a start queued in the last ten minutes unless it has already run against
    * the claim and left it failed or retired, after which the outbox only runs it again on its
@@ -1293,12 +1322,17 @@ const legionPaused = z.object({
  * as surely as when it names a number (`api.stateFor`, `withoutClaimsToRefresh`). A caller that
  * states no contract and whose pod's claims record none, or that the daemon can place in no pod,
  * is served the count. The two strips compose on one body: a caller below 53 is below 73 too
- * and is served neither key. `contract` is the mark of the narrowing, the two contract numbers
- * the daemon's own log line names (contract 75), optional for the same reason the other two are:
- * the route strips it for a caller below 75, read the same way, since a reader before 75 refuses
- * the key (`api.stateFor`, `withoutContractMark`). A caller that states no contract and whose
- * pod's claims record none, or that the daemon can place in no pod, is served the mark, and the
- * shapes `internal/projection` answers before the route marks them carry none either.
+ * and is served neither key. `unseenTaskValues` is every claim whose task value nobody reported
+ * seeing for a whole first bound, in claim order, never null, empty while every owed value was
+ * seen (contract 207, `supervise.TaskTakeContract`); it is optional for the same reason as the two
+ * above, since the route strips it for a caller below that contract, read the same way
+ * (`api.stateFor`, `withoutUnseenTaskValues`). `contract` is the mark of the narrowing, the two
+ * contract numbers the daemon's own log line names (contract 75), optional for the same reason
+ * the others are: the route strips it for a caller below 75, read the same way, since a reader
+ * before 75 refuses the key (`api.stateFor`, `withoutContractMark`). A caller that states no
+ * contract and whose pod's claims record none, or that the daemon can place in no pod, is served
+ * the mark, and the shapes `internal/projection` answers before the route marks them carry none
+ * either.
  * `paused` is the project's open pause, with the claims whose stop it still waits on and the rows
  * it holds, and `lastPause` is its newest ended pause, with when and by whom it was ended
  * (contract 178). The daemon writes each only where there is one: `paused` while the project is
@@ -1317,6 +1351,7 @@ export const LegionStateResponse = z.object({
   strandedClaims: z.array(legionStrandedClaim).optional(),
   wakesWaiting: z.array(legionWakeWaiting).optional(),
   claimsToRefresh: z.number().int().nonnegative().optional(),
+  unseenTaskValues: z.array(legionUnseenTaskValue).optional(),
   paused: legionPaused.optional(),
   lastPause: legionEndedPause.optional(),
   controllerLocator: legionControllerLocator.optional(),
@@ -1335,6 +1370,24 @@ export const LegionStateResponse = z.object({
 
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
+
+/** `claim.TaskValue` — a claim's value as the task bucket holds it: `number`, the task the daemon's
+ * record owes the claim, and the `epoch` and `revision` of the write that put it there. The epoch
+ * is the bucket's creation time, an opaque string a worker only compares: a bucket created again
+ * counts its revisions from 1 again, so a revision is read only beside its epoch. */
+const legionTaskValue = z.object({
+  number: z.number().int().positive(),
+  epoch: nonEmptyString,
+  revision: z.number().int().positive(),
+});
+
+/** A claim's value as the task bucket holds it now, null where it holds none, and the number of
+ * the last task the claim finished, 0 for none: what `POST /legion/v1/claims/task` answers
+ * (`LegionTaskResponse`), which the registration's answer carries too. */
+const taskReadingFields = {
+  task: legionTaskValue.nullable(),
+  finished: z.number().int().nonnegative(),
+};
 
 /** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 193): one
  * issue's record, equal field for field to the value the whole-project body holds under
@@ -1357,7 +1410,11 @@ export type LegionHealth = z.output<typeof LegionHealthResponse>;
 /** `claim.RegisterResponse`, the body of `POST /legion/v1/claims/register`: the claim the agent
  * holds, the secret its ready and exit authenticate with, and `promptAgents`, the sorted names of
  * the task agents the role's prompts dispatch — what the session's subagents check measures its
- * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`. */
+ * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
+ * `task` and `finished` are what `POST /legion/v1/claims/task` answers (`LegionTaskResponse`),
+ * read once the registration is recorded, so the worker holds its claim's value before its ready
+ * (contract 207). A caller below 207 is served the answer without either key
+ * (`withoutTaskReading` in `internal/api/shaping.go`). */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,
@@ -1366,6 +1423,7 @@ export const LegionRegisterResponse = z.object({
   generation: z.number().int().positive(),
   secret: nonEmptyString,
   promptAgents: z.array(nonEmptyString),
+  ...taskReadingFields,
 });
 
 export type LegionRegistration = z.output<typeof LegionRegisterResponse>;
@@ -1386,9 +1444,10 @@ export type LegionCapabilityRow = LegionCapabilityReportBody["rows"][number];
 
 /** `claim.ReadyRequest`, the body of `POST /legion/v1/claims/ready`: the registered claim says its
  * agent has booted and can be prompted, authenticated by the registration's secret and naming the
- * launch generation it answers for. A boot's ready and a role-regain's carry no report; a claimed
- * session sends its report on a `claims/ready` of its own, from the interval it runs while it is
- * idle. A ready without a `capabilities` report reports nothing and changes no row. */
+ * launch generation it answers for. A boot's ready carries no report, and a regain of the role
+ * sends no ready (it reads `claims/task`); a claimed session sends its report on a `claims/ready`
+ * of its own, from the interval it runs while it is idle. A ready without a `capabilities` report
+ * reports nothing and changes no row. */
 export const LegionReadyRequest = z.strictObject({
   claimToken: nonEmptyString,
   sessionId: nonEmptyString,
@@ -1399,25 +1458,59 @@ export const LegionReadyRequest = z.strictObject({
 
 export type LegionReadyRequestBody = z.output<typeof LegionReadyRequest>;
 
+/** `claim.ProviderError` — how a provider failed the turn a turn outcome reports: the HTTP status
+ * of the provider request that failed (0 when it had none, as a content-filter refusal has none),
+ * the provider and model it went to, the provider's message, and whether the agent called it
+ * retryable. The daemon decides by the status alone; the rest is logged. */
+const legionProviderError = z.strictObject({
+  status: z.number().int().nonnegative(),
+  provider: z.string(),
+  model: z.string(),
+  message: z.string(),
+  retryable: z.boolean(),
+});
+
 /** The half of `claim.TurnOutcomeRequest` that is the turn rather than the caller: `sequence` is
  * the producer's own count of the turns it has ended at `generation`, from 1, and the daemon
  * keeps the report under the pair, so a report that arrives late or out of order lands in its own
  * place and the run of refused turns it derives is the same either way. `message` is what the
- * provider said about a refusal, and a clean turn carries none. */
+ * provider said about a refusal, and a clean turn carries none. `task` is the number of the take
+ * whose turn this was, absent for a turn of no task: the report that names the claim's taken task
+ * finishes it, unless it carries `providerError`, which keeps the task under its number and starts
+ * the wait before its value is written again (contract 207). `held` is the number of the accepted
+ * take whose text the producer still held unrun when this turn ended — it was answered that take
+ * during the turn — absent for none: this turn was not that take's, which puts the take back to
+ * await its own turn even where the daemon has lost its count of the process's turns (a daemon
+ * restarted under the process). It is optional: a report without it is read as before, and none is
+ * refused for lacking it. */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
   outcome: z.enum(["clean", "refused"]),
   message: z.string().optional(),
+  task: z.number().int().positive().optional(),
+  providerError: legionProviderError.optional(),
+  held: z.number().int().positive().optional(),
 };
+
+/** `claim.AgentCaller` — the worker inside the agent's own session, which holds the secret its
+ * registration was issued and names the claim with it, as the ready does. */
+const agentCaller = {
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+};
+
+/** `claim.BootCaller` — the worker beside the agent rather than inside it, which holds no secret
+ * (`legion claude-bridge`): it presents the launch's own boot token, which names the same claim,
+ * and the route holds it to that launch's generation. */
+const bootCaller = { bootToken: nonEmptyString };
 
 /** `claim.AgentCaller`'s report: the producer inside the agent's own session — pi-legion's
  * `agent_end` hook for an Oh My Pi session — which holds the secret its registration was issued
  * and names the claim with it, as the ready does. */
 export const LegionTurnOutcomeAgentRequest = z.strictObject({
-  claimToken: nonEmptyString,
-  sessionId: nonEmptyString,
-  secret: nonEmptyString,
+  ...agentCaller,
   ...turnOutcomeFields,
 });
 
@@ -1427,7 +1520,7 @@ export const LegionTurnOutcomeAgentRequest = z.strictObject({
  * it to that launch: a token of a launch the claim has moved past, and a report for any other
  * generation, are refused. */
 export const LegionTurnOutcomeBootRequest = z.strictObject({
-  bootToken: nonEmptyString,
+  ...bootCaller,
   ...turnOutcomeFields,
 });
 
@@ -1452,6 +1545,64 @@ export const LegionTurnOutcomeResponse = z.object({
 });
 
 export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
+
+/** A task route's body under either caller a turn outcome takes (`claim.Caller`): the agent's
+ * secret form or the bridge's boot-token form, each refusing a key it does not name. */
+function eitherCaller<Fields extends z.ZodRawShape>(fields: Fields) {
+  return z.union([
+    z.strictObject({ ...agentCaller, ...fields }),
+    z.strictObject({ ...bootCaller, ...fields }),
+  ]);
+}
+
+/** The value a seen report or a take names: the task `number` and the `epoch` and `revision` of
+ * the value the worker was handed. */
+const taskValueFields = { generation: z.number().int().positive(), ...legionTaskValue.shape };
+
+/** `claim.TaskRequest`, the body of `POST /legion/v1/claims/task`: a worker reading its claim's
+ * value, at a new epoch of its relay or when it gains its role again (contract 207). */
+export const LegionTaskRequest = eitherCaller({ generation: z.number().int().positive() });
+
+export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
+
+/** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
+ * bucket holds it now, null where it holds none, and the number of the last task the claim
+ * finished, 0 for none (contract 207). */
+export const LegionTaskResponse = z.object(taskReadingFields);
+
+export type LegionTask = z.output<typeof LegionTaskResponse>;
+
+/** `claim.TaskSeenRequest`, the body of `POST /legion/v1/claims/task-seen`, answered 204: the
+ * worker reporting the value it was handed, whether or not its host is idle (contract 207). */
+export const LegionTaskSeenRequest = eitherCaller(taskValueFields);
+
+export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
+
+/** `claim.TakeRequest`, the body of `POST /legion/v1/claims/take`: the worker asking, because its
+ * host is idle, to take the task its value names. A take the daemon gave no answer to — any
+ * failure that carries no HTTP status, no answer in 5 minutes included, and a 502, 503 or 504
+ * that names no `code` — is sent again unchanged (`@legion/pi-shared/daemon-client`), and a
+ * take of a number already accepted and not finished is answered the same text again, before its
+ * turn starts or after (contract 207). */
+export const LegionTakeRequest = eitherCaller(taskValueFields);
+
+export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
+
+/** `claim.TakeResponse`, the answer of `POST /legion/v1/claims/take` (supervise's `TakeAnswer`):
+ * `accepted` with the `text` the worker runs as its turn's user message, `refused` naming the
+ * `hold` that stands (the daemon writes the value again once none does), or `dropped`, the task no
+ * longer owed and its value deleted. `hold` is read as a string, not an enum of today's holds
+ * (`not-owed`, `in-turn`, `not-ready`, `issue-in-turn`, `suspension`, `update-round`,
+ * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `session-not-held`,
+ * `adoption`, `project-paused`), since a worker acts on none of them by name and a hold a later
+ * daemon adds must not refuse the answer (contract 207). */
+export const LegionTakeResponse = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),
+  z.object({ outcome: z.literal("refused"), hold: nonEmptyString }),
+  z.object({ outcome: z.literal("dropped") }),
+]);
+
+export type LegionTake = z.output<typeof LegionTakeResponse>;
 
 /** `claim.ReadyForUpdateRequest`, the body of `POST /legion/v1/claims/ready-for-update`: the
  * worker's answer to its pod's update message, which says it has pushed everything it wants kept
@@ -1651,27 +1802,25 @@ export const LegionErrorResponse = z.object({
   code: nonEmptyString.optional(),
 });
 
-/** `api.DeliveryView` — the claim's pending task; `deliveredAt` is the latest acknowledgement of
- * this task's prompt, and with it whether the agent may have read the task (a refusal of that
- * prompt clears it, since an agent that refused it never read it), and `confirmedAt` the turn a
- * send started, each absent until it happens. `phase` is the issue phase the task was queued for, which is what
- * says whether it is still the work to do; a task of no phase — an operator's own, an
- * architect's — carries none. */
+/** `api.DeliveryView` — the claim's pending task; `confirmedAt` is when the task was recorded as
+ * taken (an accepted take), absent until it is. `phase` is the issue phase the task was queued
+ * for, which is what says whether it is still the work to do; a task of no phase — an operator's
+ * own, an architect's — carries none. */
 const legionDeliveryView = z.object({
   id: nonEmptyString,
   task: nonEmptyString,
   phase: z.enum(LEGION_WORKFLOW_PHASES).optional(),
   queuedAt: timestamp,
-  deliveredAt: timestamp.optional(),
   confirmedAt: timestamp.optional(),
   interrupted: z.literal(true).optional(),
-  /** How many sends of this task came back without reaching a turn, when the last of them failed
+  /** How many takes of this task failed to adopt the working copy, when the last of them failed
    * and the error it failed with. The three are a diagnosis record, not a budget: the budget is
-   * `budgets.promptFailures` and `budgets.promptRetires`, which only a charged failure spends,
-   * while these count every send that failed that way, charged or not — a send lost to the
-   * transport costs nothing and is retried for ever, which is the stall they exist to name. A
-   * prompt the agent acknowledged and then refused is charged and read in the budget instead. A
-   * send that reaches a turn clears all three, so a task no send has failed for carries none. */
+   * `budgets.promptFailures` and `budgets.promptRetires`, which, of the adoptions that fail, only
+   * a refused one — the shim's answer about this workspace — spends (the two take waits charge it
+   * too), while these count every adoption that failed,
+   * charged or not — an adoption lost to the transport costs nothing and waits for the next take,
+   * which is the stall they exist to name. An accepted take clears all three, so a task no
+   * adoption has failed for carries none. */
   sendFailures: z.number().int().nonnegative().optional(),
   lastSendFailureAt: timestamp.optional(),
   lastSendError: nonEmptyString.optional(),
@@ -2252,7 +2401,19 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "generation",
     "secret",
     "promptAgents",
+    // The take holds the claim's value and its finished number from the registration
+    // (contract 207), as it holds what a read of `claims/task` answers.
+    "task",
+    "task.number",
+    "task.epoch",
+    "task.revision",
+    "finished",
   ],
+  // `task-take.ts` holds the value a read answers and the number of the task the claim last
+  // finished, and runs the text of an accepted take or logs the hold a refused one met
+  // (contract 207).
+  LegionTaskResponse: ["task", "task.number", "task.epoch", "task.revision", "finished"],
+  LegionTakeResponse: ["|0.text", "|1.hold"],
   // `controller-session.ts` checks the controller's claim token, mints every controller grant
   // with the secret, and sends the generation on `claims/ready`.
   LegionControllerRegisterResponse: ["claimToken", "generation", "secret"],

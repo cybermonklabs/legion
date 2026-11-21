@@ -51,16 +51,19 @@ func putWorkerClaim(t *testing.T, pool *pgxpool.Pool, root, key string, role cla
 
 // putWorkerTask records the task the claim holds: the generation and phase it was given for, and
 // whether the claim confirmed it, which together with the claim's state are what say whether the
-// claim still works it (supervise.Delivery.StillWorked).
+// claim still works it (supervise.Delivery.StillWorked). A confirmed task is a take whose turn
+// started (turn_started), as the task numbers' fill reads a confirmed row: a take accepted whose
+// turn has not started is one the claim still works whatever its state, and the turn's start is
+// read from turn_started alone (supervise's turnStarted).
 func putWorkerTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, generation uint64, stands phase.Phase, confirmed bool) {
 	t.Helper()
 	var at *time.Time
 	if confirmed {
 		at = &fixedNow
 	}
-	if _, err := pool.Exec(context.Background(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, confirmed_at)
-		values ($1, 'outbox:11', 'Carry on.', $2, $3, $4, $5)`,
-		string(token), fixedNow, int64(generation), string(stands), at); err != nil {
+	if _, err := pool.Exec(context.Background(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, confirmed_at, turn_started)
+		values ($1, 'outbox:11', 'Carry on.', $2, $3, $4, $5, $6)`,
+		string(token), fixedNow, int64(generation), string(stands), at, confirmed); err != nil {
 		t.Fatalf("record the task the claim %s holds: %v", token, err)
 	}
 }

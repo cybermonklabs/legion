@@ -9,16 +9,14 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-  deliverSubject,
-  RelayHeader,
-  type RelayReply,
-} from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject, type RelayReply } from "@legion/envoy-client/consumer-delivery";
+import { RelayHeader } from "@legion/envoy-client/relay-frame";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { Terminal } from "@xterm/headless";
 import { linkOmpNatives } from "./omp-natives";
+import { publishTaskFrame, taskRelayConnection, taskStandIn } from "./task-stand-in";
 
 export interface Request {
   readonly path: string;
@@ -118,15 +116,17 @@ export function deliveryFor(
   };
 }
 
-/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. Its options,
- * and their `headers`, are optional as `nats`'s own `request` declares them, which is what lets
- * that connection, whose options take a fuller header set, be one; `sendRelayFrame` always
- * sends both. */
-export interface RelayConnection {
+/**
+ * What a relay frame needs of a NATS connection: one request carrying `Headers`, the header set
+ * the frame's `newHeaders` makes. `nats`'s `NatsConnection` is one for `nats`'s `MsgHdrs`. Its
+ * options, and their `headers`, are optional as `nats`'s own `request` declares them, which is
+ * what lets that connection be one; `sendRelayFrame` always sends both.
+ */
+export interface RelayConnection<Headers extends RelayFrameHeaders = RelayFrameHeaders> {
   request(
     subject: string,
     payload: Uint8Array,
-    options?: { readonly timeout: number; readonly headers?: RelayFrameHeaders }
+    options?: { readonly timeout: number; readonly headers?: Headers }
   ): Promise<{ readonly data: Uint8Array }>;
 }
 
@@ -136,10 +136,12 @@ export interface RelayFrameHeaders {
 }
 
 /** One frame of the stand-in stream, as `sendRelayFrame` sends it. */
-export interface RelayFrame {
-  readonly connection: RelayConnection;
+export interface RelayFrame<Headers extends RelayFrameHeaders = RelayFrameHeaders> {
+  /** Typed by the header set `newHeaders` makes, never inferred from the connection: `nats`'s
+   * `request` takes its headers as optional, and `MsgHdrs | undefined` is no header set. */
+  readonly connection: RelayConnection<NoInfer<Headers>>;
   /** Makes an empty header set; `nats`'s `headers` is one. */
-  readonly newHeaders: () => RelayFrameHeaders;
+  readonly newHeaders: () => Headers;
   /** The session the listener relays to, which the deliver subject names. */
   readonly sessionID: string;
   /** The subject the stream stored the message on, which the frame carries. */
@@ -232,7 +234,9 @@ const RELAY_SEND_DEFAULT_MS = 30_000;
  * the answer through it: a caller that awaits a send would otherwise read a frame the session
  * dropped, or one it refused, as a frame it took.
  */
-export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
+export async function sendRelayFrame<Headers extends RelayFrameHeaders>(
+  frame: RelayFrame<Headers>
+): Promise<RelayTake> {
   // Read once, so the refusal below names the bound this send actually kept.
   const within = frame.withinMs ?? RELAY_SEND_DEFAULT_MS;
   const deadline = Date.now() + within;
@@ -863,13 +867,16 @@ export interface LegionPaneOptions {
   readonly tree: string;
   /** `LEGION_ISSUE`; the tree itself makes the pane the tree's root: a root architect's. */
   readonly issue: string;
-  /** The daemon's assignment, sent as the RPC `prompt`. Several are sent one after another, each
+  /** The daemon's assignment, a task the pane takes. Several are given one after another, each
    * once the run the one before it started has settled: a turn a refusal ended starts no
-   * continuation of its own, so a case that needs a second turn names a second assignment. */
+   * continuation of its own, so a case that needs a second turn names a second assignment. An
+   * ordinary session (`legion: false`) takes no task, so each is what a person types there: the
+   * RPC `prompt`. */
   readonly prompt: string | readonly string[];
   /**
    * False drops every `LEGION_*` variable, so the pane is an ordinary session: the Legion
-   * extension stays inert and the Envoy extension's run-end ask nudge is not excluded.
+   * extension stays inert, the Envoy extension's run-end ask nudge is not excluded, and each
+   * `prompt` is sent as the RPC `prompt`.
    */
   readonly legion?: boolean;
   /** Configures Dispatch against the stand-in: `DISPATCH_URL` is its base, `DISPATCH_TOKEN` the
@@ -933,7 +940,7 @@ export interface LegionPane {
    * root and against the same stand-in, and settles it as the first life settled: what the
    * daemon does when it relaunches a worker whose process is gone. `replies` are appended to the
    * script the first life left, and `prompt` is the assignment — or assignments — the second
-   * life is given.
+   * life is given, as tasks it takes.
    */
   readonly resume: (replies: readonly Reply[], prompt: string | readonly string[]) => Promise<void>;
   /** The pane's issue workspace. */
@@ -947,9 +954,12 @@ export interface LegionPane {
  * gateway that answers the pane's turns from `replies`. The server is real: a session's only
  * inbound is the consumer the listener builds for it, which it is relayed on its own relay
  * subject, so a pane with no NATS server holds no relay subject, every registration of its fails
- * saying so, and its Legion claim fails with it (INFRA-771). The daemon's assignment arrives as
- * the RPC `prompt`. Nothing in a pane runs `legion` from bash (LEGION-631), so no stand-in
- * `legion` is on its PATH: `bin` holds what `prepare` put there.
+ * saying so, and its Legion claim fails with it (INFRA-771). The daemon's assignment is a task the
+ * pane takes (`./task-stand-in`): the stand-in holds it as the claim's value, the registration
+ * answers it, and the take is answered its text; each later one is relayed to the session as a
+ * task frame once the run before it has settled. An ordinary session (`legion: false`) is sent
+ * each one as the RPC `prompt` instead. Nothing in a pane runs `legion` from bash (LEGION-631),
+ * so no stand-in `legion` is on its PATH: `bin` holds what `prepare` put there.
  */
 export async function runLegionPane(
   binary: string,
@@ -958,6 +968,7 @@ export async function runLegionPane(
   cleanup: Cleanup
 ): Promise<LegionPane> {
   const { name, role, tree, issue } = options;
+  const legion = options.legion ?? true;
   const claimToken = `legion-${name}-${issue.toLowerCase()}-${role}`;
   // The pane's secrets: the boot token its registration spends, the secret the stand-in daemon
   // answers it with, and its Dispatch bearer.
@@ -987,6 +998,9 @@ export async function runLegionPane(
    * gateway itself still has to settle on the gateway falling silent. */
   let served = 0;
   let lastAnsweredAt = 0;
+  const tasks = taskStandIn();
+  // The session the pane registered, which a later task is relayed to.
+  let paneSession = "";
   const { requests, base } = serveStandin(cleanup, (url, body) => {
     if (url.pathname === "/anthropic/v1/messages") {
       served += 1;
@@ -1023,7 +1037,10 @@ export async function runLegionPane(
       });
     }
     if (url.pathname.startsWith("/anthropic/")) return Response.json({ data: [] });
+    const taskAnswer = tasks.answer(url.pathname, body);
+    if (taskAnswer !== undefined) return taskAnswer;
     if (url.pathname === "/legion/v1/claims/register") {
+      paneSession = typeof body.sessionId === "string" ? body.sessionId : "";
       return Response.json({
         ...registered,
         claimToken,
@@ -1032,6 +1049,7 @@ export async function runLegionPane(
         role,
         generation: 1,
         secret: claimSecret,
+        ...tasks.registered(),
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -1065,13 +1083,18 @@ export async function runLegionPane(
   });
   await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
 
+  // The connection a later task is relayed on, opened at the first such task.
+  const relay = taskRelayConnection(options.nats, cleanup);
+
   /**
-   * One life of the pane: omp started with `args` on its command line, given each prompt of
+   * One life of the pane: omp started with `args` on its command line, given each task of
    * `prompts` once the run the one before it started has settled, and left once the last has
-   * settled. A run has settled when the RPC stream reports its terminal agent_end: a continuation
-   * the host scheduled (the follow-up) starts its turn before that, under the same run. A steer
-   * the extension sends from `agent_end` instead starts its continuation after that frame, so
-   * `quietMs` waits for the gateway to fall silent rather than for the frame.
+   * settled. The first is the value the registration answers; each later one is relayed. An
+   * ordinary session's are each its RPC `prompt`, as a person types one. A run has settled when
+   * the RPC stream reports its terminal agent_end: a continuation the host scheduled (the
+   * follow-up) starts its turn before that, under the same run. A steer the extension sends from
+   * `agent_end` instead starts its continuation after that frame, so `quietMs` waits for the
+   * gateway to fall silent rather than for the frame.
    */
   const live = async (
     prompts: readonly string[],
@@ -1079,6 +1102,8 @@ export async function runLegionPane(
     whileUp?: (rpc: Rpc) => Promise<void>
   ): Promise<void> => {
     let settled = Promise.withResolvers<void>();
+    const [first] = prompts;
+    if (legion && first !== undefined) tasks.give(first);
     const rpc = spawnRpc(
       binary,
       {
@@ -1097,7 +1122,7 @@ export async function runLegionPane(
           ENVOY_URL: base,
           ENVOY_NATS_URL: options.nats,
           ...(options.dispatch ? { DISPATCH_URL: base, DISPATCH_TOKEN: dispatchToken } : {}),
-          ...((options.legion ?? true)
+          ...(legion
             ? {
                 LEGION_DAEMON_URL: base,
                 LEGION_ROLE: role,
@@ -1124,11 +1149,15 @@ export async function runLegionPane(
       },
       cleanup
     );
-    for (const prompt of prompts) {
-      settled = Promise.withResolvers<void>();
+    for (const [index, prompt] of prompts.entries()) {
+      if (index > 0) settled = Promise.withResolvers<void>();
       lastAnsweredAt = Date.now();
       const started = served;
-      rpc.send({ type: "prompt", message: prompt });
+      if (!legion) {
+        rpc.send({ type: "prompt", message: prompt });
+      } else if (index > 0) {
+        publishTaskFrame(await relay(), paneSession, claimToken, tasks.give(prompt));
+      }
       if (options.quietMs === undefined) {
         await Promise.race([settled.promise, rpc.closed]);
       } else {

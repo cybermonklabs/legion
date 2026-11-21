@@ -141,7 +141,7 @@ func seedLeftAlone(t *testing.T, r *mainPathRig, index int, row leftAloneClaim) 
 //
 // The whole path main runs is held here: the admission pass reads the claim's given entry below
 // the entry its row names and writes the start (admit's owedEntryRoles and resumeSlottedWorkers),
-// the outbox runner runs that row, and the agent is prompted that task. One entry reaches the
+// the outbox runner runs that row, and the agent takes that task. One entry reaches the
 // claim once: four more passes write no second row, because a task the claim has not confirmed is
 // a start already on its way (workflow.ArchitectStartPending).
 //
@@ -195,7 +195,7 @@ func TestAQueuedRootWhoseArchitectWasQueuedNoEntryIsSentThatEntrysTask(t *testin
 	}
 	prompts := r.prompts()
 	if len(prompts) != before+1 || prompts[len(prompts)-1].Message != pending.Task {
-		t.Fatalf("the architect was prompted %#v, want the one task of its entry", prompts[before:])
+		t.Fatalf("the architect took %#v, want the one task of its entry", prompts[before:])
 	}
 	// The lane that ran that row finished it, which deletes it, so a row standing in the outbox
 	// now is a row a later pass wrote.
@@ -218,7 +218,7 @@ func TestAQueuedRootWhoseArchitectWasQueuedNoEntryIsSentThatEntrysTask(t *testin
 		t.Fatalf("the architect's claim was given entry %d after four more passes, want the 1 it was given once", given)
 	}
 	if got := len(r.prompts()); got != before+1 {
-		t.Fatalf("the architect was prompted %d times, want the one prompt of its entry: one entry reaches a claim once", got-before)
+		t.Fatalf("the architect took a task %d times, want the one take of its entry: one entry reaches a claim once", got-before)
 	}
 	if reasons := architectStalledWakes(t, r.pool, mainPathRoot); len(reasons) != 0 {
 		t.Fatalf("the architect wakes of %s = %q, want none: its architect holds the task of its entry", mainPathRoot, reasons)

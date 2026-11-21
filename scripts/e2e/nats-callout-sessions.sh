@@ -675,11 +675,13 @@ else
     --session-id "$claude_session" --model "$claude_model") \
     <"$claude_home/stdin" >"$claude_home/rpc.log" 2>"$claude_home/stderr.log" &
   scenario_pids+=($!)
-  # One turn of its own first, in the bridge's own prompt frame (it ignores Claude Code's raw user
-  # frames): Claude Code's print mode starts its MCP servers with a turn. The session is up once its
-  # channel server has registered it with the listener; a session whose connection the hub does not
-  # admit (the seedless control) may never register, and its receives then say so.
-  jq -cn '{type: "prompt", id: "ncs-first", message: "Reply with the one word: ready."}' >&"$claude_fd"
+  # No first turn of the script's own: the bridge takes no prompt frame (a task is a value a pane
+  # takes from its daemon, and this run has none), and Claude Code starts its MCP server without
+  # one, as it does in every Legion pane, whose claim the channel server registers before the
+  # daemon has a task for it. The bridge's seed of the fresh session (`/rename`) is Claude Code's
+  # first input. The session is up once its channel server has registered it with the listener; a
+  # session whose connection the hub does not admit (the seedless control) may never register, and
+  # its receives then say so.
   claude_registered() { printf 'Authorization: Bearer %s' "$ENVOY_TOKEN" | curl -fs --max-time 5 -o /dev/null -H @- "$ENVOY_URL/v1/registry/$claude_session"; }
   wait_for 240 claude_registered ||
     note "Claude Code's channel server has not registered $claude_session: $(tail -n 3 "$claude_home/stderr.log")"

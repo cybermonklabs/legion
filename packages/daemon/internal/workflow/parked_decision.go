@@ -78,11 +78,11 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 // grandchild handed over beside its parent and a queued root adopted each bring what was decided
 // on them to this task with nothing moved, in whatever order their admissions run.
 //
-// The text names no generation: a start's task waits on its claim and is prompted whenever that
-// claim is next ready, which can be generations later, and the one architect session of the root
-// reads it then as what a person decided on its tree. It deletes nothing: the caller enqueues the
-// task with the record of what it named (record.KeptDecisions) and claims those rows for it in the
-// same transaction (EnqueueNaming). A catch-up that published tells what it named
+// The text names no generation: a start's task waits on its claim, and its worker takes it
+// whenever that claim is next ready, which can be generations later, and the one architect session
+// of the root reads it then as what a person decided on its tree. It deletes nothing: the caller
+// enqueues the task with the record of what it named (record.KeptDecisions) and claims those rows
+// for it in the same transaction (EnqueueNaming). A catch-up that published tells what it named
 // (Store.ForgetKeptDecisions) and a start's task tells it at the confirmation of the delivery the
 // claim queued it as; one that reached no architect hands it over (HandOverKept). Both results are
 // zero when there was nothing.
@@ -108,9 +108,9 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 
 // KeptDecisionsTask is the text that names kept to the architect of tree, the one wording a start
 // task and a catch-up both use (ParkedDecisionTask) and the one a held task is written back to
-// when an issue it names leaves that tree while the task waits to be sent (supervise's
+// when an issue it names leaves that tree while the task waits to be taken (supervise's
 // Deps.RootTask, the daemon's rootTask): a task whose decisions have all left is written back to
-// "", which is a task that names nothing and is retired rather than sent. The approval is the
+// "", which is a task that names nothing and is dropped rather than taken. The approval is the
 // root's own, so it is named whenever kept carries one — the gate was read where it was first
 // kept — and it is named on the document of its own step (record.DesignStep.Document), which is
 // the document the person reviewed and the one whose approval the architect requests again.
@@ -205,8 +205,8 @@ func HandOverKept(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // queued for nobody would only be dropped by the ready that follows. No catch-up of a hand-over
 // is paced: it answers a person who is waiting, and it reaches an architect the daemon did not
 // wake, so it is due at once (the zero moment QueueCatchUp reads as now). Nor does one carry the
-// sentence of what a relaunch ended, which only a launch's ready knows: the prompt the claim's
-// own machine sends carries that sentence whatever becomes of a catch-up.
+// sentence of what a relaunch ended, which only a launch's ready knows: the claim's own machine
+// puts that sentence in the text of the worker's next accepted take whatever becomes of a catch-up.
 func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, trees []string, now time.Time) error {
 	launches, err := store.ArchitectLaunches(ctx, tx, trees)
 	if err != nil {

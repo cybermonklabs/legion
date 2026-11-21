@@ -321,19 +321,9 @@ func callListener(t *testing.T, port int, method, path, body string) (int, strin
 }
 
 // countRecords counts the JSON records in the listener's output whose msg is name and that match
-// accepts.
+// accepts (logRecords).
 func countRecords(p *listenerProcess, name string, match func(map[string]any) bool) int {
-	count := 0
-	for line := range strings.SplitSeq(p.Output.String(), "\n") {
-		var record map[string]any
-		if json.Unmarshal([]byte(line), &record) != nil || record["msg"] != name {
-			continue
-		}
-		if match(record) {
-			count++
-		}
-	}
-	return count
+	return logRecords(p.Output.String(), name, match)
 }
 
 // A listener built before the KV key check stored role claims, interests, sessions and CI records

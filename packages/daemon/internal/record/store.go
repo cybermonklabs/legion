@@ -1479,7 +1479,7 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// number is never reset is also what keeps a review of the old entry from moving the
 		// reviewer's commit after the promotion: its footer names a number the row has left
 		// (PhaseRow.ReviewedHead), and until the promotion the row holds no entry's task. The mark
-		// that the task is sent as written goes with the task it was about. The time the entry was
+		// that the task is taken as written goes with the task it was about. The time the entry was
 		// raised stays with the number it belongs to, and so does the move that raised it
 		// (entry_moved_back), which that same promotion writes again. The counts go with the
 		// rounds: the new generation counts its moves back from nothing, and the cap mark goes
@@ -3502,22 +3502,27 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // readyWorkerTask).
 //
 // The task is read as the entry it is of, the two moments of its handshake — queued when the
-// delivery was written, confirmed when a turn of the claim's worker took it — and whether a let-go
-// took it back from a turn (interrupted), with the moment the claim's agent last said it was ready
-// (last_ready) and the claim's own handshake of the last entry it was queued a task of
-// (handshake_*), whose queued moment is when that entry's task was first queued, however many
-// times it was queued again, and whose confirmed moment is when a turn first confirmed one. Those
-// are what say an architect took nothing — the task of the entry its row names, standing
-// unconfirmed, counted while the claim's agent is up from the later of that entry's first
-// queueing and the agent's ready — and when the bound of a root slow before its gate starts,
-// which the admission pass reads of every root it weighs (admit's architectStalls).
+// delivery was written, confirmed when the claim's worker's take of it was accepted — whether a
+// let-go took it back from a turn (interrupted) and whether that take's turn has started
+// (turn_started, which is what supervise's Delivery.StillWorked reads), with the moment the
+// claim's agent last said it was ready (last_ready) and the claim's own handshake of the last
+// entry it was queued a task of (handshake_*), whose queued moment is when that entry's task was
+// first queued, however many times it was queued again, and whose confirmed moment is when a take
+// of one was first accepted. The text the take was answered with (taken_text) is not read: no
+// reader of a role run asks it, and it stays on the row through the take's turn, so a read of it
+// would carry every running task's text on every admission pass. Those are what say an architect
+// took nothing — the task of the entry its row names, standing unconfirmed, counted while the
+// claim's agent is up from the later of that entry's first queueing and the agent's ready — and
+// when the bound of a root slow before its gate starts, which the admission pass reads of every
+// root it weighs (admit's architectStalls).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
+		c.session, c.task_written, c.task_finished, c.task_finished_session,
 		c.last_ready, c.handshake_entry, c.handshake_generation, c.handshake_queued_at, c.handshake_confirmed_at,
 		c.update_round, c.step_at, c.turn_started_at,
 		c.activity_at, c.activity_background, c.activity_next_reminder_at,
 		d.claim_token is not null, coalesce(d.delivery_id, ''), coalesce(d.generation, 0), coalesce(d.phase, ''), coalesce(d.entry, 0), d.queued_at, d.confirmed_at,
-		coalesce(d.interrupted, false)
+		coalesce(d.interrupted, false), coalesce(d.turn_started, false)
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
 		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
@@ -3529,12 +3534,13 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		var pending bool
 		var task supervise.Delivery
 		var queued, confirmed *time.Time
+		var written, finished int64
 		// last_ready is nullable (migration 20261029121000_claim_death_and_start_causes): a claim
 		// whose agent has never said it was ready has none, and the zero time is what says so.
 		var ready *time.Time
 		// Both handshake moments are nullable (migration 20261114020537_claim_entry_handshake): a
-		// claim queued no task of an entry has neither, and one no turn confirmed such a task of
-		// has no confirmed moment. The zero time left in each is what says so.
+		// claim queued no task of an entry has neither, and one no accepted take confirmed such a
+		// task of has no confirmed moment. The zero time left in each is what says so.
 		var handshakeQueued, handshakeConfirmed *time.Time
 		// Both step columns are nullable (migration 20261107052815_claim_step_record): a claim
 		// whose agent has neither stepped nor begun a turn has neither, and the zero time left
@@ -3546,11 +3552,14 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		// rule that reads them (workflow.SilentPhaseWorker).
 		var reported, reminder *time.Time
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
-			&held.GivenEntry, &ready, &held.Handshake.Entry, &held.Handshake.Generation, &handshakeQueued, &handshakeConfirmed,
+			&held.GivenEntry, &held.Session, &written, &finished, &held.TaskFinishedSession,
+			&ready, &held.Handshake.Entry, &held.Handshake.Generation, &handshakeQueued, &handshakeConfirmed,
 			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
-			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted); err != nil {
+			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted,
+			&task.TurnStarted); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
+		held.TaskWritten, held.TaskFinished = uint64(written), uint64(finished)
 		if ready != nil {
 			held.LastReady = ready.UTC()
 		}

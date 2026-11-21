@@ -1,9 +1,9 @@
 package supervise
 
-// A send that never reaches a turn leaves two marks: the claim's prompt budget, which only the
-// far side's own answer about this workspace spends, and the pending task's record of every
-// failed send, which is kept whether the failure was charged or not. These tests pin both
-// (INFRA-1480).
+// A take whose adoption of the working copy fails leaves two marks: the claim's prompt budget,
+// which only the far side's own answer about this workspace spends, and the pending task's record
+// of every failed adoption, which is kept whether the failure was charged or not. These tests pin
+// both (INFRA-1480).
 
 import (
 	"context"
@@ -25,10 +25,10 @@ const staleLockRefusal = "Command failed (exit 1): jj metaedit: the git lock " +
 	"/legion/workspaces/acme/widgets/legion-480/.git/index.lock was last written 31m ago"
 
 // staleLockRefusalWithNUL is that same answer with a NUL byte in it, which is what reaches the
-// daemon when the far side's JSON holds a `\u0000`: Oh My Pi decodes it into the `error` string,
-// and the shim relays the wedged command's own bytes whatever they are. PostgreSQL refuses a NUL in
-// text ("invalid byte sequence for encoding \"UTF8\": 0x00"), so the record holds U+FFFD in its
-// place, as every text the daemon stores does (storetext.FarSideError).
+// daemon when the wedged command printed one: the Go shim relays the command's own bytes whatever
+// they are. PostgreSQL refuses a NUL in text ("invalid byte sequence for encoding \"UTF8\":
+// 0x00"), so the record of failed working-copy adoptions holds U+FFFD in its place, as every text
+// the daemon stores does (storetext.FarSideError).
 const staleLockRefusalWithNUL = "Command failed (exit 1): jj metaedit: the git lock " +
 	"/legion/workspaces/acme/widgets/legion-480/.git/index.lock\x00 was last written 31m ago"
 
@@ -39,37 +39,34 @@ const staleLockRefusalWithRawByte = "Command failed (exit 1): jj metaedit: the g
 
 // adoptingHarness is a machine whose role has an App identity to adopt its working copy with, at
 // ready with nothing pending: without an Identity the daemon adopts nothing at all (Machine.adopt)
-// and no adoption could fail. Every task sent through it names a phase, because a prompt that is
+// and no adoption could fail. Every task given through it names a phase, because a task that is
 // no phase task adopts nothing either (Machine.adopts): the adoption is made for the commits a
 // phase writes, and a message or a reminder would only take the workspace from whichever role is
 // working in it (dispatch://INFRA-714).
 func adoptingHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newHarness(t)
-	h.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
-		return runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}, nil
-	}
+	h.deps.Identity = adoptingIdentity
 	h.restart()
 	h.reach(StateReady)
 	return h
 }
 
-// The whole split a failed send is charged on, in one table: the prompt budget pays for the two
-// answers the far side gave about this very workspace — a prompt the agent refused and an
-// adoption the shim refused — and for nothing else. A frame the transport lost, either frame, and
-// an App identity the daemon could not mint before any frame left it, say nothing about the
-// workspace or the agent, cost nothing, and are retried for as long as they keep failing. Charging
-// them would retire a healthy worker for its cluster's weather; charging neither of the first two
-// leaves a claim re-sending for ever, which is what held two planning tasks 31 and 33 hours
-// (INFRA-1480).
+// The whole split a failed adoption is charged on, in one table: the prompt budget pays for the
+// answer the far side gave about this very workspace — an adoption the shim refused — and for
+// nothing else. A call the transport lost, and an App identity the daemon could not mint before
+// any call left it, say nothing about the workspace or the agent, cost nothing, and the value is
+// written again for as long as they keep failing. Charging them would retire a healthy worker for
+// its cluster's weather; charging none leaves a claim refused for ever, which is what held two
+// planning tasks 31 and 33 hours (INFRA-1480). Each take is refused with the adoption's hold.
 //
 // Each row names its own failure in the log, the uncharged ones included: an operator reading a
-// claim that waits is told whether the prompt was lost on the way or the GitHub App would mint
+// claim that waits is told whether the adoption was lost on the way or the GitHub App would mint
 // no identity for it, which are looked for in different places.
-func TestDeliveryBudgets(t *testing.T) {
+func TestTakeWhoseAdoptionFailsIsRefusedAndOnlyTheShimsRefusalIsCharged(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// fail arranges the one failure the send meets.
+		// fail arranges the one failure the take's adoption meets.
 		fail func(h *harness)
 		// logged is the message of the log line the failure writes, which carries the failure's
 		// own text beside it; the charge writes a line of its own, so the message is matched
@@ -78,22 +75,14 @@ func TestDeliveryBudgets(t *testing.T) {
 		text    string
 		budgets Budgets
 	}{
-		{name: "the agent refuses the prompt",
-			fail:    func(h *harness) { h.conn.RefusePrompt("the model provider refused the request") },
-			logged:  `msg="supervise: the agent refused the prompt"`,
-			text:    "the model provider refused the request",
-			budgets: Budgets{PromptFailures: 1}},
-		{name: "the transport loses the prompt",
-			fail:   func(h *harness) { h.conn.FailPrompt(errBoom) },
-			logged: `msg="supervise: the prompt was lost to the transport; the delivery waits"`, text: errBoom.Error()},
 		{name: "the shim refuses the adoption",
 			fail:    func(h *harness) { h.rt.FailAdoptWorkingCopy(adoptRefusal(staleLockRefusal)) },
-			logged:  `msg="supervise: the shim refused to adopt the working copy; the prompt was never sent"`,
+			logged:  `msg="` + adoptRefusedLine + `"`,
 			text:    staleLockRefusal,
 			budgets: Budgets{PromptFailures: 1}},
 		{name: "the transport loses the adoption",
 			fail:   func(h *harness) { h.rt.FailAdoptWorkingCopy(errBoom) },
-			logged: `msg="supervise: the prompt was lost to the transport; the delivery waits"`, text: errBoom.Error()},
+			logged: `msg="supervise: the adoption of the working copy was lost to the transport; the take is refused and the task waits"`, text: errBoom.Error()},
 		{name: "the role's App identity cannot be minted",
 			fail: func(h *harness) {
 				h.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
@@ -102,7 +91,7 @@ func TestDeliveryBudgets(t *testing.T) {
 				h.restart()
 				h.reach(StateReady)
 			},
-			logged: `msg="supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits"`,
+			logged: `msg="supervise: the role's GitHub App identity could not be minted; the take is refused and the task waits"`,
 			text:   errBoom.Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,8 +101,12 @@ func TestDeliveryBudgets(t *testing.T) {
 			h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing})
 
 			h.wantBudgets(tc.budgets)
-			if p := h.pending(); p.Task != "the task" || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
-				t.Fatalf("pending %+v, want the task waiting unread for the next send", p)
+			h.wantPrompts(0)
+			if answers := h.worker.answers; len(answers) != 1 || answers[0].Outcome != TakeOutcomeRefused || answers[0].Hold != HoldAdoption {
+				t.Fatalf("the take was answered %+v, want it refused by %q", answers, HoldAdoption)
+			}
+			if p := h.pending(); p.Task != "the task" || p.taken() {
+				t.Fatalf("pending %+v, want the task waiting untaken for the next take", p)
 			}
 			if lines := h.logs.lines("level=WARN", tc.logged, tc.text); len(lines) != 1 {
 				t.Fatalf("logged %v, want one warning naming %q and carrying %q", lines, tc.logged, tc.text)
@@ -121,7 +114,7 @@ func TestDeliveryBudgets(t *testing.T) {
 		})
 	}
 
-	// Refused adoptions spend that budget to its end rather than being re-sent for ever: with the
+	// Refused adoptions spend that budget to its end rather than being refused for ever: with the
 	// shipped limits (prompt_failure_limit 3, prompt_retire_limit 2) three charges retire the
 	// process and relaunch the session, and the sixth consecutive charge fails the claim, which
 	// `legion state` and the stranded report then name. A failed claim adopts nothing more.
@@ -130,7 +123,7 @@ func TestDeliveryBudgets(t *testing.T) {
 		h.rt.FailAdoptWorkingCopy(adoptRefusal(staleLockRefusal))
 
 		h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing}) // the first charge
-		h.observe(runtime.Alive)                                                              // the second
+		h.observe(runtime.Alive)                                                              // the second, at the value the sweep writes again
 		h.wantBudgets(Budgets{PromptFailures: 2})
 		h.observe(runtime.Alive) // the third: the retirement
 
@@ -143,14 +136,14 @@ func TestDeliveryBudgets(t *testing.T) {
 
 		h.wantState(StateFailed)
 		h.wantBudgets(Budgets{PromptFailures: 3, PromptRetires: 2})
-		// One adoption per send and no seventh: the claim failed where it would otherwise have
-		// asked again, and no prompt ever reached the agent.
+		// One adoption per take and no seventh: the claim failed where it would otherwise have
+		// been offered the task again, and no take was ever accepted.
 		h.wantCalls("AdoptWorkingCopy", 6)
 		h.wantPrompts(0)
 		if lines := h.logs.lines("level=WARN",
-			`msg="supervise: the shim refused to adopt the working copy; the prompt was never sent"`,
+			`msg="`+adoptRefusedLine+`"`,
 			staleLockRefusal); len(lines) != 6 {
-			t.Fatalf("logged %d adoption refusals, want one per send naming the shim's own words:\n%s",
+			t.Fatalf("logged %d adoption refusals, want one per take naming the shim's own words:\n%s",
 				len(lines), strings.Join(lines, "\n"))
 		}
 		if p := h.pending(); p.Task != "the task" {
@@ -158,31 +151,31 @@ func TestDeliveryBudgets(t *testing.T) {
 		}
 	})
 
-	// The charge is what bounds the re-sends, and the record of the failed send beside it is only
-	// a diagnosis, so a record the store will not take decides nothing about the charge. The write
-	// of that record used to return before the split that charges, and a refused adoption whose
-	// text the store refused was then charged nothing and re-sent with no bound — the very stall
-	// the split exists to end (INFRA-1480). The store refuses the write itself here, rather than
-	// the text being one a UTF8 server rejects, so the claim holds for every reason a write can
-	// fail and not for one encoding's quirk.
+	// The charge is what bounds the takes refused, and the record of the failed adoption beside it
+	// is only a diagnosis, so a record the store will not take decides nothing about the charge.
+	// The write of that record used to return before the split that charges, and a refused
+	// adoption whose text the store refused was then charged nothing and offered again with no
+	// bound — the very stall the split exists to end (INFRA-1480). The store refuses the write
+	// itself here, rather than the text being one a UTF8 server rejects, so the claim holds for
+	// every reason a write can fail and not for one encoding's quirk.
 	t.Run("a refused adoption is charged though its record is not written", func(t *testing.T) {
 		h := adoptingHarness(t)
 		h.rt.FailAdoptWorkingCopy(adoptRefusal(staleLockRefusalWithNUL))
 
-		// The first send writes its record: this same call queues the task, and a store refusing
-		// every delivery write would refuse the queue's own write and leave no task to re-send.
+		// The first take writes its record: this same call queues the task, and a store refusing
+		// every delivery write would refuse the queue's own write and leave no task to take.
 		h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing})
 		h.wantBudgets(Budgets{PromptFailures: 1})
 
 		h.store.fail("PutDelivery", errBoom)
-		h.observe(runtime.Alive) // the sweep's re-send, whose record the store refuses
+		h.observe(runtime.Alive) // the sweep's offer, whose take's record the store refuses
 
 		h.wantBudgets(Budgets{PromptFailures: 2})
 		if p := h.pending(); p.SendFailures != 2 {
-			t.Fatalf("pending %+v, want the second failed send counted in memory", p)
+			t.Fatalf("pending %+v, want the second failed adoption counted in memory", p)
 		}
 		if lines := h.logs.lines("level=WARN",
-			`msg="supervise: the failed send was not recorded on the delivery; settle writes it again and the charge goes on"`,
+			`msg="supervise: the failed adoption was not recorded on the delivery; settle writes it again and the charge goes on"`,
 			errBoom.Error()); len(lines) != 1 {
 			t.Fatalf("logged %v, want the unwritten record named once", lines)
 		}
@@ -190,7 +183,7 @@ func TestDeliveryBudgets(t *testing.T) {
 		// The other half of the same fix, and the half a guard written the obvious way does not
 		// reach: carrying the failed write past loses nothing, because settle writes the record
 		// again at the next decision. Reading the stored row after another sweep would prove
-		// none of it — that sweep's own send fails too, and its putPending writes the row — so
+		// none of it — that sweep's own take fails too, and its putPending writes the row — so
 		// the decision after the store recovers must be one that touches no delivery. An
 		// operator's suspension is that decision, and it retires nothing because an operator's
 		// suspension keeps the pending task whatever its phase (SuspendSource.RetiresPhaseTask,
@@ -221,7 +214,7 @@ func TestDeliveryBudgets(t *testing.T) {
 	// follows it in the log at Info, in lines one log entry holds, under a message of their own
 	// that names the warning's (farSideErrorInFull, storetext.LogWhole), so nothing is lost and
 	// only moved.
-	t.Run("the text a failed send records is cleaned and bounded", func(t *testing.T) {
+	t.Run("the text a failed adoption records is cleaned and bounded", func(t *testing.T) {
 		// About a megabyte of relayed stderr, as a jj wedged on a lock writes it, ending in a
 		// line the log must still carry and the record must not.
 		hugeRefusal := "Command failed (exit 1): jj metaedit: " +
@@ -277,7 +270,7 @@ func TestDeliveryBudgets(t *testing.T) {
 					t.Fatalf("logged %d records of %q, want the refusal's one warning, however long its text", len(records), adoptRefusedLine)
 				}
 				warned, _ := records[0].attr("error")
-				delivery, _ := records[0].attr("delivery")
+				task, _ := records[0].attr("task")
 				if warned.String() != got {
 					t.Fatalf("the warning carries %.300q, want the text the delivery records", warned.String())
 				}
@@ -285,12 +278,12 @@ func TestDeliveryBudgets(t *testing.T) {
 				for i, part := range h.records.of(farSideErrorInFull) {
 					number, _ := part.attr("part")
 					of, _ := part.attr("of")
-					partDelivery, _ := part.attr("delivery")
+					partTask, _ := part.attr("task")
 					text, _ := part.attr("error")
 					if part.level != slog.LevelInfo || number.Kind() != slog.KindInt64 || number.Int64() != int64(i+1) ||
-						of.String() != adoptRefusedLine || partDelivery.String() != delivery.String() {
-						t.Fatalf("part record %d is %s part %v of %q for delivery %v, want part %d at INFO of %q for delivery %v",
-							i+1, part.level, number, of, partDelivery, i+1, adoptRefusedLine, delivery)
+						of.String() != adoptRefusedLine || partTask.String() != task.String() {
+						t.Fatalf("part record %d is %s part %v of %q for task %v, want part %d at INFO of %q for task %v",
+							i+1, part.level, number, of, partTask, i+1, adoptRefusedLine, task)
 					}
 					whole.WriteString(text.String())
 				}
@@ -303,17 +296,17 @@ func TestDeliveryBudgets(t *testing.T) {
 	})
 }
 
-// Every send that fails is recorded on the pending task itself — how many have failed, when the
-// last of them failed by the machine's clock, and the error it failed with — and the record is
+// Every adoption that fails is recorded on the pending task itself — how many have failed, when
+// the last of them failed by the machine's clock, and the error it failed with — and the record is
 // kept for a failure the budget charged and for one it did not. The uncharged failures are the
-// ones it exists for: a transport loss costs nothing and is retried for ever, so without this the
-// only trace of a claim waiting days on a send that never lands is a log line inside its pod. A
-// send that reaches a turn clears all three, so what an operator reads on a pending task is the
-// run of failures standing in the way of the send it is still waiting for.
-func TestDeliveryRecordsItsFailures(t *testing.T) {
+// ones it exists for: a transport loss costs nothing and is offered again for ever, so without
+// this the only trace of a claim waiting days on a take that never lands is a log line inside its
+// pod. An accepted take clears all three, so what an operator reads on a pending task is the run
+// of failures standing in the way of the take it is still waiting for.
+func TestTakeRecordsItsAdoptionFailuresAndAnAcceptedTakeClearsThem(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// fail arranges the failure, and succeed takes it away so the next send lands.
+		// fail arranges the failure, and succeed takes it away so the next take is accepted.
 		fail    func(h *harness)
 		succeed func(h *harness)
 		text    string
@@ -324,9 +317,9 @@ func TestDeliveryRecordsItsFailures(t *testing.T) {
 			succeed: func(h *harness) { h.rt.FailAdoptWorkingCopy(nil) },
 			text:    staleLockRefusal,
 			charged: Budgets{PromptFailures: 2}},
-		{name: "a prompt the transport loses, which is not",
-			fail:    func(h *harness) { h.conn.FailPrompt(errBoom) },
-			succeed: func(h *harness) { h.conn.FailPrompt(nil) },
+		{name: "an adoption the transport loses, which is not",
+			fail:    func(h *harness) { h.rt.FailAdoptWorkingCopy(errBoom) },
+			succeed: func(h *harness) { h.rt.FailAdoptWorkingCopy(nil) },
 			text:    errBoom.Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -338,13 +331,13 @@ func TestDeliveryRecordsItsFailures(t *testing.T) {
 			first := h.clock.Now()
 			p := h.pending()
 			if p.SendFailures != 1 || !p.LastSendFailureAt.Equal(first) || !strings.Contains(p.LastSendError, tc.text) {
-				t.Fatalf("pending after one failed send = %+v, want one failure at %v carrying %q", p, first, tc.text)
+				t.Fatalf("pending after one failed adoption = %+v, want one failure at %v carrying %q", p, first, tc.text)
 			}
-			if !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
-				t.Fatalf("pending %+v, want the task left queued by the failed send", p)
+			if p.taken() {
+				t.Fatalf("pending %+v, want the task left untaken by the failed adoption", p)
 			}
-			// The record rides out on the write the taken-back send already makes, so a restart
-			// reads it rather than starting the count again.
+			// The record rides out on the delivery's own write, so a restart reads it rather than
+			// starting the count again.
 			if stored, ok := h.store.delivery(testToken); !ok || stored.SendFailures != 1 || !stored.LastSendFailureAt.Equal(first) {
 				t.Fatalf("stored delivery = %+v (held %t), want the failure persisted with it", stored, ok)
 			}
@@ -354,20 +347,19 @@ func TestDeliveryRecordsItsFailures(t *testing.T) {
 			h.observe(runtime.Alive)
 
 			if p := h.pending(); p.SendFailures != 2 || !p.LastSendFailureAt.Equal(second) {
-				t.Fatalf("pending after two failed sends = %+v, want two failures, the last at %v", p, second)
+				t.Fatalf("pending after two failed adoptions = %+v, want two failures, the last at %v", p, second)
 			}
 			h.wantBudgets(tc.charged)
 
 			tc.succeed(h)
 			h.observe(runtime.Alive)
-			h.must(StreamTurnStart{Claim: testToken})
 
 			p = h.pending()
-			if p.ConfirmedAt.IsZero() {
-				t.Fatalf("pending %+v, want the turn that started to have confirmed it", p)
+			if !p.awaitsTurn() {
+				t.Fatalf("pending %+v, want the take the sweep offered accepted", p)
 			}
 			if p.SendFailures != 0 || !p.LastSendFailureAt.IsZero() || p.LastSendError != "" {
-				t.Fatalf("pending after the send that reached a turn = %+v, want its failure record cleared", p)
+				t.Fatalf("pending after the accepted take = %+v, want its failure record cleared", p)
 			}
 			if stored, ok := h.store.delivery(testToken); !ok || stored.SendFailures != 0 ||
 				!stored.LastSendFailureAt.IsZero() || stored.LastSendError != "" {

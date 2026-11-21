@@ -299,7 +299,7 @@ func TestTheSweepWaitsForAReleasesQueuedResumeAndRetiresNothingOfIt(t *testing.T
 	answered := fmt.Sprintf("A person answered your ask %s on %s", mainPathAsk, r.key)
 	for _, prompt := range r.prompts()[sent:] {
 		if !strings.HasPrefix(prompt.DeliveryID, relaunchDeliveryPrefix) || strings.Contains(prompt.Message, answered) {
-			t.Fatalf("the resumed architect was prompted %+v, want nothing but the record of the release's let-go before the sweep sends its entry",
+			t.Fatalf("the resumed architect took %+v, want nothing but the record of the release's let-go before the sweep sends its entry",
 				r.prompts()[sent:])
 		}
 	}

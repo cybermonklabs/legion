@@ -91,10 +91,11 @@ func TestARootExitWhoseSuspendFailsStillSuspendsIt(t *testing.T) {
 	}
 }
 
-// A root's exit ends its phase as a suspension does, so a task still pending unconfirmed — sent and
-// acknowledged, no turn started — is retired with it: the next resume starts with its new phase's
-// task, never the finished one's. That holds whether or not the runtime could suspend the process.
-func TestARootsExitRetiresItsPhasesUnconfirmedTask(t *testing.T) {
+// A root's exit ends its phase as a suspension does, so a task still pending with no turn of it
+// started — taken, its turn still to come — is retired with it: the next resume starts with its
+// new phase's task, never the finished one's. That holds whether or not the runtime could suspend
+// the process.
+func TestARootsExitRetiresItsPhasesTaskWhoseTurnHasNotStarted(t *testing.T) {
 	for _, failSuspend := range []bool{false, true} {
 		name := "suspend ok"
 		if failSuspend {
@@ -107,8 +108,8 @@ func TestARootsExitRetiresItsPhasesUnconfirmedTask(t *testing.T) {
 			// end here (TestAnOperatorsTaskSurvivesASuspensionAndGoesOnResume).
 			h.must(RequestDeliver{Claim: rootToken, Task: "the task", Phase: phase.Implementing})
 			h.wantPrompts(1)
-			if stored, ok := h.store.delivery(rootToken); !ok || stored.DeliveredAt.IsZero() || !stored.ConfirmedAt.IsZero() {
-				t.Fatalf("stored delivery %+v (ok=%v), want it acknowledged and unconfirmed", stored, ok)
+			if stored, ok := h.store.delivery(rootToken); !ok || !stored.awaitsTurn() {
+				t.Fatalf("stored delivery %+v (ok=%v), want it taken and its turn still to come", stored, ok)
 			}
 			if failSuspend {
 				h.rt.FailSuspend(errBoom)
@@ -118,7 +119,7 @@ func TestARootsExitRetiresItsPhasesUnconfirmedTask(t *testing.T) {
 
 			h.wantState(StateSuspended)
 			if p := h.claim().Pending; p != nil {
-				t.Errorf("pending %+v, want the unconfirmed task retired with the root's exit", p)
+				t.Errorf("pending %+v, want the task whose turn had not started retired with the root's exit", p)
 			}
 			if d, ok := h.store.delivery(rootToken); ok {
 				t.Errorf("stored delivery %+v, want it retired", d)

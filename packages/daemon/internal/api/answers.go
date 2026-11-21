@@ -48,11 +48,13 @@ const ServingFloor = 46
 //
 // 193 is the constant rather than its number, because the entry that added the shaped answers
 // names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The last is
-// repositoriesLiveContract rather than its number for the same reason: it is this daemon's own
-// contract, dispatch://INFRA-4401's, and a renumber of that change moves the constant and this
-// list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract}
+// one of the two alone would describe a shape at a contract no entry declares. 202 is
+// repositoriesLiveContract rather than its number for the same reason: it is
+// dispatch://INFRA-4401's contract, and a renumber of that change moves the constant and this list
+// with it. The last, 207, is supervise.TaskTakeContract for the same reason: it is this daemon's
+// own contract, the entry that brought the take names it, and a renumber of that entry moves the
+// constant and this list together.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, supervise.TaskTakeContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -78,6 +80,8 @@ const (
 	AnswerRefusal            AnswerID = "refusal"
 	AnswerProjectPause       AnswerID = "project-pause"
 	AnswerProjectResume      AnswerID = "project-resume"
+	AnswerTask               AnswerID = "task"
+	AnswerTake               AnswerID = "take"
 )
 
 // Answer is one response schema a plugin parses, with every route that answers it and the
@@ -150,14 +154,16 @@ var Answers = []Answer{
 	// Older than the floor: the controller's registration answer, which version.go's 14 added to
 	// the same route and which 46 is the floor for here.
 	{ID: AnswerRegisterController, Routes: []string{"POST /legion/v1/claims/register"}, Since: ServingFloor},
-	// Older than the floor: 204 and nothing after the headers. Two of the four routes are newer
-	// — `claims/ready-for-update` is version.go's 46 and `claims/activity` its 48 — but the
-	// answer they share is older than either.
+	// Older than the floor: 204 and nothing after the headers. Three of the five routes are newer
+	// — `claims/ready-for-update` is version.go's 46, `claims/activity` its 48 and
+	// `claims/task-seen` its 207 (supervise.TaskTakeContract) — but the answer they share is older
+	// than any of them.
 	{ID: AnswerNoContent, Routes: []string{
 		"POST /legion/v1/claims/ready",
 		"POST /legion/v1/claims/ready-for-update",
 		"POST /legion/v1/claims/exit",
 		"POST /legion/v1/claims/activity",
+		"POST /legion/v1/claims/task-seen",
 	}, Since: ServingFloor, NoBody: true},
 	// version.go's 48: the deployment's release, resume and hold records a pod reads.
 	{ID: AnswerReleaseRecords, Routes: []string{"POST /legion/v1/claims/release-records"}, Since: 48},
@@ -198,6 +204,14 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
+	// version.go's 207: a worker's read of its claim's task value, the value the task bucket holds
+	// and the number of the last task the claim finished (`claim.TaskResponse`). The route arrives
+	// with the answer, so no contract below 207 records either.
+	{ID: AnswerTask, Routes: []string{"POST /legion/v1/claims/task"}, Since: supervise.TaskTakeContract},
+	// version.go's 207: the answer to a worker's take of the task its value names, accepted with
+	// the text, refused naming the hold or dropped (`claim.TakeResponse`), arrived with its route
+	// as the task read's answer did.
+	{ID: AnswerTake, Routes: []string{"POST /legion/v1/claims/take"}, Since: supervise.TaskTakeContract},
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,
@@ -240,10 +254,10 @@ type EnumeratedValue struct {
 // `z.enum`, at every key path it is reachable at. The whole-project body's `issues.*.…` and the
 // record's bare `…` are two rows of one field, as the two `answeredBy` rows are. A field read
 // with a `z.literal` is no row — `issues.*.holdReason`, `controllerLocator.external` and the
-// discriminators of the three discriminated unions, `locator.runtime`, `waitingOn.kind` and a
-// pause actor's `kind` (`paused.by`, `lastPause.by`, `lastPause.endedBy`) — because a literal
-// admits the one value its own shape carries and a daemon that widened it would be changing the
-// field's type rather than its domain.
+// discriminators of the four discriminated unions, `locator.runtime`, `waitingOn.kind`, a pause
+// actor's `kind` (`paused.by`, `lastPause.by`, `lastPause.endedBy`) and the take answer's
+// `outcome` — because a literal admits the one value its own shape carries and a daemon that
+// widened it would be changing the field's type rather than its domain.
 //
 // Each value's arrival is the later of two readings, and each row says which of them decided
 // it: the contract the value first appears in the plugin's own list at, and the contract the
@@ -253,10 +267,11 @@ type EnumeratedValue struct {
 // The first reading is measured rather than guessed: `legion-api.ts` and `legion-roles.ts` were
 // read at the commit that declared each contract of SupportedContracts, and the members of
 // every `z.enum` diffed. The lists below that ever grew are `answeredBy`, which gained
-// `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56, and
-// `waitingLine.kind`, which gained `waiting_on_issue` at 132, so every other list is recorded
-// whole at its own field's arrival. (`suspendedBy` gained `released` at 48 and is no row here:
-// the operator claim answers carry it and no plugin parses them.)
+// `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56,
+// `waitingLine.kind`, which gained `waiting_on_issue` at 132, and a claim's failure cause, which
+// gained `never_reconnected` at 207, so every other list is recorded whole at its own field's
+// arrival. (`suspendedBy` gained `released` at 48 and is no row here: the operator claim answers
+// carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
 
 // enumeratedFields is every row the table holds: the state's own, the record's taken from them,
@@ -347,6 +362,10 @@ var stateEnumeratedFields = []EnumeratedField{
 	// contract whole (shaping.go's withoutPause). The pause's `by.kind` and `endedBy.kind` are no
 	// rows: each is the discriminator of a discriminated union, read with a `z.literal`.
 	{Answer: AnswerState, KeyPath: "paused.waitsOn.*.role", Values: pauseStopRoles},
+	// `role` of one claim whose task value nobody reported seeing (api.UnseenTaskValue.Role). It
+	// arrived with `unseenTaskValues`, which is served down below that contract whole
+	// (shaping.go's withoutUnseenTaskValues), so no body below 207 carries a value of it.
+	{Answer: AnswerState, KeyPath: "unseenTaskValues.*.role", Values: unseenTaskRoles},
 	// `runtime` of the registered controller's locator, the runtime this daemon runs under
 	// (api.ControllerLocator.Runtime).
 	{Answer: AnswerState, KeyPath: "controllerLocator.runtime", Values: controllerRuntimes},
@@ -373,7 +392,8 @@ var stateEnumeratedFields = []EnumeratedField{
 	// failed the claim chose (api.ClaimFailureView.Cause, supervise.FailureCause). Both arrived
 	// with the decided record and are served down below that contract whole
 	// (shaping.go's withoutRecordFields), and the architect's view and each worker's carry the
-	// one field.
+	// one field. Their list grew: `never_reconnected` arrived at 207, after the field, and is
+	// served as `never_registered` below that contract (shaping.go's withoutNeverReconnected).
 	{Answer: AnswerState, KeyPath: "issues.*.architect.failure.cause", Values: failureCauses},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.failure.cause", Values: failureCauses},
 	{Answer: AnswerState, KeyPath: "issues.*.architect.pendingCause", Values: failureCauses},
@@ -480,13 +500,23 @@ var workflowPhases = valuesFrom(recordFieldsContract,
 
 // failureCauses is every word the site that failed a claim can choose
 // (supervise.FailureCause), which the failure record's `cause` and the `pendingCause` beside it
-// share. Both arrived at recordFieldsContract, so the list is recorded there. It names each
-// constant rather than reading supervise.FailureCauses, because a cause added there later
-// arrives at its own contract and not at this one.
-var failureCauses = valuesFrom(recordFieldsContract,
-	supervise.CauseLaunchRefused, supervise.CauseDied, supervise.CauseNeverRegistered,
-	supervise.CauseStalePlugin, supervise.CausePromptRetiresExhausted, supervise.CauseProviderError,
-	supervise.CauseUnrecorded)
+// share. Both arrived at recordFieldsContract with seven words, which are recorded there. It
+// names each constant rather than reading supervise.FailureCauses, because a cause added there
+// later arrives at its own contract and not at this one, and the list grew once:
+// `never_reconnected`, a claim a daemon start restored ready, idle or working whose shim never
+// said hello again, arrived at supervise.TaskTakeContract (version.go's 207). So it is written
+// out value by value, sorted by value, as waitAnswers is, and a caller below 207 is served the
+// word as `never_registered` (shaping.go's withoutNeverReconnected).
+var failureCauses = []EnumeratedValue{
+	{Value: string(supervise.CauseDied), Since: recordFieldsContract},
+	{Value: string(supervise.CauseLaunchRefused), Since: recordFieldsContract},
+	{Value: string(supervise.CauseNeverReconnected), Since: supervise.TaskTakeContract},
+	{Value: string(supervise.CauseNeverRegistered), Since: recordFieldsContract},
+	{Value: string(supervise.CausePromptRetiresExhausted), Since: recordFieldsContract},
+	{Value: string(supervise.CauseProviderError), Since: recordFieldsContract},
+	{Value: string(supervise.CauseStalePlugin), Since: recordFieldsContract},
+	{Value: string(supervise.CauseUnrecorded), Since: recordFieldsContract},
+}
 
 // lineParts is every part of the admission's waiting line a member can stand in, and whyStates
 // every fact that holds an issue that is not working now. Both arrived at
@@ -535,9 +565,10 @@ var floorRoles = []claim.Role{
 	claim.RoleReviewer, claim.RoleMerger,
 }
 
-// claimRoles is every role a claim can hold, which four rows share: the stranded report's, the
-// registration's, the wake's and the pause stop's, those last two at their own arrivals
-// (wakeRoles, pauseStopRoles). The list has not moved since the floor.
+// claimRoles is every role a claim can hold, which five rows share: the stranded report's, the
+// registration's, the wake's, the pause stop's and the unseen task value's, those last three at
+// their own arrivals (wakeRoles, pauseStopRoles, unseenTaskRoles). The list has not moved since
+// the floor.
 var claimRoles = valuesFrom(ServingFloor, floorRoles...)
 
 // wakeRoles is the same list of roles at the contract `wakesWaiting` arrived at: no wake of that
@@ -548,6 +579,11 @@ var wakeRoles = valuesFrom(wakesWaitingContract, floorRoles...)
 // each claim the open pause waits on takes (api.PauseStopView.Role): no `paused` is served below
 // that contract at all (shaping.go's withoutPause).
 var pauseStopRoles = valuesFrom(pauseContract, floorRoles...)
+
+// unseenTaskRoles is the same list of roles at the contract `unseenTaskValues` arrived at,
+// supervise.TaskTakeContract: no `unseenTaskValues` is served below that contract at all
+// (shaping.go's withoutUnseenTaskValues).
+var unseenTaskRoles = valuesFrom(supervise.TaskTakeContract, floorRoles...)
 
 // updateStates is every value of a claim view's `updateState`, recorded at the contract this
 // change adds the key under. The words are the four the package declares (updatestate.go), so a

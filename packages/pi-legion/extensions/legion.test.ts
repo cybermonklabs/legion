@@ -64,6 +64,7 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
+import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -76,6 +77,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { ConnectionOptions, NatsConnection } from "nats";
 import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
 import type { resetNatsConnectForTests as ResetNatsConnectForTests } from "../../pi-envoy/extensions/envoy";
+import { CardWake } from "../../pi-envoy/src/card-wake";
 import pkg from "../package.json";
 import {
   type CapabilityHost,
@@ -105,6 +107,15 @@ import type {
   setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
   setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
 } from "./legion";
+
+/** Lets the event loop turn, up to 50 times, until `until` holds. */
+async function turns(until: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 50 && !until(); turn += 1) {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setImmediate(resolve);
+    await promise;
+  }
+}
 
 // The consumer answer every registration here is given is the harness's (`deliveryFor`), shared
 // with the tests that run the real binary.
@@ -534,6 +545,9 @@ function createPi(
     readonly agentsExposed?: boolean;
     /** The Envoy entry the pane binds; the one this file loaded unless a test loads another. */
     readonly envoyEntry?: typeof envoyExtension;
+    /** The host's answer to each `sendUserMessage`, made once the call is recorded: nothing,
+     * unless a test gives one, such as the rejection Oh My Pi answers a prompt it dropped. */
+    readonly sendAnswer?: (content: string) => void | Promise<void>;
   } = {}
 ): {
   readonly commands: RegisteredCommand[];
@@ -610,6 +624,7 @@ function createPi(
       }
       sentUserMessages.push(content);
       sentUserMessageOptions.push(sendOptions);
+      return options.sendAnswer?.(content);
     },
     appendEntry: (customType, data) => {
       entries.push({ type: "custom", customType, data });
@@ -892,6 +907,9 @@ interface ClaimPane {
   readonly entries: AppendedEntry[];
   readonly sentMessages: SentMessage[];
   readonly sentMessageOptions: unknown[];
+  /** Every `sendUserMessage` call, and its options, in order: an accepted take's text. */
+  readonly sentUserMessages: string[];
+  readonly sentUserMessageOptions: unknown[];
   readonly title: HostTitle;
   readonly models: HostModels;
   readonly handlers: Map<string, Handler>;
@@ -936,7 +954,6 @@ async function claimPane(options: {
   readonly abort?: () => void | Promise<void>;
   readonly register?: () => Response | Promise<Response>;
   readonly ready?: (attempt: number) => Response | Promise<Response>;
-  readonly readyPosted?: () => void;
   readonly roleHolder?: () => string | undefined;
   /** A route the stub answers ahead of the daemon's own. `init` is the request as the caller
    * made it, so a test can read what never reaches `requests`: the `AbortSignal` a bounded call
@@ -945,7 +962,7 @@ async function claimPane(options: {
     url: URL,
     body: unknown,
     init: RequestInit | undefined
-  ) => Response | undefined;
+  ) => Response | Promise<Response> | undefined;
   readonly ensureOnDisk?: () => Promise<void>;
   readonly branch?: readonly unknown[];
   readonly title?: { readonly name: string; readonly source: "auto" | "user" };
@@ -954,6 +971,12 @@ async function claimPane(options: {
   /** What `ctx.getAsyncJobSnapshot()` answers; absent leaves the host without the member, as a
    * build that predates it is. */
   readonly asyncJobs?: () => AsyncJobSnapshot | null;
+  /** The claim's task value the registration answers, none unless given. */
+  readonly taskValue?: {
+    readonly number: number;
+    readonly epoch: string;
+    readonly revision: number;
+  };
 }): Promise<ClaimPane> {
   resetEnvoyPluginInterfaceForTests();
   const tree = options.tree ?? "REPO-42";
@@ -969,6 +992,8 @@ async function claimPane(options: {
     generation: 2,
     secret: fixtureSecret("reg"),
     promptAgents: options.promptAgents ?? [],
+    task: options.taskValue ?? null,
+    finished: 0,
   };
   // Random, as the daemon's is: the pane holds it, and one spelled from the session's id would be
   // scrubbed out of every line naming the role (`@legion/contracts/held-secrets`).
@@ -987,11 +1012,6 @@ async function claimPane(options: {
   process.env.LEGION_ROLE = options.role;
   process.env.LEGION_WORKSPACE = workspace;
   process.env.LEGION_STATE_DIR = stateDir;
-  // An hour, so no pane's deferred role claim ever fires on its own bound: the cases that want
-  // the name taken drive the session's first turn themselves (`firstTurn`), and a bound firing
-  // into a later test would claim through an interface that test has reset and stop a pane
-  // nobody is watching.
-  process.env.LEGION_CLAIM_FIRST_TURN_BOUND_MS = "3600000";
 
   const requests: DaemonRequest[] = [];
   let readyAttempts = 0;
@@ -1007,11 +1027,14 @@ async function claimPane(options: {
     }
     if (url.pathname === "/legion/v1/claims/ready") {
       readyAttempts += 1;
-      options.readyPosted?.();
       return (await options.ready?.(readyAttempts)) ?? new Response(null, { status: 204 });
     }
     if (url.pathname === "/legion/v1/claims/turn-outcome") {
       return Response.json({ refusedRun: 0, failed: false });
+    }
+    // The daemon's reading of the claim's value: the one its registration answered.
+    if (url.pathname === "/legion/v1/claims/task") {
+      return Response.json({ task: registration.task, finished: registration.finished });
     }
     if (url.pathname === "/legion/v1/grants") {
       grants += 1;
@@ -1114,6 +1137,8 @@ async function claimPane(options: {
     entries: fixture.entries,
     sentMessages: fixture.sentMessages,
     sentMessageOptions: fixture.sentMessageOptions,
+    sentUserMessages: fixture.sentUserMessages,
+    sentUserMessageOptions: fixture.sentUserMessageOptions,
     title: fixture.title,
     models: fixture.models,
     handlers: fixture.handlers,
@@ -1136,32 +1161,6 @@ async function bootPane(options: Parameters<typeof claimPane>[0]): Promise<Claim
   const pane = await claimPane(options);
   await pane.start();
   return pane;
-}
-
-/**
- * The session's first turn, which is when the claim boot takes its Envoy name (INFRA-1573): the
- * entry's own `agent_start` handler — the last registered for the event, the Envoy entry's
- * running before it — and then the claim that signal fires, which nothing of the host awaits,
- * having reached the listener.
- */
-async function firstTurn(pane: ClaimPane): Promise<void> {
-  const agentStart = pane.handlersFor("agent_start").at(-1);
-  if (agentStart === undefined) throw new Error("the entry registered no agent_start handler");
-  await agentStart({}, pane.context);
-  const claimed = (): boolean =>
-    pane.requests.some(
-      (request) =>
-        request.path === "/v1/roles/set" &&
-        typeof request.body === "object" &&
-        request.body !== null &&
-        "role" in request.body &&
-        request.body.role === pane.claimToken
-    );
-  const deadline = Date.now() + 2_000;
-  while (!claimed()) {
-    if (Date.now() > deadline) throw new Error("the session's first turn claimed no Envoy role");
-    await Bun.sleep(5);
-  }
 }
 
 const daemonRequests = <T extends { readonly path: string }>(requests: readonly T[]) =>
@@ -1310,6 +1309,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       injectedUserTurns: new Map(),
       bootstrappedSession: { file: undefined },
       startupTurn: undefined,
+      taskValues: { taker: undefined },
+      taskTurnPending: undefined,
     });
 
     test("a worker whose process has no Envoy plugin logs one line naming @sjawhar/pi-envoy, the version it needs and none, exits, and claims nothing", async () => {
@@ -1473,7 +1474,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       "LEGION_CONTROLLER_SECRET or LEGION_CONTROLLER_SECRET_FILE is required to claim the controller."
     );
   });
-  test("a claim registers, reports ready, measures nothing, and takes its Envoy role at the session's first turn", async () => {
+  test("a claim registers, reports ready, measures nothing, reads its task value, and takes its Envoy role right after", async () => {
     const calls: string[] = [];
     const pane = await bootPane({
       role: "tester",
@@ -1503,19 +1504,22 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           generation: pane.registration.generation,
         },
       },
+      {
+        path: "/legion/v1/claims/task",
+        body: {
+          claimToken: pane.claimToken,
+          sessionId: "ses_worker",
+          secret: pane.registration.secret,
+          generation: pane.registration.generation,
+        },
+      },
     ]);
-    // INFRA-1573: the name is taken last, so nothing of this session holds the role until one of
-    // its turns has started. The boot is over and no role has been claimed.
-    expect(pane.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
-
-    // The host's first-turn signal: `agent_start`, which `legion.ts` answers by telling the claim
-    // session its turn has started, and the claim that runs behind it.
-    await firstTurn(pane);
-
-    // The Envoy role is the claim token, claimed after the registration issued it and after
-    // ready. The claim names the process making it: the client instance the pane's own
-    // registration carried, never a literal id, so a claim another process made under this
-    // session id would not match.
+    // The name is taken inside the boot, right after ready and the read of the claim's value,
+    // with no turn of the session started: the task is a value the session takes, so nothing the
+    // role's kept lane hands over can take the task's turn. The Envoy role is the claim token,
+    // claimed after the registration issued it, after ready and after that read. The claim names
+    // the process making it: the client instance the pane's own registration carried, never a
+    // literal id, so a claim another process made under this session id would not match.
     const roleClaimBody = {
       session_id: "ses_worker",
       role: pane.claimToken,
@@ -1529,6 +1533,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     );
     expect(roleClaim).toBeGreaterThan(paths.indexOf("/legion/v1/claims/register"));
     expect(roleClaim).toBeGreaterThan(paths.indexOf("/legion/v1/claims/ready"));
+    expect(roleClaim).toBeGreaterThan(paths.indexOf("/legion/v1/claims/task"));
     expect(pane.exits).toEqual([]);
     // The boot measures nothing: no capability host member was called before its ready.
     expect(calls).toEqual([]);
@@ -1985,6 +1990,11 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       readonly recordAnswer?: () => Response;
       /** What `ctx.getAsyncJobSnapshot()` answers this pane. */
       readonly asyncJobs?: () => AsyncJobSnapshot | null;
+      /** The claim's task value the registration answers, the host's idleness, and the routes the
+       * pane's stub answers first: a take's. */
+      readonly taskValue?: Parameters<typeof claimPane>[0]["taskValue"];
+      readonly idle?: () => boolean;
+      readonly routes?: (url: URL, body: unknown) => Response | Promise<Response> | undefined;
     }) => {
       // Nothing in these panes reaches the architect: the notice a run of reminders earns is the
       // real binary's case (extensions/legion-phase-stall-omp.test.ts), so the threshold is put
@@ -2034,7 +2044,11 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         workspace,
         branch: options.branch,
         asyncJobs: options.asyncJobs,
-        extraRoutes: (url) => {
+        taskValue: options.taskValue,
+        idle: options.idle,
+        extraRoutes: (url, body) => {
+          const routed = options.routes?.(url, body);
+          if (routed !== undefined) return routed;
           if (url.pathname === "/legion/v1/issues/REPO-43/record") {
             return options.recordAnswer?.() ?? Response.json(state.issues["REPO-43"]);
           }
@@ -2215,15 +2229,456 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ]);
     });
 
+    // The claim holds its value from the registration's answer on, takes it once its ready has
+    // answered and its host is idle, and sends the take's text as the session's user message.
+    // That message is no turn the Envoy entry sent in, so it is the assignment that opens the
+    // phase; the task-turn mark stands from the registration, so it is up when the role's claim
+    // hands the kept lane over, until the task's turn starts.
+    test("a take's text is the assignment: the task-turn mark is up from the registration through the role claim, the text is sent as the user message once the ready answered, and its turn's report names the task", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      // The daemon's record: the take of the number it owes is answered the text, any other not.
+      const tasks = taskStandIn();
+      const value = tasks.give(text);
+      const marksAtRoleClaim: unknown[] = [];
+      const worker = await bootStalling({
+        taskValue: value,
+        idle: () => true,
+        routes: (url, body) => {
+          if (url.pathname === "/v1/roles/set") {
+            marksAtRoleClaim.push(envoyPluginInterface().taskTurnPending);
+          }
+          return tasks.answer(url.pathname, body as Record<string, unknown>);
+        },
+      });
+      expect(marksAtRoleClaim).toEqual([{ session: "ses_stall" }]);
+      // The take goes on a timer that fires once `session_start` has returned.
+      expect(tasks.takes()).toEqual([]);
+      await turns(() => worker.sentUserMessages.length > 0);
+      expect(tasks.takes()).toEqual([
+        {
+          claimToken: worker.claimToken,
+          sessionId: "ses_stall",
+          secret: worker.registration.secret,
+          generation: 2,
+          ...value,
+        },
+      ]);
+      expect(worker.sentUserMessages).toEqual([text]);
+      // A plain send on an idle host: it starts the turn.
+      expect(worker.sentUserMessageOptions).toEqual([undefined]);
+      expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
+
+      // The turn starts, which clears the mark, and its user message opens the phase.
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+      await worker.arrives({
+        message: { role: "user", content: [{ type: "text", text }] },
+      });
+      expect(await worker.settles("I pushed the change and CI is green.")).toEqual(
+        followUp("handoff_complete")
+      );
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      expect(
+        daemonRequests(worker.requests).filter(
+          (request) => request.path === "/legion/v1/claims/turn-outcome"
+        )
+      ).toEqual([
+        {
+          path: "/legion/v1/claims/turn-outcome",
+          body: {
+            claimToken: worker.claimToken,
+            sessionId: "ses_stall",
+            secret: worker.registration.secret,
+            generation: 2,
+            sequence: 1,
+            outcome: "clean",
+            task: value.number,
+          },
+        },
+      ]);
+    });
+
+    // The plan's decision 15, at the pane: the registration
+    // answers no value and the ready decision writes one, as it writes the relaunch record's task.
+    // The session's agent subject is open from its start, so a card sent to the session itself
+    // can reach it while the ready, or the read of the claim's value after it, is on its way. The
+    // take holds the task-turn mark from the registration until that read has answered, so
+    // pi-envoy's card wake hands such a card over with no turn, and the task is the first turn.
+    test("a card that reaches the pane while its ready and the read after it are on their way starts no turn: the take holds the task-turn mark from the registration until that read answers, and the task the ready decision wrote is the first turn", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      // pi-envoy's own card wake, reading the marks the pane keeps as the Envoy entry wires it,
+      // and an idle host outside any startup phase: what decides a card's hand-over is the mark.
+      const cardWake = new CardWake({
+        now: () => Date.now(),
+        sendMessage: () => undefined,
+        startupTurn: () => envoyPluginInterface().startupTurn,
+        taskTurnPending: () => envoyPluginInterface().taskTurnPending,
+        isOwnSession: (session) => session === "ses_stall",
+      });
+      const idleHost = { isIdle: () => true, setTimeout: () => undefined, sessionManager: {} };
+      // How a card reaching the session as each request reached the daemon would have gone.
+      const handOvers: { readonly at: string; readonly triggerTurn: boolean }[] = [];
+      const cardAt = (at: string) => {
+        handOvers.push({ at, triggerTurn: cardWake.deliveryFor(false, idleHost).triggerTurn });
+      };
+      const worker = await bootStalling({
+        idle: () => true,
+        routes: (url, body) => {
+          if (url.pathname === "/legion/v1/claims/ready") {
+            cardAt("ready");
+            // The ready decision writes the claim's value; the stub's own route answers the ready.
+            tasks.give(text);
+            return undefined;
+          }
+          if (url.pathname === "/legion/v1/claims/task") cardAt("the read after the ready");
+          if (url.pathname === "/v1/roles/set") cardAt("role claim");
+          return tasks.answer(url.pathname, body as Record<string, unknown>);
+        },
+      });
+
+      expect(handOvers).toEqual([
+        { at: "ready", triggerTurn: false },
+        { at: "the read after the ready", triggerTurn: false },
+        { at: "role claim", triggerTurn: false },
+      ]);
+      await turns(() => worker.sentUserMessages.length > 0);
+      expect(worker.sentUserMessages).toEqual([text]);
+      expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+    });
+
+    // The same window when the read answers that the claim is owed nothing: the hold ends with the
+    // read, and a card then starts its own turn.
+    test("a pane whose read after its ready holds no value holds its cards until that read answers, and no longer", async () => {
+      const marks: { readonly at: string; readonly mark: unknown }[] = [];
+      await bootStalling({
+        idle: () => true,
+        routes: (url) => {
+          if (url.pathname === "/legion/v1/claims/task" || url.pathname === "/v1/roles/set") {
+            marks.push({ at: url.pathname, mark: envoyPluginInterface().taskTurnPending });
+          }
+          return undefined;
+        },
+      });
+
+      expect(marks).toEqual([
+        { at: "/legion/v1/claims/task", mark: { session: "ses_stall" } },
+        { at: "/v1/roles/set", mark: undefined },
+      ]);
+      expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+    });
+
+    // At the pane: a run no take started (here a reminder's) begins
+    // after the take was asked and before its answer comes back. Nothing is sent into that run —
+    // no follow-up, which Oh My Pi would fold into it — and its end is reported naming no task and
+    // naming the take's number as held (`TaskTake.held`, read before the end hands the text on),
+    // which gives the take its turn back on the daemon, even where the daemon has lost its count of
+    // the session's turns. At that end the host is idle, and the text is sent plainly, starting the
+    // task's turn, whose report names the task and holds nothing.
+    test("a take accepted during a run starts no follow-up in that run: the run's report names no task and the text held, and the text starts the task's turn once the host is idle", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const value = tasks.give(text);
+      const answer = Promise.withResolvers<Response>();
+      let taken = 0;
+      let running = false;
+      const worker = await bootStalling({
+        taskValue: value,
+        idle: () => !running,
+        routes: (url, body) => {
+          if (url.pathname === "/legion/v1/claims/take") {
+            taken += 1;
+            return answer.promise;
+          }
+          return tasks.answer(url.pathname, body as Record<string, unknown>);
+        },
+      });
+      await turns(() => taken > 0);
+      expect(taken).toBe(1);
+
+      // The foreign run starts, and the daemon's acceptance arrives while it goes on.
+      running = true;
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      answer.resolve(Response.json({ outcome: "accepted", text }));
+      await turns(() => false);
+      expect(worker.sentUserMessages).toEqual([]);
+      expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
+
+      // Its end: the host is idle again by the time `agent_end` runs.
+      running = false;
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      expect(worker.sentUserMessages).toEqual([text]);
+      expect(worker.sentUserMessageOptions).toEqual([undefined]);
+
+      // The task's turn.
+      running = true;
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+      running = false;
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+
+      const reports = daemonRequests(worker.requests)
+        .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+        .map((request) => request.body as Record<string, unknown>);
+      expect(reports.map((report) => [report.sequence, report.task, report.held])).toEqual([
+        [1, undefined, value.number],
+        [2, value.number, undefined],
+      ]);
+      expect(taken).toBe(1);
+    });
+
+    // A switch, a branch or a tree navigation can leave the pane on another session than the one
+    // its claim registered (`afterSessionChange`), whose runs reach `agent_start` and `agent_end`
+    // here as the claim's own do. Such a run is no run of the claim's session: it neither starts
+    // nor ends the turn of the text the take handed the claim's session, and its end reports
+    // nothing. The claim's own session's run is the task's turn, and its report names the task.
+    test("a run of another session of the pane neither starts nor ends the take's turn", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const value = tasks.give(text);
+      const worker = await bootStalling({
+        taskValue: value,
+        idle: () => true,
+        routes: (url, body) => tasks.answer(url.pathname, body as Record<string, unknown>),
+      });
+      await turns(() => worker.sentUserMessages.length > 0);
+      expect(worker.sentUserMessages).toEqual([text]);
+      expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
+
+      const other: SessionContext = {
+        ...worker.context,
+        sessionManager: { ...worker.context.sessionManager, getSessionId: () => "ses_other" },
+      };
+      await hook(worker.handlers, "agent_start")({}, other);
+      expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
+      await hook(worker.handlers, "agent_end")(
+        { messages: [{ role: "assistant", stopReason: "stop" }] },
+        other
+      );
+
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+
+      const reports = daemonRequests(worker.requests)
+        .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+        .map((request) => request.body as Record<string, unknown>);
+      expect(reports.map((report) => [report.sessionId, report.sequence, report.task])).toEqual([
+        ["ses_stall", 1, value.number],
+      ]);
+    });
+
+    // At the pane: the take's answer finds the host setting up a prompt it already took — a
+    // card's, before its `agent_start` — so the host reads not idle though no run of the session
+    // is going. The text goes into that setup in no form: no follow-up, whose answer settles once
+    // the host queues it, so a drop of it after that would not be seen. The take holds the text,
+    // the card's run is reported naming no task, and the text starts the task's own turn once the
+    // host is idle, as a plain prompt, whose report names the task.
+    test("a take accepted while the host sets up a card's prompt sends no follow-up: the card's run's report names no task, and the text starts the task's turn once the host is idle", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const value = tasks.give(text);
+      const answer = Promise.withResolvers<Response>();
+      let taken = 0;
+      let idle = true;
+      const worker = await bootStalling({
+        taskValue: value,
+        idle: () => idle,
+        routes: (url, body) => {
+          if (url.pathname === "/legion/v1/claims/take") {
+            taken += 1;
+            return answer.promise;
+          }
+          return tasks.answer(url.pathname, body as Record<string, unknown>);
+        },
+      });
+      await turns(() => taken > 0);
+      expect(taken).toBe(1);
+
+      // The host takes a card's prompt and sets it up, and the daemon's acceptance arrives before
+      // that prompt's `agent_start`.
+      idle = false;
+      answer.resolve(Response.json({ outcome: "accepted", text }));
+      await turns(() => false);
+      expect(worker.sentUserMessageOptions).toEqual([]);
+      expect(worker.sentUserMessages).toEqual([]);
+      expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
+
+      // The card's run, at whose end the host is idle again.
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      expect(worker.sentUserMessages).toEqual([]);
+      idle = true;
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      expect(worker.sentUserMessages).toEqual([text]);
+      expect(worker.sentUserMessageOptions).toEqual([undefined]);
+
+      // The task's turn.
+      idle = false;
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+      idle = true;
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+
+      const reports = daemonRequests(worker.requests)
+        .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+        .map((request) => request.body as Record<string, unknown>);
+      expect(reports.map((report) => [report.sequence, report.task])).toEqual([
+        [1, undefined],
+        [2, value.number],
+      ]);
+      expect(taken).toBe(1);
+      expect(worker.sentUserMessages).toEqual([text]);
+    });
+
+    // The daemon may write a task's value again, under the same number, after its turn ended and
+    // before the turn's report lands (a daemon start writes every owed value again), and it
+    // answers a take of that accepted, unfinished number with the same text. A report with no
+    // provider error finishes the task, so the pane holds the number finished from that run's end
+    // and the newer revision runs nothing; a report with one finishes nothing, so the newer
+    // revision is taken and the task runs once more.
+    for (const [name, last, again] of [
+      [
+        "with no provider error leaves a newer revision of its number untaken",
+        { role: "assistant", stopReason: "stop" },
+        false,
+      ],
+      [
+        "with a provider error takes a newer revision of its number and runs it once",
+        {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "529 overloaded_error",
+          errorStatus: 529,
+          provider: "anthropic",
+          model: "claude-opus-4-5",
+        },
+        true,
+      ],
+    ] as const) {
+      test(`a task's turn whose report, not yet answered, ${name}`, async () => {
+        const text = "Implement REPO-43 on its branch.";
+        const tasks = taskStandIn();
+        const value = tasks.give(text);
+        const outcome = Promise.withResolvers<Response>();
+        let taken = 0;
+        const worker = await bootStalling({
+          taskValue: value,
+          idle: () => true,
+          routes: (url, body) => {
+            if (url.pathname === "/legion/v1/claims/take") taken += 1;
+            if (url.pathname === "/legion/v1/claims/turn-outcome") return outcome.promise;
+            return tasks.answer(url.pathname, body as Record<string, unknown>);
+          },
+        });
+        await turns(() => worker.sentUserMessages.length > 0);
+        expect(worker.sentUserMessages).toEqual([text]);
+
+        await hook(worker.handlers, "agent_start")({}, worker.context);
+        const ending = worker.ends({ messages: [last] });
+        await turns(() => false);
+        // The daemon writes the same number again, at a newer revision, before it answers.
+        envoyPluginInterface().taskValues.taker?.({
+          kind: "value",
+          session: "ses_stall",
+          value: {
+            claim: worker.claimToken,
+            epoch: value.epoch,
+            revision: value.revision + 1,
+            op: "put",
+            task: value.number,
+          },
+        });
+        await turns(() => false);
+
+        expect(taken).toBe(again ? 2 : 1);
+        expect(worker.sentUserMessages).toEqual(again ? [text, text] : [text]);
+        outcome.resolve(Response.json({ refusedRun: 0, failed: false }));
+        await ending;
+      });
+    }
+
+    // The local finish lasts only until the turn's report is answered. A 4xx refusal of a report
+    // that would have finished the task applied nothing, so the record still owes the number: the
+    // newer revision the daemon wrote while the report was on its way, untaken while the report
+    // stood unanswered, is taken once the refusal comes, and its text runs once. The report of
+    // that second turn finishes the task, so a revision after it runs nothing.
+    test("a task's turn whose report the daemon refuses with a 4xx takes the newer revision of its number and runs it once", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const value = tasks.give(text);
+      const outcome = Promise.withResolvers<Response>();
+      let taken = 0;
+      let reports = 0;
+      const worker = await bootStalling({
+        taskValue: value,
+        idle: () => true,
+        routes: (url, body) => {
+          if (url.pathname === "/legion/v1/claims/take") taken += 1;
+          if (url.pathname === "/legion/v1/claims/turn-outcome") {
+            reports += 1;
+            // The first report is refused: the stand-in's record applies nothing of it.
+            if (reports === 1) return outcome.promise;
+          }
+          return tasks.answer(url.pathname, body as Record<string, unknown>);
+        },
+      });
+      const relay = (revision: number): void =>
+        envoyPluginInterface().taskValues.taker?.({
+          kind: "value",
+          session: "ses_stall",
+          value: {
+            claim: worker.claimToken,
+            epoch: value.epoch,
+            revision,
+            op: "put",
+            task: value.number,
+          },
+        });
+      await turns(() => worker.sentUserMessages.length > 0);
+      expect(worker.sentUserMessages).toEqual([text]);
+
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      const ending = worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      await turns(() => false);
+      relay(value.revision + 1);
+      await turns(() => false);
+      expect(taken).toBe(1);
+
+      outcome.resolve(Response.json({ error: "turn outcome refused" }, { status: 409 }));
+      await ending;
+      await turns(() => worker.sentUserMessages.length > 1);
+      expect(taken).toBe(2);
+      expect(worker.sentUserMessages).toEqual([text, text]);
+
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      relay(value.revision + 2);
+      await turns(() => false);
+      expect(taken).toBe(2);
+      expect(worker.sentUserMessages).toEqual([text, text]);
+      const reported = daemonRequests(worker.requests)
+        .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+        .map((request) => request.body as Record<string, unknown>);
+      expect(reported.map((report) => [report.sequence, report.task])).toEqual([
+        [1, value.number],
+        [2, value.number],
+      ]);
+    });
+
     // dispatch://INFRA-264: every turn of that implementer was refused by its provider, and every
     // reminder it earned bought another refused turn. The worker read nothing and said nothing, so
     // the turn earns no continuation and the record stands as the last real turn left it. One
-    // timer is armed all the same: the task the refused turn carried ended with it, and below
-    // `launch_failure_limit` the daemon counts the turn rather than failing the claim, so without
-    // it a single transient refusal would leave the issue idle with nothing to wake it. By the
-    // time the timer fires the daemon has had every refusal of the run reported, and at the limit
-    // the claim it reads is failed and the reminder is dropped — which is what ends the reminding
-    // of a session the provider refuses for ever.
+    // timer is armed all the same: a refused turn that carried no task leaves nothing else to wake
+    // the worker, and below `launch_failure_limit` the daemon counts the turn rather than failing
+    // the claim, so without it a single transient refusal would leave the issue idle. A task's
+    // refused turn is woken by the daemon as well, whose provider-error wait keeps the task and
+    // writes its value again once the wait is over, unless the provider answered a 4xx other than
+    // 401, 403, 408 and 429, which fails the claim. By the time the timer fires the daemon has had
+    // every refusal of the run reported, and at the limit the claim it reads is failed and the
+    // reminder is dropped — which is what ends the reminding of a session the provider refuses for
+    // ever.
     test("a turn the provider refused earns no continuation and no record, and is woken by one timer", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -2278,6 +2733,13 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           sequence: 2,
           outcome: "refused",
           message: "Overloaded: the model is busy",
+          providerError: {
+            status: 0,
+            provider: "",
+            model: "",
+            message: "Overloaded: the model is busy",
+            retryable: false,
+          },
         },
       ]);
     });
@@ -2297,8 +2759,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     // The worker has already had the continuation and done nothing about it, so this run must
-    // settle — the daemon sees the turn end, delivers a queued task, lands a held suspension —
-    // and the reminder comes from the host's own timer instead.
+    // settle — the daemon sees the turn end, the idle worker takes a task the daemon wrote for it,
+    // a held suspension lands — and the reminder comes from the host's own timer instead.
     test("the settle after the continuation arms a timer, and firing it steers one reminder that starts a turn", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -3313,47 +3775,49 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(pane.exits).toEqual([1]);
   });
 
-  test("a claim that regains its Envoy role reports ready again", async () => {
+  test("a claim that regains its Envoy role reads its task value again and sends no second ready", async () => {
     let holder: string | undefined = "ses_regain";
-    const secondReady = Promise.withResolvers<void>();
-    let readies = 0;
+    let reads = 0;
+    const regainRead = Promise.withResolvers<void>();
     const pane = await claimPane({
       role: "implementer",
       sessionId: "ses_regain",
       roleHolder: () => holder,
-      readyPosted: () => {
-        readies += 1;
-        if (readies === 2) secondReady.resolve();
+      extraRoutes: (url) => {
+        if (url.pathname !== "/legion/v1/claims/task") return undefined;
+        reads += 1;
+        if (reads === 2) regainRead.resolve();
+        return Response.json({ task: null, finished: 0 });
       },
     });
     await pane.start();
-    // There is a role to regain only once the session holds it, and it takes its name at its
-    // first turn. The heartbeat is the pane's first managed interval all the same: the Envoy
-    // registration that carries the session's title arms it, ahead of the boot.
-    await firstTurn(pane);
+    // The boot read the value once, after its ready answered and before it claimed the role.
+    expect(reads).toBe(1);
 
+    // The boot claimed the role right after that read. The heartbeat is the pane's first managed
+    // interval: the Envoy registration that carries the session's title arms it, ahead of the
+    // boot. A listener that names no holder makes the heartbeat claim the role again.
     holder = "";
     pane.intervals[0]?.();
-    await secondReady.promise;
+    await regainRead.promise;
 
-    // The one ready the boot built, sent again: the regain measures nothing anew, and neither
-    // ready carries a capability report.
-    const readyBodies = daemonRequests(pane.requests).filter(
-      (request) => request.path === "/legion/v1/claims/ready"
-    );
-    expect(readyBodies).toHaveLength(2);
-    expect(readyBodies[0]).toEqual({
-      path: "/legion/v1/claims/ready",
+    // A value relayed while the listener had lost sight of the role is lost, so the claim reads
+    // it; a ready would make the daemon send nothing.
+    const read = {
+      path: "/legion/v1/claims/task",
       body: {
         claimToken: pane.claimToken,
         sessionId: "ses_regain",
         secret: pane.registration.secret,
         generation: pane.registration.generation,
       },
-    });
-    expect(readyBodies[1]).toEqual(readyBodies[0]);
-    expect(readyBodies[0]?.body).not.toHaveProperty("capabilities");
-    expect(readyBodies[1]?.body).not.toHaveProperty("capabilities");
+    };
+    expect(
+      daemonRequests(pane.requests).filter((r) => r.path === "/legion/v1/claims/task")
+    ).toEqual([read, read]);
+    expect(
+      daemonRequests(pane.requests).filter((r) => r.path === "/legion/v1/claims/ready")
+    ).toHaveLength(1);
   });
 
   /**
@@ -4045,12 +4509,19 @@ async function launchedController(options: {
   /** Called with each request's path as the stub takes it, before it answers. */
   readonly onRequest?: (path: string) => void;
   /** Tried for each request after it is recorded and before the stub's own routes: a `Response`
-   * it returns is the answer, so a test can refuse one listener call. A test cannot wrap the
-   * stub's `fetch` itself — the Envoy client captures it when the pane binds. */
-  readonly answer?: (path: string) => Response | undefined;
+   * it returns, or one it settles later, is the answer, so a test can refuse one listener call or
+   * hold a daemon answer back. `init` is the request as the caller made it, its `AbortSignal`
+   * included. A test cannot wrap the stub's `fetch` itself — the Envoy client captures it when
+   * the pane binds. */
+  readonly answer?: (
+    path: string,
+    init: RequestInit | undefined
+  ) => Response | Promise<Response> | undefined;
   /** The listener's answer to a `/v1/roles/set` for the controller role, in place of its own
    * registry's when it gives one. */
   readonly roleClaim?: () => Response | undefined | Promise<Response | undefined>;
+  /** The host's answer to each `sendUserMessage` (`createPi`'s `sendAnswer`). */
+  readonly sendAnswer?: (content: string) => void | Promise<void>;
 }): Promise<LaunchedController> {
   const project = options.project ?? "omp";
   const token = `legion-${project}-controller`; // fixture-secret: the controller's claim token, the role the daemon and the listener name it by; no client holds it
@@ -4100,7 +4571,7 @@ async function launchedController(options: {
     const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
     requests.push({ path: url.pathname, body });
     options.onRequest?.(url.pathname);
-    const answered = options.answer?.(url.pathname);
+    const answered = options.answer?.(url.pathname, init);
     if (answered !== undefined) return answered;
     if (url.pathname === "/legion/v1/claims/register") {
       return (await options.register?.(body)) ?? Response.json(registration);
@@ -4121,6 +4592,8 @@ async function launchedController(options: {
     }
     if (url.pathname === "/legion/v1/issues/status") return Response.json({});
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
+    if (url.pathname === "/legion/v1/claims/task")
+      return Response.json({ task: null, finished: 0 });
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: "no route" }, { status: 404 });
     }
@@ -4180,7 +4653,10 @@ async function launchedController(options: {
     exits.push(code);
     throw new Error("process would exit");
   });
-  const fixture = createPi({ bindEnvoy: options.order !== "legion.ts" });
+  const fixture = createPi({
+    bindEnvoy: options.order !== "legion.ts",
+    sendAnswer: options.sendAnswer,
+  });
   legionExtension(fixture.pi);
   if (options.order === "legion.ts") envoyExtension(fixture.pi as never);
   return {
@@ -4671,6 +5147,47 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     ]);
     expect(envoyPluginInterface().startupTurn).toEqual({
       session: "ses_controller_refused",
+      sentAt: expect.any(Number),
+    });
+  });
+
+  // Oh My Pi answers a prompt it dropped before its turn began with a rejection
+  // (`PiApi.sendUserMessage`): a start message so dropped ran nothing, so the claim that sent it
+  // logs the drop, leaves it unsent and clears its startup mark, and the next claim sends it again.
+  test("a start message the host drops is logged and its startup mark cleared, and the next claim sends it again", async () => {
+    let drop = true;
+    const controller = await launchedController({
+      sessionId: "ses_controller_dropped",
+      sendAnswer: () =>
+        drop ? Promise.reject(new Error("Prompt dropped before provider dispatch.")) : undefined,
+    });
+    const context = controller.context("ses_controller_dropped");
+    const { value: notices, errors } = await loggedErrors(() =>
+      startOperatorController(controller, context)
+    );
+
+    expect(notices).toEqual([]);
+    expect(errors).toContain(
+      "[legion] Oh My Pi dropped the controller's start message before its turn began; run /legion-claim-controller to send it again: Prompt dropped before provider dispatch."
+    );
+    expect(controller.sentUserMessages).toEqual([
+      "Legion controller start: follow skill://legion-controller",
+    ]);
+    expect(envoyPluginInterface().startupTurn).toBeUndefined();
+
+    drop = false;
+    const claimCommand = controller.commands.find(
+      (command) => command.name === "legion-claim-controller"
+    );
+    if (claimCommand === undefined) throw new Error("controller claim command was not registered");
+    await claimCommand.handler("", commandContext(context));
+
+    expect(controller.sentUserMessages).toEqual([
+      "Legion controller start: follow skill://legion-controller",
+      "Legion controller start: follow skill://legion-controller",
+    ]);
+    expect(envoyPluginInterface().startupTurn).toEqual({
+      session: "ses_controller_dropped",
       sentAt: expect.any(Number),
     });
   });
@@ -5374,6 +5891,10 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           path: "/legion/v1/claims/ready",
           mark: { session: "ses_no_pending_mark", sentAt: expect.any(Number) },
         },
+        {
+          path: "/legion/v1/claims/task",
+          mark: { session: "ses_no_pending_mark", sentAt: expect.any(Number) },
+        },
       ],
     ],
     [
@@ -5455,13 +5976,13 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   });
 
   // `controller: daemon`: the pod carries its launch's boot token, never a capability fetched over
-  // the operator's bearer. The session registers with that token and, holding the role and the
-  // topic, reports ready, which is when the daemon hands it the start message, so it marks the
-  // start turn sent just before that report. The state it reads first is the daemon's own while
-  // that daemon holds the controller's claim (internal/projection's golden), which the plugin's
-  // client parses. The pod carries no LEGION_CONTROLLER_START_MESSAGE, and the session
-  // sends no start message of its own: the daemon's delivery at ready is its one start message.
-  test("a controller the daemon launched registers with its boot token, then reports ready once it holds the role", async () => {
+  // the operator's bearer. The session registers with that token and reports ready, at which the
+  // daemon writes its start task's value, so it marks the start turn sent just before that report,
+  // and reads that value, all before it claims its role. The state it reads first is the daemon's
+  // own while that daemon holds the controller's claim (internal/projection's golden), which the
+  // plugin's client parses. The pod carries no LEGION_CONTROLLER_START_MESSAGE, and the session
+  // sends no start message of its own: the start task it takes is its one start message.
+  test("a controller the daemon launched registers with its boot token, then reports ready and reads its start task before it claims its role", async () => {
     const markAtReady: EnvoyPluginInterface["startupTurn"][] = [];
     const controller = await launchedController({
       sessionId: "ses_controller_pod",
@@ -5510,18 +6031,290 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           generation: controller.registration.generation,
         },
       },
+      {
+        path: "/legion/v1/claims/task",
+        body: {
+          claimToken: controller.token,
+          sessionId: "ses_controller_pod",
+          secret: controller.registration.secret,
+          generation: controller.registration.generation,
+        },
+      },
     ]);
     const paths = controller.requests.map((request) => request.path);
-    expect(paths.indexOf("/v1/roles/set")).toBeLessThan(paths.indexOf("/legion/v1/claims/ready"));
+    expect(paths.indexOf("/legion/v1/claims/task")).toBeLessThan(paths.indexOf("/v1/roles/set"));
     expect(controller.sentUserMessages).toEqual([]);
     expect(markAtReady).toEqual([{ session: "ses_controller_pod", sentAt: expect.any(Number) }]);
     const sentAt = markAtReady[0]?.sentAt ?? 0;
     expect(sentAt).toBeGreaterThanOrEqual(before);
     expect(sentAt).toBeLessThanOrEqual(Date.now());
-    // Its start command had nothing to do: it claimed at session_start, and the daemon delivers
-    // the start message.
+    // Its start command had nothing to do: it claimed at session_start, and takes its start
+    // message from its claim's value.
     expect(commandNotices).toEqual([NOTHING_TO_DO]);
     expect(controller.sentUserMessages).toEqual([]);
+    expect(controller.exits).toEqual([]);
+  });
+
+  // Decision 15 at the daemon's controller: it
+  // held its role, the controller topic and its Slack channels before its ready wrote the start
+  // task, so a card on the role's lane, a notice or a Slack mention could take the first turn. It
+  // reports ready and reads the start task's value first, and claims the role and subscribes only
+  // then; from its registration until that read has answered its take holds the task-turn mark
+  // whatever value it holds, so a card sent to the session itself waits for the start turn too.
+  test("the daemon-launched controller reports ready and reads its start task before it claims its role and subscribes its topics, holding the task-turn mark until that read answers", async () => {
+    const value = { number: 1, epoch: "2026-11-13T16:21:44.123456789Z", revision: 3 };
+    const lane = "notifications.legion.omp.controller";
+    const slack = "notifications.slack.*.C00000000.mention";
+    // The task-turn mark as each claim request reached the daemon.
+    const marks: { readonly path: string; readonly mark: unknown }[] = [];
+    const controller = await launchedController({
+      sessionId: "ses_controller_order",
+      stateFixture: "state-controller-claim.json",
+      onRequest: (path) => {
+        if (path === "/legion/v1/claims/ready" || path === "/legion/v1/claims/task") {
+          marks.push({ path, mark: envoyPluginInterface().taskTurnPending });
+        }
+      },
+      answer: (path) => {
+        if (path === "/legion/v1/claims/task") return Response.json({ task: value, finished: 0 });
+        if (path === "/legion/v1/claims/task-seen") return new Response(null, { status: 204 });
+        if (path === "/legion/v1/claims/take") {
+          return Response.json({ outcome: "accepted", text: "Legion controller start: run it." });
+        }
+        return undefined;
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "C00000000";
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_order")
+      );
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+
+    // The ready, then the read of the start task's value, then the role claim.
+    expect(
+      controller.requests.flatMap((request) => {
+        if (request.path === "/legion/v1/claims/ready") return ["ready"];
+        if (request.path === "/legion/v1/claims/task") return ["read"];
+        if (request.path === "/v1/roles/set") return ["role claim"];
+        return [];
+      })
+    ).toEqual(["ready", "read", "role claim"]);
+    // Neither the controller topic nor the Slack mention is followed before the role claim; both
+    // are once the claim is done.
+    const roleClaim = controller.requests.findIndex((request) => request.path === "/v1/roles/set");
+    const before = registeredTopics(
+      controller.requests.slice(0, roleClaim),
+      "ses_controller_order"
+    );
+    expect(before).not.toContain(lane);
+    expect(before).not.toContain(slack);
+    const after = registeredTopics(controller.requests, "ses_controller_order");
+    expect(after).toContain(lane);
+    expect(after).toContain(slack);
+    // The registration carried no value: the mark stood at the ready and at the read for the read
+    // alone, and stays after it for the start task it read, until that task's turn starts.
+    expect(marks).toEqual([
+      { path: "/legion/v1/claims/ready", mark: { session: "ses_controller_order" } },
+      { path: "/legion/v1/claims/task", mark: { session: "ses_controller_order" } },
+    ]);
+    await turns(() => controller.sentUserMessages.length > 0);
+    expect(controller.sentUserMessages).toEqual(["Legion controller start: run it."]);
+    expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_controller_order" });
+    await controller.handlers.get("agent_start")?.({}, controller.context("ses_controller_order"));
+    expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+    expect(controller.exits).toEqual([]);
+  });
+
+  // The daemon writes the start task's value at the controller's ready; the session takes it once
+  // its host is idle, and the take's text is the start message, sent as the session's user
+  // message so it starts the turn.
+  test("a controller the daemon launched takes its start message from its claim's value once its ready has answered", async () => {
+    const value = { number: 1, epoch: "2026-11-13T16:21:44.123456789Z", revision: 3 };
+    const taken: unknown[] = [];
+    const controller = await launchedController({
+      sessionId: "ses_controller_take",
+      stateFixture: "state-controller-claim.json",
+      answer: (path) => {
+        if (path === "/legion/v1/claims/task") return Response.json({ task: value, finished: 0 });
+        if (path === "/legion/v1/claims/task-seen") return new Response(null, { status: 204 });
+        if (path === "/legion/v1/claims/take") {
+          taken.push(path);
+          return Response.json({ outcome: "accepted", text: "Legion controller start: run it." });
+        }
+        return undefined;
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_take")
+      );
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    // The value is held, and the task's turn pending, from the read on; the take waits for the
+    // timer that fires once `session_start` has returned.
+    expect(taken).toEqual([]);
+    expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_controller_take" });
+    // Event-loop turns, no clock: the take goes on the timer `session_start` armed, and its
+    // answer is read over the stub's fetch.
+    await turns(() => controller.sentUserMessages.length > 0);
+
+    const takes = daemonRequests(controller.requests).filter(
+      (request) => request.path === "/legion/v1/claims/take"
+    );
+    expect(takes).toEqual([
+      {
+        path: "/legion/v1/claims/take",
+        body: {
+          claimToken: controller.token,
+          sessionId: "ses_controller_take",
+          secret: controller.registration.secret,
+          generation: controller.registration.generation,
+          ...value,
+        },
+      },
+    ]);
+    expect(controller.sentUserMessages).toEqual(["Legion controller start: run it."]);
+    // Its turn starts, which clears the mark.
+    await controller.handlers.get("agent_start")?.({}, controller.context("ses_controller_take"));
+    expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+    expect(controller.exits).toEqual([]);
+  });
+
+  // The daemon finishes the controller's start task on the report of
+  // its turn, as any claim's task, so that report names the task's number, under the controller
+  // claim's own credentials; a provider error on that turn reaches the daemon's wait instead of
+  // finishing it. A later turn of the session names no task.
+  test("the daemon-launched controller's turn end names its start task's number", async () => {
+    const value = { number: 1, epoch: "2026-11-13T16:21:44.123456789Z", revision: 3 };
+    const outcomes: unknown[] = [];
+    const controller = await launchedController({
+      sessionId: "ses_controller_report",
+      stateFixture: "state-controller-claim.json",
+      answer: (path, init) => {
+        if (path === "/legion/v1/claims/task") return Response.json({ task: value, finished: 0 });
+        if (path === "/legion/v1/claims/task-seen") return new Response(null, { status: 204 });
+        if (path === "/legion/v1/claims/take") {
+          return Response.json({ outcome: "accepted", text: "Legion controller start: run it." });
+        }
+        if (path === "/legion/v1/claims/turn-outcome") {
+          outcomes.push(JSON.parse(String(init?.body)));
+          return Response.json({ refusedRun: 0, failed: false });
+        }
+        return undefined;
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    const context = controller.context("ses_controller_report");
+    try {
+      await controller.handlers.get("session_start")?.({}, context);
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    await turns(() => controller.sentUserMessages.length > 0);
+    expect(controller.sentUserMessages).toEqual(["Legion controller start: run it."]);
+
+    // The start task's turn, and a turn after it.
+    const clean = { messages: [{ role: "assistant", stopReason: "stop" }] };
+    await controller.handlers.get("agent_start")?.({}, context);
+    await controller.handlers.get("agent_end")?.(clean, context);
+    await controller.handlers.get("agent_start")?.({}, context);
+    await controller.handlers.get("agent_end")?.(clean, context);
+
+    const caller = {
+      claimToken: controller.token,
+      sessionId: "ses_controller_report",
+      secret: controller.registration.secret,
+      generation: controller.registration.generation,
+    };
+    expect(outcomes).toEqual([
+      { ...caller, sequence: 1, outcome: "clean", task: value.number },
+      { ...caller, sequence: 2, outcome: "clean" },
+    ]);
+    expect(controller.exits).toEqual([]);
+  });
+
+  // Each claim of the daemon-launched controller makes a new take (`/legion-claim-controller` on
+  // its own session here; a re-claim after a session change does the same). The take it replaces
+  // still has a take the daemon has not answered: that request is stopped, and the answer that
+  // still arrives for it — the daemon's refusal of the replaced registration — neither runs a text
+  // nor takes down the mark the new take holds until its task's turn starts.
+  test("a controller the daemon launched that claims again stops its replaced take, whose late answer changes nothing", async () => {
+    const value = { number: 1, epoch: "2026-11-13T16:21:44.123456789Z", revision: 3 };
+    const start = "Legion controller start: run it.";
+    const replacedAnswer = Promise.withResolvers<Response>();
+    const takeSignals: (AbortSignal | undefined)[] = [];
+    const controller = await launchedController({
+      sessionId: "ses_controller_retake",
+      stateFixture: "state-controller-claim.json",
+      answer: (path, init) => {
+        if (path === "/legion/v1/claims/task") return Response.json({ task: value, finished: 0 });
+        if (path === "/legion/v1/claims/task-seen") return new Response(null, { status: 204 });
+        if (path === "/legion/v1/claims/take") {
+          takeSignals.push(init?.signal ?? undefined);
+          // The first claim's take is answered only once the test says so.
+          return takeSignals.length === 1
+            ? replacedAnswer.promise
+            : Response.json({ outcome: "accepted", text: start });
+        }
+        return undefined;
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    const context = controller.context("ses_controller_retake");
+    const claimCommand = controller.commands.find(
+      (command) => command.name === "legion-claim-controller"
+    );
+    if (claimCommand === undefined) throw new Error("controller claim command was not registered");
+    try {
+      await controller.handlers.get("session_start")?.({}, context);
+      await turns(() => takeSignals.length > 0);
+      expect(takeSignals).toHaveLength(1);
+      expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_controller_retake" });
+
+      await claimCommand.handler("", commandContext(context));
+      await turns(() => controller.sentUserMessages.length > 0);
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(takeSignals).toHaveLength(2);
+    expect(takeSignals[0]?.aborted).toBe(true);
+    expect(controller.sentUserMessages).toEqual([start]);
+    expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_controller_retake" });
+
+    replacedAnswer.resolve(Response.json({ outcome: "refused", hold: "not-owed" }));
+    await turns(() => false);
+    expect(controller.sentUserMessages).toEqual([start]);
+    expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_controller_retake" });
+    // The new take's turn starts, which clears the mark.
+    await controller.handlers.get("agent_start")?.({}, context);
+    expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
     expect(controller.exits).toEqual([]);
   });
 
@@ -5556,12 +6349,13 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   });
 
   // A daemon-launched controller whose role claim the listener answers 503 does not exit: the
-  // daemon supervises it, and it claims again until the claim lands. Each wait is one warning
+  // daemon supervises it, and it claims again until the claim lands. It reported ready and read its
+  // start task's value before the role claim, so the 503s come after both. Each wait is one warning
   // naming the attempt and the listener's answer, and its claim widget shows it holds no role
-  // until the claim lands, which takes the widget down and reports ready. The listener answers
-  // 503 to each of the first claim's transport attempts (LISTENER_CALL_ATTEMPTS), so the claim
-  // itself is answered 503 once.
-  test("a daemon-launched controller whose role claim is answered 503 logs each wait and shows it is waiting, then claims and reports ready", async () => {
+  // until the claim lands, which takes the widget down. The listener answers 503 to each of the
+  // first claim's transport attempts (LISTENER_CALL_ATTEMPTS), so the claim itself is answered 503
+  // once.
+  test("a daemon-launched controller whose role claim is answered 503 after its ready and its task read logs each wait and shows it is waiting, then claims", async () => {
     let claims = 0;
     const controller = await launchedController({
       sessionId: "ses_controller_busy",
@@ -5606,7 +6400,12 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(shown[1]?.lines).toBeUndefined();
     expect(controller.sentUserMessages).toEqual([]);
     expect(controller.exits).toEqual([]);
-    expect(controller.requests.map((request) => request.path)).toContain("/legion/v1/claims/ready");
+    const paths = controller.requests.map((request) => request.path);
+    expect(paths).toContain("/legion/v1/claims/ready");
+    expect(paths.indexOf("/legion/v1/claims/task")).toBeGreaterThan(
+      paths.indexOf("/legion/v1/claims/ready")
+    );
+    expect(paths.indexOf("/legion/v1/claims/task")).toBeLessThan(paths.indexOf("/v1/roles/set"));
   });
 
   // A session change in the daemon-launched controller never reaches its Envoy role claim: the
@@ -5779,7 +6578,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   // the listener's 503. One whose role claim landed and whose controller-topic subscription then
   // met a 503 (the listener's session registry unavailable) exits as the daemon's own claim does,
   // so the daemon launches a controller that holds its topics again, rather than one that holds
-  // the role without them and sends no ready.
+  // the role without them and takes no task.
   test("/legion-claim-controller typed in a daemon-launched controller whose controller-topic subscription is answered 503 after the role landed exits", async () => {
     let typed = false;
     let landed = false;
@@ -6979,10 +7778,8 @@ function registrationBeforeClaim(
 describe.skipIf(skip)("a Legion session's title", () => {
   test("a phase worker is titled by its role and issue before its role claim registers it with Envoy", async () => {
     const worker = await bootPane({ role: "implementer" });
-    // The role is claimed at the session's first turn, so the registration that carries the
+    // The role is claimed right after the boot's ready, so the registration that carries the
     // title to the listener is the one that claim sends.
-    await firstTurn(worker);
-
     expect(worker.title.set).toEqual(["Legion implementer · REPO-43"]);
     expect(registrationBeforeClaim(worker.requests, worker.claimToken)).toMatchObject({
       title: "Legion implementer · REPO-43",
@@ -7004,7 +7801,6 @@ describe.skipIf(skip)("a Legion session's title", () => {
       issue: "REPO-42",
       sessionId: "ses_root_title",
     });
-    await firstTurn(pane);
 
     expect(pane.title.set).toEqual(["Legion architect · REPO-42"]);
     expect(registrationBeforeClaim(pane.requests, pane.claimToken)).toMatchObject({
@@ -7057,7 +7853,6 @@ describe.skipIf(skip)("a Legion session's title", () => {
       role: "reviewer",
       title: { name: "Reviewing the flaky e2e", source: "user" },
     });
-    await firstTurn(worker);
 
     expect(worker.title.set).toEqual([]);
     expect(registrationBeforeClaim(worker.requests, worker.claimToken)).toMatchObject({

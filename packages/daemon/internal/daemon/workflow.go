@@ -82,12 +82,12 @@ type workflowRuntime struct {
 	// daemon boots, once per connect attempt: connect runs there, inside bootprobe.Run, which
 	// retries it, and a failed attempt stores nil (daemon.go). Every one of those writes is
 	// before the serving goroutine starts. It is read afterwards from several others — the serving
-	// goroutine's workflowRuntime.stop, reconnectWatchdog, the intake group — and from run itself
-	// once awaitStop has returned. Two of those close it at once when the stop's budget runs out
-	// (closeNATS), so the field is held atomically rather than leaving each reader to prove its
-	// own ordering, and internal/daemon runs under the race detector in CI
-	// (.github/workflows/ci.yaml, the step "Test the concurrent packages under the race
-	// detector").
+	// goroutine's workflowRuntime.stop, reconnectWatchdog and the intake group — while run closes
+	// that same connection through a handle of its own (daemon.go's natsConn, closeNATS). Two
+	// closes can land at once when the stop's budget runs out, so the field is held atomically
+	// rather than leaving each reader to prove its own ordering, and internal/daemon runs under
+	// the race detector in CI (.github/workflows/ci.yaml, the step "Test the concurrent packages
+	// under the race detector").
 	conn      atomic.Pointer[nats.Conn]
 	consumers *intake.Consumers
 	// setRepositories replaces the repositories GitHub intake hears, the one route the runtime
@@ -153,6 +153,15 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// idleFixedPlugin is which roles' launches install no plugin (noPluginInstall), the rule's
+	// reading of a claim whose plugin no relaunch moves (workflow.IdleRelease's old plugin), and
+	// idleImage the worker image the configuration names (runtime.kubernetes.image), which the
+	// error a pod already on it logs for such a claim names. oldPluginTold is the contract that
+	// error was last logged at for each claim, so it is logged once rather than at every tick
+	// (tellOldPluginOnImage); the idle pass is its one reader and writer.
+	idleFixedPlugin func(claim.Role) bool
+	idleImage       string
+	oldPluginTold   map[claim.Token]int
 	// now is the daemon's one clock (overrides.clock, the machines' clock, the wall clock in
 	// production), which the engine stamps its deadlines with (workflow.Config.Clock) and the
 	// idle, wake and stuck passes read their now from, so a test clock moves all of them
@@ -292,20 +301,21 @@ type workflowRuntime struct {
 	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
 	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
 	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
-	// testing through merging), each the start read found GitHub still computing
-	// (readIssuesAtStart), and each a second read of a conflicting head left reading no answer
+	// testing through merging, one read for a base push in merging and a ladder for every other),
+	// each outside merging the start read found GitHub still computing (readIssuesAtStart,
+	// ladderAtStart), and each a second read of a conflicting head left reading no answer
 	// (queueMergeStateFollow), that readMergeStates has not started a ladder for yet;
-	// mergeStateQueued is what each of them asked for, the head its ladder starts by following or
-	// "" for a climb (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still
-	// reading, a climb or a follow (mergeStateRun), which is why a second fact of an issue already
-	// being read starts no second ladder. mergeStateRetry is how long a ladder waits between reads
-	// of a state GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how
-	// long the outbox's merge-queue read and second conflict read wait before they read again
-	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
-	// shortens (overrides.mergeStateRetry).
+	// mergeStateQueued is what each of them asked for, a climb, the head its ladder starts by
+	// following, or one read (mergeStateAsk); and mergeStateRunning each issue whose ladder is still
+	// reading, a climb, a follow or its one read (mergeStateRun), which is why a second fact of an
+	// issue already being read starts no second ladder. mergeStateRetry is how long a ladder waits
+	// between reads of a state GitHub answers `unknown` for, the unit the reads after a ladder wait
+	// in, and how long the outbox's merge-queue read and second conflict read wait before they read
+	// again (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a
+	// test shortens (overrides.mergeStateRetry).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
-	mergeStateQueued  map[string]string
+	mergeStateQueued  map[string]mergeStateAsk
 	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
 }
@@ -852,10 +862,11 @@ func (w *workflowRuntime) queueRoleHoldersPublish(ctx context.Context) error {
 }
 
 // roleHoldersChanged queues the publication of c's issue's role sessions for the ready route
-// (api's Options.RoleHoldersChanged), before the claim takes a boot's or a role-regain's ready, in
-// a transaction of its own, which owns the commit hook its write registers, so the board lane is
-// woken once it commits; it queues none for an issue of another project (enqueueRoleHolders).
-// An error is the route's to answer: it refuses the ready with 503, so no task goes first.
+// (api's Options.RoleHoldersChanged), before the claim takes a boot's ready — a regain of the
+// role sends no ready — in a transaction of its own, which owns the commit hook its write
+// registers, so the board lane is woken once it commits; it queues none for an issue of another
+// project (enqueueRoleHolders). An error is the route's to answer: it refuses the ready with 503,
+// so no take is accepted first.
 func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Claim) error {
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -1007,35 +1018,23 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 	return running
 }
 
-// connect opens Envoy's JetStream and this project's durable consumers, so a missing
-// notification stream refuses boot rather than leaving a daemon that reads no events. Boot runs it
-// before reconcile, whose Dispatch listing covers only what precedes a consumer created now. It
-// connects as nc, the user readBoot chose (natsConnection), and logs what the server reports about
-// the connection: every permission it refuses at error, every disconnect at warn and every
-// reconnect at info (natsauth.LogEvents), under natsauth.ReconnectForever so a reconnect never
-// gives up: a NATS outage mid-run never closes the connection for good. A failed attempt here
-// closes whatever it opened and clears it, so a later call — this one retried after an unreachable
-// NATS — starts clean rather than leaking the connection this one could not finish setting up.
-// Close comes before natsauth.WithLastError on both failure paths, never after: WithLastError only
-// looks once the connection reports itself closed, and Close does not clear what the connection
-// last recorded.
-func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc natsConnection) error {
-	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, "legion-daemon "+cfg.Project, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
-	if err != nil {
-		return fmt.Errorf("connect Envoy NATS: %w", err)
-	}
+// connect opens Envoy's JetStream and this project's durable consumers on conn, the daemon's own
+// connection to Envoy's NATS, so a missing notification stream refuses boot rather than leaving a
+// daemon that reads no events. Boot runs it before reconcile, whose Dispatch listing covers only
+// what precedes a consumer created now, as part of its attempt at NATS (connectNATS), which dials
+// conn and closes it again when this fails. A failed call clears the connection it kept, so the
+// attempt after it — the boot waits out an unreachable NATS — keeps the one it dials.
+func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, conn *nats.Conn) error {
 	w.conn.Store(conn)
 	js, err := jetstream.New(conn)
 	if err != nil {
-		conn.Close()
 		w.conn.Store(nil)
-		return fmt.Errorf("open Envoy JetStream: %w", natsauth.WithLastError(err, conn))
+		return fmt.Errorf("open Envoy JetStream: %w", err)
 	}
 	w.log.Info("legion workflow boot stage", "stage", "intake")
 	logIntakeHandlerLimit(ctx, w.log, cfg)
 	heard, err := w.heardAtBoot(ctx)
 	if err != nil {
-		conn.Close()
 		w.conn.Store(nil)
 		return err
 	}
@@ -1052,9 +1051,8 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 	})
 	if err != nil {
-		conn.Close()
 		w.conn.Store(nil)
-		return natsauth.WithLastError(err, conn)
+		return err
 	}
 	if servesNone {
 		w.log.Info("workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one",
@@ -1102,8 +1100,8 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 // run names no phase, so no phase ever drops it, and it waits on the claim until that claim next
 // runs — which a park, a hand back to `todo` or a linger can put generations later. The decisions
 // such a task names are held by its delivery and told when the turn that takes it starts
-// (store's holdKeptDecisions, tellKeptDecisions), so sending it while the tree has nobody to act on
-// it would spend a person's decision on an architect no run of the root owns. The answer is the
+// (store's holdKeptDecisions, tellKeptDecisions), so a take of it while the tree has nobody to act
+// on it would spend a person's decision on an architect no run of the root owns. The answer is the
 // workflow's one reading of that question
 // (workflow.ArchitectHears), which the hand-over of a released decision reads too, in a short
 // read-only transaction of its own: a root that hears is one that is its tree's root, runs, does
@@ -1128,7 +1126,7 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 }
 
 // rootTask answers supervise's Deps.RootTask: what a root architect's held task of a run says now,
-// at the moment it is about to be sent. Such a task names the decisions a person made while nobody
+// when a take of it is decided. Such a task names the decisions a person made while nobody
 // in the root's tree could hear them, and holds those rows on its own delivery until the turn that
 // takes it confirms (the claim store's putDelivery, 20261101163106_parked_decisions). An issue it names can
 // have left this tree while the task waited — a child a linger handed to Legion, a parked child a
@@ -1144,7 +1142,7 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // (workflow.KeptDecisionsTask), which is the wording the start that queued the task used. An issue
 // the record does not hold is kept rather than dropped: a person's decision is never lost, and
 // this answer drops one only where the record says another tree is owed it. A task left naming
-// nothing is retired rather than sent, and its delivery's write releases whatever it still held.
+// nothing is dropped rather than taken, and its delivery's write releases whatever it still held.
 //
 // It is the machine that asks, because the machine owns the pending delivery: the hand-over that
 // moved the issue commits in a transaction of its own, with no lock on this claim, and a task
@@ -1664,9 +1662,13 @@ func idleRelease(cfg config.Config) (config.IdleReleaseConfig, bool) {
 
 // attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods
 // (idleRelease), over a runtime that can say whether an issue's pod runs the image the
-// configuration names and whether it still holds the issue's Sandbox (issuePods).
+// configuration names and whether it still holds the issue's Sandbox (issuePods). The release of
+// a pod whose Claude Code role runs a plugin that takes no task rides the same tick and the same
+// wakes (workflow.IdleRelease's old plugin), so a deployment with release off releases no such
+// pod either.
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
-	release, ok := idleRelease(supervision.cfg)
+	cfg := supervision.cfg
+	release, ok := idleRelease(cfg)
 	if !ok {
 		return
 	}
@@ -1676,7 +1678,9 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		return
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = release.Idle(), supervision.supervisor.store, podRuntime
-	w.outbox.backstop = releaseBackstop(supervision.cfg)
+	w.idleFixedPlugin = func(role claim.Role) bool { return noPluginInstall(cfg, role) }
+	w.idleImage = cfg.Runtime.Kubernetes.Image
+	w.outbox.backstop = release.Backstop()
 }
 
 // replayTerminal applies the ready or failure fact of every stored claim in either state that no
@@ -2353,11 +2357,12 @@ func (w *workflowRuntime) claimReady(c supervise.Claim) {
 }
 
 // taskConfirmed applies the fact that a role's agent took the work the daemon gave it
-// (supervise's Deps.TaskConfirmed): admission decides on it whether a root whose architect owed
-// that task now waits on a person (workflow's ReconcileAwaiting), which otherwise waits for the
-// next tick. The machine calls it inside its own decision, so the fact is applied on a goroutine
-// of its own, bounded by readyReleaseTimeout; a failure is logged and not the daemon's end, since
-// the tick decides the same thing again.
+// (supervise's Deps.TaskConfirmed, at an accepted take): admission decides on it whether a root
+// whose architect owed that task now waits on a person (workflow's ReconcileAwaiting), which
+// otherwise waits for the next tick. The machine calls it inside its own decision, so the fact is
+// applied on a goroutine of its own, bounded by readyReleaseTimeout; a failure is logged and not
+// the daemon's end, since the tick decides the same thing again. It is applied under
+// confirmationEventID.
 func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return
@@ -2368,14 +2373,29 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		fact := intake.TaskConfirmed{Issue: c.Issue, Role: c.Role, Generation: c.Generation}
-		id := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation)
-		if p := c.Pending; p != nil {
-			id = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID)
-		}
-		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {
+		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", confirmationEventID(c), fact, w.handlers...); err != nil {
 			w.log.Warn("apply the confirmation of a task", "claim", c.Token, "error", err)
 		}
 	}()
+}
+
+// confirmationEventID is the event id the confirmation of c's task is applied under. It names
+// the task's delivery id and its number, which a take-back keeps, so a task taken again after it
+// was taken back is applied once. The delivery id is what keeps the id to one lifetime of the
+// numbering: processed_events, which dedupes the fact, is never pruned, and the store
+// migration's way back and roll-forward number every claim from task 1 again
+// (20261113175649_task_numbers.up.sql), so a number alone would name a task 1 the claim took
+// before the rollback, and the confirmation of the new task 1 would come back a duplicate. A
+// task of no number, which no take of this release made, is named by its delivery id alone, and
+// a claim holding no task by its launch.
+func confirmationEventID(c supervise.Claim) string {
+	switch p := c.Pending; {
+	case p != nil && p.Number != 0:
+		return fmt.Sprintf("task-confirmed:%s:%s:task-%d", c.Token, p.ID, p.Number)
+	case p != nil:
+		return fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID)
+	}
+	return fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation)
 }
 
 // sessionLost applies the fact that a claim forgot its recorded session, for cause (supervise's

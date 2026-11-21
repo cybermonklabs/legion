@@ -24,8 +24,8 @@ import (
 // survives the row that carried it.
 //
 // The whole path main runs is held here: admission queues the start, the outbox runner launches
-// the architect on it, and the agent that comes up is prompted that task in its first turn, with
-// no message from anyone.
+// the architect on it, and the agent that comes up takes that task and runs it as its first turn,
+// with no message from anyone.
 //
 // Nothing wakes the project's controller about this root. Each of the three stall arms is a
 // reading that the architect did not take its work, is not there, or has not moved (admit's
@@ -65,7 +65,7 @@ func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
 	r.bringUp()
 	prompts := r.prompts()
 	if len(prompts) != 1 || prompts[0].Message != pending.Task {
-		t.Fatalf("the architect was prompted %#v, want the one start task %q in its first turn", prompts, pending.Task)
+		t.Fatalf("the architect took %#v, want the one start task %q in its first turn", prompts, pending.Task)
 	}
 	// The arms are read on every pass of the project, so one runs here with the architect up and
 	// holding the task it was sent. A controller is registered for that pass, since the daemon

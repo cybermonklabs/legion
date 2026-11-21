@@ -254,6 +254,30 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 	}
 }
 
+// The example's two commented wait bounds, uncommented as the file ships them, pass the check
+// and are read as the defaults they state: the example as it ships, which names neither key, reads
+// the same two bounds, so a default changed in the loader and not in the example fails here. The
+// lines stay commented in the file itself, as the silence key's do.
+func TestShippedLegionYAMLExampleCheckConfigReadsTheTwoWaitBoundsItStates(t *testing.T) {
+	stated, err := configpkg.LoadForValidation(checkShippedExample(t, func(example string) string {
+		return uncommentExample(t, example,
+			"# worker_take_timeout_seconds: 300",
+			"# worker_turn_start_timeout_seconds: 1500",
+		)
+	}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults, err := configpkg.LoadForValidation(stageShippedExample(t, func(example string) string { return example }), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stated.WorkerTakeTimeout != defaults.WorkerTakeTimeout || stated.WorkerTurnStartTimeout != defaults.WorkerTurnStartTimeout {
+		t.Fatalf("the example's wait bounds read as %s and %s, want the defaults a file naming neither key reads, %s and %s",
+			stated.WorkerTakeTimeout, stated.WorkerTurnStartTimeout, defaults.WorkerTakeTimeout, defaults.WorkerTurnStartTimeout)
+	}
+}
+
 // memoryGuardExampleLines are the example's commented memory_guard block, line by line, as an
 // operator turning it on uncomments it.
 var memoryGuardExampleLines = []string{

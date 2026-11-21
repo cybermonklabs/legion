@@ -26,7 +26,8 @@
 # each proxy (socat's ACCEPT-FD) serves on a copy of a socket a keeper holds for the whole run, so a
 # restart serves the same port. Only a --build-from listener that takes no ENVOY_LISTEN_FD binds a
 # number, a port picked free below the kernel's ephemeral range, which its restart binds again. At
-# setup each session is told (one model turn) to follow the issue topic
+# setup each session is told (one model turn: Oh My Pi's a prompt frame, Claude Code's an Envoy
+# send to its own session, since the bridge takes no prompt frame) to follow the issue topic
 # notifications.dispatch.issue.<KEY>.> and the run's own team topic
 # notifications.team.live-delivery-<run>, and to hold a role of its own; the listener's registry is
 # then read to show them. Then seven windows run, one disruption each, with every event of the
@@ -48,7 +49,7 @@
 #   h  the Claude Code session replaced by one whose id has never registered, with one envelope
 #      published on that id's own agent subject, and stored by the stream, before it starts: the
 #      window of a session whose first registration follows a message already stored for it. It
-#      is last, because the replacement follows no issue or team topic: the setup prompt that
+#      is last, because the replacement follows no issue or team topic: the setup message that
 #      made the first Claude Code session follow them ran before this one existed
 #
 # Events of windows a to g, each carrying a unique marker in its text:
@@ -896,9 +897,9 @@ role[cc]="live-delivery-cc-${run_id}"
 # The one team topic both sessions follow. notifications.team.> is a stream subject, so a message
 # published to it while a session is down waits in that session's own consumer until it returns.
 readonly team_topic="notifications.team.live-delivery-${run_id}"
-note "the run's team topic is ${team_topic}; the setup prompt makes both sessions follow it"
+note "the run's team topic is ${team_topic}; the setup message makes both sessions follow it"
 readonly pi_note="This session is an automated delivery test. Do exactly what the user's first message says, using the Envoy tools it names. After that, answer every message and every Envoy card with the single word ok, and call no tools."
-readonly cc_note="This session is an automated delivery test. Do exactly what the user's first message says, using the Envoy tools it names. After that, answer every message with exactly one line, WAITING for test events, and call no tools."
+readonly cc_note="This session is an automated delivery test. Do exactly what the first Envoy message you receive says, using the Envoy tools it names. After that, answer every message with exactly one line, WAITING for test events, and call no tools."
 natives=$HOME/.omp/natives
 if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
 
@@ -1067,16 +1068,26 @@ session_delivery_shown() {
 begin sessions
 start_pi
 start_cc fresh
-setup_prompt() {
+# setup_text LABEL: the one setup instruction of session LABEL, naming the Envoy tools of its own
+# runtime.
+setup_text() {
   local label=$1 subscribe=envoy_subscribe role_set=envoy_role_set
   [[ "$label" == pi ]] || { subscribe=mcp__legion__envoy_subscribe; role_set=mcp__legion__envoy_role_set; }
   local topics
   topics=$(jq -nc --args '$ARGS.positional' "$issue_topic" "$team_topic" ${second_topic:+"$second_topic"})
-  jq -nc --arg m "Call ${subscribe} with topics ${topics}. Then call ${role_set} with role \"${role[$label]}\". Then reply with the single word ok." \
-    '{type: "prompt", id: "setup", message: $m}'
+  printf 'Call %s with topics %s. Then call %s with role "%s". Then reply with the single word ok.' \
+    "$subscribe" "$topics" "$role_set" "${role[$label]}"
 }
-rpc_send pi "$(setup_prompt pi)"
-rpc_send cc "$(setup_prompt cc)"
+rpc_send pi "$(jq -nc --arg m "$(setup_text pi)" '{type: "prompt", id: "setup", message: $m}')"
+# No prompt frame for the Claude Code session: the bridge takes none (a task is a value a pane
+# takes from its daemon, and this run has none), and its seed of the fresh session (`/rename`) is
+# Claude Code's first input. So the setup reaches it the way every message of the windows does:
+# an Envoy send to its own session, once its channel server has registered it, which the bridge's
+# inbox hands to Claude Code as a user turn. The send carries no marker, so no window counts it.
+await cc "$(err_log cc)" 240 registered shared "${sid[cc]}"
+answer=$(listener_post shared /v1/messages/send "$(jq -nc --arg s "${sid[cc]}" --arg m "$(setup_text cc)" \
+  '{target_session: $s, source: "agent", source_session: "envoy-session-delivery", message: $m}')")
+answer_ok "$answer" || fail "listener shared refused the Claude Code session's setup message: $answer"
 await pi "$(err_log pi)" 240 follows_and_holds pi
 note "pi: $(session_view pi)"
 await cc "$(err_log cc)" 300 follows_and_holds cc
@@ -1515,7 +1526,7 @@ run_window() {
     # case. Its subject is the session's own agent subject, which publish_rest never publishes on.
     #
     # It is the last window: the replacement session follows no issue or team topic, since the
-    # setup prompt that made the first one follow them ran before it existed, so a window after
+    # setup message that made the first one follow them ran before it existed, so a window after
     # this one would publish to a session that cannot take what it sends.
     local text answer cc_file
     kill_label cc KILL

@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  A push to the base and the daemon's start read now read the merge state of an issue in `merging`,
+  or held from it, once, with no ladder and no follow on GitHub's `unknown`: a head in the merge
+  queue answers `unknown`, so a ladder there would read it again and again for an answer GitHub
+  does not give while the head is queued. That one read's answer is applied as every read's is,
+  and an `unknown` one moves nothing. A base push or a start read that asks for a read of an issue
+  in any other phase still starts a ladder.
+time: 2026-11-20T10:26:07Z

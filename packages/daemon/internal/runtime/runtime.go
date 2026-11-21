@@ -4,9 +4,9 @@
 //
 // The boundary carries process facts only: a runtime spawns, stops, and observes processes, and
 // says `Alive`, `Gone`, `NotRecordedProcess`, or `Uncertain` about them. What the agent inside
-// the process is doing — that it connected, acknowledged a prompt, started or ended a turn — is
-// the worker stream's to report, a peer source beside this one. Both reach the supervisor, which
-// is the only place the two kinds of fact meet.
+// the process is doing — that it connected, took its task, started or ended a turn — is the
+// worker stream's and the claim routes' to report, peer sources beside this one. They all reach
+// the supervisor, which is the only place the two kinds of fact meet.
 //
 // The connection contract (`Conn`, `Conns`) lives here rather than in the stream package so that
 // this package and its fake depend on methods rather than on the stream's structs; the stream's

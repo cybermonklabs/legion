@@ -48,8 +48,8 @@ var ErrCompactNotTaken = errors.New("the claim was not taken for a compaction, s
 //
 // What a daemon that stops here leaves behind is a shape it already knows: a claim stored
 // working, whose agent's own answer to "are you streaming" ends it (askTurnOver), or a ready
-// or idle claim holding a task, which the next thing that reaches that claim sends — its
-// agent's hello, its ready, the end of a turn it takes of its own (sendPending's callers).
+// or idle claim holding a task, whose value the next thing that reaches that claim writes again —
+// its agent's hello, its ready, the end of a turn it takes of its own (offerPending's callers).
 var ErrCompactNotEnded = errors.New("the compaction ended and the claim could not be given back, so the task it owes was not sent")
 
 // ErrCompactProcessGone is a compaction whose end found it was no longer the claim's own
@@ -59,9 +59,10 @@ var ErrCompactNotEnded = errors.New("the compaction ended and the claim could no
 // So compactEnded never ran: the claim was not given back and the task it owes was not sent.
 //
 // What happens to the claim next is its own path's, and that path is not always a relaunch. A
-// claim whose death the daemon relaunches is sent the owed task when its agent is ready again
-// (sendPending), but a claim its death failed and one a held suspension stopped each run again
-// only when an operator retries or resumes them, and the task waits for that.
+// claim whose death the daemon relaunches has its new process take the owed task once its agent
+// is ready again (CurrentTask, claimHold), but a claim its death failed and one a held suspension
+// stopped each run again only when an operator retries or resumes them, and the task waits for
+// that.
 var ErrCompactProcessGone = errors.New("the claim lost its process while its session was being compacted, so it was not given back and the task it owes was not sent")
 
 // ErrCompactSuspended is a compaction whose end found a suspension held over the claim: one
@@ -69,9 +70,11 @@ var ErrCompactProcessGone = errors.New("the claim lost its process while its ses
 // suspension that arrives in a turn (holdSuspension). The compaction ran and its end was the
 // claim's own, so this is neither ErrCompactProcessGone nor a store that would not write
 // (ErrCompactNotEnded); what it is is a claim the end did not give back. The hold runs there
-// and the claim is suspended, or the claim is working for a turn Oh My Pi started under the
-// compaction and the hold runs at that turn's end instead (compactEnded). Either way the task
-// the claim owes was not sent.
+// and the claim is suspended; or the claim is working for a turn Oh My Pi started under the
+// compaction and the hold runs at that turn's end instead; or the claim is idle over a take whose
+// turn ended before the compaction with its report still to come, and the hold runs at that
+// report's finish or at its deadline (compactEnded). Each way the task the claim owes was not
+// sent.
 //
 // What becomes of that task is the hold's own, and settle is what decides it. A suspension by
 // a source that resumes this same claim in the same phase — an operator's hold, and a
@@ -125,8 +128,8 @@ type compacting struct {
 // — a session too small, one already compacted, a summarizer that failed — carries its words
 // (runtime.RefusalReason); a wait that ran out, or a transport that failed, is an error of its
 // own. The claim is given back in every one of those cases, and the task it owes goes with it —
-// or waits for the turn of a launch the pacing parked over its process, where every send of
-// such a claim waits (sendPending) — and only a compaction that ran puts the claim's run of
+// or waits for the turn of a launch the pacing parked over its process, where every take of
+// such a claim waits (claimHold) — and only a compaction that ran puts the claim's run of
 // provider-error turns back to zero (compactEnded). A take that did not happen at all is
 // ErrCompactNotTaken or a *RefusedError, and leaves the claim where it was with its task unsent.
 //
@@ -215,8 +218,8 @@ func (m *Machine) compaction() (compacting, bool) {
 //
 // A process still running that a parked launch is to replace is no such loss: the compaction
 // ran over a live session, so the claim records it to the end, that end gives the claim back
-// (compactEnded), and the task it owes waits for the launch's turn where every send of such a
-// claim waits (sendPending's launchWaits).
+// (compactEnded), and the task it owes waits for the launch's turn where every take of such a
+// claim waits (claimHold's launchWaits).
 func (m *Machine) ownsCompaction(generation uint64) bool {
 	return m.compacting != nil && m.compacting.generation == generation
 }
@@ -249,8 +252,8 @@ func (m *Machine) ownsCompaction(generation uint64) bool {
 // What the drop gives up is the compaction's one reader that is not its end or that record: a
 // late agent_end from the dead connection is no longer recorded on the compaction
 // (turnStartedWhileBusy, turnEnded) but read as the end of the claim's own turn, which writes the
-// turn's end line and idles the claim. Nothing is sent on it, since every send of a claim whose
-// launch waits its turn waits with it (sendPending's launchWaits), and the wake's turn relaunches
+// turn's end line and idles the claim. Nothing is taken on it, since every take of a claim whose
+// launch waits its turn waits with it (claimHold's launchWaits), and the wake's turn relaunches
 // an idle claim exactly as it relaunches a working one. The record then reads the idle claim as
 // it stands.
 func (m *Machine) compactionLostProcess() {
@@ -261,9 +264,9 @@ func (m *Machine) compactionLostProcess() {
 
 // compactStart takes the claim for a compaction: it is working until the compaction ends
 // (compactEnded), and that is the whole of how the rest of the daemon knows not to disturb it.
-// Working is the state every one of those readers already asks about — sendPending hands a claim
-// that is not ready or idle nothing, so the ladder's re-send and any newer task wait; the idle
-// rule holds the pod (workflow's idleStateReleasable); a fresh session is refused in a turn (api's
+// Working is the state every one of those readers already asks about — a take of a claim that is
+// not ready or idle is refused, so the ladder's re-take and any newer task wait; the idle rule
+// holds the pod (workflow's idleStateReleasable); a fresh session is refused in a turn (api's
 // freshSession); and this row is an ignore in working, so a second compaction is refused — and
 // the claim is in no turn, so nothing is lost by saying the agent is busy in the one word the
 // daemon already has for it. The one reader that must not take that word for a turn is the
@@ -272,26 +275,23 @@ func (m *Machine) compactionLostProcess() {
 // It is written, because the idle rule and the daemon's sweeps read the claim from the store
 // rather than from the machine. A claim left working by a daemon that stopped mid-compaction is
 // the shape a restart already knows: it asks the agent whether the turn is still running and
-// ends it when the agent says it is not (askTurnOver), and the owed task goes on that end.
+// ends it when the agent says it is not (askTurnOver), and a take from it is the worker's word
+// that the compaction is over (takeInTurn).
 //
-// A prompt the agent has not answered yet is taken back before anything is asked. Oh My Pi runs
-// one thing at a time, so the compaction aborts the turn that prompt started, and the result of
-// an aborted turn carries no error of its own (shimwire.PromptResult): left as it was, the task
-// would be confirmed by that result and retired as worked at the end of the compaction, unsent
-// (promptResulted, settle). Taken back it is unconfirmed under a new id, which the result of
-// the aborted prompt no longer names (Machine.fence), and the end of the compaction sends it.
-// A task re-sent after work that may have run is this operation's lesser fault, as it is at
-// every other send that may repeat one (sendPending). So is a sentence told again: what the
-// confirmation the take-back clears had told — the abandoned session, or what the last let-go
-// ended — goes back to untold with it (takeBackPending, moveTelling), and the re-sent task
-// carries it again. The aborted turn may have read it, and a sentence repeated in the next prompt
-// is the safe way round, where one marked told for a turn the compaction cut short may reach
-// nobody.
+// A take accepted whose turn has not started is taken back before anything is asked, under its
+// number (takeBack). Oh My Pi runs one thing at a time, so the compaction aborts the turn that
+// take was about to start: left as it was, the task would wait on a turn its worker never runs.
+// Taken back, its value is written again at the end of the compaction (afterTurn, offerPending),
+// and the worker takes it again. A task taken again after work that may have run is this
+// operation's lesser fault, as it is wherever a take may repeat one. So is a sentence told again:
+// what the take told — the abandoned session, or what the last let-go ended — goes back to untold
+// with it, and so does the handshake's confirmation of its entry, since no turn ran its text
+// (giveBackTake); the next accepted take carries the sentence again.
 //
 // A claim whose launch waits its turn in the wake pacing is taken for nothing either
 // (launchWaits). What becomes of the process its session runs on is already decided — the turn
 // lets it go and starts the next (wakeNow, launchNow) — and such a process is asked nothing
-// anywhere else: no task is handed to it (sendPending), no observation of it is judged and no
+// anywhere else: no take of it is accepted (claimHold), no observation of it is judged and no
 // probe is made of it (judge, probe). A compaction is the longest ask of them all, up to ten
 // minutes of a model reading the transcript, over a connection that turn is about to close. It
 // is answered as the shim that is not connected above is, a take that did not happen
@@ -334,7 +334,7 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 	// Nothing is asked of a session the claim does not hold (holdRecorded, plan E's t-e-54): a
 	// compaction runs Oh My Pi's summarizer over the session and can start a turn, which would put
 	// a process the boot could not suspend to work under another claim's session, or one no claim
-	// holds, as a task would (sendPending; review round 13 of #4220). No refusal of the claim's
+	// holds, as a task it took would (takeable; review round 13 of #4220). No refusal of the claim's
 	// state either: the state takes a compaction, and what stops it is the session, so
 	// Machine.Compact answers it as a take that did not happen, carrying the hold's own refusal,
 	// or the store's error when the store did not answer.
@@ -344,13 +344,10 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		}
 		return fmt.Errorf("the claim's session is not held to it, so nothing is asked of that session: %w", err)
 	}
-	if m.claim.Pending != nil && (m.send != nil || m.resultPending()) {
-		m.log.Info("supervise: the compaction aborts the turn this task's prompt is running; the task goes back to waiting",
-			"delivery", m.claim.Pending.ID)
-		// The compaction aborts whatever run its session had, so no prompt of the task is left
-		// outstanding for a turn of its own (Machine.outstanding).
-		m.outstanding = nil
-		if err := m.takeBackPending(ctx, taskRead); err != nil {
+	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
+		m.log.Info("supervise: the compaction aborts the turn this task's take was to start; the task goes back to waiting",
+			"task", p.Number)
+		if err := m.takeBack(ctx, takenBackCompaction); err != nil {
 			return err
 		}
 	}
@@ -397,10 +394,15 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // A suspension held over the claim is the one end that gives the claim back to nothing, and it
 // says so to whoever asked for the compaction (ErrCompactSuspended). The hold runs here, as
 // the turn's end runs it, and leaves the claim suspended with its process stopped; where a
-// turn is running it is left to that turn's end, and the claim is working for it. Neither is a
-// claim back on the task it owes, and that task is unsent either way, so an answer of nil —
+// turn is running it is left to that turn's end, and the claim is working for it; and where the
+// compaction began after a take's turn had ended with its report still to come, it waits for that
+// report as at the turn's end (reportSettles, Machine.heldForReport): the claim goes back idle
+// holding it, and the report's finish runs it (reportedTask, afterTurn), or its deadline
+// (suspendAtTimeout). Run here, its stop would come before that report, which the suspended claim
+// ignores, and settle would take back as a cut turn a task whose turn ran whole. None of these is
+// a claim back on the task it owes, and that task is unsent each way, so an answer of nil —
 // which its caller reads as the claim back and its task gone again (Machine.Compact, api's
-// CompactResponse) — would be false of both. The hold that runs here stops a process in no
+// CompactResponse) — would be false of each. The hold that runs here stops a process in no
 // turn, so what its let-go records reads the claim in the state the compaction gives it back
 // in (compacting.back, suspendHeldAtEnd), and the next process is not told a turn was cut off.
 func compactEnded(m *Machine, ctx context.Context, ev Event) error {
@@ -426,6 +428,14 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	if m.held != nil {
+		if m.reportSettles() {
+			m.claim.State, m.heldForReport = run.back, true
+			m.log.Info(heldForReportLine, "task", m.claim.Pending.Number, "by", m.held.By, "deadline", m.held.Deadline)
+			if err := m.persist(ctx); err != nil {
+				return err
+			}
+			return ErrCompactSuspended
+		}
 		// A suspension that arrived while the compaction ran was held for it, as one that
 		// arrives in a turn is (holdSuspension); it runs now, exactly as the turn's end runs it.
 		if err := m.suspendHeldAtEnd(ctx, run.back); err != nil {

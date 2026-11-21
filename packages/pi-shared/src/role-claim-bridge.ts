@@ -139,7 +139,8 @@ export async function subscribeLegionNotice(
 
 /**
  * Registers the hook the heartbeat fires after it re-establishes this session as `role`'s live
- * holder (see `reassertRole`). legion.ts re-runs the role's daemon ready call from it. Last
+ * holder (see `reassertRole`). The Legion claim reads the claim's task value again from it
+ * (`claims/task`, `legion-claim-core.ts`) and sends no second ready. Last
  * registration wins — the bridge holds one `regained` slot, unlike its per-instance claim list —
  * so legion.ts calls this only from the paths that establish a Legion identity, never at
  * extension setup, or a `task` subagent's identity-less instance would replace the holder's

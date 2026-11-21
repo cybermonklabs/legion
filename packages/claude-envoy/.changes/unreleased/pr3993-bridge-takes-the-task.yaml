@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  A Legion worker on Claude Code hands each of its claim's task values to `legion claude-bridge`,
+  with the number the daemon says the claim finished, and tells the bridge once the claim's ready,
+  and the read of its task after it, have answered. The bridge holds every Envoy message until
+  then, one sent to the session itself included, takes the task when Claude Code is idle, ahead of
+  any queued message, starts a task accepted during a turn once that turn ends, naming the task as
+  `held` in that turn's report, and sends each turn's report again until the daemon answers it.
+  The worker claims its Envoy role right after `claims/ready`, and the
+  `LEGION_CLAIM_FIRST_TURN_BOUND_MS` setting is gone.

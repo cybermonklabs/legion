@@ -34,7 +34,7 @@ import (
 // Verification document at version 10).
 //
 // The path is main's own: admission queues the start, the outbox runner launches the architect on
-// it, the agent comes up and is prompted the task, and the turn that task starts runs and ends.
+// it, the agent comes up and takes the task, and the turn the take answers runs and ends.
 // The two later phases are written onto the root's record, as the gate's registration and its
 // approval would leave it.
 func TestTheArchitectHandshakeOutlastsTheTurnThatConfirmedIt(t *testing.T) {
@@ -44,7 +44,7 @@ func TestTheArchitectHandshakeOutlastsTheTurnThatConfirmedIt(t *testing.T) {
 	r.runStarts()
 	r.bringUp()
 	if prompts := r.prompts(); len(prompts) != 1 {
-		t.Fatalf("the architect was prompted %#v, want its one start task", prompts)
+		t.Fatalf("the architect took %#v, want its one start task", prompts)
 	}
 	machine := r.machine()
 	pending := machine.Claim().Pending
@@ -52,8 +52,8 @@ func TestTheArchitectHandshakeOutlastsTheTurnThatConfirmedIt(t *testing.T) {
 		t.Fatal("the architect holds no task after its start, so this test proves nothing")
 	}
 
-	// The turn the task's prompt starts confirms it, and the state shows both times while it runs.
-	if err := machine.Handle(r.ctx, supervise.StreamTurnStart{Claim: r.token, DeliveryID: pending.ID}); err != nil {
+	// The accepted take confirmed the task, and the state shows both times while its turn runs.
+	if err := machine.Handle(r.ctx, supervise.StreamTurnStart{Claim: r.token}); err != nil {
 		t.Fatalf("start the architect's turn: %v", err)
 	}
 	r.waitMachine()
@@ -63,10 +63,10 @@ func TestTheArchitectHandshakeOutlastsTheTurnThatConfirmedIt(t *testing.T) {
 			"this is the handshake the test holds past the turn", during.EntryQueuedAt, during.EntryConfirmedAt)
 	}
 
-	// The turn ends, and the prompt's result retires the task the claim held.
+	// The turn ends, and the turn-outcome report naming the task's number finishes it.
 	for _, ev := range []supervise.Event{
 		supervise.StreamTurnEnd{Claim: r.token},
-		supervise.StreamPromptResult{Claim: r.token, DeliveryID: pending.ID, AgentInvoked: true},
+		supervise.RequestTurnOutcome{Claim: r.token, Generation: machine.Claim().Generation, Sequence: turnSequence.Add(1), Task: pending.Number},
 	} {
 		if err := machine.Handle(r.ctx, ev); err != nil {
 			t.Fatalf("handle %T for the architect: %v", ev, err)
@@ -74,7 +74,7 @@ func TestTheArchitectHandshakeOutlastsTheTurnThatConfirmedIt(t *testing.T) {
 	}
 	r.waitMachine()
 	if held := machine.Claim().Pending; held != nil {
-		t.Fatalf("the architect holds %#v after the turn its task ran, want the task retired", held)
+		t.Fatalf("the architect holds %#v after the turn its task ran, want the task finished", held)
 	}
 
 	after := r.rootView()

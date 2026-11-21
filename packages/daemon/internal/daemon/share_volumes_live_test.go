@@ -22,10 +22,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 )
 
 // TestShareVolumesMountInAnIssuePodLive writes every case's legion.yaml, holds each to the pod
@@ -34,10 +37,17 @@ import (
 // the roles container, the claim read-only and the export writable, under gVisor. It writes
 // `<case> <namespace>/<pod> <legion.yaml>` per case to LEGION_E2E_RESULT (`-` for a case it does
 // not launch) for the script.
+//
+// Every file names the nats-server the script runs on the kind network (LEGION_E2E_NATS_URL),
+// which the script's `legion probe-boot` runs reach from a container on that network: the probe
+// opens the task bucket there before it probes the image (probeTaskBucket), so a file naming a
+// server nothing answers on would refuse every probe on NATS and prove nothing of the shares. The
+// driver creates the notification stream on it first, as a deployment's listener does, because the
+// probe's own create of the bucket reads that stream's replica count.
 func TestShareVolumesMountInAnIssuePodLive(t *testing.T) {
 	fixtureenv.Live(t)
 	env := map[string]string{}
-	for _, name := range []string{"LEGION_E2E_KUBECONFIG", "LEGION_E2E_KUBE_CONTEXT", "LEGION_E2E_IMAGE", "LEGION_E2E_STREAM_HOST", "LEGION_E2E_WORK", "LEGION_E2E_RESULT", "LEGION_E2E_SHARE_SERVER"} {
+	for _, name := range []string{"LEGION_E2E_KUBECONFIG", "LEGION_E2E_KUBE_CONTEXT", "LEGION_E2E_IMAGE", "LEGION_E2E_STREAM_HOST", "LEGION_E2E_WORK", "LEGION_E2E_RESULT", "LEGION_E2E_SHARE_SERVER", liveNATSURLEnv} {
 		if env[name] = os.Getenv(name); env[name] == "" {
 			t.Fatalf("%s is unset; scripts/e2e/share-volumes-kind.sh sets it", name)
 		}
@@ -49,6 +59,10 @@ func TestShareVolumesMountInAnIssuePodLive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
+	// The listener of a deployment creates the notification stream before any daemon reads it,
+	// and the probe's create of the task bucket reads its replica count (taskBucket.create).
+	natsURL := env[liveNATSURLEnv]
+	testnats.CreateStream(t, workflowJetStream(t, natsURL), jetstream.StreamConfig{Name: intake.NotificationStream, Subjects: []string{"notifications.>"}})
 	server := env["LEGION_E2E_SHARE_SERVER"]
 	want := map[string]config.PodConfig{
 		"shares":         shareLivePod(shareLiveClaim, server, "/scratch"),
@@ -59,7 +73,7 @@ func TestShareVolumesMountInAnIssuePodLive(t *testing.T) {
 	var results []string
 	for _, tc := range shareLiveCases(server) {
 		path := writeBurstableLiveConfig(t, filepath.Join(env["LEGION_E2E_WORK"], tc.name), tc.project, env["LEGION_E2E_STREAM_HOST"],
-			env["LEGION_E2E_IMAGE"], env["LEGION_E2E_KUBECONFIG"], env["LEGION_E2E_KUBE_CONTEXT"], tc.pod)
+			env["LEGION_E2E_IMAGE"], env["LEGION_E2E_KUBECONFIG"], env["LEGION_E2E_KUBE_CONTEXT"], natsURL, tc.pod)
 		cfg, err := config.LoadForValidation(path, nil)
 		if err != nil {
 			t.Fatalf("%s: load %s: %v", tc.name, path, err)

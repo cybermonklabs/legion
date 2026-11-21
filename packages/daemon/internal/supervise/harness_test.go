@@ -362,7 +362,7 @@ func (s *memStore) RetireDelivery(ctx context.Context, c Claim, deliveryID strin
 	switch {
 	// The real store tells the two refusals of a delete that removed no row apart, because its
 	// table is keyed on the claim: nothing stored under the claim is the retirement it has
-	// already made, and a delivery stored under another id is a write that rotated the id and
+	// already made, and a delivery stored under another id is a write of another delivery that
 	// committed after its answer was lost.
 	case !ok:
 		s.mu.Unlock()
@@ -600,6 +600,20 @@ func (l *logRecords) of(message string) []loggedRecord {
 	return matched
 }
 
+// ofAny is every record whose message is exactly one of messages, in the order they were
+// written.
+func (l *logRecords) ofAny(messages ...string) []loggedRecord {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var matched []loggedRecord
+	for _, r := range l.kept {
+		if slices.Contains(messages, r.message) {
+			matched = append(matched, r)
+		}
+	}
+	return matched
+}
+
 func (l *logRecords) add(r loggedRecord) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -669,8 +683,131 @@ type harness struct {
 	specs   *testSpecs
 	logs    *logBuffer
 	records *logRecords
+	values  *memTaskValues
+	worker  *harnessWorker
 	deps    Deps
 	m       *Machine
+}
+
+// memTaskValues is the task bucket as a double (TaskValues): one value per claim, a revision the
+// whole bucket counts, as a NATS key-value bucket's does, every write and delete in order, and a
+// way to fail a call. internal/supervise/supervisetest holds the same double for other packages'
+// tests; this package's own tests cannot import it, since it imports this package.
+type memTaskValues struct {
+	mu       sync.Mutex
+	epoch    string
+	revision uint64
+	values   map[claim.Token]TaskValue
+	writes   []TaskValue
+	deletes  []claim.Token
+	failures map[string]error
+}
+
+// testEpoch is the bucket epoch memTaskValues writes under.
+const testEpoch = "2026-09-22T12:00:00Z"
+
+func newMemTaskValues() *memTaskValues {
+	return &memTaskValues{epoch: testEpoch, values: map[claim.Token]TaskValue{}, failures: map[string]error{}}
+}
+
+func (v *memTaskValues) Write(_ context.Context, token claim.Token, number uint64) (string, uint64, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if err := v.failures["Write"]; err != nil {
+		return "", 0, err
+	}
+	v.revision++
+	value := TaskValue{Number: number, Epoch: v.epoch, Revision: v.revision}
+	v.values[token] = value
+	v.writes = append(v.writes, value)
+	return value.Epoch, value.Revision, nil
+}
+
+func (v *memTaskValues) Delete(_ context.Context, token claim.Token) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if err := v.failures["Delete"]; err != nil {
+		return err
+	}
+	v.revision++
+	delete(v.values, token)
+	v.deletes = append(v.deletes, token)
+	return nil
+}
+
+func (v *memTaskValues) Read(_ context.Context, token claim.Token) (TaskValue, bool, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if err := v.failures["Read"]; err != nil {
+		return TaskValue{}, false, err
+	}
+	value, ok := v.values[token]
+	return value, ok, nil
+}
+
+func (v *memTaskValues) fail(method string, err error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.failures[method] = err
+}
+
+// value is token's value as the bucket holds it now, and false for none.
+func (v *memTaskValues) value(token claim.Token) (TaskValue, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	value, ok := v.values[token]
+	return value, ok
+}
+
+// written is every value written, in order.
+func (v *memTaskValues) written() []TaskValue {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return slices.Clone(v.writes)
+}
+
+// deleted is every delete made, in order.
+func (v *memTaskValues) deleted() []claim.Token {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return slices.Clone(v.deletes)
+}
+
+// harnessWorker is the claim's plugin as the harness plays it, the way pi-shared's task-take
+// takes: it reports every value it is handed seen, and asks to take the newest once per
+// revision, while its host is idle — the claim ready or idle, no turn of its own running. A
+// process that registers anew has asked nothing (generation, at). It starts no turn of its own:
+// a test posts the turn's start. manual stops it, for a test that drives every take itself
+// (manualTakes). relayDown is the listener that relays its values stopped: the worker is handed
+// no value, so it reports none seen and asks nothing, until the test sets it back.
+type harnessWorker struct {
+	manual     bool
+	relayDown  bool
+	generation uint64
+	seen       map[TaskValue]bool
+	asked      map[TaskValue]bool
+	// taken is every take of the worker's the daemon accepted, in order, and answers every answer
+	// the daemon gave, the refused and the dropped among them.
+	taken   []taken
+	answers []TakeAnswer
+	// sequence is the worker's own count of the turns it has reported ended (RequestTurnOutcome).
+	sequence uint64
+}
+
+// at is the worker as the process of generation knows it: one that registered anew has seen and
+// asked at nothing, since its memory went with the process it replaced.
+func (w *harnessWorker) at(generation uint64) {
+	if w.generation != generation || w.seen == nil {
+		w.generation, w.seen, w.asked = generation, map[TaskValue]bool{}, map[TaskValue]bool{}
+	}
+}
+
+// taken is one take the daemon accepted: the task's delivery and number as the claim held it, and
+// the text the answer carried, which is what the worker runs.
+type taken struct {
+	DeliveryID string
+	Number     uint64
+	Message    string
 }
 
 func testLimits() Limits { return Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2} }
@@ -716,11 +853,15 @@ func newHarness(t *testing.T) *harness {
 	return newHarnessOf(t, queuedClaim())
 }
 
-// newHarnessOf is newHarness over the queued claim c; the walks drive c's token.
-func newHarnessOf(t *testing.T, c Claim) *harness {
+// newHarnessOf is newHarness over the queued claim c; the walks drive c's token. set, when it is
+// given, changes the machine's deps before it is built.
+func newHarnessOf(t *testing.T, c Claim, set ...func(*Deps)) *harness {
 	t.Helper()
 	h := newBareHarness(t)
 	h.token = c.Token
+	for _, change := range set {
+		change(&h.deps)
+	}
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
 		t.Fatal(err)
 	}
@@ -745,6 +886,8 @@ func newBareHarness(t *testing.T) *harness {
 		specs:   &testSpecs{},
 		logs:    &logBuffer{},
 		records: &logRecords{},
+		values:  newMemTaskValues(),
+		worker:  &harnessWorker{},
 	}
 	h.rt.Now = h.clock.Now
 	h.deps = Deps{
@@ -772,6 +915,7 @@ func newBareHarness(t *testing.T) *harness {
 		// one and none is nil, and a test that wants the lane bounded builds its own
 		// (NewRefreshGate, gatedHarness).
 		RefreshGate: NewRefreshGate(0),
+		TaskValues:  h.values,
 	}
 	return h
 }
@@ -796,75 +940,199 @@ func (h *harness) start(c Claim) {
 // timers die with it — and a new one is built from what the store read back.
 func (h *harness) restart() {
 	h.t.Helper()
+	h.outage(0)
+}
+
+// outage is the daemon stopped for d and started again: the machine goes with everything it
+// held in memory, its timers with it, the time passes with no daemon to see any of it, and a new
+// machine is built from what the store holds.
+func (h *harness) outage(d time.Duration) {
+	h.t.Helper()
 	h.m.Wait()
 	h.clock.dropAll()
+	h.clock.Advance(d)
 	h.start(h.store.load(h.token))
 }
 
-// handle posts one event and waits for the decision it starts, with the agent answering a turn's
-// end as Oh My Pi does: the prompt_result of the prompt whose turn it was, written right behind
-// that agent_end (resultAfterTurn).
+// restore builds the machine over restored, which the store holds with its pending delivery and
+// the bucket with its value, as a restart finds them.
+func (h *harness) restore(restored Claim) {
+	h.t.Helper()
+	h.token = restored.Token
+	h.seedValue(&restored)
+	if err := h.store.PutClaimAndDelivery(h.ctx, restored, *restored.Pending); err != nil {
+		h.t.Fatalf("seed the restored claim: %v", err)
+	}
+	h.start(restored)
+}
+
+// handle posts one event and waits for the decision it starts, with the worker answering a turn's
+// end as its plugin does: the turn-outcome report naming the task whose take's turn it was,
+// right behind the end (report). The worker then takes a value it has not asked at, if its host
+// is idle (workerAsks).
 func (h *harness) handle(ev Event) error {
 	return h.post(ev, true)
 }
 
-// handleQuiet is handle for a turn that was not the pending prompt's — a role's own background
-// result waking a settled session — whose end no prompt_result follows.
+// handleQuiet is handle for a turn that was not the pending task's — a role's own background
+// result waking a settled session — whose end no report follows, so only the end frame's bound
+// finishes a task (finishAtTurnsEnd).
 func (h *harness) handleQuiet(ev Event) error {
 	return h.post(ev, false)
 }
 
-func (h *harness) post(ev Event, result bool) error {
-	ran := ""
-	if _, ending := ev.(StreamTurnEnd); ending && result {
-		ran = h.promptInTurn()
+func (h *harness) post(ev Event, report bool) error {
+	var ran uint64
+	if _, ending := ev.(StreamTurnEnd); ending && report {
+		if p := h.m.Claim().Pending; p != nil && p.turnStarted() {
+			ran = p.Number
+		}
 	}
 	err := h.m.Handle(h.ctx, ev)
 	h.m.Wait()
-	if ran != "" {
-		// Oh My Pi writes the prompt's result right behind the agent_end of the turn that ran it.
-		err = errors.Join(err, h.m.Handle(h.ctx, StreamPromptResult{Claim: h.token, DeliveryID: ran, AgentInvoked: true}))
-		h.m.Wait()
+	if ran == 0 {
+		h.workerAsks()
+		return err
+	}
+	// The worker reports the turn whatever became of the claim at its end, and then takes as it
+	// does after every event (reportTurn). A report the claim's state refuses — the turn's end ran
+	// a held suspension — is the daemon's answer to the worker, as a 409 is to its plugin, and no
+	// failure of the event posted.
+	var refused *RefusedError
+	if rerr := h.reportTurn(ran, nil); rerr != nil && !errors.As(rerr, &refused) {
+		err = errors.Join(err, rerr)
 	}
 	return err
 }
 
-// promptInTurn is the delivery of the prompt the agent took and has not reported the end of: the
-// one whose work the turn now ending did. It is read before the end reaches the machine, so a
-// task that end re-sends is the next turn's prompt rather than this one's. A prompt the
-// connection refused reports nothing, and neither does one the agent has already answered with
-// no turn, a busy answer or a late refusal: Oh My Pi answers a prompt once, a failure or a result,
-// and the machine stops waiting for that prompt's result at exactly the moment it takes that
-// answer (Machine.outstanding). A prompt whose wait for its turn ran out is still outstanding, and
-// its turn, starting late, reports it only while it is the last prompt the connection accepted:
-// the fake connection keeps that one alone (fake.Conn's TakePromptResult), so a test whose task
-// was sent again since posts the first prompt's result itself.
-func (h *harness) promptInTurn() string {
-	conn, ok := h.conns.Conn(h.token)
-	if !ok {
-		return ""
-	}
-	reporter, ok := conn.(interface{ TakePromptResult() (string, bool) })
-	if !ok {
-		return ""
-	}
-	delivery, _ := reporter.TakePromptResult()
-	h.m.mu.Lock()
-	held := slices.Contains(h.m.outstanding, delivery)
-	h.m.mu.Unlock()
-	if !held {
-		return ""
-	}
-	return delivery
+// reportTurn is the worker's turn-outcome report of the turn of task number, naming the provider
+// error it ended in, nil for none (RequestTurnOutcome). The worker then takes a value written
+// meanwhile, as it does after every event (workerAsks).
+func (h *harness) reportTurn(number uint64, providerError *ProviderError) error {
+	h.worker.sequence++
+	err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(),
+		Sequence: h.worker.sequence, Task: number, ProviderError: providerError})
+	h.m.Wait()
+	h.workerAsks()
+	return err
 }
 
-// outstanding is every prompt of the pending task the machine waits on a result for
-// (Machine.outstanding), read under the machine's lock, since a send's goroutine may be handling
-// its acknowledgement.
-func (h *harness) outstanding() []string {
-	h.m.mu.Lock()
-	defer h.m.mu.Unlock()
-	return slices.Clone(h.m.outstanding)
+// mustReport is reportTurn for the pending task, failing the test on an error.
+func (h *harness) mustReport(providerError *ProviderError) {
+	h.t.Helper()
+	number := h.pending().Number
+	if err := h.reportTurn(number, providerError); err != nil {
+		h.t.Fatalf("report the turn of task %d: %v", number, err)
+	}
+}
+
+// workerAsks is the worker's own reading of its value, as pi-shared's task-take reads it: seen
+// once per revision while its agent is registered, and taken once per revision while its host is
+// idle. A process that registered anew asks afresh, since its memory went with the process it
+// replaced. Each revision is marked seen and asked before the request goes, as the plugin marks
+// it, so a seen report or a take the daemon answered with nothing but a failure — a store a test
+// is failing — is not sent again: every failure the daemon answers carries a code, and the plugin
+// sends the same request again only where no daemon answered at all (departure 7 of
+// dispatch://INFRA-2811), which a harness calling the machine itself never meets. The worker asks
+// again at a newer revision, which is the daemon's to write (undecided, offerPending).
+func (h *harness) workerAsks() {
+	w := h.worker
+	if w.manual || w.relayDown {
+		return
+	}
+	c := h.m.Claim()
+	w.at(c.Generation)
+	value, ok := h.values.value(h.token)
+	if !ok || !HoldsCapability(c.State) {
+		return
+	}
+	if !w.seen[value] {
+		w.seen[value] = true
+		_ = h.m.Handle(h.ctx, RequestTaskSeen{Claim: h.token, Generation: c.Generation, Session: c.Session,
+			Number: value.Number, Revision: value.revision()})
+	}
+	if (c.State != StateReady && c.State != StateIdle) || w.asked[value] {
+		return
+	}
+	w.asked[value] = true
+	_, _ = h.takeValue(value)
+}
+
+// takeValue is a take of value's number at its revision, recorded as the worker's. An answer the
+// daemon gave beside a failure of the rest of its decision is the worker's all the same
+// (Machine.Take), so it is recorded whatever the error.
+func (h *harness) takeValue(value TaskValue) (TakeAnswer, error) {
+	c := h.m.Claim()
+	answer, err := h.m.Take(h.ctx, RequestTake{Claim: h.token, Generation: c.Generation, Session: c.Session,
+		Number: value.Number, Revision: value.revision()})
+	h.m.Wait()
+	if answer.Outcome == "" {
+		return answer, err
+	}
+	h.worker.answers = append(h.worker.answers, answer)
+	if answer.Outcome == TakeOutcomeAccepted {
+		h.worker.taken = append(h.worker.taken, taken{DeliveryID: pendingID(c.Pending), Number: value.Number, Message: answer.Text})
+	}
+	return answer, err
+}
+
+// manualTakes stops the harness's worker from taking on its own, for a test that drives every
+// seen report and take itself (seen, take).
+func (h *harness) manualTakes() { h.worker.manual = true }
+
+// seen is the worker reporting the claim's current value seen.
+func (h *harness) seen() TaskValue {
+	h.t.Helper()
+	value, ok := h.values.value(h.token)
+	if !ok {
+		h.t.Fatal("the bucket holds no value for the claim")
+	}
+	if err := h.m.Handle(h.ctx, RequestTaskSeen{Claim: h.token, Generation: h.generation(), Session: h.claim().Session,
+		Number: value.Number, Revision: value.revision()}); err != nil {
+		h.t.Fatalf("report the value seen: %v", err)
+	}
+	return value
+}
+
+// take is the worker taking the claim's current value: seen, then taken, and the answer.
+func (h *harness) take() TakeAnswer {
+	h.t.Helper()
+	value := h.seen()
+	answer, err := h.takeValue(value)
+	if answer.Outcome == "" {
+		h.t.Fatalf("take task %d: %v", value.Number, err)
+	}
+	return answer
+}
+
+// mustTake is take, failing the test unless the take is accepted; it answers the text.
+func (h *harness) mustTake() string {
+	h.t.Helper()
+	answer := h.take()
+	if answer.Outcome != TakeOutcomeAccepted {
+		h.t.Fatalf("take = %+v, want accepted", answer)
+	}
+	return answer.Text
+}
+
+// wantRefused is take, failing the test unless the take is refused by hold.
+func (h *harness) wantRefused(hold string) {
+	h.t.Helper()
+	if answer := h.take(); answer.Outcome != TakeOutcomeRefused || answer.Hold != hold {
+		h.t.Fatalf("take = %+v, want refused by %q", answer, hold)
+	}
+}
+
+// seedValue writes c's pending task's value into the bucket, as the daemon that queued it did, and
+// records the write on c as that daemon's claim write did: a claim restored holding a task finds
+// the value its record names (internal/daemon's task bucket repairs one at boot).
+func (h *harness) seedValue(c *Claim) {
+	h.t.Helper()
+	epoch, revision, err := h.values.Write(h.ctx, c.Token, c.Pending.Number)
+	if err != nil {
+		h.t.Fatalf("seed the restored value: %v", err)
+	}
+	c.TaskWrittenRevision = TaskRevision{Epoch: epoch, Revision: revision}
 }
 
 func (h *harness) must(ev Event) {
@@ -874,7 +1142,7 @@ func (h *harness) must(ev Event) {
 	}
 }
 
-// mustQuiet is must for a turn whose end no prompt_result follows (handleQuiet).
+// mustQuiet is must for a turn whose end no turn-outcome report follows (handleQuiet).
 func (h *harness) mustQuiet(ev Event) {
 	h.t.Helper()
 	if err := h.handleQuiet(ev); err != nil {
@@ -897,6 +1165,7 @@ func (h *harness) handleWithoutPanic(ev Event) error {
 func (h *harness) advance(d time.Duration) {
 	h.clock.Advance(d)
 	h.m.Wait()
+	h.workerAsks()
 }
 
 func (h *harness) claim() Claim { return h.m.Claim() }
@@ -926,13 +1195,15 @@ func (h *harness) observe(kind runtime.ObservationKind) {
 	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: kind, At: h.clock.Now()}})
 }
 
-func (h *harness) prompts() []fake.Prompt { return h.conn.Prompts() }
+// prompts is every take of the worker's the daemon accepted, in order: what reached the worker.
+func (h *harness) prompts() []taken { return slices.Clone(h.worker.taken) }
 
-func (h *harness) wantPrompts(n int) []fake.Prompt {
+// wantPrompts is prompts, failing the test unless n takes were accepted.
+func (h *harness) wantPrompts(n int) []taken {
 	h.t.Helper()
 	prompts := h.prompts()
 	if len(prompts) != n {
-		h.t.Fatalf("prompts sent = %d (%+v), want %d", len(prompts), prompts, n)
+		h.t.Fatalf("takes accepted = %d (%+v), want %d", len(prompts), prompts, n)
 	}
 	return prompts
 }
@@ -1037,8 +1308,9 @@ func (h *harness) relaunched() {
 }
 
 // reach walks the claim from where it is to state through the events that lead there. Working
-// and idle are reached through a delivered task, so they carry one: working holds it confirmed,
-// idle has retired it.
+// and idle are reached through a delivered task, so they carry one: working holds it taken with
+// its turn running — delivered, seen, taken by the worker, its turn started — and idle has
+// finished it, by the turn's end and the worker's report of it.
 func (h *harness) reach(state ClaimState) {
 	h.t.Helper()
 	steps := []ClaimState{StateQueued, StateLaunching, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle}
@@ -1064,6 +1336,12 @@ func (h *harness) reach(state ClaimState) {
 			h.ready()
 		case StateWorking:
 			h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+			if h.worker.manual {
+				h.mustTake()
+			}
+			if p := h.claim().Pending; p == nil || !p.awaitsTurn() {
+				h.t.Fatalf("reach working: the task's take was not accepted: %+v", h.worker.answers)
+			}
 			h.must(StreamTurnStart{Claim: h.token})
 		case StateIdle:
 			h.must(StreamTurnEnd{Claim: h.token})
@@ -1072,26 +1350,26 @@ func (h *harness) reach(state ClaimState) {
 	}
 }
 
-// gatedConn holds every prompt at the door until the test lets it through, so a test can land a
-// stream event while a send is still in flight.
-type gatedConn struct {
-	*fake.Conn
-	entered chan string
+// gatedAdopt holds every adoption of the working copy at the door until the test lets it through,
+// so a test can land an event, or a second take, while a take's adoption is still running.
+type gatedAdopt struct {
+	*fake.Runtime
+	entered chan struct{}
 	release chan struct{}
 }
 
-func newGatedConn() *gatedConn {
-	return &gatedConn{Conn: fake.NewConn(), entered: make(chan string, 8), release: make(chan struct{}, 8)}
+func newGatedAdopt(rt *fake.Runtime) *gatedAdopt {
+	return &gatedAdopt{Runtime: rt, entered: make(chan struct{}, 8), release: make(chan struct{}, 8)}
 }
 
-func (g *gatedConn) Prompt(ctx context.Context, deliveryID, message string) error {
-	g.entered <- deliveryID
+func (g *gatedAdopt) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+	g.entered <- struct{}{}
 	select {
 	case <-g.release:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return g.Conn.Prompt(ctx, deliveryID, message)
+	return g.Runtime.AdoptWorkingCopy(ctx, loc, id)
 }
 
 // gatedRuntime holds Suspend until the test lets it through.
@@ -1138,17 +1416,6 @@ func (g *gatedSpawn) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime
 		return runtime.Locator{}, ctx.Err()
 	}
 	return g.Runtime.Spawn(ctx, spec)
-}
-
-func waitFor(t *testing.T, what string, ch <-chan string) string {
-	t.Helper()
-	select {
-	case v := <-ch:
-		return v
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-		return ""
-	}
 }
 
 var errBoom = errors.New("boom")

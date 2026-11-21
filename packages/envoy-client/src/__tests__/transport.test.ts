@@ -12,11 +12,12 @@ import envelopeWithoutRole from "../../../contracts/fixtures/envelope-without-ro
 import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
-import { createConsumerDelivery, RelayHeader, type RelayReply } from "../consumer-delivery";
+import { createConsumerDelivery, type RelayReply } from "../consumer-delivery";
 import { DedupeIdentitySchema, renderInbound } from "../delivery";
 import { createDeliveryLedger, type FailureNotice } from "../delivery-ledger";
 import { subscriptionRemovedTopics } from "../dispatch-subscribe";
 import { machineID } from "../machine";
+import { RelayHeader } from "../relay-frame";
 import type { TmuxPlace } from "../tmux-place";
 import {
   publishConfirmationText,
@@ -2547,7 +2548,12 @@ describe("an envelope that carries the role field", () => {
       const replies: RelayReply[] = [];
       const delivery = createConsumerDelivery({
         sessionID: SESSION,
-        host: { deliver: () => undefined, gap: () => undefined, log: () => undefined },
+        host: {
+          deliver: () => undefined,
+          gap: () => undefined,
+          log: () => undefined,
+          onTaskValue: () => undefined,
+        },
         publish: (_reply, body) => {
           replies.push(body);
         },

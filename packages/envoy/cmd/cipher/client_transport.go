@@ -9,7 +9,6 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -23,6 +22,7 @@ import (
 	"syscall"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/nettimeout"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/tlsalert"
 )
@@ -128,7 +128,6 @@ func unreachable(base cipheraddr.Address, method, callURL string, err error) err
 	host := brokerHost(base)
 	failed := func(what string) error { return &unreachableError{what, base, method, callURL, cause, ""} }
 	var dns *net.DNSError
-	var timeout net.Error
 	var op *net.OpError
 	switch {
 	case errors.As(err, &dns) && dns.IsNotFound:
@@ -137,7 +136,7 @@ func unreachable(base cipheraddr.Address, method, callURL string, err error) err
 		return failed("the broker's host " + host + " name resolution failed")
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return failed("nothing answered at " + host + ": the connection was refused")
-	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()):
+	case nettimeout.InChain(err):
 		return failed("the broker at " + host + " did not answer in time")
 	case errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.EHOSTUNREACH),
 		errors.As(err, &op) && op.Op == "dial":

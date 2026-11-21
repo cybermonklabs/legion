@@ -21,6 +21,22 @@ import (
 // publisher sent.
 var publishRefusal = regexp.MustCompile(`Publish to ("(?:[^"\\]|\\.)*")`)
 
+// RefusedPublishSubject is the subject err names the server's refusal of a publish to, unquoted
+// (publishRefusal), and whether err is such a refusal: the violation a connection reports, or an
+// error that carries its text, as ErrPublishDenied does (deniedPublishError). A refusal whose
+// subject does not unquote is none.
+func RefusedPublishSubject(err error) (string, bool) {
+	match := publishRefusal.FindStringSubmatch(err.Error())
+	if match == nil {
+		return "", false
+	}
+	subject, unquoteErr := strconv.Unquote(match[1])
+	if unquoteErr != nil {
+		return "", false
+	}
+	return subject, true
+}
+
 // publishDenialRetention is how long a recorded violation can still be read (deniedPublish). It
 // outlasts, with room to spare, every wait a publish of this package makes for the answer a denied
 // publish never gets - publishAcknowledgementTimeout for a window's send, publishBound for
@@ -63,12 +79,8 @@ type publishViolation struct {
 // oldest of the subject's own, so a connection refused publishes to ever new subjects, or ever
 // more of one subject, cannot grow the record without bound.
 func (c *Client) recordPublishDenial(nc *nats.Conn, violation error) bool {
-	match := publishRefusal.FindStringSubmatch(violation.Error())
-	if match == nil {
-		return false
-	}
-	subject, err := strconv.Unquote(match[1])
-	if err != nil {
+	subject, ok := RefusedPublishSubject(violation)
+	if !ok {
 		return false
 	}
 	at := time.Now()

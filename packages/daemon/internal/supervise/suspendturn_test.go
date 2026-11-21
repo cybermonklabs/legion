@@ -232,6 +232,32 @@ func TestTheOperatorsSuspensionMovesADaemonsDeadlineEarlierAndTakesTheHoldOver(t
 	}
 }
 
+// A ready the agent sends again while it is in a turn leaves a suspension held for that turn
+// held (reready): the hold runs at the turn's end, as every hold made in a turn does
+// (holdSuspension, turnEnded), and the turn runs whole meanwhile. pi-legion sends its ready again
+// from its capability schedule, and a turn can start between its read of the session and the ready
+// reaching the daemon. A claim held in a compaction is working too, and waits for the
+// compaction's end the same way.
+//
+// The negative control is reready running every hold the ready meets (before this change): the
+// ready stops the process in the middle of the turn, cutting off the call the hold exists to keep.
+func TestAReadySentAgainInATurnLeavesTheHoldForTheTurnsEnd(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateWorking)
+	if err := h.handle(RequestSuspend{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the suspension in a turn answered %v, want it held", err)
+	}
+	stops := len(h.calls("Suspend"))
+
+	h.must(RequestReady{Claim: h.token, Generation: h.generation(), Session: session})
+
+	h.wantState(StateWorking)
+	h.wantCalls("Suspend", stops)
+	h.must(StreamTurnEnd{Claim: h.token})
+	h.wantState(StateSuspended)
+	h.wantCalls("Suspend", stops+1)
+}
+
 // A held suspension whose stop the runtime refuses stays held and is tried again at the probe
 // interval, so it lands with nothing else retrying it — an operator's suspend has no outbox row.
 // At the turn's end the claim is left idle meanwhile, and is handed nothing while it is stopped.
@@ -361,55 +387,11 @@ func TestAProcessThatDiesWhileItsSuspensionWaitsIsSuspendedNotRelaunched(t *test
 		t.Errorf("suspended %+v, want the dead process's %+v", suspend.Locator, loc)
 	}
 	h.wantBudgets(Budgets{})
-	if p := h.pending(); !p.ConfirmedAt.IsZero() || !p.Interrupted {
-		t.Errorf("pending %+v, want the dead turn's task back unconfirmed and marked interrupted", p)
+	if p := h.pending(); p.taken() || !p.Interrupted {
+		t.Errorf("pending %+v, want the dead turn's task taken back and marked interrupted", p)
 	}
 	h.advance(testStop)
 	h.wantCalls("Suspend", 1)
-}
-
-// A prompt retirement while a suspension is held is that suspension's stop: the process is alive,
-// so a stop the runtime refuses leaves the claim working and still holding the suspension, retried
-// at the probe interval, rather than marked suspended over a process that still runs. Nothing is
-// charged — here the retirement would be the claim's last, which would fail it. The prompt was on
-// its way when a turn began, and the agent refuses it at the prompt-failure limit.
-func TestAPromptRetirementWhileASuspensionIsHeldRunsTheHeldStop(t *testing.T) {
-	h := newBareHarness(t)
-	h.deps.Limits = Limits{LaunchFailures: 3, PromptFailures: 1, PromptRetires: 1}
-	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
-		t.Fatal(err)
-	}
-	h.start(queuedClaim())
-	h.reach(StateReady)
-	gated := newGatedConn()
-	gated.RefusePrompt("the model provider refused the request")
-	h.conns.Register(testToken, gated)
-	if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the task"}); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, "the send", gated.entered)
-	if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.m.Handle(h.ctx, RequestSuspend{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
-		t.Fatalf("suspend mid-turn returned %v, want ErrSuspendHeld", err)
-	}
-	h.rt.FailSuspend(errBoom)
-
-	gated.release <- struct{}{}
-	h.m.Wait()
-
-	h.wantState(StateWorking)
-	if c := h.claim(); !c.SuspensionHeld || c.Locator == nil {
-		t.Fatalf("after the refused stop the claim is %+v, want its process kept and the suspension still held", c)
-	}
-	h.wantCalls("Suspend", 1)
-	h.rt.FailSuspend(nil)
-	h.advance(testProbe)
-	h.wantState(StateSuspended)
-	h.wantCalls("Suspend", 2)
-	h.wantCalls("Resume", 0)
-	h.wantBudgets(Budgets{})
 }
 
 // Only a held suspension lets a row end in suspended without naming that state. A row that

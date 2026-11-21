@@ -157,13 +157,13 @@ type sliceError struct{ cause any }
 
 func (sliceError) Error() string { return "slice error" }
 
-// sameError never panics on a value that cannot be compared, and counts it as a change.
+// SameError never panics on a value that cannot be compared, and counts it as a change.
 func TestSameErrorTreatsAValueThatCannotBeComparedAsChanged(t *testing.T) {
-	if sameError(sliceError{[]int{1}}, sliceError{[]int{1}}) {
+	if SameError(sliceError{[]int{1}}, sliceError{[]int{1}}) {
 		t.Fatal("two incomparable error values read as the same error")
 	}
 	shared := errors.New("shared")
-	if !sameError(shared, shared) {
+	if !SameError(shared, shared) {
 		t.Fatal("one error value read as a change")
 	}
 }

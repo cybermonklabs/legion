@@ -57,6 +57,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"worker_stop_timeout_seconds must be at least 9 when runtime is kubernetes: …": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, top: "worker_stop_timeout_seconds: 5\n"}.refuse(t)
 	},
+	"worker_take_timeout_seconds must be a positive integer": func(t *testing.T) string {
+		return refusalFile{top: "worker_take_timeout_seconds: 0\n"}.refuse(t)
+	},
 	"projects must configure <PROJECT>, the daemon's own project": func(t *testing.T) string {
 		// The daemon's own project is refused only beside the dispatch_url a workflow boot reads.
 		return refusalFile{kubernetes: true, drop: []string{"project:"}, top: "project: ABSENT\n"}.refuse(t)
@@ -212,13 +215,15 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	},
 }
 
-// refusalsNoFixtureDrives is every row of that table no fixture can drive, and why. Neither is a
+// refusalsNoFixtureDrives is every row of that table no fixture can drive, and why. None is a
 // refusal the configuration's own read makes, which is all `legion config check` runs.
 var refusalsNoFixtureDrives = map[string]string{
 	"<PROJECT> is already running (pid <n>)": "`legion start` itself prints it, from this machine's registry of running daemons, " +
 		"after the configuration is read: a fixture would have to register a daemon, and `legion config check`, which claims no team, never reads the registry",
 	`capability <name> is open: <detail>; to record a decision, add to legion.yaml: capabilities.decided.<name>: "<reason>"`: "the row marks it a report rather than a refusal: " +
 		"the check prints it after the Config OK line and exits 0, so no fixture makes it the message a refusal carries",
+	"nats: nats_urls names no NATS, so this daemon has no task bucket (legion_tasks) to hand a worker its task through: it launches no worker, and refuses every spawn, retry and resume of one until nats_urls names Envoy's NATS": "the row marks it a report rather than a refusal: " +
+		"the check prints it after the Config OK line and exits 0 (TestCheckConfigSaysNoNATSLaunchesNoWorker), so no fixture makes it the message a refusal carries",
 }
 
 // Every row of the troubleshooting page's refusal table (the table under `## The daemon will not

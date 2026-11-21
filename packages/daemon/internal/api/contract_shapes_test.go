@@ -377,8 +377,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging, "integrating", phase.Done,
 		phase.Held}
 	causeWords := []supervise.FailureCause{supervise.CauseLaunchRefused, supervise.CauseDied,
-		supervise.CauseNeverRegistered, supervise.CauseStalePlugin, supervise.CausePromptRetiresExhausted,
-		supervise.CauseProviderError, supervise.CauseUnrecorded}
+		supervise.CauseNeverRegistered, supervise.CauseNeverReconnected, supervise.CauseStalePlugin,
+		supervise.CausePromptRetiresExhausted, supervise.CauseProviderError, supervise.CauseUnrecorded}
 	updateWords := []UpdateState{UpdateStateNone, UpdateStateOpen, UpdateStateAsked, UpdateStateAnswered}
 	mergeWords := []record.MergeState{record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
 		record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
@@ -426,6 +426,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	keys := make([]string, 0, len(phaseWords))
 	wakes := make([]WakeWaiting, 0, len(roleWords))
 	stops := make([]store.PauseStop, 0, len(roleWords))
+	unseen := make([]UnseenTaskValue, 0, len(roleWords))
 	for i, heldFrom := range phaseWords {
 		key := fmt.Sprintf("VALUES-%d", i+1)
 		keys = append(keys, key)
@@ -473,6 +474,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 				Kind: supervise.WakeLaunch, DueAt: at})
 			stops = append(stops, store.PauseStop{ID: int64(40 + i), Pause: 7,
 				Claim: claim.Token("legion-values-" + key + "-" + string(roleWords[i])), Issue: key, Role: roleWords[i], AskedAt: at})
+			unseen = append(unseen, UnseenTaskValue{Claim: claim.Token("legion-values-" + key + "-" + string(roleWords[i])),
+				Issue: key, Role: roleWords[i], Task: uint64(i + 1), WrittenAt: at})
 		}
 	}
 	held := make([]HeldIssue, 0, len(heldWords))
@@ -495,11 +498,12 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
-		Admission:    Admission{Cap: 1, Waiting: keys, Trees: keys, Held: held},
-		Issues:       issues,
-		WakesWaiting: wakes,
-		Repositories: RepositoriesView{Live: live},
-		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
+		Admission:        Admission{Cap: 1, Waiting: keys, Trees: keys, Held: held},
+		Issues:           issues,
+		WakesWaiting:     wakes,
+		UnseenTaskValues: unseen,
+		Repositories:     RepositoriesView{Live: live},
+		Settings:         SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
 		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
 		// pause carries the held rows.
 		Paused: pausedViewOf(goldenPause(false), stops, nil),
@@ -550,7 +554,8 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// paths read as one set.
 		AnswerIssueRecord: {roots: typesOf(Issue{}), bodies: issues},
 		AnswerHealth:      {roots: typesOf(Health{}), bodies: []any{Health{Status: "ok", Project: "legion"}}},
-		// The register golden's own value (TestRegisterResponseGolden).
+		// The register golden's own value (TestRegisterResponseGolden): a claim whose bucket holds
+		// a value, which writes every key of `task` (contract 207).
 		AnswerRegister: {roots: typesOf(claim.RegisterResponse{}), bodies: []any{claim.RegisterResponse{
 			ClaimToken:   "legion-legion-legion-208-architect",
 			Tree:         "LEGION-208",
@@ -559,6 +564,8 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Generation:   3,
 			Secret:       "U3VwZXJ2aXNlZEJ5TGVnaW9u",
 			PromptAgents: []string{"deep-worker", "oracle", "plan-gap-analyst"},
+			Task:         &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 12},
+			Finished:     3,
 		}}},
 		// The controller registration golden's own value (TestControllerRegisterResponseGolden).
 		AnswerRegisterController: {roots: typesOf(ControllerRegisterResponse{}), bodies: []any{ControllerRegisterResponse{
@@ -567,10 +574,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Generation: 2,
 			Secret:     "Q29udHJvbGxlZEJ5TGVnaW9u",
 		}}},
-		// 204 and nothing after the headers. The four routes write the status themselves
-		// (claims.go's ready, exit and activity, update.go's ready-for-update), and this
-		// package's claim tests hold each to a 204 with an empty body, so the fixture holds no
-		// body for them and the record says there is none.
+		// 204 and nothing after the headers. The five routes write the status themselves
+		// (claims.go's ready, exit and activity, update.go's ready-for-update and take.go's
+		// task-seen), and this package's claim tests hold each to a 204 with an empty body, so the
+		// fixture holds no body for them and the record says there is none.
 		AnswerNoContent: {},
 		// The release-records golden's own value (TestReleaseRecordsResponseGolden), built
 		// through releaseRecordsBody from the store's rows as the route builds it. Its third
@@ -676,6 +683,20 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
+		// Richer than the golden, which reads a bucket that holds no value: the record describes
+		// every key of the value a read answers (contract 207).
+		AnswerTask: {roots: typesOf(claim.TaskResponse{}), bodies: []any{claim.TaskResponse{
+			Task:     &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 12},
+			Finished: 3,
+		}}},
+		// The three goldens' own values (TestTakeResponseGolden), one for each outcome of a take,
+		// which between them carry every key of the answer (contract 207).
+		AnswerTake: {roots: typesOf(claim.TakeResponse{}), bodies: []any{
+			claim.TakeResponse{Outcome: string(supervise.TakeOutcomeAccepted),
+				Text: "Implement LEGION-209 on its branch, then complete the phase with legion handoff_complete."},
+			claim.TakeResponse{Outcome: string(supervise.TakeOutcomeRefused), Hold: supervise.HoldStalePlugin},
+			claim.TakeResponse{Outcome: string(supervise.TakeOutcomeDropped)},
+		}},
 	}
 }
 

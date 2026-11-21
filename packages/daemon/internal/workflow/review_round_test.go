@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // reviewEntryPartOf is the sentence a reviewer's task in reviewing names the entry of its round
@@ -412,15 +413,15 @@ func TestATaskWhoseTextQuotesTheRoundsSentencesIsStillGivenThem(t *testing.T) {
 }
 
 // bootResumesTheReviewer is the boot's resume of LEGION-208's reviewer, a claim the daemon
-// suspended level with the entry its row holds (startSuspendedOwner), with only that start in the
+// suspended level with the entry its row holds (startPhaseOwner), with only that start in the
 // outbox: the reviewer relaunched in the middle of its round.
 func bootResumesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	t.Helper()
 	row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 	outboxRan(t, pool)
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := engine.startSuspendedOwner(ctx, tx, suspendedOwner{issue: *issue, root: *issue, role: claim.RoleReviewer,
-			run: record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}}, row)
+		_, err := engine.startPhaseOwner(ctx, tx, phaseOwner{issue: *issue, root: *issue, role: claim.RoleReviewer,
+			run: record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}}, row, supervise.OriginResume)
 		return err
 	})
 }

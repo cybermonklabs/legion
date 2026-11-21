@@ -2,7 +2,8 @@
 // into its static authorization (packages/envoy/infra/core wraps each as the rules a User takes) and
 // the grants the auth service answers a connection with (internal/cipher/natscallout). Both read
 // the same functions, so a hub's static user and a connection the auth service admits for the same
-// kind hold the same lists, built from the names internal/bus and internal/contracts export.
+// kind hold the same lists, built from the names internal/bus, internal/contracts and legiontasks
+// export.
 //
 // Each call returns lists of its own, so a caller may narrow a grant without changing another's.
 package natsgrant
@@ -17,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/legiontasks"
 )
 
 // Permissions are one NATS user's publish and subscribe allow lists, and the deny lists nats-server
@@ -43,9 +45,9 @@ const (
 const inboxes = nats.InboxPrefix + ">"
 
 // listenerGrant is the grant every user that runs envoy-listener holds as machine machineID, built
-// from Envoy's own names: Listener adds the session consumers' calls to it (sessionConsumerCalls),
-// ListenerHost those and the subscribe to every notification topic, Dispatch what Dispatch itself
-// needs, and Host the session's entries. Publish, in this order:
+// from Envoy's own names: Listener adds the session consumers' calls (sessionConsumerCalls) and
+// the task bucket's reads to it, ListenerHost those and the subscribe to every notification topic,
+// Dispatch what Dispatch itself needs, and Host the session's entries. Publish, in this order:
 //   - every notification topic (bus.NotificationTopicPrefix): the stream's subjects, the role
 //     lanes, every exception lane, the session relay subjects (bus.DeliverSubjectPrefix), and any
 //     other topic the listener publishes over core NATS, a role lane's forward among them
@@ -123,29 +125,42 @@ func sessionConsumerCalls() []string {
 }
 
 // Listener is the grant envoy-listener needs as machine machineID: the listener grant
-// (listenerGrant), then the session consumers' calls (sessionConsumerCalls), which only this set
-// and ListenerHost hold. A hub that renders this set for its own listener gives that listener
-// consumer delivery; a listener connecting as a host or Dispatch user does not have it, and has no
-// session of its own registered at all: every registration it cannot give a consumer is refused by
-// name and writes nothing.
+// (listenerGrant), then the session consumers' calls (sessionConsumerCalls) and the reads of the
+// Legion daemons' task bucket (KVRead of legiontasks.Bucket), which only this set and ListenerHost
+// hold. A hub that renders this set for its own listener gives that listener consumer delivery and
+// the task relay; a listener connecting as a host or Dispatch user has neither, and has no session
+// of its own registered at all: every registration it cannot give a consumer is refused by name
+// and writes nothing.
+//
+// The task relay (cmd/listener's taskRelay) opens and watches the task bucket but never creates or
+// writes it: the reads are the bucket's stream info (the open, and the epoch it reads, the stream's
+// creation time), its direct and stored-message gets, which read one key's value and allow nothing
+// else, its watch's consumer create and delete, and their flow-control replies. The relay itself
+// makes no get: it relays each key from its watch's copy of the bucket, a key's current record on
+// a change of its role's holder included. The watch delivers on a reply inbox, which the listener
+// grant's subscribe already admits. The daemon is the bucket's one writer (Daemon), so the reads
+// add no create or update of the bucket's stream and no publish to its keys: a listener that tried
+// any of them is refused. The bucket is not one of bus.ListenerBuckets, so listenerGrant, and Host,
+// Dispatch and the session's sets with it, hold none of them.
 func Listener(machineID string) Permissions {
 	grant := listenerGrant(machineID)
 	grant.Publish = append(grant.Publish, sessionConsumerCalls()...)
+	grant.Publish = append(grant.Publish, KVRead(legiontasks.Bucket)...)
 	return grant
 }
 
 // ListenerHost is the grant of a listener's own NATS user, one no session shares, as machine
-// machineID: the listener's set (Listener), the session consumers' calls included, then a
-// subscribe to every notification topic (bus.NotificationTopicPrefix) that nothing now uses. It
-// existed for the opt-in that had a listener hold a core subscription on notifications.> for the
-// sessions it served, and that opt-in went with the listener's push to a session's serving port,
-// so this set grants the listener's set and the one subscribe nothing reads. It keeps the
-// subscribe rather than dropping it, and so stays a set of its own rather than an alias, because a
-// change to a set rewrites every hub's rendered authorization: it replaces a VM hub's instance and
-// reaches a clustered hub only as a live reload, which is left to later work. The set holds none
-// of the session's publish entries, so a process connecting as this user can neither publish a
-// session's agent stream frames nor subscribe to a session's control subject. Host stays the set
-// of a user a host's sessions share.
+// machineID: the listener's set (Listener), the session consumers' calls and the task bucket's
+// reads included, then a subscribe to every notification topic (bus.NotificationTopicPrefix) that
+// nothing now uses. It existed for the opt-in that had a listener hold a core subscription on
+// notifications.> for the sessions it served, and that opt-in went with the listener's push to a
+// session's serving port, so this set grants the listener's set and the one subscribe nothing
+// reads. It keeps the subscribe rather than dropping it, and so stays a set of its own rather than
+// an alias, because a change to a set rewrites every hub's rendered authorization: it replaces a VM
+// hub's instance and reaches a clustered hub only as a live reload, which is left to later work.
+// The set holds none of the session's publish entries, so a process connecting as this user can
+// neither publish a session's agent stream frames nor subscribe to a session's control subject.
+// Host stays the set of a user a host's sessions share.
 func ListenerHost(machineID string) Permissions {
 	grant := Listener(machineID)
 	grant.Subscribe = append(grant.Subscribe, bus.NotificationTopicPrefix+">")
@@ -177,7 +192,8 @@ func KVWrite(bucket string) []string {
 // KVRead are the calls a reader of one bucket makes and nothing that writes it: the bucket's
 // stream info, direct and stream message gets, its watchers' consumer create and delete, and their
 // flow-control replies. It holds no write to a key ($KV.<bucket>.>) and no create or update of
-// the bucket's stream, so a holder can neither change an entry nor make the bucket.
+// the bucket's stream, so a holder can neither change an entry nor make the bucket. Listener lists
+// them for the task bucket (legiontasks.Bucket), which the listener's task relay reads.
 func KVRead(bucket string) []string {
 	stream := kvStream + bucket
 	return []string{
@@ -299,6 +315,25 @@ func SessionToken(id string) bool {
 // exceptions and JetStream API replies. Those replies arrive on `_INBOX.>`, so the daemon's user
 // receives every reply any client on the server gets, key-value reads and watch updates included,
 // such as the listener's envoy_roles and envoy_sessions watchers.
+//
+// After those come the calls the daemon makes on the task bucket (legiontasks.Bucket), whose one
+// writer it is: JetStream's account info (`$JS.API.INFO`), which nats.go asks before it creates
+// any bucket; the info, create and update of the bucket's stream (legiontasks.Stream), since the
+// daemon creates the bucket when it is missing, reads the stream's creation time as the bucket's
+// epoch, and, when another daemon created the bucket first, nats.go reads the stream and sends an
+// update of the configuration it already holds; the stream's direct get and stored-message get,
+// which read one key; the publish to its keys (`$KV.legion_tasks.>`), every write and delete of a
+// value; the purge of its stream (`$JS.API.STREAM.PURGE.KV_legion_tasks`), which drops the delete
+// markers of the daemon's own project's keys once they are old, one key's subject at a time, since
+// the bucket keeps one revision of each key and has no TTL and so drops none of them itself; and
+// the calls of its watch of the whole bucket, an ordered consumer: the consumer's create (with the
+// filter subject in its subject) and delete, which a watch's reset and stop send, and its
+// flow-control replies (`$JS.FC.KV_legion_tasks.>`). These are KVWrite's calls on the bucket and
+// the purge, which stands after the key writes, the order a hub renders the daemon's user in. The
+// watch delivers on a subject nats.go makes under `_INBOX.`, which the reply subscribe above
+// already admits, so the bucket adds no subscribe. Every key is a claim of some project, and the
+// grant reaches every project's keys and its stream's whole purge: a daemon writes, deletes and
+// purges only its own project's keys (legiontasks.OwnedBy).
 func Daemon() Permissions {
 	return Permissions{
 		Publish: []string{
@@ -308,6 +343,17 @@ func Daemon() Permissions {
 			jsAPI + "CONSUMER.CREATE." + bus.Stream + ".>",
 			jsAPI + "CONSUMER.MSG.NEXT." + bus.Stream + ".>",
 			jsAck + bus.Stream + ".>",
+			jsAPI + "INFO",
+			jsAPI + "STREAM.INFO." + legiontasks.Stream,
+			jsAPI + "STREAM.CREATE." + legiontasks.Stream,
+			jsAPI + "STREAM.UPDATE." + legiontasks.Stream,
+			jsAPI + "DIRECT.GET." + legiontasks.Stream + ".>",
+			jsAPI + "STREAM.MSG.GET." + legiontasks.Stream,
+			kvSubjects + legiontasks.Bucket + ".>",
+			jsAPI + "STREAM.PURGE." + legiontasks.Stream,
+			jsAPI + "CONSUMER.CREATE." + legiontasks.Stream + ".>",
+			jsAPI + "CONSUMER.DELETE." + legiontasks.Stream + ".>",
+			jsFlow + legiontasks.Stream + ".>",
 		},
 		Subscribe: []string{
 			bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + ">",

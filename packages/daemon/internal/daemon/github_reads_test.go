@@ -199,9 +199,11 @@ func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.
 				}
 			}
 			w := readRuntime(pool, mergeableStandIn(t, tc.state).URL, quietLogger())
+			before := time.Now().UTC().Truncate(time.Second)
 			if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 				t.Fatalf("read the issue's pull request: %v", err)
 			}
+			after := time.Now().UTC()
 			got, pr := capturePhase(t, pool)
 			if got != phase.Merging {
 				t.Fatalf("after the read the issue is in %s, want merging: no read of GitHub's mergeability moves an issue", got)
@@ -231,6 +233,15 @@ func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.
 			}
 			if want := "the issue stays in merging"; len(reasons) != 1 || !strings.Contains(reasons[0], want) {
 				t.Fatalf("checks-red notices %q, want one saying %q", reasons, want)
+			}
+			// The reason ends naming the read the act rests on (dispatch://INFRA-2833 R3): this read,
+			// whose answer carried no merge state, at the moment the reader dated it, in RFC 3339 UTC.
+			const named = "; GitHub answered with no mergeState for head code at "
+			_, at, found := strings.Cut(reasons[0], named)
+			if readAt, err := time.Parse(time.RFC3339, at); !found || err != nil || readAt.Location() != time.UTC ||
+				readAt.Before(before) || readAt.After(after) {
+				t.Fatalf("the checks-red notice reads %q, want it to end %q and a time in RFC 3339 UTC between %s and %s, the read's own",
+					reasons[0], named, before.Format(time.RFC3339), after.Format(time.RFC3339Nano))
 			}
 		})
 	}

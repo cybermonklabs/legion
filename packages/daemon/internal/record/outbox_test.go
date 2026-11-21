@@ -89,8 +89,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeQueueRemoval{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de", Unread: true},
 		ConflictConfirm{Number: 42, Head: "c0de", FirstReadAt: now.Add(-time.Minute)},
-		MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Implementing, PullRequest: 42, Why: ConflictCheckNotGreen},
-		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
+		MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Implementing, PullRequest: 42, Why: ConflictCheckNotGreen,
+			MergeState: MergeStateDirty, StateReadAt: now.Add(-30 * time.Second)},
+		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext,
+			MergeState: MergeStateDirty, StateReadAt: now.Add(-30 * time.Second)},
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
 	}
@@ -718,6 +720,83 @@ func TestAHookPromptStatesTheFactsAndLeavesTheHooksWordsAlone(t *testing.T) {
 		prompt + "\n\nMoves back this hook counts: 3. Counts by move: none."
 	if got := counted.Message("LEGION-208"); got != want {
 		t.Fatalf("Message of a firing that counts nothing =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// The ask and the hold of a merge forward name the read of GitHub the act rests on
+// (dispatch://INFRA-2833 R3), so the worker can hold them to a read of its own: GitHub's merge
+// state for the head as GitHub spells it, and when the daemon read it, in RFC 3339 UTC whatever
+// zone the time was held in. The words around it are #4464's own (dispatch://INFRA-4374 R1). A
+// read whose answer carried no merge state is named "with no mergeState", never with an empty
+// state.
+func TestAMergeForwardAskAndHoldNameGitHubsMergeStateAndWhenItWasRead(t *testing.T) {
+	// 03:01 in a zone an hour east of UTC is 02:01 UTC.
+	read := time.Date(2026, 11, 19, 3, 1, 0, 0, time.FixedZone("UTC+1", 3600))
+	ask := MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Testing,
+		PullRequest: 42, Why: ConflictCheckNotGreen, MergeState: MergeStateDirty, StateReadAt: read}
+	want := "LEGION-208: pull request sjawhar/legion#42 at head c0de conflicts with its base branch main, and a second read of GitHub confirmed it." +
+		" GitHub answered mergeState=dirty for head c0de at 2026-11-19T02:01:00Z." +
+		" The issue stays in testing. A check that main requires has not passed on this head, and GitHub runs no checks on a head that conflicts with its base." +
+		" Merge main forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace." +
+		" First do the working-copy check of skill://legion-worker/references/foreign-path.md." +
+		" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch." +
+		" Write no handoff and make no completion for this merge."
+	if got := ask.Message("LEGION-208", "sjawhar/legion"); got != want {
+		t.Fatalf("Message of the ask =\n%q\nwant\n%q", got, want)
+	}
+
+	hold := MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging,
+		PullRequest: 42, Why: ConflictMergeNext, MergeState: MergeStateDirty, StateReadAt: read}
+	want = "LEGION-208: pull request sjawhar/legion#42 at head c0de conflicts with its base branch main." +
+		" GitHub answered mergeState=dirty for head c0de at 2026-11-19T02:01:00Z." +
+		" The next step of the issue is the merge, and GitHub cannot merge a head that conflicts with its base." +
+		" The implementer is asked to merge main forward in the issue workspace, $LEGION_WORKSPACE, which you share with it." +
+		" The issue stays in merging. Stop writing the workspace now. Do not merge the pull request, and do not put it in the merge queue." +
+		" Do not complete your phase at head c0de. Complete it at the new head that the daemon names." +
+		" Keep your session and the jobs of your turn. The daemon tells you the new head when it lands." +
+		" A result you recorded at head c0de stays a result of head c0de."
+	if got := hold.Message("LEGION-208", "sjawhar/legion"); got != want {
+		t.Fatalf("Message of the hold =\n%q\nwant\n%q", got, want)
+	}
+
+	stateless := ask
+	stateless.Phase, stateless.MergeState = phase.Implementing, MergeStateUnread
+	const says = " GitHub answered with no mergeState for head c0de at 2026-11-19T02:01:00Z. The issue stays in implementing."
+	if got := stateless.Message("LEGION-208", "sjawhar/legion"); !strings.Contains(got, says) || strings.Contains(got, "mergeState=") {
+		t.Fatalf("Message of an ask whose read carried no merge state =\n%q\nwant it to say %q and to name no mergeState=", got, says)
+	}
+}
+
+// A merge-forward ask or hold with no read time names no read of GitHub (dispatch://INFRA-2833
+// R3): it says that GitHub's merge state for the head and the time of its read are both unknown,
+// and it names no state, an empty one or one held without its time. Such a row is one the release
+// before this one queued, which carries neither key and is still decoded and delivered under this
+// release, or one written from a record that holds no dated read of the head.
+func TestAMergeForwardMessageWithNoReadTimeSaysBothAreUnknown(t *testing.T) {
+	const unknown = " GitHub's merge state for head c0de and the time the daemon read it are unknown. "
+	queued, err := DecodeOutboxPayload(OutboxRow{ID: 67, Kind: OutboxKindMergeForward,
+		Payload: json.RawMessage(`{"role":"implementer","step":"ask","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"required-check-not-green"}`)})
+	if err != nil {
+		t.Fatalf("DecodeOutboxPayload of an ask the release before this one queued: %v", err)
+	}
+	for _, tc := range []struct {
+		name    string
+		message MergeForwardMessage
+	}{
+		{"an ask the release before this one queued, with neither key", queued.(MergeForwardMessage)},
+		{"a hold with neither", MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardHold, Head: "c0de", Base: "main",
+			Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}},
+		{"an ask with a merge state and no read time", MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de",
+			Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen, MergeState: MergeStateDirty}},
+		{"a hold with a merge state and no read time", MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardHold, Head: "c0de",
+			Base: "main", Phase: phase.Reviewing, PullRequest: 42, Why: ConflictCheckNotGreen, MergeState: MergeStateDirty}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.message.Message("LEGION-208", "sjawhar/legion")
+			if !strings.Contains(got, unknown) || strings.Contains(got, "mergeState=") || strings.Contains(got, "GitHub answered") {
+				t.Fatalf("Message =\n%q\nwant it to say %q and to name no merge state", got, unknown)
+			}
+		})
 	}
 }
 

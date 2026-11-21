@@ -242,6 +242,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Generation: 3, TreeEpoch: 2,
 		Session: "ses_implementer_500", SessionFile: "/var/lib/legion/sessions/ses_implementer_500.jsonl",
 		ServingGeneration: 2, GivenEntry: 7, ServedEntry: 6,
+		TaskWritten: 5, TaskTaken: 5, TaskFinished: 4, TaskFinishedSession: "ses_implementer_500",
+		TaskSeenRevision: supervise.TaskRevision{Epoch: "2026-11-02T08:00:00.123456789Z", Revision: 41},
+		TaskTakeState:    supervise.TakeAccepted, TaskWrittenRevision: supervise.TaskRevision{Epoch: "2026-11-02T08:00:00.123456789Z", Revision: 41},
 		Handshake:        supervise.EntryHandshake{Entry: 7, Generation: 3, QueuedAt: queuedAt, ConfirmedAt: openedAt},
 		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: openedAt},
 		LastStartRow:     811, DeliveredRows: []int64{809, 811},
@@ -332,7 +335,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"lastStartFailure": current.LastStartFailure,
 			// The pending task reduced to the five facts a reader decides on, and never its
 			// text: that one is held, which the key's presence says, its phase, when it was
-			// queued, how many sends failed and the last send error.
+			// queued, how many of its takes failed to adopt the working copy and the last such error.
 			"pendingTask": map[string]any{
 				"phase":         current.Pending.Phase,
 				"queuedAt":      current.Pending.QueuedAt,

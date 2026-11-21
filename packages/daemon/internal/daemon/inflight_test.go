@@ -827,9 +827,9 @@ func awaitLog(t *testing.T, log *syncBuffer, want string, bound time.Duration, w
 // begins, while a route's suspension holds the API's drain open, and no hello of its is answered
 // until the daemon has gone. What its agent says meanwhile waits in the shim's backlog and is the
 // first thing the next daemon reads: a connection held open through the drain would hand it to a
-// daemon that no longer acts on it, and a late refusal lost that way leaves a task retired unread.
-// The claim the route is deciding keeps its connection, which carries its process's shutdown frame
-// (LEGION-650).
+// daemon that no longer acts on it, and a turn's start lost that way leaves an accepted take's
+// turn unseen, so R5's second wait would charge a worker that started it. The claim the route is
+// deciding keeps its connection, which carries its process's shutdown frame (LEGION-650).
 func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *testing.T) {
 	cfg := testConfig(t)
 	envoy := drainListener(t, &cfg)

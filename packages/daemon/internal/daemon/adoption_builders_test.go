@@ -80,8 +80,10 @@ type adoptionRig struct {
 	rt        *fake.Runtime
 	runner    *outbox
 	// workers is the connection each claim's agent is reached over, made when the rig first boots
-	// or restores the claim; it records every prompt the daemon sends that agent.
+	// or restores the claim, and taken every task each claim's worker took that the daemon
+	// accepted, in order (delivered).
 	workers map[claim.Token]*fake.Conn
+	taken   map[claim.Token][]acceptedTake
 	// ran is the newest start row the rig has run.
 	ran int64
 }
@@ -109,7 +111,7 @@ func newAdoptionRig(t *testing.T) *adoptionRig {
 	sup.OnDurableState(answers.terminal)
 	return &adoptionRig{
 		t: t, ctx: ctx, pool: pool, records: records, st: st, engine: engine, admission: admission, sup: sup, rt: rt,
-		workers: map[claim.Token]*fake.Conn{},
+		workers: map[claim.Token]*fake.Conn{}, taken: map[claim.Token][]acceptedTake{},
 		runner: &outbox{
 			log: quietLogger(), pool: pool, dispatchProject: adoptionProject, records: records, supervisor: sup,
 			handlers: []intake.Handler{engine, admission}, trees: st, tokens: outboxTokens{}, project: "legion",
@@ -288,7 +290,7 @@ func (r *adoptionRig) handle(issue string, role claim.Role, ev supervise.Event) 
 
 // boot is the agent of issue's role coming up on the launch its claim stands at: the shim's hello,
 // the agent's registration and its ready, on the session the claim keeps, or a fresh one for a
-// claim that has none. The ready is what sends a task the claim holds.
+// claim that has none. The ready is what lets the worker take a task the claim holds.
 func (r *adoptionRig) boot(issue string, role claim.Role) {
 	r.t.Helper()
 	token := r.token(issue, role)
@@ -306,46 +308,51 @@ func (r *adoptionRig) boot(issue string, role claim.Role) {
 		r.handle(issue, role, ev)
 	}
 	if got := r.claimOf(issue, role).State; !supervise.SaidReady(got) {
-		r.t.Fatalf("%s's %s after its ready is %s, want a claim that can be prompted", issue, role, got)
+		r.t.Fatalf("%s's %s after its ready is %s, want a claim that can take its task", issue, role, got)
 	}
 }
 
-// delivered is the delivery id of every prompt the agent of issue's role was sent, in order.
+// delivered is the delivery id of every task the worker of issue's role took that the daemon
+// accepted, in order. The worker takes the task its claim holds whenever the test reads what
+// reached it, as a worker takes once its host is idle (takeOffered); a take a hold refuses leaves
+// the task where it is, untaken and unadopted.
 func (r *adoptionRig) delivered(issue string, role claim.Role) []string {
 	r.t.Helper()
-	conn, ok := r.workers[r.token(issue, role)]
-	if !ok {
-		return nil
+	token := r.token(issue, role)
+	if m, ok := r.sup.Machine(token); ok {
+		if take, accepted := takeOffered(r.ctx, r.t, m); accepted {
+			r.taken[token] = append(r.taken[token], take)
+		}
 	}
 	var ids []string
-	for _, prompt := range conn.Prompts() {
-		ids = append(ids, prompt.DeliveryID)
+	for _, take := range r.taken[token] {
+		ids = append(ids, take.DeliveryID)
 	}
 	return ids
 }
 
-// wantSent holds issue's role to one prompt, of the task delivered as id, and to exactly the
+// wantSent holds issue's role to one take, of the task delivered as id, and to exactly the
 // adoptions named for its claim, by the App git name each was made as: none for a task that names
 // no phase, its own App once for a phase task.
 func (r *adoptionRig) wantSent(issue string, role claim.Role, id string, adopted ...string) {
 	r.t.Helper()
 	if got := r.delivered(issue, role); !slices.Equal(got, []string{id}) {
-		r.t.Errorf("%s's %s was prompted with %v, want its task %s once", issue, role, got, id)
+		r.t.Errorf("%s's %s took %v, want its task %s once", issue, role, got, id)
 	}
 	if made := adoptionsOf(r.rt, r.token(issue, role)); !slices.Equal(made, adopted) {
 		r.t.Errorf("%s's %s had the working copy adopted as %v for its task %s, want %v", issue, role, made, id, adopted)
 	}
 }
 
-// wantNothingSent holds issue's role to nothing at all: no task held, no prompt, no adoption made
-// for its claim.
+// wantNothingSent holds issue's role to nothing at all: no task held, none taken, no adoption
+// made for its claim.
 func (r *adoptionRig) wantNothingSent(issue string, role claim.Role) {
 	r.t.Helper()
 	if held := r.claimOf(issue, role).Pending; held != nil {
 		r.t.Errorf("%s's %s holds %+v, want no task", issue, role, held)
 	}
 	if got := r.delivered(issue, role); len(got) != 0 {
-		r.t.Errorf("%s's %s was prompted with %v, want nothing sent", issue, role, got)
+		r.t.Errorf("%s's %s took %v, want nothing taken", issue, role, got)
 	}
 	if made := adoptionsOf(r.rt, r.token(issue, role)); len(made) != 0 {
 		r.t.Errorf("%s's %s had the working copy adopted as %v, want no adoption", issue, role, made)
@@ -386,8 +393,8 @@ func TestOnlyThePhaseOwnersTaskAdoptsTheWorkingCopy(t *testing.T) {
 // The checking role reads production with the working copy as the issue's last phase left it; it
 // commits nothing for a phase, so nothing adopts. The look here is the wake a pending report named,
 // coming due as the fact its check_wake row applies (the outbox's checkWake), under a closed root
-// whose linger suspended the implementer the check records: the look's start resumes it and its
-// ready sends the look.
+// whose linger suspended the implementer the check records: the look's start resumes it, and
+// after its ready its worker takes the look.
 func aLookAdoptsNothing(r *adoptionRig) {
 	root := checkRoot()
 	check := openCheck(root, "a1b2c3d4")
@@ -413,7 +420,8 @@ func aLookAdoptsNothing(r *adoptionRig) {
 // phase, since an architect works no phase of its own. That start carries a task only when the root
 // keeps a decision nobody in its tree heard (ParkedDecisionTask), so a person answers an ask of the
 // root while it waits in `todo` for its slot; the controller's tick then admits it, the architect's
-// start launches the architect, and its ready sends the task naming that decision.
+// start launches the architect, and after its ready the architect takes the task naming that
+// decision.
 func theArchitectsStartAdoptsNothing(r *adoptionRig) {
 	const ask = "ask-1"
 	r.put(record.Issue{Key: adoptionWaitingRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -436,7 +444,7 @@ func theArchitectsStartAdoptsNothing(r *adoptionRig) {
 // linger, and the promotion that re-admits it brings back every role of its mid-phase child that
 // has run (admit's startMidPhaseMembers). The owner of the child's phase is given the task that
 // carries the phase on, on a start that names the phase, and adopts for it. Every other role comes
-// back on a start that names the phase too, but carries no task, so nothing is sent to it and
+// back on a start that names the phase too, but carries no task, so nothing is taken by it and
 // nothing adopted for it: such a role is brought back so that a person can talk to it, and the
 // commits of the phase are the owner's.
 func aReadmissionAdoptsForThePhaseOwnerAlone(r *adoptionRig) {
@@ -521,11 +529,11 @@ func aReadyOwnersResumeTaskIsAdoptedOnce(r *adoptionRig) {
 
 // aPhaseStartWaitsOutATurn: a transition starts its phase's worker on one row that carries the
 // task and names the phase (Engine.started, through workflow.StartOrOwe), so that task adopts, and
-// because it adopts it waits while another claim of the issue is in a turn (supervise's
-// sendPending). The planner completes planning from inside its turn, as the handoff route applies
-// that completion, and the implementer the transition creates comes up while that turn still runs:
-// its task is held, unsent and unadopted, until the planner's turn ends, and then adopted once, as
-// the implementer's App.
+// because it adopts its take is refused while another claim of the issue is in a turn
+// (supervise's issue-in-turn hold). The planner completes planning from inside its turn, as the
+// handoff route applies that completion, and the implementer the transition creates comes up while
+// that turn still runs: its task is held, untaken and unadopted, until the planner's turn ends,
+// and then taken and adopted once, as the implementer's App.
 func aPhaseStartWaitsOutATurn(r *adoptionRig) {
 	issue := record.Issue{Key: adoptionPlanningRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: adoptionProject, Tree: adoptionPlanningRoot, Title: "Workflow", Phase: phase.Planning, Generation: 1,
@@ -555,19 +563,19 @@ func aPhaseStartWaitsOutATurn(r *adoptionRig) {
 		r.t.Fatalf("the implementer holds %+v, want the task of the transition's start row, %s", task, want)
 	}
 	if got, made := r.delivered(issue.Key, claim.RoleImplementer), adoptionsOf(r.rt, r.token(issue.Key, claim.RoleImplementer)); len(got) != 0 || len(made) != 0 {
-		r.t.Errorf("while the planner was in a turn the implementer was prompted with %v and had the working copy adopted as %v; want its phase task held, unsent and unadopted, until that turn ends",
+		r.t.Errorf("while the planner was in a turn the implementer took %v and had the working copy adopted as %v; want its phase task held, untaken and unadopted, until that turn ends",
 			got, made)
 	}
 
 	// The turn ends as Oh My Pi reports it, through the inbox the worker's stream feeds, which the
 	// daemon tells the issue's other claims of (wakeIssue).
 	r.sup.post(planner, supervise.StreamTurnEnd{Claim: planner})
-	testwait.Eventually(r.t, "the implementer's phase task to be sent once the planner's turn ended", func() bool {
+	testwait.Eventually(r.t, "the implementer's phase task to be taken once the planner's turn ended", func() bool {
 		return len(r.delivered(issue.Key, claim.RoleImplementer)) > 0
 	})
 	r.settle()
 	r.wantSent(issue.Key, claim.RoleImplementer, task.ID, "legion-implementer[bot]")
 	if made := adoptionsOf(r.rt, planner); len(made) != 0 {
-		r.t.Errorf("the planner had the working copy adopted as %v, want no adoption: it was sent no task", made)
+		r.t.Errorf("the planner had the working copy adopted as %v, want no adoption: it took no task", made)
 	}
 }

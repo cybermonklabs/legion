@@ -1382,12 +1382,14 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 // implementing through merging, a base push of an issue in testing through merging) or by the
 // third, which the gate does not hold: the issue's review round waiting on GitHub's answer for the
 // head (reviewRound's waitsOnMergeState), worked out here only for a fact the gate owes no read
-// for. The guard on a daemon with no reader is here as well as in askMergeState, because a base
-// push reaches this from its handler's walk rather than through that switch (basePush), and that
-// walk is the one caller that names classify.MergeStateFactBasePush. A pull request that is not
-// open is read for nothing: it merges nothing until a reopen, which asks again, and its round
-// waits on no answer (classify.RoundWaitsOnMergeState holds only for an open one), so the test of
-// its state here saves the store reads below.
+// for. It asks for one read rather than a ladder where classify.MergeStateReadOnce says so, a
+// base push of an issue in merging, which the gate always owes and whose round never waits, since
+// only a round in reviewing does. The guard on a daemon with no reader is here as well as in
+// askMergeState, because a base push reaches this from its handler's walk rather than through that
+// switch (basePush), and that walk is the one caller that names classify.MergeStateFactBasePush. A
+// pull request that is not open is read for nothing: it merges nothing until a reopen, which asks
+// again, and its round waits on no answer (classify.RoundWaitsOnMergeState holds only for an open
+// one), so the test of its state here saves the store reads below.
 func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, fact classify.MergeStateFact) error {
 	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
 		return nil
@@ -1409,8 +1411,8 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	if !owed {
 		return nil
 	}
-	key := issue.Key
-	intake.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
+	key, once := issue.Key, classify.MergeStateReadOnce(*issue, fact)
+	intake.OnCommit(ctx, func() { e.cfg.ReadMergeState(key, once) })
 	return nil
 }
 

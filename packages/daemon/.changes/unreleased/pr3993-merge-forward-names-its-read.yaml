@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The merge-forward ask, the hold and the architect's `checks-red` notice name the read of GitHub
+  the daemon acted on: GitHub's merge state for the head and the time the daemon read it, in RFC
+  3339 UTC (`GitHub answered mergeState=dirty for head <sha> at <time>`), or that both are unknown
+  where the record holds no dated read of that head. `workflow: merge forward asked` logs the same
+  two (`mergeState`, `stateReadAt`). A `merge_forward` outbox row carries them under those keys,
+  and the way back to the release before takes both keys out of each queued row, since that
+  release decodes the row strictly (`docs/kubernetes.md`, the task numbers' rollback block).

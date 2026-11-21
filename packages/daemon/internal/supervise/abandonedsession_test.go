@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 const (
@@ -138,104 +139,215 @@ func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 	}
 }
 
-// A prompt the agent refused reached nobody, so the abandoned session is still owed to the fresh
-// agent: the task goes back in the queue and the claim and the store both still record the
-// sentence as untold. The prompt the agent does acknowledge carries it again, and the turn that
-// takes that prompt is what marks it told — not the acknowledgement, which Oh My Pi gives at a
-// prompt's admission and can still follow with a busy answer — so the task after it is the task
-// alone. Marking it where the send started instead left the first task the fresh session actually
-// read without the branch, the handoffs and the sentence that says an older session existed at all
-// (dispatch://INFRA-714).
-func TestARefusedPromptLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
+// A take a hold refused reached nobody, so the abandoned session is still owed to the fresh agent:
+// the task waits for its next take, and the claim and the store both still record the sentence as
+// untold. The take that is accepted is answered with it, and that acceptance is what marks it
+// told, so the task after it is the task alone. A take of the same number sent again is answered
+// the same text, sentence and all, and marks nothing again. Marking it where a take was refused
+// instead would leave the first task the fresh session actually read without the branch, the
+// handoffs and the sentence that says an older session existed at all (dispatch://INFRA-714).
+func TestTakeRefusedLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 	h := newHarness(t)
 	refusal := "the provider ended the turn with an error at 226k tokens of context"
 	h.abandonSession(refusal)
 	h.registerFresh()
+	h.manualTakes()
 	base := len(h.prompts())
-	h.conn.RefusePrompt("the agent will not take it")
 
+	// A turn of the fresh agent's own is running when the task arrives, so its take is refused.
+	h.must(StreamTurnStart{Claim: h.token})
 	h.must(RequestDeliver{Claim: h.token, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing."})
-
-	if first := h.wantPrompts(base + 1)[base].Message; !strings.Contains(first, session) {
-		t.Fatalf("the refused prompt is %q, want it to name the abandoned session %q", first, session)
-	}
+	h.wantRefused(HoldInTurn)
 	if told, stored := h.claim().Abandoned.Told, h.store.load(h.token).Abandoned.Told; told || stored {
-		t.Fatalf("after the refusal the claim records the abandonment told = %v and the store %v, want it untold in both: the agent the prompt was refused by never read it", told, stored)
+		t.Fatalf("after the refusal the claim records the abandonment told = %v and the store %v, want it untold in both: the take was refused", told, stored)
 	}
 
-	// The shim's next hello sends the task again, and this time the agent takes it.
-	h.conn.FailPrompt(nil)
-	h.must(StreamHello{Claim: h.token, Generation: h.generation()})
-
-	acknowledged := h.wantPrompts(base + 2)[base+1]
+	// The turn ends, the value is written again, and this time the take is accepted.
+	h.must(StreamTurnEnd{Claim: h.token})
+	taken := h.mustTake()
 	for _, want := range []string{session, "abandoned", refusal, "legion/LEGION-209",
 		"dispatch handoff-read --issue LEGION-209 --phase", handoffWordsClause()} {
-		if !strings.Contains(acknowledged.Message, want) {
-			t.Errorf("the task the agent acknowledged does not name %q:\n%s", want, acknowledged.Message)
+		if !strings.Contains(taken, want) {
+			t.Errorf("the accepted take's text does not name %q:\n%s", want, taken)
 		}
 	}
-	h.wantAbandonedToldBy("", "at the acknowledgement")
+	h.wantAbandonedToldBy(h.pending().ID, "at the accepted take")
+	if again := h.mustTake(); again != taken {
+		t.Fatalf("the take sent again was answered %q, want the same text %q", again, taken)
+	}
+	h.wantPrompts(base + 2)
+	h.wantAbandonedToldBy(h.pending().ID, "after the take sent again, which marks nothing again")
 
-	// That task's turn takes it, which tells the abandonment, and once it is over the one after it
-	// is the task alone.
+	// That task's turn is over, so the one after it is the task alone.
 	h.must(StreamTurnStart{Claim: h.token})
-	h.wantAbandonedToldBy(acknowledged.DeliveryID, "once the task's turn began")
 	h.must(StreamTurnEnd{Claim: h.token})
 
 	h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
 
-	if next := h.wantPrompts(base + 3)[base+2].Message; next != "the next task" {
-		t.Errorf("the task after the one the agent acknowledged is %q, want the task alone", next)
+	if next := h.mustTake(); next != "the next task" {
+		t.Errorf("the task after the one the agent took is %q, want the task alone", next)
 	}
 }
 
-// The abandoned session's sentence is told at the confirmation of the prompt that carried it, by
-// the rule the record of a let-go follows (confirm). The pinned Oh My Pi acknowledges a prompt at
-// its admission and can then answer it busy (lateRefused): the fresh agent is in a turn of its own
-// and never read that prompt, so the abandonment is still untold and the task the turn's end sends
-// names the session again. The turn that takes that prompt tells it, by that delivery. A late busy
-// answer to the same prompt then says that turn was another's: the confirmation goes back, and the
-// telling with it, so the next prompt names the session again, and the turn that takes it tells it.
-func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
+// The abandoned session's sentence is told by the accepted take whose text carried it, by the rule
+// the record of a let-go follows (accept), and the record names that take's delivery (ToldBy). A
+// take a hold refused carried nothing: the fresh agent is in a turn of its own, so the abandonment
+// is still untold, and the take after that turn's end carries it and tells it. A provider error
+// then takes that take back: the error is a model call that failed, often the turn's first, so
+// the telling goes back with the take (giveBackTake), and the take after the ladder's wait carries
+// the session again and tells it again. Once that task's turn is over, the task after it is the
+// task alone.
+//
+// The negative control is the give-back taken out of the provider error's take-back (takeBack's
+// giveBackTake): the take after the wait is then answered with the task and the provider's note
+// alone, and this test reads the missing session there.
+func TestAnAbandonedSessionsSentenceIsToldAtTheAcceptedTake(t *testing.T) {
 	h := newHarness(t)
 	refusal := "the provider ended the turn with an error at 226k tokens of context"
 	h.abandonSession(refusal)
 	h.registerFresh()
-	base := len(h.prompts())
+	h.manualTakes()
 	says := []string{session, "abandoned", refusal, "legion/LEGION-209"}
 
+	// A turn of the fresh agent's own is running when the task arrives, so its take is refused.
+	h.must(StreamTurnStart{Claim: h.token})
 	h.must(RequestDeliver{Claim: h.token, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing."})
-	first := h.wantPrompts(base + 1)[base]
-	wantSays(t, first.Message, says...)
-	h.wantAbandonedToldBy("", "at the acknowledgement")
+	h.wantRefused(HoldInTurn)
+	h.wantAbandonedToldBy("", "after the take a hold refused")
 
-	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: first.DeliveryID, Error: busyAnswer})
-	h.wantAbandonedToldBy("", "after the busy answer")
+	h.must(StreamTurnEnd{Claim: h.token})
+	first := h.mustTake()
+	wantSays(t, first, says...)
+	id := h.pending().ID
+	h.wantAbandonedToldBy(id, "at the accepted take")
 
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	second := h.wantPrompts(base + 2)[base+1]
-	wantSays(t, second.Message, says...)
+	// The take's turn ends in a provider error, which takes the take back.
 	h.must(StreamTurnStart{Claim: h.token})
-	h.wantAbandonedToldBy(second.DeliveryID, "once the task's turn began")
-
-	// Oh My Pi answers that prompt busy after all: the turn that confirmed it was another input's.
-	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: second.DeliveryID, Error: busyAnswer})
-	if p := h.pending(); !p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending after the late busy answer = %+v, want the confirmation taken back", p)
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
+	if p := h.pending(); p.ID != id || p.taken() {
+		t.Fatalf("pending after the provider error = %+v, want the task %s taken back", p, id)
 	}
-	h.wantAbandonedToldBy("", "after the confirmation that told it was taken back")
+	h.wantAbandonedToldBy("", "after the provider error took the take that told it back")
 
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	third := h.wantPrompts(base + 3)[base+2]
-	wantSays(t, third.Message, says...)
+	h.advance(promptRetryDelay(1))
+	again := h.mustTake()
+	wantSays(t, again, says...)
+	h.wantAbandonedToldBy(id, "at the take accepted after the ladder's wait")
+
 	h.must(StreamTurnStart{Claim: h.token})
-	h.wantAbandonedToldBy(third.DeliveryID, "once the task's own turn began")
 	h.must(StreamTurnEnd{Claim: h.token})
 
 	h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
-	if next := h.wantPrompts(base + 4)[base+3].Message; next != "the next task" {
-		t.Errorf("the task after the one whose turn told the abandonment is %q, want the task alone", next)
+	if next := h.mustTake(); next != "the next task" {
+		t.Errorf("the task after the one whose take told the abandonment is %q, want the task alone", next)
 	}
+}
+
+// The give-back of a take's telling is keyed on the take, not on the delivery, whose id stands
+// across every take-back of its task. Take 1 carries the abandoned session's sentence; its turn
+// starts and its process dies in it, so that turn ran the text and the telling stands. Take 2,
+// made by the relaunched process, carries nothing of it, and is given back before its turn starts:
+// its own process dies first. Take 3 must not tell the session again, since take 2 told nothing
+// to give back (departure 11: told once).
+//
+// The negative control is the give-back keyed on the delivery's id alone (untell before this
+// change): take 2's give-back then untells what take 1 told, and take 3 carries the sentence a
+// second time.
+func TestAbandonedSessionToldByACutOffTurnIsNotToldAgainWhenALaterTakeIsGivenBack(t *testing.T) {
+	h := newHarness(t)
+	refusal := "the provider ended the turn with an error at 226k tokens of context"
+	h.abandonSession(refusal)
+	h.registerFresh()
+	h.manualTakes()
+	h.must(RequestDeliver{Claim: h.token, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing."})
+
+	first := h.mustTake()
+	wantSays(t, first, refusal)
+	id := h.pending().ID
+	h.wantAbandonedToldBy(id, "at take 1")
+	h.must(StreamTurnStart{Claim: h.token})
+	h.observe(runtime.Gone)
+	h.wantAbandonedToldBy(id, "once take 1's turn was cut off")
+
+	h.registerFresh()
+	second := h.mustTake()
+	wantSaysNot(t, second, refusal)
+	h.observe(runtime.Gone)
+	h.wantAbandonedToldBy(id, "once take 2, which carried nothing of it, was given back before its turn")
+
+	h.registerFresh()
+	third := h.mustTake()
+	wantSaysNot(t, third, refusal)
+	h.wantAbandonedToldBy(id, "at take 3")
+}
+
+// A take's give-back untells what that take told, which the take itself records
+// (Delivery.TakeTold) and the store keeps with it, so a daemon restarted between the take and its
+// give-back gives back what one that never stopped would. Take 1 carries the abandoned session's
+// sentence; its turn starts and its process dies in it, so that turn ran the text and the telling
+// stands. Take 2, made by the relaunched process, carries nothing of it. The daemon restarts, and
+// take 2 is given back before its turn starts: its own process dies first. Nothing goes back to
+// untold, and take 3 does not tell the session again (departure 11: told once). The other way
+// round, a take that told the session, accepted before the restart and given back before its
+// turn, gives the telling back, so the next take tells the session rather than lose it.
+//
+// The negative control is the restored machine reading the take's telling from the records that
+// name the pending delivery (ToldBy is its id): take 2's give-back then untells what take 1 told,
+// and take 3 carries the sentence a second time.
+func TestTakeBackAfterADaemonRestartGivesBackOnlyWhatThatTakeTold(t *testing.T) {
+	const task = "Continue Workflow. Issue: LEGION-209. Phase: implementing."
+	refusal := "the provider ended the turn with an error at 226k tokens of context"
+
+	t.Run("a take that told nothing", func(t *testing.T) {
+		h := newHarness(t)
+		h.abandonSession(refusal)
+		h.registerFresh()
+		h.manualTakes()
+		h.must(RequestDeliver{Claim: h.token, Task: task})
+
+		first := h.mustTake()
+		wantSays(t, first, refusal)
+		id := h.pending().ID
+		h.must(StreamTurnStart{Claim: h.token})
+		h.observe(runtime.Gone)
+		h.wantAbandonedToldBy(id, "once take 1's turn was cut off")
+
+		h.registerFresh()
+		second := h.mustTake()
+		wantSaysNot(t, second, refusal)
+
+		h.restart()
+		h.connect()
+		h.observe(runtime.Gone)
+		h.wantAbandonedToldBy(id, "once take 2, which carried nothing of it, was given back before its turn after the restart")
+
+		h.registerFresh()
+		third := h.mustTake()
+		wantSaysNot(t, third, refusal)
+		h.wantAbandonedToldBy(id, "at take 3")
+	})
+
+	t.Run("a take that told the session", func(t *testing.T) {
+		h := newHarness(t)
+		h.abandonSession(refusal)
+		h.registerFresh()
+		h.manualTakes()
+		h.must(RequestDeliver{Claim: h.token, Task: task})
+
+		first := h.mustTake()
+		wantSays(t, first, refusal)
+		id := h.pending().ID
+
+		h.restart()
+		h.connect()
+		h.observe(runtime.Gone)
+		h.wantAbandonedToldBy("", "once take 1, which told it, was given back before its turn after the restart")
+
+		h.registerFresh()
+		second := h.mustTake()
+		wantSays(t, second, refusal)
+		h.wantAbandonedToldBy(id, "at take 2")
+	})
 }
 
 // handoffWordsClause is the list of phase words exactly as the prompt renders it, read from the

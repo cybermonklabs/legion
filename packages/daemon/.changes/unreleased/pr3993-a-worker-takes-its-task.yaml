@@ -1,0 +1,33 @@
+kind: Changed
+body: |-
+  The daemon no longer pushes a task to a worker as a prompt. It writes the number of each claim's
+  task to the task bucket `legion_tasks` on Envoy's NATS, the Envoy listener relays it to the
+  worker's session, and the worker takes the task once it is idle. A worker is charged only when it
+  saw a task and did not take it within `worker_take_timeout_seconds` (300 by default), took it and
+  started no turn within `worker_turn_start_timeout_seconds` (1500 by default), or asked to take it
+  and the shim refused to adopt the working copy, a refusal charged at the shim's answer. A daemon that
+  cannot open or create the bucket refuses to boot and names the missing grant, and so does one that
+  connects as the agents' shared NATS user; `legion probe-boot` makes the same check, and
+  `legion config check` prints the refusal of a daemon that would connect as that user.
+  The daemon purges its own project's delete markers from the bucket an hour after each delete,
+  and the listener forgets each one at its next whole read of the bucket. A daemon with
+  no `nats_urls` boots and launches no worker, and says so. `legion state` names each claim whose
+  task nobody reported seeing, and the new `legion task-cost` reads from the daemon's log what task
+  delivery cost in a window, and lists each number the record owed that its worker saw and did not
+  take within the first bound (`--take-timeout`, 300 seconds by default), counting only time in
+  which the daemon waited on that take; each one fails the third verdict. A take the daemon fails to
+  decide or to record is refused at its revision, and the value is written again under its number
+  once the store answers, with no charge to the worker. A take by a claim that records a session
+  the daemon does not hold is refused with the hold `session-not-held`, charges the worker nothing,
+  and the value is written again once the claim holds its session. After a daemon start, the
+  first bound over a revision whose seen report the daemon read from its database writes the value
+  again instead of charging. A turn that ends in a provider error counts toward no launch failure:
+  what follows it is the provider-error wait's alone. A take whose text the worker held through a
+  run of its own is put back to wait for its own turn, and so falls under the turn-start bound,
+  also after a daemon restart under a live worker: the worker's report of that run names the take
+  as `held`. That holds for a take accepted before the restart too, except one whose given run the
+  daemon before the restart saw end, whose own turn may have run there as well.
+  Roll out in this order: the envoy-infra release with the bucket grants first, then the listener
+  image, then each project's daemon and worker image together in one apply, then restart any
+  controller an operator started and every worker of a daemon that knows no plugin pair to relaunch
+  onto.

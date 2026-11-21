@@ -28,11 +28,11 @@ const (
 // against which every report counts.
 //
 // It is one test with two callers, and each passes its own moment. The idle release
-// (workflow.IdleRelease) passes pods.IdleClaim.LastTurnAt, the latest of the claim's pending task
-// delivery's send acknowledgement and the confirmation of the turn that send started. The pod
-// update round's early end (internal/daemon's podupdate.go) passes supervise.Claim.LastTurnStart,
-// which every turn moves, a turn started by an Envoy message or by a job's result included: such a
-// turn moves no delivery, and it can start background work.
+// (workflow.IdleRelease) passes pods.IdleClaim.LastTurnAt, the moment the daemon accepted the
+// take of the claim's pending task (the delivery's confirmation), zero where no take of it stands.
+// The pod update round's early end (internal/daemon's podupdate.go) passes
+// supervise.Claim.LastTurnStart, which every turn moves, a turn started by an Envoy message or by
+// a job's result included: such a turn moves no delivery, and it can start background work.
 func ReadSessionWork(reportedAt, lastTurn time.Time, background bool) SessionWork {
 	switch {
 	case reportedAt.IsZero() || reportedAt.Before(lastTurn):

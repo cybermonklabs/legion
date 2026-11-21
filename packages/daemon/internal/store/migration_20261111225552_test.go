@@ -50,8 +50,8 @@ func TestThePhaseEntryColumnsReplaceTheAssignmentColumnsWith20261111225552(t *te
 			launch_failures, prompt_failures, prompt_retires, uncertain_streak, serving_generation, serving_assignment)
 			values ('legion-LEGION-208-implementer', 'legion', 'LEGION-208', 'LEGION-208', 'implementer', 1, 'ses_i', '',
 				'working', 0, 0, 0, 0, 1, 'A1')`,
-		`insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, queued_at, marked_by, interrupted, assignment)
-			values ('legion-LEGION-208-implementer', 'outbox:7', 'Implement the change.', 'implementing', 1, now(), '', false, 'A1')`,
+		`insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, queued_at, interrupted, assignment)
+			values ('legion-LEGION-208-implementer', 'outbox:7', 'Implement the change.', 'implementing', 1, now(), false, 'A1')`,
 	} {
 		if _, err := store.Pool().Exec(ctx, seed); err != nil {
 			t.Fatalf("record before the migration: %v", err)

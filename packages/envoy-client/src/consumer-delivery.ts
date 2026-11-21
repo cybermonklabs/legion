@@ -8,6 +8,15 @@ import {
 } from "./delivery";
 import { type DeliveryLedger, envoyNoticeText } from "./delivery-ledger";
 import { messageFor } from "./errors";
+import {
+  decodeRelayFrame,
+  decodeTaskFrame,
+  type RelayFrame,
+  RelayHeader,
+  type RelayMessage,
+  type RelayTaskValue,
+  TaskHeader,
+} from "./relay-frame";
 import { registrationTopics, subjectsOverlap } from "./stream-topics";
 import {
   type DeliveryAnswer,
@@ -26,30 +35,6 @@ export const DELIVER_SUBJECT_PREFIX = "notifications.envoy.deliver.";
 export function deliverSubject(sessionID: string): string {
   return `${DELIVER_SUBJECT_PREFIX}${sessionID}`;
 }
-
-/** The headers of a relay frame, and of the listener's connection probe. */
-export const RelayHeader = {
-  /** The subject the stream stored the message on. */
-  subject: "Envoy-Subject",
-  /** The stream sequence, decimal. */
-  streamSeq: "Envoy-Stream-Seq",
-  /** The stream's `envoy_stream_id`. */
-  streamID: "Envoy-Stream-Id",
-  /** JetStream's delivery count, decimal; 1 is the first delivery. */
-  delivered: "Envoy-Delivered",
-  /** When the stream stored the message: RFC 3339 with nanoseconds, UTC. */
-  storedAt: "Envoy-Stored-At",
-  /** `true` only on the first frame after the relay restarted below the stream's first sequence. */
-  gap: "Envoy-Gap",
-  /**
-   * `1` on the listener's connection probe, which is no frame: a core request on this session's
-   * relay subject with this header alone and no body, sent when someone sends to the session. Any
-   * answer, or none within the listener's second, reads connected; NATS no-responders reads
-   * stopped. It never carries a frame header, so it can never decode as a frame and move the
-   * resume point (`receive` answers it before the decode).
-   */
-  probe: "Envoy-Probe",
-} as const;
 
 /**
  * A session's answers on a frame's reply subject, each exactly one ASCII word. `received`: the
@@ -86,92 +71,6 @@ export const FOLLOW_CLOCK_ALLOWANCE_MS = 2_000;
  * that decides the next one.
  */
 const RELAY_ATTEMPTS_BEFORE_FAILED = 3;
-
-/** What `decodeRelayFrame` reads headers through; a NATS message's `headers` is one. */
-export interface RelayHeaders {
-  get(name: string): string | null | undefined;
-}
-
-/** A message received on the relay subject, as any NATS client hands it over. */
-export interface RelayMessage {
-  readonly data: Uint8Array | string;
-  readonly headers?: RelayHeaders | undefined;
-  readonly reply?: string | undefined;
-}
-
-/** A decoded relay frame. */
-export interface RelayFrame {
-  /** The subject the stream stored the message on. */
-  readonly subject: string;
-  readonly streamSeq: number;
-  readonly streamID: string;
-  /** JetStream's delivery count; 1 is the first delivery. */
-  readonly delivered: number;
-  /** The stored time as the header carries it (RFC 3339, UTC). */
-  readonly storedAt: string;
-  /** The stored time in milliseconds since the epoch. */
-  readonly storedAtMs: number;
-  /** The relay restarted below the stream's first sequence just before this frame. */
-  readonly gap: boolean;
-  /** The stored message's bytes as text: the Envoy envelope JSON. */
-  readonly data: string;
-  /** The listener's inbox for this frame's replies. */
-  readonly reply: string;
-}
-
-type DecodedRelayFrame = { readonly frame: RelayFrame } | { readonly error: string };
-
-const decoder = new TextDecoder();
-const DECIMAL = /^[0-9]+$/;
-// RFC 3339 with up to nine fractional digits. `Date.parse` reads at most milliseconds portably,
-// so the fraction is cut to three digits first.
-const RFC3339 = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/;
-
-function positiveInteger(text: string | null | undefined): number | undefined {
-  if (text === null || text === undefined || !DECIMAL.test(text)) return undefined;
-  const value = Number(text);
-  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
-}
-
-function parseStoredAt(text: string): number | undefined {
-  const match = RFC3339.exec(text);
-  if (match === null) return undefined;
-  const fraction = (match[2] ?? "").padEnd(3, "0").slice(0, 3);
-  const ms = Date.parse(`${match[1]}.${fraction}${match[3]}`);
-  return Number.isNaN(ms) ? undefined : ms;
-}
-
-/** Reads a relay frame's headers; any header missing or malformed, or no reply, is an error. */
-export function decodeRelayFrame(message: RelayMessage): DecodedRelayFrame {
-  const reply = message.reply ?? "";
-  if (reply === "") return { error: "no reply subject" };
-  const headers = message.headers;
-  if (headers === undefined) return { error: "no headers" };
-  const subject = headers.get(RelayHeader.subject) ?? "";
-  if (subject === "") return { error: `no ${RelayHeader.subject}` };
-  const streamSeq = positiveInteger(headers.get(RelayHeader.streamSeq));
-  if (streamSeq === undefined) return { error: `bad ${RelayHeader.streamSeq}` };
-  const streamID = headers.get(RelayHeader.streamID) ?? "";
-  if (streamID === "") return { error: `no ${RelayHeader.streamID}` };
-  const delivered = positiveInteger(headers.get(RelayHeader.delivered));
-  if (delivered === undefined) return { error: `bad ${RelayHeader.delivered}` };
-  const storedAt = headers.get(RelayHeader.storedAt) ?? "";
-  const storedAtMs = parseStoredAt(storedAt);
-  if (storedAtMs === undefined) return { error: `bad ${RelayHeader.storedAt}` };
-  return {
-    frame: {
-      subject,
-      streamSeq,
-      streamID,
-      delivered,
-      storedAt,
-      storedAtMs,
-      gap: headers.get(RelayHeader.gap) === "true",
-      data: typeof message.data === "string" ? message.data : decoder.decode(message.data),
-      reply,
-    },
-  };
-}
 
 /** A random string per plugin NATS connection: the registration's `delivery.epoch`. */
 function newEpoch(): string {
@@ -231,6 +130,14 @@ export interface ConsumerDeliveryHost {
   /** Tells the session once that messages may be missing. */
   gap(notice: ConsumerGapNotice): void;
   log(message: string, error?: unknown): void;
+  /**
+   * Takes a claim's task value a task frame relayed (`decodeTaskFrame`). A task frame is no
+   * message of the session's consumer: it is never answered, never counted in the ledger, never
+   * ordered with the frames `deliver` takes, and it moves neither the stream nor the resume point,
+   * so it comes here at once, ahead of any frame still held. A host that serves no Legion claim
+   * drops it here.
+   */
+  onTaskValue(value: RelayTaskValue): void;
 }
 
 export interface ConsumerDeliveryOptions {
@@ -277,7 +184,8 @@ export type ConsumerDeliverySnapshot = z.infer<typeof ConsumerDeliverySnapshotSc
 export interface ConsumerDelivery {
   /** The relay subject; the host subscribes to it before it registers. */
   readonly subject: string;
-  /** Takes one message from the relay subscription. */
+  /** Takes one message from the relay subscription: a relay frame, or a task frame, which goes
+   *  to the host's `onTaskValue` and nowhere else. */
   receive(message: RelayMessage): void;
   /** The current epoch; one begins when the delivery is created. */
   epoch(): ConsumerEpoch;
@@ -291,11 +199,13 @@ export interface ConsumerDelivery {
    */
   registration(): DeliveryRequest;
   /**
-   * Takes the registration's answer. An answer that
-   * reports a gap, or names another stream than the resume the registration sent, tells the
-   * session once. Persists the snapshot when it changed.
+   * Takes the registration's answer. An answer that reports a gap, or names another stream than
+   * the resume the registration sent, tells the session once. Persists the snapshot when it
+   * changed. Says whether this is the first answer taken in the current epoch: from then on the
+   * listener relays to this session's subject again, and a task frame it relayed while the
+   * session was not subscribed is lost, so a host reads its claim's task value again then.
    */
-  answered(answer: DeliveryAnswer): void;
+  answered(answer: DeliveryAnswer): boolean;
   /**
    * Whether the session followed `topic` before a frame stored at `storedAtMs`: a frame the
    * stream kept while the session was away acts on a topic only when it predates nothing
@@ -386,6 +296,8 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   const ownsSubject = (subject: string): boolean => topicForms(subject).includes(ownSubject);
 
   let currentEpoch: ConsumerEpoch = { id: newEpoch(), startedAt: now() };
+  // The epoch of the last registration answer taken (`answered`).
+  let answeredEpoch: string | undefined;
   // When each followed topic was first followed, on the host's clock.
   let follows = new Map<string, number>();
   // The resume point's stream, the frames of it received and not yet written, and the highest
@@ -625,7 +537,25 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     }
   }
 
+  // A task frame is the claim's task value and nothing of the consumer (`onTaskValue`): it is
+  // handed over and nothing else, not even answered. Its reply subject is the listener's, which
+  // reads no answer to it.
+  const receiveTaskValue = (message: RelayMessage) => {
+    if (closed) return;
+    const decoded = decodeTaskFrame(message);
+    if ("error" in decoded) {
+      log(`dropping an undecodable task frame: ${decoded.error}`);
+      return;
+    }
+    safely("task value", () => host.onTaskValue(decoded.value));
+  };
+
   const receive = (message: RelayMessage) => {
+    // A frame carrying a claim header is a task frame, whatever else it carries.
+    if ((message.headers?.get(TaskHeader.claim) ?? "") !== "") {
+      receiveTaskValue(message);
+      return;
+    }
     // The listener's connection probe asks only whether this subscription is here, and the
     // answer says so. It reaches no host, ledger, dedupe cache or resume point, and is logged by
     // nobody: a session that is sent to often would otherwise log every send to it.
@@ -771,6 +701,9 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
         gapTold = true;
       }
       persist();
+      const first = answeredEpoch !== currentEpoch.id;
+      answeredEpoch = currentEpoch.id;
+      return first;
     },
     followedBefore(topic, storedAtMs) {
       const at = follows.get(topic);

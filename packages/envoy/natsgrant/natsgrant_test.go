@@ -53,9 +53,17 @@ func requireSet(t *testing.T, want set, got natsgrant.Permissions, name string) 
 	require.Equal(t, want.Subscribe, got.Subscribe, "%s subscribe", name)
 }
 
+// withPublish is s with entries after its publish list, in a list of its own.
+func withPublish(s set, entries []string) set {
+	return set{Publish: slices.Concat(s.Publish, entries), Subscribe: s.Subscribe}
+}
+
 // Every set this package builds is, element for element and in order, the set infra/core built at
-// the merge base, so moving them here rewrites no hub's rendered authorization.
-func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
+// the merge base, so moving them here rewrites no hub's rendered authorization, but for the Legion
+// daemons' task bucket, which came after that commit: the listener's two sets end their publish
+// list with the bucket's reads (listenerTaskBucketReads), and the daemon's with its calls on the
+// bucket (daemonTaskBucketCalls). Host, Dispatch and the session's set gain nothing of it.
+func TestEachGrantIsTheSetItReplacesPlusTheTaskBucket(t *testing.T) {
 	var base mergeBase
 	readJSON(t, "testdata/merge-base-grants.json", &base)
 	require.Equal(t, []string{"example-host-a", "example-dispatch", "example-hub"}, base.MachineIDs)
@@ -64,8 +72,8 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 			want set
 			got  natsgrant.Permissions
 		}{
-			"Listener":     {base.Listener[id], natsgrant.Listener(id)},
-			"ListenerHost": {base.ListenerHost[id], natsgrant.ListenerHost(id)},
+			"Listener":     {withPublish(base.Listener[id], listenerTaskBucketReads), natsgrant.Listener(id)},
+			"ListenerHost": {withPublish(base.ListenerHost[id], listenerTaskBucketReads), natsgrant.ListenerHost(id)},
 			"Dispatch":     {base.Dispatch[id], natsgrant.Dispatch(id)},
 			"Host":         {base.Host[id], natsgrant.Host(id)},
 		} {
@@ -73,7 +81,7 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 		}
 	}
 	requireSet(t, base.SessionPattern, natsgrant.SessionPattern(), "SessionPattern()")
-	requireSet(t, base.Daemon, natsgrant.Daemon(), "Daemon()")
+	requireSet(t, withPublish(base.Daemon, daemonTaskBucketCalls), natsgrant.Daemon(), "Daemon()")
 	require.NotEmpty(t, base.DispatchDurables)
 	require.Equal(t, base.DispatchDurables, natsgrant.DispatchDurables())
 }

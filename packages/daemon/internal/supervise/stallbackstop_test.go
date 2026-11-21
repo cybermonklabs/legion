@@ -68,13 +68,14 @@ func (h *harness) workingOnATask(task string) string {
 
 // A claim in a turn whose recorded last step is older than its role's bound has that turn ended
 // by the daemon: the process is replaced, the session is resumed on the new one, and the task it
-// was serving is still owed to it — taken back unconfirmed and marked interrupted, kept in the
-// store, and sent again under a new id once the replacement is ready. Nothing is charged: no
-// launch failure, and no death with work outstanding, which is what would fail the claim at the
-// launch budget if a stall repeated.
+// was serving is still owed to it — taken back under its number and marked interrupted, kept in
+// the store, and taken again once the replacement is ready. Nothing is charged: no launch failure,
+// and no death with work outstanding, which is what would fail the claim at the launch budget if a
+// stall repeated.
 func TestTheBackstopEndsAStalledTurnAndLeavesTheTaskOwed(t *testing.T) {
 	h := newHarness(t)
 	sent := h.workingOnATask("implement the plan")
+	number := h.pending().Number
 	h.advance(time.Minute)
 	h.stepped("bash", "toolu_turn1_0", toolArgs, false)
 	last := h.clock.Now()
@@ -84,8 +85,8 @@ func TestTheBackstopEndsAStalledTurnAndLeavesTheTaskOwed(t *testing.T) {
 
 	h.wantState(StateLaunching)
 	h.wantBudgets(Budgets{})
-	if p := h.pending(); !p.Interrupted || p.ID == sent || !p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending after the backstop = %+v, want the task taken back, unconfirmed and interrupted", p)
+	if p := h.pending(); !p.Interrupted || p.ID != sent || p.Number != number || p.taken() {
+		t.Fatalf("pending after the backstop = %+v, want task %d taken back and interrupted", p, number)
 	}
 	stored := h.store.load(h.token)
 	if stored.Pending == nil || stored.ServingGeneration != 0 {
@@ -96,8 +97,8 @@ func TestTheBackstopEndsAStalledTurnAndLeavesTheTaskOwed(t *testing.T) {
 	}
 
 	h.relaunched()
-	if resent := h.wantPrompts(2)[1]; resent.DeliveryID == sent {
-		t.Fatalf("re-sent %+v under the id the stalled turn ran under", resent)
+	if again := h.wantPrompts(2)[1]; again.Number != number {
+		t.Fatalf("took %+v after the relaunch, want task %d again", again, number)
 	}
 	if h.store.load(h.token).Session != session {
 		t.Fatalf("session after the backstop = %q, want the same session brought back", h.store.load(h.token).Session)
@@ -488,11 +489,11 @@ func TestTheBackstopTellsNobodyOfAnEndTheStoreRefusedBeforeItWasMade(t *testing.
 }
 
 // A replacement the pacing parked is an end of its own, and it is told as that
-// (EndRelaunchParked). The take-back has already run, so the task the stalled agent was serving
-// is owed to it again; the claim keeps the process and the wake's own turn is what stops it and
-// brings the session back (reserveWake, wakeNow). An owner told nothing here is an owner who
-// hears of this stall never — the claim leaves StateWorking at that turn, and the sweep that
-// would post again skips it — and an owner told "its session was brought back" is told of a
+// (EndRelaunchParked). The park makes no take-back: the stalled agent's turn runs on with the task
+// it was serving, and the wake's own turn is what takes that task back, stops the process and
+// brings the session back (launchReplacing, runWake, wakeNow). An owner told nothing here is an
+// owner who hears of this stall never — the claim leaves StateWorking at that turn, and the sweep
+// that would post again skips it — and an owner told "its session was brought back" is told of a
 // process that does not exist yet. The wake's turn tells nobody again: the end this notice
 // named is the one that turn carries out.
 func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T) {
@@ -503,8 +504,8 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	working := stalePluginClaim(wakeClaim(secondToken, StateWorking), h.deps.PluginContract)
 	working.State = StateWorking
 	working.Step = StepRecord{At: stepped, TurnStartedAt: stepped, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: stepped}
-	working.Pending = &Delivery{ID: "outbox:7", Task: "implement the plan", QueuedAt: stepped,
-		DeliveredAt: stepped, ConfirmedAt: stepped}
+	working.TaskWritten, working.TaskTaken = 1, 1
+	working.Pending = &Delivery{ID: "outbox:7", Number: 1, Task: "implement the plan", QueuedAt: stepped, ConfirmedAt: stepped, TurnStarted: true}
 	stalled := h.machineFor(working)
 
 	// The harness's own claim takes the limiter's one token, so the backstop's own relaunch
@@ -521,8 +522,10 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	if c := stalled.Claim(); c.State != StateWorking || c.Locator == nil {
 		t.Fatalf("the claim is %s with locator %+v, want it left in its turn until the wake's turn comes", c.State, c.Locator)
 	}
-	if c := stalled.Claim(); c.Pending == nil || !c.Pending.Interrupted || !c.Pending.ConfirmedAt.IsZero() {
-		t.Fatalf("the claim's task after the park = %+v, want it taken back and owed: this is what the owner is told of", c.Pending)
+	// The park makes no take-back: the process runs on until the wake's turn, and so does the
+	// take's turn it was stalled in (replaceNow).
+	if c := stalled.Claim(); c.Pending == nil || !c.Pending.turnStarted() || c.Pending.Number != 1 {
+		t.Fatalf("the claim's task after the park = %+v, want its take's turn still standing until the wake's turn", c.Pending)
 	}
 	h.wantStarts(secondToken, 0)
 	// The due time goes with the report: the owner's notice names the moment that launch's turn
@@ -538,6 +541,9 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	h.wantStarts(secondToken, 1)
 	if c := stalled.Claim(); c.State != StateLaunching {
 		t.Fatalf("the claim is %s after the wake's turn, want it launching on the replacement that turn made", c.State)
+	}
+	if c := stalled.Claim(); c.Pending == nil || !c.Pending.Interrupted || c.Pending.taken() || c.Pending.Number != 1 {
+		t.Fatalf("the claim's task after the wake's turn = %+v, want it taken back from the turn that turn cut off and owed", c.Pending)
 	}
 	if len(stops) != 1 {
 		t.Fatalf("the backstop reported %+v, want the one notice: the wake's turn carries out the end already told", stops)

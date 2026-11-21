@@ -38,7 +38,8 @@
 // the workflow creates. No agent runs: every claim is launched by the package's fake runtime
 // (subArchitectRuntime, which refuses the relaunches the failure step names), and the driver plays
 // each claim a step needs over the daemon's own worker stream and HTTP routes
-// (subArchitectSession), as a pane's shim and its agent do. The daemon's timers never fire
+// (subArchitectSession), as a pane's shim and its agent do, its plugin taking the claim's task as
+// pi-legion takes one (take_driver_test.go's takeDriver). The daemon's timers never fire
 // (fakeRuntime's stillClock), so a claim the driver does not play stays launching rather than
 // failing on its boot deadline. The tree's root, its design gate, its slot and its architect's
 // unfinished launch are seeded through the store, as every daemon test seeds its fixture; every
@@ -368,8 +369,8 @@ func (r *subArchitectLive) failureStep() {
 	t := r.t
 	c := r.child
 	planner := r.register(c, claim.RolePlanner, "ses_c_planner", 0)
-	task := planner.awaitPrompt(1)
-	r.note("registered and readied %s's planner as session %s; it took its task: %q", c, planner.session, firstLine(task.Message))
+	task := planner.takeTask()
+	r.note("registered and readied %s's planner as session %s; it took its task %d: %q", c, planner.session, task.Number, firstLine(task.Text))
 
 	architect := r.token(c, claim.RoleArchitect)
 	booted := r.d.claim(architect)
@@ -427,8 +428,8 @@ func (r *subArchitectLive) failureStep() {
 	r.note("read back: no launch of %s since its failure, and it is still failed", architect)
 
 	planner = r.register(c, claim.RolePlanner, "ses_c_planner_fresh", mark)
-	task = planner.awaitPrompt(1)
-	r.note("registered and readied the fresh planner as session %s; it took its task: %q", planner.session, firstLine(task.Message))
+	task = planner.takeTask()
+	r.note("registered and readied the fresh planner as session %s; it took its task %d: %q", planner.session, task.Number, firstLine(task.Text))
 	handoff := r.board.handoff(c, "plan", planner.session)
 	mark = len(r.rt.Calls())
 	if status, failure := planner.complete("planned", handoff); status != http.StatusOK {
@@ -811,8 +812,9 @@ func (r *subArchitectLive) publishIssue(key, status, parent string, blockers []s
 // register brings the launched claim of role on issue to ready, as its pane's shim and its agent
 // do: it waits for a launch of it after the fake runtime's first since calls, dials the worker
 // stream with that launch's boot token, registers session with its session file and reports it
-// ready. The connection is then answered as Oh My Pi answers it (serve). A relaunch registers
-// the session the claim recorded, as an agent resuming it does.
+// ready. The connection is then answered as Oh My Pi answers it (serve), and the session's plugin
+// takes the claim's task when a step asks for it (takeDriver). A relaunch registers the session
+// the claim recorded, as an agent resuming it does.
 func (r *subArchitectLive) register(issue string, role claim.Role, session string, since int) *subArchitectSession {
 	t := r.t
 	t.Helper()
@@ -835,6 +837,8 @@ func (r *subArchitectLive) register(issue string, role claim.Role, session strin
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
+	c.worker = newTakeDriver(r.d.post, c.write, claim.AgentCaller{ClaimToken: token, SessionID: session, Secret: registered.Secret}, launch.Generation)
+	c.worker.started = r.d.turnRead(token)
 	c.sh.serve(c.serve)
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
@@ -846,8 +850,8 @@ func (r *subArchitectLive) register(issue string, role claim.Role, session strin
 
 // subArchitectSession is one claim's agent as the driver plays it: the session its registration
 // named on the launch it registered from, the capability secret that registration returned, which
-// buys its grants, and the worker stream connection its shim holds, with every prompt the daemon
-// sent over it.
+// buys its grants, the worker stream connection its shim holds, and the plugin that takes the
+// claim's task over the daemon's routes and runs its turn (takeDriver).
 type subArchitectSession struct {
 	r       *subArchitectLive
 	token   claim.Token
@@ -856,18 +860,15 @@ type subArchitectSession struct {
 	launch  uint64
 	secret  string
 	sh      *shim
-	// writing serialises the frames serve and a step write; mu guards what serve records.
+	worker  *takeDriver
+	// writing serialises the frames serve and the plugin write.
 	writing sync.Mutex
-	mu      sync.Mutex
-	turn    bool
-	prompts []shimwire.Prompt
 }
 
 // serve reads every frame the daemon sends the shim until the connection closes or the test ends
 // it (shim.serve): it answers the protocol negotiation and the state probe (idle, or streaming
-// while a turn runs), and takes each prompt — answering it and starting the turn, as Oh My Pi
-// does — for a step to read. A write that fails ends it too: the connection closed under the
-// process the runtime reported gone.
+// while a turn runs). A write that fails ends it too: the connection closed under the process the
+// runtime reported gone.
 func (c *subArchitectSession) serve() {
 	// The reader dialShim read the hello_ack through, which may already hold the frames after it.
 	reader := c.sh.lines
@@ -886,22 +887,9 @@ func (c *subArchitectSession) serve() {
 				return
 			}
 		case shimwire.GetState:
-			c.mu.Lock()
-			streaming := c.turn
-			c.mu.Unlock()
+			streaming := c.worker.inATurn()
 			data, _ := json.Marshal(shimwire.StateData{IsStreaming: &streaming})
 			if !c.send(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data}) {
-				return
-			}
-		case shimwire.Prompt:
-			if !c.send(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true}) {
-				return
-			}
-			c.mu.Lock()
-			c.turn = true
-			c.prompts = append(c.prompts, f)
-			c.mu.Unlock()
-			if !c.send(shimwire.AgentStart{DeliveryID: f.DeliveryID}) {
 				return
 			}
 		}
@@ -916,25 +904,24 @@ func (c *subArchitectSession) end() {
 
 // send writes one frame to the daemon, and says whether the connection took it.
 func (c *subArchitectSession) send(frame shimwire.Frame) bool {
-	c.writing.Lock()
-	defer c.writing.Unlock()
-	return c.sh.writer.WriteFrame(frame) == nil
+	return c.write(frame) == nil
 }
 
-// awaitPrompt waits for the daemon's n-th prompt over this connection, and answers it.
-func (c *subArchitectSession) awaitPrompt(n int) shimwire.Prompt {
+// write writes one frame to the daemon, serialised with every other frame of the connection.
+func (c *subArchitectSession) write(frame shimwire.Frame) error {
+	c.writing.Lock()
+	defer c.writing.Unlock()
+	return c.sh.writer.WriteFrame(frame)
+}
+
+// takeTask is the session's plugin taking the claim's next task, and the agent starting the turn
+// that runs it, as Oh My Pi starts a turn on the text its plugin took: the take the daemon
+// accepted.
+func (c *subArchitectSession) takeTask() takenTask {
 	c.r.t.Helper()
-	var prompt shimwire.Prompt
-	testwait.Eventually(c.r.t, fmt.Sprintf("prompt %d of %s", n, c.token), func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if len(c.prompts) < n {
-			return false
-		}
-		prompt = c.prompts[n-1]
-		return true
-	})
-	return prompt
+	task := c.worker.mustTake(c.r.t, "the task of "+string(c.token))
+	c.worker.mustStartTurn(c.r.t)
+	return task
 }
 
 // grant is a capability grant minted for this session now, as its `legion` tool mints one per

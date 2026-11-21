@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // reviewerRow is LEGION-208's reviewer row as the record holds it.
@@ -576,8 +577,8 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 		outboxRan(t, pool)
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			_, err := engine.startSuspendedOwner(ctx, tx, suspendedOwner{issue: *issue, root: *issue, role: claim.RoleReviewer,
-				run: record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}}, row)
+			_, err := engine.startPhaseOwner(ctx, tx, phaseOwner{issue: *issue, root: *issue, role: claim.RoleReviewer,
+				run: record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}}, row, supervise.OriginResume)
 			return err
 		})
 		if task, want := onlyReviewerStart(t, pool).Task, resumeWant+reviewEntryPartOf(row.Entry); task != want {

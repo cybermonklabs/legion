@@ -733,8 +733,9 @@ func stepsHold(read stepRecordsRead, want []stepWant) error {
 }
 
 // stepClaimant is one role's claim as its pane reaches the daemon: the shim connected with the
-// launch's boot token, the session registered and ready, and a reader that answers what the daemon
-// asks of the shim and hands each prompt to the walk, starting its turn as Oh My Pi does.
+// launch's boot token, the session registered and ready, a reader that answers what the daemon
+// asks of the shim, and the plugin that takes the claim's task and starts the turn that works it,
+// as pi-legion does (takeDriver): the daemon pushes no task (dispatch://INFRA-2811).
 type stepClaimant struct {
 	r     *stepRecordsRig
 	token claim.Token
@@ -746,15 +747,15 @@ type stepClaimant struct {
 	session   string
 	secret    string
 	bootToken string
-	prompts   chan shimwire.Prompt
-	mu        sync.Mutex
+	// driver is the pane's plugin: it reads the claim's value from the daemon that runs now, takes
+	// the task it names, and writes its turns on the shim that connects to that daemon.
+	driver *takeDriver
+	mu     sync.Mutex
 	// model is the model the agent's answers name, `<provider>/<model>`: stepRecordsModel until
 	// its test gives the agent another.
 	model string
 	// sh is the shim's connection to the daemon now running, which a restart replaces.
 	sh *shim
-	// open is the id of each prompt whose turn has started and not ended.
-	open []string
 }
 
 // worker is role's claimant on the walk's issue (workerOf).
@@ -778,7 +779,7 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 	address := r.built.address
 	r.built.mu.Unlock()
 	c := &stepClaimant{r: r, token: token, issue: issue, tree: r.key, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: stepRecordsModel,
-		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
+		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
 		AgentID: c.session, PluginContract: api.DaemonAPIVersion,
@@ -791,6 +792,11 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
+	// The driver posts to the daemon that runs now and reads that daemon's claims, so a restart
+	// (reboot), which replaces r.d, leaves the pane's plugin talking to the new one.
+	c.driver = newTakeDriver(func(path string, body, answer any) error { return c.r.d.post(path, body, answer) }, c.write,
+		claim.AgentCaller{ClaimToken: token, SessionID: c.session, Secret: c.secret}, launch.Generation)
+	c.driver.started = func() (bool, error) { return c.r.d.turnRead(token)() }
 	sh, d := c.sh, r.d
 	sh.serve(func() { c.serve(sh, d) })
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
@@ -817,11 +823,10 @@ func (c *stepClaimant) reconnect() {
 }
 
 // serve reads every frame the daemon d sends sh until the connection closes or the test ends it
-// (shim.serve): it answers the protocol negotiation and the state probe, and acknowledges each
-// prompt and hands it to the walk, whose take starts its turn. An answer that fails to write
-// fails the test, unless the test had begun stopping d by then: the pane's connection outlives
-// the daemon, as a tmux pane does, so a restart's stop closes it under whatever answer is on
-// its way, which is no fault of the daemon's.
+// (shim.serve): it answers the protocol negotiation and the state probe, idle or streaming while
+// a turn of the pane's runs. An answer that fails to write fails the test, unless the test had
+// begun stopping d by then: the pane's connection outlives the daemon, as a tmux pane does, so a
+// restart's stop closes it under whatever answer is on its way, which is no fault of the daemon's.
 func (c *stepClaimant) serve(sh *shim, d *daemon) {
 	reply := func(frame shimwire.Frame) {
 		if err := sh.writer.WriteFrame(frame); err != nil && !d.stopped.Load() {
@@ -842,72 +847,76 @@ func (c *stepClaimant) serve(sh *shim, d *daemon) {
 		case shimwire.NegotiateProtocol:
 			reply(shimwire.Response{ID: f.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
 		case shimwire.GetState:
-			c.mu.Lock()
-			streaming := len(c.open) > 0
-			c.mu.Unlock()
+			streaming := c.driver.inATurn()
 			data, _ := json.Marshal(shimwire.StateData{IsStreaming: &streaming})
 			reply(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
-		case shimwire.Prompt:
-			reply(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true})
-			c.mu.Lock()
-			c.open = append(c.open, f.ID)
-			c.mu.Unlock()
-			select {
-			case c.prompts <- f:
-			case <-sh.stopping:
-				return
-			}
 		}
 	}
 }
 
-// send writes one frame to the daemon that runs now.
-func (c *stepClaimant) send(frame shimwire.Frame) {
+// write writes one frame to the daemon that runs now, which is how the driver sends its turns.
+func (c *stepClaimant) write(frame shimwire.Frame) error {
 	c.mu.Lock()
 	sh := c.sh
 	c.mu.Unlock()
-	if err := sh.writer.WriteFrame(frame); err != nil {
+	return sh.writer.WriteFrame(frame)
+}
+
+// send writes one frame to the daemon that runs now.
+func (c *stepClaimant) send(frame shimwire.Frame) {
+	if err := c.write(frame); err != nil {
 		c.r.t.Errorf("send %s for %s: %v", frame.FrameType(), c.token, err)
 	}
 }
 
-// take waits for the daemon's next task of this claim and starts the turn that works it, its
-// model answering first: the claim's machine reads a connection's frames in order, so once the
-// turn's start shows the claim working, the answer before it has been read too.
+// take takes the claim's next task and starts the turn that works it, its model answering first:
+// the claim's machine reads a connection's frames in order, so once the turn's start shows the
+// claim working, the answer before it has been read too.
 func (c *stepClaimant) take() {
 	c.r.t.Helper()
-	prompt := c.receive()
+	c.receive()
 	c.answer()
-	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
+	c.driver.mustStartTurn(c.r.t)
 	c.waitState(supervise.StateWorking)
 }
 
-// receive waits for the daemon's next task of this claim, the prompt the pane has acknowledged
-// and holds until a turn works it.
-func (c *stepClaimant) receive() shimwire.Prompt {
+// receive waits for the claim's next task and takes it, as the pane's plugin does once its host
+// is idle: the daemon accepts the take, and the take's turn has not started yet.
+func (c *stepClaimant) receive() {
 	c.r.t.Helper()
-	select {
-	case prompt := <-c.prompts:
-		return prompt
-	case <-time.After(stepRecordsWait):
-		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, stepRecordsWait)
-		return shimwire.Prompt{}
+	if _, err := c.driver.takeWithin(stepRecordsWait); err != nil {
+		c.r.t.Fatalf("%s took no task within %s: %v", c.token, stepRecordsWait, err)
 	}
 }
 
-// endTurnUnseen ends every turn a prompt started with no daemon of this release there to read it,
-// as the earlier release runs the agent after a rollback: the pane holds no open turn when its
-// shim next connects, so the daemon's state probe finds it idle.
+// endTurnUnseen ends the task the pane took with no daemon of this release there to read it, as
+// the earlier release runs the agent after a rollback: the pane holds no take and no open turn
+// when its shim next connects, so the daemon's state probe finds it idle.
 func (c *stepClaimant) endTurnUnseen() {
-	c.mu.Lock()
-	c.open = nil
-	c.mu.Unlock()
+	c.driver.mu.Lock()
+	c.driver.accepted, c.driver.running, c.driver.inTurn = 0, 0, false
+	c.driver.mu.Unlock()
+}
+
+// endTurnUnreported ends the take's turn as a plugin below supervise.TaskTakeContract does: the
+// agent_end alone, no report naming the number, to the daemon that runs now. The driver lets go of
+// the take first, as endTurnUnseen's pane does, so nothing of the turn is left for it to report.
+func (c *stepClaimant) endTurnUnreported() {
+	c.endTurnUnseen()
+	c.send(shimwire.AgentEnd{})
 }
 
 // ownTurn is a turn of the agent's own in which its model answers: it returns once the claim is
-// out of it, so the answer, read before the turn's end, is the claim's last.
+// out of it, so the answer, read before the turn's end, is the claim's last. A pane whose take's
+// turn still runs — the daemon restarted inside it, and the pane outlived the daemon — answers in
+// that turn instead, which goes on until endTurn: the claim's machine reads the answer before any
+// request of the agent's applies (supervision.awaitStream).
 func (c *stepClaimant) ownTurn() {
 	c.r.t.Helper()
+	if c.driver.inATurn() {
+		c.answer()
+		return
+	}
 	c.send(shimwire.AgentStart{})
 	c.waitState(supervise.StateWorking)
 	c.answer()
@@ -940,18 +949,12 @@ func (c *stepClaimant) answer() {
 	c.send(shimwire.Raw{Type: "message_end", JSON: frame})
 }
 
-// endTurn ends every turn a prompt started: the agent_end, and the result of each prompt.
+// endTurn ends the turn the claim's last take started, when one runs: the agent_end, and the
+// report naming the task, which finishes it (takeDriver.endTurn).
 func (c *stepClaimant) endTurn() {
-	c.mu.Lock()
-	open := c.open
-	c.open = nil
-	c.mu.Unlock()
-	if len(open) == 0 {
-		return
-	}
-	c.send(shimwire.AgentEnd{})
-	for _, id := range open {
-		c.send(shimwire.PromptResult{ID: id, AgentInvoked: true})
+	c.r.t.Helper()
+	if c.driver.inATurn() {
+		c.driver.mustEndTurn(c.r.t)
 	}
 }
 

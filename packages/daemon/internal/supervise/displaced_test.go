@@ -57,28 +57,28 @@ func TestAProcessEndedWithAPodTheDaemonReplacedIsRelaunchedChargingNothing(t *te
 
 // A process the daemon's replacement ends mid-turn gives its task back (interrupted), as a death in
 // a turn does, but counts no death with work outstanding: more replacements in a row than the launch
-// failure limit leave the claim relaunched each time, its task re-sent, never failed.
-func TestReplacementsMidTurnInterruptTheTaskWithoutEverFailingTheClaim(t *testing.T) {
+// failure limit leave the claim relaunched each time, its task taken again under its number, never
+// failed.
+func TestTakeBackByAReplacementKeepsTheNumberWithoutEverFailingTheClaim(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
 	h.must(StreamTurnStart{Claim: testToken})
-	sent := h.wantPrompts(1)[0].DeliveryID
+	first := h.wantPrompts(1)[0]
 
 	for replaced := 1; replaced <= testLimits().LaunchFailures+1; replaced++ {
 		h.observeDisplaced(runtime.NotRecordedProcess)
 
 		h.wantState(StateLaunching)
 		h.wantBudgets(Budgets{})
-		if p := h.pending(); !p.Interrupted || p.ID == sent || !p.ConfirmedAt.IsZero() {
-			t.Fatalf("pending after replacement %d = %+v, want the task taken back, unconfirmed and interrupted", replaced, p)
+		if p := h.pending(); !p.Interrupted || p.ID != first.DeliveryID || p.Number != first.Number || p.taken() {
+			t.Fatalf("pending after replacement %d = %+v, want task %d taken back under its number and interrupted", replaced, p, first.Number)
 		}
 		h.relaunched()
-		resent := h.wantPrompts(1 + replaced)[replaced]
-		if !strings.HasSuffix(resent.Message, "implement the plan") {
-			t.Fatalf("re-sent %+v after replacement %d, want the task", resent, replaced)
+		again := h.wantPrompts(1 + replaced)[replaced]
+		if !strings.HasSuffix(again.Message, "implement the plan") || again.Number != first.Number {
+			t.Fatalf("took %+v after replacement %d, want task %d again", again, replaced, first.Number)
 		}
-		sent = resent.DeliveryID
 		h.must(StreamTurnStart{Claim: testToken})
 	}
 }
@@ -103,5 +103,35 @@ func TestAReplacementWithAHeldSuspensionSuspendsTheClaimChargingNothing(t *testi
 	h.wantCalls("Resume", 0)
 	if claim := h.claim(); claim.SuspensionHeld {
 		t.Fatalf("claim %+v after the replacement, want the held suspension ended", claim)
+	}
+}
+
+// A displacement whose end was its pod running out of memory keeps that end's note when the wake
+// pacing parks its launch: the take-back is made at the wake's turn, where the process is let go,
+// and it is the displacement's own, with its out-of-memory end (launchReplacing, wake.takeBack),
+// so the relaunched worker's take carries outOfMemoryTask in front of its task.
+//
+// The negative control is the wake's turn making its own generic take-back (runWake with no
+// wake.takeBack): the task is then taken back with no out-of-memory mark.
+func TestTakeBackOfAParkedDisplacementKeepsItsOutOfMemoryNote(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+	h.must(StreamTurnStart{Claim: h.token})
+
+	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone,
+		At: h.clock.Now(), Displaced: true, OutOfMemory: true}})
+	waiting := h.wantWaitingWake(WakeLaunch)
+	if p := h.pending(); !p.turnStarted() {
+		t.Fatalf("the task after the park is %+v, want its take's turn still standing until the wake's turn", p)
+	}
+	h.advance(waiting.At.Sub(h.clock.Now()))
+
+	if p := h.pending(); p.taken() || !p.Interrupted || !p.OutOfMemory {
+		t.Fatalf("the task after the wake's turn is %+v, want it taken back from its cut turn with the out-of-memory mark", p)
+	}
+	h.relaunched()
+	if again := h.wantPrompts(2)[1]; !strings.Contains(again.Message, outOfMemoryTask) {
+		t.Fatalf("the relaunched worker took %q, want the out-of-memory note in front of its task", again.Message)
 	}
 }

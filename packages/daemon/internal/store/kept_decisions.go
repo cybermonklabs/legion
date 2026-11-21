@@ -13,27 +13,31 @@ import (
 // What a root architect's start task names of the decisions a person made while nobody in its
 // tree could hear them (record.KeptDecisions, carried as supervise.Delivery.Kept and persisted as
 // pending_task_deliveries.kept_decisions) is held by the delivery that task was queued as, and
-// told at that delivery's confirmation. Those rows stand in parked_decisions throughout
-// (20261101163106_parked_decisions): the claim's write of the delivery takes each from the start row that
-// named it and marks it held by this claim and delivery id, the write recording the confirmation
-// tells it, and the write that retires the delivery leaves it KEPT again. Each is the delivery's
-// own write, so no ordering of queues, confirmations, retirements and restarts can leave a row
-// held by a delivery that is not there or told by one whose turn never started.
+// told at that delivery's confirmation, the accepted take of it. Those rows stand in
+// parked_decisions throughout (20261101163106_parked_decisions): the claim's write of the
+// delivery takes each from the start row that named it and marks it held by this claim and
+// delivery id, the write recording the accepted take tells it, and the write that retires the
+// delivery leaves it KEPT again. Each is the delivery's own write, so no ordering of queues,
+// takes, retirements and restarts can leave a row held by a delivery that is not there or told
+// by one no take of which stands accepted.
 //
 // The telling follows the one validity rule both sides of this machinery follow: a row is told
 // only while its own issue still stands in the claim's tree. An issue that has left it — a child
 // a linger handed to Legion, a parked child a person orphaned, a queued root admission adopted —
 // is owed its answer by the tree it stands in now, so its row's claim and hold go instead and
-// that tree's next start or catch-up names it. The old architect having been prompted with it as
+// that tree's next start or catch-up names it. The old architect having taken a task naming it as
 // well is the lesser fault: a person's decision is never lost.
 
 // putBackARetakenConfirmation puts back what this claim's own confirmation told, and does so on
-// one unconfirmed write alone: the one that takes that confirmation back. The confirmation's
-// write told the rows the delivery held and deleted them — a prompt refused busy after a turn of
-// the agent's own confirmed it, a late refusal, a turn its process died in — so the architect
-// never read them and the resend names them again; a second telling is the worst case, never a
-// loss. It inserts, held by this delivery, each decision the delivery names that has no
-// (issue, ref) row and whose issue stands in the claim's tree.
+// one unconfirmed write alone: the one that takes that confirmation back. The confirmation is the
+// accepted take of the delivery, and its write told the rows the delivery held and deleted them.
+// A take taken back — given back before its turn started (supervise's giveBackTake: a
+// compaction, the second wait, a let-go or a retirement of a take that awaited its turn), taken
+// back after its turn started by a provider error's ladder (supervise's takeToLadder), or cut off
+// in its turn by a let-go (interrupted) — may leave the architect not having run that text whole,
+// so the next accepted take of the task names them again; a second telling is the worst
+// case, never a loss. It inserts, held by this delivery, each decision the delivery names that has
+// no (issue, ref) row and whose issue stands in the claim's tree.
 //
 // Which write that is, is read from the row the write is about to replace: a delivery the claim
 // holds now with a confirmation on it. So this runs before the upsert, since afterwards nothing
@@ -42,14 +46,14 @@ import (
 // never written — has no confirmation to take back, and a task that names nothing has nothing to
 // put back.
 //
-// Every other unconfirmed write — the queue, the mark as sent, a write-back, a send a refusal
-// took back — puts nothing back, because a row of theirs that is missing was told by somebody
-// else: a catch-up of the tree named it while no delivery held it and its telling forgot it
-// (record.Store.ForgetKeptDecisions). Putting such a row back makes it KEPT again, the tree's
+// Every other unconfirmed write — the queue, a write-back of an unconfirmed delivery, a take
+// refused at its revision — puts nothing back, because a row of theirs that is missing was told by
+// somebody else: a catch-up of the tree named it while no delivery held it and its telling forgot
+// it (record.Store.ForgetKeptDecisions). Putting such a row back makes it KEPT again, the tree's
 // next start or catch-up names it, and a person's decision reaches one architect twice
-// (dispatch://INFRA-2339). The send-time narrowing drops such a mark from the task (the daemon's
-// rootTask), but only at a send, and a task the root cannot hear yet is written many times
-// before one. An issue that left the claim's tree is never put back.
+// (dispatch://INFRA-2339). The take-time narrowing drops such a mark from the task (the daemon's
+// rootTask, which the take asks), but only at a take, and a task the root cannot hear yet is
+// written many times before one. An issue that left the claim's tree is never put back.
 func putBackARetakenConfirmation(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string, kept []byte) error {
 	if len(kept) == 0 {
 		return nil
@@ -80,13 +84,14 @@ func putBackARetakenConfirmation(ctx context.Context, tx pgx.Tx, token claim.Tok
 }
 
 // holdKeptDecisions marks every row the delivery names held by this claim and delivery id, and
-// moves to this delivery id whatever the claim's previous delivery held — a task a death took back
-// comes back under a new id, and what it names is the same (supervise's interrupted,
-// takeBackPending). It takes only rows this delivery owns: one claimed by a start row whose task
-// this claim queued (claims.delivered_rows, which the claim's write puts down first), one this
-// claim already holds, or one nobody claims or holds whose issue stands in this claim's tree (what
-// this delivery names of its own tree that nothing else has taken). A row another start, catch-up
-// or delivery owns now — the tree a moved issue stands in has claimed or held it — stays theirs.
+// moves to this delivery id whatever the claim's previous delivery held: the claim holds one
+// pending task, and this write is the one that replaces it. A task taken back keeps its id
+// (supervise's interrupted), so what it names stays held where it was. It takes only rows this
+// delivery owns: one claimed by a start row whose task this claim queued (claims.delivered_rows,
+// which the claim's write puts down first), one this claim already holds, or one nobody claims or
+// holds whose issue stands in this claim's tree (what this delivery names of its own tree that
+// nothing else has taken). A row another start, catch-up or delivery owns now — the tree a moved
+// issue stands in has claimed or held it — stays theirs.
 //
 // It puts no row back: a row the task names and the table does not hold is
 // putBackARetakenConfirmation's, which runs before the write of the delivery this holds for and

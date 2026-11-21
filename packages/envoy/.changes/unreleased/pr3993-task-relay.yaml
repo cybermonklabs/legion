@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  The listener relays each Legion claim's task value from the Legion daemons' task bucket,
+  `legion_tasks`, to the session that holds the claim's role, on that session's delivery subject.
+  It only reads the bucket and never creates it, and a bucket that does not exist yet, or a grant
+  that lacks its reads, stops no other route. It reads the bucket whole again a minute after each
+  whole read, so the record of a delete marker a daemon purged leaves the listener's memory then.
+  envoy-infra grants the daemon's NATS user create, update, read, write and purge of the bucket,
+  the listener's user its reads, and no session user anything of it; the broker's NATS auth
+  service answers a daemon's and a listener's connection with the same grants (`natsgrant`).
+  Roll out in this order: the envoy-infra release first, then this listener, then each project's
+  Legion daemon and worker image together. Applying the envoy-infra release replaces the VM of a
+  `gcp:NatsHub` that has a `listener`, a `listenerMachineId` or a `daemon: true` user, once, with
+  NATS down while it is replaced, since those users' rendered grants change; a hub with none of
+  them keeps its VM.

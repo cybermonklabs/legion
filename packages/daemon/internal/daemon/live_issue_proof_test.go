@@ -7,11 +7,11 @@
 // that bears its name. Each driver embeds liveIssueProof, liveProof (live_proof_test.go) grown for
 // that one issue: the issue's seed and the daemon's boot over the fake runtime; the reads of a
 // claim's token, its launch and the issue's state; each role's agent, as the registered session it
-// is over HTTP (liveSession) and as the turns a step plays on the shim (liveClaimant); GitHub's
-// REST API for the pull request at the head the driver last pushed (liveGitHub); and the
-// implementer's push, GitHub's synchronize and a push onto the base. firstLine, the cut of a
-// prompt a note prints, is here too, for these drivers and the other e2e ones. What one proof
-// alone drives stays in its driver.
+// is over HTTP (liveSession) and as the takes and turns a step plays through its plugin
+// (liveClaimant, over take_driver_test.go's takeDriver); GitHub's REST API for the pull request at
+// the head the driver last pushed (liveGitHub); and the implementer's push, GitHub's synchronize
+// and a push onto the base. firstLine, the cut of a task a note prints, is here too, for these
+// drivers and the other e2e ones. What one proof alone drives stays in its driver.
 package daemon
 
 import (
@@ -35,7 +35,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -359,12 +358,11 @@ func (c *liveSession) complete(summary, commit, verdict, handoffID string) (int,
 }
 
 // liveClaimant is a role's claim whose agent the step itself plays: its registered session, and
-// the prompt whose turn is running. Each read of the connection is the step's own, on the step's
-// own goroutine, so nothing answers the daemon between a step's reads.
+// the plugin that takes its tasks and runs its turns (takeDriver). Each take and each turn is the
+// step's own, on the step's own goroutine, so nothing takes a task between a step's acts.
 type liveClaimant struct {
 	*liveSession
-	// turn is the id of the prompt the running turn answers, "" for a turn of the agent's own.
-	turn string
+	worker *takeDriver
 }
 
 // claimant brings the launched claim of role to ready, as its pane's shim and its agent do: it
@@ -372,49 +370,44 @@ type liveClaimant struct {
 // session and reports it ready.
 func (p *liveIssueProof) claimant(role claim.Role, session string) *liveClaimant {
 	p.t.Helper()
-	c := &liveClaimant{liveSession: p.register(role, session)}
+	s := p.register(role, session)
+	c := &liveClaimant{liveSession: s, worker: p.d.takeDriver(s.sh, s.token, s.session, s.secret, s.generation)}
 	c.ready()
 	return c
 }
 
-// takeTask is the agent taking the daemon's next task: it reads the prompt the daemon sends,
-// acknowledges it as Oh My Pi does and starts the turn that works it, and returns once the daemon
-// has recorded the claim working on that delivery.
-func (c *liveClaimant) takeTask(want string) shimwire.Prompt {
+// takeTask is the agent taking the daemon's next task: its plugin reads the claim's value, takes
+// the task it names and starts the turn that works it, and this returns once the daemon has
+// recorded the claim working on that task.
+func (c *liveClaimant) takeTask(want string) takenTask {
 	t := c.p.t
 	t.Helper()
-	prompt := c.sh.prompt()
-	if !strings.Contains(prompt.Message, want) {
-		t.Fatalf("the %s was prompted %q, want a task saying %q", c.role, prompt.Message, want)
+	task := c.worker.mustTake(t, fmt.Sprintf("the %s takes a task saying %q", c.role, want))
+	if !strings.Contains(task.Text, want) {
+		t.Fatalf("the %s took %q, want a task saying %q", c.role, task.Text, want)
 	}
-	c.sh.send(shimwire.Response{ID: prompt.ID, Command: shimwire.TypePrompt, Success: true})
-	c.startTurn(prompt.ID)
-	return prompt
+	c.startTurn()
+	return task
 }
 
-// startTurn is the agent beginning a turn, on the prompt id when the daemon sent one and on
-// nothing when the turn is its own. It returns once the daemon has recorded the claim working.
-func (c *liveClaimant) startTurn(prompt string) {
+// startTurn is the agent beginning a turn: the turn of the task it took last, or of nothing when
+// the turn is its own. It returns once the daemon has recorded the claim working.
+func (c *liveClaimant) startTurn() {
 	t := c.p.t
 	t.Helper()
-	c.sh.send(shimwire.AgentStart{})
-	c.turn = prompt
+	c.worker.mustStartTurn(t)
 	testwait.Eventually(t, fmt.Sprintf("the %s's turn running", c.role), func() bool {
 		return c.p.d.claim(c.token).State == string(supervise.StateWorking)
 	})
 }
 
-// endTurn is the agent finishing its turn: the agent_end, and behind it the prompt's own result,
-// which is what names the prompt the turn belonged to (shimwire.PromptResult) and retires the
-// task. It returns once the daemon has recorded the claim out of its turn.
+// endTurn is the agent finishing its turn: the agent_end, and behind it the turn's report naming
+// the task the turn ran, which finishes that task. It returns once the daemon has recorded the
+// claim out of its turn.
 func (c *liveClaimant) endTurn() {
 	t := c.p.t
 	t.Helper()
-	c.sh.send(shimwire.AgentEnd{})
-	if c.turn != "" {
-		c.sh.send(shimwire.PromptResult{ID: c.turn, AgentInvoked: true})
-	}
-	c.turn = ""
+	c.worker.mustEndTurn(t)
 	testwait.Eventually(t, fmt.Sprintf("the %s out of its turn", c.role), func() bool {
 		return c.p.d.claim(c.token).State == string(supervise.StateIdle)
 	})

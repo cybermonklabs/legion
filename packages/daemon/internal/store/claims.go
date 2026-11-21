@@ -44,6 +44,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.boot_token_hash, c.capability_hash, c.uncertain_streak, c.last_start_row, c.serving_generation,
 	c.given_entry, c.served_entry, c.handshake_entry, c.handshake_generation, c.handshake_queued_at,
 	c.handshake_confirmed_at, c.serving_check_look, c.serving_check_opened_at,
+	c.task_written, c.task_taken, c.task_finished, c.task_finished_session,
+	c.task_seen_epoch, c.task_seen_revision, c.task_take_state, c.task_written_epoch, c.task_written_revision,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
@@ -54,8 +56,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
 	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
-	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
-	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
+	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.number, d.origin, d.taken_text, d.turn_started, d.take_told,
+	d.check_look, d.check_opened_at, d.queued_at, d.confirmed_at, d.interrupted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.round_named
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
@@ -355,6 +357,10 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
 	}
+	if max(c.TaskWritten, c.TaskTaken, c.TaskFinished, c.TaskSeenRevision.Revision, c.TaskWrittenRevision.Revision) > math.MaxInt64 {
+		return fmt.Errorf("put claim %s: a task number or revision does not fit a bigint: written %d, taken %d, finished %d, seen revision %d, written revision %d",
+			c.Token, c.TaskWritten, c.TaskTaken, c.TaskFinished, c.TaskSeenRevision.Revision, c.TaskWrittenRevision.Revision)
+	}
 	if c.Handshake.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: the generation %d of its handshake does not fit a bigint", c.Token, c.Handshake.Generation)
 	}
@@ -424,10 +430,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
+		task_written, task_taken, task_finished, task_finished_session,
+		task_seen_epoch, task_seen_revision, task_take_state, task_written_epoch, task_written_revision,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59,
+		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52,
+		$53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -476,6 +484,11 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		handshake_generation = excluded.handshake_generation,
 		handshake_queued_at = excluded.handshake_queued_at,
 		handshake_confirmed_at = excluded.handshake_confirmed_at,
+		task_written = excluded.task_written, task_taken = excluded.task_taken,
+		task_finished = excluded.task_finished, task_finished_session = excluded.task_finished_session,
+		task_seen_epoch = excluded.task_seen_epoch, task_seen_revision = excluded.task_seen_revision,
+		task_take_state = excluded.task_take_state,
+		task_written_epoch = excluded.task_written_epoch, task_written_revision = excluded.task_written_revision,
 		-- The four activity columns (activity_at, activity_background, activity_kinds,
 		-- activity_next_reminder_at) and the eight step columns (step_at, turn_started_at,
 		-- step_tool, step_call_id, step_args_bytes, step_args_hash, step_started_at,
@@ -515,6 +528,8 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
+		int64(c.TaskWritten), int64(c.TaskTaken), int64(c.TaskFinished), c.TaskFinishedSession,
+		c.TaskSeenRevision.Epoch, int64(c.TaskSeenRevision.Revision), string(c.TaskTakeState), c.TaskWrittenRevision.Epoch, int64(c.TaskWrittenRevision.Revision),
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -688,151 +703,6 @@ func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervis
 	return c, true, nil
 }
 
-// PutDelivery writes the claim's pending delivery, replacing the one it had: a claim has at most
-// one. A token no claim carries is refused. It is one transaction, because the write carries what
-// the task names of the decisions a person made while nobody in its root's tree could hear them:
-// queued or taken back, the delivery holds those rows; confirmed, it tells them (kept_decisions.go).
-func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.Delivery) error {
-	return s.Tx(ctx, func(tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
-}
-
-// putDelivery writes a delivery through the caller's transaction: the one PutDelivery opens, or
-// the one that carries the claim the delivery is confirmed against. It takes a transaction
-// because it reads the row it is about to replace and holds that reading until it has written
-// (kept_decisions.go's putBackARetakenConfirmation), which no autocommit statement can do. The
-// rows the task names go with it: a delivery still unconfirmed holds them, under this claim and
-// this delivery id, taking each from the start row that claimed it and from whatever id the
-// claim's previous delivery held it under; the write that records the confirmation tells them.
-// All of it is in the caller's transaction, so no row is ever held by a delivery the store does
-// not hold, and no confirmation commits without telling what it confirmed.
-func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
-	if d.Generation > math.MaxInt64 {
-		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
-	}
-	kept := keptDecisions(d.Kept)
-	unconfirmed := d.ConfirmedAt.IsZero()
-	if unconfirmed {
-		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
-			return err
-		}
-	}
-	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
-		phase, generation, entry, check_look, check_opened_at, queued_at, delivered_at, marked_by,
-		confirmed_at, interrupted, prompted, out_of_memory,
-		send_failures, last_send_failure_at, last_send_error, kept_decisions,
-		provider_error_retries, provider_error_note, round_named)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22)
-		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
-		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
-		entry = excluded.entry, check_look = excluded.check_look,
-		check_opened_at = excluded.check_opened_at, queued_at = excluded.queued_at,
-		delivered_at = excluded.delivered_at, marked_by = excluded.marked_by, confirmed_at = excluded.confirmed_at,
-		interrupted = excluded.interrupted, prompted = excluded.prompted,
-		out_of_memory = excluded.out_of_memory, send_failures = excluded.send_failures,
-		last_send_failure_at = excluded.last_send_failure_at, last_send_error = excluded.last_send_error,
-		kept_decisions = excluded.kept_decisions,
-		provider_error_retries = excluded.provider_error_retries,
-		provider_error_note = excluded.provider_error_note, round_named = excluded.round_named`,
-		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
-		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
-		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
-		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
-		d.ProviderErrorRetries, d.ProviderErrorNote, d.RoundNamed,
-	)
-	if err != nil {
-		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
-	}
-	if unconfirmed {
-		return holdKeptDecisions(ctx, tx, token, d.ID, kept)
-	}
-	return tellKeptDecisions(ctx, tx, token, d.ID)
-}
-
-// PutClaimAndDelivery writes a claim and its pending delivery in one transaction: a confirmation
-// records both, and a daemon that died between them would leave a claim recorded as working whose
-// delivery nothing retires or re-sends — a task the shim has already answered, so its worker is
-// never prompted again and the phase waits. It is also where a confirmation tells the decisions
-// its delivery holds, in that same transaction and for the same reason.
-func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
-	var queued bool
-	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
-		queued, err = s.PutClaimAndDeliveryTx(ctx, tx, c, d)
-		return err
-	}); err != nil {
-		return err
-	}
-	s.CommittedClaim(c, queued)
-	return nil
-}
-
-// PutClaimAndDeliveryTx is PutClaimAndDelivery inside a caller's transaction, for the stop a
-// project's pause makes of a claim that holds a pending delivery (PutClaimTx). It answers whether
-// the claim's write queued the publication of its issue's role sessions, for the caller's
-// CommittedClaim once its transaction has committed.
-func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) (bool, error) {
-	queued, err := s.putClaim(ctx, tx, c)
-	if err != nil {
-		return false, err
-	}
-	return queued, putDelivery(ctx, tx, c.Token, d)
-}
-
-// RetireDelivery removes the claim's pending delivery, fenced on its id: retiring a delivery the
-// claim does not hold is refused, and the one it does hold stays. The claim it is given is written
-// in the same transaction, because the run a claim serves is set by the retiring of the task that
-// ran: a delete that committed without it would leave a daemon crashed in between with a claim
-// that has forgotten the run its worker is still working. What the delivery held is left KEPT in
-// that same transaction: a retired task tells nothing, so each row waits for the next start or
-// catch-up of its own issue's tree to name it.
-//
-// A delete that removes no row is refused two ways, because pending_task_deliveries is keyed on
-// the claim: the row holds no delivery at all, or it holds one under another id. The first is
-// the retirement this call already committed and whose answer the caller lost, and it carries
-// supervise.ErrNoSuchDelivery so that the caller can read it as its own write made good rather
-// than as a fresh failure. The second is a different claim altogether — a write that rotated the
-// delivery's id committed after its answer was cut off, so the row holds the new delivery while
-// the caller is retiring the old one — and it carries supervise.ErrOtherDelivery, naming both
-// ids, which is not ErrNoSuchDelivery and must never be read as one: that would drop the
-// delivery memory holds and leave the stored one behind, pending and unretired. Which it is can
-// only be read from the row, so it is read here, in the same transaction as the delete that
-// found nothing.
-func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
-	var queued bool
-	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
-		if queued, err = s.putClaim(ctx, tx, c); err != nil {
-			return err
-		}
-		tag, err := tx.Exec(ctx,
-			"delete from pending_task_deliveries where claim_token = $1 and delivery_id = $2",
-			string(c.Token), deliveryID,
-		)
-		if err != nil {
-			return fmt.Errorf("retire delivery %s on %s: %w", deliveryID, c.Token, err)
-		}
-		if tag.RowsAffected() == 0 {
-			var stored string
-			switch err := tx.QueryRow(ctx,
-				"select delivery_id from pending_task_deliveries where claim_token = $1",
-				string(c.Token),
-			).Scan(&stored); {
-			case errors.Is(err, pgx.ErrNoRows):
-				return fmt.Errorf("retire delivery %s on %s: %w", deliveryID, c.Token, supervise.ErrNoSuchDelivery)
-			case err != nil:
-				return fmt.Errorf("read the pending delivery of %s: %w", c.Token, err)
-			default:
-				return fmt.Errorf("retire delivery %s on %s: the row holds delivery %s: %w",
-					deliveryID, c.Token, stored, supervise.ErrOtherDelivery)
-			}
-		}
-		return releaseKeptDecisions(ctx, tx, c.Token, deliveryID)
-	}); err != nil {
-		return err
-	}
-	s.CommittedClaim(c, queued)
-	return nil
-}
-
 func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	var (
 		c                           supervise.Claim
@@ -843,10 +713,13 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		agentResumeGeneration       int64
 		locator                     []byte
 		deliveryID, task            *string
-		markedBy                    *string
 		deliveryPhase               *string
 		deliveryGeneration          *int64
 		deliveryEntry               *int64
+		deliveryNumber              *int64
+		deliveryOrigin, takenText   *string
+		turnStartedTake             *bool
+		takeTold                    []string
 		deliveryCheckLook           *int
 		deliveryCheckOpened         *time.Time
 		servingGeneration           int64
@@ -855,11 +728,14 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		handshakeGeneration         int64
 		handshakeQueued             *time.Time
 		handshakeConfirmed          *time.Time
+		taskWritten, taskTaken      int64
+		taskFinished                int64
+		seenRevision                int64
+		writtenRevision             int64
+		takeState                   string
 		enrollmentID, enrollmentIC  *string
-		queuedAt, delivered         *time.Time
-		confirmed                   *time.Time
-		interrupted, prompted       *bool
-		outOfMemory                 *bool
+		queuedAt, confirmed         *time.Time
+		interrupted, outOfMemory    *bool
 		sendFailures                *int64
 		lastSendFailure             *time.Time
 		lastSendError               *string
@@ -886,6 +762,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.LastStartRow, &servingGeneration, &c.GivenEntry, &c.ServedEntry,
 		&c.Handshake.Entry, &handshakeGeneration, &handshakeQueued, &handshakeConfirmed,
 		&servingCheckLook, &servingCheckOpened,
+		&taskWritten, &taskTaken, &taskFinished, &c.TaskFinishedSession,
+		&c.TaskSeenRevision.Epoch, &seenRevision, &takeState, &c.TaskWrittenRevision.Epoch, &writtenRevision,
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
 		&turnStart, &turnEnd,
@@ -896,8 +774,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
-		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
-		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
+		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry,
+		&deliveryNumber, &deliveryOrigin, &takenText, &turnStartedTake, &takeTold, &deliveryCheckLook, &deliveryCheckOpened,
+		&queuedAt, &confirmed, &interrupted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &roundNamed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
@@ -915,10 +794,13 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
 	c.AgentResumeGeneration = uint64(agentResumeGeneration)
+	c.TaskWritten, c.TaskTaken, c.TaskFinished = uint64(taskWritten), uint64(taskTaken), uint64(taskFinished)
+	c.TaskSeenRevision.Revision, c.TaskWrittenRevision.Revision = uint64(seenRevision), uint64(writtenRevision)
+	c.TaskTakeState = supervise.TakeState(takeState)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
 	// The handshake's two moments are nullable (20261114020537_claim_entry_handshake): a claim queued
-	// no task carrying an entry has neither, and one whose task of its entry no turn has confirmed
-	// has no confirmed moment, each of which the handshake holds as the zero time.
+	// no task carrying an entry has neither, and one whose task of its entry no accepted take has
+	// confirmed has no confirmed moment, each of which the handshake holds as the zero time.
 	c.Handshake.Generation = uint64(handshakeGeneration)
 	c.Handshake.QueuedAt, c.Handshake.ConfirmedAt = orZero(handshakeQueued), orZero(handshakeConfirmed)
 	if len(outcomes) > 0 {
@@ -975,17 +857,20 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			Phase:       phase.Phase(*deliveryPhase),
 			Generation:  uint64(orZeroInt(deliveryGeneration)),
 			Entry:       orZeroInt(deliveryEntry),
+			Number:      uint64(orZeroInt(deliveryNumber)),
+			Origin:      *deliveryOrigin,
+			TakenText:   *takenText,
+			TurnStarted: orFalse(turnStartedTake),
+			TakeTold:    takeToldOf(takeTold),
 			CheckLook:   supervise.CheckLook{Look: *deliveryCheckLook, OpenedAt: orZero(deliveryCheckOpened)},
 			QueuedAt:    *queuedAt,
-			DeliveredAt: orZero(delivered),
-			MarkedBy:    *markedBy,
 			ConfirmedAt: orZero(confirmed),
 			Interrupted: orFalse(interrupted),
-			Prompted:    orFalse(prompted),
 			OutOfMemory: orFalse(outOfMemory),
-			// The three the send failures are diagnosed from: a count, the moment of the last
-			// failure — null until a send has failed, which the delivery holds as the zero
-			// time — and that failure's error.
+			// The record of the takes whose adoption of the working copy failed (supervise's
+			// refusedAdoption): a count, the moment of the last failure — null until an
+			// adoption has failed, which the delivery holds as the zero time — and that
+			// failure's error.
 			SendFailures:         int(orZeroInt(sendFailures)),
 			LastSendFailureAt:    orZero(lastSendFailure),
 			LastSendError:        *lastSendError,
@@ -1006,17 +891,6 @@ func instant(t time.Time) *time.Time {
 		return nil
 	}
 	return &t
-}
-
-// keptDecisions is a delivery's kept-decision record as the column holds it and as the delivery
-// carries it: an empty record ("{}", or nothing at all for a claim with no delivery) is a task that
-// names no decision, which the delivery holds as no bytes at all, so a restored delivery equals the
-// one that was written.
-func keptDecisions(kept []byte) []byte {
-	if len(kept) == 0 || string(kept) == "{}" {
-		return nil
-	}
-	return kept
 }
 
 // orFalse is a nullable boolean column read as false when null: the left join's delivery columns

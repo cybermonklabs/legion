@@ -86,7 +86,8 @@ func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing
 
 	// Its task is delivered once its agent, on the session it kept, is ready again.
 	relaunched := r.claim(token)
-	sh := r.dialShim(lastLaunch(t, r.rt.Runtime, token).BootToken)
+	launch := lastLaunch(t, r.rt.Runtime, token)
+	sh := r.dialShim(launch.BootToken, launch.Generation)
 	testwait.Eventually(t, "the relaunched spawn's shim to say hello", func() bool {
 		return r.claim(token).State == supervise.StateShimConnected
 	})
@@ -692,7 +693,8 @@ func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectA
 		t.Fatalf("after the resume the spawn owed a launch is %s by %s; want it launched once through the pacing", c.State, c.SuspendedBy)
 	}
 	relaunched := r.claim(token)
-	r.dialShim(lastLaunch(t, r.rt.Runtime, token).BootToken)
+	launch := lastLaunch(t, r.rt.Runtime, token)
+	r.dialShim(launch.BootToken, launch.Generation)
 	testwait.Eventually(t, "the relaunched spawn's shim to say hello", func() bool {
 		return r.claim(token).State == supervise.StateShimConnected
 	})

@@ -59,7 +59,7 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 	for _, tc := range burstableLiveCases {
 		started := time.Now()
 		path := writeBurstableLiveConfig(t, filepath.Join(env["LEGION_E2E_WORK"], tc.name), tc.project, env["LEGION_E2E_STREAM_HOST"],
-			env["LEGION_E2E_IMAGE"], env["LEGION_E2E_KUBECONFIG"], env["LEGION_E2E_KUBE_CONTEXT"], tc.resources)
+			env["LEGION_E2E_IMAGE"], env["LEGION_E2E_KUBECONFIG"], env["LEGION_E2E_KUBE_CONTEXT"], burstableLiveNoNATS, tc.resources)
 		cfg, err := config.LoadForValidation(path, nil)
 		if err != nil {
 			t.Fatalf("%s: load %s: %v", tc.name, path, err)

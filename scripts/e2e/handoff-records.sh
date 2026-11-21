@@ -19,7 +19,7 @@
 #     to Dispatch (the `dispatch` CLI, this proof's worker side, refuses a session id with a colon
 #     in it); the tester's completion naming that record is refused HANDOFF_SESSION_MISMATCH; the
 #     tester reads it, writes it again under its session and completes, and the reviewer the daemon
-#     starts is prompted with a task naming that record;
+#     starts takes a task naming that record;
 #   - HANDOFF_NOT_NEW: the implementer completes round 1, the tester fails it, and the implementer's
 #     round-2 completion naming its round-1 record is refused; naming a new record moves it on;
 #   - completion head: the real findHandoffReport (packages/pi-shared/src/handoff-record.ts), run

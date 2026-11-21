@@ -333,6 +333,13 @@ export interface AgentEndMessage {
    * `packages/ai/src/types.ts:1492-1500` at the pinned tag). `classifyProviderTurn`
    * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
   readonly errorMessage?: string;
+  /** The HTTP status of the provider request an `error` stop failed on, when it had one, and the
+   * provider and model the request went to (`AssistantMessage`, `packages/ai/src/types.ts` at the
+   * pinned tag): the fields Oh My Pi's own `prompt_result` error carries as `httpStatus`,
+   * `provider` and `model`. */
+  readonly errorStatus?: number;
+  readonly provider?: string;
+  readonly model?: string;
 }
 
 /**
@@ -715,12 +722,16 @@ export interface PiApi {
    * Sends a user prompt, exactly as Enter at the terminal does: idle, it starts a turn; streaming,
    * it steers. `deliverAs: "aside"` lands it at the next step without interrupting the running
    * tool batch; `deliverAs: "followUp"` queues it behind the running turn without starting one.
-   * The host queues the send, so the prompt's `message_start` comes after this returns.
+   * The host queues the send, so the prompt's `message_start` comes after this returns. Oh My Pi
+   * answers a promise that rejects when it drops the message before a turn begins (its 18.18.2
+   * changelog; `PromptDroppedError`, "Prompt dropped before provider dispatch."): an abort while
+   * it sets the prompt up, the one a compaction makes first among them. A follow-up's settles once
+   * the host has queued it. A stand-in host answers nothing.
    */
   readonly sendUserMessage: (
     content: string | readonly ContentBlock[],
     options?: { readonly deliverAs: "aside" | "followUp" }
-  ) => void;
+  ) => void | Promise<void>;
   /**
    * Runs text as if typed at the session's own terminal: a built-in its host can run headless, an
    * extension or custom command, a file command or prompt template, and `/skill:<name>`; any other

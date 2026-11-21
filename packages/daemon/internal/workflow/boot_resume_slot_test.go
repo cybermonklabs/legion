@@ -106,8 +106,8 @@ func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing
 // The boot's resume by rule leaves a root's architect alone, at admitted as in accepting, though
 // phase.RoleFor answers the architect for both (dispatch://INFRA-2614, R2). The architect's claim
 // is started with its tree by admission and sent the work of its entry by admission's sweep, so
-// the phase owners the boot reads (suspendedPhaseOwners) name no architect, and the boot writes
-// no start for one whatever source suspended its claim. The control is a phase worker of a
+// the phase owners the boot reads (suspendedAndLivePhaseOwners) name no architect, and the boot
+// writes no start for one whatever source suspended its claim. The control is a phase worker of a
 // running tree, which the same boot resumes.
 func TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting(t *testing.T) {
 	pool := migratedPool(t)

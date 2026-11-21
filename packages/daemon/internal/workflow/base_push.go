@@ -70,10 +70,13 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 		// reading a state GitHub no longer answers (R4). So every pull request this push moved is
 		// read for where the push owes a read (askMergeStateFor): an issue in testing through
 		// merging, by the gate (classify.MergeStateReadOwed), or a round that waits on the merge
-		// state. The read is asked for here rather than from Apply's askMergeState because the line
-		// above has just overwritten what tells a redelivery from a first delivery: a second walk
-		// after the handler would find every pull request on the base recorded at this push's
-		// commit and ask for all of their reads again, however many times the push was delivered.
+		// state. An issue in merging is read once rather than by a ladder of reads
+		// (classify.MergeStateReadOnce): its head sits in the merge queue, where GitHub answers
+		// `unknown`, and that answer asks for no more. The read is asked for here rather than from
+		// Apply's askMergeState because the line above has just overwritten what tells a
+		// redelivery from a first delivery: a second walk after the handler would find every pull
+		// request on the base recorded at this push's commit and ask for all of their reads again,
+		// however many times the push was delivered.
 		if err := e.askMergeStateFor(ctx, tx, own, classify.MergeStateFactBasePush); err != nil {
 			return intake.Result{}, err
 		}

@@ -22,11 +22,20 @@ import (
 // implementing it also tells the worker of that phase, when that is the tester, the reviewer or
 // the merger, to stop writing the workspace the roles share while the merge runs
 // (record.MergeForwardHold), and the architect that owns the issue one checks-red notice whose
-// phase is the phase the issue stays in and whose reason names the head, the base, why and that
-// the issue stays in its phase; the outbox routes that notice to the owning architect, as every
-// notice of the issue is routed. In implementing only the ask goes: the implementer's own
-// assignment and its completion stand, and the architect is told nothing, since the work the
-// conflict needs is already where the issue stands.
+// phase is the phase the issue stays in and whose reason names the head, the base, why, that the
+// issue stays in its phase and the read of GitHub the act rests on; the outbox routes that notice
+// to the owning architect, as every notice of the issue is routed. In implementing only the ask
+// goes: the implementer's own assignment and its completion stand, and the architect is told
+// nothing, since the work the conflict needs is already where the issue stands.
+//
+// The read the act rests on is the newest read of GitHub the record holds of the head, its merge
+// state and the moment it was read (record.PullRequest.MergeState and StateReadAt), which the ask,
+// the hold and the notice each name (record.AnsweredMergeState, dispatch://INFRA-2833 R3) and the
+// log line of the ask carries. On a confirmed read (mergeability) it is the read just applied,
+// which confirmed the conflict or found it confirmed again, and which mergeability has just
+// written to pr; a fact that carries no read time, as one a test mints, writes its state and
+// leaves the stamp the record held. On a phase entry (mergeForwardOnEntry) it is the newest read
+// the record holds of that head by then. The time is carried in UTC, as the messages name it.
 //
 // It asks once for each head: the record keeps the ask (record.PullRequest.MergeForward), and a
 // later confirmed read, or a move into another phase, at the head it names sends nothing. The one
@@ -63,6 +72,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if err != nil {
 		return err
 	}
+	readAt := pr.StateReadAt.UTC()
 	for _, to := range addressed {
 		role, _ := to.token.Role()
 		step := record.MergeForwardHold
@@ -70,13 +80,13 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 			step = record.MergeForwardAsk
 		}
 		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Step: step, Head: pr.HeadSHA, Base: pr.Base,
-			Phase: at, PullRequest: pr.Number, Why: why}); err != nil {
+			Phase: at, PullRequest: pr.Number, Why: why, MergeState: pr.MergeState, StateReadAt: readAt}); err != nil {
 			return err
 		}
 	}
 	if at != phase.Implementing {
-		reason := fmt.Sprintf("the head %s conflicts with %s (%s): the implementer is asked to merge %s forward, and the issue stays in %s",
-			pr.HeadSHA, pr.Base, why, pr.Base, at)
+		reason := fmt.Sprintf("the head %s conflicts with %s (%s): the implementer is asked to merge %s forward, and the issue stays in %s; %s",
+			pr.HeadSHA, pr.Base, why, pr.Base, at, record.AnsweredMergeState(pr.MergeState, readAt, pr.HeadSHA))
 		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: at, Reason: reason}); err != nil {
 			return err
 		}
@@ -94,7 +104,8 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: merge forward asked", "issue", issue.Key, "tree", issue.Tree, "phase", at,
-		"pullRequest", pr.Number, "head", pr.HeadSHA, "base", pr.Base, "why", why)
+		"pullRequest", pr.Number, "head", pr.HeadSHA, "base", pr.Base, "why", why,
+		"mergeState", string(pr.MergeState), "stateReadAt", readAt)
 	return nil
 }
 

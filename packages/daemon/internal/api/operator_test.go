@@ -103,8 +103,8 @@ func TestSpawnCreatesTheClaimQueuesItsTaskAndLaunchesIt(t *testing.T) {
 	if got.Locator == nil || got.Locator.Claim != architectToken {
 		t.Fatalf("spawn answered locator %+v, want the launch's", got.Locator)
 	}
-	if got.Pending == nil || got.Pending.Task != "Say hello." || got.Pending.DeliveredAt != nil {
-		t.Fatalf("spawn answered pending %+v, want the task queued and not yet sent", got.Pending)
+	if got.Pending == nil || got.Pending.Task != "Say hello." || got.Pending.ConfirmedAt != nil {
+		t.Fatalf("spawn answered pending %+v, want the task queued and not yet taken", got.Pending)
 	}
 	spawns := h.runtime.CallsOf("Spawn")
 	if len(spawns) != 1 || spawns[0].Spec.Claim != architectToken || spawns[0].Spec.Project != testProject {
@@ -113,8 +113,9 @@ func TestSpawnCreatesTheClaimQueuesItsTaskAndLaunchesIt(t *testing.T) {
 	if h.supervisor.prompts[architectToken] != body.Prompt {
 		t.Errorf("the role prompt handed to the supervisor = %q, want %q", h.supervisor.prompts[architectToken], body.Prompt)
 	}
-	if stored := h.stored(architectToken); stored.State != supervise.StateLaunching || stored.Pending == nil {
-		t.Errorf("stored %+v, want the launched claim with its task", stored)
+	if stored := h.stored(architectToken); stored.State != supervise.StateLaunching || stored.Pending == nil ||
+		stored.Pending.Origin != supervise.OriginOperator {
+		t.Errorf("stored %+v, want the launched claim with its task, under origin %q", stored, supervise.OriginOperator)
 	}
 }
 
@@ -219,6 +220,9 @@ func TestDeliverQueuesATaskOnTheClaim(t *testing.T) {
 	decodeInto(t, recorder, &got)
 	if got.Pending == nil || got.Pending.Task != "Review the plan." {
 		t.Fatalf("deliver answered pending %+v, want the task", got.Pending)
+	}
+	if pending := h.stored(architectToken).Pending; pending == nil || pending.Origin != supervise.OriginOperator {
+		t.Fatalf("the stored task = %+v, want it under origin %q", pending, supervise.OriginOperator)
 	}
 
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/deliver",
@@ -1570,12 +1574,12 @@ func TestAnOperatorAnswerWhoseStepReadFailsCarriesNoRecordRatherThanTheMachinesC
 	}
 }
 
-// A claim's view carries the record of the sends of its task that never reached a turn — how
-// many failed, when the last of them failed and the error it failed with — beside the queued,
-// delivered and confirmed times. Without it, a claim that has waited days on a send which never
+// A claim's view carries the record of the takes of its task whose adoption of the working copy
+// failed — how many failed, when the last of them failed and the error it failed with — beside the
+// queued and confirmed times. Without it, a claim that has waited days on an adoption which never
 // lands says so only in a log line inside its own pod (INFRA-1480). The three are omitempty, and
-// the send that reaches a turn clears them, so a task no send has failed for carries none of
-// them on the wire.
+// the accepted take clears them (supervise's accept), so a task no adoption has failed for carries
+// none of them on the wire.
 func TestClaimViewCarriesTheSendFailures(t *testing.T) {
 	h := newHarness(t)
 	token := claim.Token("legion-legion-legion-209-implementer")
@@ -1602,16 +1606,16 @@ func TestClaimViewCarriesTheSendFailures(t *testing.T) {
 	pending := got.Claims[0].Pending
 	if pending.SendFailures != failing.SendFailures || pending.LastSendFailureAt == nil ||
 		!pending.LastSendFailureAt.Equal(failedAt) || pending.LastSendError != failing.LastSendError {
-		t.Fatalf("pending %+v, want %d failed sends, the last at %v, with its error", pending, failing.SendFailures, failedAt)
+		t.Fatalf("pending %+v, want %d failed adoptions, the last at %v, with its error", pending, failing.SendFailures, failedAt)
 	}
-	if !pending.QueuedAt.Equal(queued) || pending.DeliveredAt != nil || pending.ConfirmedAt != nil {
-		t.Fatalf("pending %+v, want the record beside the three times, of which only the queue has happened", pending)
+	if !pending.QueuedAt.Equal(queued) || pending.ConfirmedAt != nil {
+		t.Fatalf("pending %+v, want the record beside the two times, of which only the queue has happened", pending)
 	}
 
-	// The send that reached a turn: the task is acknowledged and confirmed, and supervise's
-	// confirm cleared all three with the budgets.
+	// The take that was accepted: the task is confirmed, and supervise's accept cleared all three.
+	// The prompt budgets it leaves alone, to the take's turn start.
 	confirmed := failing
-	confirmed.DeliveredAt, confirmed.MarkedBy, confirmed.ConfirmedAt = failedAt.Add(time.Second), failing.ID, failedAt.Add(2*time.Second)
+	confirmed.ConfirmedAt = failedAt.Add(2 * time.Second)
 	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""
 	if err := h.store.PutDelivery(h.ctx, token, confirmed); err != nil {
 		t.Fatalf("put the confirmed delivery: %v", err)

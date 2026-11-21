@@ -55,9 +55,9 @@ import (
 //
 // A launch's ready that carries the sentence of what the last let-go of the architect's process
 // ended (intake.ClaimReady.Relaunch) has its catch-up open with it (QueueCatchUp): the first turn
-// of a relaunched architect can be this catch-up's rather than its prompt's, and the
-// architect then reads that its subagent died before it reads its issues. A prompt the claim's
-// machine sends tells the same record and is what marks it told, so a catch-up that is held,
+// of a relaunched architect can be this catch-up's rather than its task's, and the architect then
+// reads that its subagent died before it reads its issues. A take of a task the claim holds tells
+// the same record and is what marks it told, so a catch-up that is held,
 // superseded or never queued here costs nothing (dispatch://INFRA-3276 R3).
 func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) (intake.Result, error) {
 	if fact.Role != claim.RoleArchitect {
@@ -103,8 +103,8 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // and "" from every other caller. The notice's reason — the text the architect reads of the
 // catch-up — opens with it, so the architect reads what died with its last process before it
 // reads its issues. The copy tells nothing: the record is the claim's, and it is told at the
-// confirmation of a prompt the claim's machine sends that tells the same record (supervise's
-// confirm, Delivery.message), which the outbox's publish of this notice does not see.
+// accepted take of a task that tells the same record (supervise's accept, Delivery.message),
+// which the outbox's publish of this notice does not see.
 //
 // A catch-up an earlier launch never had delivered is dropped first (DropCatchUps, at the caller's
 // now, which is the clock a lane's lease is written from), so the agent is given one catch-up,
@@ -196,7 +196,7 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 //
 // The daemon's own delivery of a relaunch's record is no task (supervise.HoldsTask), so a claim
 // that holds that alone is read as holding nothing. The phase's task that this queues takes that
-// delivery's place while no prompt of it waits on a result, or waits for its turn to end
+// delivery's place while no take of it is accepted, or once the accepted take's turn has run
 // (supervise's queue), and carries the sentence in front of itself while the record is untold.
 // A worker that came back holding only that delivery — its ready found it holding one from an
 // earlier launch its agent never read — would otherwise be given no phase task at all.
@@ -213,21 +213,32 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // on the wrong prompt, since the completion it answers with is refused as behind that entry and
 // the entry's own task follows from the next admission pass or the entry sweep anyway.
 //
-// A claim level with its row is sent the phase's resume task, enqueued here and marked as a
-// resume task, so the one rule about already-delivered work stays the outbox's: it does not
-// deliver a resume task to a claim that by then holds its phase's task for this run. That row
-// reads no slot and carries no entry, the claim being on the entry its row names already; the
-// owed entry's start takes the slot mark the slot rule gives its phase, as every start
-// Engine.started builds does (StartOrOwe), so it waits for the issue's admission slot in a phase
-// up to the review and for none past it (record.KeepsSlot). Most often an issue up to its review
-// holds that slot already: a claim whose agent has just said it is ready is running, and
-// admission has long since given its tree a slot. The one such issue at work that holds none is
-// one that gave its row back to wait on another issue (admit's releaseSlotsForWaits,
+// A claim level with its row is sent the phase's resume task, enqueued here, marked as a resume
+// task and under a resume's origin, so the one rule about already-delivered work stays the
+// outbox's: it does not deliver a resume task to a claim that by then holds its phase's task for
+// this run. That row reads no slot and carries no entry, the claim being on the entry its row
+// names already; the owed entry's start takes the slot mark the slot rule gives its phase, as
+// every start Engine.started builds does (StartOrOwe), so it waits for the issue's admission slot
+// in a phase up to the review and for none past it (record.KeepsSlot). Most often an issue up to
+// its review holds that slot already: a claim whose agent has just said it is ready is running,
+// and admission has long since given its tree a slot. The one such issue at work that holds none
+// is one that gave its row back to wait on another issue (admit's releaseSlotsForWaits,
 // record.Issue.ReleasedForWaitAt), and the two branches still hold for it: the wait stops none of
 // its work, so a level claim's resume is no new work and goes at once, while an owed entry's work
 // is work the claim does not have, and its start waits until the issue holds a slot again, as the
 // slot repair's does (admit's resumeSlottedWorkers). The rule is "Admission and the `legion`
 // label" in docs/site/src/content/docs/legion/concepts.md.
+//
+// A level claim that finished the last task written to it, in the session it runs now, is sent
+// nothing (finishedInItsSession, dispatch://INFRA-2811 R4). Such a worker is one that waits: it
+// did its work and ended its turn, and its process was relaunched under it — a death, a stale
+// plugin, a displacement, a cancelled idle release — with its session resumed. The resume task
+// would only ask it to do again what it already did, and the session's own resume reminder
+// (packages/pi-shared's armResumeReminder) is what wakes a worker whose phase is still open. A
+// claim never written a task is sent the resume, and so is one whose session is new since it
+// finished (a fresh session, or an abandoned one replaced), since a new session has no reminder
+// state to wake it. The rule covers the resume task alone: the owed entry's work above, a
+// transition's start, a wake's task and every other task are written as before.
 func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || record.OutOfWorkflow(issue.Status) {
@@ -258,7 +269,8 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		return err
 	}
 	// A claim holding only the daemon's own delivery of a relaunch's record holds no task (above).
-	if held := run.Claim; held == nil || supervise.HoldsTask(held.Pending) {
+	held := run.Claim
+	if held == nil || supervise.HoldsTask(held.Pending) {
 		return nil
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {
@@ -276,13 +288,33 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
 	}
+	if finishedInItsSession(*held) {
+		e.logOnCommit(ctx, "workflow: a ready worker that finished its last task in this session is given nothing; its own reminder wakes it",
+			"claim", token, "issue", issue.Key, "role", role, "phase", issue.Phase, "launch", fact.Launch, "task", held.TaskFinished,
+			"session", held.Session)
+		return nil
+	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-		Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(*issue), ResumeTask: true}); err != nil {
+		Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(*issue), Origin: supervise.OriginResume,
+		ResumeTask: true}); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with nothing pending is given its phase's task",
 		"issue", issue.Key, "role", role, "phase", issue.Phase, "launch", fact.Launch)
 	return nil
+}
+
+// finishedInItsSession is the resume rule's test of a claim (dispatch://INFRA-2811 R4): the
+// record has written it a task, and the session it finished its latest finished task in
+// (TaskFinishedSession) is the session it holds. It compares no numbers, so a claim whose latest
+// task was dropped unfinished after it finished an earlier one in this session passes it too.
+// supervise's finishedLastTask, which the `finished` of the value-written line reads, also asks
+// that the last task finished be the last one written, and so reads such a claim as not finished.
+// The phase's resume task is queued for a claim of which this is false — one never written a
+// task, or whose session is new since it finished — and for no other, at a ready
+// (readyWorkerTask) and at the boot (booted).
+func finishedInItsSession(held record.RoleClaim) bool {
+	return held.TaskWritten != 0 && held.Session == held.TaskFinishedSession
 }
 
 // treeCatchUp is what issue's architect owns as the record holds it. A tree root's architect owns

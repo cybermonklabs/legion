@@ -22,8 +22,9 @@ import (
 // and sends it as the session's first turn, ahead of any Envoy card or Legion notice (LEGION-392:
 // that command, which runs after Oh My Pi's startup, sends it once the controller is registered,
 // right before the controller role's Envoy claim and the live Envoy subscription a wake could
-// arrive on). The daemon delivers it to its own controller (`controller: daemon`) as an RPC prompt
-// each time that controller reports ready, after its claims.
+// arrive on). The daemon queues it as the task of its own controller (`controller: daemon`) each
+// time that controller reports ready (controllerKeeper.ready), and the controller takes it as any
+// claim takes its task, before it claims its role and its topics.
 const ControllerStartMessage = "Legion controller start: follow skill://legion-controller's start procedure now (\"What happened before you started\"), then end the turn."
 
 // ControllerStartCommand is the positional word `legion controller start` passes to the operator's
@@ -217,7 +218,8 @@ func (k *controllerKeeper) ready(c supervise.Claim) {
 	}
 	// The ready route calls this on its own goroutine, beside the keeper's loop, so the decision
 	// takes a fresh hold mark at the call.
-	err := m.Handle(store.ForConcurrentWorker(k.ctx), supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage})
+	err := m.Handle(store.ForConcurrentWorker(k.ctx), supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage,
+		Origin: supervise.OriginControllerStart})
 	switch {
 	case err == nil:
 	case errors.Is(err, supervise.ErrDeliveryPending):

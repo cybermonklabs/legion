@@ -4,10 +4,11 @@
 # start` calls, over a real PostgreSQL and a real nats-server, and three real `omp --mode rpc`
 # panes run under it — the real `legion worker-shim`, this checkout's `legion`, and this checkout's
 # @sjawhar/pi-envoy and @sjawhar/pi-legion in an Oh My Pi profile of the run's own — against three
-# HTTP model stand-ins of the driver's own. A 529 keeps the task on the claim and the daemon sends
-# it to the same session again after 30 s, 60 s and 120 s; the sixth turn in a row tells the
-# project's controller, once, and holds nothing; an OpenAI `finish_reason: content_filter` with no
-# fallback model left carries no HTTP status at all, so the task goes again after 30 s, holding the
+# HTTP model stand-ins of the driver's own. A 529 keeps the task on the claim and the daemon gives
+# it to the same session again after 30 s, 60 s and 120 s, writing its value again for the worker
+# to take; the sixth turn in a row tells the project's controller, once, and holds nothing; an
+# OpenAI `finish_reason: content_filter` with no fallback model left carries no HTTP status at all,
+# so the task is given again after 30 s, holding the
 # issue for nobody; an HTTP 400, a client error that is none of 401, 403, 408 and 429, fails the claim and
 # holds its issue for its architect; and `legion claims stop`,
 # `legion claims retry --fresh-session` and `legion claims list` — the built binary against that
@@ -24,8 +25,9 @@
 #
 # The whole run took 317 s measured in a Legion worker pod (omp/18.16.0), the driver 300 s of it:
 # the ladder's first three gaps are waited out where they are real (30 s, 60 s and 120 s of wall
-# clock between the daemon's sends), its fourth and fifth are driven on the daemon's own clock, and
-# three panes each start Oh My Pi once. The ladder is measured from the daemon's own first send of
+# clock between the moments the daemon gives the task again), its fourth and fifth are driven on
+# the daemon's own clock, and three panes each start Oh My Pi once. The ladder is measured from the
+# planner's own first take of
 # the task the planner's claim holds from the moment it boots, which is what that phase's start
 # left pending on it; the other two panes answer a warm-up task of their own before the step that
 # drives them (the driver's seed says why each claim holds one).

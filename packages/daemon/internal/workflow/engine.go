@@ -112,9 +112,13 @@ type Config struct {
 	// issue to accepting; and, by the gate classify.MergeStateReadOwed, a head move of an issue in
 	// implementing through merging and a base push of an issue in testing through merging, each of
 	// which can turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon
-	// answers it with a ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which
-	// is the API-only daemon and a test that drives the reads itself.
-	ReadMergeState func(issue string)
+	// answers it (workflowRuntime.queueMergeState): with one read when once is set, which the
+	// engine sets for a base push of an issue in merging (classify.MergeStateReadOnce), whose head
+	// sits in the merge queue, where GitHub answers `unknown`, and an `unknown` answer then asks for
+	// no more; with a ladder of reads otherwise, which climbs and then follows the head while GitHub
+	// answers `unknown`. nil asks for none, which is the API-only daemon and a test that drives the
+	// reads itself.
+	ReadMergeState func(issue string, once bool)
 	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
 	// never a moment before it: the daemon's one wake limiter (internal/wakepace, openSupervision
 	// in internal/daemon), which paces every wake the daemon causes together — the role processes

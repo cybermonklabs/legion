@@ -22,7 +22,7 @@ func rules(grant natsgrant.Permissions) Permissions {
 }
 
 // ListenerPermissions is the grant envoy-listener needs as machine machineID (natsgrant.Listener),
-// the session consumers' calls included.
+// the session consumers' calls and the task bucket's reads included.
 func ListenerPermissions(machineID string) Permissions {
 	return rules(natsgrant.Listener(machineID))
 }

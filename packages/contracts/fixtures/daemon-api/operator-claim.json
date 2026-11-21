@@ -27,12 +27,11 @@
     "id": "OVXA3ZC6BPIKTOQHKXHRZ7TYVB",
     "task": "Implement the plan recorded on the issue, which `dispatch handoff-read --issue LEGION-208 --phase plan` reads.",
     "queuedAt": "2026-09-22T09:30:58Z",
-    "deliveredAt": "2026-09-22T09:31:04Z",
     "confirmedAt": "2026-09-22T09:31:04Z",
     "interrupted": true,
     "sendFailures": 2,
     "lastSendFailureAt": "2026-09-22T09:31:02Z",
-    "lastSendError": "prompt the agent: context deadline exceeded"
+    "lastSendError": "worker-stream: legion-legion-legion-209-implementer refused adopt-working-copy: Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/legion-209/.git/index.lock was last written 31m ago"
   },
   "suspensionHeld": true,
   "pluginContract": 0,

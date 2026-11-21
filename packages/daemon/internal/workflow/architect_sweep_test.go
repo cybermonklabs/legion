@@ -243,7 +243,7 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 		{
 			name: "a live claim holding a task it confirmed", entry: rowEntry,
 			run: record.RoleRun{Claim: holding(supervise.StateIdle,
-				supervise.Delivery{Task: "take the tree up", Generation: 2, Entry: rowEntry, ConfirmedAt: seededRaisedAt})},
+				supervise.Delivery{Task: "take the tree up", Generation: 2, Entry: rowEntry, ConfirmedAt: seededRaisedAt, TurnStarted: true})},
 			why: "it took that work and holds nothing it has not taken: the claim this rule exists to reach once its row moves on",
 		},
 	} {

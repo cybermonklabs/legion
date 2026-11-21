@@ -244,7 +244,7 @@ type Options struct {
 	// ClaimReady is told of each claim whose agent's ready the claim took, on the session it
 	// registered: a launched or relaunched agent once it has booted and can be prompted, or a
 	// live one that took its Envoy role back. A boot's ready comes before the role, which its
-	// session claims at its first turn (supervise.SaidReady). A ready the claim refuses tells
+	// session claims right after that ready (supervise.SaidReady). A ready the claim refuses tells
 	// no one. Nil tells no one. It is called before the route answers the agent, so it returns
 	// at once.
 	ClaimReady func(c supervise.Claim)
@@ -267,12 +267,13 @@ type Options struct {
 	// once it has returned.
 	CapabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	// RoleHoldersChanged is told, before the claim takes a ready that carries no capability report
-	// — a boot's ready, or a role-regain's — of the claim as it stands, when it has an issue and is
-	// not the controller: for an issue of the daemon's own project, the daemon queues the
-	// publication of that issue's role sessions to Dispatch, which reads the live set from the
-	// store when it runs. The ready is what sends the claim its first task, so the publication is
-	// queued before any task goes. An error refuses the ready with 503: the machine has not taken
-	// it, no task goes, and the plugin tries the ready again. Nil queues nothing.
+	// — a boot's ready; a regain of the role sends none, and reads the claim's task value instead
+	// (claims/task) — of the claim as it stands, when it has an issue and is not the controller:
+	// for an issue of the daemon's own project, the daemon queues the publication of that issue's
+	// role sessions to Dispatch, which reads the live set from the store when it runs. A claim
+	// takes no task until it has taken its ready (supervise.HoldNotReady), so the publication is
+	// queued before any take is accepted. An error refuses the ready with 503: the machine has not
+	// taken it, no take is accepted, and the plugin tries the ready again. Nil queues nothing.
 	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route
@@ -556,6 +557,9 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/claims/ready-for-update", s.readyForUpdate},
 		{"POST /legion/v1/claims/exit", s.exit},
 		{"POST /legion/v1/claims/turn-outcome", s.turnOutcome},
+		{"POST /legion/v1/claims/task", s.task},
+		{"POST /legion/v1/claims/task-seen", s.taskSeen},
+		{"POST /legion/v1/claims/take", s.take},
 		{"POST /legion/v1/claims/activity", s.activity},
 		{"POST /legion/v1/claims/release-records", s.releaseRecords},
 		{"POST /legion/v1/grants", s.grant},

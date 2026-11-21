@@ -2,14 +2,13 @@ package delivery
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/nettimeout"
 )
 
 // githubPageAttempts bounds how many times one list/search page is asked for before the step
@@ -88,11 +87,7 @@ func retryGitHubPage(ctx context.Context, attempt, status int, err error) bool {
 		return false
 	}
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return true
-		}
-		var netErr net.Error
-		return errors.As(err, &netErr) && netErr.Timeout()
+		return nettimeout.InChain(err)
 	}
 	return status == http.StatusBadGateway || status == http.StatusGatewayTimeout
 }

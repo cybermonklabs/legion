@@ -560,6 +560,21 @@ pane is its recorded process only while its root process's command line, `sh -c`
 command, holds a configured harness's marker: `omp` for Oh My Pi, ` claude-bridge -- ` for Claude
 Code. A daemon with no `worker_backends` has Oh My Pi's launcher alone and checks for `omp` alone.
 
+### How a worker takes its task
+
+Neither harness is sent its task over the worker stream.
+`legion worker-shim` carries the daemon's frames to the harness and the harness's events back, and no frame of the daemon's carries a task: a worker takes its task as its claim's value, which the daemon writes in the task bucket `legion_tasks` on Envoy's NATS and the Envoy listener relays to the session that holds the claim's role.
+A daemon whose `nats_urls` names no NATS has no bucket to write a value in, so it boots and serves and launches no worker; it logs a line saying so, which `legion config check` prints after its OK line.
+
+Both harnesses' plugins boot a claim the same way (`bootLegionClaim`, `packages/pi-shared/src/legion-claim-core.ts`).
+The session registers, reports ready (`POST /legion/v1/claims/ready`), and reads its claim's value again (`POST /legion/v1/claims/task`), since the ready can write a value the registration's answer did not carry.
+Only then does it claim the issue's Envoy role, so no message the listener kept for the role starts a turn ahead of a task the ready wrote.
+It reports each value it is handed seen (`POST /legion/v1/claims/task-seen`), asks to take the task once its host is idle (`POST /legion/v1/claims/take`), and runs the text the take is answered with as a turn of its own; nothing is sent into a turn that is running.
+
+Under Claude Code the take is `legion claude-bridge`'s, since the bridge is what knows whether Claude Code is in a turn.
+The plugin claude-envoy keeps none of the claim's values: it writes each one it is handed into the bridge's inbox as a `task` line, a reading that holds no value as a `finished` line, and, once the ready and the read after it have answered, the `ready` line, behind that read's own line and after a read that failed too.
+The bridge holds back every Envoy delivery until the ready line, and from it on every one that would start a turn while it holds a value the claim is owed and has not asked about, while that take waits for its answer, and while an accepted take's text waits for its turn, so the task's turn starts ahead of them; a text the daemon accepts while Claude Code is in a turn waits for that turn's end.
+
 ## The `runtime.tmux` block
 
 `runtime: tmux` (or no `runtime` key) runs every pane with what the runtime tells it and the

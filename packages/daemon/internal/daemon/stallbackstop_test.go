@@ -168,7 +168,7 @@ func (r *backstopRig) claim(role claim.Role, issue string, silent time.Duration,
 		State: supervise.StateWorking, Session: "ses_" + string(role), SessionFile: "/sessions/" + string(role) + ".jsonl",
 		PluginContract: api.DaemonAPIVersion, Locator: pluginTestLocator(token),
 		Pending: &supervise.Delivery{ID: "delivery-" + string(role), Task: "work the phase",
-			QueuedAt: at.Add(-time.Hour), DeliveredAt: at.Add(-time.Hour), ConfirmedAt: at.Add(-time.Hour)},
+			QueuedAt: at.Add(-time.Hour), ConfirmedAt: at.Add(-time.Hour), TurnStarted: true},
 		Step: supervise.StepRecord{TurnStartedAt: at},
 	}
 	if call {
@@ -864,14 +864,16 @@ func TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch(t *te
 	}
 }
 
-// A replacement the wake pacing parked is the one end whose turn was not ended: the take-back
-// has run, so the task is owed again, and the claim goes on recording the stalled process
-// until the launch comes due (supervise's reserveWake, parkWake). The notice says exactly that
-// much and no more. Its opening never says the turn was ended, because it was not — the
-// opening cannot say it, since the daemon derives that clause from the end's own record of the
-// process (stallTurnClause), and the kept process is the daemon's own sentence too, which says
-// that the daemon made no stop of it and says nothing of whether it is alive, which the daemon
-// has not looked at (stallStopClause). The row's own clause says what the park settled and
+// A replacement the wake pacing parked is the one end whose turn was not ended: the park makes
+// no take-back, so the turn runs on with its task until the launch comes due, whose take-back
+// takes the task back (supervise's launchReplacing, runWake), and the claim goes on recording
+// the stalled process until then (supervise's reserveWake, parkWake). The notice says exactly
+// that much and no more, and never that the task was taken back already. Its opening never says
+// the turn was ended, because it was not — the opening cannot say it, since the daemon derives
+// that clause from the end's own record of the process (stallTurnClause), and the kept process is
+// the daemon's own sentence too, which says that the daemon made no stop of it and says nothing of
+// whether it is alive, which the daemon has not looked at (stallStopClause). The row's own clause
+// says what the park settled and
 // then names what can change it, as an open list rather than a closed one: a suspension that
 // arrived while the launch waited ends the turn in a stop
 // (supervise's wakeNow, endHeld), a lifecycle recheck refuses the launch when it comes due and
@@ -915,7 +917,7 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
 	}
 	for _, want := range []string{
-		"the daemon took back the implementer's task without ending its turn and queued the replacement launch",
+		"the daemon left the implementer's turn running and queued the replacement launch, whose take-back of the task waits for it to come due",
 		"still owed",
 		"the launch that replaces it is queued in the daemon's wake pacing and is due at " + stallInstant(parked.At),
 		"what the park settled is that launch queued and the claim waiting on it until then",
@@ -939,6 +941,7 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 		"is stopped and replaced there",
 		"tens of minutes",
 		"brought back",
+		"took back",
 	} {
 		if strings.Contains(notices[0].Reason, never) {
 			t.Errorf("the notice says %q, which claims %q: the turn runs on, nothing is promised of the launch's turn, and the things that can change it are named as some of them rather than all", notices[0].Reason, never)

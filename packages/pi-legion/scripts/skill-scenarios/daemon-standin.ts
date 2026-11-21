@@ -192,6 +192,8 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
           generation: 1,
           secret: SESSION_SECRET,
           promptAgents: [],
+          task: null,
+          finished: 0,
         }),
       };
     }

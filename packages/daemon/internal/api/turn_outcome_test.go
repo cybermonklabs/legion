@@ -56,6 +56,27 @@ func TestTheClaimsSecretReportsEveryTurnAndARunOfRefusalsFailsTheClaim(t *testin
 	}
 }
 
+// A report may say the accepted take whose text its producer still held unrun at the turn's end
+// (claim.TurnOutcomeRequest.Held): the route decodes it, strict as it is about every other key,
+// and records the report as any other. Every report above lacks it, and none is refused for that.
+func TestATurnOutcomeNamingAHeldTakeIsDecodedAndRecorded(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
+	registered := h.registered(boot, "ses_architect")
+
+	recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
+		ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
+		Generation: 1, Sequence: 1, Outcome: claim.TurnClean, Held: 4,
+	})
+
+	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{}) {
+		t.Fatalf("the report naming a held take = %d %+v (body %s), want 200 with no run", recorder.Code, answer, recorder.Body)
+	}
+	if outcomes := h.stored(token).TurnOutcomes; len(outcomes) != 1 || outcomes[0].Sequence != 1 {
+		t.Fatalf("the claim keeps %+v, want the report recorded", outcomes)
+	}
+}
+
 // The Claude bridge holds no registration secret — its pane's registration is claude-envoy's —
 // so it reports with the launch's own boot token, which names the same claim.
 func TestTheLaunchsBootTokenReportsTheSameClaimsTurns(t *testing.T) {

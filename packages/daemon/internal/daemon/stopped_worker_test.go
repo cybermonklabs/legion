@@ -230,7 +230,7 @@ func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
 			State: supervise.StateWorking, Session: "ses_implementer", SessionFile: filepath.Join(cfg.StateDir, "implementer.jsonl"),
 			PluginContract: api.DaemonAPIVersion, Locator: workingPane(implementer),
 			Pending: &supervise.Delivery{ID: "outbox:11", Task: "Carry on implementing.", Generation: 1, Phase: phase.Implementing,
-				QueuedAt: now, DeliveredAt: now, ConfirmedAt: now}})
+				QueuedAt: now, ConfirmedAt: now, TurnStarted: true}})
 	writePrompt(t, cfg, implementer)
 	d := startDaemon(t, cfg, o)
 
@@ -417,8 +417,11 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 		t.Fatalf("after the retry of the held phase %s owes the start rows %v, want the one row the retry writes: the retry is the way back the repair leaves",
 			member, owed)
 	}
-	if line := d.state().Admission.Waiting; !slices.Contains(line, member) {
-		t.Fatalf("after the retry the waiting line is %v, want %s in it: it holds no slot and owes its tester a start again", line, member)
+	// A slot stands free, so an admission pass can promote the issue between the retry and this
+	// read: it is then a slot holder, out of the line. One state read holds both lists.
+	if admission := d.state().Admission; !slices.Contains(admission.Waiting, member) && !slices.Contains(admission.Active, member) {
+		t.Fatalf("after the retry the waiting line is %v and the slot holders are %v, want %s in one of them: it owes its tester a start again, which puts it in the line until a pass gives it the free slot",
+			admission.Waiting, admission.Active, member)
 	}
 	testwait.Eventually(t, "the retried phase to launch its tester once a slot comes", func() bool {
 		return len(launchesOf(rt, tester)) > launches

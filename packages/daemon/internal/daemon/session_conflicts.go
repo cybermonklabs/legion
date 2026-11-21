@@ -60,15 +60,15 @@ import (
 // Error, where the broker refuses the revocation for good, while the process renews it until it
 // stops (revokeUnheld); and the daemon publishes nothing to its Envoy role, whatever the claim's
 // state, or, for the daemon's own controller under `controller: daemon`, to the controller topic,
-// and sends that process no task and no compaction (holdRecorded, ensureEnrolled, outbox.publish,
-// sendPending, compactStart). The process runs on under the session until it is stopped, and the
-// Envoy listener does not yet withhold the role its session claimed: the daemon could free the
-// role, but the process claims a free role again at its next heartbeat. So a message another
-// session sends to that role reaches the session's subscriber until the session ends. Once no
-// process registers the session id, the listener frees the role at the role reaper's first pass
-// after the session's record is gone and the role claim's last renewal is a live window old: the
-// record leaves the session bucket at the bucket's maximum age (`ENVOY_SESSION_MAX_AGE`, five
-// minutes on a bucket created with it unset) or reads gone at the gone horizon (an hour) where
+// and lets that process take no task and asks it no compaction (holdRecorded, ensureEnrolled,
+// outbox.publish, supervise's takeable, compactStart). The process runs on under the session until
+// it is stopped, and the Envoy listener does not yet withhold the role its session claimed: the
+// daemon could free the role, but the process claims a free role again at its next heartbeat. So a
+// message another session sends to that role reaches the session's subscriber until the session
+// ends. Once no process registers the session id, the listener frees the role at the role reaper's
+// first pass after the session's record is gone and the role claim's last renewal is a live window
+// old: the record leaves the session bucket at the bucket's maximum age (`ENVOY_SESSION_MAX_AGE`,
+// five minutes on a bucket created with it unset) or reads gone at the gone horizon (an hour) where
 // that age is longer, and the reaper runs every `ENVOY_ROLE_CLAIM_REAP_INTERVAL`, five minutes by
 // default, so the role is free at most `max(min(ENVOY_SESSION_MAX_AGE,
 // ENVOY_SESSION_GONE_HORIZON), ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL` after
@@ -95,12 +95,11 @@ import (
 // session writes no claim, and the publication of an issue's role holders follows claim writes,
 // so Dispatch is shown that claim as its role's holder at the next boot, or once the claim is
 // suspended and resumed. A boot whose budget runs out on the suspensions still fails, since every
-// later step would too. A store that refuses
-// the conflicts' read refuses the boot, naming what failed, as the controller's boot stop does
-// (stopLaunchedController). A suspension the claim holds for later is no failure: a
-// working claim's is held for its turn and stops the process at the operator's stop timeout
-// (holdSuspension), and a launching claim's is held until its agent is ready, which an agent
-// refused its registration never is, so its registration deadline suspends it
+// later step would too. A store that refuses the conflicts' read refuses the boot, naming what
+// failed, as the controller's boot stop does (stopLaunchedController). A suspension the claim holds
+// for later is no failure: a working claim's is held for its turn and stops the process at the
+// operator's stop timeout (holdSuspension), and a launching claim's is held until its agent is
+// ready, which an agent refused its registration never is, so its registration deadline suspends it
 // (registrationDeadline). Neither is relaunched meanwhile, and a restart before either completes
 // asks again.
 //
@@ -179,7 +178,7 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 			case ctx.Err() != nil:
 				return fmt.Errorf("suspend %s, which records the %s %s it does not hold: %w", token, c.Hold.Kind, c.Hold.Name, err)
 			default:
-				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, contained: its hold refuses every relaunch, resume and new enrollment of it, its process's enrollment is revoked once the broker confirms the revocation (or recorded no longer if the broker refuses that for good), and the daemon publishes nothing to its role and sends it no task and no compaction; where the runtime refused the stop the process runs on, and the Envoy listener does not yet withhold its role, until it is stopped (legion claims suspend, or a stop of its pod or pane by hand); where another claim's live process runs under the same session id, the role stays with that session while it lives; the next boot asks again",
+				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, contained: its hold refuses every relaunch, resume and new enrollment of it, its process's enrollment is revoked once the broker confirms the revocation (or recorded no longer if the broker refuses that for good), and the daemon publishes nothing to its role, refuses its take of a task and asks it no compaction; where the runtime refused the stop the process runs on, and the Envoy listener does not yet withhold its role, until it is stopped (legion claims suspend, or a stop of its pod or pane by hand); where another claim's live process runs under the same session id, the role stays with that session while it lives; the next boot asks again",
 					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name, "error", err)
 			}
 		}

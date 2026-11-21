@@ -13,9 +13,10 @@
 # from its second read. The whole daemon is booted by the function `legion start` calls, over a
 # real PostgreSQL and a real nats-server, and driven only through GitHub envelopes on the
 # ENVOY_NOTIFICATIONS stream, the daemon's own HTTP routes and its worker stream, which the driver
-# speaks as `legion worker-shim` does; every step is read back from GET /legion/v1/state, from the
-# operator's claim listing, from what the daemon published to the Envoy stand-in, from what it sent
-# — or did not send — to a role's own connection and from the lines it logged for its decisions
+# speaks as `legion worker-shim` does, each role taking its task through the daemon's claims
+# routes as its plugin does; every step is read back from GET /legion/v1/state, from the operator's
+# claim listing, from what the daemon published to the Envoy stand-in, from what it sent — or did
+# not send — to a role's own connection and from the lines it logged for its decisions
 # (packages/daemon/internal/daemon/conflict_no_takeover_live_test.go, which this script builds with
 # `-tags e2e`). Each check prints `== <name>`, what it observed and `ok <name>`; the first that
 # fails ends the run non-zero, naming it. The proof waits out the minute between the two reads,

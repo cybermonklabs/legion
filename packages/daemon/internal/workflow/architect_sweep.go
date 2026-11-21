@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // ArchitectAtWork says whether a root's own architect is the role at work where that root stands.
@@ -340,10 +341,18 @@ func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.
 }
 
 // enqueueArchitectStart writes the start row of root's architect for entry, carrying task and
-// claiming the kept decisions that task names in this same transaction.
+// claiming the kept decisions that task names in this same transaction. The task, when the start
+// carries one, is the architect's start task (ArchitectStartTask, with what its tree is owed of the
+// decisions a person made while nobody in it could hear them, ParkedDecisionTask), which is
+// recorded under the origin of a notice (supervise.OriginNotice). An origin describes a task, so a
+// start that carries none names none.
 func (e *Engine) enqueueArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, task string,
 	kept *record.KeptDecisions, entry int64,
 ) error {
-	return e.EnqueueNaming(ctx, tx, root.Key, root.Tree, record.SuperviseRequest{Op: "start", Tree: root.Tree,
-		Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry, Kept: kept}, kept, e.now())
+	start := record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation,
+		Task: task, Entry: entry, Kept: kept}
+	if task != "" {
+		start.Origin = supervise.OriginNotice
+	}
+	return e.EnqueueNaming(ctx, tx, root.Key, root.Tree, start, kept, e.now())
 }

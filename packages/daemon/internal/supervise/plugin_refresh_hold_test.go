@@ -1,34 +1,34 @@
 package supervise
 
-// The task a stale claim is owed waits for the process the refresh lane's relaunch starts
-// (sendPending's staleRefusesClaim, dispatch://INFRA-2712 R2). The window these tests drive is
+// The task a stale claim is owed waits for the process the refresh lane's relaunch starts: its take
+// is refused (claimHold's staleRefusesClaim, dispatch://INFRA-2712 R2). The window these tests drive is
 // the one a plugin wave leaves the whole fleet in: every live claim records the contract of the
 // daemon before this one, the gate lets the lane relaunch only K of them a minute, and until a
 // claim's own relaunch has run the daemon answers that claim's every `legion` route 409
-// (internal/api's staleClaim). A task sent into that window reaches an agent that can read it
+// (internal/api's staleClaim). A task taken in that window reaches an agent that can read it
 // and do nothing with it, and the turn it starts is what postpones the relaunch the claim is
 // waiting for (refreshPlugin's holdStaleRelaunch).
 //
 // The hold is exactly the set internal/api refuses, so the two claims that set leaves out hold
-// nothing back and are sent their task where it arrives: a Claude Code role's claim in a pod,
+// nothing back and their task is taken where it arrives: a Claude Code role's claim in a pod,
 // whose plugin is the image's own and which no relaunch of this deployment moves, and every
 // claim of a daemon that can relaunch onto no plugin at all (LEGION-164's degraded Kubernetes
 // mode), where no relaunch is coming for any of them and a held task would wait for a process
 // nobody is going to start.
 //
 // The negative controls are the terms of that predicate, one test each: the hold reverted in
-// sendPending for the first, and for the other two the term that excuses the claim dropped from
+// claimHold for the first, and for the other two the term that excuses the claim dropped from
 // staleRefusesClaim (its NoPluginInstall branch, its PluginRelaunchable term), which holds a
 // task that must go now.
 
 import "testing"
 
 // A stale claim with no wake parked over it yet — the gate has admitted it nothing, which at a
-// fleet's worth of claims is most of them for most of a wave — holds the task it is handed, and
-// is sent it once the process its relaunch starts has registered on this daemon's contract and
-// said it is ready. Nothing new carries it there: the ready of every launch sends the task the
-// claim was holding (finishReady, sendPending), which is where a task held back for a waiting
-// launch already goes.
+// fleet's worth of claims is most of them for most of a wave — refuses the take of the task it is
+// handed, and its worker takes it once the process its relaunch starts has registered on this
+// daemon's contract and said it is ready. Nothing new carries it there: the process that registers
+// reads the claim's value afresh and asks to take it (register, CurrentTask), which is where a task
+// held back for a waiting launch already goes.
 //
 // The task is held with no wake at all, which is what tells this hold from the launch's
 // (launchWaits): the claim records its process, is idle, and holds a wake of no kind, so the
@@ -52,9 +52,9 @@ func TestAStaleClaimHoldsItsTaskUntilItsReplacementRegistersOnThisDaemonsContrac
 		t.Fatalf("the claim holds the wake %+v, want none: this task is held by the contract, not by a launch",
 			h.m.View().WakeWaiting)
 	}
-	if p := h.pending(); p.Task != next || !p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() {
-		t.Fatalf("the task delivered to the stale claim is %+v, want %q queued unread: every `legion` call of the process it would reach is refused",
-			p, next)
+	if p := h.pending(); p.Task != next || p.taken() || h.claim().TaskTakeState != TakeRefused {
+		t.Fatalf("the task delivered to the stale claim is %+v with take state %q, want %q untaken, its take refused: every `legion` call of the process it would reach is refused",
+			p, h.claim().TaskTakeState, next)
 	}
 
 	// The lane's credit comes, the relaunch waits its paced turn, and the turn replaces the
@@ -75,14 +75,15 @@ func TestAStaleClaimHoldsItsTaskUntilItsReplacementRegistersOnThisDaemonsContrac
 		t.Fatalf("the relaunched claim records contract %d, want this daemon's %d", got.PluginContract, refreshContract)
 	}
 	// The stale process left no report the daemon took (a stale plugin's report is refused), so
-	// the relaunch recorded its background work as unknown, and the task carries that sentence in
-	// front of it (dispatch://INFRA-3276 R3).
+	// the relaunch recorded its background work as unknown, and the take of the task carries that
+	// sentence in front of it and tells it (dispatch://INFRA-3276 R3).
+	got := h.wantPrompts(sent + 1)[sent]
 	ended := h.claim().EndedWork
-	if ended.Cause != endStalePlugin || ended.Reported || !ended.Tells() {
-		t.Fatalf("the relaunch recorded %+v, want an untold, unreported end of the stale plugin's process", ended)
+	if ended.Cause != endStalePlugin || ended.Reported || !ended.Told || ended.ToldBy != got.DeliveryID {
+		t.Fatalf("the relaunch recorded %+v, want an unreported end of the stale plugin's process, told by the take of %s", ended, got.DeliveryID)
 	}
-	if got, want := h.wantPrompts(sent + 1)[sent], relaunchSentence(ended, true)+"\n\n"+next; got.Message != want {
-		t.Fatalf("the prompt after the relaunch is %+v, want the task %q behind the relaunch's sentence, to the process this daemon serves", got, want)
+	if want := relaunchSentence(ended, true) + "\n\n" + next; got.Message != want {
+		t.Fatalf("the take after the relaunch is %+v, want the task %q behind the relaunch's sentence, by the process this daemon serves", got, want)
 	}
 }
 

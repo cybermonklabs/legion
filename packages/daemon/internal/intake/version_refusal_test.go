@@ -32,7 +32,7 @@ func TestOpenConsumersRefusesAServerThatSkipsAFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JetStream on nats:2.10: %v", err)
 	}
-	if _, err := refused.CreateStream(ctx, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"}}); err != nil {
+	if _, err := refused.CreateStream(ctx, jetstream.StreamConfig{Name: NotificationStream, Subjects: []string{"notifications.>"}}); err != nil {
 		t.Fatalf("create the stream on nats:2.10: %v", err)
 	}
 	consumers, err := OpenConsumers(ctx, refused, pool, consumerSpec(&lockedBuffer{}))

@@ -99,7 +99,14 @@ func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
 		t.Fatalf("the booted daemon reads %s at plugin contract %d, want %d: this case proves nothing", implementer.token, got, old)
 	}
 
-	r.finish(implementer, "", r.retroCompletion(nil), phase.Merging)
+	if status, body := r.complete(implementer, r.retroCompletion(nil)); status != http.StatusOK {
+		t.Fatalf("the old plugin's retro completion with no rating = %d %s, want 200", status, body)
+	}
+	// The old plugin is below supervise.TaskTakeContract too, so no report of it names the task's
+	// number: its turn ends with the agent_end alone, which finishes the task (supervise's
+	// endFrameFinishes).
+	implementer.endTurnUnreported()
+	r.waitPhase(phase.Merging)
 	// The stale claim's relaunch, which the boot held for the turn's end.
 	r.awaitLaunch(implementer.token)
 	r.merge()

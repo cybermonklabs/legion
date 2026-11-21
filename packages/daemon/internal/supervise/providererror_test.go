@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// providerErrorTaskText is the work the cases below give the claim, so a prompt's own sentence is
-// told from the task behind it.
+// providerErrorTaskText is the work the cases below give the claim, so the sentence a take's text
+// opens with is told from the task behind it.
 const providerErrorTaskText = "implement the plan"
 
 // workingClaim is a ready implementer in the turn of its implementing task: where a turn that
@@ -28,7 +28,7 @@ func workingClaim(t *testing.T, set ...func(*Deps)) *harness {
 }
 
 // workingClaimOf is workingClaim over the claim c, for a case the claim's role decides: what an
-// operator's retry restarts, and so what the claim is sent when it comes back.
+// operator's retry restarts, and so what the claim takes when it comes back.
 //
 // The task is the claim's own kind. A phase worker's names the phase and the run it was queued
 // for; an architect's names neither, as the workflow queues it (Delivery.Phase).
@@ -53,46 +53,49 @@ func workingClaimOf(t *testing.T, c Claim, set ...func(*Deps)) *harness {
 	return h
 }
 
-// errorTurn ends the turn the claim is working and answers its prompt with the provider error r.
-// That is the order the daemon sees: the agent_end, then the prompt's result on the worker
-// stream, which is the whole of what the decision reads.
-func (h *harness) errorTurn(r StreamPromptResult) {
+// errorTurn ends the turn the claim is working and reports it over with the provider error pe:
+// the order the daemon sees, the end frame and then the worker's turn-outcome report naming the
+// task, which is the whole of what the decision reads.
+func (h *harness) errorTurn(pe ProviderError) {
 	h.t.Helper()
-	r.Claim, r.AgentInvoked, r.DeliveryID = h.token, true, h.pending().ID
+	number := h.pending().Number
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	h.must(r)
+	if err := h.reportTurn(number, &pe); err != nil {
+		h.t.Fatalf("report the provider error: %v", err)
+	}
 }
 
-// climbs walks the ladder's next step: nothing goes before the wait is over, the task goes when
-// it is, and the agent starts its turn on it. It returns the prompt that step sent.
-func (h *harness) climbs(sentSoFar int, wait time.Duration) string {
+// climbs walks the ladder's next step: nothing is taken before the wait is over, the task's value
+// is written again when it is, the worker takes it, and starts its turn on it. It returns the
+// text that step's take was answered with.
+func (h *harness) climbs(takenSoFar int, wait time.Duration) string {
 	h.t.Helper()
 	h.advance(wait - time.Second)
-	h.wantPrompts(sentSoFar)
+	h.wantPrompts(takenSoFar)
 	h.advance(time.Second)
-	sent := h.wantPrompts(sentSoFar + 1)
+	takes := h.wantPrompts(takenSoFar + 1)
 	h.must(StreamTurnStart{Claim: h.token})
-	return sent[sentSoFar].Message
+	return takes[takenSoFar].Message
 }
 
 // The ladder is exact and has no top step that ends it: 30 s, 60 s, 120 s, doubling to 10 minutes
 // and never further apart than that, for as many turns as the provider keeps failing.
-func TestAProviderErrorTurnKeepsItsTaskAndSendsItAgainOnAGrowingLadder(t *testing.T) {
+func TestAProviderErrorTurnKeepsItsTaskAndWritesItAgainOnAGrowingLadder(t *testing.T) {
 	h := workingClaim(t)
-	sent := 1
+	takes := 1
 	for attempt, wait := range []time.Duration{
 		30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute,
 		8 * time.Minute, 10 * time.Minute, 10 * time.Minute, 10 * time.Minute,
 	} {
-		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+		h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 		p := h.pending()
 		if !p.ConfirmedAt.IsZero() || p.ProviderErrorRetries != attempt+1 {
-			t.Fatalf("attempt %d: the task is %+v, want it unconfirmed and counted %d sends", attempt+1, p, attempt+1)
+			t.Fatalf("attempt %d: the task is %+v, want it untaken and counted %d retries", attempt+1, p, attempt+1)
 		}
-		if message := h.climbs(sent, wait); !strings.HasSuffix(message, providerErrorTaskText) {
-			t.Fatalf("attempt %d sent %q, want the task again", attempt+1, message)
+		if message := h.climbs(takes, wait); !strings.HasSuffix(message, providerErrorTaskText) {
+			t.Fatalf("attempt %d's take was answered %q, want the task again", attempt+1, message)
 		}
-		sent++
+		takes++
 	}
 	if state := h.state(); state != StateWorking {
 		t.Fatalf("the claim is %s after eight provider errors, want it still working its task", state)
@@ -102,7 +105,7 @@ func TestAProviderErrorTurnKeepsItsTaskAndSendsItAgainOnAGrowingLadder(t *testin
 // promptRetryDelay is read by nothing else, and the step it is asked for comes from a persisted
 // count: an attempt a restart reads back past the ladder's top is still the top step. Attempts 29
 // to 31 are the ladder past the point where a shift of promptRetryFirst leaves int64: a wait the
-// claim would have taken as "send it again now".
+// claim would have taken as "write it again now".
 func TestThePromptRetryLadderStopsGrowingAtTenMinutes(t *testing.T) {
 	for _, tc := range []struct {
 		attempt int
@@ -117,8 +120,8 @@ func TestThePromptRetryLadderStopsGrowingAtTenMinutes(t *testing.T) {
 	}
 }
 
-// A credential error, a rate limit, a timeout and an overload all send the task again, and none
-// costs the claim a prompt failure: chargePrompt retires and then fails a claim past
+// A credential error, a rate limit, a timeout and an overload all have the task taken again, and
+// none costs the claim a prompt failure: chargePrompt retires and then fails a claim past
 // Limits.PromptFailures, which would fail every claim of a project at once in a provider outage
 // — and a credential is the fleet's, so a 401 or a 403 reaches every claim of the project at
 // once (holdsTheIssue).
@@ -126,17 +129,17 @@ func TestAStatusThatClearsChargesNoPromptBudgetHoweverOftenItHappens(t *testing.
 	for _, status := range []int{401, 403, 408, 429, 529} {
 		t.Run(fmt.Sprintf("HTTP %d", status), func(t *testing.T) {
 			h := workingClaim(t)
-			sent := 1
+			takes := 1
 			// More turns than the claim's prompt-failure limit, which is what used to retire and
 			// then fail it.
 			for turn := range h.deps.Limits.PromptFailures + 2 {
-				h.errorTurn(StreamPromptResult{Error: "the provider answered an error", HTTPStatus: status})
-				h.climbs(sent, promptRetryDelay(turn+1))
-				sent++
+				h.errorTurn(ProviderError{Message: "the provider answered an error", Status: status})
+				h.climbs(takes, promptRetryDelay(turn+1))
+				takes++
 			}
 			h.wantBudgets(Budgets{})
 			if state := h.state(); state == StateFailed {
-				t.Fatalf("the claim failed after %d provider errors: %q", sent-1, h.claim().Failure)
+				t.Fatalf("the claim failed after %d provider errors: %q", takes-1, h.claim().Failure)
 			}
 			if h.claim().Pending == nil {
 				t.Fatal("the claim holds no task; a provider error keeps the work it was given")
@@ -145,22 +148,22 @@ func TestAStatusThatClearsChargesNoPromptBudgetHoweverOftenItHappens(t *testing.
 	}
 }
 
-// A content filter's refusal carries no HTTP status at all, and it is sent to the same session
-// again: the plugin has already moved the session down its model chain, so the next prompt goes
-// to another model. Nothing is waited for first — the prompt's own result is the whole of what
-// the decision reads — so the ladder's first step is armed in the same step the error arrives.
-func TestAStatuslessRefusalIsSentAgainOnTheLadder(t *testing.T) {
+// A content filter's refusal carries no HTTP status at all, and the same session takes its task
+// again: the plugin has already moved the session down its model chain, so the next take's turn
+// goes to another model. Nothing is waited for first — the turn's report is the whole of what the
+// decision reads — so the ladder's first step is armed in the same step the error arrives.
+func TestAStatuslessRefusalIsTakenAgainOnTheLadder(t *testing.T) {
 	h := workingClaim(t)
 
-	h.errorTurn(StreamPromptResult{Error: "Refusal (reasoning_extraction): I will not help with that."})
+	h.errorTurn(ProviderError{Message: "Refusal (reasoning_extraction): I will not help with that."})
 
 	p := h.claim().Pending
 	if p == nil || p.ProviderErrorRetries != 1 || p.ProviderErrorNote == "" {
-		t.Fatalf("pending %+v, want the task kept, counted one send, and carrying the sentence it goes behind", p)
+		t.Fatalf("pending %+v, want the task kept, counted one retry, and carrying the sentence it goes behind", p)
 	}
 	h.climbs(1, 30*time.Second)
 	if state := h.state(); state != StateWorking {
-		t.Fatalf("the claim is %s, want it working the task it was sent again", state)
+		t.Fatalf("the claim is %s, want it working the task it took again", state)
 	}
 }
 
@@ -170,7 +173,7 @@ func TestAStatuslessRefusalIsSentAgainOnTheLadder(t *testing.T) {
 func TestAMalformedRequestFailsTheClaim(t *testing.T) {
 	h := workingClaim(t)
 
-	h.errorTurn(StreamPromptResult{Error: "invalid_request_error", HTTPStatus: 400})
+	h.errorTurn(ProviderError{Message: "invalid_request_error", Status: 400})
 
 	h.wantState(StateFailed)
 	if failure := h.claim().Failure; !strings.Contains(failure, "HTTP 400") {
@@ -182,15 +185,15 @@ func TestAMalformedRequestFailsTheClaim(t *testing.T) {
 	if got := h.store.load(testToken).ProviderErrorRun; got != 1 {
 		t.Errorf("the stored claim's run of provider errors is %d, want 1", got)
 	}
-	// One prompt: the task itself. A malformed request is not sent again at all.
+	// One take: the task itself. A malformed request is not taken again at all.
 	h.wantPrompts(1)
 }
 
 // The whole rule, status by status. A 400 to 499 other than 401, 403, 408 and 429 holds the
 // issue; every other error — 5xx, the four exceptions, and the statusless turn every
-// content-filter refusal ends in — keeps the task and sends it again. 401 and 403 are a
+// content-filter refusal ends in — keeps the task, which is taken again. 401 and 403 are a
 // credential, which is the fleet's and not this claim's work: failing every claim whose turn
-// hits one is worse than sending the task again, and the controller is told at six such turns
+// hits one is worse than having the task taken again, and the controller is told at six such turns
 // in a row (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3).
 func TestOnlyAClientErrorThatIsNoCredentialNoTimeoutAndNoRateLimitHoldsTheIssue(t *testing.T) {
 	for _, tc := range []struct {
@@ -203,7 +206,7 @@ func TestOnlyAClientErrorThatIsNoCredentialNoTimeoutAndNoRateLimitHoldsTheIssue(
 		t.Run(fmt.Sprintf("HTTP %d", tc.status), func(t *testing.T) {
 			h := workingClaim(t)
 
-			h.errorTurn(StreamPromptResult{Error: "the provider answered an error", HTTPStatus: tc.status})
+			h.errorTurn(ProviderError{Message: "the provider answered an error", Status: tc.status})
 
 			if held := h.state() == StateFailed; held != tc.holds {
 				t.Fatalf("HTTP %d left the claim %s, want holds=%v", tc.status, h.state(), tc.holds)
@@ -212,39 +215,39 @@ func TestOnlyAClientErrorThatIsNoCredentialNoTimeoutAndNoRateLimitHoldsTheIssue(
 				return
 			}
 			if p := h.pending(); p.ProviderErrorRetries != 1 {
-				t.Fatalf("pending %+v, want the task kept and counted one send", p)
+				t.Fatalf("pending %+v, want the task kept and counted one retry", p)
 			}
 			h.climbs(1, 30*time.Second)
 		})
 	}
 }
 
-// One turn's error decides that turn and nothing else. A refusal with no status keeps the task
-// and sends it again; the turn that re-sent task runs ends in a malformed request, and that
-// error holds the issue, whatever the turn before it did.
+// One turn's error decides that turn and nothing else. A refusal with no status keeps the task,
+// which is taken again; the turn that take starts ends in a malformed request, and that error
+// holds the issue, whatever the turn before it did.
 func TestARefusalThenAMalformedRequestHoldsTheIssue(t *testing.T) {
 	h := workingClaim(t)
 
-	h.errorTurn(StreamPromptResult{Error: "Refusal (reasoning_extraction): I will not help with that."})
+	h.errorTurn(ProviderError{Message: "Refusal (reasoning_extraction): I will not help with that."})
 	h.climbs(1, 30*time.Second)
 
-	h.errorTurn(StreamPromptResult{Error: "invalid_request_error", HTTPStatus: 400})
+	h.errorTurn(ProviderError{Message: "invalid_request_error", Status: 400})
 
 	h.wantState(StateFailed)
 	if failure := h.claim().Failure; !strings.Contains(failure, "HTTP 400") {
 		t.Errorf("the failure is %q, want the status the provider answered", failure)
 	}
-	// Two prompts: the task itself and the one send the refusal earned. The malformed request is
-	// not sent again at all.
+	// Two takes: the task itself and the one take again the refusal earned. The malformed request
+	// is not taken again at all.
 	h.wantPrompts(2)
 }
 
-// R2: a newer daemon task for the claim replaces the task a provider error took back, and goes at
-// once. Nothing works the owed task, the ladder's next step can be ten minutes away and a run of
-// errors has no end of its own, so a task that waited behind it would wait that long. What the
-// ladder counted is the owed delivery's own and goes with it, so the task that replaces it starts
-// its own ladder at the first step; the claim's run of provider-error turns is the claim's and
-// stays.
+// R2: a newer daemon task for the claim replaces the task a provider error took back, and is
+// taken at once. Nothing works the owed task, the ladder's next step can be ten minutes away and
+// a run of errors has no end of its own, so a task that waited behind it would wait that long.
+// What the ladder counted is the owed delivery's own and goes with it, so the task that replaces
+// it starts its own ladder at the first step; the claim's run of provider-error turns is the
+// claim's and stays.
 //
 // The owed row is retired before the newer task's row is written, and nothing is written under
 // its id afterwards. A root architect's task names what a person decided while nobody in its
@@ -255,17 +258,17 @@ func TestARefusalThenAMalformedRequestHoldsTheIssue(t *testing.T) {
 // named them, to be told at that task's confirmation.
 func TestANewerTaskQueuedWhileTheLadderWaitsReplacesTheTaskItKept(t *testing.T) {
 	h := workingClaim(t)
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 	owed := h.pending()
 	if owed.ProviderErrorRetries != 1 || owed.ProviderErrorNote == "" {
-		t.Fatalf("the owed task is %+v, want one send counted against it and the sentence it would go behind", owed)
+		t.Fatalf("the owed task is %+v, want one retry counted against it and the sentence it would go behind", owed)
 	}
 
 	h.must(RequestDeliver{Claim: testToken, Task: "test the change", Phase: phase.Testing, Generation: 8, Entry: 2})
 
-	sent := h.wantPrompts(2)[1]
-	if sent.Message != "test the change" || sent.DeliveryID == owed.ID {
-		t.Fatalf("sent %+v, want the newer task at once under an id of its own", sent)
+	newer := h.wantPrompts(2)[1]
+	if newer.Message != "test the change" || newer.DeliveryID == owed.ID {
+		t.Fatalf("the take was answered %+v, want the newer task at once under an id of its own", newer)
 	}
 	p := h.pending()
 	if p.ProviderErrorRetries != 0 || p.ProviderErrorNote != "" {
@@ -292,20 +295,20 @@ func TestANewerTaskQueuedWhileTheLadderWaitsReplacesTheTaskItKept(t *testing.T) 
 
 // olderDaemonsLadderStep is the first step of the ladder an older daemon took over its own ask of
 // an update round, before the deploy replaced it: a turn of the ask ended in a provider error,
-// that daemon took the ask back unconfirmed, and its wait for the next send was that daemon's
-// timer, which went with it.
+// that daemon took the ask back untaken, and its wait before the value was written again was
+// that daemon's timer, which went with it.
 func olderDaemonsLadderStep(d *Delivery) {
 	d.ProviderErrorRetries, d.ProviderErrorNote = 1, providerErrorTask(providerErrorCause(529))
 }
 
 // A question an older daemon queued as a task and kept on the provider-error ladder is dropped
-// rather than sent again, for the round the claim is still in as for any other. This daemon
-// restores the claim holding the ask, owed and unconfirmed, with no wait armed for it, and the
-// claim's next send is where it reads the ask (sendPending). Sending it would put the older
+// rather than taken again, for the round the claim is still in as for any other. This daemon
+// restores the claim holding the ask, owed and untaken, with no wait armed for it, and the
+// worker's next take is where the claim reads the ask (takeable). Taking it would put the older
 // daemon's words in front of the worker again, words that can tell it that the end of its turn
 // answers the round; the drop frees the slot, and the round's ask is the sweep's, on the role's
 // topic.
-func TestAQuestionTheLadderKeptForAnOlderDaemonIsDroppedRatherThanSentAgain(t *testing.T) {
+func TestAQuestionTheLadderKeptForAnOlderDaemonIsDroppedRatherThanTakenAgain(t *testing.T) {
 	h := newBareHarness(t)
 	c := queuedClaim()
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
@@ -314,20 +317,20 @@ func TestAQuestionTheLadderKeptForAnOlderDaemonIsDroppedRatherThanSentAgain(t *t
 	h.start(c)
 	h.reach(StateReady)
 	h.openUpdate(testRound, testReasons)
-	owed := h.olderDaemonsAsk(testRound, true, olderDaemonsLadderStep)
-	sent := len(h.prompts())
+	owed := h.olderDaemonsAsk(testRound, olderDaemonsLadderStep)
+	takes := len(h.prompts())
 	if _, armed := h.m.timers[TimerPromptRetry]; armed {
 		t.Fatal("the restored claim has a ladder wait armed; the wait was the older daemon's timer")
 	}
 
-	// The daemon's next observation of the live process is the claim's next send.
+	// The daemon's next observation of the live process is the worker's next chance to take.
 	h.observe(runtime.Alive)
 
 	if p := h.claim().Pending; p != nil {
 		t.Fatalf("the claim holds %+v, want the older daemon's question %s dropped", *p, owed.ID)
 	}
-	// The one prompt of the ask is the older daemon's own send.
-	h.wantPrompts(sent)
+	h.wantDropped()
+	h.wantPrompts(takes)
 	if d, ok := h.store.delivery(testToken); ok {
 		t.Errorf("the store holds %+v, want the dropped question's row gone", d)
 	}
@@ -335,26 +338,25 @@ func TestAQuestionTheLadderKeptForAnOlderDaemonIsDroppedRatherThanSentAgain(t *t
 
 	h.openUpdate(testRound, testReasons)
 
-	h.wantPrompts(sent)
+	h.wantPrompts(takes)
 	if p := h.claim().Pending; p != nil {
 		t.Errorf("pending after the sweep's next post = %+v, want nothing: the machine queues no ask of %s", *p, testRound)
 	}
 }
 
 // The same drop at the end of this daemon's own ladder wait. The claim is restored holding the
-// ask an older daemon sent, and the turn that ask's prompt started confirms it (askFirst). That
-// turn ends in a provider error, and the prompt's result reaches this daemon before the turn's
-// end. This daemon did not send that prompt and waits for no result of it, so a result after the
-// end finds the ask already retired by that end; a result before the end is the case that
-// reaches the ladder. The result takes the ask back unconfirmed and arms the ladder's wait for
-// it (waitsForProviderError), and sendPending holds the ask while the wait runs. When the wait
-// is over, the ladder's send is where the claim reads the ask, and the ask is dropped there with
-// no prompt: this daemon sends no `update:` task, for the round the claim is in as for any
+// ask an older daemon queued, with the take of it that daemon accepted (leftAsk), and the turn
+// that take starts runs under this daemon. That turn ends in a provider error, which takes the
+// ask back untaken and arms the ladder's wait for it (waitsForProviderError), and claimHold holds
+// the ask while the wait runs. When the wait is over, the ladder's offer is where the claim reads
+// the ask (offerPending, takeable), and the ask is dropped there and its value deleted, with no
+// take accepted: this daemon gives no `update:` task, for the round the claim is in as for any
 // other.
 //
-// The negative control is sendPending's drop narrowed to the rule before this release's, an ask
-// of a round the claim is not in now or has left (`holds := !asks || (round ==
-// m.claim.UpdateRound && !m.claim.LeftPodRound(round))`): the ladder then sends the ask again.
+// The negative control is takeable's drop narrowed to the rule before this release's, an ask of
+// a round the claim is not in now or has left (`holds := !asks || (round == m.claim.UpdateRound
+// && !m.claim.LeftPodRound(round))`): the ladder then writes the ask's value again, and the
+// worker's take of it is accepted.
 func TestAQuestionWhoseTurnEndedInAProviderErrorIsDroppedWhenTheLaddersWaitPasses(t *testing.T) {
 	h := newBareHarness(t)
 	c := queuedClaim()
@@ -365,45 +367,46 @@ func TestAQuestionWhoseTurnEndedInAProviderErrorIsDroppedWhenTheLaddersWaitPasse
 	h.reach(StateReady)
 	h.openUpdate(testRound, testReasons)
 	ask := h.leftAsk(testRound)
-	sent := len(h.prompts())
+	takes := len(h.prompts())
 	h.must(StreamTurnStart{Claim: testToken})
-	if p := h.pending(); p.ID != ask.ID || p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending = %+v, want the older daemon's ask confirmed by the turn its prompt started", p)
+	if p := h.pending(); p.ID != ask.ID || !p.turnStarted() {
+		t.Fatalf("pending = %+v, want the older daemon's ask in the turn of the take it accepted", p)
 	}
 
-	h.must(StreamPromptResult{Claim: testToken, DeliveryID: ask.ID, AgentInvoked: true,
-		Error: "overloaded_error", HTTPStatus: 529})
-	h.mustQuiet(StreamTurnEnd{Claim: testToken})
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 
 	owed := h.pending()
-	if !asksRound(owed.ID, testRound) || !owed.ConfirmedAt.IsZero() || !h.m.waitsForProviderError(owed.ID) {
-		t.Fatalf("pending %+v, want the ask of %s taken back unconfirmed with the ladder's wait armed for it", owed, testRound)
+	if !asksRound(owed.ID, testRound) || owed.taken() || !h.m.waitsForProviderError(owed.ID) {
+		t.Fatalf("pending %+v, want the ask of %s taken back untaken with the ladder's wait armed for it", owed, testRound)
 	}
 	h.advance(30*time.Second - time.Second)
-	h.wantPrompts(sent)
+	h.wantPrompts(takes)
 
 	h.advance(time.Second)
 
-	h.wantPrompts(sent)
+	h.wantPrompts(takes)
 	if p := h.claim().Pending; p != nil {
 		t.Fatalf("the claim holds %+v after the ladder's wait, want the older daemon's ask dropped", *p)
 	}
 	if d, ok := h.store.delivery(testToken); ok {
 		t.Errorf("the store holds %+v, want the dropped ask's row gone", d)
 	}
+	if _, held := h.values.value(testToken); held {
+		t.Error("the bucket still holds the dropped ask's value")
+	}
 	h.wantRound(testRound)
 }
 
 // R3: the operator stops a claim whose provider keeps refusing its session and retries it with
-// a fresh one, and the task the ladder kept is the task that fresh session is sent. The stop
+// a fresh one, and the task the ladder kept is the task that fresh session takes. The stop
 // takes the claim's timers with it (letGo), so no wait names that task any more — and the task
-// is still the claim's work, not one the claim owes with nothing left to send it, so the phase
+// is still the claim's work, not one the claim owes with nothing left to offer it, so the phase
 // restart's own task waits behind it (ErrDeliveryPending) until the turn on the owed task
 // retires it. Only the task R2 names is replaced (replaceable);
 // scripts/e2e/provider-error-retry.sh step 5 is this case live.
 func TestThePhaseRestartsTaskWaitsBehindTheTaskTheLadderKept(t *testing.T) {
 	h := workingClaim(t)
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 	owed := h.pending()
 
 	h.must(RequestStop{Claim: testToken})
@@ -418,10 +421,10 @@ func TestThePhaseRestartsTaskWaitsBehindTheTaskTheLadderKept(t *testing.T) {
 	}
 	p := h.pending()
 	if p.ID != owed.ID || p.Task != owed.Task {
-		t.Fatalf("pending %+v, want the task the ladder kept, %s: the retried session is sent that task", p, owed.ID)
+		t.Fatalf("pending %+v, want the task the ladder kept, %s: the retried session takes that task", p, owed.ID)
 	}
 	if p.ProviderErrorRetries != owed.ProviderErrorRetries {
-		t.Errorf("the owed task counts %d sends, want the %d its ladder had", p.ProviderErrorRetries, owed.ProviderErrorRetries)
+		t.Errorf("the owed task counts %d retries, want the %d its ladder had", p.ProviderErrorRetries, owed.ProviderErrorRetries)
 	}
 }
 
@@ -430,7 +433,7 @@ func TestThePhaseRestartsTaskWaitsBehindTheTaskTheLadderKept(t *testing.T) {
 func TestAWaitLeftArmedForAnOlderTaskHoldsNothing(t *testing.T) {
 	h := workingClaim(t)
 
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 
 	owed := h.pending().ID
 	if !h.m.waitsForProviderError(owed) {
@@ -441,27 +444,27 @@ func TestAWaitLeftArmedForAnOlderTaskHoldsNothing(t *testing.T) {
 	}
 }
 
-// The sentence the re-sent prompt carries is built from structured fields alone. A refusal's own
-// explanation is itself refused when it is sent back
+// The sentence the next take's text carries is built from structured fields alone. A refusal's
+// own explanation is itself refused when it is sent back
 // (dispatch://INFRA-956/artifact/cause-evidence-md), so none of the provider's words are in it.
-func TestTheResentPromptNamesTheStatusAndNoProviderText(t *testing.T) {
+func TestTheTakeAfterAProviderErrorNamesTheStatusAndNoProviderText(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		result StreamPromptResult
+		result ProviderError
 		// contains is what the sentence says, and written is the provider's own text, which no
-		// prompt may carry.
+		// take's text may carry.
 		contains string
 		written  string
 	}{
 		{
 			name:     "an error with a status names it",
-			result:   StreamPromptResult{Error: "Overloaded: upstream capacity is gone", HTTPStatus: 529},
+			result:   ProviderError{Message: "Overloaded: upstream capacity is gone", Status: 529},
 			contains: "a provider error (HTTP 529)",
 			written:  "upstream capacity is gone",
 		},
 		{
 			name:     "an error with none names only that the provider failed",
-			result:   StreamPromptResult{Error: "Refusal (reasoning_extraction): I will not help you extract that."},
+			result:   ProviderError{Message: "Refusal (reasoning_extraction): I will not help you extract that."},
 			contains: "a provider error.",
 			written:  "I will not help you extract that.",
 		},
@@ -473,13 +476,13 @@ func TestTheResentPromptNamesTheStatusAndNoProviderText(t *testing.T) {
 			message := h.climbs(1, 30*time.Second)
 
 			if !strings.Contains(message, tc.contains) {
-				t.Errorf("the prompt is %q, want it to name %q", message, tc.contains)
+				t.Errorf("the take's text is %q, want it to name %q", message, tc.contains)
 			}
 			if !strings.HasSuffix(message, "\n\n"+providerErrorTaskText) {
-				t.Errorf("the prompt is %q, want the task itself behind the sentence", message)
+				t.Errorf("the take's text is %q, want the task itself behind the sentence", message)
 			}
 			if strings.Contains(message, tc.written) {
-				t.Errorf("the prompt carries the provider's own text %q: %q", tc.written, message)
+				t.Errorf("the take's text carries the provider's own text %q: %q", tc.written, message)
 			}
 		})
 	}
@@ -488,16 +491,16 @@ func TestTheResentPromptNamesTheStatusAndNoProviderText(t *testing.T) {
 // Only a run of provider errors is counted, and a turn that ends with none ends the run.
 func TestATurnThatEndsWithNoProviderErrorEndsTheRun(t *testing.T) {
 	h := workingClaim(t)
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 	h.climbs(1, 30*time.Second)
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 	h.climbs(2, time.Minute)
 	if got := h.claim().ProviderErrorRun; got != 2 {
 		t.Fatalf("the run of provider errors is %d, want 2", got)
 	}
 
 	h.mustQuiet(StreamTurnEnd{Claim: testToken})
-	h.must(StreamPromptResult{Claim: testToken, DeliveryID: h.pending().ID, AgentInvoked: true})
+	h.mustReport(nil)
 
 	if got := h.claim().ProviderErrorRun; got != 0 {
 		t.Errorf("the run of provider errors is %d after a clean turn, want 0", got)
@@ -518,13 +521,13 @@ func TestATurnThatEndsWithNoProviderErrorEndsTheRun(t *testing.T) {
 func TestForgettingTheSessionStartsTheRunOfProviderErrorsAgain(t *testing.T) {
 	h := workingClaim(t)
 	for turn := range providerErrorRunTold {
-		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+		h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 		h.climbs(turn+1, promptRetryDelay(turn+1))
 	}
 	if got := h.claim().ProviderErrorRun; got != providerErrorRunTold {
 		t.Fatalf("the run of provider errors is %d, want the %d the controller is told at", got, providerErrorRunTold)
 	}
-	// The claim is in the turn the last send started, as a claim climbing the ladder is; the
+	// The claim is in the turn the last take started, as a claim climbing the ladder is; the
 	// fresh session the controller asks for comes between turns, which is where this one is.
 	h.mustQuiet(StreamTurnEnd{Claim: testToken})
 	h.must(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for", By: SuspendedByOperator})
@@ -551,14 +554,14 @@ func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
 		d.ProviderErrorRunReached = func(c Claim, reason string) { notices = append(notices, told{c, reason}) }
 	})
 
-	sent := 1
+	takes := 1
 	for turn := range 7 {
-		h.errorTurn(StreamPromptResult{Error: "Refusal (reasoning_extraction): no.", Model: "claude-opus-4-8"})
+		h.errorTurn(ProviderError{Message: "Refusal (reasoning_extraction): no.", Model: "claude-opus-4-8"})
 		if turn == 5 && len(notices) != 1 {
 			t.Fatalf("the controller was told %d times at the sixth turn, want once", len(notices))
 		}
-		h.climbs(sent, promptRetryDelay(turn+1))
-		sent++
+		h.climbs(takes, promptRetryDelay(turn+1))
+		takes++
 	}
 
 	if len(notices) != 1 {
@@ -584,12 +587,12 @@ func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
 }
 
 // A claim whose retry restarts no phase keeps the task the ladder kept: that retry relaunches
-// this same claim and sends what the claim kept (table.go's retry), and nothing else ever gives
-// the task again, because the outbox row that gave it is recorded on the claim
+// this same claim, whose worker takes what the claim kept (table.go's retry), and nothing else
+// ever gives the task again, because the outbox row that gave it is recorded on the claim
 // (Claim.DeliveredRows). An architect is such a claim.
-func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndTheRetrySendsIt(t *testing.T) {
+func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndItIsTakenAfterTheRetry(t *testing.T) {
 	h := workingClaimOf(t, subArchitectClaim())
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 	owed := h.pending()
 
 	h.must(RequestStop{Claim: h.token})
@@ -599,8 +602,8 @@ func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndTheRetrySendsIt(t *testing.
 	if p.ID != owed.ID || p.Task != owed.Task {
 		t.Fatalf("the stopped architect holds %+v, want the task %s it owes: no retry of its outbox row gives it again", p, owed.ID)
 	}
-	if p.ProviderErrorRetries != owed.ProviderErrorRetries || !p.DeliveredAt.Equal(owed.DeliveredAt) {
-		t.Errorf("the task is %+v, want the step of the ladder and the read mark it stood with: %+v", p, owed)
+	if p.ProviderErrorRetries != owed.ProviderErrorRetries || !p.TakenWith(h.claim()) {
+		t.Errorf("the task is %+v, want the step of the ladder it stood at, and the take the worker made of it: %+v", p, owed)
 	}
 	if d, ok := h.store.delivery(h.token); !ok || d.ID != owed.ID {
 		t.Fatalf("the store holds %+v (%t) for the stopped claim, want the owed task %s", d, ok, owed.ID)
@@ -612,7 +615,7 @@ func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndTheRetrySendsIt(t *testing.
 
 	again := h.wantPrompts(2)[1]
 	if again.DeliveryID != owed.ID || !strings.HasSuffix(again.Message, providerErrorTaskText) {
-		t.Errorf("the prompt after the retry = %+v, want the owed task %s", again, owed.ID)
+		t.Errorf("the take after the retry = %+v, want the owed task %s", again, owed.ID)
 	}
 }
 
@@ -620,7 +623,7 @@ func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndTheRetrySendsIt(t *testing.
 // queued as a task, whose turn ended in a provider error, is a question the claim owes, waiting
 // on the ladder, and this daemon restores the claim holding it; the stop retires the claim and
 // the round goes with it (clearUpdate), so nothing of this claim will ever answer that question,
-// and no send of this daemon would carry it (sendPending drops it). It is retired with the round
+// and no take of it would be accepted (takeable drops it). It is retired with the round
 // (dropsUpdateTask).
 //
 // The stop is one write of the retired claim, carrying the delete of that question: the round
@@ -635,9 +638,9 @@ func TestAStopRetiresTheRoundsQuestionTheLadderKept(t *testing.T) {
 	h.start(c)
 	h.reach(StateReady)
 	h.openUpdate(testRound, testReasons)
-	owed := h.olderDaemonsAsk(testRound, true, olderDaemonsLadderStep)
-	if p := h.pending(); !asksRound(p.ID, testRound) || !p.ConfirmedAt.IsZero() || p.ProviderErrorRetries != 1 {
-		t.Fatalf("pending %+v, want the round's question unconfirmed and waiting on the ladder", p)
+	owed := h.olderDaemonsAsk(testRound, olderDaemonsLadderStep)
+	if p := h.pending(); !asksRound(p.ID, testRound) || p.taken() || p.ProviderErrorRetries != 1 {
+		t.Fatalf("pending %+v, want the round's question untaken and waiting on the ladder", p)
 	}
 
 	h.must(RequestStop{Claim: testToken})
@@ -665,15 +668,15 @@ func TestAStopRetiresTheRoundsQuestionTheLadderKept(t *testing.T) {
 
 // The same task at the other end of a claim's life. A failure keeps the pending delivery for
 // whoever decides what happens next, and the task the ladder kept is that delivery. The failure
-// here is the one every provider error can end in: the turn the ladder's own send started ended
+// here is the one every provider error can end in: the turn the ladder's own take started ended
 // in a malformed request, which holds the issue (holdsTheIssue).
 func TestAFailureKeepsTheTaskTheLadderKept(t *testing.T) {
 	h := workingClaim(t)
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 	owed := h.pending()
 	h.climbs(1, 30*time.Second)
 
-	h.errorTurn(StreamPromptResult{Error: "invalid_request_error", HTTPStatus: 400})
+	h.errorTurn(ProviderError{Message: "invalid_request_error", Status: 400})
 
 	h.wantState(StateFailed)
 	if failure := h.claim().Failure; !strings.Contains(failure, "HTTP 400") {
@@ -688,24 +691,22 @@ func TestAFailureKeepsTheTaskTheLadderKept(t *testing.T) {
 	}
 }
 
-// The window the task the ladder kept is in once its prompt is acknowledged and before the turn
-// it starts: no send of the machine's own is out, the task is not confirmed, and the wait for
-// its turn is armed. The ladder's own wait went when the timer fired, so nothing but this
-// decides it. The task is in the agent's hands there, so a newer task waits behind it
-// (ErrDeliveryPending). A task replaced in that window would be lost twice over: the turn the
-// owed task started would confirm the task that replaced it, and that turn's end would retire
-// the owed task unsent, with its outbox row already recorded as delivered.
-func TestANewerTaskDoesNotReplaceTheLaddersTaskWhosePromptIsInFlight(t *testing.T) {
+// The window the task the ladder kept is in once its take is accepted and before the turn it
+// starts: the take holds it, and its turn is still to come. The ladder's own wait went when the
+// timer fired, so nothing but this decides it. The task is in the worker's hands there, so a
+// newer task waits behind it (ErrDeliveryPending): a task replaced in that window would be one
+// the worker is about to run with nothing left to record its turn.
+func TestANewerTaskDoesNotReplaceTheLaddersTaskWhoseTakeWasAccepted(t *testing.T) {
 	h := workingClaim(t)
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 	owed := h.pending()
 	h.advance(30 * time.Second)
-	sent := h.wantPrompts(2)[1]
-	if sent.DeliveryID != owed.ID {
-		t.Fatalf("the prompt the ladder sent = %+v, want the owed task %s", sent, owed.ID)
+	retaken := h.wantPrompts(2)[1]
+	if retaken.DeliveryID != owed.ID {
+		t.Fatalf("the take after the ladder's wait = %+v, want the owed task %s", retaken, owed.ID)
 	}
-	if p := h.pending(); !p.ConfirmedAt.IsZero() {
-		t.Fatalf("the owed task is %+v, want it acknowledged and not yet confirmed", p)
+	if p := h.pending(); !p.awaitsTurn() {
+		t.Fatalf("the owed task is %+v, want its take accepted and its turn still to come", p)
 	}
 
 	err := h.handle(RequestDeliver{Claim: testToken, Task: "test the change", Phase: phase.Testing, Generation: 8, Entry: 2})
@@ -714,7 +715,7 @@ func TestANewerTaskDoesNotReplaceTheLaddersTaskWhosePromptIsInFlight(t *testing.
 		t.Fatalf("the newer task was answered %v, want it refused: the task it would replace is in the agent's hands", err)
 	}
 	if p := h.pending(); p.ID != owed.ID {
-		t.Fatalf("pending %+v, want the owed task %s, whose prompt the agent has", p, owed.ID)
+		t.Fatalf("pending %+v, want the owed task %s, whose text the agent has", p, owed.ID)
 	}
 	h.wantPrompts(2)
 

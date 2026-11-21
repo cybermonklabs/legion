@@ -369,12 +369,12 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "prompt_failure_limit", RequiredBy: "no",
-			Description: "How many prompts a worker may acknowledge without taking a turn before the daemon fails its claim.",
+			Description: "How many charges a worker takes before the daemon retires its process and relaunches the same session: a charge is a task value the worker reported seeing and asked no take of within `worker_take_timeout_seconds`, a take accepted with no turn started within `worker_turn_start_timeout_seconds`, or a take whose working copy the shim refused to adopt, and a turn's start or end resets the count.",
 			Positive:    &positiveKey{Value: 3, Count: func(c *Config) *int { return &c.PromptFailureLimit }},
 		},
 		{
 			Name: "prompt_retire_limit", RequiredBy: "no",
-			Description: "How many times a worker is retired and relaunched over prompts it acknowledged without taking a turn before the daemon fails its claim.",
+			Description: "How many times a worker is retired and relaunched over `prompt_failure_limit` charges with no turn started or ended between them; the retirement that reaches this limit fails the claim rather than relaunching it.",
 			Positive:    &positiveKey{Value: 2, Count: func(c *Config) *int { return &c.PromptRetireLimit }},
 		},
 		{
@@ -394,13 +394,23 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_rpc_timeout_seconds", RequiredBy: "no",
-			Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also sizes how long the intake gives one fact's handling.",
+			Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also bounds how long the end of a task's turn waits for the worker's report of it before the end frame finishes the task, for a worker whose plugin is below daemon API contract 207 and names no task in its reports (a current worker's task is finished by its report alone), and how long a finish the store refused waits before it is made again; and it sizes how long the intake gives one fact's handling.",
 			Positive:    &positiveKey{Value: 5, Duration: func(c *Config) *time.Duration { return &c.WorkerRPCTimeout }},
 		},
 		{
 			Name: "worker_stop_timeout_seconds", RequiredBy: "no",
 			Description: "How long a role's stop gives its agent to exit before the daemon kills it, which under Kubernetes is the pod's termination grace and so has a floor the loader refuses a shorter value against.",
 			Positive:    &positiveKey{Value: 10, Duration: func(c *Config) *time.Duration { return &c.WorkerStopTimeout }},
+		},
+		{
+			Name: "worker_take_timeout_seconds", RequiredBy: "no",
+			Description: "How long a ready, idle worker under no hold that reported its task's value seen has to ask to take it before it is charged, and how often a value nobody reported seeing is written again.",
+			Positive:    &positiveKey{Value: 300, Duration: func(c *Config) *time.Duration { return &c.WorkerTakeTimeout }},
+		},
+		{
+			Name: "worker_turn_start_timeout_seconds", RequiredBy: "no",
+			Description: "How long after an accepted take its turn has to start before the worker is charged and the task taken back; the default is twice the compaction timeout and the longest launch-to-turn the fleet measured, added (2 × (10 min + 150 s)), and it is not a floor.",
+			Positive:    &positiveKey{Value: 1500, Duration: func(c *Config) *time.Duration { return &c.WorkerTurnStartTimeout }},
 		},
 		{
 			Name: "tree_stop_timeout_seconds", RequiredBy: "no",

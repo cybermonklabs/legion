@@ -10,4 +10,4 @@ body: |-
 
   The loader now refuses an operator mount at `/var/run/legion/testpg.log`
   (`runtime.kubernetes.pod.volume_mounts[].mount_path`), in every deployment: run this release's
-  `legion start --check-config` on the file before the rollout, and move such a mount elsewhere.
+  `legion config check` on the file before the rollout, and move such a mount elsewhere.
