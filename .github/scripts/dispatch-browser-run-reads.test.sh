@@ -12,13 +12,14 @@
 # the cases read those records, not how long the drive took: two cases set the knob to 1 and read
 # the waits 1 s and 2 s, or 1 s. The control runs the drive of a gh answering at once under
 # strace and holds it to none of the calls TIMED_WAITS lists, the census of the kernel's calls
-# that wait out a clock, arm one, or wait for a signal or a lock (a futex, an fcntl or a
-# setsockopt counted only where it waits or sets a timeout). A `sleep` by any path, a `read -t`,
-# a timed futex or futex_wait, semtimedop, mq_timedreceive, io_uring, a timerfd, alarm and pause,
-# flock, a lock wait by fcntl and SO_RCVTIMEO each make one. The waits the comment above
-# TIMED_WAITS names as not seen - a `timeout N cmd` wait, which makes only the calls the drive's
-# own `timeout` bounds make, a blocking call a timer_create timer or a process outside the
-# drive's tree ends, and a busy loop in user space - make none.
+# that wait out a clock, arm one, or wait for a signal or a lock (a futex, an fcntl or an ioctl
+# counted only where it waits, leases or sets a terminal's VTIME). A `sleep` by any path, a
+# `read -t`, a timed futex or futex_wait, semtimedop, mq_timedreceive, io_uring, a timerfd, alarm
+# and pause, flock, a lock wait by fcntl, any setsockopt (SO_RCVTIMEO, SO_LINGER and the rest)
+# and a terminal's VTIME each make one. The waits the comment above TIMED_WAITS names as not
+# seen - a `timeout N cmd` wait, which makes only the calls the drive's own `timeout` bounds
+# make, a blocking call a timer_create timer or a process outside the drive's tree ends, and a
+# busy loop in user space - make none.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
 # four cases opt into call by call and that otherwise execs the real one, a stand-in `sleep` that
@@ -147,10 +148,21 @@ real_strace=$(type -P strace) ||
 # io_uring_enter waited and ended ETIME there.
 #
 # Calls that arm a clock a later call waits out: timerfd_settime (a read of the timerfd waits),
-# setitimer and alarm, setsockopt with SO_RCVTIMEO or SO_SNDTIMEO (a recv or a send waits),
-# sched_setattr (under SCHED_DEADLINE, sched_yield sleeps to the next period), and io_uring_setup
-# and io_uring_register, so that every use of io_uring, whose timeouts are its own
-# (IORING_OP_TIMEOUT, a cancel with a timeout), is counted.
+# setitimer and alarm, sched_setattr (under SCHED_DEADLINE, sched_yield sleeps to the next
+# period), io_uring_setup and io_uring_register, so that every use of io_uring, whose timeouts
+# are its own (IORING_OP_TIMEOUT, a cancel with a timeout), is counted, and every setsockopt. Of
+# socket(7) and tcp(7)'s options these set a time a later call waits out: SO_RCVTIMEO and
+# SO_SNDTIMEO (recv, send, accept, connect), SO_LINGER (close and shutdown wait up to l_linger
+# seconds for unsent data), SO_BUSY_POLL (a blocking recv, poll or epoll_wait busy-polls that
+# many microseconds), TCP_USER_TIMEOUT (unacknowledged data ends the connection after that
+# long), TCP_KEEPIDLE and TCP_KEEPINTVL (a silent peer ends a waiting recv after them),
+# TCP_DEFER_ACCEPT (accept waits up to that long for data), TCP_LINGER2 and TCP_SYNCNT (the
+# kernel's own FIN_WAIT2 and SYN timers). The drive makes no setsockopt at all, so the list
+# counts every one rather than name the options one by one. Of the file and terminal options,
+# an ioctl that sets a terminal's attributes (TCSETS and its kin, as tcsetattr makes it) sets
+# VTIME, which a later read of the terminal waits out, and fcntl's F_SETLEASE makes another
+# process's open or truncate of the file wait up to fs.lease-break-time for the holder: both
+# are counted.
 #
 # Calls that wait for a signal or a lock and that the drive at this file's head makes none of:
 # pause, flock, and fcntl or fcntl64 with F_SETLKW or F_OFD_SETLKW.
@@ -168,6 +180,8 @@ real_strace=$(type -P strace) ||
 #   with them ends when a call listed above, a timer_create signal or another process ends it.
 #   Another process in the drive's tree is traced under -f; one outside it, such as a network
 #   peer, is not seen.
+# - close and shutdown: they wait out SO_LINGER's time, and the setsockopt that set it is
+#   counted; the drive closes files all the time.
 # - restart_syscall: it resumes an interrupted wait, whose first call is already traced.
 # - sched_yield and rseq_slice_yield: they give up the CPU and wait out no clock (sched_yield's
 #   SCHED_DEADLINE case is sched_setattr's, above).
@@ -175,6 +189,13 @@ real_strace=$(type -P strace) ||
 #   timerfd_gettime, sched_rr_get_interval, clock_settime, clock_adjtime, adjtimex,
 #   settimeofday, stime, utime, utimes, utimensat and futimesat, and their 64 and _time64 forms:
 #   they read or set a clock or a file's times and wait for nothing.
+# - prctl with PR_SET_TIMERSLACK lengthens a timed wait that is counted already; setrlimit and
+#   prlimit64 with RLIMIT_CPU or RLIMIT_RTTIME signal after CPU time is used, which ends only a
+#   busy loop (below). The drive's prlimit64 calls read RLIMIT_STACK, RLIMIT_NPROC and
+#   RLIMIT_NOFILE.
+# - A device's own ioctl requests that carry a timeout (SG_IO, USBDEVFS_BULK, I2C_TIMEOUT and
+#   the like): no list can name every driver's requests. The drive's ioctl calls are TCGETS,
+#   TIOCGPGRP and TIOCGWINSZ, and none of them sets a time.
 # - i386's ipc and socketcall multiplexers need no names of their own: strace names their
 #   subcalls (semtimedop, setsockopt), and the list matches those, as a 32-bit helper traced on
 #   2026-11-21 showed.
@@ -184,7 +205,7 @@ real_strace=$(type -P strace) ||
 # A regex, so strace matches only the calls the host's architectures have. What the trace
 # establishes is that the drive made none of these calls, counted as timed_waits counts them, and
 # no more. No check here reads elapsed time to make up for the waits named above as not seen.
-TIMED_WAITS='/^(nanosleep|clock_nanosleep(_time64)?|select|_newselect|pselect6(_time64)?|poll|ppoll(_time64)?|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait(_time64)?|futex(_time64|_waitv|_wait)?|semtimedop(_time64)?|mq_timedreceive(_time64)?|mq_timedsend(_time64)?|recvmmsg(_time64)?|io_getevents|io_pgetevents(_time64)?|io_uring_setup|io_uring_enter|io_uring_register|timerfd_settime(64)?|setitimer|alarm|sched_setattr|setsockopt|pause|flock|fcntl(64)?)$'
+TIMED_WAITS='/^(nanosleep|clock_nanosleep(_time64)?|select|_newselect|pselect6(_time64)?|poll|ppoll(_time64)?|epoll_wait|epoll_pwait|epoll_pwait2|rt_sigtimedwait(_time64)?|futex(_time64|_waitv|_wait)?|semtimedop(_time64)?|mq_timedreceive(_time64)?|mq_timedsend(_time64)?|recvmmsg(_time64)?|io_getevents|io_pgetevents(_time64)?|io_uring_setup|io_uring_enter|io_uring_register|timerfd_settime(64)?|setitimer|alarm|sched_setattr|setsockopt|pause|flock|fcntl(64)?|ioctl)$'
 
 # timed_waits <trace>: the calls of a strace log the control counts, one per line. A call begins
 # a line `<pid> <name>(`, where strace pads a short pid with spaces (`4     futex(`, as in a fresh
@@ -192,19 +213,20 @@ TIMED_WAITS='/^(nanosleep|clock_nanosleep(_time64)?|select|_newselect|pselect6(_
 # another process's call interrupted goes on in a `<... name resumed>` line, which is no new call
 # and is passed over. A futex, futex_time64, futex_wait or futex_waitv call counts only where its
 # timeout argument is a struct, `{tv_sec=`: a lock's FUTEX_WAIT has NULL there and FUTEX_WAKE has
-# no timeout at all. A setsockopt counts only where it sets SO_RCVTIMEO or SO_SNDTIMEO, and an
-# fcntl only where it is F_SETLKW or F_OFD_SETLKW. Every call of the other names counts. The
-# drive at this file's head makes none that counts: traced on 2026-11-21, in each of 3 runs it
-# made 0 of every listed call but futex and fcntl, 27 futex(FUTEX_WAKE_PRIVATE) calls, none of
-# them timed, and 51 fcntl calls (F_GETFD, F_SETFD, F_DUPFD, F_DUPFD_CLOEXEC and F_GETFL), none
-# of them a lock wait. A `/usr/bin/sleep 1` after gh answered made clock_nanosleep, a `read -t 1`
-# on a FIFO pselect6, and a 1 s FUTEX_WAIT_PRIVATE futex with `{tv_sec=1, tv_nsec=0}`.
+# no timeout at all. An fcntl counts only where it is F_SETLKW, F_OFD_SETLKW or F_SETLEASE, and
+# an ioctl only where it is TCSETS or its kin. Every call of the other names counts. The drive at
+# this file's head makes none that counts: traced on 2026-11-21, in each of 3 runs it made 0 of
+# every listed call but futex, fcntl and ioctl, 27 futex(FUTEX_WAKE_PRIVATE) calls, none of them
+# timed, 51 fcntl calls (F_GETFD, F_SETFD, F_DUPFD, F_DUPFD_CLOEXEC and F_GETFL), none of them a
+# lock wait or a lease, and 26 ioctl calls (TCGETS, TIOCGPGRP and TIOCGWINSZ), none of them a
+# TCSETS. A `/usr/bin/sleep 1` after gh answered made clock_nanosleep, a `read -t 1` on a FIFO
+# pselect6, and a 1 s FUTEX_WAIT_PRIVATE futex with `{tv_sec=1, tv_nsec=0}`.
 timed_waits() {
   { grep -E '^[0-9]+[[:space:]]+[a-z_0-9]+\(' "$1" || true; } |
-    { grep -Ev '^[0-9]+[[:space:]]+(futex(_time64|_waitv|_wait)?|setsockopt|fcntl(64)?)\(' || true; }
+    { grep -Ev '^[0-9]+[[:space:]]+(futex(_time64|_waitv|_wait)?|fcntl(64)?|ioctl)\(' || true; }
   grep -E '^[0-9]+[[:space:]]+futex(_time64|_waitv|_wait)?\(.*\{tv_sec=' "$1" || true
-  grep -E '^[0-9]+[[:space:]]+setsockopt\(.*SO_(RCV|SND)TIMEO' "$1" || true
-  grep -E '^[0-9]+[[:space:]]+fcntl(64)?\(.*F_(OFD_)?SETLKW' "$1" || true
+  grep -E '^[0-9]+[[:space:]]+fcntl(64)?\([^,]*, F_((OFD_)?SETLKW|SETLEASE)' "$1" || true
+  grep -E '^[0-9]+[[:space:]]+ioctl\([^,]*, TCSETS' "$1" || true
 }
 
 # The stand-in `timeout`, beside the stand-in `gh` and opted into per call. It records the
@@ -653,11 +675,11 @@ echo "case: the negative control, a gh that answers at once"
 # answering at once makes the drive make none of the calls TIMED_WAITS lists, as timed_waits
 # counts them. A wait the stand-in does not record - a sleep binary by its absolute path,
 # `read -t`, a timed futex or futex_wait, semtimedop, mq_timedreceive, io_uring_enter with a
-# timeout, a timerfd, alarm and pause, flock, an F_OFD_SETLKW lock wait, SO_RCVTIMEO, any of them
-# after the answer, of any length - makes one, so the drive runs under strace and timed_waits
-# must find none. The waits the comment above TIMED_WAITS names as not seen pass. The knob is
-# 100000 and the real `timeout 120` still bounds the drive, so a wait the size of the knob also
-# ends it with 124.
+# timeout, a timerfd, alarm and pause, flock, an F_OFD_SETLKW lock wait, SO_RCVTIMEO, a close that
+# waits out SO_LINGER, a terminal read that waits out VTIME, any of them after the answer, of any
+# length - makes one, so the drive runs under strace and timed_waits must find none. The waits
+# the comment above TIMED_WAITS names as not seen pass. The knob is 100000 and the real
+# `timeout 120` still bounds the drive, so a wait the size of the knob also ends it with 124.
 fixture 0
 set +e
 out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
@@ -718,12 +740,19 @@ yes|4     fcntl(4, F_OFD_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, 
 yes|2239  fcntl(4, F_OFD_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
 yes|4     fcntl64(4, F_SETLKW, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = ? ERESTARTSYS (To be restarted if SA_RESTART is set)
 yes|4     sched_setattr(0, {size=56, sched_policy=SCHED_DEADLINE, sched_flags=0, sched_nice=0, sched_priority=0, sched_runtime=10000000, sched_deadline=1000000000, sched_period=1000000000, sched_util_min=0, sched_util_max=0}, 0) = -1 EPERM (Operation not permitted)
+yes|4     setsockopt(4, SOL_SOCKET, SO_LINGER, {l_onoff=1, l_linger=1}, 8) = 0
+yes|4     setsockopt(3, SOL_TCP, TCP_USER_TIMEOUT, [1000], 4) = 0
+yes|4     setsockopt(3, SOL_SOCKET, SO_BUSY_POLL, [1000], 4) = 0
+yes|4     setsockopt(3, SOL_SOCKET, SO_RCVBUF, [1024], 4) = 0
+yes|4     ioctl(4, TCSETS, {c_iflag=, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|ONLCR, c_cflag=B38400|CS8|CREAD, c_lflag=ECHOE|ECHOK|ECHOCTL|ECHOKE, ...}) = 0
+yes|4     fcntl(3, F_SETLEASE, F_RDLCK)     = 0
 no|4     futex(0x7ffc5cf8d2dc, FUTEX_WAIT_PRIVATE, 2, NULL) = 0
 no|2256817 futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
 no|4     futex(0x76abf580572c, FUTEX_WAKE_PRIVATE, 2147483647) = 0
 no|4     futex_time64(0x804b010, FUTEX_WAIT_PRIVATE, 2, NULL) = 0
 no|4     futex_time64(0x804b010, FUTEX_WAKE_PRIVATE, 2147483647) = 0
-no|4     setsockopt(3, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0
+no|4     ioctl(4, TCGETS, {c_iflag=ICRNL|IXON, c_oflag=NL0|CR0|TAB0|BS0|VT0|FF0|OPOST|ONLCR, c_cflag=B38400|CS8|CREAD, c_lflag=ISIG|ICANON|ECHO|ECHOE|ECHOK|IEXTEN|ECHOCTL|ECHOKE, ...}) = 0
+no|4     ioctl(3, TIOCGPTN, [19])          = 0
 no|4     futex_wait(0x7ffe02ed1ba0, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, NULL, CLOCK_MONOTONIC) = -1 EAGAIN (Resource temporarily unavailable)
 no|2234  futex_wait(0xffffc227b690, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32|FUTEX2_PRIVATE, NULL, CLOCK_MONOTONIC) = -1 EAGAIN (Resource temporarily unavailable)
 no|4     fcntl(3, F_OFD_SETLK, {l_type=F_WRLCK, l_whence=SEEK_SET, l_start=0, l_len=0}) = 0
