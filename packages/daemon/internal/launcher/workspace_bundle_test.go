@@ -556,9 +556,15 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		}
 	})
 
+	// The accept waits until beforeDeadline runs out, as acceptRole's does: a shim that never dials
+	// fails here, the bound named beside the accept's error.
+	accept := beforeDeadline(f.t)
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(accept)); err != nil {
+		f.t.Fatal(err)
+	}
 	conn, err := listener.Accept()
 	if err != nil {
-		f.t.Fatal(err)
+		f.t.Fatalf("the shim's connection: %v (the accept waited %s, to 30 s before the test binary's deadline)", err, accept.Round(time.Second))
 	}
 	defer conn.Close()
 	// The read of the shim's frames, and the save's own budget, run until beforeDeadline runs out:

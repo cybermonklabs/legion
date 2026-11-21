@@ -141,10 +141,37 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 		case <-g.result:
 		case <-time.After(cleanupBeforeDeadline(t)):
 			t.Error("the launcher did not leave after its context ended, to 10 s before the test binary's deadline")
+			// The launcher never stopped its generation, so the case ends it: nothing of a case
+			// outlives the test binary.
+			if g.roleConn != nil && g.latest.Child != nil {
+				killGroupLedBy(g.latest.Child.PID)
+			}
 		}
 	})
 	g.accept()
 	return g
+}
+
+// killGroupLedBy sends SIGKILL to the process group pid leads, for a case whose launcher left a
+// generation running: the launcher starts each of a single-role launcher's generations as a group
+// of its own (launcher.go's Setpgid) from this test process. The group is signalled only while pid
+// is still this process's own child and leads its group, so a number the kernel has handed to
+// another process since is never signalled.
+func killGroupLedBy(pid int) {
+	body, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return
+	}
+	end := strings.LastIndex(string(body), ") ")
+	if end < 0 {
+		return
+	}
+	// The fields after the command are its state, its parent's pid and its group's.
+	fields := strings.Fields(string(body)[end+2:])
+	if len(fields) < 3 || fields[1] != strconv.Itoa(os.Getpid()) || fields[2] != strconv.Itoa(pid) {
+		return
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
 // accept takes the launcher's next connection through its hello, acknowledgement and state.
@@ -1669,7 +1696,9 @@ func TestAGenerationWhoseSessionDatabaseRefusesIsNotStarted(t *testing.T) {
 // cleanup and the reply): the time from the start's send to the dial's entry plus the time from
 // the dial's return to the reply's arrival. A start that reached the daemon after it had stopped
 // waiting fails here however correct the dial's deadline was, whichever side of the dial it lost
-// its time on.
+// its time on. That half is a span the product itself must meet, so no order of events stands in
+// for it: the row keeps it at the production value, and a start whose own work outlasts it on a
+// loaded machine would outlast the daemon's wait there too.
 func TestAGenerationWhoseSessionDatabaseNeverAnswersIsRefusedWhileTheDaemonWaits(t *testing.T) {
 	dialer := &sessionDialer{addr: idleUpstream(t)}
 	dialer.stallAt(silentUpstream(t))
@@ -1797,9 +1826,11 @@ func TestASessionDatabaseIsHeldForItsGenerationAndNothingBetween(t *testing.T) {
 // upstream for that connection, with the child still alive and Run not yet returned, and only then
 // lets it end. The second gives a child that ignores SIGTERM a short grace and reads only what a
 // slow machine cannot change: Run returns no sooner than the grace after the shutdown, with the
-// child gone, the socket no longer served and the directory removed. The row once dialed the
-// socket inside a grace of 500 ms and waited 5 s for the proxy's upstream dial and 10 s for Run, so
-// a loaded machine could fail it with nothing wrong.
+// child gone, the socket no longer served and the directory removed. Neither half alone shows the
+// proxy closed only once the child is gone: the first shows it served while the child lives, and
+// the second that the child is killed at the grace and the proxy closed by the time Run returns.
+// The row once dialed the socket inside a grace of 500 ms and waited 5 s for the proxy's upstream
+// dial and 10 s for Run, so a loaded machine could fail it with nothing wrong.
 func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t *testing.T) {
 	t.Run("its child is served for as long as it lives through the stop", func(t *testing.T) {
 		// The directory comes first, so its removal is the last of the case's cleanups: the release
@@ -1876,7 +1907,7 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 		}
 	})
 
-	t.Run("a child that ignores SIGTERM is killed at the grace, and only then is the proxy closed", func(t *testing.T) {
+	t.Run("a child that ignores SIGTERM is killed at the grace, and Run returns with its proxy closed", func(t *testing.T) {
 		dialer := &sessionDialer{addr: idleUpstream(t)}
 		const grace = 500 * time.Millisecond
 		g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build, StopGrace: grace})
@@ -1892,11 +1923,16 @@ func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t
 			t.Fatalf("start result = %#v", got)
 		}
 		pid, _ := published(t, ready)
+		// Registered after the rig, so it runs before the rig's cleanup: a launcher that never kills
+		// the child leaves it ignoring every SIGTERM for good, and the case ends it.
+		t.Cleanup(func() { killGroupLedBy(pid) })
 		dir := g.generationDir(1)
 		socket := filepath.Join(dir, ompsessions.SocketName)
 
-		g.cancel()
+		// The time is read before the stop, so a pause between the two only lengthens the wait the
+		// case measures, never shortens it below the grace.
 		stopped := time.Now()
+		g.cancel()
 		select {
 		case err := <-g.result:
 			// The rig's cleanup reads the result too.
