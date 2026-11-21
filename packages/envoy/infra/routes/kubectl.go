@@ -53,17 +53,24 @@ func OpenKubectl(target Target) (Source, error) {
 	return &kubectlSource{Target: target, path: path, forwards: map[string]*forward{}}, nil
 }
 
+// ErrClusterNotRead is OpenKubectl's Source's refusal of a read before Cluster: it learns there the
+// kubeconfig text that kubectl's errors must not show (redact), so it runs no other kubectl before.
+var ErrClusterNotRead = errors.New("kubectl's Source reads the cluster first, to learn what kubectl's errors must not show, " +
+	"and its Cluster has not been read")
+
 // kubectlSource reads a hub through kubectl: `get statefulset` for its replica count and `get pod`
 // for each ordinal pod, a `port-forward` per pod to its monitoring port and one to its route port,
 // each held for the check's pass over it, and `logs -c nats`. OpenKubectl makes the one value of
-// it that works: its zero value has no forwards map. secrets is the text of the context's
-// kubeconfig that Cluster found kubectl may print and no error may show (redact).
+// it that works: its zero value has no forwards map. clusterRead is whether Cluster has read the
+// context, before which every other read refuses (ErrClusterNotRead); secrets is the text of the
+// context's kubeconfig that Cluster found kubectl may print and no error may show (redact).
 type kubectlSource struct {
 	Target
-	path     string
-	mu       sync.Mutex
-	forwards map[string]*forward
-	secrets  []string
+	path        string
+	mu          sync.Mutex
+	forwards    map[string]*forward
+	clusterRead bool
+	secrets     []string
 }
 
 // forward is a running `kubectl port-forward` and the local port it listens on.
@@ -73,9 +80,18 @@ type forward struct {
 	done chan struct{}
 }
 
-// kubectl runs kubectl with args after the context and namespace and returns its stdout, or an
-// error carrying its stderr, redacted.
+// kubectl is run for every read but Cluster's own: it refuses, running nothing, until Cluster has
+// read the context (ErrClusterNotRead).
 func (k *kubectlSource) kubectl(ctx context.Context, args ...string) ([]byte, error) {
+	if !k.clusterRead {
+		return nil, ErrClusterNotRead
+	}
+	return k.run(ctx, args...)
+}
+
+// run runs kubectl with args after the context and namespace and returns its stdout, or an error
+// carrying its stderr, redacted.
+func (k *kubectlSource) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := k.command(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -167,9 +183,10 @@ var serviceAccountCA = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 // KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT set, as the kubelet sets them in every pod,
 // the cluster is in-cluster, at that address, with the digests of the pod's ServiceAccount CA.
 // Through a kubeconfig, it keeps the cluster's proxy-url when it carries user information, so
-// that no later error shows it (redact): record and check call it before any other read.
+// that no later error shows it (redact). Every other read refuses until it has returned a cluster
+// (ErrClusterNotRead).
 func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
-	out, err := k.kubectl(ctx, "config", "view", "--minify", "--output", "json")
+	out, err := k.run(ctx, "config", "view", "--minify", "--output", "json")
 	if err != nil {
 		host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 		if k.Context == "" && host != "" && port != "" {
@@ -181,6 +198,7 @@ func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 			if caErr != nil {
 				return Cluster{}, fmt.Errorf("the pod's ServiceAccount CA, %s, %w", serviceAccountCA, caErr)
 			}
+			k.clusterRead = true
 			return Cluster{Context: inClusterContext, Server: "https://" + net.JoinHostPort(host, port), CA: ca}, nil
 		}
 		return Cluster{}, err
@@ -218,6 +236,7 @@ func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 	if err != nil {
 		return Cluster{}, fmt.Errorf("the certificate-authority-data of context %q %w", config.CurrentContext, err)
 	}
+	k.clusterRead = true
 	return Cluster{Context: config.CurrentContext, Server: server, CA: ca}, nil
 }
 
@@ -404,8 +423,12 @@ var forwardLine = regexp.MustCompile(`^Forwarding from 127\.0\.0\.1:(\d+) -> \d+
 // forwardTimeout is how long a port-forward may take to print its local port.
 const forwardTimeout = 30 * time.Second
 
-// forwardTo is the running port-forward to pod's port, started at the first call for that pair.
+// forwardTo is the running port-forward to pod's port, started at the first call for that pair. It
+// refuses, starting nothing, until Cluster has read the context (ErrClusterNotRead).
 func (k *kubectlSource) forwardTo(ctx context.Context, pod string, port int) (*forward, error) {
+	if !k.clusterRead {
+		return nil, ErrClusterNotRead
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	key := pod + ":" + strconv.Itoa(port)

@@ -84,7 +84,8 @@ type Pod struct {
 // time the runtime read it at and a space; RouteExchange opens a connection to a pod's route port
 // and returns the first line it sends, its INFO, and, when send is not empty, writes send and
 // returns the first line after the INFO that answers it (Exchange). Close ends whatever the source
-// holds open.
+// holds open. Cluster is read first: OpenKubectl's Source learns there the kubeconfig text that
+// kubectl's later errors must not show, and refuses every other read before it (ErrClusterNotRead).
 type Source interface {
 	Cluster(ctx context.Context) (Cluster, error)
 	Pods(ctx context.Context) ([]Pod, error)

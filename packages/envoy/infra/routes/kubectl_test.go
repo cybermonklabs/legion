@@ -142,7 +142,7 @@ func kubePod(name, uid, ip string, ready bool, restarts int, startedAt time.Time
 // fakeKubeHub writes the files fakeKubectl answers from for h's pods, each pod's monitoring port a
 // local HTTP server answering h's /varz and /routez and its route port a local listener that sends
 // h's INFO for it, and returns OpenKubectl's Source over that kubectl, under the kubeconfig context
-// example-context.
+// example-context, its Cluster read, as routes record and routes check read it before any other.
 func fakeKubeHub(t *testing.T, h *fakeHub) (routes.Source, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -182,6 +182,8 @@ func fakeKubeHub(t *testing.T, h *fakeHub) (routes.Source, string) {
 	src, err := routes.OpenKubectl(routes.Target{
 		Namespace: "envoy", StatefulSet: "envoy-nats", Kubectl: filepath.Join(dir, "kubectl"), Context: "example-context", MonitorPort: 8222, RoutePort: 6222,
 	})
+	require.NoError(t, err)
+	_, err = src.Cluster(context.Background())
 	require.NoError(t, err)
 	return src, dir
 }
@@ -355,6 +357,38 @@ func TestKubectlForwardWritesItsPIDBeforeItListens(t *testing.T) {
 		require.NoError(t, err, "the forward to :%s wrote its PID before it printed its port", port)
 		_, err = strconv.Atoi(strings.TrimSpace(string(pid)))
 		require.NoError(t, err)
+	}
+}
+
+// kubectl's Source learns from Cluster the kubeconfig text that its later errors must not show
+// (redact), so every other read refuses, ErrClusterNotRead, and runs no kubectl until Cluster has
+// read the context. Control: the same reads after Cluster each run.
+func TestKubectlRefusesAReadBeforeItsCluster(t *testing.T) {
+	ctx := context.Background()
+	h := cleanHub()
+	first, dir := fakeKubeHub(t, h)
+	require.NoError(t, first.Close())
+	src, err := routes.OpenKubectl(routes.Target{
+		Namespace: "envoy", StatefulSet: "envoy-nats", Kubectl: filepath.Join(dir, "kubectl"), Context: "example-context", MonitorPort: 8222, RoutePort: 6222,
+	})
+	require.NoError(t, err)
+	defer src.Close()
+	require.NoError(t, os.Remove(filepath.Join(dir, "calls")))
+	reads := map[string]func() error{
+		"Pods":          func() error { _, err := src.Pods(ctx); return err },
+		"Log":           func() error { _, err := src.Log(ctx, "envoy-nats-0"); return err },
+		"Monitor":       func() error { _, err := src.Monitor(ctx, "envoy-nats-0", "/varz"); return err },
+		"RouteExchange": func() error { _, _, err := src.RouteExchange(ctx, "envoy-nats-0", nil); return err },
+	}
+	for name, read := range reads {
+		require.ErrorIs(t, read(), routes.ErrClusterNotRead, "%s before Cluster", name)
+	}
+	require.NoFileExists(t, filepath.Join(dir, "calls"), "no kubectl ran before Cluster")
+
+	_, err = src.Cluster(ctx)
+	require.NoError(t, err)
+	for name, read := range reads {
+		require.NoError(t, read(), "control: %s after Cluster", name)
 	}
 }
 

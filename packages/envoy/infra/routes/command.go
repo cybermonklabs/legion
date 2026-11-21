@@ -134,7 +134,8 @@ func record(ctx context.Context, target Target, out string, stdout, stderr io.Wr
 	}
 	defer src.Close()
 	// The cluster first: its read refuses a server kubectl's errors could print, before any call
-	// that reads an object of the cluster.
+	// that reads an object of the cluster, and kubectl's Source learns there the kubeconfig text its
+	// later errors must not show; that Source refuses any other read before it (ErrClusterNotRead).
 	cluster, err := src.Cluster(ctx)
 	if err != nil {
 		fmt.Fprintf(stderr, "envoy-infra routes record: not recorded: which cluster it reads is not known: %v\n", err)
@@ -179,6 +180,9 @@ func check(ctx context.Context, target Target, recordPath string, stdout, stderr
 		return 2
 	}
 	defer src.Close()
+	// The cluster first, as record reads it: its read refuses a server kubectl's errors could print,
+	// and kubectl's Source learns there the kubeconfig text its later errors must not show; that
+	// Source refuses any other read before it (ErrClusterNotRead).
 	cluster, err := src.Cluster(ctx)
 	if err != nil {
 		fmt.Fprintf(stderr, "envoy-infra routes check: which cluster it reads is not known: %v\n", err)
