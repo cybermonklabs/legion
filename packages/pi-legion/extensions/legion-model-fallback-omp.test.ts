@@ -448,9 +448,6 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a refusal of the fallback model after the host's own walk steps down again and comes back to the model the session started on",
   async () => {
-    /** When the job's result run stops asking again for a session that has not come back by
-     * then: it bounds only a session that never comes back, which the assertions then fail on. */
-    let until = 0;
     const pane = await fallbackPane({
       chains: TWO_STEPS,
       // One assignment. Its first turn starts a background job, so the turn the second refusal
@@ -471,13 +468,12 @@ test.skipIf(skip)(
         // The replay is refused after text, which the host leaves where it is, and the turn ends
         // waiting on the job's result: the plugin's own walk takes it from the middle model to
         // the weaker one.
-        if (nth === 3) {
-          until = Date.now() + 2 * COOLDOWN_MS + IDLE_RETURN_MS;
-          return refuses("refusal_2", { text: "Looking at it." });
-        }
+        if (nth === 3) return refuses("refusal_2", { text: "Looking at it." });
         // The job's result starts a run that asks the gateway every second while the session is
-        // on the weaker model, so the model of each request says where the session stood then.
-        return model === "weak-model" && Date.now() < until
+        // on the weaker model, and ends at its first request to any other: on the return, or at
+        // once when the result comes after it. A session that never comes back is left to the
+        // test runner's timeout.
+        return model === "weak-model"
           ? replies([sleeps(1)], `ping_${nth}`)
           : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
       },
@@ -905,7 +901,6 @@ test.skipIf(skip)(
     /** The file whose existence ends the background job, which the case makes once the walk has
      * set the model, so the job's result cannot start its run before that. */
     const release = ".release-job";
-    let walked = false;
     let first = 0;
     const pane = await fallbackPane({
       // The case reads where the job's result starts its run, never the return: a wait no case
@@ -940,8 +935,9 @@ test.skipIf(skip)(
         await life.prompt("Start the job.");
         const refusedAt = life.served[2]?.at ?? 0;
         // The walk is the one model change the host reports after the refusal; a plugin that
-        // reads that end as a retry makes none, and the wait for it gives up.
-        walked = await life.modelChanges(refusedAt, 1, refusedAt + IDLE_RETURN_MS);
+        // reads that end as a retry makes none, and the test runner's timeout then ends the case.
+        // The wait has no deadline of its own.
+        await life.modelChanges(refusedAt, 1, Number.POSITIVE_INFINITY);
         first = life.served.length;
         const runs = life.runs();
         await writeFile(path.join(life.workspace, release), "");
@@ -949,7 +945,6 @@ test.skipIf(skip)(
       },
     });
 
-    expect(walked).toBe(true);
     // The job's result starts its run on the model the plugin's own walk moved the session to:
     // the refused turn settled when it ended waiting on the job, since the host retries nothing
     // then.
