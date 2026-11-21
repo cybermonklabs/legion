@@ -173,9 +173,10 @@ func TestAKeysDeadlineCutsTheReadOfAnOldSetToTheCachedKey(t *testing.T) {
 	}
 }
 
-// While the issuer answers, a key it has withdrawn verifies for at most Lifetime + MinRefresh after
-// the last good read: a token signed by it, presented to a cache that sat idle for longer, is read
-// against the issuer first and refused, never answered from the old set.
+// For a caller that waits, while the issuer answers within the caller's wait, a key it has
+// withdrawn verifies for at most Lifetime + MinRefresh after the last good read: a token signed by
+// it, presented to a cache that sat idle for longer, is read against the issuer first and refused,
+// never answered from the old set.
 func TestAWithdrawnKeyIsRefusedOnceTheSetIsPastMinRefresh(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, withdrawn := keysFor(t, issuer, "key-a")
@@ -191,6 +192,31 @@ func TestAWithdrawnKeyIsRefusedOnceTheSetIsPastMinRefresh(t *testing.T) {
 	claims, err := verifier.Verify(context.Background(), token)
 	if !errors.Is(err, ErrSignature) {
 		t.Fatalf("Verify of a token signed by the withdrawn key-a after 1 s idle (Lifetime 100 ms, MinRefresh 200 ms) = %+v, %v; want ErrSignature", claims, err)
+	}
+}
+
+// A caller whose own context has ended before the read of a set past Lifetime + MinRefresh lands,
+// a client that hung up or half-closed, gets no answer from the cached set: a token signed by a key
+// the issuer has withdrawn is refused, never accepted from a set of any age. The caller has gone, so
+// the fallback that keeps serving a live caller serves nobody here.
+func TestAHungUpCallerGetsNoAnswerFromAnOldSet(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, withdrawn := keysFor(t, issuer, "key-a")
+	keys.Lifetime, keys.MinRefresh = 100*time.Millisecond, 200*time.Millisecond
+	verifier := NewWithKeys(issuer.URL(), testAudience, keys)
+	token := issuer.Mint(t, withdrawn, issuer.Claims(testSubject, testAudience))
+	if _, err := verifier.Verify(context.Background(), token); err != nil {
+		t.Fatalf("Verify while key-a is published: %v", err)
+	}
+	issuer.Withdraw("key-a")
+	issuer.PublishKey(t, "key-b")
+	issuer.DelayKeys(200 * time.Millisecond)
+	time.Sleep(time.Second)
+	hungUp, cancel := context.WithCancel(context.Background())
+	cancel()
+	claims, err := verifier.Verify(hungUp, token)
+	if err == nil || !errors.Is(err, ErrCancelled) {
+		t.Fatalf("Verify for a hung-up caller of a token signed by the withdrawn key-a, the set past Lifetime + MinRefresh = %+v, %v; want ErrCancelled, never the cached key", claims, err)
 	}
 }
 
@@ -518,6 +544,28 @@ func TestAStaleSetIsRefreshedOnceForManyCallers(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if fetches := issuer.JWKSFetches(); fetches != 2 {
 		t.Fatalf("key set read %d times for 200 callers on a stale set, want 2: the first read and one refresh", fetches)
+	}
+}
+
+// A caller that has hung up, on a set stale by less than MinRefresh that holds its key, is
+// answered from that set and starts no background refresh: nobody waits on it, so the next live
+// caller starts the refresh instead.
+func TestAHungUpCallerOnAStaleSetStartsNoRefresh(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("the first read: %v", err)
+	}
+	keys.Lifetime = time.Millisecond
+	time.Sleep(5 * time.Millisecond)
+	hungUp, cancel := context.WithCancel(context.Background())
+	cancel()
+	if key, err := keys.Key(hungUp, "exchange-key", testAlgorithm); err != nil || key == nil {
+		t.Fatalf("Key for a hung-up caller on a stale set that holds the key: %v, want the cached key", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if fetches := issuer.JWKSFetches(); fetches != 1 {
+		t.Fatalf("key set read %d times, want 1: a hung-up caller starts no background refresh", fetches)
 	}
 }
 

@@ -6,10 +6,14 @@ body: |-
   had been read and was older than 15 minutes, a key set that kept failing was read once per
   request. Every read now runs on its own, so a caller that gives up ends only its own wait. A key
   set older than 15 minutes, by less than a minute, that holds a token's key answers at once and is
-  read again in the background; an older set is read again first, as before. So while the issuer
-  answers, a key it has withdrawn is accepted for at most 16 minutes after the last good read, plus
-  the background read's 10 seconds. During a key rotation whose read failed, a token naming the new
-  key is looked for again 5 seconds after that failure, rather than a minute. For a key id the cache
+  read again in the background; an older set is read again first, as before. So for a caller that
+  waits, while the issuer answers within its wait, a key the issuer has withdrawn is accepted for at
+  most 16 minutes after the last good read. A listener request whose 4-second wait ends before the
+  read of an older set lands is answered from the cached set until that read lands, at most 10
+  seconds later; Dispatch and the secrets broker set no such wait. A caller that has hung up or
+  half-closed gets no answer from the cached set. While the issuer fails, the cached set answers the
+  keys it holds. During a key rotation whose read failed, a token naming the new key is looked for
+  again 5 seconds after that failure, rather than a minute. For a key id the cache
   lacks while that is unsettled (a read runs, or one failed less than 5 seconds ago): the listener
   answers `503` with `Retry-After: 1` once its 4-second wait ends; Dispatch waits on the read under
   way and answers `503 OIDC_ISSUER_UNAVAILABLE` when it fails, and IAP sign-in

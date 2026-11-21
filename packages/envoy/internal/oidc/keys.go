@@ -31,9 +31,13 @@ const (
 	// again. It is the far side of the trade a cache makes: a key the issuer has withdrawn still
 	// verifies a signature for this long after the last good read, and in exchange every
 	// verification in the window costs no network read. A set that is stale by less than
-	// MinRefresh still answers a key it holds at once while it is read again in the background, so
-	// while the issuer answers, a withdrawn key verifies for at most Lifetime + MinRefresh after the
-	// last good read, plus the FetchTimeout of that background read.
+	// MinRefresh still answers a key it holds at once while it is read again in the background,
+	// and an older set is read again first. So for a caller that waits, while the issuer answers
+	// within the caller's wait, a withdrawn key verifies for at most Lifetime + MinRefresh after
+	// the last good read. A caller whose keys deadline (WithKeysDeadline) ends first is answered
+	// from the cached set until that read lands, at most FetchTimeout later. While the issuer
+	// fails, the cached set answers the keys it holds. A caller whose own context has ended gets
+	// no answer from it.
 	DefaultKeysLifetime = 15 * time.Minute
 	// DefaultKeysMinRefresh is the shortest interval between two fetches made because a token
 	// named a key id the cached set does not hold, while reads succeed; while they fail, it is one
@@ -96,7 +100,12 @@ type Keys struct {
 	fetched  time.Time
 	missed   time.Time
 	inflight *keysFetch
-	// failedAt and failure are the last failed read: when it ended, and its error.
+	// reads numbers the reads in the order they start, and goodRead is the number of the read whose
+	// set is kept.
+	reads, goodRead uint64
+	// failure and failedAt are the last failed read, kept only while no read started after it has
+	// succeeded: a good read clears them. So failure != nil says the key set's latest answer was a
+	// failure, by the order the reads ran in and never by their clock times, which can be equal.
 	failedAt time.Time
 	failure  error
 }
@@ -104,6 +113,7 @@ type Keys struct {
 // keysFetch is one key-set read in progress, which every caller that arrives while it runs waits
 // on instead of starting its own.
 type keysFetch struct {
+	seq  uint64
 	done chan struct{}
 	keys []jose.JSONWebKey
 	err  error
@@ -151,15 +161,17 @@ func NewKeysAt(jwksURI string) *Keys {
 //
 // A set stale by less than MinRefresh (older than Lifetime, younger than Lifetime + MinRefresh)
 // that holds the key asked for answers at once, and is read again in the background
-// (refreshInBackground): a slow key set costs no verification its wait. So while the issuer
-// answers, a key it has withdrawn is answered for at most Lifetime + MinRefresh after the last
-// good read, plus that background read's FetchTimeout. An older set, and a stale set that does not
-// hold the key, is read again first, and a caller whose keys deadline passes during that read is
-// answered from the cached set where it holds the key. A kid the set does not hold is a rotation
-// the cache has not seen yet, so it prompts one more read, at most once per MinRefresh, or once
-// FailureSpacing has passed since that read failed. A read that fails leaves the last good set
-// serving, with no new read for FailureSpacing, and is returned only when that set does not hold
-// the key asked for — an issuer that is down stops no verification it does not have to. A kid the
+// (refreshInBackground): a slow key set costs no verification its wait. An older set, and a stale
+// set that does not hold the key, is read again first. So for a caller that waits, while the
+// issuer answers within the caller's wait, a key it has withdrawn is answered for at most
+// Lifetime + MinRefresh after the last good read. A caller whose keys deadline passes during
+// that read is answered from the cached set where it holds the key, so for it the old set
+// answers until the read lands, at most FetchTimeout later; a caller whose own context has ended
+// is not. A kid the set does not hold is a rotation the cache has not seen yet, so it prompts one
+// more read, at most once per MinRefresh, or once FailureSpacing has passed since that read
+// failed. A read that fails leaves the last good set serving a caller still waiting, with no new
+// read for FailureSpacing, and is returned only when that set does not hold the key asked for —
+// an issuer that is down stops no verification it does not have to. A kid the
 // set does not hold while the read that would settle it has not (one is under way, or the last
 // one failed within MinRefresh) is ErrKeySet, not ErrNoKey: no verdict on that key has been
 // reached yet.
@@ -184,7 +196,10 @@ func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, erro
 		switch {
 		case err == nil:
 			set = fresh
-		case fetched.IsZero():
+		case fetched.IsZero() || ctx.Err() != nil:
+			// No set to fall back to, or a caller that has gone: a client that hung up or
+			// half-closed gets no answer from a set of any age. A live caller whose read failed, or
+			// whose keys deadline passed (wait cuts only a context derived from ctx), falls back.
 			return nil, err
 		default:
 			fetchErr = err
@@ -222,15 +237,16 @@ func (k *Keys) state() ([]jose.JSONWebKey, time.Time) {
 // openMissWindow reports whether a key id the cached set does not hold may prompt a read now, and
 // opens the next MinRefresh window when it does. The window opens on the attempt rather than on
 // the answer, so an issuer that is failing is asked no more often than one that is rotating. A
-// window whose read failed, with no good read since, closes early, once FailureSpacing has passed
-// since that failure: the read it opened settled nothing, so the key may be looked for again, at
-// most once per FailureSpacing while the key set keeps failing.
+// window whose read has not succeeded, the key set's latest answer being a failure, closes early,
+// once FailureSpacing has passed since that failure: the read it opened settled nothing, so the
+// key may be looked for again, at most once per FailureSpacing while the key set keeps failing. A
+// good read clears the failure, so a window it settled stays shut.
 func (k *Keys) openMissWindow() bool {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	now := time.Now()
-	unsettled := !k.failedAt.IsZero() && !k.failedAt.Before(k.missed) && k.failedAt.After(k.fetched)
-	if !k.missed.IsZero() && now.Sub(k.missed) < k.MinRefresh && !(unsettled && now.Sub(k.failedAt) >= k.FailureSpacing) {
+	unsettled := k.failure != nil && now.Sub(k.failedAt) >= k.FailureSpacing
+	if !k.missed.IsZero() && now.Sub(k.missed) < k.MinRefresh && !unsettled {
 		return false
 	}
 	k.missed = now
@@ -247,7 +263,7 @@ func (k *Keys) openMissWindow() bool {
 func (k *Keys) settleMiss(ctx context.Context, kid, alg string) (bool, crypto.PublicKey, error) {
 	k.mu.Lock()
 	inflight := k.inflight
-	failedRecently := !k.failedAt.IsZero() && k.failedAt.After(k.fetched) && time.Since(k.failedAt) < k.MinRefresh
+	failedRecently := k.failure != nil && time.Since(k.failedAt) < k.MinRefresh
 	failure := k.failure
 	k.mu.Unlock()
 	switch {
@@ -287,20 +303,28 @@ func (k *Keys) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 			k.mu.Unlock()
 			return nil, failure
 		}
-		inflight = &keysFetch{done: make(chan struct{})}
-		k.inflight = inflight
+		inflight = k.startReadLocked(ctx)
 		k.mu.Unlock()
-		go k.complete(context.WithoutCancel(ctx), inflight)
 	} else {
 		k.mu.Unlock()
 	}
 	return k.wait(ctx, inflight)
 }
 
-// spacedLocked reports whether a read failed less than FailureSpacing ago with no good read since,
-// so no new read starts. k.mu is held.
+// spacedLocked reports whether the key set's latest answer is a failure less than FailureSpacing
+// old, so no new read starts. k.mu is held.
 func (k *Keys) spacedLocked() bool {
-	return !k.failedAt.IsZero() && k.failedAt.After(k.fetched) && time.Since(k.failedAt) < k.FailureSpacing
+	return k.failure != nil && time.Since(k.failedAt) < k.FailureSpacing
+}
+
+// startReadLocked numbers a new read, makes it the read in flight, and starts it on a context
+// detached from ctx, bounded by FetchTimeout alone (complete): the one way a read starts, so every
+// read is detached from the caller that started it. k.mu is held.
+func (k *Keys) startReadLocked(ctx context.Context) *keysFetch {
+	k.reads++
+	k.inflight = &keysFetch{seq: k.reads, done: make(chan struct{})}
+	go k.complete(context.WithoutCancel(ctx), k.inflight)
+	return k.inflight
 }
 
 // refreshInBackground starts a read of the key set detached from ctx, for a stale set that has
@@ -316,10 +340,8 @@ func (k *Keys) refreshInBackground(ctx context.Context) {
 		k.mu.Unlock()
 		return
 	}
-	inflight := &keysFetch{done: make(chan struct{})}
-	k.inflight = inflight
+	k.startReadLocked(ctx)
 	k.mu.Unlock()
-	go k.complete(context.WithoutCancel(ctx), inflight)
 }
 
 // wait is inflight's set, or its error, once it ends; or ErrKeySet when the caller's wait ends
@@ -339,17 +361,21 @@ func (k *Keys) wait(ctx context.Context, inflight *keysFetch) ([]jose.JSONWebKey
 	}
 }
 
-// complete runs inflight's read on ctx, which no caller ends, keeps the set it read when it read
-// one, or else keeps the failure as the last one (settleMiss, FailureSpacing), and releases every
-// caller waiting on inflight.
+// complete runs inflight's read on ctx, which no caller ends, and releases every caller waiting on
+// it. A read that succeeds keeps its set and clears the recorded failure; a read that fails is
+// recorded as the last failure (settleMiss, FailureSpacing). Either counts only when it started
+// after the read whose set is kept, so the order the reads ran in decides, never their end times.
 func (k *Keys) complete(ctx context.Context, inflight *keysFetch) {
 	inflight.keys, inflight.err = k.read(ctx)
 	k.mu.Lock()
 	k.inflight = nil
-	if inflight.err == nil {
-		k.keys, k.fetched = inflight.keys, time.Now()
-	} else {
-		k.failedAt, k.failure = time.Now(), inflight.err
+	if inflight.seq > k.goodRead {
+		if inflight.err == nil {
+			k.keys, k.fetched, k.goodRead = inflight.keys, time.Now(), inflight.seq
+			k.failedAt, k.failure = time.Time{}, nil
+		} else {
+			k.failedAt, k.failure = time.Now(), inflight.err
+		}
 	}
 	k.mu.Unlock()
 	close(inflight.done)
@@ -373,7 +399,8 @@ func keysDeadline(ctx context.Context) (time.Time, bool) {
 	return deadline, ok
 }
 
-// read fetches and parses the issuer's key set once, under FetchTimeout and the caller's context.
+// read fetches and parses the issuer's key set once, under FetchTimeout and the detached context
+// it is given (startReadLocked), never a caller's.
 func (k *Keys) read(ctx context.Context) ([]jose.JSONWebKey, error) {
 	ctx, cancel := context.WithTimeout(ctx, k.FetchTimeout)
 	defer cancel()
