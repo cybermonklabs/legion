@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // verdictNames names a verdict in a failure message.
@@ -487,6 +488,8 @@ func TestARecreatedBucketForgetsTheOldBucketsRecords(t *testing.T) {
 	}
 	fresh := head{"example-org", "example-repo", "73", "f2e573000000000000000000000000000000beef"}
 	putHeadGatedRecord(t, store, fresh, past, nil)
+	// The cache keeps the old bucket's records until the recreated bucket's read completes.
+	testwait.Eventually(t, "the recreated bucket's read to complete", func() bool { return store.watcher.Following() })
 	if cached := store.List(); len(cached) != 1 {
 		t.Fatalf("the cache after the recreate holds %d records, want only the new bucket's %s", len(cached), fresh.key())
 	}

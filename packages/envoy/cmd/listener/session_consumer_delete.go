@@ -106,12 +106,12 @@ func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps
 // listener's, and neither half carries it alone. The lock: the subscribe path holds it from its
 // consumer call through the write of its entry (register, api.go), so a registration in flight
 // is either not started here, or finished by the time this reads. The read: it is the leader
-// of the session bucket's stream that answers it (session.SessionRegistry.RefreshFromLeader),
-// not the direct get every other read of that bucket makes, because on a replicated bucket a
-// direct get is answered by whichever copy is near enough to current, and a copy that has not
-// applied the registration's own write answers not found for a session that is live. Without
-// both halves a clean stop answered session.EntryDeleted on the entry a relaunch replaced
-// would take the live relaunch's consumer, and its relay would pause on
+// of the session bucket's stream that answers it (session.SessionRegistry.RefreshFromLeader,
+// through bus.KeyValue.GetFromLeader), not the direct get session.SessionRegistry.Refresh makes,
+// because on a replicated bucket a direct get is answered by whichever copy is near enough to
+// current, and a copy that has not applied the registration's own write answers not found for a
+// session that is live. Without both halves a clean stop answered session.EntryDeleted on the
+// entry a relaunch replaced would take the live relaunch's consumer, and its relay would pause on
 // bus.ErrSessionConsumerNotFound until the session registered again.
 //
 // Against anything outside this process the lock settles nothing, and the bucket read is what

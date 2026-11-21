@@ -21,6 +21,7 @@ type discardingCache struct{}
 func (discardingCache) Apply(kvwatch.Entry, kvwatch.Read) {}
 func (discardingCache) BeginRead(kvwatch.Read)            {}
 func (discardingCache) CompleteRead(kvwatch.Read)         {}
+func (discardingCache) Unmarked([]string) []string        { return nil }
 
 // watchedBucket opens a bucket on client's connection and returns a watcher on it that has
 // finished its first scan, with the server's own view of the bucket's consumers through admin.

@@ -298,8 +298,13 @@ func watchOverhead(bucket string) int {
 	return len("$JS.API.CONSUMER.CREATE.KV_..00000000") + len(bucket) + putOverhead(bucket)
 }
 
-// check refuses key when the subject a call puts overhead bytes around it would be refused.
+// check refuses key when the subject a call puts overhead bytes around it would be refused, and
+// refuses BarrierKey, which only WriteBarrier writes (ErrReservedKey): every get, write, delete,
+// purge and watch through a KeyValue runs it, so no store reads or writes a record under that key.
 func (kv KeyValue) check(key string, overhead int) error {
+	if key == BarrierKey {
+		return fmt.Errorf("%w: key %q", ErrReservedKey, key)
+	}
 	if limit := maxSubjectBytes - overhead; len(key) > limit {
 		return fmt.Errorf("%w: a key of %d bytes, past %d", ErrTooLarge, len(key), limit)
 	}
@@ -344,19 +349,22 @@ func invalidKey(key any, err error) error {
 // bucket's leader. No test here reads a lagging copy: that takes a cluster, and these tests run
 // one server.
 //
-// A read the stream's leader answers exists, and this build makes none: js.GetLastMsg(stream,
-// subject) without nats.DirectGet is a STREAM.MSG.GET, which the leader answers, and the
-// listener's grant holds $JS.API.STREAM.MSG.GET.KV_<bucket> for every bucket it opens
-// (infra/core's bucketPermissions), so it is this build's choice and not its permissions. What
-// that read answers is a raw stream message rather than a KV entry, so each caller would decode
-// the KV operation markers nats.go's KV decodes for it today -- the KV-Operation header's DEL and
-// PURGE, which the legacy kvs.get and the jetstream package's own kvs.get both answer
-// ErrKeyDeleted for -- to tell a deleted record from a live one, in each of the two reads the
-// repair makes (session.SessionRegistry.Refresh, store.Registry.RefreshAt). The window the direct
-// get leaves is one write wide and is closed without that decoding: a delete and a registration
-// each repair the session's consumer from the bucket's newest record and row (cmd/listener's
-// registeredTarget, which states what a copy behind costs that repair), and the session's next
-// heartbeat registers again.
+// Two reads the stream's leader answers stand beside it, each for a caller that takes something
+// away on the strength of a key being absent (kv_leader_read.go): GetFromLeader, which the
+// listener's delete of a session's JetStream consumer reads through
+// (session.SessionRegistry.RefreshFromLeader), and HeldFromLeader, through which a kvwatch read
+// reads each key it has no evidence of before it removes any (kvwatch's Watcher.verifyUnmarked).
+// Each is js.GetLastMsg(stream, subject) without nats.DirectGet, a STREAM.MSG.GET, which the
+// leader answers and the listener's grant holds for every bucket it opens
+// ($JS.API.STREAM.MSG.GET.KV_<bucket>, infra/core's bucketPermissions). What that read answers is
+// a raw stream message rather than a KV entry, so the two read the KV-Operation header themselves
+// (latestFromLeader) and answer a key whose newest message is a delete or a purge marker as
+// nats.ErrKeyNotFound, as Get answers it. The two reads the repair of a session's consumer makes
+// stay direct gets (session.SessionRegistry.Refresh, store.Registry.RefreshAt). The window the
+// direct get leaves is one write wide and is closed without a leader read: a delete and a
+// registration each repair the session's consumer from the bucket's newest record and row
+// (cmd/listener's registeredTarget, which states what a copy behind costs that repair), and the
+// session's next heartbeat registers again.
 func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 	if err := kv.check(key, getOverhead(kv.Bucket())); err != nil {
 		return nil, err
@@ -431,8 +439,11 @@ func natsKeyValid(key string) bool {
 }
 
 // GetRevision gets key by revision, which names the revision rather than the key in its subject, so
-// only nats.go's alphabet check refuses a key here.
+// only nats.go's alphabet check and the reserved BarrierKey refuse a key here.
 func (kv KeyValue) GetRevision(key string, revision uint64) (nats.KeyValueEntry, error) {
+	if key == BarrierKey {
+		return nil, fmt.Errorf("%w: key %q", ErrReservedKey, key)
+	}
 	entry, err := refusedAfterOn(kv, kv.revisionSubjects, func() (nats.KeyValueEntry, error) { return kv.legacy.GetRevision(key, revision) })
 	return entry, invalidKey(key, err)
 }

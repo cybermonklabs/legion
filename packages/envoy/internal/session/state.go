@@ -58,11 +58,13 @@ const (
 	Gone State = "gone"
 )
 
-// StateOf judges entry by its last registration (UpdatedAt) and by nothing else: not by its
-// presence in any cache, not by the bucket's maximum age, and not by any claim it holds. A record
-// the copy kept through a re-read is judged again from its own age, so a stale cache cannot hold
-// a dead session live, and a cache that could not see a live session's heartbeats does not read
-// their absence as death either.
+// StateOf judges entry by its last registration (UpdatedAt) as of now, and by nothing else: not by
+// its presence in any cache, not by the bucket's maximum age, and not by any claim it holds. A
+// reader of a copy passes the moment the copy stopped following its bucket as now while the copy
+// does not follow it (SessionRegistry's rows, judgedAtLocked), so a re-read drops no row for age
+// while it runs: a cache that cannot see a live session's heartbeats does not read their absence
+// as a stall or a death, and once the read completes every row is judged by its age again, so a
+// stale cache does not hold a dead session live either.
 //
 // Each window is the age a record may reach, not the age it may not: a record exactly live old is
 // still live, and one exactly horizon old is still unresponsive. The boundaries fall that way so

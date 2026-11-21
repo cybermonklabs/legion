@@ -1128,12 +1128,13 @@ func stallSessionReads(t *testing.T, sessions *session.SessionRegistry) {
 }
 
 // discardingCache is a kvwatch.Cache that keeps nothing: stallSessionReads's watcher never starts,
-// and only its handle is read.
+// and only its handle is read, and unverifiedReadWatcher's reads all fail.
 type discardingCache struct{}
 
 func (discardingCache) Apply(kvwatch.Entry, kvwatch.Read) {}
 func (discardingCache) BeginRead(kvwatch.Read)            {}
 func (discardingCache) CompleteRead(kvwatch.Read)         {}
+func (discardingCache) Unmarked([]string) []string        { return nil }
 
 // When the session bucket cannot be read, every path that could take a role from its holder takes
 // nothing, and answers inside its bound (roleHolderReadTimeout, well under the 10 s HTTP write
@@ -2991,6 +2992,16 @@ func TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx(t *testing.T) {
 		{"read the entry of a session id outside the key alphabet", http.MethodGet, "/v1/registry/ses:bad", "", http.StatusBadRequest},
 		{"read a role outside the key alphabet", http.MethodGet, "/v1/roles/bad:role", "", http.StatusBadRequest},
 		{"publish to a role outside the key alphabet", http.MethodPost, "/v1/messages/publish", `{"topic":"notifications.role.bad:role","message":"hi"}`, http.StatusBadRequest},
+		// The key kvwatch's read barrier is written under (bus.BarrierKey) is refused like a key
+		// outside the alphabet (bus.ErrReservedKey): no session registers, and no role is claimed,
+		// under it.
+		{"register the read barrier's key as a session id", http.MethodPost, "/v1/interests/subscribe", `{"session_id":"` + bus.BarrierKey + `","self_subscribed":true}`, http.StatusBadRequest},
+		{"read the entry of the read barrier's key as a session id", http.MethodGet, "/v1/registry/" + bus.BarrierKey, "", http.StatusBadRequest},
+		{"read the interests of the read barrier's key as a session id", http.MethodGet, "/v1/interests/" + bus.BarrierKey, "", http.StatusBadRequest},
+		{"remove the read barrier's key as a session id", http.MethodDelete, "/v1/sessions/" + bus.BarrierKey, "", http.StatusBadRequest},
+		{"claim the read barrier's key as a role", http.MethodPost, "/v1/roles/set", `{"session_id":"ses_live","role":"` + bus.BarrierKey + `"}`, http.StatusBadRequest},
+		{"claim a role as the read barrier's key", http.MethodPost, "/v1/roles/set", `{"session_id":"` + bus.BarrierKey + `","role":"valid-role"}`, http.StatusBadRequest},
+		{"read the read barrier's key as a role", http.MethodGet, "/v1/roles/" + bus.BarrierKey, "", http.StatusBadRequest},
 		// The Legion agent registry bounds and checks every name it keys before NATS sees it, so
 		// each is its 400 naming the field.
 		{"read a long legion agent's entry", http.MethodGet, "/v1/legion/agents/sessions/" + long, "", http.StatusBadRequest},

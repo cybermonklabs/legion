@@ -320,6 +320,17 @@ func (c roleCache) CompleteRead(read kvwatch.Read) {
 	}
 }
 
+// Unmarked names the claims the read has no evidence of, held or only in stored, the stream's
+// keys, for the watcher to read from the stream's leader before the read completes
+// (kvwatch.Copy.Unmarked). A claim the leader holds is applied as a delivered record (Apply), so a
+// read that repairs counts it as any delivery is counted.
+func (c roleCache) Unmarked(stored []string) []string {
+	r := c.r
+	r.holdersMu.RLock()
+	defer r.holdersMu.RUnlock()
+	return r.roleHolders.Unmarked(stored)
+}
+
 // setOwnRoleHolder records a claim write this registry made through a handle of epoch
 // (kvwatch.Copy.Put): a write through a handle on a bucket since recreated is dropped rather than
 // fencing out the new bucket's lower revisions, and so is one the fence finds older than the

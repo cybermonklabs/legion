@@ -595,6 +595,16 @@ func (c ciCache) Apply(entry kvwatch.Entry, read kvwatch.Read) {
 	}
 }
 
+// Unmarked names the records the read has no evidence of, held or only in stored, the stream's
+// keys, for the watcher to read from the stream's leader before the read completes
+// (kvwatch.Copy.Unmarked).
+func (c ciCache) Unmarked(stored []string) []string {
+	s := c.s
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cache.Unmarked(stored)
+}
+
 // CompleteRead removes every record and fence entry the read found no evidence of: the bucket no
 // longer holds it.
 func (c ciCache) CompleteRead(kvwatch.Read) {
@@ -737,6 +747,12 @@ func (s *Store) cachedState(key string) (State, bool) {
 // WatchErr is the cache watcher's terminal error, or nil while it runs.
 func (s *Store) WatchErr() error {
 	return s.watcher.Err()
+}
+
+// ReadErr is the cache watcher's reads that have failed, or are still waiting, to settle past their
+// barrier for its stale bound with none completing, or nil (kvwatch.Watcher.ReadErr).
+func (s *Store) ReadErr() error {
+	return s.watcher.ReadErr()
 }
 
 // NeedsRead reports whether the copy does not follow its bucket with no read under way to make it,

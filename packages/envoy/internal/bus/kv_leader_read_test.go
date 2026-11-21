@@ -192,3 +192,36 @@ func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 		t.Errorf("GetFromLeader(ses:bad) = %v, want the refusal Get answers, %v", leaderErr, getErr)
 	}
 }
+
+// HeldFromLeader reads every key the bucket's stream holds, one past the length Get and
+// GetFromLeader refuse included (testnats.LegacyKeys' unreadable key, which a listener built before
+// the KV key check could have stored), because the stream message get carries the key in its body.
+// It answers a deleted key as not found, as GetFromLeader does, and refuses the read barrier's key,
+// which no record of a bucket is stored under but the barrier.
+func TestHeldFromLeaderReadsEveryKeyTheStreamHolds(t *testing.T) {
+	const bucket = "kv_held_from_leader"
+	_, kv := leaderReadBucket(t, bucket)
+	_, legacy := testnats.LegacyKeys(bucket, "u")
+	if _, err := kv.Legacy().Put(legacy, []byte("1")); err != nil {
+		t.Fatalf("put the %d-byte legacy key: %v", len(legacy), err)
+	}
+	if _, err := kv.GetFromLeader(context.Background(), legacy); !errors.Is(err, ErrRefused) {
+		t.Fatalf("GetFromLeader of the %d-byte legacy key = %v, want it refused as Get refuses it", len(legacy), err)
+	}
+	entry, err := kv.HeldFromLeader(context.Background(), legacy)
+	if err != nil || entry.Key() != legacy || string(entry.Value()) != "1" {
+		t.Fatalf("HeldFromLeader of the %d-byte legacy key = %v, %v; want its record", len(legacy), entry, err)
+	}
+	if _, err := kv.Put("deleted", []byte("1")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if err := kv.Delete("deleted"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := kv.HeldFromLeader(context.Background(), "deleted"); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("HeldFromLeader of a deleted key = %v, want %v", err, nats.ErrKeyNotFound)
+	}
+	if _, err := kv.HeldFromLeader(context.Background(), BarrierKey); !errors.Is(err, ErrReservedKey) {
+		t.Fatalf("HeldFromLeader of the barrier key = %v, want %v", err, ErrReservedKey)
+	}
+}

@@ -219,10 +219,11 @@ func writeListRefilling(w http.ResponseWriter) {
 // (bus.ErrRefused) is the caller's own input, so it is answered naming why: a message too large to
 // take whole, or a session id or role whose KV key would make a subject too long (bus.ErrTooLarge),
 // is a 413, and any other refusal, a topic or key NATS does not accept in a subject
-// (bus.ErrInvalidSubject) or a key outside nats.go's key alphabet (bus.ErrInvalidKey: `ses:bad`), a
-// 400. Any other failure is status with message. It returns the status it wrote: a caller that
-// also records the answer (requestRecord, request_record.go) reads this one classification back
-// instead of repeating it, so no record can disagree with the response that was sent.
+// (bus.ErrInvalidSubject), a key outside nats.go's key alphabet (bus.ErrInvalidKey: `ses:bad`) or
+// the key kvwatch's read barrier is written under (bus.ErrReservedKey), a 400. Any other failure is
+// status with message. It returns the status it wrote: a caller that also records the answer
+// (requestRecord, request_record.go) reads this one classification back instead of repeating it,
+// so no record can disagree with the response that was sent.
 func writeNATSError(w http.ResponseWriter, err error, status int, message string) int {
 	switch {
 	case errors.Is(err, bus.ErrTooLarge):
@@ -279,24 +280,24 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // bus did not serve, in the one place that writes that 503, so the body's prefix and the hint never
 // drift apart. Retry-After is set only where retrying can help: every member of bus.ErrRefused -
 // a refusal NATS repeats however often the same bytes are sent - is answered by writeNATSError as
-// what it is, bus.ErrTooLarge as the 413 and bus.ErrInvalidSubject and bus.ErrInvalidKey as the
-// 400, so this one guard keeps the header off every bus.ErrRefused and off nothing else. The
-// status writeNATSError settled on is passed back for the record's sake, as that function's own
-// comment explains.
+// what it is, bus.ErrTooLarge as the 413 and bus.ErrInvalidSubject, bus.ErrInvalidKey and
+// bus.ErrReservedKey as the 400, so this one guard keeps the header off every bus.ErrRefused and
+// off nothing else. The status writeNATSError settled on is passed back for the record's sake, as
+// that function's own comment explains.
 //
 // A publish the server denied (bus.ErrPublishDenied) is answered ahead of both, because it is
-// neither. bus.ErrRefused has exactly three members (internal/bus/nats.go): bus.ErrTooLarge,
-// bus.ErrInvalidSubject and bus.ErrInvalidKey, each of them this client's own refusal of the
-// caller's bytes, decided before anything is sent. A denial is the opposite: the publish reached a
-// server that answered `-ERR 'Permissions Violation for Publish to "<subject>"'` and dropped it,
-// which internal/bus names bus.ErrPublishDenied around nats.ErrPermissionViolation and the
-// server's own text (confirmPublished for a core publish, deniedPublish for a JetStream one). So
-// it is not an outage and not a malformed request, and retrying it can never succeed: the grant
-// this listener connects with forbids the subject until an operator changes it. 403 says exactly
-// that - the request was understood and the server refuses to authorise it - where 400 would
-// blame the caller's bytes, which are fine, and where any 5xx would be retried:
-// packages/envoy-client/src/transport.ts retries every status at or past 500 and no status below
-// it. No Retry-After rides it for the same reason.
+// neither. bus.ErrRefused's members on a KV key or a subject (internal/bus/nats.go) are
+// bus.ErrTooLarge, bus.ErrInvalidSubject, bus.ErrInvalidKey and bus.ErrReservedKey, each of them
+// this client's own refusal of the caller's bytes, decided before anything is sent. A denial is
+// the opposite: the publish reached a server that answered `-ERR 'Permissions Violation for
+// Publish to "<subject>"'` and dropped it, which internal/bus names bus.ErrPublishDenied around
+// nats.ErrPermissionViolation and the server's own text (confirmPublished for a core publish,
+// deniedPublish for a JetStream one). So it is not an outage and not a malformed request, and
+// retrying it can never succeed: the grant this listener connects with forbids the subject until
+// an operator changes it. 403 says exactly that - the request was understood and the server
+// refuses to authorise it - where 400 would blame the caller's bytes, which are fine, and where any
+// 5xx would be retried: packages/envoy-client/src/transport.ts retries every status at or past 500
+// and no status below it. No Retry-After rides it for the same reason.
 //
 // A message the stream refused because it is full (bus.ErrStreamFull) is answered ahead of the
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
@@ -1930,6 +1931,13 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		}
 		var roleWarning string
 		body.Role, roleWarning = d.registry.ClaimedRole(body.Role)
+		// The claimant's session key is checked before the copy is asked, which answers a key
+		// no session can be registered under (bus.ErrRefused: the read barrier's key among them)
+		// as an unknown session: such a key is the caller's input to fix, a 400 or 413.
+		if err := d.sessions.RefusesKey(body.SessionID); err != nil {
+			writeNATSError(w, err, http.StatusBadRequest, err.Error())
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		entry, err := d.sessions.Get(body.SessionID)

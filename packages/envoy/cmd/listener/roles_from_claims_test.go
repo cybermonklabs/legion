@@ -248,6 +248,7 @@ type feedsNothing struct{}
 func (feedsNothing) BeginRead(kvwatch.Read)            {}
 func (feedsNothing) Apply(kvwatch.Entry, kvwatch.Read) {}
 func (feedsNothing) CompleteRead(kvwatch.Read)         {}
+func (feedsNothing) Unmarked([]string) []string        { return nil }
 
 // requireRolesOrUnanswered fails the test unless recorder answers 200 with the session's rows
 // (rolesOf reads them) holding exactly want, or exactly kept, the copy the view had when the read
