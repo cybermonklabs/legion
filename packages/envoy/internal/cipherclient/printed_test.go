@@ -179,6 +179,19 @@ func TestARefusedSettingIsNamedAndNotEchoed(t *testing.T) {
 	}
 }
 
+// TestADeviceLoginIsRefusedByName: device-login is the TypeScript client's own identity, which a
+// laptop sets for its sessions, and no Go tool trades it. A Go tool started on that laptop says
+// so by name, rather than calling it a kind it does not know.
+func TestADeviceLoginIsRefusedByName(t *testing.T) {
+	env := map[string]string{IdentityVar: "device-login"}
+	source, err := MachineIdentity(func(name string) string { return env[name] })
+	if err == nil || source != nil {
+		t.Fatalf("MachineIdentity = %#v, %v; want device-login refused", source, err)
+	}
+	namesAll(t, "MachineIdentity's error", err.Error(), IdentityVar, "device-login", "TypeScript",
+		IdentityKubernetes, IdentityMetadata, IdentityPool)
+}
+
 // TestAnIssuerThatCarriesACredentialIsNotPrinted: AGENT_SECRETS_SIGNIN_ISSUER is a URL, and every
 // refusal of the sign-in prints it only as internal/redact's allow-list does - whole when it is a
 // plain URL, not at all when it carries a user name, a password or a query - beside the setting's

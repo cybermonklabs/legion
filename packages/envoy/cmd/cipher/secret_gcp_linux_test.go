@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -272,12 +273,20 @@ func TestGcloudLoginListAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 	child.requireGone(t)
 }
 
-// TestGcloudSignInSignalHelper is the process TestGcloudSignInEndedByASignalKillsGcloudsChild
-// signals: `secret list` against a fake broker serving the GCP store, with no other source of a
-// Google credential, so its sign-in runs `gcloud auth list` through the stub gcloud of
-// gcloudStubIn, written beside the pid file AGENT_SECRETS_GCLOUD_SIGNAL_HELPER names, which never
-// answers. The deadline on each store call stays 60s, so the signal comes while the call runs. It
-// prints RETURNED <exit code> should the form return.
+// gcloudSignalAt is the variable that makes TestGcloudSignInSignalHelper interrupt itself at one
+// moment of its gcloud call (onGcloudStep): gcloudStarted or gcloudWaited.
+const gcloudSignalAt = "AGENT_SECRETS_GCLOUD_SIGNAL_AT"
+
+// TestGcloudSignInSignalHelper is the process the gcloud sign-in signal rows signal: `secret list`
+// against a fake broker serving the GCP store, with no other source of a Google credential, so
+// its sign-in runs `gcloud auth list` through the stub gcloud of gcloudStubIn, written beside the
+// pid file AGENT_SECRETS_GCLOUD_SIGNAL_HELPER names. It prints RETURNED <exit code> should the
+// form return. Without gcloudSignalAt the stub never answers and the deadline on each store call
+// stays 60s, so TestGcloudSignInEndedByASignalKillsGcloudsChild's signal comes while the call
+// runs. With gcloudSignalAt set, it sends SIGINT to the thread that runs onGcloudStep at that
+// step, once the stub's child has named itself, so the signal is handled on that thread before
+// runRecorded goes on; at gcloudWaited the stub exits at once, leaving its child holding its
+// output (TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild).
 func TestGcloudSignInSignalHelper(t *testing.T) {
 	pidFile := os.Getenv("AGENT_SECRETS_GCLOUD_SIGNAL_HELPER")
 	if pidFile == "" {
@@ -286,7 +295,27 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useNoADC(t)
-	gcloud, _ := gcloudStubIn(t, filepath.Dir(pidFile), "wait")
+	at := os.Getenv(gcloudSignalAt)
+	last := "wait"
+	if at == gcloudWaited {
+		last = "exit 0"
+	}
+	gcloud, child := gcloudStubIn(t, filepath.Dir(pidFile), last)
+	if at != "" {
+		restore := onGcloudStep
+		t.Cleanup(func() { onGcloudStep = restore })
+		onGcloudStep = func(step string) {
+			if step != at {
+				return
+			}
+			for child.pid() == 0 {
+				time.Sleep(testwait.Poll)
+			}
+			runtime.LockOSThread()
+			_ = syscall.Tgkill(os.Getpid(), syscall.Gettid(), syscall.SIGINT)
+			runtime.UnlockOSThread()
+		}
+	}
 	t.Setenv("PATH", filepath.Dir(gcloud.path)+":/usr/bin:/bin")
 	t.Setenv("CLOUDSDK_CORE_ACCOUNT", "")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
@@ -294,38 +323,67 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 	fmt.Println("RETURNED", code, stderr)
 }
 
+// signInHelper is a run of TestGcloudSignInSignalHelper (startSignInHelper): its process, what it
+// printed, and a channel closed once it has been waited for.
+type signInHelper struct {
+	cmd    *exec.Cmd
+	out    *bytes.Buffer
+	waited chan struct{}
+}
+
+// startSignInHelper starts TestGcloudSignInSignalHelper, its stub gcloud's child naming itself in
+// child's pid file, with env added to its environment. It runs under `env --default-signal`, so
+// it does not inherit a SIGINT this test process ignores (as a job run in the background of a
+// script does), at which agent-secrets rightly goes on running. A helper still running when t
+// ends is killed.
+func startSignInHelper(t *testing.T, child gcloudChild, env ...string) *signInHelper {
+	t.Helper()
+	cmd := exec.Command("env", "--default-signal=INT", os.Args[0], "-test.run=^TestGcloudSignInSignalHelper$", "-test.count=1")
+	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_GCLOUD_SIGNAL_HELPER="+child.pidFile), env...)
+	h := &signInHelper{cmd: cmd, out: &bytes.Buffer{}, waited: make(chan struct{})}
+	cmd.Stdout, cmd.Stderr = h.out, h.out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_ = cmd.Wait()
+		close(h.waited)
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		h.ended(10 * time.Second)
+	})
+	return h
+}
+
+// ended reports whether the helper has been waited for within within.
+func (h *signInHelper) ended(within time.Duration) bool {
+	select {
+	case <-h.waited:
+		return true
+	case <-time.After(within):
+		return false
+	}
+}
+
+// requireEndedByInterrupt fails t unless the helper, waited for already, ended as an interrupt
+// ends it: by SIGINT, a shell's status 130.
+func (h *signInHelper) requireEndedByInterrupt(t *testing.T) {
+	t.Helper()
+	status := h.cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if !(status.Signaled() && status.Signal() == syscall.SIGINT) && status.ExitStatus() != 130 {
+		t.Fatalf("agent-secrets ended %v, saying %q; want it ended by its interrupt (SIGINT, a shell's 130)", h.cmd.ProcessState, h.out.String())
+	}
+}
+
 // TestGcloudSignInEndedByASignalKillsGcloudsChild: a sign-in whose gcloud never answers, ended by
 // an interrupt sent to agent-secrets alone (gcloud, in a group of its own, gets no signal sent to
 // agent-secrets' group, a terminal's Ctrl-C included), ends as the interrupt ends it - by SIGINT,
 // a shell's status 130 - and the child that held gcloud's output is gone with it.
 func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
-	dir := t.TempDir()
-	child := gcloudChild{pidFile: filepath.Join(dir, "child.pid")}
+	child := gcloudChild{pidFile: filepath.Join(t.TempDir(), "child.pid")}
 	t.Cleanup(func() { child.cleanUp(t) })
-	helper := exec.Command(os.Args[0], "-test.run=^TestGcloudSignInSignalHelper$", "-test.count=1")
-	helper.Env = append(os.Environ(), "AGENT_SECRETS_GCLOUD_SIGNAL_HELPER="+child.pidFile)
-	var out bytes.Buffer
-	helper.Stdout, helper.Stderr = &out, &out
-	if err := helper.Start(); err != nil {
-		t.Fatal(err)
-	}
-	waited := make(chan struct{})
-	go func() {
-		_ = helper.Wait()
-		close(waited)
-	}()
-	ended := func(within time.Duration) bool {
-		select {
-		case <-waited:
-			return true
-		case <-time.After(within):
-			return false
-		}
-	}
-	t.Cleanup(func() {
-		_ = helper.Process.Kill()
-		ended(10 * time.Second)
-	})
+	helper := startSignInHelper(t, child)
 	seen := testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
 		pid := child.pid()
 		if pid == 0 {
@@ -335,23 +393,43 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 		return err == nil && running
 	})
 	if !seen {
-		_ = helper.Process.Kill()
-		ended(10 * time.Second)
-		t.Fatalf("the stub gcloud's child was never seen running; the helper said %q", out.String())
+		_ = helper.cmd.Process.Kill()
+		helper.ended(10 * time.Second)
+		t.Fatalf("the stub gcloud's child was never seen running; the helper said %q", helper.out.String())
 	}
-	if err := helper.Process.Signal(syscall.SIGINT); err != nil {
+	if err := helper.cmd.Process.Signal(syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
-	if !ended(10 * time.Second) {
-		_ = helper.Process.Kill()
-		ended(10 * time.Second)
-		t.Fatalf("agent-secrets was still running 10s after its interrupt; it said %q", out.String())
+	if !helper.ended(10 * time.Second) {
+		_ = helper.cmd.Process.Kill()
+		helper.ended(10 * time.Second)
+		t.Fatalf("agent-secrets was still running 10s after its interrupt; it said %q", helper.out.String())
 	}
-	status := helper.ProcessState.Sys().(syscall.WaitStatus)
-	if !(status.Signaled() && status.Signal() == syscall.SIGINT) && status.ExitStatus() != 130 {
-		t.Fatalf("agent-secrets ended %v, saying %q; want it ended by its interrupt (SIGINT, a shell's 130)", helper.ProcessState, out.String())
-	}
+	helper.requireEndedByInterrupt(t)
 	child.requireGone(t)
+}
+
+// TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild: an interrupt that comes at
+// either edge of a gcloud call still ends agent-secrets by SIGINT and kills gcloud's group, the
+// child that holds gcloud's output among them: the moment gcloud has started, before
+// agent-secrets has recorded it (gcloudStarted), and the moment a gcloud that exited leaving that
+// child has been waited for, before the child is killed (gcloudWaited). The helper sends the
+// interrupt to itself from onGcloudStep once the stub's child has named itself, so it lands in
+// that moment on every run, whatever the machine's load.
+func TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild(t *testing.T) {
+	for _, step := range []string{gcloudStarted, gcloudWaited} {
+		t.Run(step, func(t *testing.T) {
+			child := gcloudChild{pidFile: filepath.Join(t.TempDir(), "child.pid")}
+			t.Cleanup(func() { child.cleanUp(t) })
+			helper := startSignInHelper(t, child, gcloudSignalAt+"="+step)
+			testwait.Receive(t, "agent-secrets' end by the interrupt it sent itself once gcloud had "+step, helper.waited)
+			helper.requireEndedByInterrupt(t)
+			if child.pid() == 0 {
+				t.Fatalf("the stub gcloud's child never named itself, so no interrupt came from onGcloudStep; the helper said %q", helper.out.String())
+			}
+			child.requireGone(t)
+		})
+	}
 }
 
 // TestGcloudThatExitsLeavingAChildTakesTheChildWithIt: a gcloud that exits by itself and leaves

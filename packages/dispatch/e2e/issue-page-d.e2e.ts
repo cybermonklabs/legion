@@ -32,6 +32,7 @@ import {
   presetToggle,
   presetToggles,
   presetToolbar,
+  viewportAt,
 } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
 import { expect, type Locator, type Page, type Route, test } from "./test";
@@ -92,11 +93,6 @@ const WIDTHS = [320, 390, 768, 1024, 1280, 1440] as const;
 
 /** R10's widths with 390 px first, the width the view row's negative control names. */
 const PHONE_FIRST = [390, ...WIDTHS.filter((width) => width !== 390)] as const;
-
-/** A viewport of `width`: the desktop height from 768 px up, a phone's below. */
-function viewportAt(width: number): { height: number; width: number } {
-  return { height: width >= 768 ? 900 : 844, width };
-}
 
 /** The column that holds the stage and the foot, inside its insets. */
 async function stageWidth(page: Page): Promise<number> {

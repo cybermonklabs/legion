@@ -649,9 +649,9 @@ which no other route accepts.
 
 The pod enrols itself with `agent-secrets enroll --pod --service <its login service>`, which names
 no session. It names its Dispatch projects as the person's session does, with
-`AGENT_SECRETS_PROJECTS` or `--projects`, and a restricted member's pod must name at least one
-([Concepts](/legion/broker/concepts/#a-persons-pod)). Its login, made with its own projected token,
-carries the person, and so does its
+`AGENT_SECRETS_PROJECTS` or `--projects`; a restricted member's pod enrols nothing, whatever it
+names (`403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, [Concepts](/legion/broker/concepts/#a-persons-pod)).
+Its login, made with its own projected token, carries the person, and so does its
 enrollment: the person's agent-tier secrets go to it at once, the person's human-tier secrets wait
 for the person's approval, and another person's secret waits for its owner's. A token of the
 account that is bound to no pod, such as one `kubectl create token` mints, logs in for no person
@@ -681,7 +681,13 @@ another person:
 
 - the enrollment the pod holds keeps renewing, and the broker answers each of its calls as its
   account's own, for no person, also after a move: the first person's agent-tier secrets wait for
-  that person's approval, and a shared agent-tier secret is still granted;
+  that person's approval, and a shared agent-tier secret is still granted. A broker with
+  `BROKER_PROJECT_ACCESS_URL` still asks Dispatch about the first person, the one the pod was
+  enrolled for: when Dispatch calls that person a restricted member, the pod is denied every secret
+  `restricted-member`, a shared agent-tier secret included, and each grant it holds ends at its
+  next use, whatever the items below say; while Dispatch cannot say what kind of member that
+  person is, each secret request, release and new airlock call of the pod is refused
+  `503 MEMBER_KIND_UNCHECKABLE`;
 - the pod's requests are its own enrollment's alone. The pod no longer reads or cancels a request
   of the person's box or of another session of the person, and those sessions no longer read or
   cancel the pod's requests: each is refused `403 NOT_YOURS`, or `404 NOT_FOUND` for a request of
@@ -698,7 +704,8 @@ another person:
   pod's next request for that secret waits for the person. It is not revoked, and putting the entry
   back makes it release again;
 - a grant a person approved stands on that approval. It keeps releasing, whoever approved it, until
-  it expires, its approver revokes it, the policy refuses it to the account, or the enrollment ends;
+  it expires, its approver revokes it, the policy refuses it to the account, or the enrollment ends,
+  unless Dispatch calls the first person a restricted member or cannot say, as the first item says;
 - a grant of a secret whose `requesters` tag names the person ends for good
   (`requester-not-listed`), and putting the entry back does not revive it;
 - the pod's login keeps the first person until the pod logs in again, and lives at most an hour.
@@ -1233,7 +1240,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. It calls the listener with its own projected ServiceAccount token, which `BROKER_ENVOY_ACCOUNT_TOKEN_FILE` names and which it reads for each notice, so the listener must admit that account. The shared bearer `BROKER_ENVOY_TOKEN` is removed, and a broker started with it refuses to start. |
 | The Envoy hub's NATS auth service (optional) | With `BROKER_NATS_URLS`, the broker answers the authorization of each connection the Envoy hub sends it: a session presenting its broker access token and a proof of its key gets its own delivery channel, and a service presenting a platform token for `BROKER_NATS_K8S_AUDIENCE` or `BROKER_NATS_GOOGLE_AUDIENCE`, from an account `BROKER_NATS_SERVICES` lists, gets its kind's grant; an `edge-listener` entry's connection is refused, since this release holds no edge listener's NATS grant. It connects to the hub as the user `BROKER_NATS_SEED_FILE` holds, signs with the account seed in `BROKER_NATS_ISSUER_SEED_FILE` and opens each request with the curve seed in `BROKER_NATS_XKEY_SEED_FILE`; each file is refused at startup unless it holds a seed of its kind. Every replica answers in one queue group, so a stopped replica delays no connection. With none of these set the broker runs no auth service. |
 | The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read at call time and never at boot, so a rotation needs no restart. It reads one issue, that issue's spec document and the ask the reason cites there for the judge, and one issue's assignee for a Legion worker pod's request for a shared secret, and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). With `BROKER_JUDGE_MODEL_ACCOUNT` set, the token it presents to the model is that service account's, which it mints at IAM Service Account Credentials' `generateIdToken`, so it also needs outbound HTTPS to `iamcredentials.googleapis.com` on 443, and a read of the metadata server's token path (`/computeMetadata/v1/instance/service-accounts/default/token`, plain HTTP on the node's own link) for the access token the mint spends; the broker's principal holds `roles/iam.serviceAccountOpenIdTokenCreator` on the account; and the account's project has the IAM Service Account Credentials API turned on. A mint that fails hands the request to its person, and the broker never falls back to the metadata server's identity token. |
-| Dispatch's project access (optional) | `BROKER_PROJECT_ACCESS_URL` names the Dispatch the broker asks about projects, through Dispatch's `GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person` routes, and `BROKER_PROJECT_ACCESS_TOKEN_FILE` names the broker's own projected ServiceAccount token for Dispatch's audience, read at call time and never at boot. No Dispatch release serves those routes yet: leave both unset until the broker can reach one that does, since against one that does not, every trade naming a project is refused `temporarily_unavailable`. Dispatch must list that account as one that may ask: until it does, Dispatch answers 403, every trade that asks it is refused `server_error`, saying Dispatch refused the broker's account, a person's session enrollment is refused `503 PROJECTS_UNCHECKED` whether it names projects or not (where an outage enrolls one naming none), and every other question below is answered as Dispatch being unreachable; the trade and the enrollment are refused the same way while the broker cannot read the token file. While Dispatch answers a member kind the broker does not know, a trade naming no project is refused, and so is a person's session enrollment naming none: those two ask the kind, and one naming projects asks only whether its person may see each. The two are set together or not at all. The broker asks: at the token exchange, whether a person may see a project a token names and what kind of member a person is; at a person's session enrollment, whether its person may see each project its `--projects` list names (a pod's and a machine's own session ask nothing); at each release of a secret carrying a `dispatch-project` tag, and at each airlock connection of a grant holding one, whether that project is private and whether the credential's person may still see it; for a `project-channels` secret asked for by a credential that names a private project, which Slack channels that project's owner named; for the approval page, the pending lists and each decision, whether the signed-in person may see the projects a request touches (its secrets' tags, the projects of the credential that asked and of the one the request hangs off now, and the project of each issue key its reason names, at most 16 projects for a new request, which `400 REQUEST_INVALID` enforces when it is made); and, for the model judge, whether a request is a private project's, which the judge then leaves to a person: before the model, inside the 5 seconds its policy, project and issue reads share, and again, afresh, when its approval is written. Answers are kept 30 seconds, apart from that last question, which is always asked of Dispatch, and every question is asked before a database transaction begins. No decision rests on an answer older than 30 seconds: the questions are asked one at a time, so when the later ones take long enough for an earlier answer to pass 30 seconds before the decision, the broker asks every question again, and refuses as though Dispatch could not be asked if the answers pass 30 seconds a second time. While Dispatch cannot be asked, a token naming no project is minted as before, and each such mint logs a warning naming the account or person and the session; every trade naming a project, an operator entry's included, is refused `temporarily_unavailable`. With neither set the broker asks Dispatch nothing: it refuses every secret carrying a `dispatch-project` tag as `project-unchecked` and serves every other secret as before; a token naming no project and an operator entry's token are minted as before; a person's trade naming a project is refused, and so is a session enrollment naming projects (`503 PROJECTS_UNCHECKED`). One refusal does not depend on this setting: every broker refuses a new request whose reason names the issue keys of more than 16 projects, `400 REQUEST_INVALID`. The boot log's `project access check state=on` or `state=off` line says which. The same URL and token serve `GET /v1/project-repositories`, which asks Dispatch's `GET /api/v1/access/projects/{key}/repositories` on every call an edge listener makes and keeps no answer; with both unset, and whenever Dispatch's whole answer does not arrive within 2 seconds, that route answers `503 REPOSITORIES_UNKNOWN`. Each question above, and this route's, is its own call to that Dispatch, and every one of those calls goes through the same code (`internal/cipher/dispatchread`) with the same account token, so a token Dispatch refuses, or a token file the broker cannot read, is the broker's own credential failing for each of them alike: each question above is then answered as its sentence above says, and this route answers `503 REPOSITORIES_UNKNOWN`, with an error log line saying the broker's own account token was refused or could not be read. |
+| Dispatch's project access (optional) | `BROKER_PROJECT_ACCESS_URL` names the Dispatch the broker asks about projects and people, through Dispatch's `GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person` routes, and `BROKER_PROJECT_ACCESS_TOKEN_FILE` names the broker's own projected ServiceAccount token for Dispatch's audience, read at call time and never at boot. No Dispatch release serves those routes yet: leave both unset until the broker can reach one that does, since against one that does not, every trade naming a project is refused `temporarily_unavailable`, every enrollment under a person's machine login or pod login, and every secret request, release and new airlock call of a person's session, is refused `503 MEMBER_KIND_UNCHECKABLE`, and every approval of one decides nothing (the approval page says it could not decide the request). Dispatch must list that account as one that may ask: until it does, Dispatch answers 403, every trade that asks it is refused `server_error`, saying Dispatch refused the broker's account, an enrollment under a person's machine login or pod login is refused `503 MEMBER_KIND_UNCHECKABLE` saying the same, a person's session enrollment under a sign-in is refused `503 PROJECTS_UNCHECKED` whether it names projects or not (where an outage enrolls one naming none), and every other question below is answered as Dispatch being unreachable; the trade and the enrollments are refused the same way while the broker cannot read the token file. While Dispatch answers a member kind the broker does not know, a trade naming no project is refused, so is a person's session enrollment under a sign-in naming none, and every enrollment under that person's machine login or pod login and every secret request and release of their sessions is refused `503 MEMBER_KIND_UNCHECKABLE`; a sign-in's enrollment naming projects asks only whether its person may see each. The two are set together or not at all. The broker asks: at the token exchange, whether a person may see a project a token names and what kind of member a person is; at every enrollment under a person's machine login or pod login, every secret request, every approval and every release of a person's session, and every airlock connection of its grants, what kind of member that person is; at a person's session enrollment, whether its person may see each project its `--projects` list names, and, for a session under a sign-in naming none, what kind of member its person is (a service's pod and a machine's own session ask nothing; a person's pod whose account `BROKER_POD_OPERATORS` no longer maps to that person, or maps to another, is still asked about as the person it was made for); at each release of a secret carrying a `dispatch-project` tag, and at each airlock connection of a grant holding one, whether that project is private and whether the credential's person may still see it; for a `project-channels` secret asked for by a credential that names a private project, which Slack channels that project's owner named; for the approval page, the pending lists and each decision, whether the signed-in person may see the projects a request touches (its secrets' tags, the projects of the credential that asked and of the one the request hangs off now, and the project of each issue key its reason names, at most 16 projects for a new request, which `400 REQUEST_INVALID` enforces when it is made); and, for the model judge, what kind of member the session's person is and whether a request is a private project's, which the judge then leaves to a person: before the model, inside the 5 seconds its policy, project and issue reads share, and again, afresh, when its approval is written. Answers are kept 30 seconds, apart from that last question, which is always asked of Dispatch, and every question is asked before a database transaction begins. No decision rests on an answer older than 30 seconds: the questions are asked one at a time, so when the later ones take long enough for an earlier answer to pass 30 seconds before the decision, the broker asks every question again, and refuses as though Dispatch could not be asked if the answers pass 30 seconds a second time. While Dispatch does not answer, the reads of one person's member kind in flight together share one call, and a read that failed is the answer to that person's next reads for 2 seconds after it came back. What that leaves is one call at a time for each person: a caller that arrives while the call is in flight waits for it, up to its 10-second bound, before it is refused, and the first caller after those 2 seconds starts the next call and waits the same. While Dispatch cannot be asked, a token naming no project is minted as before, and each such mint logs a warning naming the account or person and the session; that trade asks the member kind afresh, never answered by a failure the broker kept, so such mints stop as soon as Dispatch answers again. Every trade naming a project, an operator entry's included, is refused `temporarily_unavailable`. The same setting holds a restricted member's agents to no secret at all: an enrollment under a machine login or a pod login whose person Dispatch calls a restricted member is refused `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, and each secret request, each approval, each release and each call the airlock proxy carries asks again of the session's person, so a session such a person already had, enrolled while the setting was unset, is denied every secret `restricted-member`, an approval of a request it left pending is recorded as the policy's denial `restricted-member`, and its grants end at their next use, the airlock proxy refusing its next call `407 GRANT_NOT_LIVE` though it already holds the grant's values. A check that cannot decide refuses: while the broker cannot learn from Dispatch whether a person is a restricted member, every enrollment under that person's machine login or pod login, every secret request of their sessions, every release of their grants and every new call the airlock proxy would carry for them is refused `503 MEMBER_KIND_UNCHECKABLE` naming the person and why, and every approval of one is refused (the approval page says it could not decide the request), with nothing written and nothing released; the caller asks again. What is logged depends on the path. The API port (enrollments, secret requests, releases) logs an error naming the person and the failure, and writes no line when the caller hung up first, which it counts as an answer the caller cancelled. The airlock proxy logs an error, or an INFO line when the caller hung up. The approval page writes no error, only its usual decision line, whose outcome says the request was unavailable. The model judge logs a warning that the request waits for its person, and hands it to that person. A person's sign-in on a machine is not held to the member-kind check at enrollment, since the broker checked its domain itself; its session is held to the list rule alone. With neither set the broker asks Dispatch nothing: it refuses every secret carrying a `dispatch-project` tag as `project-unchecked` and serves every other secret as before; a token naming no project and an operator entry's token are minted as before; a person's trade naming a project is refused, and so is a session enrollment naming projects (`503 PROJECTS_UNCHECKED`); every other enrollment and request is decided as before, a restricted member's included. One refusal does not depend on this setting: every broker refuses a new request whose reason names the issue keys of more than 16 projects, `400 REQUEST_INVALID`. The boot log's `project access check state=on` or `state=off` line says which. The same URL and token serve `GET /v1/project-repositories`, which asks Dispatch's `GET /api/v1/access/projects/{key}/repositories` on every call an edge listener makes and keeps no answer; with both unset, and whenever Dispatch's whole answer does not arrive within 2 seconds, that route answers `503 REPOSITORIES_UNKNOWN`. Each question above, and this route's, is its own call to that Dispatch, and every one of those calls goes through the same code (`internal/cipher/dispatchread`) with the same account token, so a token Dispatch refuses, or a token file the broker cannot read, is the broker's own credential failing for each of them alike: each question above is then answered as its sentence above says, and this route answers `503 REPOSITORIES_UNKNOWN`, with an error log line saying the broker's own account token was refused or could not be read. |
 
 ## Rolling back past the project tags
 
@@ -1279,7 +1286,8 @@ secret is refused, so no session gets one until the broker is rolled forward aga
   `X-Forwarded-Proto` or `X-Forwarded-Host` a request arrives with: a proxy may rewrite `Host` or
   terminate TLS without setting `X-Forwarded-Proto`, and a client that sends those headers itself
   changes nothing. That holds for the machine login's token endpoint (`POST /v1/oauth/token`)
-  too, whose DPoP proofs name `BROKER_PUBLIC_URL/v1/oauth/token`.
+  too, whose DPoP proofs name `BROKER_PUBLIC_URL/v1/oauth/token`; at the broker's edge they name
+  `BROKER_EDGE_URL/v1/oauth/token` instead ([The edge](#the-edge-device-login-from-outside-the-private-network)).
 - The model judge adds two outbound calls. The broker reads one Dispatch issue, that issue's spec
   document and the ask the reason cites at `BROKER_JUDGE_DISPATCH_URL`, with its own projected
   ServiceAccount token, and writes nothing there: no ask, no comment, no status. At the same
@@ -1322,7 +1330,13 @@ secret is refused, so no session gets one until the broker is rolled forward aga
   person's grants (`POST /v1/operator/grants/{id}/revoke`) and end their other machine logins
   (`POST /v1/operator/machines/{id}/revoke`). Those take access away and grant none.
 - Behind a reverse proxy, set `BROKER_TRUSTED_PROXY_HEADER` so the machine-login, token-endpoint
-  and secret-reread rate limiters see each caller's address rather than the proxy's. The token
+  and secret-reread rate limiters see each caller's address rather than the proxy's. The broker
+  reads the last entry of the header's last line: a proxy that folds the lines into one, appends
+  to the last line or adds a line of its own leaves its entry there, after any line a caller sent,
+  so a line a caller adds picks it no bucket. A proxy that appends to the first line and passes a
+  later line the caller sent would leave the caller's text last; the setting assumes the proxy is
+  not of that kind, and one that sends a single line, folding or overwriting the header, never
+  is. The token
   endpoint (`POST /v1/oauth/token`) has its own per-address bucket in each process, a burst of 60
   refilled at two a second, far above a machine's poll every five seconds and refresh about once a
   day; a refused request is `429` `invalid_request` (`RATE_LIMITED: …`) with `Retry-After`.
@@ -1444,6 +1458,140 @@ secret is refused, so no session gets one until the broker is rolled forward aga
 - Agents never see the broker's database or the secret store; whoever can write the database can
   forge a record, so its access control is part of the broker's. Whoever can tag (or annotate) a
   secret under the namespace decides who gets it, so that write access is part of the broker's too.
+
+## The edge: device login from outside the private network
+
+A person outside the deployment's private network, with no way onto it, logs a machine in through
+the broker's edge: a fourth port of the same process, which a public load balancer reaches and
+nothing else does. It serves three routes; every other path answers `404`, and any method but
+`POST` on the two login paths answers `405`:
+
+- `POST /v1/oauth/device_authorization`, the start of a machine login;
+- `POST /v1/oauth/token`, the machine's poll, its refreshes and the trade of its access token;
+- `GET /healthz`, the load balancer's health check, which answers as the API's does and fails
+  from the signal that stops the broker, through the drain.
+
+Each is served by the handler the API's port serves it with. The person decides the login where
+every machine login is decided, on the routes Dispatch relays to on `BROKER_PUBLIC_URL`, and the
+launcher credential the approval mints works as any other.
+
+| Setting | What it is |
+| --- | --- |
+| `BROKER_EDGE_LISTEN_ADDR` | The edge's `host:port`, such as `0.0.0.0:13383`, with its port written as a number. That number may not be the port of `BROKER_LISTEN_ADDR`, `BROKER_METRICS_LISTEN_ADDR` or `BROKER_AIRLOCK_LISTEN_ADDR`, each read as the bind reads it, so `013382` is `13382`: the boot is refused naming both settings. Unset, the broker has no edge and binds nothing for one. |
+| `BROKER_EDGE_URL` | The broker's address as the edge's callers reach it, an absolute URL with no path, whose origin is not `BROKER_PUBLIC_URL`'s. The two are compared as a DPoP proof's `htu` is, the scheme and the host in any case and the scheme's default port the same as none, so `https://secrets.example:443` is refused beside `https://secrets.example`. A login made at the edge signs its request object for this audience, and every DPoP proof sent there names this URL and the path, so a proof or request object made for one port is refused at the other. |
+| `BROKER_EDGE_MACHINE_LOGIN_URL` | The page the person types the code into, which a device authorization at the edge answers as its `verification_uri` in place of `BROKER_MACHINE_LOGIN_URL`: a page the person can reach from outside. |
+| `BROKER_SIGNIN_WORKSPACE_DOMAINS` | Optional: the other domains the Workspace owns beside `BROKER_SIGNIN_DOMAIN`, separated by commas. |
+
+The first three are set together or not at all. The edge also needs `BROKER_MACHINE_LOGIN_URL`,
+since the device grant is what it serves, and `BROKER_SIGNIN_DOMAIN`, so `BROKER_SIGNIN=off`
+refuses it. Unless `BROKER_FAKE_SECRETS_FILE` makes this a local run, a `BROKER_EDGE_URL` or
+`BROKER_EDGE_MACHINE_LOGIN_URL` that is not `https` refuses the start, naming the setting: both
+are on the path of a person on the internet, and over plain http anyone on that path could rewrite
+the device authorization or serve a page of their own where the person types the user code.
+
+What the edge does that the API's port does not:
+
+- **The caller's address is the second-to-last entry of the one `X-Forwarded-For` line.**
+  Google's external Application Load Balancer writes the header as `[<what the client
+  sent>,]<client address>,<load balancer address>`, so the last entry is the balancer's own, the
+  same for every caller, and anything before the second-to-last is the caller's own text. A login
+  request that carries the header as more than one line is refused `400 invalid_request`
+  `REQUEST_INVALID`: Google documents the header as one line and not which of several lines it
+  appends to, and a balancer that appended to the first line would leave the client's own line
+  last. So is one whose line holds fewer than two entries, or whose entry is no IP address: it did
+  not come through the balancer as it writes the header. `GET /healthz` reads no address: the
+  balancer's own probe calls it. `BROKER_TRUSTED_PROXY_HEADER` is not read at the edge.
+- **The operator puts one proxy in front of the edge: Google's load balancer, and nothing between
+  it and the broker.** The rule above takes the second-to-last entry because that balancer is the
+  one hop that appends to the header. A second proxy that appends its own entry, such as a
+  sidecar or an ingress behind the balancer, would make the second-to-last entry the balancer's
+  for every caller and put the whole internet in one bucket. The broker cannot see that at boot,
+  so the deployment must not add one.
+- **Only Google's load balancer may reach the edge's port.** The broker does not check the address
+  of the peer that connects to the edge: it reads `X-Forwarded-For` from whatever reaches that
+  port, and holds no list of trusted proxies. A caller that reached the port without the balancer
+  could write the header itself and pick its own buckets, and would pass no Cloud Armor rule. So
+  the deployment's ingress firewall must allow the edge's port from Google's front-end proxy
+  ranges alone, the ranges a global external Application Load Balancer connects from
+  ([Google's load balancer firewall rules](https://docs.cloud.google.com/load-balancing/docs/firewall-rules)):
+  `35.191.0.0/16` and `130.211.0.0/22` for IPv4, and `2600:2d00:1:1::/64` for IPv6. The
+  balancer's health checks come from `35.191.0.0/16` for IPv4, inside the first range, and from
+  `2600:2d00:1:b029::/64` for IPv6, which the rule must allow too when the backends are IPv6.
+- **Its rate-limit buckets are its own.** The edge spends the address, login and token buckets of
+  [Network and trust](#network-and-trust) at the same limits, in buckets the API's port never
+  reads, and its per-login keys open with `edge:`. A flood at the edge spends nothing a caller of
+  the API's port is held to, and naming a person there cannot lock that person's machine logins
+  out on the private network. Three of its buckets differ from the API's port:
+  - A person's bucket is that person's at the caller's address
+    (`edge:person:<length of login>:<login>:<address>`, the length first because a login and an
+    IPv6 address can both hold `:`), and only a login the broker opened spends it, so anyone on the
+    internet naming a person can spend their own address's bucket for that person and never the
+    one the person uses.
+  - An IPv6 caller is keyed on the `/64` that holds its address, since one host or one site holds
+    a whole `/64`.
+  - Every login the edge opens spends one token of one more bucket that all callers share: a
+    burst of 30 and one every two seconds, per pod. A request the device login would refuse
+    (another client's id, an object that does not verify, a service's login, a missing
+    `login_hint`, a `dpop_jkt` that is not the object's key) spends nothing of it; one that passes
+    those checks and opens no login, a replay among them, spends one. It caps
+    the pending edge logins a pod holds, about 480 at the 15-minute pending time, three rows each,
+    however many addresses send them. Its cost:
+    a caller who sends valid device authorizations from about 15 addresses, each within its own
+    address bucket, holds it empty on every pod, and every outside person's new device login at
+    the edge is refused `429` until the flood stops; the burst refills in a minute after that.
+    Refresh, device-code polls and trades at the edge, and the broker's own address, do not spend
+    it. It is a constant of the release, with no setting. Per-address rules at the load balancer
+    (Cloud Armor), once the deployment's edge security policy applies them, refuse one address's
+    flood before it reaches a pod; the deployment must apply them, since the broker cannot.
+- **Its health check pings Postgres at most once a second.** `GET /healthz` at the edge answers
+  from one ping for a second, so a caller on the internet who asks at any rate costs the database
+  at most one ping a second per pod. The ping runs on a context of its own for at most two
+  seconds, so a caller who leaves neither cancels it, which would close the pool's connection,
+  nor keeps its result from the next check. A check that asks while a ping runs waits for it and
+  leaves when its own request ends. Each failing ping, one that hangs past its two seconds
+  included, writes one `broker: ping Postgres failed` line at ERROR, naming `port=edge`, and no
+  caller writes one, so the edge logs a failing database at most once a second per pod. A
+  draining pod still fails it at once.
+- **A person of the Workspace cannot be named there.** A device authorization whose `login_hint`
+  is an address on `BROKER_SIGNIN_DOMAIN` or a `BROKER_SIGNIN_WORKSPACE_DOMAINS` domain, or on a
+  subdomain of one, in any case, with a trailing dot or written in characters IDNA maps onto one,
+  or a login that is no address at all, is refused `400 invalid_request` `EDGE_WORKSPACE_LOGIN`
+  before it spends any bucket or writes any row. The edge reads the `login_hint` as the verifier
+  of the request object reads it. A person of the Workspace logs machines in on
+  `BROKER_PUBLIC_URL`. The answer to a login the edge takes is the same whether or not the broker
+  knows the person it names.
+- **A person of the Workspace cannot use a machine login there either.** A machine login of a
+  person of the Workspace is opened on `BROKER_PUBLIC_URL`, and the edge serves none of its
+  tokens, so a machine-login file copied off a developer's machine is no use from the internet:
+  at the edge its refresh and the poll of its device code are refused `400 invalid_grant`
+  `EDGE_WORKSPACE_LOGIN`, before the refresh moves the credential's expiry, and the trade of its
+  access token is refused `400 invalid_request` `EDGE_WORKSPACE_LOGIN`. The login refreshes and
+  trades on `BROKER_PUBLIC_URL` as before.
+- **The token route takes three grants.** The device code, a refresh token, and the RFC 8693
+  trade of one of the broker's own access tokens (`subject_token_type`
+  `urn:ietf:params:oauth:token-type:access_token`) with no actor token. Every other grant, a pod's,
+  a workflow run's and a Google trade among them, is `400 unsupported_grant_type`
+  `EDGE_GRANT_REFUSED`, before any bucket is spent. The trade takes only a device login's own
+  access token. A token another trade minted, a Google machine's, a person sign-in's and a
+  session's among them, is the exchange client's own, which the exchange never trades again (`400
+  invalid_grant`), and the edge refuses any other token but a device login's `400 invalid_request`
+  `EDGE_GRANT_REFUSED`.
+- **Both login routes take a form and nothing else.** A body of any type but
+  `application/x-www-form-urlencoded`, `multipart/form-data` included, is refused `400
+  invalid_request` `REQUEST_INVALID` before it is read.
+- **The method is the edge's to hold.** The load balancer's route to the edge can match a path
+  and not a method, so the edge answers `405` with `Allow: POST` to any other method on
+  `/v1/oauth/device_authorization` and `/v1/oauth/token`.
+
+A machine login the edge opened is signed for `BROKER_EDGE_URL`, and the broker reads its record
+back on `BROKER_PUBLIC_URL`'s routes. Every reader of a stored record (the pending lists, the
+lookup, the decision and the launcher credential's chain) takes a machine login signed for either
+address, and a session's request signed for `BROKER_PUBLIC_URL` alone, since the edge never opens
+one. Each compares origins as a DPoP proof's `htu` is compared, so a record signed for
+`https://secrets.example:443` is read back by a broker whose setting is `https://secrets.example`.
+
+The load balancer's health check reads `GET /healthz` on the edge's port; route nothing else of
+the broker through it, and admit to the port only the balancer's own source ranges.
 
 ## People who manage secrets
 
@@ -1637,8 +1785,9 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `approval sign-in refused …` | At WARN: a sign-in made no session, the line saying why: the provider refused it, its state or return path was not the sign-in's, the code exchange or ID token failed, or the person is outside `BROKER_SIGNIN_DOMAIN` or unverified. |
 | `approval page decision login=<email> record=<record id> decision=<approve or deny> outcome=<outcome>` | A person decided a secret request on the page; `outcome` is what became of it (`granted`, for one). |
 | `approval sign-in: reach the provider issuer=<issuer> error=…` | At ERROR: the provider's discovery document could not be read at a sign-in, and the page answered `503` naming the issuer. |
-| `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); and the metrics port (the line below). |
-| `broker metrics listening addr=<host:port>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
+| `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); the edge, where the deployment has one (the line below); and the metrics port. |
+| `broker edge listening addr=<host:port> url=<BROKER_EDGE_URL> verification_uri=<BROKER_EDGE_MACHINE_LOGIN_URL> workspace_domains=<domains>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock, on a broker with `BROKER_EDGE_LISTEN_ADDR` set: the edge is bound at this address, takes request objects and proofs naming `url`, sends a person to `verification_uri`, and refuses a login on any of `workspace_domains` ([The edge](#the-edge-device-login-from-outside-the-private-network)). A broker with no edge writes no such line. |
+| `broker metrics listening addr=<host:port>` | After `broker listening`, after `airlock proxy listening` where the deployment has an airlock, and after `broker edge listening` where it has an edge: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
 | `session account pairs state=on pairs=<pairs>` / `session account pairs state=off detail=…` | At INFO, at startup, after `broker metrics listening` and before the broker serves its first request: `state=on` names each pair `BROKER_SESSION_ACCOUNT_PAIRS` gives, as `<account>=<account>` in the setting's order, joined by one space, and `state=off` says the setting is unset, so an account is refused a session name another account holds. |
 | `broker: fatal error=…` | Startup refused; the error names the variable or dependency. The process exits 1. |
 | `agent secret policy refused name=<secret's name in the store> reason=<reason> owner=<owner tag> first_load=<true or false>` | At ERROR, when a secret becomes one the broker refuses to serve, and when it is refused for another reason than before, with `was=<the reason before>`: one line at the change, not one for each read of the store. A pod's first load writes one for each secret it refuses, each with `first_load=true`. A load or a reread that finds a secret refused for the reason it had writes nothing, and `broker_unservable_secrets` ([Metrics](#metrics)) holds every secret refused now. `name` is the secret's whole name in the store, such as `production/agent-secrets/deel-api-key`. `owner` is its owner tag, and empty for `owner-tag-missing` and `owner-tag-malformed`. Reasons include `owner-tag-missing`, `owner-tag-malformed` (among others, a `group:` owner whose address is no lowercase email), `tier-tag-missing`, `tier-tag-malformed`, `name-malformed`, `service-owner-human-tier`, `not-on-agent-secrets-key`, `no-current-value`, `type-unknown`, `github-owners-missing`, `github-owners-malformed`, `requesters-malformed` (a `requesters` list holding a comma, naming nobody, carrying an email with a capital letter, holding a `group:` entry whose address is no lowercase email, or naming a service the deployment does not register), `type-human-tier` (an `anthropic-federation` secret that is not human tier), `max-grant-required` (an `admin` secret, or a `google-service-account` or `anthropic-federation` one, with no `max-grant` or one longer than an hour), `requesters-not-owner` (a `google-service-account` or `anthropic-federation` secret whose `requesters` do not name its owner once, a person or a group, and no other person or group, or that lists a service it may not: any service at agent tier, and any service at all on a secret `BROKER_SERVICE_ACCOUNT_SECRETS` binds to a `dev-<name>` account), `admin-malformed` (an `admin` tag set to anything but `true`), `admin-tier` (an `admin` secret that is not human tier), `admin-requesters` (an `admin` secret with no `requesters` list), `scopes-malformed` (a `scopes` list holding a comma, naming no scope, naming one twice, or holding an entry that is no scope name, a whole `https://www.googleapis.com/auth/…` URL among them), `scopes-type` (a `scopes` tag on a secret that is not a `google-service-account` one), `project-tag-misspelled` (a tag key that differs from `dispatch-project` or `project-channels` only in case or in its separators, such as `Dispatch-Project`, `dispatch_project` or `PROJECT-CHANNELS`, which the broker would otherwise read as no project tag at all), `project-malformed` (a `dispatch-project` tag that is not one Dispatch project key), `project-unchecked` (a `dispatch-project` tag on a broker with no `BROKER_PROJECT_ACCESS_URL`), `project-channels-malformed` (a `project-channels` tag set to anything but `slack`), `max-grant-malformed`, `default-grant-malformed` and `value-malformed` (a `github-app`, `google-login`, `google-service-account`, `azure-login` or `anthropic-federation` secret whose stored value that type's minter could not mint from: [the value read](#the-value-read)). |
@@ -1649,7 +1798,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `agent secret value read failed; its state kept name=<secret's name in the store> version=<version> error=…` | At WARN: the broker could not read a type secret's stored value to check it ([the value read](#the-value-read)), for a permission, a timeout or the store's own failure, which `error` names by its call and its class and never by a byte of the value. A stored value that is not text is no failed read: it is refused `value-malformed`. The secret keeps the state it had, but for a `value-malformed` refusal of an older version: a failed read of a version the store listed since ends that refusal, which writes `agent secret policy no longer refused`. Each load after it reads the value again and writes nothing more until a read succeeds. |
 | `agent secret value read succeeded again name=<secret's name in the store> version=<version>` | At INFO: the first read of that secret's value that succeeds after the line above. |
 | `agent secret uses legacy classifier tag; retag it with --type name=<secret's name in the store> old_tag=kind tag=type` | At WARN, once per secret for as long as the broker process runs, the first time a load or a reread reads a secret's type from the old `kind` tag because the secret carries no `type` tag. The broker serves the secret as that type. `agent-secrets secret retag NAME --type <type>` writes `type`, after which the line is not written again for that secret. |
-| `broker: answer refused answer_id=<id> status=<status> code=<code> method=<method> route=<route> caller_class=<class> caller=<caller> secrets=[<names>] secrets_count=<n>` | At WARN, once for each refusal of the API port and of the airlock's proxy port: every answer from 400 to 499 but a `429` and the two answers a machine gets while it polls a device login, `slow_down` and `authorization_pending`, which are counted and not logged. It is written before the answer is sent, and it names the answer id the refused caller was given ([Refusals and the answer id](#refusals-and-the-answer-id)). It lists the first secret names the request named, up to 32 KiB of names as the line writes them (JSON-escaped, each with its two quotes), counts them all in `secrets_count`, and adds `secrets_omitted=<n>` when it left names out, since Cloud Logging refuses an entry over 256 KiB. An answer Go's HTTP server writes itself before any of the broker's code runs, such as a `400` for a malformed request line, has no answer id and writes no line. |
+| `broker: answer refused answer_id=<id> status=<status> code=<code> method=<method> route=<route> caller_class=<class> caller=<caller> secrets=[<names>] secrets_count=<n>` | At WARN, once for each refusal of the API port, of the edge and of the airlock's proxy port: every answer from 400 to 499 but a `429` and the two answers a machine gets while it polls a device login, `slow_down` and `authorization_pending`, which are counted and not logged. It is written before the answer is sent, and it names the answer id the refused caller was given ([Refusals and the answer id](#refusals-and-the-answer-id)). It lists the first secret names the request named, up to 32 KiB of names as the line writes them (JSON-escaped, each with its two quotes), counts them all in `secrets_count`, and adds `secrets_omitted=<n>` when it left names out, since Cloud Logging refuses an entry over 256 KiB. An answer Go's HTTP server writes itself before any of the broker's code runs, such as a `400` for a malformed request line, has no answer id and writes no line. The edge's lines add `port=edge`. The edge writes no line, and only counts, for the `404` and `405` its router answers to a path or a method it serves no route for, and for the refusals its two login routes make before any bucket: a request with no one `X-Forwarded-For` line or with a body that is not a form (`REQUEST_INVALID`), a grant it does not take (`EDGE_GRANT_REFUSED`) and a device authorization naming a person of the Workspace (`EDGE_WORKSPACE_LOGIN`). Anyone on the internet can send those at any rate; `broker_answers_total` still counts each with its `code` and `port="edge"`. An alert on this line for the private ports leaves the edge out with `NOT jsonPayload.port="edge"` in Cloud Logging; the API port's and the proxy port's lines carry no `port`. |
 | `broker: <operation> failed error=…` | A request failed with a 500 or 503; the line carries the cause the response does not. A reread whose own request ended before it finished - its caller went away, or it reached the 45-second bound - is not one of these: it answers `503 REQUEST_ENDED` and logs nothing, since anyone can end a request. One reread whose request ended only while it read the value of a `github-app`, `google-login`, `google-service-account`, `azure-login` or `anthropic-federation` secret has already put the secret's new tags in force on that pod, so it still tells the other pods to reread the secret, as a `200` does. A held read of a request (`GET /v1/requests/{id}?wait=`) whose caller went away before its wait ran out or in the half second after it, by a Ctrl-C, a timeout of its own or a front door that cut the call, is not one of these either: it answers `503 REQUEST_ENDED`, logs nothing, and is counted `cancelled`, not `failed` ([Metrics](#metrics)). Every other read of a request that ends early is one of these, `read request failed` with a failed `503 DATABASE_UNAVAILABLE`: a read with no wait, which owes its answer at once, and a held read the database stalled until its caller gave up or the 45-second bound ended it. A held read's wait counts from when the request arrived, before its proof is checked, so a caller that goes away while its proof is still being checked leaves inside its wait; one that goes away while the broker looks its enrollment up or records its proof's jti ends that check instead, which is `verify proof failed`, a failed `503 DATABASE_UNAVAILABLE`. |
 | `broker: mint failed name=<NAME> type=<type> class=<class> attempts=<attempts> error=…` | At ERROR, for each release of a type secret its minter could not make. `class` says whose fix it is: `stored-value`, the secret's value is not a key or login the type takes, so its owner stores a new one; `binding`, a `google-service-account` or `anthropic-federation` secret the deployment binds to no account, or to an account its stored value does not name, so the operator fixes `BROKER_SERVICE_ACCOUNT_SECRETS` — this one is not the secret's owner to fix by storing a new value, and the mint is refused before any call reaches Google; `refused`, GitHub, Google or Anthropic answered and refused, such as a Google login that needs a new sign-in, a GitHub App with no installation on a listed account, or Anthropic's `401 authentication_error` when no federation rule admits the account's token (its Console's authentication history names why), so its owner signs in again, fixes the App or fixes the rule; `upstream`, GitHub, Google or Anthropic could not be asked, answered no usable reply or rate limited the call, or answered a narrowed GitHub token holding more than the narrowing asked, which the broker revokes at GitHub, so check the broker's egress and the upstream's status. For an `anthropic-federation` mint, a failure to mint the identity token at Google is `upstream`, with Google's own reason in the error, and so is an answer from Anthropic whose token does not start `sk-ant-oat01-` or names no lifetime. `attempts` is how many times the broker sent the call the mint failed at, `1` to `3` ([the mint retry](#the-mint-retry)), and `0` for a failure that was no call's, such as a stored value the minter could not read. An `anthropic-federation` exchange is sent once and never again (`attempts=1`): the identity token it carries may be good for one exchange only, so the next release mints a new one and asks again. A `stored-value` failure also refuses the secret as `value-malformed`, so its grants release nothing until a value that decodes is stored. A narrowing the caller got wrong is never this line: see `broker: narrowing refused`. The error never holds the stored value, a token or a value from GitHub's answer. The session is answered `502 MINT_FAILED` with the same error. |
 | `broker: a stored value's trailing line ending was removed name=<NAME>` | At INFO, once for each value of a release the line-ending rule changed, so twice for one release that changed two values: both the value a session is handed and the input a minter reads pass that rule. The line carries the secret's name and no part of any value. The rule removes the trailing run of carriage returns and line feeds only where what is left is not empty and holds no line ending inside it, so a value whose last line ending is part of it is released as it is. |
@@ -1698,13 +1847,14 @@ Each request is bounded to 45 seconds. Request bodies are JSON of at most 1 MiB.
 
 ### Refusals and the answer id
 
-Every answer of the API port and of the airlock's proxy port carries an answer id, 32 hexadecimal
-characters, in its `X-Broker-Answer-Id` header. An answer from 400 to 499 carries it in its body
+Every answer of the API port, of the edge and of the airlock's proxy port carries an answer id, 32
+hexadecimal characters, in its `X-Broker-Answer-Id` header, and the edge's refusals write the same
+refusal line and counts as the API port's. An answer from 400 to 499 carries it in its body
 too: a JSON one as its `answer_id` member, a refusal of the airlock's proxy port at the end of its
 text as `(answer <id>)`, and a refusal page of the approval page as an id to quote. A `429` is no
 refusal, so two bodies carry no id: the text of a `429` that the Azure token endpoint answered and
 the airlock's proxy port forwards, and the approval page's `429` page. The header of each still
-carries it. The exception on both ports is the answers Go's HTTP server writes itself before any
+carries it. The exception on every port is the answers Go's HTTP server writes itself before any
 of the broker's code runs, such as a `400` for a malformed request line, an invalid header name
 or value, or a missing, repeated or malformed `Host` header, a `431` for headers over its limit,
 a `417` for an `Expect` header it does not know, the `400`
@@ -1911,13 +2061,13 @@ write `tls: the service's certificate is not valid for this host; the names it h
 in its place. The API port's refusal line takes its `correlation_id` from the caller's
 `X-Correlation-Id` too; its line holds no message text, and names the code. Each
 answer, a refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is
-the one record of the API port's `429` and of a device grant's poll answers.
+the one record of the API port's and the edge's `429` and of a device grant's poll answers.
 
-On the API port, an answer that no refusal line records names its id in no line: a `429`, the two
-answers of a device login's poll, and every answer of 500 and above. `agent-secrets` prints the id
-of a `429` and of a failure as well. For a `502 MINT_FAILED`, read the `broker: mint failed` line
-instead ([Health and logs](#health-and-logs)). It names the secret as `name` and holds no answer
-id, so find it by that name and the time of the answer.
+On the API port and the edge, an answer that no refusal line records names its id in no line: a
+`429`, the two answers of a device login's poll, and every answer of 500 and above.
+`agent-secrets` prints the id of a `429` and of a failure as well. For a `502 MINT_FAILED`, read
+the `broker: mint failed` line instead ([Health and logs](#health-and-logs)). It names the secret
+as `name` and holds no answer id, so find it by that name and the time of the answer.
 
 ### The value read
 
@@ -2004,7 +2154,7 @@ The broker serves its metrics in the Prometheus text format at `GET /metrics`, o
 own: `BROKER_METRICS_LISTEN_ADDR`, by default `127.0.0.1:13382`. The same port serves `GET /livez`,
 the NATS auth service's liveness (below). The API's port serves neither, and the metrics port
 serves nothing else: every other path answers `404`, and a method other than `GET` or `HEAD`
-answers `405`. The boot binds it after the API's port and the airlock's proxy port and logs
+answers `405`. The boot binds it after the API's port, the airlock's proxy port and the edge and logs
 `broker metrics listening addr=<host:port>`, and a pod that cannot bind it does not start. A
 draining pod goes on answering scrapes through its drain, and the port closes with the others.
 
@@ -2018,7 +2168,7 @@ own listing.
 
 | Metric | Type | Labels | What it holds |
 | --- | --- | --- | --- |
-| `broker_answers_total` | counter | `outcome`, `code`, `caller_class` | Each answer the broker's code writes on the API port and on the airlock's proxy port; the answers Go's HTTP server writes itself before that code runs are not counted ([Refusals and the answer id](#refusals-and-the-answer-id)). `outcome` is `served` (below 400), `refused` (a refusal the `broker: answer refused` line records), `rate_limited` (a `429`, and the device grant's `slow_down`), `pending` (the device grant's `authorization_pending`, a machine's poll while its person has not decided), `cancelled` (a held read of a request, `GET /v1/requests/{id}?wait=`, whose caller went away before its wait ran out or in the half second after it, which writes no line; a read with no wait is never counted here, and one whose caller left while the broker looked its enrollment up or recorded its proof's jti is `failed`, under `caller_class` `unauthenticated`, with the `verify proof failed` line) or `failed` (500 and above, but a `cancelled` one). `code` is a refusal's code, as its line names it, or the code the airlock's proxy port names for a failure of its own, such as `UPSTREAM_UNREACHABLE`. Every other answer's `code` is `HTTP_<status>`. `caller_class` is as the refusal line names it. A call the proxy carried to a service counts as `served`, with the service's own status as its `HTTP_<status>`. |
+| `broker_answers_total` | counter | `outcome`, `code`, `caller_class`, and `port` on the edge's | Each answer the broker's code writes on the API port, on the edge and on the airlock's proxy port. The edge's samples carry `port="edge"`, and the API port's and the proxy port's carry no `port`, so `broker_answers_total{port!="edge"}` reads the private ports alone and an alert on refusals there is not fired by traffic from the internet. The answers Go's HTTP server writes itself before that code runs are not counted ([Refusals and the answer id](#refusals-and-the-answer-id)). `outcome` is `served` (below 400), `refused` (a refusal the `broker: answer refused` line records, and at the edge also the `404` and `405` its router answers, which write no line), `rate_limited` (a `429`, and the device grant's `slow_down`), `pending` (the device grant's `authorization_pending`, a machine's poll while its person has not decided), `cancelled` (a held read of a request, `GET /v1/requests/{id}?wait=`, whose caller went away before its wait ran out or in the half second after it, which writes no line; a read with no wait is never counted here, and one whose caller left while the broker looked its enrollment up or recorded its proof's jti is `failed`, under `caller_class` `unauthenticated`, with the `verify proof failed` line) or `failed` (500 and above, but a `cancelled` one). `code` is a refusal's code, as its line names it, or the code the airlock's proxy port names for a failure of its own, such as `UPSTREAM_UNREACHABLE`. Every other answer's `code` is `HTTP_<status>`. `caller_class` is as the refusal line names it. A call the proxy carried to a service counts as `served`, with the service's own status as its `HTTP_<status>`. |
 | `broker_mint_attempts_total` | counter | `type`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `type` is the secret's type. `outcome` is `ok`, `upstream` (an answer of 500 or above, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
 | `broker_unservable_secrets` | gauge | `secret`, `reason`, `owner` | One series of value 1 for each secret the broker refuses to serve now. `secret` is the secret's whole name in the store, as the `agent secret policy refused` line names it, `reason` is that line's reason, and `owner` its owner tag, empty for `owner-tag-missing` and `owner-tag-malformed`. A secret that becomes servable, or leaves the store, is gone from the next scrape, and a reread of a name nobody created adds no series. Nor does a secret waiting for its value in the ten minutes after its creation (`agent secret policy waiting for a value`), which is no refusal. |
 | `broker_policy_store_reads_total` | counter | `read` | Each call the policy makes to the secret store, a failed one too: `list` for a load of the whole namespace, `describe` for one secret's reread, and `value` for one type secret's value ([the value read](#the-value-read)). It is how to see that this pod read the store: the broker logs no line for a read whose secrets it serves. On Secret Manager each of them spends the project's read quota. A `list` is one `ListSecrets` for each page and one `GetSecretVersion` for each secret, and a `describe` is one `GetSecret` and one `GetSecretVersion`. A `value` is one `GetSecret`, or none when this pod read that secret in the 30 seconds before, and then the `AccessSecretVersion` that reads the value, which counts against Secret Manager's separate access quota. |
@@ -2381,11 +2531,13 @@ What you do depends on how the database came to hold another file:
   means: add the line the refusal names, alone on a line of its own and outside every quoted
   string or function body, to the file, after the replaces lines it has, and ship it. The next
   start accepts the row as it is. The first replaces line names the identity the version first
-  shipped with; a later edit of the same file keeps it first and adds one naming the edit before
-  it. The line names a file of the same version and 64 lower-case hex digits; a line that begins
-  `-- replaces:` and is written any other way, or that sits inside a quoted string or a function
-  body, stops every start, naming the file and the line. A pull request that edits a migration
-  main already holds without such lines fails CI's `envoy-go-checks` job before it merges.
+  shipped with; a later edit of the same file keeps every replaces line it has, in their order,
+  and adds one after them naming the edit before it, its file name and checksum. The line names a
+  file of the same version and 64 lower-case hex digits; a line that begins `-- replaces:` and is
+  written any other way, or that sits inside a quoted string or a function body, stops every start,
+  naming the file and the line. A pull request that edits a migration main already holds without
+  such lines, or whose lines do not begin with main's file's lines, in their order, then the one
+  naming main's file itself, fails CI's `envoy-go-checks` job before it merges.
 
 An image cannot accept a text it has never seen, so it refuses a database whose migration a later
 image applied from an edited text: one that an image with the edit created from empty, and a

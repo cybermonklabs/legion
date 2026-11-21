@@ -25,6 +25,16 @@ type RoleClaim struct {
 	HolderSessionID   string `json:"holder_session_id"`
 	ClaimedAt         int64  `json:"claimed_at"`
 	PreviousSessionID string `json:"previous_session_id"`
+	// GrantID names the grant that wrote this claim: an id each grant draws at random for the
+	// record it writes (SetRoleWithPrevious), which the holder's renewals, the adoption of a
+	// claim that names no process and the hand-back's mark carry over untouched. It is what
+	// tells a claim granted again from the claim a hand-back read before its write lost
+	// (RoleClaim.sameGrant, Registry.markRoleClaimHandedBack), which ClaimedAt cannot: a grant
+	// stamped in the millisecond of the claim before it carries that claim's moment. Empty on a
+	// claim an earlier build wrote: that build draws no grant id, and its renewal and its mark
+	// write back a claim decoded without the field, so a record it rewrites loses the id. Such a
+	// claim renews, is adopted, released and marked as it was.
+	GrantID string `json:"grant_id,omitempty"`
 	// ClientInstanceID is the client instance of the process that holds the claim, which the
 	// claimant named when it took the role. A session id alone does not name that process: a
 	// second process can resume a live session's id, and it carries a client instance of its
@@ -98,6 +108,22 @@ func (c RoleClaim) LastAnsweredAt() int64 {
 // where an absent id on either side is a client predating the field and the claim goes through.
 func (c RoleClaim) HeldByProcess(instance string) bool {
 	return instance != "" && c.ClientInstanceID == instance
+}
+
+// sameGrant reports whether c is the grant read is, as the holder's renewals and the adoption
+// leave it: the question a hand-back asks of the claim it reads again after its mark lost a
+// write (Registry.markRoleClaimHandedBack). Where c carries a grant id, that id decides, so a
+// grant made since read, which drew an id of its own, is never read's, whatever millisecond it
+// was stamped in. Where c carries none, an earlier build wrote it - its grant draws no id, and
+// its renewal drops the one it read - so ClaimedAt decides, as it did in that build. Two grants
+// in read's own millisecond therefore read as read while such a build writes the bucket: one that
+// build wrote, and one this build wrote that such a build renewed before this read, which has
+// lost its id. No code here can tell either apart; both end when no such build writes the bucket.
+func (c RoleClaim) sameGrant(read RoleClaim) bool {
+	if c.GrantID != "" {
+		return c.GrantID == read.GrantID
+	}
+	return c.ClaimedAt == read.ClaimedAt
 }
 
 // ExpiredRoleClaimRelease reports what releaseReadExpiredRoleClaim's conditional delete did to
