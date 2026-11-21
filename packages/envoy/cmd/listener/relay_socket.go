@@ -470,8 +470,12 @@ func (socket *relaySocket) read() {
 		if err != nil {
 			// The client's close frame, which gorilla answers, a frame past the read limit, which
 			// gorilla answers 1009, or a connection that ended: the socket ends with nothing more
-			// to write, and end drops the connection.
+			// to write, and the connection is dropped now. When the listener closed the socket
+			// itself, end already ran and left the connection to its grace (relaySocketCloseGrace)
+			// for this answer; the answer is in, so the client is not kept waiting out the rest of
+			// that grace for its connection's end, which a client that reopens on it waits for.
 			socket.end(0, "")
+			_ = conn.Close()
 			return
 		}
 		extend()

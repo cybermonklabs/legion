@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -570,6 +571,37 @@ func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
 	if code, text := client.closeCode(4 * time.Second); code != relaySocketCloseExpired || text != relaySocketReasonExpired {
 		t.Fatalf("the socket closed %d %q at its token's expiry, want %d %q\n%s", code, text, relaySocketCloseExpired, relaySocketReasonExpired, rig.logs.String())
 	}
+}
+
+// A socket the listener closes (here 4403, its token revoked) drops its connection as soon as the
+// client answers the close frame, not when relaySocketCloseGrace runs out: a client that reopens
+// once its connection ends (Bun's WebSocket fires close only then) reopens at once. The client
+// here answers the close as gorilla/websocket does, and the row times the end of the connection
+// from the close frame. Control: the reader leaving the connection to end's grace once end has
+// run; the connection ends a whole grace after the close, and the row fails naming how long.
+func TestARelaySocketDropsItsConnectionWhenTheClientAnswersTheClose(t *testing.T) {
+	rig := newRelaySocketRig(t)
+	const session = "ses_edge_close_answered"
+	client, token := rig.open(t, session)
+	rig.broker.Says(token, ciphertoken.Introspection{})
+	rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
+	if code, text := client.closeCode(5 * time.Second); code != relaySocketCloseRefused || text != relaySocketReasonRefused {
+		t.Fatalf("the socket closed %d %q, want %d %q", code, text, relaySocketCloseRefused, relaySocketReasonRefused)
+	}
+	closed := time.Now()
+	raw := client.conn.NetConn()
+	if err := raw.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set the read deadline: %v", err)
+	}
+	_, err := raw.Read(make([]byte, 1))
+	ended := time.Since(closed)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("the connection after the answered close read %v, want the listener's end of it (EOF)", err)
+	}
+	if ended > relaySocketCloseGrace/4 {
+		t.Fatalf("the connection ended %s after the answered close, want it dropped at the client's answer, well inside the %s grace", ended.Round(time.Millisecond), relaySocketCloseGrace)
+	}
+	t.Logf("the connection ended %s after the answered close", ended.Round(time.Millisecond))
 }
 
 // A client that reads promptly keeps its socket however large the session's backlog: an edge
