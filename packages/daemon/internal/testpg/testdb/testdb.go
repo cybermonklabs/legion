@@ -58,11 +58,12 @@ const SkipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to tes
 	"  LEGION_TEST_PG_DSN=postgres://legion:legion@127.0.0.1:$port/legion go test ./..."
 
 // Database is the URL of a new, empty database named <prefix>_<random>, dropped at the test's end,
-// for a pgx pool to open: store.Open, pgxpool, or a daemon's postgres_dsn. Every pool opened on it
-// holds PoolConns connections at most (PoolBounded), so a test's pools do not grow with the
-// machine's CPU count. A URL that libpq, pgx.Connect, psql, a scratch Dispatch or another child
-// process reads is PlainDatabase's: pgx.Connect sends pool_max_conns to the server as a setting
-// the server does not know, and libpq refuses it.
+// for a pgx pool to open: store.Open, pgxpool, or a daemon's postgres_dsn. A pool opened on it
+// holds PoolConns connections unless LEGION_TEST_PG_DSN sets a size of its own, which it keeps
+// (PoolBounded), so a test's pools do not grow with the machine's CPU count. A URL that libpq,
+// pgx.Connect, psql, a scratch Dispatch or another child process reads is PlainDatabase's:
+// pgx.Connect sends pool_max_conns to the server as a setting the server does not know, and libpq
+// refuses it.
 func Database(t testing.TB, prefix string) string {
 	t.Helper()
 	bounded, err := PoolBounded("LEGION_TEST_PG_DSN", PlainDatabase(t, prefix))
@@ -234,12 +235,12 @@ func DatabaseURL(dsn, database string) (string, error) {
 	return rewriteDSN("LEGION_TEST_PG_DSN", dsn, rewrite{database: database})
 }
 
-// PoolConns is the most connections a pool a test opens on a URL PoolBounded made may hold. A pool
-// that is not told its size is sized by pgx at the greater of 4 and the machine's CPU count
-// (pgxpool.ParseConfig), so on a box with 288 CPUs one test that runs 100 statements at once asks
-// for 100 connections, which is all PostgreSQL's default max_connections allows, and fails with
-// "too many clients" there while it passes on a small machine. 4 is pgx's own floor: the size
-// every pool has on a machine with 4 CPUs or fewer.
+// PoolConns is the size PoolBounded gives the pools opened on a URL that sets no size of its own;
+// a URL that sets one (pool_max_conns) keeps it. A pool that is not told its size is sized by pgx
+// at the greater of 4 and the machine's CPU count (pgxpool.ParseConfig), so on a box with 288 CPUs
+// one test that runs 100 statements at once asks for 100 connections, which is all PostgreSQL's
+// default max_connections allows, and fails with "too many clients" there while it passes on a
+// small machine. 4 is pgx's own floor: the size every pool has on a machine with 4 CPUs or fewer.
 const PoolConns = 4
 
 // poolMaxConns is the key of a DSN's query that pgxpool reads as its pool's size.

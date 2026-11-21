@@ -512,11 +512,12 @@ takes one database for its whole run instead: `testdb.RunDatabaseMain` from its 
 `testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the
 database they are given).
 
-Every pgx pool a daemon test opens holds four connections at most. pgx sizes a pool with no size
-of its own at the greater of 4 and the machine's CPU count, so on a large machine one test could
-ask for more connections than PostgreSQL's default 100 allow, and pass only on a small one.
-`testdb.PoolBounded` appends `pool_max_conns=4` to a URL; `testdb.Database`, `testpg`'s `Clone`,
-and the `testDSN` of `internal/daemon` and `internal/store` answer bounded URLs. A URL that
+A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
+its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater
+of 4 and the machine's CPU count, so on a large machine one test could ask for more connections
+than PostgreSQL's default 100 allow, and pass only on a small one. `testdb.PoolBounded` appends
+`pool_max_conns=4` to a URL that sets no size; `testdb.Database`, `testpg`'s `Clone`, and the
+`testDSN` of `internal/daemon` and `internal/store` answer such URLs. A URL that
 libpq, `pgx.Connect`, `psql`, a scratch Dispatch or another child process reads takes
 `testdb.PlainDatabase` instead: those readers send `pool_max_conns` to the server, which refuses
 it.
