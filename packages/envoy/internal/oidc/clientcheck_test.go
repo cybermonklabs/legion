@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -79,6 +80,40 @@ func TestCheckClientReadsTheIssuersAnswerAboutTheClient(t *testing.T) {
 				check, err, ClientCheckIssuerUnreachable)
 		}
 	})
+}
+
+// TestCheckClientIsOneTokenRequest pins that a check asks the token endpoint once, the way the
+// issuer's discovery document lists, whatever the verdict: a ready client, whose invented code the
+// issuer refuses, and a rejected one are each one request, by HTTP Basic under Google's list (the
+// test issuer's own) and in the form under a list naming client_secret_post alone. A client that
+// guessed its style would ask by HTTP Basic, be refused, and ask again in the form.
+func TestCheckClientIsOneTokenRequest(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		methods []string // nil keeps the test issuer's own list, Google's
+		secret  string
+		want    ClientCheck
+		sent    string
+	}{
+		{"a ready client, Google's list", nil, checkClientSecret, ClientCheckReady, "client_secret_basic"},
+		{"a rejected client, Google's list", nil, "not-the-secret", ClientCheckRejected, "client_secret_basic"},
+		{"a ready client, client_secret_post alone", []string{"client_secret_post"}, checkClientSecret, ClientCheckReady, "client_secret_post"},
+		{"a rejected client, client_secret_post alone", []string{"client_secret_post"}, "not-the-secret", ClientCheckRejected, "client_secret_post"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issuer := oidctest.New(t)
+			issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), checkClientID, checkClientSecret)
+			if c.methods != nil {
+				issuer.AdvertiseTokenAuthMethods(c.methods...)
+			}
+			if check, err := CheckClient(context.Background(), issuer.URL(), checkClientID, c.secret); check != c.want {
+				t.Fatalf("CheckClient = (%q, %v), want %q", check, err, c.want)
+			}
+			if got := issuer.TokenRequests(); !slices.Equal(got, []string{c.sent}) {
+				t.Fatalf("the check's token requests = %q, want one, %s", got, c.sent)
+			}
+		})
+	}
 }
 
 // TestCheckClientSpendsNoCodeOfItsOwnIssuer pins that the code a check invents is its own: a

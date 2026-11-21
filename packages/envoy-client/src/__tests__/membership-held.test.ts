@@ -10,9 +10,9 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
-import { signedIn, stubIssuer, writeSignIn } from "@legion/broker-client/test/sign-ins";
-import { RETRY_FIRST_WAIT_MS } from "@legion/broker-client/token-client";
-import { isFinalRefusal, TradeRetryingError } from "@legion/broker-client/token-errors";
+import { signedIn, stubIssuer, writeSignIn } from "@legion/cipher-client/test/sign-ins";
+import { RETRY_FIRST_WAIT_MS } from "@legion/cipher-client/token-client";
+import { isFinalRefusal, TradeRetryingError } from "@legion/cipher-client/token-errors";
 import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";

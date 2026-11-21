@@ -96,6 +96,14 @@ message from Dispatch's Agents page as that person's own turn.
   The server pings NATS every 10 seconds and drops a connection that leaves two pings unanswered,
   so a connection that stops answering without closing is left within 30 seconds and redialed,
   and the listener restarts the relay at the consumer's ack floor.
+  A connection nats.js closes for good is replaced too. nats.js gives up after a repeated
+  authorization refusal under an nkey seed or no credential, and when the session's broker token
+  cannot sign the hub's greeting (a hub that sends no nonce). The server dials a new connection
+  as it dialed at start, warning of each redial on stderr, subscribes the relay subject on it and
+  registers a new epoch, so the listener restarts the relay at the ack floor. Until then the
+  session is told once that it receives nothing, naming why, and once that it receives again. A
+  dial that fails for good (an authorization refusal under a seed) is dialed again at the next
+  heartbeat, and a `/clear` made meanwhile completes on the new connection.
   What the consumer does not hold: anything older than 72 hours, anything from before the session
   followed the topic, and anything from before it first registered; a `/clear` starts afresh, as a
   new session does. What the session was delivered, and where it read to, are kept in
@@ -524,15 +532,28 @@ token beside it, and its token only beside its own server. An `envoy` section in
 file is not read, which the channel server's notice says, and a checkout's file that is not valid
 refuses Dispatch alone, only while `DISPATCH_URL` is unset. The chosen file's `dispatch` section
 (`enabled`, `serverUrl`, `token`) and `envoy` section (`enabled`, `url`, `natsUrls`, `token`,
-`natsSeed`, `natsAuth`) are resolved each on its own; `enabled: false` turns one off, a missing file
-contributes nothing (each section is then on only when its variables name it), and a `token` or
-`natsSeed` starting with `!` is a command whose trimmed output is the value. `DISPATCH_URL`,
-`DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN`, `ENVOY_URL`, `ENVOY_NATS_URL`, `ENVOY_TOKEN_FILE`,
-`ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE`, `NATS_NKEY_SEED` and `NATS_AUTH` each override their own
-field; a file's token or seed goes with a variable's server only when it is the file's own. With
+`natsSeed`, `natsAuth`, `inbound`) are resolved each on its own; `enabled: false` turns one off, a
+missing file contributes nothing (each section is then on only when its variables name it), and a
+`token` or `natsSeed` starting with `!` is a command whose trimmed output is the value.
+`DISPATCH_URL`, `DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN`, `ENVOY_URL`, `ENVOY_NATS_URL`,
+`ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE`, `NATS_NKEY_SEED`, `NATS_AUTH` and
+`ENVOY_INBOUND` each override their own field; a file's token or seed goes with a variable's server
+only when it is the file's own. With
 `NATS_AUTH=broker` and no seed the NATS connection presents the session's own broker token, which
 a hub's NATS auth service admits to that session's subjects alone, and a `/clear` moves it to the
-new id's token before the new id's relay subject is subscribed. The `open-asks` hook
+new id's token before the new id's relay subject is subscribed. With `ENVOY_INBOUND=listener` (or
+`"inbound": "listener"`), a Claude Code or Codex session takes its inbound messages through the
+listener's relay socket, `<ENVOY_URL>/v1/sessions/<id>/relay`, over HTTPS alone, with the session's
+own broker token, rather than over NATS, and a `/clear` or `/new` opens the socket again for the
+new id; it is refused beside `ENVOY_NATS_URL` or `envoy.natsUrls`, naming both, with a bearer for
+the listener, with no broker route, and for a process that names no session. With the setting, a
+listener at a plain http address of another machine turns Envoy off as a whole, its tools
+included, a NATS server named or not (the token would cross the network unencrypted; a conflict
+with a NATS server is named first; this machine's own listener may be plain http, and a session
+not set to `listener` keeps plain http). The
+socket carries no agent stream, so neither live view
+takes its control subject and the Agents page shows nothing of the session's turns, which the
+start notice says. The `open-asks` hook
 hands the file on to the session's Bash as `ENVOY_CONFIG_FILE` beside `DISPATCH_HOST=claude`, and
 the `dispatch` command reads the file `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set; a
 Bash with neither, as a subagent's can be, has `CLAUDE_CODE_CHILD_SESSION=1` and takes this plugin's

@@ -588,19 +588,44 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 	}
 }
 
-// theTag is the pin a pod's worker image carries, as these tests spell one.
+// theTag is the pin a pod's worker image carries, as these tests spell one, and theChecker the
+// deployment's manifest digest the runtime tells a role of a deployment that runs a shared leak
+// check (leakguard.CheckerVar): the digest (leakguard.Manifest) of the stand-in check every install
+// here holds (installedFiles), which the shim compares before it starts an agent.
 const theTag = "leak-check-v15"
 
+// installedFiles are the files of the stand-in check every install here holds: a launcher whose
+// --help names both shapes, and the other files of its manifest.
+var installedFiles = map[string]string{
+	leakguardtest.CheckName:    "#!/bin/sh\n" + leakguardtest.AnswersHelp(os.DevNull),
+	leakguardtest.ProgramName:  leakguardtest.Program,
+	leakguardtest.ReadmeName:   leakguardtest.Readme,
+	leakguardtest.MustPassName: leakguardtest.MustPass,
+}
+
+var theChecker = leakguard.CheckerVar + "=" + func() string {
+	digest, err := leakguard.Manifest(func(name string) ([]byte, error) { return []byte(installedFiles[name]), nil })
+	if err != nil {
+		panic(err)
+	}
+	return digest
+}()
+
 // installedCheck is the directory the pod's launcher installs the check the daemon served into,
-// made the way the launcher makes it: a GitHub-shaped tarball of a stand-in check whose --help
-// names both shapes (leakguardtest.AnswersHelp), packed (leakguard.PackTarball) and installed at
-// tag (leakguard.InstallServed).
+// made the way the launcher makes it: a GitHub-shaped tarball of installedFiles, packed
+// (leakguard.PackTarballManifest) and installed at tag (leakguard.InstallServed).
 func installedCheck(t *testing.T, tag string) string {
 	t.Helper()
-	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
-	})
-	body, err := leakguard.PackTarball(bytes.NewReader(raw))
+	members := map[string]leakguardtest.Member{}
+	for name, body := range installedFiles {
+		mode := int64(0o644)
+		if name == leakguardtest.CheckName {
+			mode = 0o755
+		}
+		members[name] = leakguardtest.Member{Body: body, Mode: mode}
+	}
+	raw := leakguardtest.GitHubTarball(t, members)
+	body, _, err := leakguard.PackTarballManifest(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +656,7 @@ func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := socketPath(t)
 			daemon := listen(t, path)
-			extra := []string{leakguard.TagVariable + "=" + theTag}
+			extra := []string{leakguard.TagVariable + "=" + theTag, theChecker}
 			if tc.already != "" {
 				extra = append(extra, leakguard.CheckVar+"="+tc.already)
 			}
@@ -653,9 +678,9 @@ func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
 	}
 }
 
-// A role whose environment carries the pin and whose pod holds no install of it runs no agent at
-// all: the shim ends with exit 1 and the read's own refusal. Every write path of such a role would
-// refuse anyway.
+// A role whose environment carries the pin and the deployment's checker and whose pod holds no
+// install of the pin runs no agent at all: the shim ends with exit 1 and the read's own refusal.
+// Every write path of such a role would refuse anyway.
 func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -670,7 +695,7 @@ func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := socketPath(t)
 			daemon := listen(t, path)
-			child := newOMP(t, leakguard.TagVariable+"="+theTag)
+			child := newOMP(t, leakguard.TagVariable+"="+theTag, theChecker)
 			cfg := config(t, path, child)
 			cfg.LeakCheckDir = tc.dir(t)
 			sh := run(t, cfg, newClock())
@@ -696,22 +721,34 @@ func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
 	}
 }
 
-// A tmux pane's environment carries no pin, and its shim reads no install at all: the agent
-// starts where no install exists, and the shim names no check of its own for it.
-func TestWithNoPinTheAgentStartsWithNoInstall(t *testing.T) {
-	path := socketPath(t)
-	daemon := listen(t, path)
-	child := newOMP(t)
-	cfg := config(t, path, child)
-	cfg.LeakCheckDir = filepath.Join(t.TempDir(), "leak-check")
-	sh := run(t, cfg, newClock())
+// A tmux pane's environment carries no pin, and a role of a deployment that runs no shared leak
+// check carries the image's pin and no checker (leakguard.CheckerVar): the shim of either reads no
+// install at all, the agent starts where no install exists, and the shim names no check of its
+// own for it.
+func TestWithNoPinOrNoCheckerTheAgentStartsWithNoInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+	}{
+		{"no pin", nil},
+		{"the pin and no checker", []string{leakguard.TagVariable + "=" + theTag}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := socketPath(t)
+			daemon := listen(t, path)
+			child := newOMP(t, tc.env...)
+			cfg := config(t, path, child)
+			cfg.LeakCheckDir = filepath.Join(t.TempDir(), "leak-check")
+			sh := run(t, cfg, newClock())
 
-	daemon.accept(t).open(t)
-	if got, ok := child.environment(t)[leakguard.CheckVar]; ok {
-		t.Errorf("the child was told %s=%q, want no check named by the shim; log:\n%s", leakguard.CheckVar, got, sh.log)
-	}
-	if sh.log.count("the shared public leak check") != 0 {
-		t.Errorf("the shim logged an install with no pin; log:\n%s", sh.log)
+			daemon.accept(t).open(t)
+			if got, ok := child.environment(t)[leakguard.CheckVar]; ok {
+				t.Errorf("the child was told %s=%q, want no check named by the shim; log:\n%s", leakguard.CheckVar, got, sh.log)
+			}
+			if sh.log.count("the shared public leak check") != 0 {
+				t.Errorf("the shim logged an install it should not have read; log:\n%s", sh.log)
+			}
+		})
 	}
 }
 
@@ -1560,6 +1597,69 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 				t.Fatalf("the lock after the failed adoption: %v, want it left in place", err)
 			}
 		})
+	}
+}
+
+// An adoption that fails answers its reason to the daemon on the connection it was asked on,
+// however much jj wrote to its standard error. The answer goes out as one line, and an error
+// longer than one line can hold would make an answer the writer refuses: the shim would close the
+// connection and send that line first again at each reconnect, so the role's stream would stay
+// down (ASVS v5.0.0-15.2.2). The answer keeps the start of the reason, which names the command and
+// its exit, and its end, where the note about a stale git lock goes, which tells the role what to
+// do; it says that the shim cut the bytes between. The connection then carries the next answer.
+func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testing.T) {
+	workspace := t.TempDir()
+	lock := filepath.Join(workspace, ".git", "index.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	written := time.Now().Add(-31 * time.Minute)
+	if err := os.Chtimes(lock, written, written); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\n"+
+		"echo >&2\necho \"fatal: Unable to create '%s': File exists.\" >&2\nexit 1\n", 2*shimwire.MaxFrameBytes, lock)
+	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	cfg := config(t, path, child)
+	cfg.Env = append(fixtureenv.Isolated(t.TempDir()), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker,
+		"FAKE_OMP_LOG="+child.log, "LEGION_WORKSPACE="+workspace)
+	run(t, cfg, newClock())
+	p := daemon.accept(t)
+	p.open(t)
+	p.send(t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: "tester", JJEmail: "tester@example.test", TimeoutMs: 10000})
+	got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult)
+	if !ok || got.ID != "adopt" || got.OK {
+		t.Fatalf("the shim answered %#v, want the failed adoption", got)
+	}
+	// The shim keeps 4 KiB of a reason and a line that says what it cut (shim's cutAnswerError).
+	if len(got.Error) > 8<<10 {
+		t.Fatalf("the failed adoption's reason has %d bytes, want it cut to about 4 KiB", len(got.Error))
+	}
+	for _, want := range []string{
+		"Command failed (exit 1)",
+		"the working copy is stale",
+		"The shim cut",
+		"git lock " + lock + " was last written 31m",
+		"Run the command again in about 16 minutes.",
+	} {
+		if !strings.Contains(got.Error, want) {
+			t.Errorf("the failed adoption's reason %.300q ... %.300q does not say %q", got.Error, got.Error[max(len(got.Error)-300, 0):], want)
+		}
+	}
+	p.send(t, shimwire.GetState{ID: "after"})
+	if answer, ok := p.next(t).(shimwire.Response); !ok || answer.ID != "after" {
+		t.Fatalf("the shim sent %#v, want OMP's answer to the get_state after the adoption on the same connection", answer)
 	}
 }
 

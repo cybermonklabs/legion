@@ -63,7 +63,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-LEAN_DIR="$ENVOY_DIR/internal/broker/airlock/lean"
+LEAN_DIR="$ENVOY_DIR/internal/cipher/proxyrules/lean"
 # shellcheck source=packages/envoy/scripts/airlock/k7-consumers.sh
 source "$SCRIPT_DIR/airlock/k7-consumers.sh"
 
@@ -1093,9 +1093,10 @@ check_k5() {
 		"the stored secret's second call carries the new value, and every call succeeds" \
 		"the first call carried the old value and the second the new one, by SHA-256 and length; the two answered $K5_FIRST_STATUS and $K5_SECOND_STATUS"
 
-	# The google-login half. The stack's Google stand answers one fixed access token and a
-	# lifetime of an hour, so nothing here can make the proxy mint again after three minutes,
-	# and two mints could not be told apart if it did.
+	# The google-login half. The stack's Google stand answers a new numbered access token at
+	# each refresh, with the 7-minute lifetime dev-airlock.sh gives it, so the proxy's
+	# five-minute margin falls due before the second call three minutes on, which must carry a
+	# fresh mint.
 	local google_before google_after first_status second_status s_mark got_first got_second recs
 	google_before="$(records_count google)"
 	s_mark="$(records_count s)"
@@ -1109,7 +1110,7 @@ check_k5() {
 	got_second="$(printf '%s' "$recs" | jq -r '[.[] | .header.Authorization // [] | .[]] | .[1] // ""')"
 	observe "the google-login secret: the call at once answered $first_status carrying $(shape "$got_first"), and the one three minutes later $second_status carrying $(shape "$got_second"); the stand-in minter was asked $((google_after - google_before)) times"
 	if [ "$got_first" = "$got_second" ]; then
-		fail "the google-login secret's second call carries the new value — this step cannot run on this stack. dev-airlock.sh's Google stand answers one fixed access token ('the-stand-in-google-access-token') with a lifetime of an hour, so the proxy's five-minute margin never falls due within three minutes, and two mints could not be told apart if it did. It needs dev-airlock.sh to pass --google-lifetime 7m to dev-airlock-stands and airlocktest.GoogleStand to answer a different token for each mint. Here the minter was asked $((google_after - google_before)) times, both calls answered $first_status and $second_status, and the two carried one value by SHA-256 and length."
+		fail "the google-login secret's second call carries the new value — it carried the first call's. The stand answers a new numbered access token at each refresh, with the 7-minute lifetime dev-airlock.sh gives it, so the proxy's five-minute margin falls due two minutes after the first mint and the call three minutes on should have carried a fresh one. Here the minter was asked $((google_after - google_before)) times, both calls answered $first_status and $second_status, and the two carried one value by SHA-256 and length."
 	else
 		judge "$([ "$first_status" = 200 ] && [ "$second_status" = 200 ] && echo 0 || echo 1)" \
 			"the google-login secret's second call carries the new value, and every call succeeds" \
@@ -1550,7 +1551,7 @@ say "git=\$(cd $d/repo && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.proxy GIT_CON
 # command line: curl reads the header on standard input. wget reads a header from no pipe, so it
 # gets a startup file of its own, removed when this script exits: the airlock's WGETRC first,
 # whose ca_certificate is the one way the proxy's certificate reaches wget
-# (cmd/agent-secrets/airlock.go, wgetrcFor), then the header. --config would read that file in
+# (cmd/cipher/airlock.go, wgetrcFor), then the header. --config would read that file in
 # place of WGETRC and lose the certificate, so the file is named as WGETRC for this one call.
 # wget follows a redirect by default and sends a startup file's header on every request, to the
 # origin a Location names too (wget 1.21.4, measured 2026-11-17), so --max-redirect=0 holds it to
@@ -2130,9 +2131,9 @@ check_k15() {
 		"${bad:-every one of the $count rests on propext, Classical.choice and Quot.sound alone, and none on sorryAx}"
 
 	echo "airlock-check: fuzzing the Go airlock against the model for ten minutes..." >&2
-	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" go test -run FuzzAirlock ./internal/broker/airlock/) >"$WORK_DIR/seed-corpus.log" 2>&1
+	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" go test -run FuzzAirlock ./internal/cipher/proxyrules/) >"$WORK_DIR/seed-corpus.log" 2>&1
 	local seed_status=$?
-	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" go test -fuzz FuzzAirlock -fuzztime=600s -run FuzzAirlock ./internal/broker/airlock/) >"$WORK_DIR/fuzz.log" 2>&1
+	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" go test -fuzz FuzzAirlock -fuzztime=600s -run FuzzAirlock ./internal/cipher/proxyrules/) >"$WORK_DIR/fuzz.log" 2>&1
 	local fuzz_status=$?
 	observe "the seed corpus comparison exited $seed_status: $(tail -n 2 "$WORK_DIR/seed-corpus.log" | tr '\n' ' ')"
 	observe "ten minutes of fuzzing exited $fuzz_status: $(grep -E '^(ok|FAIL|--- FAIL|fuzz:)' "$WORK_DIR/fuzz.log" | tail -n 3 | tr '\n' ' ')"

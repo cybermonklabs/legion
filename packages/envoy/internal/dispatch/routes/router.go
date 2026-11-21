@@ -32,7 +32,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -141,7 +142,7 @@ type AppContextOptions struct {
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	AgentStream  agentstream.Source
 	// AgentPublisher queues a person's targeted message on its session's own subject when no store
 	// of the listener's holds that session: cmd/dispatch's NATS client, its recorder under the
@@ -179,6 +180,10 @@ type AppContextOptions struct {
 	OutboxPublishes bool
 	// Metrics is the process's metrics registry (cmd/dispatch's /metrics); see api.Deps.Metrics.
 	Metrics *metrics.Registry
+	// AnswersLatency times the answers reads this process serves for the keyword fill's pause,
+	// which cmd/dispatch gives the fill too (textversions.Config.Latency); nil times none. See
+	// api.Deps.AnswersLatency.
+	AnswersLatency *sessionanswers.Latency
 	// DevSignIn mounts GET /auth/_dev/signin, which issues the session cookie for any person
 	// named with no sign-in issuer exchange, and makes the whole router refuse a request whose Host
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
@@ -244,6 +249,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		OutboxPublishes:        opts.OutboxPublishes,
 		Metrics:                opts.Metrics,
+		AnswersLatency:         opts.AnswersLatency,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
 	})

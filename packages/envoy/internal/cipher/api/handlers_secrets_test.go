@@ -1,0 +1,564 @@
+package api_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+
+	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/ratelimit"
+)
+
+// wireSettings is GET /v1/settings's answer as the CLI reads it.
+type wireSettings struct {
+	Store         string `json:"store"`
+	SecretsPrefix string `json:"secrets_prefix"`
+	KMSKeyARN     string `json:"kms_key_arn"`
+	AWSAccountID  string `json:"aws_account_id"`
+	AWSRegion     string `json:"aws_region"`
+	KMSKeyName    string `json:"kms_key_name"`
+	GCPProject    string `json:"gcp_project"`
+	SecretTypeTag bool   `json:"secret_type_tag"`
+}
+
+// wireReread is POST /v1/secrets/{name}/reread's answer.
+type wireReread struct {
+	Name   string `json:"name"`
+	Served bool   `json:"served"`
+	Reason string `json:"reason"`
+	Type   string `json:"type"`
+}
+
+// TestSettingsAnswersTheNamespaceAndKey pins GET /v1/settings for a broker on AWS Secrets
+// Manager: the store, the prefix, the key ARN with its account and region, and secret_type_tag,
+// which says this broker reads a secret's type from the type tag, so agent-secrets writes a typed
+// secret through it (a broker from before the tag sends no such field).
+func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
+	ts := newTestServer(t)
+	status, body := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	got := decode[wireSettings](t, body)
+	want := wireSettings{Store: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: "111122223333", AWSRegion: "us-east-1", SecretTypeTag: true}
+	if got != want {
+		t.Fatalf("settings = %+v, want %+v", got, want)
+	}
+	// The AWS fields are omitted, not empty, so a client reading the raw body sees no AWS key.
+	if strings.Contains(string(body), "kms_key_name") || strings.Contains(string(body), "gcp_project") {
+		t.Fatalf("an AWS broker's settings carry GCP fields: %s", body)
+	}
+}
+
+// TestSettingsAnswersTheGCPStore pins GET /v1/settings for a broker on Google Secret Manager: the
+// store's name, the prefix, the Cloud KMS key's name and the project number cut from the prefix,
+// with none of the AWS fields, and secret_type_tag, as on AWS.
+func TestSettingsAnswersTheGCPStore(t *testing.T) {
+	const prefix = "projects/000000000000/secrets/agent-secrets-"
+	const key = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+	mux := http.NewServeMux()
+	cur, err := policy.NewCurrent(t.Context(), policytest.Loader(secrets.NewLocal()), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreGCP, SecretsPrefix: prefix, SecretsKMSKey: key})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL + "/v1/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d: %s", resp.StatusCode, body)
+	}
+	got := decode[wireSettings](t, body)
+	want := wireSettings{Store: secrets.StoreGCP, SecretsPrefix: prefix, KMSKeyName: key, GCPProject: "000000000000", SecretTypeTag: true}
+	if got != want {
+		t.Fatalf("settings = %+v, want %+v", got, want)
+	}
+	for _, field := range []string{"kms_key_arn", "aws_account_id", "aws_region"} {
+		if strings.Contains(string(body), field) {
+			t.Fatalf("a GCP broker's settings carry %s: %s", field, body)
+		}
+	}
+}
+
+// TestSettingsNameTheGoogleExchangeAudienceOnEitherStore pins the exchange audience GET
+// /v1/settings answers beside the store, on either store: the audience a machine's Google identity
+// token must carry (BROKER_GOOGLE_OIDC_AUDIENCE), so a machine's `agent-secrets` finds the
+// identity it can trade with no setting of its own, beside that store's own key field. A broker
+// that accepts no machine identity names no audience at all, and none ever names a Kubernetes one.
+func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
+	for _, store := range []struct{ name, kind, prefix, key, keyField string }{
+		{"aws", secrets.StoreAWS, policytest.Prefix, policytest.KeyARN, "kms_key_arn"},
+		{"gcp", secrets.StoreGCP, "projects/000000000000/secrets/agent-secrets-", "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets", "kms_key_name"},
+	} {
+		t.Run(store.name, func(t *testing.T) {
+			read := func(t *testing.T, google string) (map[string]any, string) {
+				t.Helper()
+				cur, err := policy.NewCurrent(t.Context(), policytest.Loader(secrets.NewLocal()), time.Hour)
+				if err != nil {
+					t.Fatal(err)
+				}
+				mux := http.NewServeMux()
+				api.Register(mux, api.Deps{Policy: cur, SecretsStore: store.kind, SecretsPrefix: store.prefix, SecretsKMSKey: store.key,
+					GoogleExchangeAudience: google})
+				srv := httptest.NewServer(mux)
+				t.Cleanup(srv.Close)
+				resp, err := http.Get(srv.URL + "/v1/settings")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("status %d: %s", resp.StatusCode, body)
+				}
+				return decode[map[string]any](t, body), string(body)
+			}
+
+			got, body := read(t, "agent-secrets-vm")
+			if got["google_exchange_audience"] != "agent-secrets-vm" {
+				t.Fatalf("settings = %s; want google_exchange_audience agent-secrets-vm", body)
+			}
+			if got["store"] != store.kind || got[store.keyField] != store.key {
+				t.Fatalf("settings = %s; want the store %s and its %s beside the audience", body, store.kind, store.keyField)
+			}
+
+			_, body = read(t, "")
+			for _, field := range []string{"google_exchange_audience", "kubernetes_exchange_audience"} {
+				if strings.Contains(body, field) {
+					t.Fatalf("a broker that accepts no machine identity names %s: %s", field, body)
+				}
+			}
+		})
+	}
+}
+
+// rereadsFreely is the broker-wide bucket a row about what a reread *answers* mounts, so that
+// row never meets the production sizing of a bucket it is not about. The production figure is
+// the store's whole fleet budget divided by the pods the process counts (api.RereadOverallFor):
+// a burst of ten refilled one a second at two pods, and slower above that. It is sized for the
+// fleet rather than for a test: a row driving several rereads back to back, and any row that
+// later drives one more, would be answered by a limiter rather than by the handler it is
+// testing, and would go red on a sizing change that was correct. The rows that *are* about the
+// limiter inject a bucket of their own in the same way, with no tokens left in it.
+var rereadsFreely = ratelimit.Limit{Every: time.Millisecond, Burst: 100}
+
+func TestRereadServesANewSecretAndDropsADeletedOne(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
+	ts.Secrets.Put(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
+	status, body := ts.sessionReread(t, "NEW_KEY")
+	if status != http.StatusOK {
+		t.Fatalf("reread: %d %s", status, body)
+	}
+	if r := decode[wireReread](t, body); !r.Served || r.Reason != "" {
+		t.Fatalf("reread = %+v, want served", r)
+	}
+	ts.Secrets.Delete(policytest.ID("NEW_KEY"))
+	_, body = ts.sessionReread(t, "NEW_KEY")
+	if r := decode[wireReread](t, body); r.Served || r.Reason != policy.ReasonAbsent {
+		t.Fatalf("after delete = %+v, want absent", r)
+	}
+	if status, body = ts.req(t, http.MethodPost, "/v1/secrets/not_a_name/reread", nil, nil); status != http.StatusBadRequest || decode[wireError](t, body).Code != "SECRET_NAME_INVALID" {
+		t.Fatalf("malformed name: %d %s, want 400 SECRET_NAME_INVALID", status, body)
+	}
+	// A name whose Secrets Manager name would pass the 512-character limit names no secret.
+	tooLong := "A" + strings.Repeat("B", 512-len(policytest.Prefix))
+	if status, body = ts.req(t, http.MethodPost, "/v1/secrets/"+tooLong+"/reread", nil, nil); status != http.StatusBadRequest || decode[wireError](t, body).Code != "SECRET_NAME_INVALID" {
+		t.Fatalf("over-long name: %d %s, want 400 SECRET_NAME_INVALID", status, body)
+	}
+}
+
+// TestARereadNamesTheTypeItServes: a reread's answer names the type the broker serves the secret
+// as, and none for a stored secret, so a person who retags a secret to a type can tell a reread
+// that read the new tags from one that read them stale. It carries nothing else of the tags.
+func TestARereadNamesTheTypeItServes(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
+	ts.Secrets.Put(policytest.Secret("PLAIN_KEY", testApprover, policy.TierAgent, "v1"))
+	_, body := ts.sessionReread(t, "PLAIN_KEY")
+	if r := decode[wireReread](t, body); !r.Served || r.Type != "" || strings.Contains(string(body), `"type"`) {
+		t.Fatalf("reread of a stored secret = %s, want served with no type", body)
+	}
+	for _, secretType := range policy.Types {
+		// An anthropic-federation secret is served at human tier alone (policy.ReasonTypeHumanTier);
+		// every other type at agent tier, as before.
+		tier := policy.TierAgent
+		if secretType == policy.TypeAnthropicFederation {
+			tier = policy.TierHuman
+		}
+		ts.Secrets.Put(policytest.TypeSecret("PLAIN_KEY", testApprover, tier, secretType, policytest.TypeValue(secretType)))
+		_, body = ts.sessionReread(t, "PLAIN_KEY")
+		if r := decode[wireReread](t, body); !r.Served || r.Type != secretType {
+			t.Fatalf("reread once the type is %s = %s, want served as %s", secretType, body, secretType)
+		}
+		for _, private := range []string{testApprover, tier, "github-owners", "owner"} {
+			if strings.Contains(string(body), private) {
+				t.Fatalf("reread answer %s carries %q; it names only the type", body, private)
+			}
+		}
+	}
+}
+
+// TestARereadWhoseRequestEndedLogsNoError pins that a session's reread whose request ended before
+// it finished - its caller went away, or its deadline passed - is answered 503 REQUEST_ENDED
+// without the ERROR line "broker: reread secret failed" that an operator's alert counts, as the
+// miss path logs nothing for one, while a reread Secrets Manager itself fails for a caller still
+// waiting is still that 500 and that line. A request that ends during the value read of a type
+// secret's version the pod has not decoded, once the metadata read has served the secret, ended
+// before the reread finished too: it is that 503, not a 200 answering for a value nobody checked.
+// That reread has merged the tags it read into this pod's policy, though, so the other pods are
+// told to reread the name as on a 200, on a context of the handler's own; one whose request ended
+// during its metadata read merged nothing and tells nobody, nor does the 500.
+func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
+	verifier, sign := oneSession(t)
+	// route is the reread route over a policy of local whose Secrets Manager calls client makes,
+	// telling the other pods through notifier.
+	route := func(local *secrets.Local, client secrets.SecretsManagerAPI, notifier *recordingNotifier) *http.ServeMux {
+		loader := policytest.Loader(local)
+		loader.Store = policytest.StoreThrough(local, client)
+		cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux := http.NewServeMux()
+		api.Register(mux, api.Deps{PublicURL: oneSessionBroker, Proof: verifier, Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN, NotifyReread: notifier.notify})
+		return mux
+	}
+	// signed is a session's reread of name, on ctx.
+	signed := func(ctx context.Context, name string) *http.Request {
+		path := "/v1/secrets/" + name + "/reread"
+		request := httptest.NewRequestWithContext(ctx, http.MethodPost, path, nil)
+		request.Header.Set("Proof", sign(http.MethodPost, oneSessionBroker+path))
+		return request
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	local, notifier := secrets.NewLocal(), &recordingNotifier{}
+	mux := route(local, abandoningDescriber{SecretsManagerAPI: local, cancel: cancel}, notifier)
+	valueCtx, cancelValue := context.WithCancel(context.Background())
+	defer cancelValue()
+	valueLocal, valueNotifier := secrets.NewLocal(), &recordingNotifier{}
+	valueMux := route(valueLocal, abandoningReader{SecretsManagerAPI: valueLocal, cancel: cancelValue}, valueNotifier)
+	valueLocal.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+	logged := policytest.CaptureLog(t)
+
+	for _, ended := range []struct {
+		during   string
+		mux      *http.ServeMux
+		ctx      context.Context
+		name     string
+		notifier *recordingNotifier
+		// notified is what the other pods were told: nothing for a reread that merged nothing.
+		notified []string
+	}{
+		{"its metadata read", mux, ctx, "NEW_KEY", notifier, nil},
+		{"its value read", valueMux, valueCtx, "APP_KEY", valueNotifier, []string{"APP_KEY"}},
+	} {
+		answer := httptest.NewRecorder()
+		ended.mux.ServeHTTP(answer, signed(ended.ctx, ended.name))
+		if answer.Code != http.StatusServiceUnavailable || decode[wireError](t, answer.Body.Bytes()).Code != "REQUEST_ENDED" || strings.Contains(logged.String(), "reread secret failed") {
+			t.Fatalf("a reread whose caller went away during %s: %d %s, logged %q; want 503 REQUEST_ENDED and no line", ended.during, answer.Code, strings.TrimSpace(answer.Body.String()), logged.String())
+		}
+		if got := ended.notifier.recorded(); !slices.Equal(got, ended.notified) {
+			t.Fatalf("a reread whose caller went away during %s notified %q, want %q", ended.during, got, ended.notified)
+		}
+	}
+
+	failed := httptest.NewRecorder()
+	mux.ServeHTTP(failed, signed(context.Background(), "NEW_KEY"))
+	if failed.Code != http.StatusInternalServerError || !strings.Contains(logged.String(), "ERROR broker: reread secret failed") {
+		t.Fatalf("a reread Secrets Manager failed for a live caller: %d, logged %q; want 500 and the ERROR line", failed.Code, logged.String())
+	}
+	if got := notifier.recorded(); len(got) != 0 {
+		t.Fatalf("a reread Secrets Manager failed notified %q, want nobody", got)
+	}
+}
+
+// oneSessionBroker is the BROKER_PUBLIC_URL of a route a row mounts on a bare mux, which a
+// session's proof names (oneSession).
+const oneSessionBroker = "https://broker.example"
+
+// oneSession is a proof verifier that knows one live session and nothing else, and that
+// session's signer: what a route a row mounts on a bare mux, with no store behind it, needs to
+// answer a session's call. Every proof it is shown is fresh, since such a row signs each call
+// once.
+func oneSession(t *testing.T) (*proof.Verifier, func(method, url string) string) {
+	t.Helper()
+	const enrollmentID = "00000000-0000-4000-8000-00000000a11e"
+	key := newSigningKey(t)
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := &proof.Verifier{
+		Skew: time.Minute,
+		Lookup: func(_ context.Context, id string) (string, bool, error) {
+			return thumbprint, id == enrollmentID, nil
+		},
+		Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil },
+	}
+	return verifier, func(method, url string) string {
+		signed, err := proof.Sign(key, enrollmentID, method, url, time.Now())
+		if err != nil {
+			t.Fatalf("proof.Sign: %v", err)
+		}
+		return signed
+	}
+}
+
+// abandoningDescriber is a caller that goes away while the reread's DescribeSecret is in flight:
+// it ends that caller's context and fails as the AWS SDK does once a context has ended. For a
+// caller whose context it does not hold, it fails as a throttled Secrets Manager does.
+type abandoningDescriber struct {
+	secrets.SecretsManagerAPI
+	cancel context.CancelFunc
+}
+
+func (d abandoningDescriber) DescribeSecret(ctx context.Context, _ *secretsmanager.DescribeSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+	d.cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", err)
+	}
+	return nil, errors.New("operation error Secrets Manager: DescribeSecret, ThrottlingException")
+}
+
+// abandoningReader is a caller that goes away while the reread's value read is in flight, its
+// DescribeSecret answered: it ends that caller's context and fails as the AWS SDK does once a
+// context has ended.
+type abandoningReader struct {
+	secrets.SecretsManagerAPI
+	cancel context.CancelFunc
+}
+
+func (r abandoningReader) GetSecretValue(ctx context.Context, _ *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	r.cancel()
+	return nil, fmt.Errorf("operation error Secrets Manager: GetSecretValue, %w", ctx.Err())
+}
+
+// postReread sends one reread of name with headers, answering the status, headers and body: the
+// 429 each reread limit answers carries a Retry-After, which testServer.req does not give back.
+func postReread(t *testing.T, ts *testServer, name string, headers map[string]string) (int, http.Header, []byte) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/secrets/"+name+"/reread", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+	resp, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, resp.Header, body
+}
+
+func TestRereadIsRateLimitedPerAddress(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadLimit = &ratelimit.Limit{Every: time.Hour, Burst: 1} })
+	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/WORKER_TOKEN/reread", nil, nil); status != http.StatusAccepted {
+		t.Fatalf("first reread: %d %s", status, body)
+	}
+	status, headers, body := postReread(t, ts, "WORKER_TOKEN", nil)
+	if status != http.StatusTooManyRequests || headers.Get("Retry-After") != "3600" || decode[wireError](t, body).Code != "RATE_LIMITED" {
+		t.Fatalf("second reread: %d Retry-After=%q %s, want 429 RATE_LIMITED with Retry-After 3600", status, headers.Get("Retry-After"), body)
+	}
+}
+
+// TestOneAddressNeverOutlastsTheSharedRereadBucket pins the ordering the whole fan-out leans on,
+// as a relation between the two buckets rather than as two numbers.
+//
+// POST /v1/secrets/{name}/reread takes no credential (routes_table.go: public), and
+// ratelimit.Keyed.AllowBothAt charges a refusal to neither bucket, so a caller that never floods
+// and merely keeps succeeding at the rate the broker-wide bucket refills holds that bucket at
+// zero for ever and is never refused itself. While it is empty no narrowing retag reaches any
+// pod before that pod's own five-minute reload, which is the one thing this fan-out exists to
+// prevent. So one address's own sustained rate has to be strictly less than the shared bucket's,
+// and by enough that holding it down takes more than one address: the rule is that the address
+// bucket refills at half the rate of the shared bucket THIS PROCESS MOUNTS.
+//
+// It has to be the mounted bucket and not a constant, because no constant is what a process
+// mounts: cmd/cipherd divides the Secret Manager fleet budget under gcp-secret-manager and the
+// default one otherwise, and each pod divides whichever it has by the pods it counts. An
+// address limit derived from the Google figure alone makes every AWS deployment pay a fourfold
+// tightening for a Secret Manager quota it never touches, one derived from the default figure
+// alone leaves a single address able to hold a Secret Manager fleet's budget at zero, and one
+// derived at a fixed replica count drifts from the bucket the process really runs as the count
+// moves.
+//
+// Retry-After is the observable: it carries the refusing bucket's own Every
+// (ratelimit.RetryAfterSeconds, which every bucket refusal of that package carries), so it says
+// which bucket refused and at what rate, which nothing else in the answer does. The mounted
+// shared bucket is given a depth no row here can reach, so the only refusal this can meet is the
+// address's own. The two rates it drives are the two stores' sizings at two pods; the relation
+// is the same at every count, since RereadRate moves both buckets together.
+func TestOneAddressNeverOutlastsTheSharedRereadBucket(t *testing.T) {
+	for _, shared := range []time.Duration{time.Second, 4 * time.Second} {
+		t.Run(shared.String(), func(t *testing.T) {
+			ts := newTestServerWith(t, func(d *api.Deps) {
+				d.RereadOverallLimit = &ratelimit.Limit{Every: shared, Burst: 1000}
+				d.TrustedProxyHeader = "X-Forwarded-For"
+			})
+			want := fmt.Sprintf("%d", int(2*shared/time.Second))
+			from := map[string]string{"X-Forwarded-For": "203.0.113.7"}
+			for sent := 1; sent <= 400; sent++ {
+				status, headers, body := postReread(t, ts, "WORKER_TOKEN", from)
+				if status == http.StatusAccepted {
+					continue
+				}
+				if status != http.StatusTooManyRequests || decode[wireError](t, body).Code != "RATE_LIMITED" {
+					t.Fatalf("reread %d from one address against a shared bucket of %s = %d %s; want 202 until that address's own bucket refuses",
+						sent, shared, status, body)
+				}
+				if got := headers.Get("Retry-After"); got != want {
+					t.Fatalf("one address's own reread bucket refuses with Retry-After %q against a shared bucket refilling every %s; want %q — the address bucket refills at half the shared bucket this process mounts, so that no single unauthenticated address can hold the fleet's reread budget at zero and so that a deployment is not tightened by a bucket it does not mount",
+						got, shared, want)
+				}
+				return
+			}
+			t.Fatalf("400 rereads from one address and its own bucket never refused; the row cannot read a rate it never meets")
+		})
+	}
+}
+
+// TestRereadIsRateLimitedAcrossEveryAddress pins the broker-wide bound. Every reread takes the
+// policy's writer lock, so a flood spread over addresses that are each on their first reread —
+// well inside their own limit — is refused all the same, and names the broker-wide bucket's own
+// Retry-After.
+func TestRereadIsRateLimitedAcrossEveryAddress(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.RereadOverallLimit = &ratelimit.Limit{Every: time.Hour, Burst: 2}
+		d.TrustedProxyHeader = "X-Forwarded-For"
+	})
+	for _, address := range []string{"198.51.100.1", "198.51.100.2"} {
+		if status, _, body := postReread(t, ts, "WORKER_TOKEN", map[string]string{"X-Forwarded-For": address}); status != http.StatusAccepted {
+			t.Fatalf("reread from %s: %d %s, want 202 (its own first reread)", address, status, body)
+		}
+	}
+	status, headers, body := postReread(t, ts, "WORKER_TOKEN", map[string]string{"X-Forwarded-For": "198.51.100.3"})
+	if status != http.StatusTooManyRequests || headers.Get("Retry-After") != "3600" || decode[wireError](t, body).Code != "RATE_LIMITED" {
+		t.Fatalf("third address: %d Retry-After=%q %s, want 429 RATE_LIMITED with Retry-After 3600 past the broker-wide burst", status, headers.Get("Retry-After"), body)
+	}
+}
+
+// TestOneAddressFloodingItsLimitLeavesOthersTheirRereads pins the order the two buckets are taken
+// in: a reread its own address's bucket refuses spends nothing of the broker-wide one, so one
+// address flooding past its own limit does not refuse another address's first reread.
+func TestOneAddressFloodingItsLimitLeavesOthersTheirRereads(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.RereadLimit = &ratelimit.Limit{Every: time.Hour, Burst: 1}
+		d.RereadOverallLimit = &ratelimit.Limit{Every: time.Hour, Burst: 2}
+		d.TrustedProxyHeader = "X-Forwarded-For"
+	})
+	flooder := map[string]string{"X-Forwarded-For": "198.51.100.1"}
+	if status, _, body := postReread(t, ts, "WORKER_TOKEN", flooder); status != http.StatusAccepted {
+		t.Fatalf("flooder's first reread: %d %s", status, body)
+	}
+	for i := range 5 {
+		if status, headers, body := postReread(t, ts, "WORKER_TOKEN", flooder); status != http.StatusTooManyRequests || headers.Get("Retry-After") != "3600" {
+			t.Fatalf("flooder's reread %d: %d Retry-After=%q %s, want 429 from its own bucket", i+2, status, headers.Get("Retry-After"), body)
+		}
+	}
+	if status, _, body := postReread(t, ts, "WORKER_TOKEN", map[string]string{"X-Forwarded-For": "198.51.100.2"}); status != http.StatusAccepted {
+		t.Fatalf("another address's first reread after the flood: %d %s, want 202", status, body)
+	}
+}
+
+// recordingNotifier stands in for the Postgres fan-out cmd/cipherd wires into Deps.NotifyReread
+// (internal/cipher/reread's Notifier), recording the names it was asked to send. The handler
+// calls it on a context of its own rather than the request's, from the server's own goroutine, so
+// the names are taken under a mutex; a context already ended when the call arrives is recorded as
+// its own entry, so a fan-out wrongly riding the request's context fails the comparison rather
+// than passing unnoticed.
+type recordingNotifier struct {
+	mu    sync.Mutex
+	names []string
+}
+
+func (n *recordingNotifier) notify(ctx context.Context, name string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		name = name + " (on an ended context: " + err.Error() + ")"
+	}
+	n.names = append(n.names, name)
+}
+
+func (n *recordingNotifier) recorded() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return slices.Clone(n.names)
+}
+
+// TestRereadNotifiesEveryOtherPodOnEvery200 pins the fan-out's decision that it fires on every
+// reread a session waits on and is answered 200: a name this broker now serves and a name it does
+// not are both changes a peer must learn of, and the handler cannot tell "unchanged" from
+// "changed" without a verdict RefreshOne does not report. A name no secret can carry rereads
+// nothing, so it notifies nobody.
+func TestRereadNotifiesEveryOtherPodOnEvery200(t *testing.T) {
+	notifier := &recordingNotifier{}
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.NotifyReread = notifier.notify
+		d.RereadOverallLimit = &rereadsFreely
+	})
+	ts.Secrets.Put(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
+
+	if status, body := ts.sessionReread(t, "NEW_KEY"); status != http.StatusOK {
+		t.Fatalf("reread of a name the broker now serves: %d %s, want 200", status, body)
+	}
+	// MISSING_KEY is a well-formed name no secret under the prefix carries: still a 200, with
+	// served=false, and still a notification, since a peer that does serve it must drop it.
+	status, body := ts.sessionReread(t, "MISSING_KEY")
+	if r := decode[wireReread](t, body); status != http.StatusOK || r.Served {
+		t.Fatalf("reread of a name the broker does not serve: %d %+v, want 200 served=false", status, r)
+	}
+	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/not_a_name/reread", nil, nil); status != http.StatusBadRequest || decode[wireError](t, body).Code != "SECRET_NAME_INVALID" {
+		t.Fatalf("malformed name: %d %s, want 400 SECRET_NAME_INVALID", status, body)
+	}
+	if got := notifier.recorded(); !slices.Equal(got, []string{"NEW_KEY", "MISSING_KEY"}) {
+		t.Fatalf("notified %q, want exactly one notification per 200, in order, and none for the refused name", got)
+	}
+}
+
+// TestARereadTheLimiterRefusesNotifiesNobody pins that the 429 a drained bucket writes before any
+// work sends nothing either: no reread happened on this pod, so there is nothing for a peer to
+// copy, and a flood the limiter exists to stop must not reach the other pods through the fan-out.
+func TestARereadTheLimiterRefusesNotifiesNobody(t *testing.T) {
+	notifier := &recordingNotifier{}
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.NotifyReread = notifier.notify
+		d.RereadOverallLimit = &ratelimit.Limit{Every: time.Hour, Burst: 1}
+	})
+	if status, body := ts.sessionReread(t, "WORKER_TOKEN"); status != http.StatusOK {
+		t.Fatalf("first reread: %d %s, want 200", status, body)
+	}
+	for i := range 3 {
+		if status, _, body := postReread(t, ts, "WORKER_TOKEN", nil); status != http.StatusTooManyRequests {
+			t.Fatalf("reread %d past the drained bucket: %d %s, want 429", i+2, status, body)
+		}
+	}
+	if got := notifier.recorded(); !slices.Equal(got, []string{"WORKER_TOKEN"}) {
+		t.Fatalf("notified %q, want only the one reread that happened", got)
+	}
+}

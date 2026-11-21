@@ -41,7 +41,6 @@ type Client interface {
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
 	Handoff(ctx context.Context, id string) (Handoff, error)
-	ListRepoProjects(ctx context.Context) ([]RepoProject, error)
 	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
 	// project row, in the order it gates them; an empty list is a deployment that gates none.
 	PutGatedSteps(ctx context.Context, project string, steps []string) error
@@ -66,15 +65,6 @@ type Client interface {
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
-}
-
-// RepoProject is one mapping of a GitHub repository (owner/name) to a Dispatch project, and
-// whether it is that project's default: the repository an issue resolves to when neither it nor
-// any ancestor names one.
-type RepoProject struct {
-	Repo    string
-	Project string
-	Default bool
 }
 
 // DesignGateDocument is one entry of an issue's design-gate publication, as Dispatch's route
@@ -507,8 +497,8 @@ func unknownNewerField(message string) bool {
 // read — rather than anything Dispatch itself answered. request wraps every such failure in it
 // (client.go), the way appauth.TransientError wraps GitHub's, so a caller can tell "Dispatch
 // never answered" from "Dispatch answered and refused" without inspecting the wrapped error's
-// own type. A certificate the client does not trust is deliberately not wrapped: request types
-// that shape out on purpose, since no wait fixes a bad certificate.
+// own type. A refusal of the transport no wait fixes (TransportRefusal) is deliberately not
+// wrapped.
 type TransientError struct{ Err error }
 
 func (e *TransientError) Error() string { return e.Err.Error() }
@@ -522,8 +512,14 @@ func (e *TransientError) Unwrap() error { return e.Err }
 // restart to take effect, same as a queued write already accepts). Anything else — a genuine coded
 // refusal PermanentRefusal does call permanent, or an error that is neither a TransientError nor
 // a Dispatch *Error at all, such as a 200 response whose body is not the JSON it promised — is not
-// an outage this waits out.
+// an outage this waits out. A refusal of the transport (TransportRefusal) is read first and wins
+// over an outage it is joined with — a TLS alert on one read beside a TransientError of another,
+// as the boot's catch-up joins the reads of one root — so a boot gate stops on it rather than
+// wait it out, as internal/natsauth's Unreachable lets an alert win.
 func Unreachable(err error) bool {
+	if TransportRefusal(err) {
+		return false
+	}
 	var transient *TransientError
 	if errors.As(err, &transient) {
 		return true

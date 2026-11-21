@@ -10,6 +10,8 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered
@@ -18,6 +20,9 @@ import (
 // route URL.
 type Cluster struct {
 	Servers []*Server
+	// routes are the relays of the members' route ports, member i's at i, which a test in this
+	// package freezes to hold every message between the members.
+	routes []*relay
 }
 
 // StartCluster runs a cluster of n servers with JetStream, each with a store of its own, shut down
@@ -50,8 +55,9 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	members := make([]atomic.Pointer[Server], n)
 	routes := make([]string, n)
 	listeners := make([]net.Listener, n)
+	relays := make([]*relay, n)
 	for i := range n {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		listener, err := testport.ListenLoopback()
 		if err != nil {
 			t.Fatalf("hold member %d's route port: %v", i, err)
 		}
@@ -66,10 +72,11 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 			return server.clusterAddress()
 		}, false)
 		t.Cleanup(routeRelay.Close)
+		relays[i] = routeRelay
 	}
-	cluster := &Cluster{Servers: make([]*Server, n)}
+	cluster := &Cluster{Servers: make([]*Server, n), routes: relays}
 	for i := range n {
-		server := start(t, clusterConfig(i, routes)+config, []string{"-js"})
+		server := start(t, clusterConfig(i, routes, listeners[i].Addr().(*net.TCPAddr).IP.String())+config, []string{"-js"})
 		server.name = memberName(i)
 		members[i].Store(server)
 		cluster.Servers[i] = server
@@ -79,7 +86,8 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 }
 
 // clusterConfig is the configuration of member i of a cluster whose route relays listen at routes.
-func clusterConfig(i int, routes []string) string {
+// The member's own route listener takes host, the address of its route relay (testport.LoopbackIP).
+func clusterConfig(i int, routes []string, host string) string {
 	urls := make([]string, len(routes))
 	for j, route := range routes {
 		urls[j] = fmt.Sprintf("%q", "nats-route://"+route)
@@ -88,12 +96,12 @@ func clusterConfig(i int, routes []string) string {
 jetstream {}
 cluster {
   name: "envoy-test"
-  listen: "127.0.0.1:-1"
+  listen: %q
   advertise: %q
   no_advertise: true
   routes: [ %s ]
 }
-`, memberName(i), routes[i], strings.Join(urls, ", "))
+`, memberName(i), net.JoinHostPort(host, "-1"), routes[i], strings.Join(urls, ", "))
 }
 
 // memberName is member i's server_name.
@@ -127,13 +135,14 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 
 // AwaitReady waits until one running member leads the JetStream meta group, that leader counts
 // every running member, and no stopped one, as an online peer, every running member is current
-// with it, and JetStream answers an account info request on every running member. A test calls it
-// after it starts a stopped member again, or after it stops one, before it asks JetStream for
-// anything that needs the meta group.
+// with it, and JetStream answers an account info request on every running member, for as long as
+// the test may run (testDeadline): a cluster's JetStream start on a loaded machine can take longer
+// than any fixed wait allows. A test calls it after it starts a stopped member again, or after it
+// stops one, before it asks JetStream for anything that needs the meta group.
 //
 // A member that no other running member's meta group hears from within muteAfter is restarted, at
-// most muteRestarts times in one call. Each restart starts the listening, and the connectTimeout
-// wait, over for every member, since a restarted member has heard no one yet.
+// most muteRestarts times in one call. Each restart starts the listening over for every member,
+// since a restarted member has heard no one yet.
 //
 // nats-server 2.10.29, the server these tests linked before v2.15.1, could start a member whose
 // every Raft message is dropped: its setSystemAccount started the Raft send queue's goroutine
@@ -149,6 +158,7 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // another reason.
 func (c *Cluster) AwaitReady(t testing.TB) {
 	t.Helper()
+	bound := boundOf(t)
 	// listening is when AwaitReady began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
@@ -167,10 +177,10 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 				continue
 			}
 		}
-		if time.Since(listening) >= connectTimeout {
-			t.Fatalf("JetStream was not ready within %s (%d members restarted): %v", connectTimeout, restarts, err)
+		if bound.over() {
+			t.Fatalf("JetStream was not ready by %s, short of the test's deadline (%d members restarted): %v", bound, restarts, err)
 		}
-		time.Sleep(retryInterval)
+		bound.pause()
 	}
 	for _, server := range c.Servers {
 		if server.running() {

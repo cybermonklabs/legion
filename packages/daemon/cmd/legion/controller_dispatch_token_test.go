@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/cipheraddr"
 )
 
 // controllerBrokerToken is the access token the stub broker mints: a value no file and no
@@ -144,7 +144,7 @@ func TestAControllerOnTheBrokerRouteIsHandedNoBearerPointer(t *testing.T) {
 		// What the client trades with, which it reads from this environment itself. The session
 		// name among them is the operator's own, for the `agent-secrets` the controller's bash
 		// runs: the controller's session acts as a session, so its Dispatch credential is traded
-		// under its own session id and under no variable (brokerclient.TradeSession).
+		// under its own session id and under no variable (cipherclient.TradeSession).
 		for name, want := range map[string]string{
 			"AGENT_SECRETS_URL":                broker.url,
 			"AGENT_SECRETS_MACHINE_IDENTITY":   "kubernetes",
@@ -285,7 +285,7 @@ func TestABrokerThatRefusesThisMachineRefusesTheStartBeforeTheMint(t *testing.T)
 // name, a password, a query or a fragment, and `legion controller start` names the broker it
 // traded at on stderr when the trade works and in its refusal when the broker refuses or does not
 // answer. Neither stream holds any part of such a credential: each names the address as
-// brokeraddr prints it, while the trade itself still goes to the address as configured, and an
+// cipheraddr prints it, while the trade itself still goes to the address as configured, and an
 // address that carries none still prints as written.
 func TestControllerStartPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 	const user, password, query, fragment = "demouser7q", "demopass9z-not-a-secret", "demoquery4m", "demofrag8w"
@@ -335,9 +335,9 @@ func TestControllerStartPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 			if got := broker.trades.Load(); got != row.trades {
 				t.Errorf("the stub broker saw %d trades, want %d: the trade goes to the address as configured", got, row.trades)
 			}
-			shown := brokeraddr.New(address).String()
+			shown := cipheraddr.New(address).String()
 			if address == broker.url && shown != address {
-				t.Fatalf("brokeraddr prints the clean address %q as %q", address, shown)
+				t.Fatalf("cipheraddr prints the clean address %q as %q", address, shown)
 			}
 			if !strings.Contains(errb, row.named+shown) {
 				t.Errorf("stderr %q does not name the broker as %q", errb, row.named+shown)

@@ -7,10 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // The helpers every test of a role's namespaces shares: roleInitEnv carries role-init's flags to
@@ -63,21 +66,34 @@ func skipOutsideCI(t *testing.T, format string, args ...any) {
 
 // namespaceScratch is a directory for a test whose role mounts its own /tmp over the container's:
 // a layout kept under /tmp would be hidden from role-init the moment it binds the role's own
-// temporary directory there, so the scratch sits outside it.
-func namespaceScratch(t *testing.T) string {
+// temporary directory there, so the scratch sits outside it. A non-empty socket is the path,
+// relative to the directory, of a socket a generation binds or a role connects to under it. The
+// directory then comes from testtmp.Dir, with room for that path, and one made under HOME instead
+// takes testtmp's two-byte prefix and is held to the length a unix socket path holds
+// (testtmp.MaxSocketPath).
+func namespaceScratch(t *testing.T, socket string) string {
 	t.Helper()
-	if dir := t.TempDir(); !strings.HasPrefix(dir, "/tmp/") {
+	dir, prefix := "", "legion-launcher-"
+	if socket == "" {
+		dir = t.TempDir()
+	} else {
+		dir, prefix = testtmp.Dir(t, socket), "lg"
+	}
+	if !strings.HasPrefix(dir, "/tmp/") {
 		return dir
 	}
 	home := os.Getenv("HOME")
 	if home == "" {
 		skipOutsideCI(t, "no directory outside /tmp for the role's layout: TMPDIR is under /tmp and HOME is unset")
 	}
-	dir, err := os.MkdirTemp(home, "legion-launcher-")
+	dir, err := os.MkdirTemp(home, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if path := filepath.Join(dir, socket); socket != "" && len(path) > testtmp.MaxSocketPath {
+		skipOutsideCI(t, "the socket path %s is longer than a unix socket path holds", path)
+	}
 	return dir
 }
 

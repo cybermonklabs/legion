@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  `dispatch review` works only with a personal token (`DISPATCH_TOKEN`) that holds `approve`. Dispatch no longer gives a token traded at the secrets broker, a person's `agent-secrets login` sign-in included, the `approve` scope, so a session that trades one is refused `403 OAUTH_SCOPE_REQUIRED` naming `approve`. The same holds for an answer to an approval request.

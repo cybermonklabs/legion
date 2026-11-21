@@ -1480,7 +1480,8 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-write-scope": "project"
       }
@@ -3727,7 +3728,7 @@
     },
     "/api/v1/credential-grants": {
       "get": {
-        "description": "List credential grants the caller may revoke (?approver=me only).",
+        "description": "List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot.",
         "operationId": "getApiV1CredentialGrants",
         "parameters": [
           {
@@ -3776,7 +3777,7 @@
     },
     "/api/v1/credential-grants/{id}/revoke": {
       "post": {
-        "description": "Revoke a credential grant as the caller, its approver or its enrollment's operator.",
+        "description": "Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put.",
         "operationId": "postApiV1CredentialGrantsByIdRevoke",
         "parameters": [
           {
@@ -3938,7 +3939,7 @@
     },
     "/api/v1/credential-requests/{id}/approve": {
       "post": {
-        "description": "Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker.",
+        "description": "Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch.",
         "operationId": "postApiV1CredentialRequestsByIdApprove",
         "parameters": [
           {
@@ -3999,7 +4000,7 @@
     },
     "/api/v1/credential-requests/{id}/deny": {
       "post": {
-        "description": "Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker.",
+        "description": "Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch.",
         "operationId": "postApiV1CredentialRequestsByIdDeny",
         "parameters": [
           {
@@ -4060,7 +4061,7 @@
     },
     "/api/v1/credential-requests/{id}/dismiss": {
       "post": {
-        "description": "Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values.",
+        "description": "Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values.",
         "operationId": "postApiV1CredentialRequestsByIdDismiss",
         "parameters": [
           {
@@ -25311,6 +25312,19 @@
           "description": {
             "type": "string"
           },
+          "description_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "id": {
             "type": "string"
           },
@@ -25457,6 +25471,19 @@
         "properties": {
           "description": {
             "type": "string"
+          },
+          "description_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "id": {
             "type": "string"
