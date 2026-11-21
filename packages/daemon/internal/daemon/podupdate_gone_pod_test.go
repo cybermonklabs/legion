@@ -10,18 +10,31 @@ package daemon
 // next task, and it held the one open-round slot `pod_update_max_open_rounds` gave the project,
 // for 13 hours, until a person cleared it by hand.
 //
-// This file uses nothing its change adds, so it can be laid over the commit before that change
-// and built there, where its test fails: the round stays open after the sweep and the issue
-// waiting for the slot stays held.
+// The other fault of this file is the same end made again at every sweep (dispatch://INFRA-4109
+// R6). On OSS Verify's daemon on 2026-11-18, OSSV-522's round replaced its pod at 07:13:36Z. The
+// implementer's machine was in a relaunch, and it takes the events posted to it only once that
+// relaunch is done, so its claim kept the round. Every sweep from 07:14:31Z to 07:24:31Z decided
+// the round again and posted the end again, 11 times, and the implementer took the 11 ends at
+// once at 07:25:09Z.
+//
+// The first test uses nothing INFRA-3276's change adds: laid over the commit before that change,
+// it fails there, because the round stays open after the sweep and the issue waiting for the slot
+// stays held. The tests of R6 fail over the commit before R6's change: there each sweep decides
+// the ended round again, posts its end again, writes on the issue again, and counts a slot for it.
 
 import (
+	"context"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -106,6 +119,197 @@ func TestPodUpdateEndsARoundOverAPodItsClaimsNoLongerRecord(t *testing.T) {
 	}
 }
 
+// OSSV-522's round, as the rig holds it (dispatch://INFRA-4109 R6). Every member of the round has
+// answered, and the round replaces its pod. The pod's processes end with it, and the tester's
+// machine is relaunching its process when the sweep posts the end, so that end waits behind the
+// relaunch and the tester's claim keeps the round. The implementer's claim still records the pod
+// that is gone, as every claim records it until its process runs again.
+//
+// Over the five sweeps after the replacement, the sweep decides the round no more: the
+// replacement is the one end it logs, and each member's machine takes one end, the tester's once
+// its relaunch is done. From the sweep after the replacement the round holds no open-round slot,
+// so the issue that the project's one slot held back opens its round at that sweep. A sweep that
+// read the round again would end it again at each of the five sweeps, post five more ends to the
+// tester, and keep the slot for a round it has ended.
+func TestARoundOverAGonePodIsDecidedOnce(t *testing.T) {
+	const (
+		waiting    = "LEGION-485"
+		waitingPod = "2e7c9a41-6b0d-4f58-a3c2-91d4e8b07f63"
+	)
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	rig, ends := newPodUpdateRigCountingEnds(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+	rig.s.cfg.PodUpdateMaxOpenRounds = new(1)
+	waitingToken := rig.driftingIssue(waiting, waitingPod)
+
+	rig.tick()
+	for _, role := range roles {
+		rig.awaitRound(role, podUpdateRound)
+		rig.signal(role, "a1b2c3d")
+	}
+	rig.settleAll()
+
+	// The replacement ends every process of the pod: the pod is gone once ReplacePod returns, and
+	// the tester's machine is relaunching its process when the sweep posts the end.
+	var release func()
+	rig.s.runtime = &podReplacedThen{Runtime: rig.rt, then: func() {
+		rig.podGone()
+		release = rig.holdRelaunch(claim.RoleTester, true, podUpdateReplacementPod)
+	}}
+	rig.awaitReplacement(1, "once every worker of the round answered")
+	if release == nil {
+		t.Fatal("the replacement was made without the relaunch it holds")
+	}
+	rig.awaitClaim(claim.RoleImplementer, "the end to reach the implementer",
+		func(c supervise.Claim) bool { return c.UpdateRound == "" })
+
+	for sweep := 1; sweep <= 5; sweep++ {
+		rig.tick()
+		if sweep == 1 {
+			testwait.Eventually(t, waiting+" to open its round in the slot at the sweep after the replacement", func() bool {
+				return rig.machineClaim(waitingToken).UpdateRound == supervise.PodRound(waitingPod)
+			})
+		}
+		if rounds := rig.s.podUpdateRoundsView(); slices.Contains(rounds.InRound, podUpdateIssue) {
+			t.Errorf("sweep %d after the replacement recorded %s in a round (%v), want it in none: the sweep ended its round",
+				sweep, podUpdateIssue, rounds.InRound)
+		}
+	}
+	if round := rig.storedRound(claim.RoleTester); round != podUpdateRound {
+		t.Fatalf("the tester's claim records round %q after the five sweeps, want %s: its machine is relaunching and has not taken the end",
+			round, podUpdateRound)
+	}
+	if n := rig.endsLogged(podUpdateRound); n != 1 {
+		t.Errorf("the sweep logged the end of the round %d times, want once", n)
+	}
+	if lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine); len(lines) != 1 {
+		t.Errorf("the sweep logged the replacement %d times, want once: %+v", len(lines), lines)
+	}
+	if calls := rig.replacements(); len(calls) != 1 {
+		t.Errorf("ReplacePod called %d times, want once", len(calls))
+	}
+
+	release()
+	for _, role := range roles {
+		rig.awaitPosted(role)
+		if c := rig.claimOf(role); c.UpdateRound != "" {
+			t.Errorf("the %s is in round %q once its machine took what was posted to it, want none", role, c.UpdateRound)
+		}
+		if n := ends.of(rig.tokens[role]); n != 1 {
+			t.Errorf("the %s's machine took %d ends of the round, want one", role, n)
+		}
+	}
+}
+
+// The same round with a member that had not answered (dispatch://INFRA-4109 R6). The pod goes
+// for a failure of its own before the implementer answers, so what the implementer had not pushed
+// went with the disk, and the implementer's machine is relaunching its process. The first sweep
+// that reads the pod gone writes one message on the issue and ends the round
+// (podWentWithoutItsRound). The implementer's claim keeps the round until its relaunch is done.
+// Over five sweeps the issue is told once: a sweep that read the round again would write the
+// message again at each sweep.
+func TestARoundOverAGonePodThatLostWorkWritesOnce(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.signal(claim.RoleTester, "a1b2c3d")
+	rig.settleAll()
+
+	release := rig.holdRelaunch(claim.RoleImplementer, false, podUpdateReplacementPod)
+	rig.podGone()
+	for range 5 {
+		rig.tick()
+	}
+
+	if round := rig.storedRound(claim.RoleImplementer); round != podUpdateRound {
+		t.Fatalf("the implementer's claim records round %q after the five sweeps, want %s: its machine is relaunching and has not taken the end",
+			round, podUpdateRound)
+	}
+	messages := rig.messages()
+	if len(messages) != 1 {
+		t.Fatalf("the issue was written on %d times over five sweeps, want once for the pod that went: %q", len(messages), messages)
+	}
+	if !strings.Contains(messages[0], string(claim.RoleImplementer)) || strings.Contains(messages[0], string(claim.RoleTester)) {
+		t.Errorf("the message does not name the implementer alone, the one member that had not answered: %s", messages[0])
+	}
+
+	release()
+	rig.awaitPosted(claim.RoleImplementer)
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != "" {
+		t.Errorf("the implementer is in round %q once its machine took what was posted to it, want none", c.UpdateRound)
+	}
+}
+
+// A restart forgets the rounds the sweep has ended (podUpdateEnded). The post that carries an end
+// lives in the daemon's memory, so a daemon that stops before a machine takes the post loses it,
+// and the store keeps the round on that claim for the next boot to restore (dispatch://INFRA-3276
+// R5). The daemon that boots ends the round once more, and then not again
+// (dispatch://INFRA-4109 R6).
+//
+// Here the round's pod goes with every member answered, and the first daemon ends the round once.
+// The daemon stops while the tester's machine is relaunching, before that machine takes the end.
+// The tester comes back in the pod in the gone pod's place, still in the round, and the new
+// daemon's first sweep ends the round on it.
+func TestARoundOverAGonePodIsEndedAgainAfterARestart(t *testing.T) {
+	const overAPodInItsPlace = "supervise: the pod this issue's update round was opened over is gone; the round is over"
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	rig, ends := newPodUpdateRigCountingEnds(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	for _, role := range roles {
+		rig.awaitRound(role, podUpdateRound)
+		rig.signal(role, "a1b2c3d")
+	}
+	rig.settleAll()
+
+	release := rig.holdRelaunch(claim.RoleTester, false, podUpdateReplacementPod)
+	rig.podGone()
+	rig.tick()
+	rig.awaitClaim(claim.RoleImplementer, "the end to reach the implementer",
+		func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	rig.tick()
+	if n := rig.endsLogged(podUpdateRound); n != 1 {
+		t.Fatalf("the first daemon logged the end of the round %d times, want once", n)
+	}
+
+	// The daemon stops with the tester's end still queued behind its relaunch, and the end goes
+	// with the daemon. Each role then runs in the pod in the gone pod's place.
+	rig.sup.halt()
+	release()
+	rig.displacedInto(claim.RoleImplementer, podUpdateReplacementPod)
+	if n := ends.of(rig.tokens[claim.RoleTester]); n != 0 {
+		t.Fatalf("the tester's machine took %d ends before the restart, want none", n)
+	}
+
+	next := rig.restart()
+	next.s.log = rig.log
+	if round := next.storedRound(claim.RoleTester); round != podUpdateRound {
+		t.Fatalf("the tester's claim records round %q at the boot, want %s: the store keeps the round the end never reached", round, podUpdateRound)
+	}
+
+	next.tick()
+	next.awaitPosted(claim.RoleTester)
+	if c := next.claimOf(claim.RoleTester); c.UpdateRound != "" {
+		t.Fatalf("the tester is in round %q after the new daemon's first sweep, want none: that daemon ends the round once more", c.UpdateRound)
+	}
+	for range 3 {
+		next.tick()
+	}
+	next.awaitPosted(claim.RoleTester)
+
+	if n := ends.of(rig.tokens[claim.RoleTester]); n != 1 {
+		t.Errorf("the tester's machine took %d ends of the round, want the one the new daemon made", n)
+	}
+	if lines := loggedLines(t, rig.logs.String(), overAPodInItsPlace); len(lines) != 1 {
+		t.Errorf("the new daemon logged the end of the round over the pod in its place %d times, want once: %+v", len(lines), lines)
+	}
+	if n := next.endsLogged(podUpdateRound); n != 2 {
+		t.Errorf("the two daemons logged the end of the round %d times, want once each", n)
+	}
+}
+
 // driftingIssue seeds an issue beside the rig's own: a tree of its own, with one ready
 // implementer in pod, a pod the runtime answers drifted, supervised by the rig's daemon as a boot
 // restores a claim. It is the issue the project's open-round limit holds back while another holds
@@ -149,4 +353,137 @@ func (r *podUpdateRig) machineClaim(token claim.Token) supervise.Claim {
 		r.t.Fatalf("%s is not supervised", token)
 	}
 	return m.Claim()
+}
+
+// podUpdateEnds counts, by claim, the round ends each machine's feed handed it to decide
+// (supervise.PodUpdateEnded, podUpdateRigOptions.beforeDecision). It counts each end the machine
+// took, the ones that found the claim in no round included, and no end that went with a stopped
+// daemon.
+type podUpdateEnds struct {
+	mu    sync.Mutex
+	taken map[claim.Token]int
+}
+
+func (e *podUpdateEnds) count(token claim.Token, ev supervise.Event) {
+	if _, ended := ev.(supervise.PodUpdateEnded); !ended {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.taken[token]++
+}
+
+// of is how many ends token's machines took, over every daemon of the rig (restart).
+func (e *podUpdateEnds) of(token claim.Token) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.taken[token]
+}
+
+// newPodUpdateRigCountingEnds is newPodUpdateRig with the ends each machine takes counted.
+func newPodUpdateRigCountingEnds(t *testing.T, roles ...podUpdateRole) (*podUpdateRig, *podUpdateEnds) {
+	t.Helper()
+	ends := &podUpdateEnds{taken: map[claim.Token]int{}}
+	return newPodUpdateRigWith(t, podUpdateRigOptions{beforeDecision: ends.count}, roles...), ends
+}
+
+// podUpdateEndLines is the line the sweep logs as it ends a round, for each way a round ends: its
+// own replacement, its pod gone with another pod recorded in its place, its pod read gone with
+// every member answered, and its pod gone with a member that had not answered.
+var podUpdateEndLines = []string{
+	podUpdateReplacedLine,
+	"supervise: the pod this issue's update round was opened over is gone; the round is over",
+	"supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over",
+	"supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
+}
+
+// endsLogged is how many times the sweep logged the end of round on the rig's issue, by any of
+// the ways a round ends (podUpdateEndLines).
+func (r *podUpdateRig) endsLogged(round string) int {
+	r.t.Helper()
+	ended := 0
+	for _, line := range podUpdateEndLines {
+		for _, logged := range loggedLines(r.t, r.logs.String(), line) {
+			if logged["issue"] == podUpdateIssue && logged["round"] == round {
+				ended++
+			}
+		}
+	}
+	return ended
+}
+
+// storedRound is the round role's claim records in the store, which is what a sweep reads.
+func (r *podUpdateRig) storedRound(role claim.Role) string {
+	r.t.Helper()
+	for _, c := range r.snapshot() {
+		if c.Token == r.tokens[role] {
+			return c.UpdateRound
+		}
+	}
+	r.t.Fatalf("the store holds no claim of the %s", role)
+	return ""
+}
+
+// holdRelaunch ends role's process and holds the relaunch that follows inside Resume, as a
+// relaunch into a pod being built holds a machine for minutes (holdNextResume). The observation
+// goes on the claim's own queue, as the runtime's observations do, so every event posted to the
+// claim after it waits behind the relaunch, the round's end among them. displaced says the daemon
+// replaced the pod the process ran in (runtime.Observation.Displaced), and pod is the pod the
+// relaunch comes up in.
+//
+// It returns once the machine is inside Resume. release lets the Resume go on and registers the
+// role in pod, as its new process does. A test that stops before it releases is released at its
+// cleanup, ahead of the supervisor's stop, which waits for the held decision.
+func (r *podUpdateRig) holdRelaunch(role claim.Role, displaced bool, pod string) (release func()) {
+	r.t.Helper()
+	token := r.tokens[role]
+	ended := r.claimOf(role).Locator
+	if ended == nil {
+		r.t.Fatalf("the %s records no process to end", role)
+	}
+	holding, let := r.holdNextResume(role, pod)
+	r.sup.post(token, supervise.RuntimeObservation{Observation: runtime.Observation{
+		Locator: *ended, Kind: runtime.Gone, At: r.clock.Now(), Detail: "the process ended with its pod", Displaced: displaced,
+	}})
+	select {
+	case <-holding:
+	case <-time.After(10 * time.Second):
+		r.t.Fatalf("the %s's relaunch did not reach Resume", role)
+	}
+	return func() {
+		r.t.Helper()
+		let()
+		r.registerInto(role, pod)
+	}
+}
+
+// awaitPosted waits until role's machine has decided every event posted to it so far, the round's
+// ends among them: a mark goes on the claim's queue behind them (supervisor.drained).
+func (r *podUpdateRig) awaitPosted(role claim.Role) {
+	r.t.Helper()
+	done := make(chan struct{})
+	r.sup.drained(r.tokens[role], done)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		r.t.Fatalf("the %s's machine did not decide what was posted to it", role)
+	}
+}
+
+// podReplacedThen is the rig's runtime with what follows a pod's replacement run inside the
+// replacement: ReplacePod returns once the pod is gone (the Sandbox runtime's awaitPodGone), and
+// by then every role process of the pod has ended and each machine relaunches its own. then runs
+// once, after the fake has made the replacement and before the sweep posts the round's end.
+type podReplacedThen struct {
+	*fake.Runtime
+	then func()
+	once sync.Once
+}
+
+func (r *podReplacedThen) ReplacePod(ctx context.Context, k runtime.Known, due func(context.Context) error) error {
+	if err := r.Runtime.ReplacePod(ctx, k, due); err != nil {
+		return err
+	}
+	r.once.Do(r.then)
+	return nil
 }

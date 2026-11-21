@@ -983,3 +983,32 @@ func TestATokenRequestTheShimCannotAnswerIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// A shim built before the workspace read forwards the frame to Oh My Pi, which refuses it as an
+// unknown command. The read is then a refusal that carries Oh My Pi's words, which the caller
+// reads as a failed read: never as a workspace with no work, and never as a refused prompt, which
+// the supervisor would charge to the claim's prompt budget.
+func TestWorkspaceWorkOfAnOlderShimIsARefusal(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	result := async(func() error {
+		_, err := h.conn().WorkspaceWork(context.Background(), "INFRA-945", runtime.WorkspaceWorkTimeout)
+		return err
+	})
+	request := p.expect(shimwire.TypeWorkspaceWork).(shimwire.WorkspaceWork)
+	if request.ID == "" || request.Issue != "INFRA-945" || request.TimeoutMs != int(runtime.WorkspaceWorkTimeout.Milliseconds()) {
+		t.Fatalf("the shim received %+v, want the issue and the read's budget", request)
+	}
+	p.send(shimwire.Response{ID: request.ID, Command: shimwire.TypeWorkspaceWork, Success: false, Error: "Unknown command: workspace-work"})
+	err := awaitResult(t, result)
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.Command != shimwire.TypeWorkspaceWork {
+		t.Fatalf("err = %v, want a RefusedError of %s", err, shimwire.TypeWorkspaceWork)
+	}
+	if reason := runtime.RefusalReason(err); reason != "Unknown command: workspace-work" {
+		t.Fatalf("the refusal carries %q, want Oh My Pi's words", reason)
+	}
+	if errors.Is(err, runtime.ErrPromptRefused) {
+		t.Fatal("a refused workspace read reads as a refused prompt")
+	}
+}

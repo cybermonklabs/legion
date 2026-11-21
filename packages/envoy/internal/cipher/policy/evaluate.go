@@ -64,11 +64,6 @@ type Decision struct {
 	Reason string
 }
 
-// ReasonRequesterNotListed is the Reason of a Deny the requesters tag decided: neither the
-// person the asking session is signed in as nor the service the asking pod proves is on the
-// secret's list, so it is refused whatever its owner and tier would have given them.
-const ReasonRequesterNotListed = "requester-not-listed"
-
 // ReasonRestrictedMember is the Reason of a Deny for a requester whose person Dispatch calls a
 // restricted member (Requester.Restricted): such a person's sessions are released no secret,
 // whatever the secret's owner, tier, requesters list and project would have given them, because
@@ -167,14 +162,17 @@ const ReasonSignInOff = "a person must approve it, and this broker signs nobody 
 // requester whose person Dispatch calls a restricted member (Requester.Restricted) is denied
 // every name the set serves, ReasonRestrictedMember, before anything else is read. A secret
 // whose requesters are listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every
-// requester the list does not name, before owner and tier are read at all. A secret tagged with
-// a project (Secret.Project) is then read by ProjectRule: no state is ErrNoProjectState, a
-// project Dispatch does not hold is denied to everyone (ReasonProjectMissing), and a private
-// project is denied to a credential that does not name it (ReasonProjectNotNamed); a public
-// project, and a private one r names, go on to owner and tier unchanged. A name withheld from r
-// (Requester.Withheld) is decided as a human-tier secret: what r would have got at once is an
-// approval request to the owner, or to anyone for a shared secret, and a service's own secret,
-// which no person approves, is denied.
+// requester the list does not name, a group entry naming those the set's group reader admits
+// (Set.Groups), before owner and tier are read at all; ReasonRequesterGroupUnread where a group
+// entry's group is not read fresh and might name the person. A secret tagged with a project
+// (Secret.Project) is then read by ProjectRule: no state is ErrNoProjectState, a project Dispatch
+// does not hold is denied to everyone (ReasonProjectMissing), and a private project is denied to a
+// credential that does not name it (ReasonProjectNotNamed); a public project, and a private one r
+// names, go on to owner and tier unchanged. An agent-tier secret a group owns goes to a session
+// whose person the group reader admits to that group, and is an approval request to the group for
+// anyone else. A name withheld from r (Requester.Withheld) is decided as a human-tier secret: what
+// r would have got at once is an approval request to the owner, or to anyone for a shared secret,
+// and a service's own secret, which no person approves, is denied.
 func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	secret, ok := s.Secrets[name]
 	if !ok {
@@ -183,8 +181,14 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	if r.Restricted {
 		return Decision{Outcome: Deny, Reason: ReasonRestrictedMember, Source: secret.Source}, nil
 	}
-	if secret.Requesters != "" && !secret.lists(r) {
-		return Decision{Outcome: Deny, Reason: ReasonRequesterNotListed, Source: secret.Source}, nil
+	if secret.Requesters != "" {
+		if listed, unread := secret.lists(r, s.Groups()); !listed {
+			reason := ReasonRequesterNotListed
+			if unread {
+				reason = ReasonRequesterGroupUnread
+			}
+			return Decision{Outcome: Deny, Reason: reason, Source: secret.Source}, nil
+		}
 	}
 	switch reason, err := ProjectRule(secret.Project, r); {
 	case err != nil:
@@ -207,7 +211,9 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 		if r.Service == secret.Owner && !withheld {
 			d.Outcome = Automatic
 		}
-	case secret.Tier == TierAgent && !withheld && (secret.ownership == ownerShared || record.CanonicalLogin(r.Operator) == secret.Owner):
+	case secret.Tier == TierAgent && !withheld && (secret.ownership == ownerShared ||
+		secret.ownership == ownerPerson && record.CanonicalLogin(r.Operator) == secret.Owner ||
+		secret.ownership == ownerGroup && record.GroupAdmits(s.Groups(), secret.Owner, r.Operator)):
 		d.Outcome = Automatic
 	default:
 		d.Outcome, d.Approver = Approval, secret.approver()
