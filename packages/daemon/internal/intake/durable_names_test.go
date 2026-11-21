@@ -124,6 +124,11 @@ func TestEachFreshNameIsReachedOnAConnectionOfItsOwn(t *testing.T) {
 		if GenerationConnection(gone) != wake+"/"+strings.TrimPrefix(gone, wake+"~") {
 			t.Fatalf("GenerationConnection(%s) = %s, want the logical name, '/' and the generation", gone, GenerationConnection(gone))
 		}
+		// The auth service's grant (natsgrant's DaemonGenerationConnection and its held scope)
+		// tests this very pair, so a change to either side's rule fails its own test.
+		if got, want := GenerationConnection("legion-go-PUB-github~RFuDfoOI3HLgXUdIZvZnZx"), "legion-go-PUB-github/RFuDfoOI3HLgXUdIZvZnZx"; got != want {
+			t.Fatalf("GenerationConnection = %s, want %s, the name the grant reads a generation from", got, want)
+		}
 		first.Close()
 		awaitConnections("no connection once the consumers are closed", nil)
 

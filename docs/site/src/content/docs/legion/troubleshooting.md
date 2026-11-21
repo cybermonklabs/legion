@@ -1943,9 +1943,12 @@ notice comes once per handoff commit, from whichever read finds it first.
   `<logical>~<id>` (`physical`, empty when none was read), which the logical name's row of the
   daemon's `intake_consumers` table selects. One step of settling that name failed (`op`): `select`
   refuses before anything is made, `create` and `missing_current` are a create, `recover` settles a
-  create another boot left open, `update` is the boot's update of the selected consumer, and
-  `last_floor` records its floor. The boot stops on every step but `last_floor`, whose record only
-  narrows a later restart. The `error` says why:
+  create another boot left open, `update` is the boot's update of the selected consumer,
+  `connect` and `info` are the dial of one name's own connection and a read on it, and
+  `last_floor` records its floor. At the boot every step but `last_floor`, whose record only
+  narrows a later restart, stops the boot. The same line from a later step does not stop the
+  daemon: a repositories change is tried again, the state route's lag says the consumer is
+  unavailable, and the poll of a held release reads again. The `error` says why:
   - `consumer names: the cutover has not run`: the database's sentinel row (`envoy.sentinel`) does
     not say `done`, or says `rolled_back`. The operator's `envoy-infra consumer-names convert`
     writes it in the maintenance window; until then run the daemon with the fixed names
