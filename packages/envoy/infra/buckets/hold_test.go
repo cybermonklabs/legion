@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -529,6 +530,7 @@ func (h *heldBuckets) bigBucket(bucket string, keys int) uint64 {
 // stream. The control is a restore with no rerun, which a cut leaves with the bucket missing.
 func TestHoldTheRestoresOneRerun(t *testing.T) {
 	h := newHeldBuckets(t)
+	ctx := context.Background()
 	keys := h.bigBucket(bus.KnownSessionBucket, 120)
 	dir := h.backupNow(bus.KnownSessionBucket)
 	m, err := ReadManifest(dir, []string{bus.KnownSessionBucket})
@@ -580,12 +582,59 @@ func TestHoldTheRestoresOneRerun(t *testing.T) {
 	if _, ok := msgs(); ok {
 		t.Fatalf("a restore cut twice left %s", stream)
 	}
-	// A buckets restore is not Stoppable (holdrecord's table), so its intent stays pending and
-	// release is refused until the restore's own rerun, under the same hold, completes it.
+	// The restore's stop records what it left, so release is refused and abort is the way out,
+	// its intent naming what is left. The control: the same journal with the restore's intent still
+	// pending (no stop) refuses abort too, ErrBusy.
 	id := h.row().HoldID
-	code, stdout, stderr = h.run("restore", "--hold", id, "--bucket", bus.KnownSessionBucket, "--from", dir)
+	d, _, err := h.s.Records.Journal(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := d.Ops[len(d.Ops)-1]
+	if last.Command != CommandRestore || last.State != "stop" || last.Outputs["left"] != stream+" deleted, its restore stopped" {
+		t.Fatalf("the stopped restore's last entry is %+v, want a stop recording %q", last, stream+" deleted, its restore stopped")
+	}
+	if _, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandRelease}, nil); err == nil {
+		t.Fatal("release was admitted after a stop that left a bucket deleted")
+	}
+	if _, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandAbort}, nil); err != nil {
+		t.Fatalf("abort after the stopped restore: %v", err)
+	}
+	d, _, err = h.s.Records.Journal(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := d.Ops[len(d.Ops)-1]
+	found := false
+	for key, value := range intent.Inputs {
+		found = found || (strings.HasPrefix(key, "left.") && value == CommandRestore+": "+stream+" deleted, its restore stopped")
+	}
+	if intent.Command != holdrecord.CommandAbort || !found {
+		t.Fatalf("abort's intent %+v does not name what the restore left", intent)
+	}
+	row := h.row()
+	if _, err := h.s.Records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, id, "abort after the stopped restore"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.s.Records.AppendDone(ctx, id, holdrecord.CommandAbort, nil); err != nil {
+		t.Fatal(err)
+	}
+	h.s.AwaitStreamLeaders(t, slicesWithout(protected(), stream))
+
+	// The control of the stop: a restore's intent with no stop after it (a run cut and gone)
+	// leaves abort refused while it is pending.
+	pending := h.s.Prepare(t, holdrecord.WorkflowBucketsRestore)
+	h.s.HoldWithoutTheSteps(t, pending)
+	if _, err := h.s.Records.Admit(ctx, pending, holdrecord.Request{Command: CommandRestore}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.Records.Admit(ctx, pending, holdrecord.Request{Command: holdrecord.CommandAbort}, nil); !errors.Is(err, holdrecord.ErrBusy) {
+		t.Fatalf("control: abort over a pending restore = %v, want ErrBusy", err)
+	}
+	// The pending restore's rerun completes it, and the hold releases.
+	code, stdout, stderr = h.run("restore", "--hold", pending, "--bucket", bus.KnownSessionBucket, "--from", dir)
 	if n, ok := msgs(); code != 0 || !ok || n != keys {
-		t.Fatalf("the restore's rerun under the same hold = %d, %d messages (present %t), want %d\n%s%s", code, n, ok, keys, stdout, stderr)
+		t.Fatalf("the pending restore's rerun = %d, %d messages (present %t), want %d\n%s%s", code, n, ok, keys, stdout, stderr)
 	}
 	h.release()
 
@@ -670,4 +719,53 @@ func TestHoldPreflightAnInterruptedRestore(t *testing.T) {
 		t.Fatalf("the rerun did not complete the record: %v %+v", err, d)
 	}
 	h.s.Release(t, id)
+}
+
+// A buckets command that stops having changed nothing lets `hold release` end its hold. In a set
+// buckets-create hold, KV_legion_agents goes missing, a protected stream the create does not name:
+// `buckets create --hold` writes its intent, its reading of the protected streams stops at that
+// absence, before any change, and its stop records holdrecord.LeftUnchanged. Release is then
+// admitted, as for a hold in which nothing changed. The control is TestHoldTheRestoresOneRerun's
+// stop that left a bucket deleted, after which release is refused and abort is the way out.
+func TestHoldAStoppedCreateThatChangedNothingReleases(t *testing.T) {
+	h := newHeldBuckets(t)
+	ctx := context.Background()
+	id := h.s.Prepare(t, holdrecord.WorkflowBucketsCreate)
+	h.s.HoldWithoutTheSteps(t, id)
+	nc, err := h.s.ConnectOperator(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, _ := jetstream.New(nc)
+	if err := js.DeleteStream(ctx, "KV_"+bus.LegionAgentBucket); err != nil {
+		t.Fatal(err)
+	}
+	nc.Close()
+	code, _, stderr := h.run("create", "--hold", id, "--bucket", bus.RoleClaimBucket)
+	if code == 0 || !strings.Contains(stderr, "KV_"+bus.LegionAgentBucket) {
+		t.Fatalf("a create beside an absent KV_%s = %d, want it stopped naming it\n%s", bus.LegionAgentBucket, code, stderr)
+	}
+	d, _, err := h.s.Records.Journal(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := d.Ops[len(d.Ops)-1]
+	if last.Command != CommandCreate || last.State != "stop" || last.Outputs["left"] != holdrecord.LeftUnchanged {
+		t.Fatalf("the stopped create's last entry is %+v, want a stop recording %q", last, holdrecord.LeftUnchanged)
+	}
+	h.s.Release(t, id)
+	if row := h.row(); row.Phase != natsgrant.OperatorPhaseReleased {
+		t.Fatalf("the row is %s after the release", row.Phase)
+	}
+}
+
+// slicesWithout is names less each of drop.
+func slicesWithout(names []string, drop ...string) []string {
+	var out []string
+	for _, name := range names {
+		if !slices.Contains(drop, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }

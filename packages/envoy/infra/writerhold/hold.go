@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -132,12 +133,16 @@ func prepare(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 }
 
 // abort is `hold abort`. From prepare it deletes the hold's cohort record, then moves the row to
-// released under its hold id; the thresholds a prepare raised stay. A held row is refused in every
-// workflow but hub-restore, where abort is admitted while no `hold prove` is done and every claim
-// is still on its step-1 disk: its intent, the disks read again, the row moved to released, the
-// disks read once more (a restore that lands between the last check and the move is a restore
-// outside any hold, which it names), then its done entry. A row already released under this hold
-// id is the abort's whole effect: a rerun after the move changes nothing.
+// released under its hold id; the thresholds a prepare raised stay. A held row is aborted through
+// the hold's table (holdrecord.Admit): in every workflow once a command has stopped and no intent
+// is pending, the way out of a command that cannot succeed, and refused while a command's intent
+// is pending or before any command has stopped ("no command has stopped"). Its intent carries each
+// stop's record of what its command left, which it prints, so the operator ends the hold knowing
+// the state. In hub-restore it also needs every claim still on its step-1 disk while no `hold
+// prove` is done: the disks read again, the row moved to released, the disks read once more (a
+// restore that lands between the last check and the move is a restore outside any hold, which it
+// names), then its done entry. A row already released under this hold id is the abort's whole
+// effect: a rerun after the move changes nothing.
 func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o options, stdout io.Writer) error {
 	row, err := records.Row(ctx)
 	if err != nil {
@@ -165,34 +170,64 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 	if err != nil {
 		return err
 	}
-	if d.Workflow != holdrecord.WorkflowHubRestore {
-		return refusef(StepPreflight, "hold %s is held in workflow %s, where abort is refused: release it with nothing changed, or finish the workflow", o.holdID, d.Workflow)
-	}
 	if _, err := records.Admit(ctx, o.holdID, holdrecord.Request{Command: holdrecord.CommandAbort}, nil); err != nil {
 		return err
 	}
+	after, _, err := records.Journal(ctx, o.holdID)
+	if err != nil {
+		return err
+	}
+	printStopRecords(stdout, after)
 	stop := func(cause error) error {
 		if err := records.AppendStop(ctx, o.holdID, holdrecord.CommandAbort, cause.Error()); err != nil {
 			return errors.Join(cause, err)
 		}
 		return cause
 	}
-	if err := onStep1Disks(ctx, op, d); err != nil {
-		return stop(err)
+	hub := d.Workflow == holdrecord.WorkflowHubRestore
+	if hub {
+		if err := onStep1Disks(ctx, op, d); err != nil {
+			return stop(err)
+		}
 	}
 	moved, err := records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, o.holdID, o.reason)
 	if err != nil {
 		return err
 	}
-	after := onStep1Disks(ctx, op, d)
+	var changed error
+	if hub {
+		changed = onStep1Disks(ctx, op, d)
+	}
 	if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandAbort, nil); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "aborted hold %s in hub-restore: row gen %d, released\n", o.holdID, moved.Gen)
-	if after != nil {
-		return fmt.Errorf("the hold is released, and a disk changed after abort's last check, outside any hold: %w", after)
+	fmt.Fprintf(stdout, "aborted hold %s in %s: row gen %d, released\n", o.holdID, d.Workflow, moved.Gen)
+	if changed != nil {
+		return fmt.Errorf("the hold is released, and a disk changed after abort's last check, outside any hold: %w", changed)
 	}
 	return nil
+}
+
+// printStopRecords prints what each stopped command left, as abort's latest intent carries it
+// (holdrecord.Admit's left.<index> inputs).
+func printStopRecords(stdout io.Writer, d holdrecord.Done) {
+	for i := len(d.Ops) - 1; i >= 0; i-- {
+		op := d.Ops[i]
+		if op.Command != holdrecord.CommandAbort || op.State != "intent" {
+			continue
+		}
+		keys := make([]string, 0, len(op.Inputs))
+		for k := range op.Inputs {
+			if strings.HasPrefix(k, "left.") {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(stdout, "left by a stopped command: %s\n", op.Inputs[k])
+		}
+		return
+	}
 }
 
 // readDisks is every claim's disk id now, by target (claim name), with the claims' bindings.

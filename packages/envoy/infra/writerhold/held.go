@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -84,34 +86,114 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 		return id, unknownf(StepPostcheck, err, "connect to the hub as the operator under the held grant")
 	}
 	defer nc.Close()
+	prior := priorLeft(d, c.Command)
 	if _, err := records.Admit(ctx, id, holdrecord.Request{Command: c.Command}, c.Inputs); err != nil {
 		return id, err
 	}
-	// A Stoppable command's failure after its intent writes a stop entry; any other leaves its
+	// A Stoppable command's failure after its intent writes a stop entry recording what it left
+	// (holdrecord.AppendStopLeft): LeftUnchanged when neither this run nor an earlier one changed
+	// anything outside the journal, else what changed. A command that is not Stoppable leaves its
 	// intent pending, and the table admits its rerun (holdrecord.Stoppable).
-	stop := func(cause error) error {
+	stop := func(cause error, left string) error {
 		if !holdrecord.Stoppable(d.Workflow, c.Command) {
 			return cause
 		}
-		if err := records.AppendStop(ctx, id, c.Command, cause.Error()); err != nil {
+		if prior != "" {
+			if left == holdrecord.LeftUnchanged {
+				left = prior
+			} else {
+				left = prior + "; " + left
+			}
+		}
+		if err := records.AppendStopLeft(ctx, id, c.Command, cause.Error(), left); err != nil {
 			return errors.Join(cause, err)
 		}
 		return cause
 	}
 	before, err := ReadProtectedStreams(ctx, nc, c.Absent)
 	if err != nil {
-		return id, stop(err)
+		return id, stop(err, holdrecord.LeftUnchanged)
 	}
 	changes, outputs, err := c.Change(ctx, nc, id)
 	if err != nil {
-		return id, stop(err)
+		left := holdrecord.LeftUnchanged
+		var changed *Left
+		if errors.As(err, &changed) {
+			left = changed.What
+		}
+		return id, stop(err, left)
 	}
 	if _, err := Postcheck(ctx, nc, before, changes); err != nil {
-		return id, stop(err)
+		return id, stop(err, describeChanges(changes))
 	}
 	if err := records.AppendDone(ctx, id, c.Command, outputs); err != nil {
 		return id, err
 	}
 	fmt.Fprintf(stdout, "%s done in hold %s: release it with envoy-infra hold release --hold %s\n", c.Command, id, id)
 	return id, nil
+}
+
+// Left is a held command's failure that names what the command changed before it failed, outside
+// the journal ("deleted KV_envoy_sessions"), which RunHeld's stop entry records. A change's error
+// that is no *Left says the change left everything as it was.
+type Left struct {
+	What string
+	Err  error
+}
+
+func (l *Left) Error() string { return l.Err.Error() }
+
+func (l *Left) Unwrap() error { return l.Err }
+
+// priorLeft is what earlier runs of command in d left, or "" when every one recorded
+// LeftUnchanged: a run whose intent has no stop after it was cut and may have changed anything its
+// inputs name, and a stop that recorded a change, or nothing, counts as changed.
+func priorLeft(d holdrecord.Done, command string) string {
+	var left []string
+	pending := false
+	for _, op := range d.Ops {
+		if op.Command != command {
+			continue
+		}
+		switch op.State {
+		case "intent":
+			if pending {
+				left = append(left, "an earlier run was cut after its intent, and may have changed what its inputs name")
+			}
+			pending = true
+		case "stop":
+			pending = false
+			switch recorded := op.Outputs["left"]; recorded {
+			case holdrecord.LeftUnchanged:
+			case "":
+				left = append(left, "an earlier run stopped recording nothing, so counted as changed")
+			default:
+				left = append(left, "an earlier run left: "+recorded)
+			}
+		case "done":
+			pending = false
+		}
+	}
+	if pending {
+		left = append(left, "an earlier run was cut after its intent, and may have changed what its inputs name")
+	}
+	return strings.Join(left, "; ")
+}
+
+// describeChanges names each stream a change stated it made, for a stop whose postcheck failed.
+func describeChanges(changes map[string]Change) string {
+	if len(changes) == 0 {
+		return holdrecord.LeftUnchanged
+	}
+	names := make([]string, 0, len(changes))
+	for stream := range changes {
+		names = append(names, stream)
+	}
+	sort.Strings(names)
+	parts := make([]string, len(names))
+	for i, stream := range names {
+		change := changes[stream]
+		parts[i] = fmt.Sprintf("%s %s with %d writes", stream, change.Kind, change.Writes)
+	}
+	return strings.Join(parts, ", ")
 }

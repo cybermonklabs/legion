@@ -64,12 +64,13 @@ func TestHoldAbort(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, cohort, "abort left the cohort record")
 
-	// A held row outside hub-restore is refused.
+	// A held row outside hub-restore where no command has stopped is refused: abort is the way out
+	// of a failed command, not a way to end a workflow that is going well.
 	id = h.prepared(holdrecord.WorkflowBucketsCreate)
 	h.heldWithoutTheSteps(id)
 	code, _, stderr := h.run(actionAbort, "--hold", id, "--reason", "abort a held buckets hold")
 	require.Equal(t, 1, code)
-	require.Contains(t, stderr, "where abort is refused")
+	require.Contains(t, stderr, "no command has stopped")
 	require.Equal(t, natsgrant.OperatorPhaseHeld, h.row().Phase)
 	require.NoError(t, abortHeldForTest(ctx, h, id))
 

@@ -176,14 +176,19 @@ const (
 // responders", which a cut restore's leftover answers for about 10 s on a clustered hub.
 var restoreStart = 60 * time.Second
 
-// restoreAll restores each of buckets from dir/<bucket> on nc, each with restoreOne.
+// restoreAll restores each of buckets from dir/<bucket> on nc, each with restoreOne. A restore that
+// stops is a *writerhold.Left naming what the command left: each bucket restored before it, and the
+// stopped one's stream deleted.
 func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string, m *Manifest, buckets []string, runs int) (map[string]writerhold.Change, map[string]string, error) {
 	changes, outputs := map[string]writerhold.Change{}, map[string]string{}
+	var left []string
 	for _, bucket := range buckets {
 		archive := m.Buckets[bucket]
 		if err := restoreOne(ctx, nc, stdout, bucket, filepath.Join(dir, bucket), archive, runs); err != nil {
-			return nil, nil, err
+			left = append(left, "KV_"+bucket+" deleted, its restore stopped")
+			return nil, nil, &writerhold.Left{What: strings.Join(left, ", "), Err: err}
 		}
+		left = append(left, "KV_"+bucket+" restored")
 		fmt.Fprintf(stdout, "restored %s: %d messages to seq %d\n", bucket, archive.Messages, archive.LastSeq)
 		changes["KV_"+bucket] = writerhold.Change{Kind: writerhold.ChangeRestored, Archive: writerhold.ArchiveState{LastSeq: archive.LastSeq, Messages: archive.Messages}}
 		outputs["sha256."+bucket] = archive.SHA256

@@ -467,25 +467,36 @@ func missingBuckets(ctx context.Context, op *writerhold.Operator, buckets []stri
 }
 
 // createMissing creates each of buckets the server reports missing, with its copied-bucket
-// configuration at replicas copies, and leaves each present one as it is.
+// configuration at replicas copies, and leaves each present one as it is. A failure is a
+// *writerhold.Left naming each bucket created before it and the failing one, possibly created, or
+// a plain error when it created nothing.
 func createMissing(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets []string, replicas int) (map[string]writerhold.Change, map[string]string, error) {
 	js, err := nc.JetStream(nats.Context(ctx))
 	if err != nil {
 		return nil, nil, err
 	}
 	changes, outputs := map[string]writerhold.Change{}, map[string]string{}
+	var left []string
+	failed := func(err error) (map[string]writerhold.Change, map[string]string, error) {
+		if len(left) == 0 {
+			return nil, nil, err
+		}
+		return nil, nil, &writerhold.Left{What: strings.Join(left, ", "), Err: err}
+	}
 	for _, bucket := range buckets {
 		if _, err := js.StreamInfo("KV_" + bucket); err == nil {
 			fmt.Fprintf(stdout, "%s exists; left as it is\n", bucket)
 			outputs["bucket."+bucket] = "exists"
 			continue
 		} else if !errors.Is(err, nats.ErrStreamNotFound) {
-			return nil, nil, &writerhold.Unknown{Step: writerhold.StepPostcheck, What: "read KV_" + bucket, Err: err}
+			return failed(&writerhold.Unknown{Step: writerhold.StepPostcheck, What: "read KV_" + bucket, Err: err})
 		}
 		if _, err := bus.CreateCopiedBucket(ctx, nc, js, bucket, replicas); err != nil {
-			return nil, nil, fmt.Errorf("create %s: %w", bucket, err)
+			left = append(left, "KV_"+bucket+" possibly created")
+			return failed(fmt.Errorf("create %s: %w", bucket, err))
 		}
 		fmt.Fprintf(stdout, "created %s (%d copies)\n", bucket, replicas)
+		left = append(left, "KV_"+bucket+" created")
 		changes["KV_"+bucket] = writerhold.Change{Kind: writerhold.ChangeRecreated}
 		outputs["bucket."+bucket] = "created"
 	}
@@ -493,22 +504,28 @@ func createMissing(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets
 }
 
 // recreate deletes each of buckets and creates it again. A rerun after a delete finds the bucket
-// missing and creates it.
+// missing and creates it. A failure is a *writerhold.Left naming what the command left: each
+// bucket recreated before it, and the failing one deleted or possibly deleted.
 func recreate(ctx context.Context, nc *nats.Conn, stdout io.Writer, buckets []string, replicas int) (map[string]writerhold.Change, map[string]string, error) {
 	js, err := nc.JetStream(nats.Context(ctx))
 	if err != nil {
 		return nil, nil, err
 	}
 	changes, outputs := map[string]writerhold.Change{}, map[string]string{}
+	var left []string
+	failed := func(what string, err error) (map[string]writerhold.Change, map[string]string, error) {
+		return nil, nil, &writerhold.Left{What: strings.Join(append(left, what), ", "), Err: err}
+	}
 	for _, bucket := range buckets {
 		if err := js.DeleteStream("KV_" + bucket); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
-			return nil, nil, fmt.Errorf("delete %s: %w", bucket, err)
+			return failed("KV_"+bucket+" possibly deleted", fmt.Errorf("delete %s: %w", bucket, err))
 		}
 		fmt.Fprintf(stdout, "deleted %s\n", bucket)
 		if _, err := bus.CreateCopiedBucket(ctx, nc, js, bucket, replicas); err != nil {
-			return nil, nil, fmt.Errorf("create %s again: %w", bucket, err)
+			return failed("KV_"+bucket+" deleted and possibly not created again", fmt.Errorf("create %s again: %w", bucket, err))
 		}
 		fmt.Fprintf(stdout, "created %s (%d copies)\n", bucket, replicas)
+		left = append(left, "KV_"+bucket+" recreated")
 		changes["KV_"+bucket] = writerhold.Change{Kind: writerhold.ChangeRecreated}
 		outputs["bucket."+bucket] = "recreated"
 	}
