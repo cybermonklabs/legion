@@ -99,14 +99,18 @@ project are counted. The census reads them as Dispatch's events state them:
   version a spec is made at with its issue, which no event names. This is the check the daemon's
   `register_gate` makes of a basis.
 
-Without `--events-file`, `--from` and `--to` are both required. The script pages
-`GET /api/v1/events/log` from the first event at or after `--from`, which a doubling and then a
-halving search of the log's ids finds one event a read, 1,000 events a page, until an event at or
-after `--to`. The asks and the messages counted are the window's. The chains and the approvals
-they are read against are each issue's whole history (`GET /api/v1/issues/{key}/events`), read
-for each ask's issue and for each issue its chain reaches, eight issues at a time, so a parent set
-or an approval given before the window is read as it stood. Dispatch is resolved as for the ask
-census above.
+Without `--events-file`, `--from` and `--to` are both required. The script first finds the id of
+the log's last event, by a doubling and then a halving search of `GET /api/v1/events/log` one event
+a read, as the route takes only `after` and `limit`. It then pages the route from the log's first
+event through that id, 1,000 events a page, and keeps each event whose `created_at` is at or after
+`--from` and before `--to`. It reads every page because ids and times are not in one order:
+Dispatch stamps an event with its transaction's start, and a transaction that started earlier can
+append later, so no event's time says where the window's other events lie. The cost is that a live
+census reads the whole event log once, whatever the window. The asks and the messages counted are
+the window's. The chains and the approvals they are read against are each issue's whole history
+(`GET /api/v1/issues/{key}/events`), read for each ask's issue and for each issue its chain
+reaches, eight issues at a time, so a parent set or an approval given before the window is read as
+it stood. Dispatch is resolved as for the ask census above.
 
 `--events-file PATH` reads a saved log instead, one event to a line as the event log route serves
 it, such as the `dispatch-events.jsonl` an end-to-end run keeps. `--from` and `--to`, when given,

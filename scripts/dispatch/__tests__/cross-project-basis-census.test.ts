@@ -187,11 +187,18 @@ describe("the census of gates opened across projects", () => {
   });
 });
 
+/** What one run of the census printed, and how it exited. */
+interface CensusRun {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number;
+}
+
 /** Runs the census with `args`, its Dispatch at `environment`. */
 async function spawnCensus(
   args: readonly string[],
   environment: Record<string, string> = {}
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+): Promise<CensusRun> {
   // DISPATCH_TOKEN_FILE outranks DISPATCH_TOKEN, so a pane's own token file would reach the stub.
   const { DISPATCH_TOKEN_FILE: _paneTokenFile, ...inherited } = process.env;
   const census = Bun.spawn(["bun", script, ...args], {
@@ -214,9 +221,9 @@ async function savedLog(): Promise<string> {
   return path;
 }
 
-/** A stub Dispatch serving the fixture's log as the event log route and each issue's events route
- * page it, recording each event log query. */
-function stubDispatch(logQueries: string[]): string {
+/** A stub Dispatch serving `log`, by default the fixture's, as the event log route and each
+ * issue's events route page it, recording each event log query. */
+function stubDispatch(logQueries: string[], log: readonly LogEvent[] = events): string {
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -226,14 +233,12 @@ function stubDispatch(logQueries: string[]): string {
       const limit = Number(url.searchParams.get("limit") ?? "1000");
       if (url.pathname === "/api/v1/events/log") {
         logQueries.push(url.search);
-        return Response.json(events.filter((each) => each.id > after).slice(0, limit));
+        return Response.json(log.filter((each) => each.id > after).slice(0, limit));
       }
       const issue = /^\/api\/v1\/issues\/([A-Z][A-Z0-9]+-\d+)\/events$/.exec(url.pathname)?.[1];
       if (issue !== undefined) {
         return Response.json(
-          events
-            .filter((each) => each.issue_key === issue && (each.seq ?? 0) > after)
-            .slice(0, limit)
+          log.filter((each) => each.issue_key === issue && (each.seq ?? 0) > after).slice(0, limit)
         );
       }
       return new Response("not found", { status: 404 });
@@ -241,6 +246,50 @@ function stubDispatch(logQueries: string[]): string {
   });
   servers.push(server);
   return `http://127.0.0.1:${server.port}`;
+}
+
+/** Minute `value` of the hour the reordered logs below are stamped in. */
+function minute(value: number): string {
+  return `2026-11-19T00:${String(value).padStart(2, "0")}:00Z`;
+}
+
+/** An event of no issue, `id`, stamped at minute `at`: the census reads it and counts it nowhere. */
+function filler(id: number, at: number): LogEvent {
+  return { id, type: "filler", issue_key: null, created_at: minute(at), payload: {} };
+}
+
+/** The opening a reordered log holds: a message in basisOpenedMessage's format on LEGION-9 naming
+ * OTHR-7, stamped at minute 5, inside the window `liveCensusOf` reads. */
+const reorderedOpening = {
+  issue: "LEGION-9",
+  message: "reordered-opening",
+  createdAt: minute(5),
+  ancestor: "OTHR-7",
+};
+
+function openingAt(id: number): LogEvent {
+  return {
+    id,
+    type: "message.created",
+    issue_key: reorderedOpening.issue,
+    created_at: reorderedOpening.createdAt,
+    payload: {
+      id: reorderedOpening.message,
+      body: `${OPENED_LINE}\n- The ancestor is ${reorderedOpening.ancestor}.`,
+    },
+  };
+}
+
+/** The live census of LEGION over minutes 4 to 10 of `log`, and the event log queries it made. */
+async function liveCensusOf(
+  log: readonly LogEvent[]
+): Promise<{ run: CensusRun; logQueries: string[] }> {
+  const logQueries: string[] = [];
+  const run = await spawnCensus(
+    ["--project", "LEGION", "--from", minute(4), "--to", minute(10), "--json"],
+    { DISPATCH_URL: stubDispatch(logQueries, log), DISPATCH_TOKEN: "token" }
+  );
+  return { run, logQueries };
 }
 
 describe("the census command", () => {
@@ -279,7 +328,7 @@ describe("the census command", () => {
     expect(JSON.parse(run.stdout)).toEqual({ ...expected, openings: [] });
   });
 
-  test("without --events-file it pages the event log from the first event at or after --from, and reads each chain's history", async () => {
+  test("without --events-file it pages the whole event log by id from its first event, and reads each chain's history", async () => {
     const logQueries: string[] = [];
     const url = stubDispatch(logQueries);
     const run = await spawnCensus(
@@ -307,10 +356,41 @@ describe("the census command", () => {
     expect(report.pairs.map((pair) => pair.asks.map((ask) => ask.answer?.selected))).toEqual([
       [["Approve"]],
     ]);
-    // The window's pages start after the event before the first one at or after --from.
-    expect(logQueries.find((query) => query.endsWith("limit=1000"))).toBe(
-      `?after=${ASK_UNDER_OTHER_PROJECT.event - 1}&limit=1000`
-    );
+    // The fixture's 36 events are one page, read from the log's first event.
+    expect(logQueries.filter((query) => query.endsWith("limit=1000"))).toEqual([
+      "?after=0&limit=1000",
+    ]);
+  });
+
+  test("an event with a later id and an earlier time hides no event of the window", async () => {
+    // Dispatch stamps an event with its transaction's start, and a transaction that started
+    // earlier can append later, so events 5 and 6, before the window, follow the opening.
+    const { run } = await liveCensusOf([
+      ...[1, 2, 3].map((id) => filler(id, 1)),
+      openingAt(4),
+      ...[5, 6].map((id) => filler(id, 1)),
+      ...[7, 8].map((id) => filler(id, 20)),
+    ]);
+    expect(run.stderr).toBe("");
+    expect(run.exitCode).toBe(0);
+    expect((JSON.parse(run.stdout) as CensusReport).openings).toEqual([reorderedOpening]);
+  });
+
+  test("a page whose last event is after --to ends nothing: the next page's event of the window is read", async () => {
+    const { run, logQueries } = await liveCensusOf([
+      ...Array.from({ length: 10 }, (_, index) => filler(index + 1, 1)),
+      ...Array.from({ length: 999 }, (_, index) => filler(index + 11, 5)),
+      filler(1010, 20),
+      openingAt(1011),
+    ]);
+    expect(run.stderr).toBe("");
+    expect(run.exitCode).toBe(0);
+    expect((JSON.parse(run.stdout) as CensusReport).openings).toEqual([reorderedOpening]);
+    // The pages run from the log's first event through its last, 1011, and no further.
+    expect(logQueries.filter((query) => query.endsWith("limit=1000"))).toEqual([
+      "?after=0&limit=1000",
+      "?after=1000&limit=1000",
+    ]);
   });
 
   test("prints a table of each list without --json", async () => {
