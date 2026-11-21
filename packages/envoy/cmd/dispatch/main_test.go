@@ -2105,10 +2105,14 @@ func TestExplainMigrateErrorPassesThroughAnUnrelatedMigrationFailure(t *testing.
 // ───── the keyword fill ─────────────────────────────────────────────────────
 
 // The lines the keyword fill (textversions.Run) logs as it takes its hold and as it stands by for
-// the hold of another process. This file and the multiprocess rows (multiprocess_test.go) read them.
+// the hold of another process, and the line a process logs at boot when DISPATCH_SEARCH_FILL=off
+// keeps it from starting the fill. This file and the multiprocess rows (multiprocess_test.go) read
+// them. The deferral is written out here rather than taken from main.go's searchFillDeferredLine,
+// so the test holds the text an operator reads in the boot log.
 const (
-	keywordFillTookLine    = `msg="dispatch: the keyword fill took its hold; this process fills the keyword table"`
-	keywordFillStandbyLine = `msg="dispatch: another process holds the keyword fill's hold; standing by"`
+	keywordFillTookLine     = `msg="dispatch: the keyword fill took its hold; this process fills the keyword table"`
+	keywordFillStandbyLine  = `msg="dispatch: another process holds the keyword fill's hold; standing by"`
+	keywordFillDeferredLine = `msg="dispatch: the keyword fill is deferred; this process fills no keyword table" setting=DISPATCH_SEARCH_FILL value=off`
 )
 
 // A process that the registry of live server processes refuses writes no keyword version. A live
@@ -2234,7 +2238,7 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 			time.Sleep(250 * time.Millisecond)
 		}
 		requireNoKeywordFillWrite(t, database, "at the end of the watch")
-		if lines := process.logLines(`msg="`+searchFillDeferredLine+`"`, "setting=DISPATCH_SEARCH_FILL value=off"); len(lines) != 1 {
+		if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 {
 			t.Fatalf("the process logged the deferral %d times; want once:\n%s", len(lines), process.Output.String())
 		}
 		for _, line := range []string{keywordFillTookLine, keywordFillStandbyLine} {
@@ -2252,7 +2256,7 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 		process.waitForLog(t, 30*time.Second, keywordFillTookLine)
 		after := writeKeywordFillComments(t, database, 50)
 		textversionstest.AwaitRows(t, database, append(before, after...), time.Minute, nil)
-		if process.logged(searchFillDeferredLine) {
+		if process.logged(keywordFillDeferredLine) {
 			t.Fatalf("the process logged the deferral with DISPATCH_SEARCH_FILL=on:\n%s", process.Output.String())
 		}
 	})
