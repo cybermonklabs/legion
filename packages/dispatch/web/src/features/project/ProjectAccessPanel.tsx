@@ -37,7 +37,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { dropSettledWrites } from "../writes/settled-writes";
 import { type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
-import { AccessPersonRow, confirmReset } from "./AccessPersonRow";
+import { AccessPersonRow } from "./AccessPersonRow";
 
 /** One change of a project's access, as the owner presses it: the project given to another
  *  owner, made public or private, one person or group named on its access list or taken off it,
@@ -221,6 +221,15 @@ function groupsRefusal(
   return null;
 }
 
+/** Whether the owner, asked what a Reset of `email` does, confirms it. Every Reset the panel
+ *  sends asks first (`useAccessWrite`'s `save`): the row's Reset, and a Retry of a refused one,
+ *  which is a new Reset under a new key. */
+function confirmReset(email: string): boolean {
+  return window.confirm(
+    `Reset ${email}? Dispatch deletes their passkeys and their unused links of every project, signs them out, and revokes their personal tokens and the device logins they approved. They sign in again only through a new link.`
+  );
+}
+
 /**
  * One project's access saves, as `ProjectsSection`'s default-assignee saves are made: one mutation
  * scope per project, so the project's saves go out one at a time in the order they were pressed,
@@ -244,6 +253,7 @@ function useAccessWrite(
   /** The Retry of the newest save's refusal: the very press where this mount made it and the
    *  reader stopped it (`again`), else a new save of the same change. */
   retry: () => void;
+  /** A new save of `change`; a Reset is sent only once the owner confirms it. */
   save: (change: AccessChange) => void;
 } {
   const queryClient = useQueryClient();
@@ -301,6 +311,14 @@ function useAccessWrite(
   const madeHere =
     press !== undefined &&
     mutation.stopped((variables) => variables === press.variables) !== undefined;
+  // A Reset is sent only once the owner confirms it, whichever press makes it: each save is a new
+  // Reset under a new key.
+  const save = (change: AccessChange) => {
+    if (change.kind === "reset-person" && !confirmReset(change.email)) {
+      return;
+    }
+    mutation.mutate(change);
+  };
   return {
     pending: saves.flatMap((save) =>
       save.status === "pending" && save.change !== undefined ? [save.change] : []
@@ -315,17 +333,13 @@ function useAccessWrite(
       }
       // A press this mount made and the reader stopped is made again as that press, under its key
       // where its method sends one; a refusal Dispatch decided, or a press of a mount made before
-      // this one, is retried as a new save. A new save of a Reset is a new Reset, so it asks the
-      // owner first, as the row's Reset does.
+      // this one, is retried as a new save, which asks first for a Reset.
       if (mutation.again(press)) {
         return;
       }
-      if (press.variables.kind === "reset-person" && !confirmReset(press.variables.email)) {
-        return;
-      }
-      mutation.mutate(press.variables);
+      save(press.variables);
     },
-    save: (change) => mutation.mutate(change),
+    save,
   };
 }
 

@@ -27,31 +27,14 @@ const LONGEST_TIMEOUT_MS = 2_147_483_647;
  *  used: no Dispatch event tells the page that the person enrolled with it, which uses it. */
 const SHOWN_LINK_POLL_MS = 5_000;
 
-/** What the owner reads when Dispatch would not make `email` a link, by its code. */
+/** What the owner reads when Dispatch would not make `email` a link: Dispatch's own sentence, as
+ *  the panel shows for every other refusal of this tab, save where passkey sign-in is off, whose
+ *  sentence names the deployment's setting rather than what the owner can do. */
 function invitationRefusal(email: string, error: Error): string {
-  switch (error instanceof ApiError ? error.code : undefined) {
-    case "WORKSPACE_ADDRESS":
-      return `No link can be made for ${email}: it is an address of the company's Google Workspace, which signs in with Google.`;
-    case "FULL_MEMBER":
-      return `No link can be made for ${email}: they sign in with Google as a member of the company's Google Workspace.`;
-    case "PERSON_NOT_LISTED":
-      return `No link can be made for ${email}: this project's access list no longer names them directly.`;
-    case "LISTED_BY_ANOTHER_OWNER":
-      return `No link can be made for ${email}: another project's owner also names them, and a passkey would read that project too.`;
-    case "PASSKEY_SIGNIN_OFF":
-      return "This deployment no longer signs anyone in with a passkey, so no link can be made.";
-    default:
-      return apiErrorMessage(error, `Couldn't make a link for ${email}.`);
+  if (error instanceof ApiError && error.code === "PASSKEY_SIGNIN_OFF") {
+    return "This deployment no longer signs anyone in with a passkey, so no link can be made.";
   }
-}
-
-/** Whether the owner, asked what a Reset of `email` does, confirms it. The row's Reset asks
- *  before its first send, and the panel's Retry of a refused Reset asks again, since that Retry
- *  is a new Reset under a new key. */
-export function confirmReset(email: string): boolean {
-  return window.confirm(
-    `Reset ${email}? Dispatch deletes their passkeys and their unused links of every project, signs them out, and revokes their personal tokens and the device logins they approved. They sign in again only through a new link.`
-  );
+  return apiErrorMessage(error, `Couldn't make a link for ${email}.`);
 }
 
 const rowClass = `flex min-h-11 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b px-4 py-2 last:border-0 ${borderDefault}`;
@@ -69,9 +52,10 @@ const linkFieldClass = `min-h-11 w-full min-w-0 rounded-md px-3 py-2 font-mono t
  * approved.
  *
  * The link is shown only in this row, once: its token is in the answer alone, which Dispatch keeps
- * under no write key. The row lets go of it when a new link lands, when it lapses, and when a read
- * of the access list that began after it landed lists no open link of the person made at its
- * `made_at` (`open_invitations`): a Reset here or in another tab, a newer link from another tab, a
+ * under no write key. The row lets go of it when a new link lands, when a press lands whose answer
+ * Dispatch did not keep (that press's link ended it), when it lapses, and when a read of the
+ * access list that began after it landed lists no open link of the person made at its `made_at`
+ * (`open_invitations`): a Reset here or in another tab, a newer link from another tab, a
  * delisting, or the person's enrollment ended it. A write's own answer, read in the write's
  * transaction, may predate the link and ends nothing; the read asked once the write settles does.
  * A press Dispatch refuses makes no new link, so it leaves the one shown. While the
@@ -125,11 +109,13 @@ export function AccessPersonRow({
     inline: true,
     label: () => `Make a link for ${email} on ${project}`,
     mutationKey: ["project-invitation", project, email],
-    // The link shown stays until a new one lands: a press Dispatch refuses ends nothing.
+    // The link shown stays until a press lands: a press Dispatch refuses ends nothing. A press that
+    // lands made a link, which ends the person's earlier unused links of the project, so one whose
+    // answer Dispatch did not keep (`null`, 409 KEY_COMMITTED) leaves the row no link to show, and
+    // the row says that answer was lost.
     onSuccess: (answer) => {
-      if (answer === null) return;
-      watched.current = { armed: false, madeAt: answer.made_at };
-      setInvitation(answer);
+      watched.current = answer === null ? undefined : { armed: false, madeAt: answer.made_at };
+      setInvitation(answer ?? undefined);
       setCopied(false);
       // A read that lists the link begins after it landed: Dispatch's client lets a read already
       // out finish and then reads again (`DispatchQueryClient`), and TanStack's cancels it.
@@ -138,12 +124,6 @@ export function AccessPersonRow({
     method: "POST",
     write: (_none, bounds) => api.createProjectInvitation(project, email, bounds),
   });
-  const reset = () => {
-    if (!confirmReset(email)) {
-      return;
-    }
-    onReset();
-  };
   // A link stops working at its expires_at: the row stops offering it then, which also ends its
   // reads, rather than show a dead link as one that "works once".
   useEffect(() => {
@@ -231,7 +211,7 @@ export function AccessPersonRow({
           <RefusableButton
             busy={resetting ? "Resetting…" : undefined}
             look="secondary-compact"
-            onPress={reset}
+            onPress={onReset}
             refusal={refusal}
             refusalShownBy={refusalShownBy}
           >

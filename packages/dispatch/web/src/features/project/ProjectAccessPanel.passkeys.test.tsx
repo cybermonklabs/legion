@@ -158,22 +158,49 @@ test("Invite shows the link to send and when it stops, and a second press makes 
   }
 });
 
-test("an Invite Dispatch refuses says why in the person's row", async () => {
+// The row shows Dispatch's own sentence, as the panel does for every other refusal of the tab, so
+// one refusal reads one way wherever the tab shows it.
+test("an Invite Dispatch refuses says why in the person's row, in Dispatch's words", async () => {
   const user = userEvent.setup();
   const panel = renderPanel({ answer: withPasskeys() });
   const invite = spyOn(api, "createProjectInvitation").mockRejectedValue(
-    new ApiError(409, { code: "FULL_MEMBER", error: "a full member signs in with Google" })
+    new ApiError(409, {
+      code: "FULL_MEMBER",
+      error: "a full member signs in with Google, never with a link",
+    })
   );
   try {
     await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
     expect(await within(personRow(ana)).findByRole("alert")).toHaveTextContent(
-      `No link can be made for ${ana}: they sign in with Google as a member of the company's Google Workspace.`
+      "a full member signs in with Google, never with a link"
     );
     expect(
       within(personRow(ana)).queryByRole("textbox", { name: `Enrollment link for ${ana}` })
     ).not.toBeInTheDocument();
     // No second press gets past it, so the row offers no Retry.
     expect(within(personRow(ana)).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  } finally {
+    panel.restore();
+    invite.mockRestore();
+  }
+});
+
+// Dispatch's sentence for a deployment whose passkey sign-in is off names its setting, which the
+// owner cannot change, so the row says what it means for the owner instead.
+test("an Invite refused because passkey sign-in is off says no link can be made", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys() });
+  const invite = spyOn(api, "createProjectInvitation").mockRejectedValue(
+    new ApiError(409, {
+      code: "PASSKEY_SIGNIN_OFF",
+      error: "this deployment signs nobody in with a passkey (DISPATCH_SIGNIN_PASSKEY is unset)",
+    })
+  );
+  try {
+    await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
+    expect(await within(personRow(ana)).findByRole("alert")).toHaveTextContent(
+      "This deployment no longer signs anyone in with a passkey, so no link can be made."
+    );
   } finally {
     panel.restore();
     invite.mockRestore();
@@ -578,32 +605,54 @@ test("a failed read of the access list while a link shows keeps the link in the 
 });
 
 // A link stops working at its expires_at, so the row stops offering it then: it shows no dead
-// link as one that works once, and its reads of the access list end with it.
+// link as one that works once, and its reads of the access list end with it. The row runs on the
+// fake clock, which holds `Date.now` too, so the link's 400 ms are counted from the press, however
+// long the render and the press take.
 test("a link leaves the row when it lapses", async () => {
-  const user = userEvent.setup();
-  const panel = renderPanel({ answer: withPasskeys({ passkeys: [] }) });
-  const invite = panel.invites({
-    expires_at: new Date(Date.now() + 400).toISOString(),
-    made_at: new Date(Date.now() - 1000).toISOString(),
-    url: madeLink.url,
-  });
-  try {
-    await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    const panel = renderPanel({ answer: withPasskeys({ passkeys: [] }) });
     const link = { name: `Enrollment link for ${ana}` };
-    expect(await within(personRow(ana)).findByRole("textbox", link)).toBeInTheDocument();
-    await waitFor(() =>
-      expect(within(personRow(ana)).queryByRole("textbox", link)).not.toBeInTheDocument()
-    );
-    expect(
-      within(personRow(ana)).queryByTestId("access-invitation-expiry")
-    ).not.toBeInTheDocument();
-    expect(within(personRow(ana)).getByTestId("access-invitation-announcement")).toHaveTextContent(
-      /^$/
-    );
-  } finally {
-    panel.restore();
-    invite.mockRestore();
-  }
+    const press = await screen.findByRole("button", { name: `Invite ${ana}` });
+    // The panel's other reads settle here, inside `act`, before the click.
+    await tick(0);
+    const lapsing = {
+      expires_at: new Date(Date.now() + 400).toISOString(),
+      made_at: new Date(Date.now() - 1000).toISOString(),
+      url: madeLink.url,
+    };
+    // Dispatch records the link and answers it once the held clock moves on, so what its landing
+    // does to the row runs inside that move (`tick`), not inside the click, which user-event lets
+    // run outside `act`.
+    const invite = spyOn(api, "createProjectInvitation").mockImplementation(() => {
+      const { promise, resolve } = Promise.withResolvers<typeof lapsing>();
+      setTimeout(() => {
+        const open = { email: ana, expires_at: lapsing.expires_at, made_at: lapsing.made_at };
+        void panel
+          .lands(withPasskeys({ open_invitations: [open], passkeys: [] }))()
+          .then(() => resolve(lapsing));
+      }, 100);
+      return promise;
+    });
+    try {
+      await user.click(press);
+      await tick(100);
+      expect(within(personRow(ana)).getByRole("textbox", link)).toHaveValue(madeLink.url);
+      await tick(200);
+      expect(within(personRow(ana)).getByRole("textbox", link)).toHaveValue(madeLink.url);
+      await tick(200);
+      expect(within(personRow(ana)).queryByRole("textbox", link)).not.toBeInTheDocument();
+      expect(
+        within(personRow(ana)).queryByTestId("access-invitation-expiry")
+      ).not.toBeInTheDocument();
+      expect(
+        within(personRow(ana)).getByTestId("access-invitation-announcement")
+      ).toHaveTextContent(/^$/);
+    } finally {
+      panel.restore();
+      invite.mockRestore();
+    }
+  });
 });
 
 // A link the row hides, while another owner's project names the person, still enrolls them once
@@ -677,6 +726,39 @@ test("a second Invite Dispatch refuses leaves the link the first one made", asyn
     await settle();
     expect(within(personRow(ana)).getByRole("textbox", link)).toHaveValue(madeLink.url);
     expect(within(personRow(ana)).getByTestId("access-invitation-expiry")).toBeInTheDocument();
+  } finally {
+    panel.restore();
+    invite.mockRestore();
+  }
+});
+
+// A second press that lands made a new link, which ended the one the first press showed, so a
+// landing whose answer Dispatch did not keep (409 KEY_COMMITTED) leaves the row no link to offer:
+// it takes the dead link away and says the new one's answer was lost.
+test("a second Invite that lands with its answer lost takes away the link the first one made", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: withPasskeys({ passkeys: [] }) });
+  const invite = panel
+    .invites(madeLink)
+    .mockRejectedValueOnce(
+      new ApiError(409, { code: "KEY_COMMITTED", error: "the write was made" })
+    );
+  const link = { name: `Enrollment link for ${ana}` };
+  try {
+    await user.click(await screen.findByRole("button", { name: `Invite ${ana}` }));
+    expect(await within(personRow(ana)).findByRole("textbox", link)).toHaveValue(madeLink.url);
+
+    await user.click(screen.getByRole("button", { name: `Invite ${ana}` }));
+    expect(
+      await within(personRow(ana)).findByText(
+        "Dispatch made a link, but its answer was lost on the way. Press Invite again: a new link ends that one."
+      )
+    ).toBeInTheDocument();
+    expect(invite).toHaveBeenCalledTimes(2);
+    expect(within(personRow(ana)).queryByRole("textbox", link)).not.toBeInTheDocument();
+    expect(
+      within(personRow(ana)).queryByTestId("access-invitation-expiry")
+    ).not.toBeInTheDocument();
   } finally {
     panel.restore();
     invite.mockRestore();
