@@ -7,11 +7,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // childEnv tells the re-executed test binary to run the helpers below, which skip in an ordinary
-// run. One gives up on purpose under a short -timeout and the other reads the deadline under
-// -timeout 0, and the parent names each flag, so each runs in a binary of its own.
+// run. One gives up on purpose under a short -timeout and the other waits under -timeout 0, and
+// the parent names each flag, so each runs in a binary of its own.
 const childEnv = "TESTWAIT_CHILD"
 
 // childTimeout is the -timeout the parent gives the child that gives up: its waits give up 5 s
@@ -58,18 +59,12 @@ func TestReceiveReturnsASentValueAndAClose(t *testing.T) {
 	}
 }
 
-// Until and Receive give up the margin before the test binary's deadline. A *testing.T names that
-// deadline; a testing.TB without Deadline reads it from the -timeout flag and the process's start,
-// which is no later than testing's own.
+// Until and Receive give up the margin before the test binary's deadline, which the test names.
 func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	deadline, bounded := t.Deadline()
 	end, ok := giveUpAt(t)
 	if ok != bounded || ok && !end.Equal(deadline.Add(-margin)) {
 		t.Fatalf("a wait in a test whose deadline is %v (%t) gives up at %v (%t), want %s before it", deadline, bounded, end, ok, margin)
-	}
-	fromFlag, ok := giveUpAt(noDeadline{t})
-	if ok != bounded || ok && fromFlag.After(end) {
-		t.Fatalf("a wait in a testing.TB without Deadline gives up at %v (%t), want no later than %v (%t)", fromFlag, ok, end, bounded)
 	}
 }
 
@@ -104,7 +99,8 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	}
 }
 
-// Under -timeout 0 there is no deadline: a wait has no moment to give up at and no timer.
+// Under -timeout 0 there is no deadline: Until asks until its reading holds, however many false
+// readings come first, and Receive waits until a value comes.
 func TestUnderNoTimeoutAWaitHasNoEnd(t *testing.T) {
 	child := exec.Command(os.Args[0], "-test.run=^TestNoDeadlineChild$", "-test.timeout=0", "-test.v")
 	child.Env = append(os.Environ(), childEnv+"=1")
@@ -136,24 +132,26 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 	})
 }
 
-// TestNoDeadlineChild is the child of TestUnderNoTimeoutAWaitHasNoEnd, run under -timeout 0. It
-// runs only when the parent re-executes this binary.
+// TestNoDeadlineChild is the child of TestUnderNoTimeoutAWaitHasNoEnd, run under -timeout 0: Until
+// reads false twice and true the third time, and Receive's value is sent 100 ms after it begins.
+// A wait that gave up on a false reading or on an empty channel fails it. The 100 ms decides no
+// verdict here, since the wait has no end; it keeps the channel empty when the wait begins, so a
+// Receive that gave up at once would find nothing. It runs only when the parent re-executes this
+// binary.
 func TestNoDeadlineChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestUnderNoTimeoutAWaitHasNoEnd")
 	}
-	if end, ok := giveUpAt(t); ok {
-		t.Errorf("under -timeout 0 a wait gives up at %v, want never", end)
+	asks := 0
+	if got := Until(t, "the third reading", func() (int, bool) { asks++; return asks, asks == 3 }); got != 3 || asks != 3 {
+		t.Errorf("under -timeout 0 Until returned %d after %d readings, want the third reading after 3", got, asks)
 	}
-	if end, ok := giveUpAt(noDeadline{t}); ok {
-		t.Errorf("under -timeout 0 a wait in a testing.TB without Deadline gives up at %v, want never", end)
-	}
-	expired, stop := expiry(t)
-	stop()
-	if expired != nil {
-		t.Errorf("under -timeout 0 a wait has a timer to give up on, want none")
+	sent := make(chan string)
+	go func() {
+		time.Sleep(10 * Poll)
+		sent <- "sent later"
+	}()
+	if got := Receive(t, "a value sent 100 ms after the wait began", sent); got != "sent later" {
+		t.Errorf("under -timeout 0 Receive returned %q, want the value sent", got)
 	}
 }
-
-// noDeadline is a testing.TB with no Deadline method, as a benchmark's is.
-type noDeadline struct{ testing.TB }
