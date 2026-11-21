@@ -59,8 +59,8 @@ func (g *gate) boundary(dir string) census {
 // ci-job-typecheck.yaml, ci-job-envoy-infra-go.yaml); and linux/arm64 and darwin/amd64, which
 // the listener's archives, the legion and agent-secrets releases and their notices build
 // (.github/go-release-targets.json, envoy-infra-targets.json, agent-secrets-client-targets.json,
-// scripts/go-release-notices.sh). The host's comes first, so its build is the one each other's
-// file sets are compared with.
+// .github/scripts/go-release-notices.sh). The host's comes first, so its build is the one each
+// other's file sets are compared with.
 var ciTargets = []string{"linux/amd64", "darwin/arm64", "linux/arm64", "darwin/amd64"}
 
 // ciTagSets is every build tag list the CI's vet passes for mod on any of ciTargets, as

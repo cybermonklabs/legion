@@ -37,15 +37,14 @@ body: |-
   a GCP `secret create` prints of the secret it made, name the broker's account, and the secret's
   whole name, id and project, as the broker's address lets its answer print: beside an address
   that is not clean, none of them. The broker's token client reads its answer only through the
-  box, with four
-  changes a caller can see: a `token_type` of `dpop` in any case is `Token.TokenType` `DPoP`
-  rather than the spelling the broker wrote; an `expires_in` that is a JSON string holding no
-  number is refused without quoting the string; a lapsed role refusal whose holder the rule would
-  print changed (a URL carrying a credential, a control character) is the listener's refusal
-  rather than a read of that holder's session; and the load test's reports name each refusal's
-  code as the rule reads it. The broker's generateIdToken mint (`ciphertoken.GoogleAccount`) reads
-  the pod's access token through the boundary, and its refusal's body prints as the rule reads it
-  with the mint's own bearer redacted.
+  box, with four changes a caller can see: a `token_type` of `dpop` in any case is
+  `Token.TokenType` `DPoP` rather than the spelling the broker wrote; an `expires_in` that is a
+  JSON string holding no number is refused without quoting the string; a lapsed role refusal whose
+  holder the rule would print changed (a URL carrying a credential, a control character) is the
+  listener's refusal rather than a read of that holder's session; and the load test's reports name
+  each refusal's code as the rule reads it. The broker's generateIdToken mint
+  (`ciphertoken.GoogleAccount`) reads the pod's access token through the boundary, and its
+  refusal's body prints as the rule reads it with the mint's own bearer redacted.
 time: 2026-11-18T10:12:18Z
 custom:
     Issue: pr4368
