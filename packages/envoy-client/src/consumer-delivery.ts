@@ -1,4 +1,4 @@
-import { legacyAgentSubject, topicForms } from "@legion/contracts";
+import { BUS_UNANSWERED_PREFIX, legacyAgentSubject, topicForms } from "@legion/contracts";
 import { z } from "zod";
 import {
   type DedupeIdentity,
@@ -13,6 +13,7 @@ import {
   type DeliveryAnswer,
   type DeliveryRequest,
   expandSubscriptionTopics,
+  isBusUnanswered,
   type ResumePoint,
 } from "./transport";
 
@@ -831,13 +832,38 @@ export function gapNoticeText(notice: ConsumerGapNotice): string {
 }
 
 /**
+ * Whether `why`, the message `inboundUnavailable` told a session, is a registration the listener
+ * may not have recorded: the bus-outage 503 (`isBusUnanswered`), whose message begins with
+ * `BUS_UNANSWERED_PREFIX`. Each host picks the words of its own one-line texts by this, so no host
+ * tests the prefix itself.
+ */
+export function isUnrecordedRegistration(why: string): boolean {
+  return why.startsWith(BUS_UNANSWERED_PREFIX);
+}
+
+/**
  * What a session is told when the listener can give it no consumer, worded once for every host:
  * its registration was refused, by one of the reasons `ErrorWireSchema.reason` lists
  * (`transport.ts`), or it failed, so nothing reaches it until a later registration is accepted.
  * `why` is the listener's own message, which carries its machine-readable reason. Each host
  * shows it where it shows a gap notice and says once per outage.
+ *
+ * A `why` that begins with the bus-outage prefix (`isUnrecordedRegistration`) is a registration
+ * the listener may not have recorded, because its message bus did not answer in time
+ * (`isBusUnanswered`). The client cannot tell which of the registration's calls failed. A retry
+ * that got no answer after that 503 may have landed (`busUnansweredStands`), and the session's
+ * consumer may well exist and deliver. So that notice says that the registration is not recorded
+ * for certain, and not that the session has no consumer.
  */
 export function inboundUnavailableNoticeText(why: string): string {
+  if (isUnrecordedRegistration(why)) {
+    return envoyNoticeText({
+      notice: "Envoy inbound unavailable",
+      error: why,
+      detail:
+        "This session's registration is not recorded for certain: the listener's message bus did not answer in time, so the listener may or may not have recorded it. Envoy messages may still reach the session, but nothing confirms it until a registration is accepted. Everything else works, and the session registers again at every heartbeat.",
+    });
+  }
   return envoyNoticeText({
     notice: "Envoy inbound unavailable",
     error: why,
@@ -847,55 +873,191 @@ export function inboundUnavailableNoticeText(why: string): string {
 }
 
 /**
- * What a session that was told its inbound is unavailable is told once a registration is
- * accepted again, worded once for every host: without it the outage notice is the last word the
- * session has, and a session that recovered a few seconds later reads itself as deaf for its life.
+ * What a session is told when a registration is accepted after an outage it was told of
+ * (`inboundUnavailableNoticeText`), worded once for every host and shown where that notice was
+ * shown. `why` is the message that notice told. After a registration that is not recorded for
+ * certain (`isUnrecordedRegistration`), the consumer may have delivered all along. So that notice
+ * says that the listener recorded a registration, and not that the session receives again. An
+ * accepted registration is answered only once the listener wrote its record, so that is true,
+ * except on a listener whose known-session store is not open, which records nothing and answers
+ * 200 all the same (the listener's `knownRecordWriteTimeout`).
  */
-export function inboundRestoredNoticeText(): string {
+export function inboundRestoredNoticeText(why: string): string {
+  if (isUnrecordedRegistration(why)) {
+    return envoyNoticeText({
+      notice: "Envoy inbound restored",
+      detail:
+        "The listener recorded a registration of this session. A message the stream stored that has not reached the session arrives now.",
+    });
+  }
   return envoyNoticeText({
     notice: "Envoy inbound restored",
     detail:
-      "The listener accepted this session's registration and gave it its durable consumer, so Envoy messages reach it again, the ones the stream stored during the outage first.",
+      "The listener accepted a registration of this session, so the session receives Envoy messages again. What the stream stored while it received nothing arrives now.",
   });
 }
+
+/**
+ * How long a session that has had no accepted registration yet may hold no relay subject before
+ * it is told that it receives nothing (`inboundUnavailable`). At a pod's start the first NATS
+ * dial can fail, and the relay opens on a later try. That race closes within about a minute
+ * (dispatch://INFRA-3589, R24): on 2026-11-16 an Oh My Pi session whose NATS was held closed
+ * for its first pass took 67 s from its start to its first accepted registration. The bound
+ * starts at the first registration that found no relay subject, not at the start.
+ *
+ * A pass's dial dials again after a failure, for at most 25 s (`connectNats`, `NATS_DIAL_PLAN`),
+ * so a pass whose dials all fail registers up to 25 s after it began. pi-envoy starts the next
+ * pass at the first 15 s tick after the last one ended (`NATS_RETRY_INTERVAL_MS`). So a real
+ * outage is told within about three minutes of the start, inside the listener's 300 s live
+ * window. A session whose NATS connection presents its broker token (`NATS_AUTH=broker`) waits up
+ * to 20 s for the token before each dial (`TRADE_DEADLINE_MS`), so each of its passes takes up to
+ * 20 s more, and its outage is told within about four minutes of the start, still inside that
+ * window.
+ */
+export const INBOUND_FIRST_OPEN_BOUND_MS = 120_000;
 
 /** One session's outage report (`inboundUnavailable`). */
 export interface InboundUnavailable {
   /**
-   * A registration was refused or failed: tells the session, through the host's `tell`, unless
-   * this outage already told it.
+   * No registration was sent, because the session holds no relay subject. Before the session's
+   * first accepted registration this is the start race, held until the bound passes; after it,
+   * a relay that was open was lost, which tells the session at once. Either way it is told once
+   * per outage, and once more after a told registration that is not recorded for certain. The
+   * first call of the start race goes to the host's `held` at once, so the host can log it while
+   * the session's notice waits.
+   */
+  noRelay(error: unknown): void;
+  /**
+   * A registration was refused or failed: tells the session at once, through the host's `tell`,
+   * unless this outage already told it. A registration the listener answered with the bus-outage
+   * 503 (`isBusUnanswered`) is held instead, as the start race is: the first such refusal since
+   * the last accepted registration starts the bound, and only one at or after its end tells the
+   * session. Any other refusal after a told bus-outage 503 is told once more: that 503 said the
+   * consumer may still deliver, and the refusal says the session receives nothing.
    */
   refused(error: unknown): void;
-  /** A registration was accepted: ends the outage, telling the session so through the host's
-   *  `restored` when it was told of the outage, and the next outage tells the session again. */
+  /**
+   * A registration was accepted: an outage the session was told of ends with `restored`, which
+   * takes the last `why` that was told, and the next outage tells the session again. An outage
+   * held and never told ends with nothing said.
+   */
   accepted(): void;
 }
 
+/** What `inboundUnavailable` takes besides `tell`. */
+export interface InboundUnavailableOptions {
+  /** The clock the bound is read on; `Date.now` unless a test passes its own. */
+  readonly now?: () => number;
+  /**
+   * How long the start race, and a run of registrations the bus-outage 503 answers, is held
+   * (`INBOUND_FIRST_OPEN_BOUND_MS` unless a test passes one).
+   */
+  readonly firstOpenBoundMs?: number;
+  /**
+   * Tells the session once that an outage it was told of has ended, because a registration was
+   * accepted. `toldWhy` is the last message `tell` took for that outage.
+   */
+  readonly restored?: (toldWhy: string) => void;
+  /**
+   * Called once, at once, when the start race's hold begins: the first registration before the
+   * session's first accepted one that found no relay subject. `relayMissing` is why the relay
+   * subject could not be opened (`NoRelaySubjectError.relayMissing`), undefined when the host
+   * named no reason. The session is told nothing yet, so a host logs it here: its log then shows
+   * at once that a registration found no relay subject, while the notice waits for the bound.
+   * It is not called for a call the bound does not hold, or once `stopping` answers true.
+   */
+  readonly held?: (relayMissing: string | undefined) => void;
+  /**
+   * Whether the session has begun to stop; once it answers true, the report tells nothing, neither
+   * `tell` nor `restored`, and calls no `held`. A stopping session closes its own relay on
+   * purpose, and a registration refused, answered or skipped during the stop says nothing about
+   * what the session receives, since its record is deleted next.
+   */
+  readonly stopping?: () => boolean;
+}
+
 /**
- * Says once per outage that the session receives nothing, and that it receives again once a
- * registration is accepted. The listener refuses a registration it can give no consumer, and the
- * host registers again at every heartbeat, so a host that told the session each time would tell
- * it every tick for as long as the outage lasts; one that never told it again would leave a second
- * outage silent; and one that never said the outage ended would leave the session believing it
- * deaf after it recovered. `tell` takes the listener's own message (`messageFor`), which each host
- * words with `inboundUnavailableNoticeText`, and `restored` is worded with
- * `inboundRestoredNoticeText`; each host shows both where it shows a gap notice.
+ * Tells the session once per outage that it has no accepted registration, and once that a
+ * registration was accepted after that. The listener refuses a registration it can give no
+ * consumer, and the host registers again at every heartbeat, so a host that told the session each
+ * time would tell it every tick for as long as the outage lasts; one that never told it again
+ * would leave a second outage silent. `tell` takes the listener's own message (`messageFor`),
+ * which each host words with `inboundUnavailableNoticeText` and shows where it shows a gap notice.
+ * `restored` takes that same message, and the host words it with `inboundRestoredNoticeText` in
+ * the same place.
+ *
+ * A session whose first relay open is still being tried holds no relay subject for a while at
+ * its start, and it receives once the relay opens. So until the session's first accepted
+ * registration, an outage with no relay subject is held: the first such call starts the bound,
+ * and only a call at or after its end tells the session. That first call goes to `held` at once,
+ * so the host's log says that a registration found no relay subject while the notice waits. A
+ * registration the listener answered with the bus-outage 503 is held the same way, at any time:
+ * it is not recorded for certain, the session's consumer may still deliver, and the next
+ * heartbeat's registration is usually accepted, so the first such refusal since the last
+ * accepted registration starts the bound and an accepted registration inside it ends the hold
+ * with nothing said. Any other refusal is told at once, as is an outage with no relay subject
+ * after the first accepted registration. Each outage is told once, with one exception. A told
+ * bus-outage 503 says the consumer may still deliver, so a refusal or a lost relay subject after
+ * it is told once more, and `restored` takes that later message. A session that has begun to
+ * stop (`stopping`) is told nothing at all.
  */
 export function inboundUnavailable(
   tell: (why: string) => void,
-  restored: () => void
+  {
+    now = () => Date.now(),
+    firstOpenBoundMs = INBOUND_FIRST_OPEN_BOUND_MS,
+    restored,
+    held,
+    stopping = () => false,
+  }: InboundUnavailableOptions = {}
 ): InboundUnavailable {
-  let told = false;
+  // The message this outage told the session last, until a registration is accepted.
+  let toldWhy: string | undefined;
+  let everAccepted = false;
+  let heldSince: number | undefined;
+  let unansweredSince: number | undefined;
+  // A told registration that is not recorded for certain says that the consumer may still
+  // deliver, so a refusal or a lost relay subject after it is told once more.
+  const say = (error: unknown) => {
+    if (stopping()) return;
+    const why = messageFor(error);
+    const toldNow =
+      toldWhy === undefined ||
+      (isUnrecordedRegistration(toldWhy) && !isUnrecordedRegistration(why));
+    if (!toldNow) return;
+    toldWhy = why;
+    tell(why);
+  };
   return {
+    noRelay(error) {
+      if (!everAccepted) {
+        const at = now();
+        const begins = heldSince === undefined;
+        heldSince ??= at;
+        if (at < heldSince + firstOpenBoundMs) {
+          if (begins && !stopping()) {
+            held?.(error instanceof NoRelaySubjectError ? error.relayMissing : undefined);
+          }
+          return;
+        }
+      }
+      say(error);
+    },
     refused(error) {
-      if (told) return;
-      told = true;
-      tell(messageFor(error));
+      if (isBusUnanswered(error)) {
+        const at = now();
+        unansweredSince ??= at;
+        if (at < unansweredSince + firstOpenBoundMs) return;
+      }
+      say(error);
     },
     accepted() {
-      if (!told) return;
-      told = false;
-      restored();
+      everAccepted = true;
+      unansweredSince = undefined;
+      const why = toldWhy;
+      if (why === undefined || stopping()) return;
+      toldWhy = undefined;
+      restored?.(why);
     },
   };
 }
@@ -936,9 +1098,17 @@ export interface RelayRegistration<Result> {
 /**
  * `registerWithRelay`'s refusal of a session that holds no relay subject, so a host can tell it
  * from a refusal the listener sent. Its message names why the relay is missing when the host said
- * (`relayMissing`).
+ * (`relayMissing`), and `relayMissing` holds that reason alone.
  */
-export class NoRelaySubjectError extends Error {}
+export class NoRelaySubjectError extends Error {
+  constructor(
+    message: string,
+    /** Why the relay subject could not be opened, as the host said it; undefined when it did not. */
+    readonly relayMissing: string | undefined
+  ) {
+    super(message);
+  }
+}
 
 /**
  * One registration, as every host that holds a relay makes it: the topics the listener will
@@ -948,7 +1118,9 @@ export class NoRelaySubjectError extends Error {}
  * A session with no relay subject open is refused here rather than registered: every
  * registration asks for consumer delivery, a session receives only what its own consumer holds,
  * and one carrying no relay would be refused `409 not_requested` and leave nothing registered.
- * The host's next heartbeat tries again.
+ * The outage report holds this at the session's start (`InboundUnavailable.noRelay`), and the
+ * host's next try opens the relay and registers. The first such refusal of the hold goes to the
+ * host's `held` at once, with why the relay is missing.
  */
 export function registerWithRelay<Result>({
   relay,
@@ -962,9 +1134,10 @@ export function registerWithRelay<Result>({
 }: RelayRegistration<Result>): Promise<Result> {
   if (relay === undefined) {
     const refused = new NoRelaySubjectError(
-      `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`
+      `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`,
+      relayMissing
     );
-    outage.refused(refused);
+    outage.noRelay(refused);
     return Promise.reject(refused);
   }
   const topics = registrationTopics(ownAgentSubject, followed, roles);

@@ -110,6 +110,7 @@ func serviceRequest(raw string) Request {
 var exampleServices = []ServiceEntry{
 	{Kind: KindDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
 	{Kind: KindListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
+	{Kind: KindWebhookListener, MachineID: "example-webhook", Account: webhookListenerAccount, AllProjects: true},
 	{Kind: KindDaemon, Account: daemonAccount, AllProjects: true},
 	{Kind: KindMeasure, Account: measureAccount, Google: true, AllProjects: true},
 	{Kind: KindDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
@@ -136,22 +137,50 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
-		"dispatch-token": {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
-		"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
-		"daemon-token":   {account: daemonAccount, issued: now, expiry: now.Add(30 * time.Minute)},
-		"measure-token":  {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
+		"dispatch-token":         {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
+		"listener-token":         {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"webhook-listener-token": {account: webhookListenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"daemon-token":           {account: daemonAccount, issued: now, expiry: now.Add(30 * time.Minute)},
+		"measure-token":          {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
 	for raw, want := range map[string]Decision{
-		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)},
-		"listener-token": {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
-		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)},
-		"measure-token":  {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
+		"dispatch-token":         {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)},
+		"listener-token":         {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
+		"webhook-listener-token": {Name: "webhook-listener/example-webhook", Grant: natsgrant.WebhookListener("example-webhook"), Expires: now.Add(time.Hour)},
+		"daemon-token":           {Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)},
+		"measure-token":          {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
 	} {
 		t.Run(raw, func(t *testing.T) {
 			decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(raw))
 			require.NoError(t, err)
 			require.Equal(t, want, decision)
+		})
+	}
+}
+
+// The lane deny reaches the services the auth service admits (check l5 of dispatch://INFRA-3589):
+// a listener's grant denies a publish on Dispatch's lane and on GitHub's lane, the webhook
+// listener's, the listener that receives GitHub's webhook, denies Dispatch's lane alone, and
+// Dispatch's denies GitHub's lane and the listener's resume lane. The deny is in the grant's
+// PublishDeny, which the answer's user carries (TestADenyEntryIsEncodedAndEnforced).
+func TestAServiceKindsGrantDeniesTheLanesItDoesNotPublish(t *testing.T) {
+	now := time.Now()
+	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
+		"dispatch-token":         {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
+		"listener-token":         {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"webhook-listener-token": {account: webhookListenerAccount, issued: now, expiry: now.Add(time.Hour)},
+	})}
+	for raw, deny := range map[string][]string{
+		"listener-token":         {"notifications.dispatch.>", "notifications.github.>"},
+		"webhook-listener-token": {"notifications.dispatch.>"},
+		"dispatch-token":         {"notifications.github.>", "notifications.envoy.resume.>"},
+	} {
+		t.Run(raw, func(t *testing.T) {
+			decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(raw))
+			require.NoError(t, err)
+			require.Equal(t, deny, decision.Grant.PublishDeny)
+			require.Contains(t, decision.Grant.Publish, "notifications.>")
 		})
 	}
 }

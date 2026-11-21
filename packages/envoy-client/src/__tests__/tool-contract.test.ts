@@ -146,6 +146,28 @@ describe("envoyToolSpecs", () => {
     );
   });
 
+  // R7 of dispatch://INFRA-3589: the listener's publish route refuses by name the agent topics,
+  // Dispatch's and GitHub's lanes, the Legion wake subject and the listener's own lanes
+  // (`publishHandler`). So the publish tool lists none of them among the topics a publish stores,
+  // and says why; the subscribe tool still lists every stored lane.
+  test("tells an agent each topic the listener refuses a publish to, and that every other topic the stream captures is stored", () => {
+    const subscribe = envoyToolSpecs.find((spec) => spec.name === "envoy_subscribe");
+    const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
+
+    expect(subscribe?.description).toContain(
+      "Every notification topic is stored (agent, dispatch, github, slack, legion, ghostwispr, whatsapp, team;"
+    );
+    expect(publish?.description).toContain(
+      "The listener refuses a publish to each of these topics by name, and stores nothing: an agent topic, since envoy_send sends to one session; a topic under notifications.dispatch., since only Dispatch publishes on Dispatch's lane; a topic under notifications.github., since only the listener that receives GitHub's webhook publishes on GitHub's lane; notifications.legion.wake, since only the listener reports a Legion pod wake; and a topic under notifications.envoy.kept., notifications.envoy.resume. or notifications.envoy.takeover., since those lanes are the listener's own."
+    );
+    expect(publish?.description).toContain(
+      "Every other topic the stream captures is stored (slack, legion, ghostwispr, whatsapp, team;"
+    );
+    expect(publish?.description).not.toContain("dispatch, github");
+    expect(publish?.description).not.toContain("Every notification topic is stored");
+    expect(publish?.description).not.toContain("webhooks");
+  });
+
   test("tells an agent the three answers a role message has, the kept one as a success", () => {
     const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
 
@@ -173,12 +195,16 @@ describe("envoyToolSpecs", () => {
     expect(publish?.description).not.toContain("in the hour that follows");
   });
 
-  test("says what the recipient counts and the stopped state mean", () => {
+  test("says what the recipient counts, the stopped state and the no_receiver state mean", () => {
     const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
 
     for (const name of ["envoy_sessions", "envoy_role_get", "envoy_send", "envoy_publish"]) {
-      expect(envoyToolSpecs.find((spec) => spec.name === name)?.description).toContain(
+      const description = envoyToolSpecs.find((spec) => spec.name === name)?.description;
+      expect(description).toContain(
         "A send answered with state stopped means that session is not running: the message is stored for it and reaches it if it runs again within 72 hours, and nothing of its claims changes."
+      );
+      expect(description).toContain(
+        "A send answered with state no_receiver means that session runs but takes no message into its conversation now, as a Claude Code terminal with no mod does: the message is stored for it and reaches it if it takes messages within 72 hours."
       );
     }
     expect(publish?.description).toContain(
@@ -686,6 +712,37 @@ describe("sendConfirmationText for a state", () => {
       "queued evt_01 for ses_target: the session is stopped; if it runs again within 72 hours, it gets the message"
     );
     expect(text).not.toContain("sent");
+  });
+
+  // A Claude Code terminal with no mod runs and holds its relay subject, but nothing writes a
+  // message into its conversation. The listener answers no_receiver and names no registry state,
+  // and the line must not call that session live (dispatch://INFRA-3589, R12).
+  const noReceiver = {
+    envelope: { event_id: "evt_01" },
+    recipient: "ses_target",
+    confirmed: true,
+    state: "no_receiver",
+    duplicate: false,
+  } as const;
+
+  test("a target with no conversation receiver is queued, and the line never says live", () => {
+    const text = sendConfirmationText(noReceiver);
+
+    expect(text).toBe(
+      "queued evt_01 for ses_target: the session runs but takes no message into its conversation now; the message is stored, and if the session takes messages within 72 hours, it gets the message"
+    );
+    expect(text).not.toContain("live");
+    expect(text).not.toContain("sent");
+  });
+
+  test("a resend to a target with no conversation receiver is queued once, and never says live", () => {
+    const text = sendConfirmationText({ ...noReceiver, duplicate: true });
+
+    expect(text).toBe(
+      "queued once for ses_target: an earlier attempt under the same idempotency_key was already stored, so this one stored no second copy; the session runs but takes no message into its conversation now; the message is stored, and if the session takes messages within 72 hours, it gets the message"
+    );
+    expect(text).not.toContain("live");
+    expect(text).not.toContain("evt_01");
   });
 });
 

@@ -149,13 +149,16 @@ func credentialKind(req Request) string {
 	return credentialNone
 }
 
-// serviceGrant is entry's kind's grant, before it is held to the entry's projects.
+// serviceGrant is entry's kind's grant, before it is held to the entry's projects. A listener's
+// grant denies GitHub's lane, and only the webhook listener's publishes it.
 func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
 	switch entry.Kind {
 	case KindDispatch:
 		return natsgrant.Dispatch(entry.MachineID)
 	case KindListener:
 		return natsgrant.Listener(entry.MachineID)
+	case KindWebhookListener:
+		return natsgrant.WebhookListener(entry.MachineID)
 	case KindDaemon:
 		return natsgrant.Daemon()
 	case KindMeasure:

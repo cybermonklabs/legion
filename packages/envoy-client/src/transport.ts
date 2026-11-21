@@ -1,4 +1,5 @@
 import {
+  BUS_UNANSWERED_PREFIX,
   DELIVERY_DUPLICATE_WINDOW_HOURS,
   type Envelope,
   EnvelopeSchema,
@@ -101,7 +102,8 @@ const SessionWireSchema = z.object({
   // listener it last registered through. The session's owner is the listener its stored
   // subscription names (the one store.Registry.Match fans its topics out on), else the one on
   // machine_id; the owner relays the session's consumer, and any other listener leaves inbox
-  // messages to it silently (session.HandleAgentResult.OwnedElsewhere). No delivery reads host.
+  // messages to it silently (session.AgentOwnedElsewhere), since a wake it reported would be one
+  // more report for each listener that does not own the session. No delivery reads host.
   // Optional here only for a listener predating the field — the live listener always fills it in,
   // falling back to machine_id itself (session.SessionEntry.HostOrMachine).
   host: z.string().optional(),
@@ -199,13 +201,16 @@ const ErrorWireSchema = z.object({
  * `recipient`, `recipient_state`, `state`, `last_seen` and `duplicate` are a send's
  * (`listenerwire.SendResponse`). `recipient_state` is the target's registry state and
  * stays the strict three-value enum every deployed plugin parses. `state` is what the listener's
- * connection check found: `connected`, or `stopped` when no plugin of the target holds its relay
- * subject, so the message waits on the session's topic. It is read as a string rather than a
- * closed pair, as this file reads a delivery answer's `reason`, so a word a later listener adds
- * still parses: only `stopped` is stopped, and anything else is the connected reading every
- * release gave before the state existed. `duplicate` says the listener already stored a send
- * under this target and idempotency key, so this one stored nothing new; absent reads as false,
- * as an older listener's answer does.
+ * connection check found: `connected`; `stopped` when no plugin of the target holds its relay
+ * subject, so the message waits on the session's topic; or `no_receiver` when the target runs but
+ * advertises no delivery mode, as a Claude Code terminal does while no mod is connected to it, so
+ * nothing takes the message into its conversation now. A `no_receiver` answer names no
+ * `recipient_state`. `state` is read as a string rather than a closed list, as this file reads a
+ * delivery answer's `reason`, so a word a later listener adds still parses: only `stopped` and
+ * `no_receiver` are read as themselves, and anything else is the connected reading every release
+ * gave before the state existed. `duplicate` says the listener already stored a send under this
+ * target and idempotency key, so this one stored nothing new; absent reads as false, as an older
+ * listener's answer does.
  *
  * `holder` and `holder_state` are a role publish's, under the two names every role answer uses
  * (`listenerwire.PublishResponse`). A publish to a topic the stream captures stores one copy that
@@ -635,33 +640,51 @@ export type ListSessionsInput = {
 /**
  * What the listener's connection check found for a send's target: `connected`, a plugin of that
  * session holds its relay subject now; `stopped`, none does, so the message waits on the
- * session's topic. Beside the registry state (`SessionState`) rather than a fourth value of it:
- * a session stays live or unresponsive by the age of its last registration whatever this says,
- * and keeps its claims.
+ * session's topic; `no_receiver`, a plugin holds it but the session advertises no delivery mode,
+ * as a Claude Code terminal does while no mod is connected to it, so nothing takes the message
+ * into its conversation now. Beside the registry state (`SessionState`) rather than a fourth value
+ * of it: a session stays live or unresponsive by the age of its last registration whatever this
+ * says, and keeps its claims.
  */
-export type ConnectionState = "connected" | "stopped";
+export type ConnectionState = "connected" | "stopped" | "no_receiver";
+
+/**
+ * A send's target as the listener found it. A `no_receiver` target has no `recipientState`: the
+ * listener names none for it, because its registry state would read `live` while no message
+ * reaches its conversation.
+ */
+export type SendTargetState =
+  | {
+      /** The recipient's state as the listener resolved it; `live` from a listener that names
+       *  none. A message to an unresponsive recipient is stored and reaches it when it answers
+       *  again. */
+      readonly recipientState: SessionState;
+      /**
+       * What the target was when the listener stored the message. `stopped` means the message
+       * waits on the session's topic for the stream's 72 hours and reaches it if it runs again in
+       * that time. A listener that answers no state reads as `connected`, which is what every
+       * release meant before the state existed.
+       */
+      readonly state: Exclude<ConnectionState, "no_receiver">;
+    }
+  | {
+      readonly recipientState?: undefined;
+      /** The session runs but takes no message into its conversation now. The message is stored,
+       *  and it reaches the session if the session takes messages within the stream's 72 hours. */
+      readonly state: "no_receiver";
+    };
 
 export type SendResult = {
   readonly envelope: Envelope;
   readonly recipient: string;
   readonly confirmed: boolean;
-  /** The recipient's state as the listener resolved it; `live` from a listener that names none.
-   *  A message to an unresponsive recipient is stored and reaches it when it answers again. */
-  readonly recipientState: SessionState;
-  /**
-   * What the target was when the listener stored the message. `stopped` means the message waits
-   * on the session's topic for the stream's 72 hours and reaches it if it runs again in that
-   * time. A listener that answers no state reads as `connected`, which is what every release
-   * meant before the state existed.
-   */
-  readonly state: ConnectionState;
   /** The recipient's last registration in epoch milliseconds, which the listener sends beside an
    *  unresponsive or a stopped recipient's state so the sender can say since when it has been
    *  silent. Absent when the listener knows none, and from a listener predating the field. */
   readonly lastSeen?: number;
   /** The listener already held a send under this target and idempotency key: delivered once. */
   readonly duplicate: boolean;
-};
+} & SendTargetState;
 
 export type PublishResult = {
   readonly envelope: Envelope;
@@ -806,6 +829,27 @@ export class EnvoyApiError extends Error {
   }
 }
 
+/**
+ * Whether `error` is the listener's bus-outage answer: an `EnvoyApiError` with status 503 whose
+ * message begins with `BUS_UNANSWERED_PREFIX` (`@legion/contracts`, the literal the listener's
+ * `busUnansweredPrefix` is generated from). The message after the prefix names the call the
+ * bus did not answer, and says `bus: NATS is reconnecting` when NATS was reconnecting. The work
+ * the listener did before that call can have landed: an unsubscribe gets this answer after it
+ * wrote the session's record, when only the update of the consumer's filter met the reconnect.
+ * A registration (`subscribe`) or a removal (`unsubscribe`) that got this answer on an attempt
+ * fails with it, also where a later attempt got no answer or a 5xx that names no reason
+ * (`busUnansweredStands`), so this reads true for it. Every other call throws the error of its
+ * last attempt alone, so a first attempt that got this answer and a retry that failed another way
+ * reads false here.
+ */
+export function isBusUnanswered(error: unknown): boolean {
+  return (
+    error instanceof EnvoyApiError &&
+    error.details.status === 503 &&
+    error.message.startsWith(BUS_UNANSWERED_PREFIX)
+  );
+}
+
 /** The listener's own test of whether a send's dedupe key lets the stream and hosts drop a repeat. */
 const mintedDedupeKey = new RegExp(MINTED_DEDUPE_KEY_PATTERN);
 
@@ -904,6 +948,20 @@ type RequestOptions = {
   readonly onNotSent?: () => void;
   /** Called as each attempt starts, so a caller can say how many it made. */
   readonly onAttempt?: () => void;
+  /**
+   * Whether an attempt's bus-outage 503 (`isBusUnanswered`) is the call's error when a later
+   * attempt gets no answer, sends nothing or gets a 5xx that names no reason. A registration and
+   * a removal set it. The listener may have done part of the call before that 503: a
+   * registration's consumer may exist though its record was not written, and a removal may have
+   * freed the claim or written the record. A retry that then got no answer tells nothing more, so
+   * the caller is told of the 503: the session is told that the registration is not recorded for
+   * certain (`inboundUnavailable`), and a removal is warned as one that may already have landed.
+   * A later attempt's refusal is still the call's error: a 4xx, and a 5xx that names a reason (a
+   * registration's `no_grant`, `consumer_limit` or `consumer_error` 503), since the listener
+   * answered the call itself. Every other call throws what its last attempt got, because its
+   * callers read that: a send's unconfirmed error names it.
+   */
+  readonly busUnansweredStands?: boolean;
   /**
    * The session this call acts for, where its body names one the listener binds to the
    * credential: a subscribe, an unsubscribe, a deregistration, a role claim, and a
@@ -1064,6 +1122,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
   ): Promise<string> => {
     const url = `${baseUrl}${path}`;
     const tries = options.retry === false ? 1 : attempts;
+    // The last bus-outage 503 an attempt got, where the caller asked for it (`busUnansweredStands`).
+    let busUnanswered: EnvoyApiError | undefined;
     for (let attempt = 0; attempt < tries; attempt += 1) {
       options.onAttempt?.();
       const outcome = await attemptOnce(
@@ -1078,7 +1138,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           await waitForRetry(retryDelayMs);
           continue;
         }
-        throw outcome.unanswered;
+        throw busUnanswered ?? outcome.unanswered;
       }
       if ("notSent" in outcome) {
         if (attempt + 1 < tries) {
@@ -1086,7 +1146,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           continue;
         }
         options.onNotSent?.();
-        throw outcome.notSent;
+        throw busUnanswered ?? outcome.notSent;
       }
       const { response, body } = outcome;
       if (response.ok) return body;
@@ -1109,10 +1169,13 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // `sender_rate_limited`: the agent reads its sentence and decides when to send it again.
       if (response.status >= 500) {
         options.onUnanswered?.();
+        if (options.busUnansweredStands === true && isBusUnanswered(error)) busUnanswered = error;
         if (attempt + 1 < tries) {
           await waitForRetry(retryDelayMs);
           continue;
         }
+        // A 5xx that names a reason is the listener's refusal of the call, which stands.
+        throw error.reason === undefined ? (busUnanswered ?? error) : error;
       }
       throw error;
     }
@@ -1170,8 +1233,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
             "/v1/interests/subscribe",
             subscribeBody(input),
             // Every call below whose body names the session it acts for presents that session's
-            // own credential, since the listener binds a broker token's session to it.
-            { actingSession: input.sessionID }
+            // own credential, since the listener binds a broker token's session to it. A
+            // registration an attempt of which got the bus-outage 503 fails with that answer where
+            // a later attempt gets no answer or a 5xx that names no reason (`busUnansweredStands`).
+            { actingSession: input.sessionID, busUnansweredStands: true }
           ),
           "POST",
           "/v1/interests/subscribe"
@@ -1190,7 +1255,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
             ? {}
             : { client_instance_id: input.clientInstanceID }),
         },
-        { actingSession: input.sessionID }
+        // A removal an attempt of which got the bus-outage 503 fails with that answer where a
+        // later attempt gets no answer or a 5xx that names no reason (`busUnansweredStands`): the
+        // listener may already have freed the claim or written the record.
+        { actingSession: input.sessionID, busUnansweredStands: true }
       );
     },
     getInterest: async (sessionID) =>
@@ -1247,16 +1315,24 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         if (refused && !unanswered) throw error;
         throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, made, error);
       }
-      return {
+      const stored = {
         envelope: response,
         recipient: response.recipient ?? input.targetSessionID,
         confirmed: response.recipient !== undefined,
-        recipientState: response.recipient_state ?? "live",
-        // Only `stopped` is stopped: an answer with no state is an older listener's, and a word
-        // this build does not know says nothing about the target that is worth acting on.
-        state: response.state === "stopped" ? "stopped" : "connected",
         ...lastSeenOf(response.last_seen),
         duplicate: response.duplicate === true,
+      };
+      // A no_receiver target runs but takes no message into its conversation now. The listener
+      // names no registry state for it, and this reads none in: `live` would say the message
+      // reaches it.
+      if (response.state === "no_receiver") return { ...stored, state: "no_receiver" };
+      return {
+        ...stored,
+        recipientState: response.recipient_state ?? "live",
+        // Only `stopped` and `no_receiver` are read as themselves: an answer with no state is an
+        // older listener's, and a word this build does not know says nothing about the target
+        // that is worth acting on.
+        state: response.state === "stopped" ? "stopped" : "connected",
       };
     },
     publish: async (input) => {

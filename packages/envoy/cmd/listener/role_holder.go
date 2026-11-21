@@ -276,11 +276,11 @@ const (
 //     window leaves its holder.
 //   - This listener's own renewal of role's claim for the holder failed inside liveWindow
 //     (store.Registry.RenewalFailedWithin, which says what clears that record and how long it
-//     stands): a claim read or write that did not answer or failed, or a registration whose
-//     store work failed before its renewal could run (store.Registry.RecordRenewalFailures,
-//     from subscribeHandler). The record is this listener's own and is lost at a restart, and a
-//     claim may reach another listener, so the repair's bound and not this record is what
-//     bounds the harm.
+//     stands): a claim read or write that did not answer or failed, or a registration that
+//     failed before its renewal could run, at its store work or at a consumer call that met a
+//     NATS reconnect (store.Registry.RecordRenewalFailures, from subscribeHandler). The record
+//     is this listener's own and is lost at a restart, and a claim may reach another listener,
+//     so the repair's bound and not this record is what bounds the harm.
 func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.RoleClaim, claimantInstanceID string, liveWindow time.Duration) (roleSupersession, error) {
 	if claim.HeldByProcess(claimantInstanceID) {
 		return roleTakenFromHolder, nil

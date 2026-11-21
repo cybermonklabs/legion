@@ -32,7 +32,7 @@ func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 	started := time.Now()
 
 	first := startSessionStandIn(t, rig.url, sessionID, answerDone)
-	rig.register(t, sessionID, map[string]any{"delivery": map[string]any{"consumer": true, "epoch": "epoch-1"}})
+	rig.register(t, sessionID, deliveryModes(map[string]any{"delivery": map[string]any{"consumer": true, "epoch": "epoch-1"}}))
 
 	connected := sendThroughRoutes(t, rig.mux, sessionID, map[string]any{"message": "while you are here"})
 	if connected.status != http.StatusOK || connected.State != sessionStateConnected || connected.RecipientState != string(session.Live) {

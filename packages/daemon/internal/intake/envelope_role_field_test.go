@@ -20,7 +20,7 @@ func TestDecodeMessageReadsAnEnvelopeThatCarriesTheRoleFieldAsWithoutIt(t *testi
 	}{
 		{"a Dispatch issue event", "notifications.dispatch.issue.CAPTURE-4.issue.created", capturedIssueCreatedEnvelope(t)},
 		{"a GitHub pull request event", "notifications.github.sjawhar.legion.pr.42", capturedGitHubEnvelope(t, "pr-opened.json")},
-		{"the listener's wake report", legionWakeSubject, envelopeJSON(t, "wake-1", "envoy", `{"kind":"role_message","role":"legion-legion-legion-208-implementer","at":`+at+`}`)},
+		{"the listener's wake report", legionWakeSubject, envelopeJSON(t, "wake-1", "envoy", `{"kind":"role_message","role":"legion-capture-capture-208-implementer","at":`+at+`}`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want, err := decodeMessage(tc.subject, "CAPTURE", capturedRepositories, tc.data)

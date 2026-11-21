@@ -617,8 +617,8 @@ func TestTheWakeTaskOfASessionAPauseStoppedSaysThePauseStoppedIt(t *testing.T) {
 		kind, detail, want string
 	}{
 		{kind: pods.WakeChecks, detail: "head1 failed build", want: "head1 failed build"},
-		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", want: "role topic (legion-LEGION-208-implementer) while your session was stopped. Envoy keeps a role message for one hour"},
-		{kind: pods.WakeAgentMessage, detail: "session-1", want: "sent to your session (session-1) while your session was stopped. A message that Envoy or Dispatch stored for your session reaches you in this session."},
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", want: "role topic (legion-LEGION-208-implementer) while your session was stopped. A message that Envoy kept for your role reaches this session, for one hour after Envoy kept it."},
+		{kind: pods.WakeAgentMessage, detail: "session-1", want: "sent to your session (session-1) while your session was stopped. A message that Envoy or Dispatch stored for your session reaches this session, for 72 hours after it was stored."},
 		{kind: pods.WakeBackstop, detail: "the backstop came due", want: "your backstop running out"},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
@@ -633,6 +633,150 @@ func TestTheWakeTaskOfASessionAPauseStoppedSaysThePauseStoppedIt(t *testing.T) {
 				t.Fatalf("WakeTask(%s) after a pause = %q, want no word of a release: the pause kept the pod", tc.kind, task)
 			}
 		})
+	}
+}
+
+// A woken role's wake text is true (dispatch://INFRA-3589), against decision 12 of
+// dispatch://INFRA-3759: a cancel of an idle release made while the project is paused keeps a wake
+// that the release let run, and the release took no pod. The kept start's task becomes the task
+// WakeTask writes for a session the pause stopped: the same wake and detail under the pause's
+// words, with the sentences the queue appended after it, such as a reviewer's review round. A task
+// that does not begin with the release's preamble is left as it is.
+func TestAPausedWakeTaskIsTheTaskOfAWakeOfARoleThePauseStopped(t *testing.T) {
+	const appended = " The review round's two sentences follow the wake's task."
+	for _, tc := range []struct{ kind, detail string }{
+		{kind: pods.WakeChecks, detail: "head1 failed build"},
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer"},
+		{kind: pods.WakeAgentMessage, detail: "session-1"},
+		{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due"},
+		{kind: pods.WakeDelivery, detail: "a notice of LEGION-208"},
+	} {
+		for _, suffix := range []string{"", appended} {
+			released := WakeTask(tc.kind, tc.detail, StoppedByRelease) + suffix
+			want := WakeTask(tc.kind, tc.detail, StoppedByPause) + suffix
+			if got := PausedWakeTask(tc.kind, released); got != want {
+				t.Errorf("PausedWakeTask(%s, %q) = %q, want %q", tc.kind, released, got, want)
+			}
+		}
+	}
+	for _, task := range []string{"", "Implement LEGION-208.", WakeTask(pods.WakeChecks, "head1 failed build", StoppedByPause)} {
+		if got := PausedWakeTask(pods.WakeChecks, task); got != task {
+			t.Errorf("PausedWakeTask(%s, %q) = %q, want the task as it is: it says nothing of a release", pods.WakeChecks, task, got)
+		}
+	}
+}
+
+// A woken role's wake text is true (dispatch://INFRA-3589, R3): a wake of a role that a project's
+// pause stopped, taken while a release that recorded the role still stood, is told the pause's
+// words, and the release's record then takes the pod. The record retells that wake's start as
+// the task WakeTask writes for a session the release stopped: the same wake and detail under the
+// release's words, with the sentences the queue appended after it, such as a reviewer's review
+// round. ReleasedWakeTask is the inverse of PausedWakeTask both ways. A task that does not begin
+// with the pause's preamble is left as it is.
+func TestAReleasedWakeTaskIsTheInverseOfAPausedWakeTask(t *testing.T) {
+	const appended = " The review round's two sentences follow the wake's task."
+	for _, tc := range []struct{ kind, detail string }{
+		{kind: pods.WakeChecks, detail: "head1 failed build"},
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer"},
+		{kind: pods.WakeAgentMessage, detail: "session-1"},
+		{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due"},
+		{kind: pods.WakeDelivery, detail: "a notice of LEGION-208"},
+	} {
+		for _, suffix := range []string{"", appended} {
+			released := WakeTask(tc.kind, tc.detail, StoppedByRelease) + suffix
+			paused := WakeTask(tc.kind, tc.detail, StoppedByPause) + suffix
+			if got := ReleasedWakeTask(tc.kind, paused); got != released {
+				t.Errorf("ReleasedWakeTask(%s, %q) = %q, want %q", tc.kind, paused, got, released)
+			}
+			if got := ReleasedWakeTask(tc.kind, PausedWakeTask(tc.kind, released)); got != released {
+				t.Errorf("ReleasedWakeTask(%s, PausedWakeTask(%s, %q)) = %q, want the task as it was", tc.kind, tc.kind, released, got)
+			}
+			if got := PausedWakeTask(tc.kind, ReleasedWakeTask(tc.kind, paused)); got != paused {
+				t.Errorf("PausedWakeTask(%s, ReleasedWakeTask(%s, %q)) = %q, want the task as it was", tc.kind, tc.kind, paused, got)
+			}
+		}
+	}
+	for _, task := range []string{"", "Implement LEGION-208.", WakeTask(pods.WakeChecks, "head1 failed build", StoppedByRelease)} {
+		if got := ReleasedWakeTask(pods.WakeChecks, task); got != task {
+			t.Errorf("ReleasedWakeTask(%s, %q) = %q, want the task as it is: it says nothing of a pause", pods.WakeChecks, task, got)
+		}
+	}
+}
+
+// A woken role's wake text is true (dispatch://INFRA-3589, R3): a cancel of an idle release keeps
+// the wake's start of a role whose claim a close, a linger or an operator took over, and the role
+// reads that start's task when the operator resumes it. The release took no pod. So the task
+// becomes the same wake and detail under a cancelled release's words: its preamble says that the
+// release did not finish and the role goes on in the same pod, a message wake says the message
+// came while the session was stopped, and the wake's own sentences and those the queue appended
+// stay. A task that does not begin with the release's preamble is left as it is.
+func TestATakenOverWakeTaskIsTheTaskOfAWakeOfACancelledRelease(t *testing.T) {
+	const appended = " The review round's two sentences follow the wake's task."
+	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
+		"Your session, your workspace and any work you had not pushed are as you left them. "
+	for _, tc := range []struct{ kind, detail, says string }{
+		{kind: pods.WakeChecks, detail: "head1 failed build", says: "The wake is a CI settlement on your pull request's head: head1 failed build."},
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer",
+			says: "role topic (legion-LEGION-208-implementer) while your session was stopped. A message that Envoy kept for your role reaches this session"},
+		{kind: pods.WakeAgentMessage, detail: "session-1",
+			says: "sent to your session (session-1) while your session was stopped. A message that Envoy or Dispatch stored for your session reaches this session"},
+		{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due",
+			says: "The wake is the release's backstop running out: the backstop armed for LEGION-208's implementer came due."},
+		{kind: pods.WakeDelivery, detail: "a notice of LEGION-208", says: "The wake is delivery: a notice of LEGION-208."},
+	} {
+		for _, suffix := range []string{"", appended} {
+			released := WakeTask(tc.kind, tc.detail, StoppedByRelease) + suffix
+			got := TakenOverWakeTask(tc.kind, released)
+			if !strings.HasPrefix(got, cancelled) || !strings.Contains(got, tc.says) || !strings.HasSuffix(got, suffix) ||
+				strings.Contains(got, "had been released") || strings.Contains(got, "while your pod was gone") {
+				t.Errorf("TakenOverWakeTask(%s, %q) = %q, want it to begin %q, say %q, end %q, and say nothing of a pod that went away",
+					tc.kind, released, got, cancelled, tc.says, suffix)
+			}
+		}
+	}
+	for _, task := range []string{"", "Implement LEGION-208.", WakeTask(pods.WakeChecks, "head1 failed build", StoppedByPause)} {
+		if got := TakenOverWakeTask(pods.WakeChecks, task); got != task {
+			t.Errorf("TakenOverWakeTask(%s, %q) = %q, want the task as it is: it says nothing of a release that took the pod", pods.WakeChecks, task, got)
+		}
+	}
+}
+
+// R2 of dispatch://INFRA-3589: a wake that comes during a release is applied again, never dropped
+// in silence. A CI settlement and a backstop reach the woken role only through the wake's task,
+// so a cancel that drops such a wake hands its task to the role's resume. A wake of a role that a
+// project's pause stopped, taken while the release stood, is told the pause's words, which say
+// that the pod was kept. The cancel kept the pod, so the resume carries that task as it is, with
+// the sentences the queue appended after it. A message wake still answers "": its message reaches
+// the session anyway.
+func TestACancelledWakeTaskKeepsThePausesWordsOfASettlementOrABackstop(t *testing.T) {
+	const appended = " The review round's two sentences follow the wake's task."
+	for _, tc := range []struct{ kind, detail string }{
+		{kind: pods.WakeChecks, detail: "head1 failed build"},
+		{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due"},
+	} {
+		for _, suffix := range []string{"", appended} {
+			paused := WakeTask(tc.kind, tc.detail, StoppedByPause) + suffix
+			if got := CancelledWakeTask(tc.kind, paused); got != paused {
+				t.Errorf("CancelledWakeTask(%s, %q) = %q, want the task as it is: the cancel kept the pod the pause kept", tc.kind, paused, got)
+			}
+			released := WakeTask(tc.kind, tc.detail, StoppedByRelease) + suffix
+			if got, want := CancelledWakeTask(tc.kind, released), cancelledWakePreamble+strings.TrimPrefix(released, wakePreamble); got != want {
+				t.Errorf("CancelledWakeTask(%s, %q) = %q, want %q", tc.kind, released, got, want)
+			}
+		}
+	}
+	for _, tc := range []struct{ kind, detail string }{
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer"},
+		{kind: pods.WakeAgentMessage, detail: "session-1"},
+	} {
+		for _, stop := range []WakeStop{StoppedByRelease, StoppedByPause} {
+			if task := WakeTask(tc.kind, tc.detail, stop); CancelledWakeTask(tc.kind, task) != "" {
+				t.Errorf("CancelledWakeTask(%s, %q) = %q, want none: the message reaches the session anyway", tc.kind, task, CancelledWakeTask(tc.kind, task))
+			}
+		}
+	}
+	if got := CancelledWakeTask(pods.WakeChecks, "Implement LEGION-208."); got != "" {
+		t.Errorf("CancelledWakeTask(%s, a task no wake wrote) = %q, want none", pods.WakeChecks, got)
 	}
 }
 
@@ -771,24 +915,24 @@ func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 }
 
 // A role message wake tells the woken role what Envoy kept for it (dispatch://INFRA-2846/spec
-// R7): a message kept for the role reaches the woken session as an Envoy card that shows kept_at,
-// possibly before the wake's task, unless its hour ended first; Envoy keeps a role message for one
-// hour and tells its sender when it drops one; and a message sent with keep: false is not kept, so
-// its sender sends it again. Each clause is matched on its own, so a sentence that drops one fails
-// and names it. The task says the same whether an idle release or a project's pause stopped the
-// session.
+// R7): a message kept for the role reaches the woken session for one hour after the keep, as an
+// Envoy card that shows kept_at, possibly before the wake's task; when that hour ends before a
+// session takes it, Envoy drops it and tells its sender; and a message sent with keep: false is
+// not kept, so its sender must send it again. Each clause is matched on its own, so a sentence
+// that drops one fails and names it. The task says the same whether an idle release or a
+// project's pause stopped the session.
 func TestTheRoleMessageWakeTaskSaysWhatWasKept(t *testing.T) {
 	for _, stop := range []WakeStop{StoppedByRelease, StoppedByPause} {
 		task := WakeTask(pods.WakeRoleMessage, "legion-LEGION-208-implementer", stop)
 		for _, clause := range []struct{ rule, want string }{
-			{rule: "a message kept for the role reaches the woken session as a card", want: "a message kept for your role reaches this session as an Envoy card"},
+			{rule: "a message kept for the role reaches the woken session as a card", want: "A message that Envoy kept for your role reaches this session, for one hour after Envoy kept it. It comes as an Envoy card"},
 			{rule: "the card shows kept_at", want: "shows kept_at"},
 			{rule: "the card can arrive before the task", want: "possibly before this task"},
-			{rule: "a copy whose hour ended before the role came back does not reach it", want: "unless its hour ended before you came back"},
-			{rule: "Envoy keeps a role message for one hour", want: "Envoy keeps a role message for one hour"},
-			{rule: "Envoy tells the sender when it drops one", want: "Envoy tells its sender when it drops one"},
-			{rule: "a message sent with keep: false is not kept", want: "A message sent with keep: false is not kept"},
-			{rule: "the sender of such a message sends it again", want: "its sender sends it again"},
+			{rule: "a copy whose hour ended before a session took it does not reach the role", want: "When that hour ends before a session takes the message, Envoy drops it"},
+			{rule: "Envoy keeps a role message for one hour", want: "for one hour after Envoy kept it"},
+			{rule: "Envoy tells the sender when it drops one", want: "Envoy drops it and tells its sender"},
+			{rule: "a message sent with keep: false is not kept", want: "A message that Envoy did not keep, such as one sent with keep: false, does not reach you"},
+			{rule: "the sender of such a message sends it again", want: "its sender must send it again"},
 		} {
 			if !strings.Contains(task, clause.want) {
 				t.Errorf("WakeTask(%s, stop %d) = %q, want it to say %s (%q)", pods.WakeRoleMessage, stop, task, clause.rule, clause.want)
@@ -878,4 +1022,56 @@ func roleMessageTokens(t *testing.T, pool *pgxpool.Pool) []string {
 		t.Fatalf("read the role messages: %v", err)
 	}
 	return tokens
+}
+
+// Every wake reads the start the outbox already holds for its role (wakeReleased,
+// Pods.StartQueued). A cancelled release queues a start for each claim it suspended, and the claim
+// reads `released` until that start runs; the pod never went away. So a CI settlement and a
+// backstop of such a role take no wake, record no resume and queue no second start, as a
+// listener's report does. The settlement still reaches the role: a settlement that woke nobody is
+// told to the phase's worker by a role message (tellChecks). A backstop owes the role only its
+// return, which the queued start brings. The start here is the cancel's resume, written as the
+// daemon's builder writes it (a start of the role at the issue's generation, with no task).
+func TestAWakeOfARoleWhoseStartIsQueuedTakesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wake func(t *testing.T, rig wakeRig)
+		// told is whether the role is sent a role message in place of the wake's task.
+		told bool
+	}{
+		{name: "a CI settlement", told: true, wake: func(t *testing.T, rig wakeRig) {
+			rig.apply("settled", settlement("head1", "build"))
+		}},
+		{name: "a backstop", wake: func(t *testing.T, rig wakeRig) {
+			id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
+			rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newWakeRig(t)
+			resume, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
+				Role: claim.RoleImplementer, Generation: wakeIssueGeneration}, wakeAt)
+			if err != nil {
+				t.Fatalf("encode the cancel's resume: %v", err)
+			}
+			if _, err := rig.pool.Exec(context.Background(), `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+				values ($1, 'LEGION-208', $2, 0, now(), '', '')`, string(resume.Kind), string(resume.Payload)); err != nil {
+				t.Fatalf("queue the cancel's resume: %v", err)
+			}
+			tc.wake(t, rig)
+
+			if starts := wakeStarts(t, rig.pool); len(starts) != 1 || starts[0] != (wakeStart{Role: claim.RoleImplementer}) {
+				t.Fatalf("supervise start rows = %+v, want the cancel's one start of the implementer: the wake queues no second one", starts)
+			}
+			if resumes := wakeResumes(t, rig.pool); len(resumes) != 0 {
+				t.Fatalf("pod resumes = %v, want none: the pod never went away", resumes)
+			}
+			implementer := string(wakeToken(t, claim.RoleImplementer))
+			if told := slices.ContainsFunc(roleMessageTokens(t, rig.pool), func(token string) bool {
+				return strings.HasSuffix(token, implementer)
+			}); told != tc.told {
+				t.Fatalf("a role message to the implementer was queued = %t, want %t (role messages to %v)", told, tc.told, roleMessageTokens(t, rig.pool))
+			}
+		})
+	}
 }

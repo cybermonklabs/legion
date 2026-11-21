@@ -202,7 +202,11 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"a listener image without a digest", func(a *A) { listener(a).Image = "example.invalid/envoy:latest" }, "tailnet.listener.image",
 			[]string{"@sha256:"}},
 		{"an empty machine id", func(a *A) { listener(a).MachineID = str("") }, "tailnet.listener.machineId", []string{"tailnet.listener.machineId is empty"}},
-		{"a machine id with a dot", func(a *A) { listener(a).MachineID = str("envoy.hub") }, "tailnet.listener.machineId", []string{"contains '.'"}},
+		{"a machine id holding the escape character", func(a *A) { listener(a).MachineID = str("envoy%2Ehub") }, "tailnet.listener.machineId", []string{"holds '%'"}},
+		// The shared machine-id rule takes a dotted id, but this hub names the listener's NATS user
+		// after it, and a NATS user name holds no dot.
+		{"a dotted machine id, which names the listener's NATS user", func(a *A) { listener(a).MachineID = str("envoy.hub") }, "tailnet.listener",
+			[]string{`listener "envoy.hub": name must match ^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$`}},
 		{"a machine id taking a user's durable", func(a *A) { listener(a).MachineID = str("example host a") }, "users[0].machineId",
 			[]string{"users[0]: machineId gives the same durable name as the hub's own listener"}},
 		{"no listener nkey", func(a *A) { listener(a).NKey = "" }, "tailnet.listener.nkey", []string{"tailnet.listener.nkey is required"}},
@@ -296,7 +300,9 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"no users and no tailnet", func(a *A) { withoutTailnet(a).Users = nil }, "users", []string{"at least one user is required"}},
 		{"a user with no nkey", func(a *A) { a.Users[1].NKey = "" }, "users", []string{"users[1]: nkey is required"}},
 		{"a user naming no grant", func(a *A) { a.Users[1].Permissions = nil }, "users", []string{"users[1]: name machineId"}},
-		{"a user's machine id with a slash", func(a *A) { a.Users[0].MachineID = str("a/b") }, "users[0].machineId", []string{"users[0].machineId contains '/'"}},
+		{"a user's machine id holding the escape character", func(a *A) { a.Users[0].MachineID = str("a%2Fb") }, "users[0].machineId", []string{"users[0].machineId holds '%'"}},
+		{"githubWebhook beside a machine id", func(a *A) { a.Users[0].GitHubWebhook = true }, "users[0].githubWebhook",
+			[]string{"users[0].githubWebhook is set beside machineId"}},
 		{"a session user with no nkey", func(a *A) { a.SessionUser.NKey = "" }, "sessionUser", []string{"sessionUser.nkey is required"}},
 		{"a session user named as a user", func(a *A) { a.SessionUser.Name = "example-host-a" }, "sessionUser", []string{"name repeats users[0]"}},
 	})

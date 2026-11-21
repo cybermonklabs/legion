@@ -245,10 +245,12 @@ func serverList(urls []string) string {
 // on the connection itself: the same authorization error twice in a row, or a server -ERR it does
 // not classify. Those two are why onClosed still starts a recovery that dials a replacement. The
 // reconnect buffer is off, so nothing is held and sent after its caller saw an error: a publish
-// while reconnecting waits for the reconnect instead (ensureConnWithContext), and a publish that
-// fails was not sent. AsyncErrorCB logs each error the connection reports on its own and then
-// hands it to asyncErrCB, where the client reads the server's refusal of its core subscription
-// (onAsyncError).
+// while reconnecting waits for the reconnect instead (ensureConnWithContext), and so does a bucket
+// call a caller bounds by its deadline (Bounded). A send that fails was not sent, and one nats.go
+// refused while reconnecting fails as ErrReconnecting (Reconnecting), never as nats.go's
+// "outbound buffer limit exceeded". AsyncErrorCB logs each error the connection reports on its own
+// and then hands it to asyncErrCB, where the client reads the server's refusal of its core
+// subscription (onAsyncError).
 func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnectedCB func(), closedCB func(), asyncErrCB func(*nats.Conn, error), now func() time.Time) nats.Options {
 	// The throttle is built here, one per call, so it is per connection and has its own mutex:
 	// options is rebuilt for every dial attempt in connectWithContext's loop and only the attempt
@@ -261,8 +263,9 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	opts.NoRandomize = true
 	opts.Timeout = connectTimeout
 	opts.MaxReconnect = -1
-	// A publish while reconnecting waits for the reconnect (ensureConnWithContext), so the wait
-	// between attempts is how long it waits after NATS is back.
+	// A publish while reconnecting waits for the reconnect (ensureConnWithContext), and so does a
+	// bucket call a caller bounds by its deadline (Bounded), so the wait between attempts is how
+	// long they wait after NATS is back.
 	opts.ReconnectWait = time.Second
 	opts.ReconnectBufSize = -1
 	opts.DisconnectedErrCB = func(_ *nats.Conn, err error) {

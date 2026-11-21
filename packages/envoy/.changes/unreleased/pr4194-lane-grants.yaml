@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  envoy-infra and the NATS auth service: only Dispatch's NATS user may publish Dispatch's lane
+  (`notifications.dispatch.>`), and only the user of the listener that receives GitHub's webhook
+  may publish GitHub's lane (`notifications.github.>`). A hub user with `listenerMachineId` takes
+  the new input `githubWebhook: true` to get that grant (`core.WebhookListenerHostPermissions`);
+  the input is refused beside any other user kind. The auth service's `BROKER_NATS_SERVICES`
+  takes the new kind `webhook-listener` for that listener (`natsgrant.WebhookListener`), and
+  answers a `listener` entry with both lanes denied. The hub's own listener, host users and
+  listener users without the input are denied both lanes, and Dispatch's user is denied GitHub's
+  lane and the listener's resume lane (`notifications.envoy.resume.>`); it keeps the kept lane and
+  `notifications.legion.wake`, which its outbox and the listener beside it publish. Each deny
+  refuses a direct publish on its lane. A session on a host user that it shares with the host's
+  listener can still have a message stored under either lane, by a stream update that adds a
+  subject transform, since that user keeps the stream's update. A session the auth service admits
+  holds no stream update. For a host's sessions the gap stays open until each connects with NATS
+  credentials of its own, as a session the auth service admits does, rather than sharing the host's
+  user. A deployment whose listener user receives GitHub's webhook sets `githubWebhook: true` on
+  that user in the change that moves its envoy-infra pin, or that listener's GitHub publishes are
+  refused.
+time: 2026-11-16T18:39:48Z
+custom:
+    Issue: pr4194

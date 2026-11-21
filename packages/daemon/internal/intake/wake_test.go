@@ -19,7 +19,7 @@ import (
 // what this daemon cannot act on, and acknowledging it loses nothing. An envelope from another
 // source on that subject, and a payload that is not an object, are poison.
 func TestDecodeTheListenerWakeReport(t *testing.T) {
-	const role = "legion-legion-legion-208-implementer"
+	const role = "legion-capture-capture-208-implementer"
 	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	millis := at.UnixMilli()
 	for _, tc := range []struct {

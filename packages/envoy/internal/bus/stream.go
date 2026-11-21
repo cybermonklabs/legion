@@ -100,6 +100,15 @@ const NotificationTopicPrefix = "notifications."
 // on ExceptionTopicPrefix followed by its original topic.
 const ExceptionTopicPrefix = NotificationTopicPrefix + "envoy.exceptions."
 
+// DispatchTopicPrefix begins Dispatch's lane: every topic Dispatch publishes an issue's, a
+// document's or a project's events on, and its own announcements. Only Dispatch's NATS user may
+// publish directly under it, since the Legion daemon trusts an event there as Dispatch's
+// (packages/envoy/natsgrant, listenerGrant's publish deny, which a hub's users and the auth
+// service's answers both carry). A session on a host user it shares with the host's listener can
+// still have a message stored under it, by a stream update that adds a subject transform, until
+// the host's sessions connect through the auth service (dispatch://INFRA-840).
+const DispatchTopicPrefix = NotificationTopicPrefix + "dispatch."
+
 // LegionWakeTopic is the one topic the listener reports a wake of a released Legion issue pod
 // on: a message published to a role topic with no live holder, a message sent to the agent
 // subject of a session that is gone, and the listener's own `listener_ready`. It is a new leaf
@@ -118,16 +127,77 @@ const DispatchDeliveryDurable = "delivery-events"
 const DispatchJobDurable = "delivery-jobs"
 
 // ListenerDurable is the durable consumer of the stream that the listener of machine machineID
-// binds. A space in the machine id is a hyphen in the name.
+// binds: listener-<machineID> in the listener's spelling (listenerName).
 func ListenerDurable(machineID string) string {
-	return "listener-" + strings.ReplaceAll(machineID, " ", "-")
+	return listenerName("listener-", machineID)
 }
 
 // ListenerQueue is the queue group the listener of machine machineID subscribes the role lanes in,
-// so NATS hands each role message to one of the machine's listeners while a rolling deploy runs two.
-// A space in the machine id is a hyphen in the name.
+// so NATS hands each role message to one of the machine's listeners while a rolling deploy runs two:
+// envoy-listener-<machineID> in the listener's spelling (listenerName).
 func ListenerQueue(machineID string) string {
-	return "envoy-listener-" + strings.ReplaceAll(machineID, " ", "-")
+	return listenerName("envoy-listener-", machineID)
+}
+
+// listenerNameRefused are the characters NATS refuses in a consumer name: nats-server refuses a
+// space, a tab, a carriage return, a line feed, a form feed, '.', '*', '>', '\' and '/'
+// (server/jetstream.go isValidAssetName), and nats.go refuses '.' and a space (jsm.go
+// checkConsumerName). A dot is also the separator of the subject tokens that carry the durable's
+// name ($JS.API.CONSUMER.CREATE.<stream>.<durable>, $JS.ACK.<stream>.<durable>.>).
+const listenerNameRefused = " \t\r\n\f.*>\\/"
+
+// machineIDEscape starts each escape in a listener name (listenerName).
+const machineIDEscape = '%'
+
+// maxConsumerNameBytes is the longest consumer name nats-server takes (server/jetstream_api.go
+// JSMaxNameLen).
+const maxConsumerNameBytes = 255
+
+// listenerName is prefix then machineID, with each ordinary space as a hyphen, as the listener has
+// always named its durable and queue group, and each other character NATS refuses in a consumer
+// name (listenerNameRefused) as machineIDEscape and that byte in two upper-case hex digits: a dot is
+// "%2E". Every other byte stays as it is, so the names of a machine id NATS takes do not change.
+// The escape makes a name NATS takes of an id with a dot, such as a fully qualified host name. An
+// id that holds machineIDEscape is refused (CheckListenerMachineID), so no two ids a listener
+// starts with give one name, except a space and a hyphen, which the listener has always spelled
+// alike.
+func listenerName(prefix, machineID string) string {
+	if !strings.ContainsAny(machineID, listenerNameRefused) {
+		return prefix + machineID
+	}
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	b.Grow(len(prefix) + 3*len(machineID))
+	b.WriteString(prefix)
+	for i := range len(machineID) {
+		switch c := machineID[i]; {
+		case c == ' ':
+			b.WriteByte('-')
+		case strings.IndexByte(listenerNameRefused, c) >= 0:
+			b.WriteByte(machineIDEscape)
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0x0f])
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// CheckListenerMachineID refuses a machine id whose listener names (ListenerDurable,
+// ListenerQueue) can be the names of another id, or that NATS refuses. An id that holds
+// machineIDEscape can spell the escape of a dot in another id, and then the two ids share one
+// durable and one queue group. An id whose durable is over NATS's 255-byte limit for a consumer
+// name names no durable. The error does not name the setting: the caller adds the name of the
+// setting it read the id from.
+func CheckListenerMachineID(machineID string) error {
+	if strings.ContainsRune(machineID, machineIDEscape) {
+		return fmt.Errorf("holds %q, which starts an escape in the listener's NATS names, so another machine id can give the same names", machineIDEscape)
+	}
+	if n := len(ListenerDurable(machineID)); n > maxConsumerNameBytes {
+		return fmt.Errorf("makes the durable name listener-<id> %d bytes long, over NATS's %d-byte limit for a consumer name", n, maxConsumerNameBytes)
+	}
+	return nil
 }
 
 // RoleLaneQueue is the queue group every listener subscribes the role lanes in, whatever its
@@ -215,7 +285,7 @@ const streamDuplicateWindow = contracts.DeliveryDuplicateWindow
 // own kept and resume lanes (listenerOwnStreamLanes, streamCarriedSubjects).
 var streamSubjects = []string{
 	"notifications.agent.>",
-	"notifications.dispatch.>",
+	DispatchTopicPrefix + ">",
 	"notifications.github.>",
 	"notifications.slack.>",
 	// The Go Legion daemon's notices for the project's controller
@@ -951,7 +1021,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	// every other wait of it, naming the write that was in flight. The update bounds itself
 	// (updateStream).
 	written := func(step string, write func() error) error {
-		_, answered, err := Bounded(ctx, func() (struct{}, error) { return struct{}{}, write() })
+		_, answered, err := Bounded(ctx, nil, func() (struct{}, error) { return struct{}{}, write() })
 		if !answered {
 			return fmt.Errorf("%s %s: no answer when the wait ended: %w", step, Stream, context.Cause(ctx))
 		}
@@ -1196,7 +1266,7 @@ func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.Stre
 			return result, nil
 		}
 		result.sent = update
-		_, answered, err := Bounded(ctx, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
+		_, answered, err := Bounded(ctx, nil, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
 		switch {
 		case !answered:
 			return result, fmt.Errorf("the update drew no answer when the wait ended: %w", context.Cause(ctx))

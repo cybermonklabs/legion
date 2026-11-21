@@ -8,12 +8,13 @@ import (
 
 // A relay whose session's record lapsed hands the messages it held to the consumer that stands,
 // and the session is delivered them when it registers again. A record lapses out of the bucket
-// five minutes after the last heartbeat (session.BucketMaxAge), short of the hour past which the
-// reaper deletes a record and its consumer together (session.GoneHorizon), and the reaper judges
-// the records the cache holds, so nothing takes that consumer away: a sleeping laptop's session
-// is exactly this case. The delete of the record alone is what the row makes of that lapse, since
-// the cache reports a record deleted and one lapsed the same way and the run's cancel reads
-// session_gone for both.
+// at the bucket's maximum age after the last heartbeat. In a bucket whose age is short of the
+// gone horizon, that is before the reaper deletes a record and its consumer together
+// (session.GoneHorizon): a bucket an older build created keeps a record five minutes until
+// ENVOY_SESSION_MAX_AGE raises it. The reaper judges the records the cache holds, so nothing
+// takes that consumer away: a sleeping laptop's session is exactly this case. The delete of the
+// record alone is what the row makes of that lapse, since the cache reports a record deleted and
+// one lapsed the same way and the run's cancel reads session_gone for both.
 //
 // The row holds the two facts the hand-over line's second half rests on - the consumer stands
 // after the hand-over, and the message the relay gave back reaches the session that registers

@@ -329,6 +329,84 @@ func TestTakingAWakeRecordsItAgainstTheNewestReleaseOnce(t *testing.T) {
 	}
 }
 
+// A wake taken while a release still stands, after that release recorded the role as `released`,
+// ends that release, and the take reads the release before it, since this one has no row yet. The
+// release's own record points that wake at it: its release and the release it saw become this
+// release, and its time and its stuck clock move to this release's time, when the pod starts to
+// come back. Nothing else is pointed: not a wake of a role the release never recorded, not a wake
+// whose role has taken its first turn, and not a wake taken before the mark.
+func TestARecordedReleasePointsTheWakeTakenUnderItsMarkAtItself(t *testing.T) {
+	store := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, store)
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	earlier, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue,
+		Generation: 1, Roles: []string{"implementer"}, At: at.Add(-2 * time.Hour)})
+	if err != nil {
+		t.Fatalf("record the earlier release: %v", err)
+	}
+	take := func(role claim.Role, when time.Time) int64 {
+		t.Helper()
+		token, err := claim.NewToken("legion", rootIssue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if taken, err := store.TakePodWake(ctx, "legion", rootIssue, token, pods.WakeAgentMessage, when, 0); err != nil || !taken {
+			t.Fatalf("take the %s's wake = %t, %v; want it taken", role, taken, err)
+		}
+		id, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, role)
+		if err != nil || !found {
+			t.Fatalf("the %s's open resume = %t, %v; want the one its wake recorded", role, found, err)
+		}
+		return id
+	}
+	// A wake of the reviewer before the mark: the mark's wake_row is its id. The mark is written
+	// by hand so that resume stays open, which the mark of a release that suspends a role closes.
+	before := take(claim.RoleReviewer, at.Add(-time.Hour))
+	markRelease(t, store, 1, 1, 1, 0, claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester)
+	if _, err := store.Pool().Exec(ctx, `update issue_releases set wake_row = $2 where project = 'legion' and issue = $1`,
+		rootIssue, before); err != nil {
+		t.Fatalf("set the mark's newest wake: %v", err)
+	}
+	taken := at.Add(-10 * time.Minute)
+	woken := take(claim.RoleImplementer, taken)
+	outside := take(claim.RoleArchitect, taken)
+	turned := take(claim.RoleTester, taken)
+	if err := store.MarkPodResumeFirstTurn(ctx, turned, taken.Add(time.Minute)); err != nil {
+		t.Fatalf("stamp the tester's first turn: %v", err)
+	}
+
+	release, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+		Roles: []string{"implementer", "reviewer", "tester"}, At: at})
+	if err != nil {
+		t.Fatalf("record the release: %v", err)
+	}
+
+	for _, want := range []struct {
+		what          string
+		id            int64
+		release, seen int64
+		at            time.Time
+	}{
+		{what: "the wake taken under the mark", id: woken, release: release, seen: release, at: at},
+		{what: "the wake of a role the release never recorded", id: outside, release: earlier, seen: earlier, at: taken},
+		{what: "the wake whose role took its first turn", id: turned, release: earlier, seen: earlier, at: taken},
+		{what: "the wake taken before the mark", id: before, release: earlier, seen: earlier, at: at.Add(-time.Hour)},
+	} {
+		var release, seen int64
+		var resumed, clock time.Time
+		if err := store.Pool().QueryRow(ctx, `select release_id, seen_release, at, clock_at from pod_resumes where id = $1`,
+			want.id).Scan(&release, &seen, &resumed, &clock); err != nil {
+			t.Fatalf("read %s: %v", want.what, err)
+		}
+		if release != want.release || seen != want.seen || !resumed.Equal(want.at) || !clock.Equal(want.at) {
+			t.Errorf("%s has release %d, seen release %d, time %s and stuck clock %s; want %d, %d, and %s for both",
+				want.what, release, seen, resumed.UTC().Format(time.RFC3339Nano), clock.UTC().Format(time.RFC3339Nano),
+				want.release, want.seen, want.at.Format(time.RFC3339Nano))
+		}
+	}
+}
+
 // A release closes the resumes of the pod it stops, and closing is its own column: the role can
 // be woken again afterwards, the records report no first turn for the closed row, and the stranded
 // and stuck reports pass it over, since a wake of a pod that is gone is nothing either warns

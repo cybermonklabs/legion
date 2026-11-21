@@ -112,45 +112,6 @@ func TestFanoutLeavesATopicOnlyTheDeployedStreamCapturesToTheSessionsConsumer(t 
 	}
 }
 
-// A delivery exception on a lane only the deployed stream captures is stored under its one-copy
-// message id (exception.<reason>.<origin>), so the stream keeps one copy however many listeners
-// raise it for the same stored message. Judged on the subjects this build compiles, the lane would
-// be published under each exception's own dedupe key, and every listener's report would be kept.
-func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *testing.T) {
-	const (
-		topic  = "notifications.x.y"
-		lane   = bus.ExceptionTopicPrefix + topic
-		reason = "delivery_failed"
-		origin = "origin-1"
-	)
-	if bus.StreamCaptures(lane) {
-		t.Fatalf("this build compiles a subject capturing %s; the test needs one it does not", lane)
-	}
-	client := connectToNewerBuildsStream(t, bus.ExceptionTopicPrefix+"notifications.x.>")
-	item := listenerTestEnvelope(topic, "exception-deployed-lane")
-	// Two listeners raise the exception for the one stored message, each from its own durable.
-	for range 2 {
-		if err := publishDeliveryException(client, item, reason, "ses_deployed_exception", origin); err != nil {
-			t.Fatalf("publish the delivery exception: %v", err)
-		}
-	}
-	js := client.JS()
-	info, err := js.StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: lane})
-	if err != nil {
-		t.Fatalf("read %s: %v", bus.Stream, err)
-	}
-	if got := info.State.Subjects[lane]; got != 1 {
-		t.Fatalf("the stream holds %d exceptions on %s, want 1", got, lane)
-	}
-	stored, err := js.GetLastMsg(bus.Stream, lane)
-	if err != nil {
-		t.Fatalf("read the exception on %s: %v", lane, err)
-	}
-	if got, want := stored.Header.Get(natsgo.MsgIdHdr), "exception."+reason+"."+origin; got != want {
-		t.Fatalf("stored message id = %q, want %q", got, want)
-	}
-}
-
 // connectToNewerBuildsStream starts a server, creates on it the stream a newer build carrying
 // extra leaves (deployNewerBuildsStream), and connects this build's listener client to it, which
 // owns the stream and leaves it as it is.

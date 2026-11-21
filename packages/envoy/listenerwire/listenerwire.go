@@ -61,6 +61,12 @@ type TmuxPlace struct {
 // status (the list routes' refilling 503, code refilling, and a send's or publish's 503 that may
 // have stored the message, CodeMaybeStored); every other answer leaves it out. Expected names the
 // request fields the refusal is about.
+//
+// Two answers say more in Error than their status says. A request whose work on the message bus
+// got no answer, as in a NATS reconnect, is 503 with Retry-After: 1, and its Error begins with
+// "envoy: the message bus did not answer" (BUS_UNANSWERED_PREFIX in @legion/contracts,
+// contracts.BusUnansweredPrefix in the listener's module). A request body past the listener's
+// limit is 413, and its Error names that limit: "body too large: the limit is <n> bytes".
 type APIError struct {
 	Code     string   `json:"code,omitempty"`
 	Error    string   `json:"error"`
@@ -145,13 +151,18 @@ type SendResponse struct {
 	// the listener still stores, and gone for a session the session registry holds no entry of
 	// within the gone horizon that the known-session store still knows, which State then answers
 	// stopped. A sender that must know whether its message will be read soon reads it; one that
-	// only needs the message stored ignores it.
-	RecipientState SessionState `json:"recipient_state"`
-	// State is what the connection probe found the recipient to be when the message was stored,
-	// connected or stopped, by the rules the listener's sendHandler states. It is a field of its
-	// own rather than a fourth value of RecipientState, because every released plugin reads that
-	// one as a closed list of three and would fail to read an answer carrying a fourth; a client
-	// older than this field drops it. stopped is never a SessionState.
+	// only needs the message stored ignores it. It is left out when State is no_receiver, and
+	// only then: the session's entry may read live by its age, but no message reaches its
+	// conversation now, and an answer that said live would say it does. The field is left out
+	// rather than empty, because every released plugin refuses an empty string as no value of its
+	// closed list of three. A client reads an absent field as the empty SessionState.
+	RecipientState SessionState `json:"recipient_state,omitempty"`
+	// State is what the connection probe and the entry found the recipient to be when the message
+	// was stored: connected, stopped or no_receiver, by the rules the listener's sendHandler
+	// states. It is a field of its own rather than a fourth value of RecipientState, because every
+	// released plugin reads that one as a closed list of three and would fail to read an answer
+	// carrying a fourth; a client older than this field drops it, and one older than no_receiver
+	// reads that word as connected. Neither stopped nor no_receiver is ever a SessionState.
 	State string `json:"state"`
 	// LastSeen is that recipient's last registration (Unix ms), so an unresponsive recipient's
 	// sender can say how long it has been stalled: its entry's where it holds one, else its
@@ -404,8 +415,10 @@ type SubscribeRequest struct {
 	// instance from another instance's live session. Empty for a client whose plugin predates the
 	// field.
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
-	// Delivery asks for consumer delivery. A registration that carries none, an older plugin's,
-	// is refused.
+	// Delivery asks for consumer delivery. A registration that asks for none is refused 409 with
+	// reason not_requested, unless its client is @sjawhar/pi-envoy 14.1.0 or later, which reads
+	// its relay subject unasked: that one is given its consumer as if it had asked (the
+	// listener's readsUnaskedRelay).
 	Delivery *SubscribeDelivery `json:"delivery,omitempty"`
 }
 
@@ -475,10 +488,14 @@ type UnsubscribeRequest struct {
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
 }
 
-// UnsubscribeResponse is the answer to POST /v1/interests/unsubscribe: the topics the listener
-// took out of the record, which is not always the topics the request named, since a release that
-// may not free a role claim leaves that role's lane topic standing. It is the empty list, never
-// null, when nothing was removed.
+// UnsubscribeResponse is the answer to POST /v1/interests/unsubscribe: every topic the request
+// named that the record no longer holds, one it never held included, with the other forms of
+// them the record held. It is not always the topics the request named, since a release that may
+// not free a role claim leaves that role's lane topic standing, and that topic is not in it. It is
+// the empty list, never null, when nothing was removed. A deregistration, which names no topic,
+// answers the empty list, and so does a removal from a session the listener holds no record for:
+// the retry of an unsubscribe whose first attempt deleted the record and then answered 503 finds
+// no record, and answers 200 with the empty list.
 type UnsubscribeResponse struct {
 	Removed []string `json:"removed"`
 }

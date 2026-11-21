@@ -216,7 +216,7 @@ to its clients as `PGPASSWORD` alone. `compose/dispatch.env.example`'s URL is in
 
 | Var | Required | Notes |
 | --- | --- | --- |
-| `ENVOY_MACHINE_ID` | yes | Logical machine name used in published metadata. |
+| `ENVOY_MACHINE_ID` | yes | Logical machine name used in published metadata, and the name of the listener's durable consumer (`listener-<machine id>`). A space in the id is a hyphen in that name, and a tab, carriage return, line feed, form feed, `.`, `*`, `>`, `/` or `\` is `%` and two hex digits. The listener refuses to start with an id that holds `%`, since that id can name another machine's durable, and with an id whose durable name is over NATS's 255-byte limit. |
 | `NATS_URLS` | yes | Comma-separated NATS URLs. |
 | `ENVOY_ALLOW_REMOTE_NATS` | yes, for a shared NATS | Set to `1` to reach a NATS that is not this host's own. The listener owns the `ENVOY_NOTIFICATIONS` stream, so every start reconciles it; without this the start refuses a non-loopback `NATS_URLS`, naming the URL. `compose/listener.compose.yml` sets it. |
 | `NATS_NKEY_SEED_FILE` | no | A file holding the NATS nkey user seed this process connects as (trimmed); wins over `NATS_NKEY_SEED`. A set but empty, missing, unreadable, blank or non-user-seed value refuses startup naming the variable and path. Neither set connects without a credential. |
@@ -238,7 +238,7 @@ to its clients as `PGPASSWORD` alone. `compose/dispatch.env.example`'s URL is in
 | `ENVOY_DISPATCH_PRINCIPAL` | no | Dispatch's own verified principal: a `system:serviceaccount:<namespace>:<name>` subject the OIDC pair admits, or a Google service account address the Google pair admits. A `/v1/messages/send` request may carry `role`, the role a Dispatch message for a `role:` route is sent for, only when its identity token proves this principal; every other caller carrying it (a session's broker token, the shared token, another service's token, no credential) is refused `403` naming `role`, and with this unset every such send is. A marked send whose role's claim names another session than its target, or none, is kept on the role's kept lane, raises the role's wake report, and is answered `202` with `kept` and `kept_until`. A value of neither shape, or one no configured pair could prove (a subject with no OIDC pair or one `ENVOY_OIDC_ACCOUNTS` leaves out, an address with no Google pair or one it does not list), refuses startup naming the setting. The boot log names it on its `listener role marks:` line. |
 | `ENVOY_ALLOWED_HOSTS` | conditional | Comma-separated host names or addresses (no port) an unauthenticated listener serves `/v1` to beside loopback; required for each name clients reach it by when neither `ENVOY_API_TOKEN` nor an OIDC or Google pair is set and they do not dial loopback. Any other `Host` gets a JSON 421. Unused when a bearer is required. Each request such a listener admits with no broker token is counted as `credential="none"` in `envoy_listener_requests_total` and logs `listener: request admitted with no credential` at most once a minute. |
 | `ENVOY_API_ALLOW_UNAUTHENTICATED` | conditional | Set to `1` to start a listener whose address is not loopback with no `ENVOY_API_TOKEN`, OIDC pair or Google pair. Without it such a listener refuses to start. Set it only where something else fences the listener's port, because the flag itself admits every caller that reaches the port. The clustered hub's tailnet-only session listener (`envoy-infra:gcp:ClusteredNatsHub`'s `tailnet.listener` with no `clientNamespaces`) is the deployment that runs this way: it binds `0.0.0.0` in a pod of its own, and its NetworkPolicy admits TCP 9020 from the tailnet entry's pods alone. There that NetworkPolicy is what decides who may call `/v1`: the `Host` check admits a loopback name or address beside the names `ENVOY_ALLOWED_HOSTS` holds, so it stops a page that rebinds its own name and not a caller the policy already admits. This flag decides nothing. A hub listener that pods of the cluster reach sets the OIDC pair with `ENVOY_OIDC_ACCOUNTS` instead. |
-| `ENVOY_WEBHOOKS` | no | Comma-separated enabled webhook providers. Without `github` the listener opens no CI store and publishes no CI settlements. |
+| `ENVOY_WEBHOOKS` | no | Comma-separated enabled webhook providers. Without `github` the listener opens no CI store and publishes no CI settlements. With `github` the listener publishes GitHub's lane (`notifications.github.>`). Two kinds of NATS user may publish on it directly: on a NATS whose users envoy-infra renders, a `listenerMachineId` user with `githubWebhook: true`; on a hub whose NATS auth service admits the listener, a `webhook-listener` entry of `BROKER_NATS_SERVICES`. Under any other user those publishes are refused (`packages/envoy/infra/docs/nats-hub.md`). A session on a host user that it shares with the host's listener (a `machineId` user) can still have a message stored under that lane, by a stream update that adds a subject transform, since that user keeps the stream's update. A session the auth service admits holds no stream update. For the host's sessions the gap stays open until dispatch://INFRA-840. |
 | `ENVOY_GITHUB_WEBHOOK_SECRET` | conditional | Required when GitHub webhooks are enabled. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | no | Defaults to `@legion`. |
 | `ENVOY_REVIEWER_APP_ID` | conditional | Required when GitHub webhooks are enabled; the App id whose check verdicts the listener records. |
@@ -257,19 +257,45 @@ refuses the nkey (`nats: nkeys not supported by the server`) instead of connecti
 
 ## Recreating a listener's durable
 
-The listener refuses to bind its durable consumer `listener-<machine id>` when the durable carries
-an idle heartbeat or an ack policy other than explicit, which the listener's consumer policy forbids
-and NATS cannot change in place. Deleting the durable lets the listener recreate it from the start
-of the stream, which replays all 72 hours the stream retains. To keep its cursor, recreate it at one
-past its ack floor while no listener runs for that machine:
+Each listener reads the `ENVOY_NOTIFICATIONS` stream through one durable consumer of its machine,
+`listener-<machine id>` (`bus.ListenerDurable`). A space in the machine id becomes `-`. Each other
+character that NATS refuses in a consumer name is escaped as `%` and its byte in two upper-case hex
+digits: `host.example.internal` names `listener-host%2Eexample%2Einternal`. Use the name that the
+listener's error gives.
+
+The listener refuses to bind a durable that has an idle heartbeat, or an ack policy other than
+`explicit`, because NATS cannot change either in place. The start logs
+`subscribe refused, shutting down` and exits 1. The line's `error` names the durable and each such
+setting.
+
+What a delete costs: a listener that finds no durable creates one at deliver policy `new`
+(`startListenerSubscription` in `cmd/listener/durable.go`). That durable reads only the messages
+the stream stores after the create. It never reads a message stored before the create, and that
+includes each message the old durable had not acknowledged. Each session's own consumer still
+delivers such a message to its session. But this listener's own decision on the message goes with
+the old durable. For a message on a session's agent subject, that decision is the wake report of
+a session with no record, which brings a released Legion pod back. Only another listener's
+durable can still decide the message. Another listener leaves a message to a session whose
+interest row names this listener (`session.AgentOwnedElsewhere`). With no other listener to
+decide the message, its wake is lost, and the released pod that it would wake stays released.
+
+To keep the durable's cursor, recreate it from its own config at one past its ack floor. Do it
+while no listener runs for that machine. A listener that reads the durable between the delete and
+the add, at its start or in its self-health rebuild, creates it again at deliver policy `new`
+before the add can recreate it at its cursor.
 
 ```bash
-d=listener-<machine id>
+d='listener-<machine id>'
 nats consumer info ENVOY_NOTIFICATIONS "$d" --json > "$d.json"
 jq '(.ack_floor.stream_seq + 1) as $next | .config | del(.idle_heartbeat, .flow_control) | .ack_policy = "explicit" | .deliver_policy = "by_start_sequence" | .opt_start_seq = $next' "$d.json" > "$d.recreate.json"
 nats consumer rm ENVOY_NOTIFICATIONS "$d" -f
 nats consumer add ENVOY_NOTIFICATIONS --config "$d.recreate.json"
 ```
+
+The listener's next start applies the rest of its consumer policy to the recreated durable (its
+filter subjects, ack wait, max ack pending, max deliver and inactive threshold) and binds it. It
+keeps the durable's start. The durable then delivers again each message past the ack floor that
+the old durable had acknowledged out of order.
 
 ## Dispatch configuration
 

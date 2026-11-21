@@ -3715,6 +3715,19 @@ GATES = [
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/cipher-client's seven modules through packages/envoy-client/src/broker-credential.ts's imports of brokerTokenClient, chooseSignIn and isFinalRefusal"),
     ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
 
+    # The refill live proof: e2e-refill.sh builds refillrig, the listener and natsd, each on a line
+    # of its own, and drives them on a NATS server of its own; it reads no other file of the tree.
+    gate("envoy_refill", "envoy-refill", runs=[
+        script_run(f"{ENVOY}/scripts/e2e-refill.sh", 'go build -o "$rig" ./internal/testnats/cmd/refillrig',
+                   f"run by {at('envoy-refill', 'Refill live proof')}", ENVOY, ["./internal/testnats/cmd/refillrig"], mode="build"),
+        script_run(f"{ENVOY}/scripts/e2e-refill.sh", 'go build -o "${bin_dir}/listener" ./cmd/listener',
+                   f"run by {at('envoy-refill', 'Refill live proof')}", ENVOY, ["./cmd/listener"], mode="build"),
+        script_run(f"{ENVOY}/scripts/e2e-refill.sh", 'go build -o "${bin_dir}/natsd" ./internal/testnats/cmd/natsd',
+                   f"run by {at('envoy-refill', 'Refill live proof')}", ENVOY, ["./internal/testnats/cmd/natsd"], mode="build"),
+    ], reads=reads(
+        (f"{ENVOY}/scripts/e2e-refill.sh", at("envoy-refill", "Refill live proof")),
+    ) + setup_go("envoy-refill", f"{ENVOY}/go.mod")),
+
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
         (NOTICES_LOOPS, f"{at('lint', NOTICES_STEP)} runs it; it holds the loops"),
         (NOTICES, f"{NOTICES_LOOPS} runs it once per release target"),

@@ -2,8 +2,6 @@ package webhook
 
 import (
 	"encoding/json"
-	"errors"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -22,6 +20,12 @@ func ghostWisprSkip(event string) bool {
 	return true
 }
 
+// ghostWisprMaxBody is the largest Ghost Wispr event body the handler reads: 1 MiB, the limit the
+// route has always had. An event names a session, its times and the links to its documents
+// (ghostWisprPayload), and a current unit sends no title or summary text, so a real body holds some
+// short fields. Only an older unit adds one meeting's summary.
+const ghostWisprMaxBody = 1 << 20
+
 // GhostWisprHandler returns the HTTP handler for Ghost Wispr webhook events. Its publish runs under
 // the request's own context, so it ends when the sender gives up on the request, and at the bus's
 // own 5 s bound otherwise (bus.Client.PublishWithin), inside the 10 s the listener's server gives a
@@ -34,14 +38,8 @@ func GhostWisprHandler(secret string, publisher Publisher) http.HandlerFunc {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-		if err != nil {
-			var maxBytesErr *http.MaxBytesError
-			if errors.As(err, &maxBytesErr) {
-				http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
-				return
-			}
-			http.Error(w, "invalid body", http.StatusBadRequest)
+		body, ok := readBody(w, r, ghostWisprMaxBody)
+		if !ok {
 			return
 		}
 		delivery := strings.TrimSpace(r.Header.Get("X-GhostWispr-Delivery"))

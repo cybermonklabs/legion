@@ -261,7 +261,7 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 			name:    "publish",
 			handler: func(d *listenerDeps) http.HandlerFunc { return publishHandler(d, logging.New("test")) },
 			path:    "/v1/messages/publish",
-			body:    map[string]any{"topic": "notifications.github.example-org.example-repo.pr.1", "source": "agent", "source_session": sender, "message": "is the bus there?"},
+			body:    map[string]any{"topic": "notifications.team.example-team", "source": "agent", "source_session": sender, "message": "is the bus there?"},
 		},
 	} {
 		t.Run(route.name, func(t *testing.T) {

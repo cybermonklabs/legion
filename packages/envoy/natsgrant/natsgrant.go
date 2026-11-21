@@ -42,14 +42,61 @@ const (
 // inboxes matches every reply inbox nats.go makes.
 const inboxes = nats.InboxPrefix + ">"
 
+// The two lanes of notifications.> that one user alone publishes. listenerGrant's publish deny
+// names both. Only the grant of a lane's own publisher takes that lane off its deny (publishing):
+//   - Dispatch's lane: Dispatch's user (Dispatch). envoy-dispatch's outbox publishes every issue,
+//     document and project event there. The Legion daemon trusts an event there as Dispatch's.
+//   - GitHub's lane: the user of the listener that receives GitHub's webhook (WebhookListener,
+//     WebhookListenerHost). That listener's webhook route and its CI summary loop publish every
+//     GitHub event. The Legion daemon applies a merge and a deciding review from an event there.
+//
+// No other program publishes either lane. A listener without GitHub's webhook publishes neither,
+// and Dispatch asks GitHub to send a missed delivery again rather than publish it itself. So the
+// deny refuses a direct publish on either lane by a session on a host. A caller of a listener's
+// /v1/messages/publish publishes with the listener's user, so the deny covers that caller too,
+// except on the listener whose user publishes that lane: the one beside envoy-dispatch, which
+// shares Dispatch's user, and the webhook listener. No grant can refuse that caller there, so the
+// publish route refuses a topic under either lane by name on every listener, and publishes
+// nothing (cmd/listener/api.go, publisherLanes).
+// The deny is in PublishDeny, so a hub's static user (packages/envoy/infra/core renders it) and a
+// connection the auth service admits (internal/cipher/natscallout encodes it) both carry it.
+//
+// The deny alone does not stop a session on a shared host user from posing as Dispatch or as
+// GitHub. listenerGrant allows the stream's create and update ($JS.API.STREAM.CREATE and
+// STREAM.UPDATE on ENVOY_NOTIFICATIONS), so every grant built on it holds both: Listener,
+// ListenerHost, WebhookListener, WebhookListenerHost, Dispatch and Host. No session shares the
+// user of the first five. Host is the grant of the user that a host's listener and every session
+// on the host share. Such a session can update the stream to add a subject transform, or a
+// Sources entry with transforms, and then publish on a subject the deny allows. The stream stores
+// that message under Dispatch's lane or GitHub's, and the Legion daemon trusts it there. No other
+// session can: SessionPattern and Session hold no stream call, so neither a session of a hub's
+// shared session user nor a session the auth service admits can change the stream. The gap stays
+// open until the sessions of a host connect through the auth service and hold Session in place of
+// the shared host user (dispatch://INFRA-840).
+const (
+	dispatchLane = bus.DispatchTopicPrefix + ">"
+	githubLane   = contracts.GithubTopicPrefix + ">"
+)
+
+// resumeLane is the listener's resume lane (bus.SessionResumeSubjectPrefix): each session's resume
+// record, the floor its consumer starts again at. Only bus.SessionConsumers writes one, when it
+// deletes a session consumer or drops a restart's pending start, so only a listener that holds the
+// session consumers' calls writes it. Dispatch holds none of them, so no Dispatch path publishes
+// the lane, and that set denies it. A user that could publish there could write a whole record, a
+// floor and the stream's id, which STREAM.INFO reads. A session that comes back would then start
+// past the messages stored while it was away. The listener sets keep the lane, since their
+// listener writes the record itself, and so does Host.
+const resumeLane = bus.SessionResumeSubjectPrefix + ">"
+
 // listenerGrant is the grant every user that runs envoy-listener holds as machine machineID, built
 // from Envoy's own names: Listener adds the session consumers' calls to it (sessionConsumerCalls),
 // ListenerHost those and the subscribe to every notification topic, Dispatch what Dispatch itself
 // needs, and Host the session's entries. Publish, in this order:
-//   - every notification topic (bus.NotificationTopicPrefix): the stream's subjects, the role
-//     lanes, every exception lane, the session relay subjects (bus.DeliverSubjectPrefix), and any
-//     other topic the listener publishes over core NATS, a role lane's forward among them
-//     (/v1/messages/publish refuses by name a notifications. topic no stream subject captures);
+//   - every notification topic (bus.NotificationTopicPrefix) but the two lanes the deny below
+//     names: the stream's subjects, the role lanes, every exception lane, the session relay
+//     subjects (bus.DeliverSubjectPrefix), and any other topic the listener publishes over core
+//     NATS, a role lane's forward among them (/v1/messages/publish refuses by name a
+//     notifications. topic no stream subject captures);
 //   - the stream's info, create and update, its stored-message get, its durable's
 //     (bus.ListenerDurable) info and create, the durable's acknowledgements, and JetStream's
 //     account info. The stored-message get reads one stored message at a time and can create,
@@ -60,6 +107,11 @@ const inboxes = nats.InboxPrefix + ">"
 //     info, create and update, direct and stream message gets, writes to its keys, its watchers'
 //     consumer create and delete, and their flow-control replies;
 //   - the purge of the interest bucket, which its delete-marker collection sends.
+//
+// The publish deny names Dispatch's lane and GitHub's lane (dispatchLane, githubLane), on which
+// one user alone publishes directly each; the comment on dispatchLane says what the deny does not
+// stop. Each call builds the deny afresh, so a grant that takes one lane off (publishing) changes
+// no other call's.
 //
 // Subscribe: reply inboxes, then the role lanes in the machine's queue group (bus.ListenerQueue),
 // which a listener of an earlier release subscribes in, and in the queue group every listener
@@ -94,6 +146,7 @@ func listenerGrant(machineID string) Permissions {
 			contracts.RoleTopicPrefix + "> " + bus.ListenerQueue(machineID),
 			contracts.RoleTopicPrefix + "> " + bus.RoleLaneQueue,
 		},
+		PublishDeny: []string{dispatchLane, githubLane},
 	}
 }
 
@@ -127,7 +180,8 @@ func sessionConsumerCalls() []string {
 // and ListenerHost hold. A hub that renders this set for its own listener gives that listener
 // consumer delivery; a listener connecting as a host or Dispatch user does not have it, and has no
 // session of its own registered at all: every registration it cannot give a consumer is refused by
-// name and writes nothing.
+// name and writes nothing. It keeps the listener grant's deny of Dispatch's lane and GitHub's lane:
+// the listener that receives GitHub's webhook takes WebhookListener instead.
 func Listener(machineID string) Permissions {
 	grant := listenerGrant(machineID)
 	grant.Publish = append(grant.Publish, sessionConsumerCalls()...)
@@ -144,12 +198,31 @@ func Listener(machineID string) Permissions {
 // change to a set rewrites every hub's rendered authorization: it replaces a VM hub's instance and
 // reaches a clustered hub only as a live reload, which is left to later work. The set holds none
 // of the session's publish entries, so a process connecting as this user can neither publish a
-// session's agent stream frames nor subscribe to a session's control subject. Host stays the set
-// of a user a host's sessions share.
+// session's agent stream frames nor subscribe to a session's control subject. It keeps the listener
+// grant's deny of Dispatch's lane and GitHub's lane; the listener that receives GitHub's webhook
+// takes WebhookListenerHost instead. Host stays the set of a user a host's sessions share.
 func ListenerHost(machineID string) Permissions {
 	grant := Listener(machineID)
 	grant.Subscribe = append(grant.Subscribe, bus.NotificationTopicPrefix+">")
 	return grant
+}
+
+// WebhookListener is the grant of the listener that receives GitHub's webhook (its ENVOY_WEBHOOKS
+// names github), as machine machineID: Listener with GitHub's lane (githubLane) taken off its
+// publish deny. That listener's webhook route and CI summary loop publish every GitHub event, and
+// no other listener may. The set still denies Dispatch's lane. The auth service answers a service
+// of the kind webhook-listener with it (internal/cipher/natscallout).
+func WebhookListener(machineID string) Permissions {
+	return publishing(Listener(machineID), githubLane)
+}
+
+// WebhookListenerHost is the grant of the user of the listener that receives GitHub's webhook, as
+// machine machineID, when that user is the listener's own static user, one no session shares:
+// ListenerHost with GitHub's lane taken off its publish deny. The set still denies Dispatch's lane.
+// A gcp:NatsHub user with listenerMachineId and githubWebhook holds it
+// (packages/envoy/infra/core, WebhookListenerHostPermissions).
+func WebhookListenerHost(machineID string) Permissions {
+	return publishing(ListenerHost(machineID), githubLane)
 }
 
 // KVWrite are the calls nats.go's KV makes on one bucket, in the order the grants list them:
@@ -212,8 +285,25 @@ func DispatchDurables() []string {
 // acknowledgements of each durable Dispatch binds, the KV calls for its webhook-redelivery bucket,
 // and every session's agent stream control subject. Subscribe: every session's agent stream
 // frames.
+//
+// Its publish deny is the listener grant's with Dispatch's lane (dispatchLane) taken off, so this
+// set still allows that lane: envoy-dispatch's outbox publishes every event there as this user. It
+// still denies GitHub's lane, which Dispatch never publishes: its redelivery sweep asks GitHub to
+// send a missed delivery to the webhook listener again. It also denies the listener's resume lane
+// (resumeLane).
+//
+// It keeps the rest of the listener's own lanes, the kept lane (bus.KeptTopicPrefix) and the
+// takeover lane (bus.TakeoverSubjectPrefix), and the wake topic (bus.LegionWakeTopic), since this
+// user publishes them. The outbox keeps a role route's copy on the kept lane
+// (internal/dispatch/outbox/role.go). The listener beside envoy-dispatch keeps a role message with
+// no holder there and moves the kept lane's drain cursors (cmd/listener/role_keep.go). Its sweep
+// also runs the passes of the takeover records, and a pass writes its record again on the takeover
+// lane (cmd/listener/role_takeover.go). It also reports role and agent wakes and its
+// listener_ready on the wake topic (cmd/listener/wake.go). It keeps every session's agent subject
+// too (contracts.LegacyAgentSubject): Dispatch queues a person's targeted message there for a
+// session no store of the listener's holds (internal/dispatch/api/message_queue_publish.go).
 func Dispatch(machineID string) Permissions {
-	listener := listenerGrant(machineID)
+	listener := publishing(listenerGrant(machineID), dispatchLane)
 	publish := listener.Publish
 	for _, durable := range DispatchDurables() {
 		publish = append(publish,
@@ -226,8 +316,9 @@ func Dispatch(machineID string) Permissions {
 	publish = append(publish, KVWrite(bus.WebhookRedeliveryBucket)...)
 	publish = append(publish, contracts.AgentStreamControlSubject("*"))
 	return Permissions{
-		Publish:   publish,
-		Subscribe: append(listener.Subscribe, contracts.AgentStreamFramesSubject("*")),
+		Publish:     publish,
+		Subscribe:   append(listener.Subscribe, contracts.AgentStreamFramesSubject("*")),
+		PublishDeny: append(listener.PublishDeny, resumeLane),
 	}
 }
 
@@ -322,7 +413,12 @@ func Daemon() Permissions {
 // holds no session-consumer call (sessionConsumerCalls), so a listener connecting as a host user
 // keeps its own durable alone and can give no session a consumer. A listener whose user no session
 // shares takes ListenerHost instead, which holds those calls beside the same notifications.>
-// subscribe.
+// subscribe. The publish direction keeps the listener grant's deny too, joined with the session's
+// as the allows are, so no session on a host and no listener connecting as a host user may publish
+// directly on Dispatch's lane or GitHub's. A session on a host can still have a message stored
+// under either lane: this set keeps the stream's update, and a stream update that adds a subject
+// transform stores its publish there. The comment on dispatchLane says which grants hold that
+// update and what closes the gap.
 //
 // That subscribe is this set's own, not one it takes from the session's: SessionPattern holds it
 // no longer. It is the reach the sessions sharing a host user already have - one user is one
@@ -343,8 +439,9 @@ func Host(machineID string) Permissions {
 		return strings.HasPrefix(entry, bus.NotificationTopicPrefix)
 	})
 	return Permissions{
-		Publish:   union(listener.Publish, agent.Publish),
-		Subscribe: union(subscribe, outside),
+		Publish:     union(listener.Publish, agent.Publish),
+		Subscribe:   union(subscribe, outside),
+		PublishDeny: union(listener.PublishDeny, agent.PublishDeny),
 	}
 }
 
@@ -431,4 +528,11 @@ func union(a, b []string) []string {
 		}
 	}
 	return a
+}
+
+// publishing is grant with lane taken off its publish deny: the grant of lane's one publisher.
+// listenerGrant builds the deny afresh at each call, so this changes no other grant.
+func publishing(grant Permissions, lane string) Permissions {
+	grant.PublishDeny = slices.DeleteFunc(grant.PublishDeny, func(entry string) bool { return entry == lane })
+	return grant
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -173,7 +174,9 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 // first and last, which is how a row of this release is told from a row of one that is over
 // (IssueReleaseStop, IssueRelease), and boundary_row is the row the mark names its boundary —
 // the stop of the first role process of the pod — which is where a delivery that reached the
-// pod after the mark cancels the release.
+// pod after the mark, while every role still ran, cancels the release. Once a stop has recorded
+// its role's claim as `released`, a wake of that role no longer cancels the release: the release
+// runs to its end, and the role comes back in the new pod (releaseOvertaken).
 //
 // It answers whether a release was marked. decide answering no rows writes nothing, which is the
 // ordinary case: nearly every tick finds a pod that is working, or one whose idle period has not
@@ -234,7 +237,8 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			started = max(started, c.LastStartRow)
 		}
 		// The newest wake this pod has had: a wake recorded above it is one this release never
-		// saw, and cancels it (releaseOvertaken).
+		// saw. It cancels the release, unless it is a wake of a role this release has since
+		// recorded as `released` (releaseOvertaken).
 		var wake int64
 		if err := tx.QueryRow(ctx, `select coalesce(max(id), 0) from pod_resumes where project = $1 and issue = $2`,
 			project, issue).Scan(&wake); err != nil {
@@ -315,6 +319,19 @@ func insertOutboxRow(ctx context.Context, tx pgx.Tx, project, issue string, row 
 // is record's to encode, as every row of a release is (IdleReleaseRow).
 type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, error)
 
+// ReleaseWokenRow is ReleaseResumeRow told what the cancel dropped of the role's wake:
+// wakeKind is the kind of the resume the cancel deleted for that role and wakeTask is the task of
+// the start it deleted, both "" for a role whose wake it did not drop (dropWakesUnderRelease).
+// The builder decides what of that wake the resume's own task carries (workflow's
+// CancelledWakeTask).
+type ReleaseWokenRow func(role claim.Role, generation uint64, wakeKind, wakeTask string) (IdleReleaseRow, error)
+
+// droppedWake is what a cancel deleted of one role's wake: the kind of its resume and the task
+// of its start ("" where the cancel found no start of it).
+type droppedWake struct {
+	kind, task string
+}
+
 // CancelIssueRelease ends a release that did not finish, in one transaction: the bundle that
 // release saved is deleted, the resume of each claim this release suspended and still holds is
 // queued, and the mark goes with them. The three are one act because any of them alone is a
@@ -334,6 +351,37 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // one an earlier release left `released` is no business of this release, which is why the
 // mark's own set is read and never every released claim of the issue.
 //
+// A wake of a role this release recorded as `released` can come before the release ends, and the
+// release goes on then (releaseOvertaken). A cancel can still follow that wake, for another cause:
+// a bundle too large or a save that failed, a role stop that met a live start of another role, or
+// an issue that left the workflow. Then the pod never goes away, and the wake brings nothing
+// back. So, for each role of the mark's set that is still suspended as `released` and has a wake
+// recorded above the mark's wake_row, this transaction deletes those resumes and the starts the
+// wake queued (wakeStartRow, above the release's last row), and then queues the role's resume
+// as above. Those starts have not run: a start waits while the release's teardown row is in the
+// outbox (record's outboxInOrder), and that row is still there whichever row runs the cancel. So
+// the role starts once, in the pod it was in, with no task that says its pod was released, and
+// no resume is left for a release that did not happen. A root architect's entry start and a
+// production check's look of that role name no phase either, but they are work the pod was
+// given, not a wake's start, and they stay. The cause of the wake still reaches the
+// role: a message that Envoy stored or kept arrives in the role's session, and the text of a CI
+// settlement or of the backstop, which reach the role only through the wake's task (workflow's
+// tellChecks tells the woken role no message of its own), goes to the role in the cancel's resume.
+// The builder is told the kind and the task of the wake dropped for each role (ReleaseWokenRow),
+// and its text says that the release did not finish rather than that the pod came back. A cancel
+// made while the project is paused drops no wake of a released role; the paragraph on the pause
+// below says why. A role of the mark's set whose claim a close, a linger or an operator took over
+// after its wake is resumed by no cancel, but its wake brought no pod back either: the cancel
+// deletes that wake's resume, paused or not, and leaves its start to the path that took the claim.
+// That start's task says that the release took the pod, so the cancel tells it in the words of a
+// release that did not finish (ReleaseCancelPause.TakenOverWakeTask, dropTakenOverWakes).
+//
+// That builder is the one variadic parameter, woken, and the cancel takes at most one. A cancel
+// given more refuses before it opens its transaction. ReleaseResumeRow keeps its shape because
+// callers outside the store pass a plain function literal of it, and the outbox passes the woken
+// builder instead, with resume nil; that builder's kind and task are "" for a role whose wake the
+// cancel did not drop.
+//
 // Beside them it answers whether the release it ended was one that suspends no role
 // (ReleaseCancelled.SuspendsNoRole, IdleReleaseMark.SuspendsNoRole, issue_releases.kind): the
 // mark's kind, read in the same transaction that reads its id and its suspended set, since the
@@ -351,7 +399,19 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // for another project's issue: a cancel runs from a row of the release, which is keyed by its
 // issue, and the daemon's outbox runs only the rows of its own project's keys (record's
 // DueRows). It is read after the issue's lock (LockIssueForPause), which this transaction takes
-// after the serializer, the one order every writer of a pod hold keeps (decision 13).
+// after the serializer, the one order every writer of a pod hold keeps (decision 13). A wake that
+// a role of the mark's set took since the mark stays open in this case: it is the launch the pause
+// owes the role, which stopReleasedForPause records as owed (openPodResume), and its start runs
+// at the pause's resume. Dropped here, as a cancel drops it while the project runs, it would leave
+// the role no launch at all, since this cancel queues no resume. The task of that start was
+// written for a session a release stopped, and says that the release took the pod; the release
+// took none, and the cancel records the role as stopped by the pause. So this transaction rewrites
+// that task as the task of a wake of a role the pause stopped (ReleaseCancelPause.WakeTask,
+// retellWakesUnderPause). A wake kept so that was taken while the project ran is no wake of the
+// pause yet: no pause holds its resume, and its resume names the newest release recorded before
+// the wake, which is not the release it waited for. The cancel makes it a held wake of the pause
+// (holdWakesUnderPause): its resume names the pause and release 0, as the resume of a wake taken
+// while the project is paused does (decision 15).
 //
 // An issue the record no longer holds, one that has left the workflow, and one whose tree
 // lingers are given no resume at all, and the mark goes all the same: those claims are a close's
@@ -373,13 +433,39 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // refuse. Under the lock the two commit in a line, and neither order leaves that state — a cancel
 // that runs first queues its resume below the close's rows, which supersede it, and one that runs
 // after reads the issue as left and queues nothing.
+//
+// The cancel reads the mark `for update`, after the serializer and before it deletes the wakes
+// taken under the mark (dropWakesUnderRelease). A take (PodRecords.TakePodWake) locks the same
+// mark `for share` before it records its resume. The workflow's takes also hold the serializer,
+// but the outbox's delivery take does not, so the mark is the one lock every take shares with the
+// cancel. When a take locks the mark first, this read waits until the take commits, and the
+// delete then reads the take's resume and drops it. When this read comes first, the take waits
+// until this transaction commits, and then finds the mark gone. Without the lock, a take still
+// open when the delete runs leaves its resume behind, under a release that did not happen. The
+// cancel takes the issue's pause lock and the pause's row after the mark and before that delete,
+// as a take orders them, so a project's resume, which writes the open resumes under the pause's
+// row, never waits for a resume this cancel deleted while this cancel waits for that row.
+// PodRecords.TakePodWake gives the whole lock order.
 func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, resume ReleaseResumeRow,
-	outOfWorkflow func(status string) bool, paused ReleaseCancelPause) (ReleaseCancelled, error) {
-	if project == "" || issue == "" || resume == nil || outOfWorkflow == nil {
+	outOfWorkflow func(status string) bool, paused ReleaseCancelPause, woken ...ReleaseWokenRow) (ReleaseCancelled, error) {
+	if len(woken) > 1 {
+		return ReleaseCancelled{}, fmt.Errorf("cancelling the release of %s takes at most one woken builder, and was given %d", issue, len(woken))
+	}
+	var wokenRow ReleaseWokenRow
+	if len(woken) == 1 {
+		wokenRow = woken[0]
+	}
+	if project == "" || issue == "" || (resume == nil && wokenRow == nil) || outOfWorkflow == nil {
 		return ReleaseCancelled{}, errors.New("cancelling a release needs its project, its issue, the row that resumes a claim and the workflow's own rule for a status")
 	}
 	if paused.At.IsZero() {
 		return ReleaseCancelled{}, errors.New("cancelling a release needs the moment a pause's stops would carry (ReleaseCancelPause.At), from the caller's clock")
+	}
+	build := func(role claim.Role, generation uint64, wake droppedWake) (IdleReleaseRow, error) {
+		if wokenRow != nil {
+			return wokenRow(role, generation, wake.kind, wake.task)
+		}
+		return resume(role, generation)
 	}
 	var cancelled ReleaseCancelled
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
@@ -387,16 +473,27 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			return err
 		}
 		cancelled = ReleaseCancelled{}
-		var release int64
+		var release, wake, last, recorded int64
 		var suspended []string
 		var kind string
-		err := tx.QueryRow(ctx, `select id, suspended, kind from issue_releases where project = $1 and issue = $2`,
-			project, issue).Scan(&release, &suspended, &kind)
+		var committed bool
+		err := tx.QueryRow(ctx, `select id, suspended, kind, wake_row, last_row, released_id, committed from issue_releases
+			where project = $1 and issue = $2 for update`, project, issue).Scan(&release, &suspended, &kind, &wake, &last, &recorded, &committed)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
+		}
+		// A release whose teardown recorded it has taken its pod (ReleaseDecision.PodTaken), and
+		// one whose teardown the runtime was authorized to carry out may have taken it
+		// (ReleaseDecision.Committed). Nothing undoes that: its teardown finishes it, and no cancel
+		// may resume its roles in a pod that is gone or delete the bundle the next pod restores.
+		if recorded != 0 {
+			return fmt.Errorf("the release of %s took its pod and was recorded as release %d, so it cannot be cancelled: its teardown finishes it", issue, recorded)
+		}
+		if committed {
+			return fmt.Errorf("the release of %s was authorized to take its pod, so it cannot be cancelled: its teardown finishes it", issue)
 		}
 		cancelled.SuspendsNoRole = kind == releaseKindUnowned
 		// The bundle this release saved goes with the mark, in this transaction. The pod it was
@@ -419,11 +516,10 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			if standing, err = resumeStanding(ctx, tx, issue, outOfWorkflow); err != nil {
 				return err
 			}
-			if !standing.live {
-				roles = nil
-			}
 		}
-		if len(roles) > 0 {
+		if len(suspended) > 0 {
+			// The issue's pause lock and the pause's row come after the mark and before any
+			// resume is deleted, as a take orders them (PodRecords.TakePodWake).
 			if err := LockIssueForPause(ctx, tx, issue); err != nil {
 				return err
 			}
@@ -431,8 +527,17 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			if err != nil {
 				return err
 			}
-			if open {
+			if err := dropTakenOverWakes(ctx, tx, project, issue, suspended, roles, wake, last, paused.TakenOverWakeTask); err != nil {
+				return err
+			}
+			if len(roles) > 0 && open && standing.live {
 				if err := stopReleasedForPause(ctx, tx, project, issue, held, roles, standing, paused); err != nil {
+					return err
+				}
+				if err := holdWakesUnderPause(ctx, tx, project, issue, roles, wake, held.ID); err != nil {
+					return err
+				}
+				if err := retellWakesUnderPause(ctx, tx, project, issue, roles, wake, last, paused.WakeTask); err != nil {
 					return err
 				}
 				cancelled.Pause = held.ID
@@ -442,8 +547,15 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 				return deleteIssueRelease(ctx, tx, project, issue)
 			}
 		}
+		dropped, err := dropWakesUnderRelease(ctx, tx, project, issue, roles, wake, last)
+		if err != nil {
+			return err
+		}
+		if !standing.live {
+			roles = nil
+		}
 		for _, r := range roles {
-			row, err := resume(r.role, standing.generation)
+			row, err := build(r.role, standing.generation, dropped[r.role])
 			if err != nil {
 				return err
 			}
@@ -468,10 +580,21 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // (workflow.OpenPhaseRole), which the store does not restate (nil arms no backstop). At is
 // required of every cancel, since whether the project is paused is read inside the cancel's own
 // transaction; a cancel made while the project runs reads nothing else of it.
+//
+// WakeTask is the workflow's rule for the task of a wake the cancel keeps (workflow.PausedWakeTask):
+// it answers, from the kind of the kept resume and the task its start carries, the task that start
+// carries from now on. The store does not restate the wake's words. nil rewrites no task.
+//
+// TakenOverWakeTask is the workflow's rule for the task of a wake's start that every cancel keeps,
+// paused or not, for a role whose claim a close, a linger or an operator took over after the wake
+// (workflow.TakenOverWakeTask, dropTakenOverWakes): it answers, from the kind of the wake's resume
+// and the task its start carries, the task that start carries from now on. nil rewrites no task.
 type ReleaseCancelPause struct {
-	At            time.Time
-	Backstop      time.Duration
-	OpenPhaseRole func(phase.Phase) claim.Role
+	At                time.Time
+	Backstop          time.Duration
+	OpenPhaseRole     func(phase.Phase) claim.Role
+	WakeTask          func(kind, task string) string
+	TakenOverWakeTask func(kind, task string) string
 }
 
 // ReleaseCancelled is what one cancel of a release did (CancelIssueRelease). Resumed are the roles
@@ -514,6 +637,102 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		}
 		if _, err := RecordPauseStopTx(ctx, tx, rec); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// holdWakesUnderPause makes each wake that a paused cancel keeps a held wake of pause
+// (CancelIssueRelease): each resume of one of roles above wake, the mark's wake_row, that no pause
+// holds. Such a wake was taken while the project ran. Its resume names the newest release
+// recorded before the wake (LatestPodRelease), and that release is not the release the wake
+// waited for, so the records would count a pod's return for a release that did not take that
+// pod. The cancel keeps the wake as the launch that the pause owes the role, so its resume now
+// names the pause and release 0, as every held wake's resume does
+// (pod_resumes_held_wake_pairs_with_no_release, decision 15 of dispatch://INFRA-3759). Its kind,
+// its times and its seen release stay. These are the resumes that dropWakesUnderRelease deletes
+// while the project runs.
+func holdWakesUnderPause(ctx context.Context, tx pgx.Tx, project, issue string, roles []releasedRole, wake, pause int64) error {
+	if len(roles) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `update pod_resumes set pause_id = $5, release_id = 0
+		where project = $1 and issue = $2 and id > $3 and role = any($4) and pause_id is null`,
+		project, issue, wake, releasedRoleNames(roles), pause); err != nil {
+		return fmt.Errorf("make the wakes taken while the release of %s stood held wakes of pause %d: %w", issue, pause, err)
+	}
+	return nil
+}
+
+// retellWakesUnderPause rewrites the task of each start that a wake of one of roles queued while
+// the release stood, for a cancel made while the project is paused, which keeps those wakes
+// (CancelIssueRelease). The wakes and their starts are the ones dropWakesUnderRelease reads: a
+// role's resumes above wake, the mark's wake_row, and the starts of that role above last, the
+// release's last row, that have a wake's own shape (wakeStartRow). A root architect's entry
+// start and a production check's look are no wake's start, and keep their task. retell answers
+// the task a start carries from now on, from the kind of the role's newest such resume and the
+// task the start carries now (ReleaseCancelPause.WakeTask). A start of a role with no such resume
+// is no wake's, and keeps its task. retellStarts writes the new tasks, and a nil retell writes
+// nothing.
+func retellWakesUnderPause(ctx context.Context, tx pgx.Tx, project, issue string, roles []releasedRole, wake, last int64,
+	retell func(kind, task string) string) error {
+	return retellWakesOf(ctx, tx, project, issue, releasedRoleNames(roles), wake, last, retell)
+}
+
+// retellWakesOf rewrites the task of each start of one of roles above last, the release's last
+// row, that has a wake's own shape (wakeStartRow), from the kind of that role's newest resume
+// above wake, the mark's wake_row, and the task the start carries now. A start of a role with no
+// such resume is no wake's, and keeps its task. It is the statement of a paused cancel's retell
+// (retellWakesUnderPause) and of the retell of a role another path took over
+// (dropTakenOverWakes). retellStarts writes the new tasks, and a nil retell writes nothing.
+func retellWakesOf(ctx context.Context, tx pgx.Tx, project, issue string, roles []string, wake, last int64,
+	retell func(kind, task string) string) error {
+	if retell == nil || len(roles) == 0 {
+		return nil
+	}
+	return retellStarts(ctx, tx, issue, retell, `select outbox.id, coalesce(outbox.payload->>'task', ''), woken.kind from outbox
+		join lateral (select r.kind from pod_resumes r where r.project = $1 and r.issue = $2 and r.id > $3
+			and r.role = outbox.payload->>'role' order by r.id desc limit 1) woken on true
+		where outbox.issue = $2 and outbox.id > $5 and `+wakeStartRow+` and outbox.payload->>'role' = any($4)
+		order by outbox.id`, project, issue, wake, roles, last)
+}
+
+// retellStarts rewrites, through tx, the task of each start that query reads of the wakes taken
+// while the release of issue stood: a paused cancel's (retellWakesUnderPause), a cancel's of the
+// roles another path took over (dropTakenOverWakes) and the release's record's
+// (retellWakesUnderRelease). query reads, for each start, its outbox id, its task ("" for
+// none) and the kind of the wake whose start it is, and retell answers the task the start carries
+// from now on. Only the task changes: the start keeps its role, generation, wake kind, pause and
+// the rest of its payload. A start whose task retell answers unchanged is not written.
+func retellStarts(ctx context.Context, tx pgx.Tx, issue string, retell func(kind, task string) string, query string, args ...any) error {
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("read the starts of the wakes taken while the release of %s stood: %w", issue, err)
+	}
+	type retold struct {
+		id   int64
+		task string
+	}
+	var writes []retold
+	for rows.Next() {
+		var id int64
+		var task, kind string
+		if err := rows.Scan(&id, &task, &kind); err != nil {
+			rows.Close()
+			return fmt.Errorf("read the starts of the wakes taken while the release of %s stood: %w", issue, err)
+		}
+		if told := retell(kind, task); told != task {
+			writes = append(writes, retold{id: id, task: told})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the starts of the wakes taken while the release of %s stood: %w", issue, err)
+	}
+	for _, w := range writes {
+		if _, err := tx.Exec(ctx, `update outbox set payload = jsonb_set(payload, '{task}', to_jsonb($2::text)) where id = $1`,
+			w.id, w.task); err != nil {
+			return fmt.Errorf("rewrite the task of outbox row %d, the start of a wake taken while the release of %s stood: %w", w.id, issue, err)
 		}
 	}
 	return nil
@@ -587,6 +806,107 @@ func stillReleasedRoles(ctx context.Context, tx pgx.Tx, project, issue string, s
 		roles = append(roles, r)
 	}
 	return roles, rows.Err()
+}
+
+// releasedRoleNames is the role of each of roles, as the claim and pod tables hold it.
+func releasedRoleNames(roles []releasedRole) []string {
+	names := make([]string, 0, len(roles))
+	for _, r := range roles {
+		names = append(names, string(r.role))
+	}
+	return names
+}
+
+// dropTakenOverWakes deletes the resumes of the wakes taken under the mark (above wake, the mark's
+// wake_row) of each role of the mark's suspended set whose claim is no longer suspended as
+// `released`: a close, a linger or an operator took that claim over after the wake, and that is
+// what cancelled the release (releaseOvertaken). stillReleased are the claims of the set that are
+// still released, whose wakes the cancel drops, holds or keeps by its other rules. The release did
+// not finish, so no pod of it went away, and such a resume is no pod's return. Left behind, it
+// would pair with the newest release recorded before the wake, and the records would count a pod
+// return for a release that did not take that pod. With no first turn it would also be warned and
+// recorded stuck, and it would refuse the role's next wake until a later release closed it. The
+// wake's own start stays: it is the start of the path that took the claim over. It finishes without
+// acting under a close or a linger (decision 10 of dispatch://INFRA-3759), and it waits for an
+// operator's resume under an operator's suspension.
+//
+// A pause's owed launch is kept whole (kind pods.WakePause). The stop transaction of a project's
+// pause takes it for a role whose launch the pause owes (internal/daemon's projectPause.stopTx),
+// and the pause's resume runs its start. That resume is the record that the pause still owes the
+// launch (openPodResume), which no cancel of a release settles.
+//
+// That start's task was written for a session a release stopped, and it says that the release
+// took the pod. The release took none, and the role that the operator resumes reads that task. So,
+// before it deletes the resumes, the transaction rewrites that task through retell
+// (ReleaseCancelPause.TakenOverWakeTask, retellWakesOf): last is the release's last row, above
+// which the wake queued its start, and the kind retell is told is the kind of the role's newest
+// resume above wake, read before the delete. That is the resume of the wake this call deletes, or
+// a pause's owed launch, which it keeps, where the pause's stop took that after the wake. A cancel
+// calls it with the issue's pause lock and the pause's row held (CancelIssueRelease).
+func dropTakenOverWakes(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string, stillReleased []releasedRole,
+	wake, last int64, retell func(kind, task string) string) error {
+	released := releasedRoleNames(stillReleased)
+	var takenOver []string
+	for _, role := range suspended {
+		if !slices.Contains(released, role) {
+			takenOver = append(takenOver, role)
+		}
+	}
+	if len(takenOver) == 0 {
+		return nil
+	}
+	if err := retellWakesOf(ctx, tx, project, issue, takenOver, wake, last, retell); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `delete from pod_resumes where project = $1 and issue = $2 and id > $3 and role = any($4)
+		and kind <> $5`, project, issue, wake, takenOver, pods.WakePause); err != nil {
+		return fmt.Errorf("delete the wakes taken while the release of %s stood of roles another path took over: %w", issue, err)
+	}
+	return nil
+}
+
+// dropWakesUnderRelease deletes what a wake of each of roles left while the release stood: the
+// role's resumes above wake, the mark's wake_row, and the starts of that role above last, the
+// release's last row, that have a wake's own shape (wakeStartRow). A root architect's entry start
+// and a production check's look are no wake's start: they stay, and their tasks are not the
+// wake's. A role with no such resume keeps every start it has, since no wake of it was taken
+// under the mark. A cancel calls it before it queues its own resumes (CancelIssueRelease).
+//
+// It answers, for each role whose wake it dropped, the kind of the resume and the task of the
+// start it deleted, the newest of each, which the cancel hands its builder (ReleaseWokenRow). A
+// role it dropped nothing of is not in the answer, and reads as the zero droppedWake.
+func dropWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, roles []releasedRole, wake, last int64) (map[claim.Role]droppedWake, error) {
+	if len(roles) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `with woken as (
+			delete from pod_resumes where project = $1 and issue = $2 and id > $3 and role = any($4) returning id, role, kind),
+		started as (
+			delete from outbox where issue = $2 and id > $5 and `+wakeStartRow+`
+				and outbox.payload->>'role' in (select role from woken)
+			returning outbox.id, outbox.payload->>'role' as role, coalesce(outbox.payload->>'task', '') as task)
+		select w.role, w.kind, coalesce(s.task, '') from woken w left join started s on s.role = w.role
+		order by w.id desc, s.id desc`,
+		project, issue, wake, releasedRoleNames(roles), last)
+	if err != nil {
+		return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
+	}
+	defer rows.Close()
+	dropped := map[claim.Role]droppedWake{}
+	for rows.Next() {
+		var role string
+		var got droppedWake
+		if err := rows.Scan(&role, &got.kind, &got.task); err != nil {
+			return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
+		}
+		if _, seen := dropped[claim.Role(role)]; !seen {
+			dropped[claim.Role(role)] = got
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("delete the wakes taken while the release of %s stood: %w", issue, err)
+	}
+	return dropped, nil
 }
 
 // ClearIssueRelease forgets the mark of issue's release once the release finished, on the pool:

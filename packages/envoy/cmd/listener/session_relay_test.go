@@ -60,7 +60,13 @@ func newRelayRigReceipt(t *testing.T, first, max, receipt time.Duration) *relayR
 // this way rather than by timing.
 func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 	t.Helper()
-	url := testnats.URL(t)
+	return newRelayRigUnownedOn(t, testnats.URL(t), first, max)
+}
+
+// newRelayRigUnownedOn is newRelayRigUnowned on the NATS URL url, for a test that cuts or stops
+// the server behind it itself.
+func newRelayRigUnownedOn(t *testing.T, url string, first, max time.Duration) *relayRig {
+	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)

@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
+import * as consumerDeliveryModule from "../consumer-delivery";
 import {
   type ConsumerDeliveryOptions,
   type ConsumerDeliverySnapshot,
@@ -11,6 +13,7 @@ import {
   FOLLOW_CLOCK_ALLOWANCE_MS,
   inboundRestoredNoticeText,
   inboundUnavailable,
+  inboundUnavailableNoticeText,
   NoRelaySubjectError,
   RELAY_PROGRESS_INTERVAL_MS,
   RelayHeader,
@@ -19,7 +22,7 @@ import {
   registerWithRelay,
 } from "../consumer-delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
-import type { DeliveryAnswer } from "../transport";
+import { type DeliveryAnswer, EnvoyApiError } from "../transport";
 
 const SESSION = "ses_a";
 const AGENT = "notifications.agent.ses_a";
@@ -1166,10 +1169,9 @@ describe("one registration", () => {
       // The bare base a stored row or a transcript brings back: the listener stores it for no
       // session and warns about it, so it never goes out (INFRA-771 review).
       followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
-      outage: inboundUnavailable(
-        (why) => told.push(why),
-        () => told.push("restored")
-      ),
+      outage: inboundUnavailable((why) => told.push(why), {
+        restored: () => told.push("restored"),
+      }),
       send: (topics, delivery) => {
         sent.push({ topics, epoch: delivery.epoch });
         return Promise.resolve("registered");
@@ -1182,33 +1184,247 @@ describe("one registration", () => {
     expect([result, answers, told]).toEqual(["registered", ["registered"], []]);
   });
 
-  test("a session holding no relay subject registers nothing and is told once", async () => {
+  /** The start race's bound in these rows; production's is `INBOUND_FIRST_OPEN_BOUND_MS`. */
+  const BOUND = 60_000;
+  const NO_RELAY =
+    "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing";
+
+  /**
+   * One session's outage report on a clock the row moves (`at`), with what it told, the clock at
+   * each time it said the session receives again, each reason it handed `held`, and the two
+   * registrations a row makes: one with no relay subject, naming `relayMissing` when a row passes
+   * one, and one whose send answers `answer`. `stop` begins the session's stop.
+   */
+  function reportOnClock() {
+    let clock = 0;
+    let stopping = false;
     const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
+    const restored: number[] = [];
+    const held: (string | undefined)[] = [];
     const sent: unknown[] = [];
-    const register = () =>
+    const outage = inboundUnavailable((why) => told.push(why), {
+      now: () => clock,
+      firstOpenBoundMs: BOUND,
+      restored: () => restored.push(clock),
+      held: (relayMissing) => held.push(relayMissing),
+      stopping: () => stopping,
+    });
+    return {
+      told,
+      restored,
+      held,
+      sent,
+      at: (ms: number) => {
+        clock = ms;
+      },
+      stop: () => {
+        stopping = true;
+      },
+      withoutRelay: (relayMissing?: string) =>
+        registerWithRelay({
+          relay: undefined,
+          relayMissing,
+          ownAgentSubject: AGENT,
+          followed: [TEAM],
+          outage,
+          send: (topics) => {
+            sent.push(topics);
+            return Promise.resolve("registered");
+          },
+          answered: () => undefined,
+        }),
+      withRelay: (answer: Promise<string>) =>
+        registerWithRelay({
+          relay: fakeRelay(),
+          ownAgentSubject: AGENT,
+          followed: [TEAM],
+          outage,
+          send: (topics) => {
+            sent.push(topics);
+            return answer;
+          },
+          answered: () => undefined,
+        }),
+    };
+  }
+
+  test("a session holding no relay subject at its start registers nothing, and is told once only when the bound has passed", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    report.at(BOUND - 1);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    // The relay may still open: inside the bound the session is told nothing.
+    expect(report.told).toEqual([]);
+
+    report.at(BOUND);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    // The next outage tick says nothing more: the session was told once.
+    report.at(BOUND + 15_000);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect(report.sent).toEqual([]);
+    expect(report.told).toEqual([NO_RELAY]);
+  });
+
+  // The host logs the start race at once (`held`), while the session's notice waits for the bound:
+  // a start whose relay never opens shows in its log that a registration found no relay subject,
+  // and why, long before the bound. It is logged once per outage, not at every try.
+  test("the start race's first registration with no relay subject goes to `held` at once, naming why, and no later one does, while the session is told only past the bound", async () => {
+    const report = reportOnClock();
+    const why = `${NO_RELAY}, because its relay subject could not be opened: Authentication Timeout`;
+
+    await expect(report.withoutRelay("Authentication Timeout")).rejects.toThrow(why);
+    expect([report.held, report.told]).toEqual([["Authentication Timeout"], []]);
+
+    report.at(BOUND - 1);
+    await expect(report.withoutRelay("Authentication Timeout")).rejects.toThrow(why);
+    expect([report.held, report.told]).toEqual([["Authentication Timeout"], []]);
+
+    report.at(BOUND);
+    await expect(report.withoutRelay("Authentication Timeout")).rejects.toThrow(why);
+    report.at(BOUND + 15_000);
+    await expect(report.withoutRelay("Authentication Timeout")).rejects.toThrow(why);
+    expect([report.held, report.told]).toEqual([["Authentication Timeout"], [why]]);
+
+    // A host that names no reason is handed none.
+    const unnamed = reportOnClock();
+    await expect(unnamed.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect([unnamed.held, unnamed.told]).toEqual([[undefined], []]);
+  });
+
+  test("`held` is not called for a lost relay subject after the first accepted registration, which is told at once, nor for a refusal, nor for a call the bound does not hold, nor once the stop began", async () => {
+    const lost = reportOnClock();
+    await lost.withRelay(Promise.resolve("registered"));
+    await expect(lost.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect([lost.held, lost.told]).toEqual([[], [NO_RELAY]]);
+
+    const refused = reportOnClock();
+    await expect(refused.withRelay(Promise.reject(new Error("no_grant")))).rejects.toThrow(
+      "no_grant"
+    );
+    expect([refused.held, refused.told]).toEqual([[], ["no_grant"]]);
+
+    const held: (string | undefined)[] = [];
+    const told: string[] = [];
+    await expect(
       registerWithRelay({
         relay: undefined,
         ownAgentSubject: AGENT,
         followed: [TEAM],
-        outage,
-        send: (topics) => {
-          sent.push(topics);
-          return Promise.resolve("registered");
-        },
+        outage: inboundUnavailable((why) => told.push(why), {
+          firstOpenBoundMs: 0,
+          held: (relayMissing) => held.push(relayMissing),
+        }),
+        send: () => Promise.resolve("registered"),
         answered: () => undefined,
-      });
+      })
+    ).rejects.toThrow("holds no relay subject");
+    expect([held, told]).toEqual([[], [NO_RELAY]]);
 
-    await expect(register()).rejects.toThrow("holds no relay subject");
-    // The second outage tick says nothing more: the session was told once.
-    await expect(register()).rejects.toThrow("holds no relay subject");
-    expect(sent).toEqual([]);
-    expect(told).toEqual([
-      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing",
+    const stopping = reportOnClock();
+    stopping.stop();
+    await expect(stopping.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect([stopping.held, stopping.told]).toEqual([[], []]);
+  });
+
+  test("a session whose relay opens inside the bound and whose registration is accepted is told nothing at all", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    report.at(BOUND - 1);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect(await report.withRelay(Promise.resolve("registered"))).toBe("registered");
+
+    expect([report.told, report.restored]).toEqual([[], []]);
+  });
+
+  test("a session holding no relay subject past the bound is told once, then once that it receives again, and a second accepted registration tells nothing", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    report.at(BOUND);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect(report.told).toEqual([NO_RELAY]);
+
+    report.at(BOUND + 15_000);
+    await report.withRelay(Promise.resolve("registered"));
+    expect(report.restored).toEqual([BOUND + 15_000]);
+    report.at(BOUND + 105_000);
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([[NO_RELAY], [BOUND + 15_000]]);
+  });
+
+  test("a registration refused while the start race is held is told at once", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    report.at(1_000);
+    await expect(report.withRelay(Promise.reject(new Error("no_grant")))).rejects.toThrow(
+      "no_grant"
+    );
+
+    expect(report.told).toEqual(["no_grant"]);
+  });
+
+  test("a session that loses its relay subject after its first accepted registration is told at once, and once that it receives again", async () => {
+    const report = reportOnClock();
+
+    await report.withRelay(Promise.resolve("registered"));
+    report.at(1_000);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect([report.told, report.restored]).toEqual([[NO_RELAY], []]);
+
+    report.at(16_000);
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([[NO_RELAY], [16_000]]);
+  });
+
+  // R24 of dispatch://INFRA-3589: a stopping session closes its own relay on purpose, and its
+  // record is deleted next, so a registration refused, answered or skipped during the stop says
+  // nothing about what it receives.
+  test("a session that has begun to stop is told nothing of a registration with no relay subject or a refused one, though it was told of both before", async () => {
+    const report = reportOnClock();
+
+    await report.withRelay(Promise.resolve("registered"));
+    // Before the stop, each tells the session once, and the accepted registration after each
+    // tells it that it receives again.
+    report.at(1_000);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    await report.withRelay(Promise.resolve("registered"));
+    report.at(2_000);
+    await expect(report.withRelay(Promise.reject(new Error("no_grant")))).rejects.toThrow(
+      "no_grant"
+    );
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([
+      [NO_RELAY, "no_grant"],
+      [1_000, 2_000],
     ]);
+
+    report.stop();
+    report.at(3_000);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    await expect(report.withRelay(Promise.reject(new Error("no_grant")))).rejects.toThrow(
+      "no_grant"
+    );
+    expect([report.told, report.restored]).toEqual([
+      [NO_RELAY, "no_grant"],
+      [1_000, 2_000],
+    ]);
+  });
+
+  test("a session told of an outage that then begins to stop is not told that it receives again", async () => {
+    const report = reportOnClock();
+
+    await report.withRelay(Promise.resolve("registered"));
+    report.at(1_000);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect(report.told).toEqual([NO_RELAY]);
+
+    report.stop();
+    report.at(2_000);
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([[NO_RELAY], []]);
   });
 
   test("a session whose relay could not be opened says why in the refusal and in the one outage notice", async () => {
@@ -1218,10 +1434,11 @@ describe("one registration", () => {
       relayMissing: "Authentication Timeout",
       ownAgentSubject: AGENT,
       followed: [TEAM],
-      outage: inboundUnavailable(
-        (why) => told.push(why),
-        () => told.push("restored")
-      ),
+      // With no bound the start race is told at once, so this row reads the one notice it tells.
+      outage: inboundUnavailable((why) => told.push(why), {
+        firstOpenBoundMs: 0,
+        restored: () => told.push("restored"),
+      }),
       send: () => Promise.resolve("registered"),
       answered: () => undefined,
     }).catch((error: unknown) => error);
@@ -1244,10 +1461,9 @@ describe("one registration", () => {
         relay,
         ownAgentSubject: AGENT,
         followed: [TEAM],
-        outage: inboundUnavailable(
-          (why) => told.push(why),
-          () => told.push("restored")
-        ),
+        outage: inboundUnavailable((why) => told.push(why), {
+          restored: () => told.push("restored"),
+        }),
         send: () => Promise.reject(new Error("no_grant")),
         answered: (answer: string) => answers.push(answer),
       })
@@ -1257,12 +1473,212 @@ describe("one registration", () => {
     expect([answers, told]).toEqual([[], ["no_grant"]]);
   });
 
+  // Row (e) of check l23 (R24 of dispatch://INFRA-3589, against R26): the listener answers its
+  // bus-outage 503 to a registration whose known-session record did not land, after it made the
+  // session's consumer, so the session still receives what the stream stores for it. Such a
+  // refusal is held as the start race is: no notice inside the bound, and a registration accepted
+  // inside it clears it with none. Past the bound the session is told once, that the listener did
+  // not record its registration, and never that it has no consumer.
+  const UNRECORDED = `${BUS_UNANSWERED_PREFIX}: write the known-session record of ${SESSION}: context deadline exceeded`;
+  const unrecorded = () =>
+    new EnvoyApiError({
+      method: "POST",
+      url: "http://listener/v1/interests/subscribe",
+      status: 503,
+      responseBody: JSON.stringify({ error: UNRECORDED }),
+    });
+
+  test("(e) a registration answered with the bus-outage 503 at the session's start is held for the bound, and one accepted inside it clears it with no notice", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    report.at(BOUND - 1);
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    expect(report.told).toEqual([]);
+
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([[], []]);
+  });
+
+  test("(e) a registered session whose later registration meets the bus-outage 503 is held the same way, from that refusal", async () => {
+    const report = reportOnClock();
+
+    await report.withRelay(Promise.resolve("registered"));
+    report.at(1_000);
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    report.at(1_000 + BOUND - 1);
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    expect(report.told).toEqual([]);
+
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([[], []]);
+  });
+
+  test("(e) past the bound a bus-outage 503 is told once, as a registration the listener did not record and not as a session with no consumer", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    report.at(BOUND);
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    report.at(BOUND + 15_000);
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    expect(report.told).toEqual([UNRECORDED]);
+
+    // Every host words what it was told with this one text.
+    const notice = inboundUnavailableNoticeText(report.told[0] ?? "");
+    expect(notice).toMatch(/not record/i);
+    expect(notice).not.toContain("no durable consumer");
+    expect(notice).not.toContain("receives none");
+
+    report.at(BOUND + 30_000);
+    await report.withRelay(Promise.resolve("registered"));
+    expect(report.restored).toEqual([BOUND + 30_000]);
+  });
+
+  // The accepted registration that ends a told episode is worded for the `why` that episode told.
+  // After a bus-outage 503 the consumer may have delivered all along, so that notice says the
+  // listener recorded a registration, and never that the session received nothing.
+  // `restored` builds the notice as every host does, from the `why` it is handed.
+  function reportRestoring() {
+    let clock = 0;
+    const told: string[] = [];
+    const restored: string[] = [];
+    const notices: string[] = [];
+    const outage = inboundUnavailable((why) => told.push(why), {
+      now: () => clock,
+      firstOpenBoundMs: BOUND,
+      restored: (why) => {
+        restored.push(why);
+        notices.push(inboundRestoredNoticeText(why));
+      },
+    });
+    return {
+      outage,
+      told,
+      restored,
+      notices,
+      at: (ms: number) => {
+        clock = ms;
+      },
+    };
+  }
+
+  test("(e) the accepted registration after a told bus-outage 503 says the listener recorded a registration, and never that the session received nothing", () => {
+    const report = reportRestoring();
+
+    report.outage.refused(unrecorded());
+    report.at(BOUND);
+    report.outage.refused(unrecorded());
+    expect(report.told).toEqual([UNRECORDED]);
+    report.at(BOUND + 15_000);
+    report.outage.accepted();
+
+    expect(report.notices).toHaveLength(1);
+    const notice = report.notices[0] ?? "";
+    expect(notice).toContain("Envoy inbound restored");
+    expect(notice).toContain("The listener recorded a registration of this session");
+    expect(notice).toContain("arrives now");
+    expect(notice).not.toMatch(/receive[sd]? nothing/i);
+    expect(notice).not.toContain("receives Envoy messages again");
+  });
+
+  test("the accepted registration after a told refusal keeps its notice: the session receives again, and what was stored while it received nothing arrives now", () => {
+    const report = reportRestoring();
+
+    report.outage.refused(new Error("no_grant"));
+    report.at(1_000);
+    report.outage.accepted();
+
+    expect(report.notices).toHaveLength(1);
+    expect(report.notices[0]).toContain(
+      "The listener accepted a registration of this session, so the session receives Envoy messages again. What the stream stored while it received nothing arrives now."
+    );
+  });
+
+  test("`restored` is handed the why its episode told: a refusal's, then a bus-outage 503's", () => {
+    const report = reportRestoring();
+
+    report.outage.refused(new Error("no_grant"));
+    report.at(1_000);
+    report.outage.accepted();
+    report.at(2_000);
+    report.outage.refused(unrecorded());
+    report.at(2_000 + BOUND);
+    report.outage.refused(unrecorded());
+    report.at(2_000 + BOUND + 15_000);
+    report.outage.accepted();
+
+    expect([report.told, report.restored]).toEqual([
+      ["no_grant", UNRECORDED],
+      ["no_grant", UNRECORDED],
+    ]);
+  });
+
+  test("isUnrecordedRegistration is true only of a why that begins with the bus-outage prefix", () => {
+    // A namespace read, so this file still loads where the module lacks the export.
+    const { isUnrecordedRegistration } = consumerDeliveryModule;
+
+    expect(isUnrecordedRegistration(UNRECORDED)).toBe(true);
+    expect(isUnrecordedRegistration("no_grant")).toBe(false);
+    expect(isUnrecordedRegistration(NO_RELAY)).toBe(false);
+    expect(isUnrecordedRegistration(`listener: ${BUS_UNANSWERED_PREFIX}`)).toBe(false);
+  });
+
+  // Finding 9 of the read-ahead at 73c124fe (dispatch://INFRA-3589): a told bus-outage 503 says
+  // that the session's consumer may still deliver. A refusal or a lost relay subject after it
+  // says that the session receives nothing, so it is told once more. The accepted registration
+  // after it is worded for that later `why`: the session receives again.
+  test("a refusal after a told bus-outage 503 is told once more, and the restore after it says the session receives again", () => {
+    const report = reportRestoring();
+
+    report.outage.accepted();
+    report.at(1_000);
+    report.outage.refused(unrecorded());
+    report.at(1_000 + BOUND);
+    report.outage.refused(unrecorded());
+    expect(report.told).toEqual([UNRECORDED]);
+
+    report.at(1_000 + BOUND + 15_000);
+    report.outage.refused(new Error("no_grant"));
+    // Once more, and no more: a later refusal or bus-outage 503 tells nothing.
+    report.at(1_000 + BOUND + 30_000);
+    report.outage.refused(new Error("no_grant"));
+    report.outage.refused(unrecorded());
+    expect(report.told).toEqual([UNRECORDED, "no_grant"]);
+
+    report.at(1_000 + BOUND + 45_000);
+    report.outage.accepted();
+    expect(report.restored).toEqual(["no_grant"]);
+    expect(report.notices).toHaveLength(1);
+    expect(report.notices[0]).toContain(
+      "The listener accepted a registration of this session, so the session receives Envoy messages again."
+    );
+  });
+
+  test("a lost relay subject after a told bus-outage 503 is told once more, and the restore after it says the session receives again", () => {
+    const report = reportRestoring();
+
+    report.outage.accepted();
+    report.at(1_000);
+    report.outage.refused(unrecorded());
+    report.at(1_000 + BOUND);
+    report.outage.refused(unrecorded());
+    report.at(1_000 + BOUND + 15_000);
+    report.outage.noRelay(new Error(NO_RELAY));
+    report.outage.noRelay(new Error(NO_RELAY));
+    expect(report.told).toEqual([UNRECORDED, NO_RELAY]);
+
+    report.at(1_000 + BOUND + 30_000);
+    report.outage.accepted();
+    expect(report.restored).toEqual([NO_RELAY]);
+    expect(report.notices[0]).toContain("so the session receives Envoy messages again");
+  });
+
   test("a registration accepted after an outage tells the session once that it receives again", async () => {
     const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
+    const outage = inboundUnavailable((why) => told.push(why), {
+      restored: () => told.push("restored"),
+    });
     let refuse = true;
     const register = () =>
       registerWithRelay({
@@ -1288,6 +1704,6 @@ describe("one registration", () => {
     refuse = false;
     await register();
     expect(told).toEqual(["no_grant", "restored", "no_grant", "restored"]);
-    expect(inboundRestoredNoticeText()).toContain("Envoy inbound restored");
+    expect(inboundRestoredNoticeText("no_grant")).toContain("Envoy inbound restored");
   });
 });

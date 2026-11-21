@@ -58,15 +58,20 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 
 // endIssuePod is SuspendIssue, and ReleaseIssue where keep is true: the issue's pod ended under
 // its launch turn, and then the issue's Sandbox deleted, or kept where keep is true and the
-// Sandbox owns a kept volume. Under the turn, authorize is asked first and false acts on nothing.
-// A Sandbox already gone is done. One labelled with another project, issue or tree is refused. The
-// Sandbox is set Suspended in the one write of its mode here (suspendOver), and its pod is waited
-// out. That write is setMode's JSON patch for a Sandbox that is not Suspended yet, and nothing for
-// one that is. A release reads the stored pod for that write and a close reads none, so a release
-// whose pod failed on the kept volume (volumeFault) sends one merge patch of the mode and the
-// reset mark in its place, or of the mark alone for a Sandbox already Suspended that does not
-// carry it. A release that keeps the Sandbox sends one merge patch more once it has deleted the
-// Secrets, which records that delete (annotate, secretsReleasedAnnotation) and changes no mode.
+// Sandbox owns a kept volume. Under the turn, the Sandbox is read first, and the steps after act
+// on that read. One labelled with another project, issue or tree is refused, and authorize is not
+// asked: the daemon's authorize of a release commits the release where it acts (store's
+// CommitIssueRelease), and a committed release is never cancelled. A refusal after that commit
+// would come on every attempt, and the release would never end. Then authorize is asked, and
+// false acts on nothing. A Sandbox already gone is done once authorize has answered, because the
+// caller acts on that answer as on any other. The Sandbox is set Suspended in the one write of its
+// mode here (suspendOver), and its pod is waited out. That write is setMode's JSON patch for a
+// Sandbox that is not Suspended yet, and nothing for one that is. A release reads the stored pod
+// for that write and a close reads none, so a release whose pod failed on the kept volume
+// (volumeFault) sends one merge patch of the mode and the reset mark in its place, or of the mark
+// alone for a Sandbox already Suspended that does not carry it. A release that keeps the Sandbox
+// sends one merge patch more once it has deleted the Secrets, which records that delete (annotate,
+// secretsReleasedAnnotation) and changes no mode.
 func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error), keep bool) error {
 	act := "suspend"
 	if keep {
@@ -81,13 +86,17 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 		return err
 	}
 	defer endTurn()
-	authorized, err := authorize(ctx)
-	if err != nil || !authorized {
-		return err
-	}
+	// The Sandbox is read and its labels checked before authorize: the daemon's authorize of a
+	// release commits the release where it acts (store's CommitIssueRelease), so a Sandbox that
+	// this call refuses commits nothing. The turn keeps every launch of the issue out, so the steps
+	// below act on this read.
 	object, err := r.sandboxClient().Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return nil
+		// A Sandbox already gone is done, and authorize is still asked: the caller acts on its
+		// answer as on the answer for a pod that this call takes. A close then ends the pause's
+		// hold on the pod, and a release is recorded.
+		_, err = authorize(ctx)
+		return err
 	}
 	if err != nil {
 		return fmt.Errorf("%s issue %s: read Sandbox: %w", act, issue, err)
@@ -98,6 +107,10 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	}
 	if s.Labels[labelProject] != r.project || s.Labels[labelIssue] != labelValue(issue) || s.Labels[labelTree] != labelValue(tree) {
 		return fmt.Errorf("%s issue %s: Sandbox %s does not belong to this issue and tree", act, issue, s.Name)
+	}
+	authorized, err := authorize(ctx)
+	if err != nil || !authorized {
+		return err
 	}
 	// The pod as it stands before the suspension takes it down: the issue's next launch reads no
 	// pod, so a release marks a kept volume that the pod shows failed for the launch to reset. A

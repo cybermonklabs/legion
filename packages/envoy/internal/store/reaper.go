@@ -271,7 +271,7 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 	for _, scanned := range claims {
 		role := scanned.Role
 		if roles := r.roles(); roles.RefusesRead(role) != nil {
-			_, _, err := bus.Bounded(ctx, func() (struct{}, error) { return struct{}{}, roles.Delete(role) })
+			_, _, err := bus.Bounded(ctx, roles.Conn(), func() (struct{}, error) { return struct{}{}, roles.Delete(role) })
 			if ended := ctx.Err(); err != nil && ended != nil {
 				return sweep, ended
 			}

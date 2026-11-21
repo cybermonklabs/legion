@@ -49,7 +49,8 @@ type connLife struct {
 	closed  bool
 }
 
-// connLives holds the life of every connection some window has pinned, until nats.go closes it.
+// connLives holds the life of every connection a window or a request follows (lifeOf), until
+// nats.go closes it.
 var connLives struct {
 	mu sync.Mutex
 	of map[*nats.Conn]*connLife
@@ -57,8 +58,10 @@ var connLives struct {
 
 // lifeOf returns conn's life, following it from now on when nothing follows it yet. Registering the
 // status listener can wait for nats.go's connection lock, so a caller that must not wait for that
-// lock makes it inside a bound (Bounded), as window.pinFirst does. connLives' lock is not held
-// across that registration.
+// lock makes it inside a bound (Bounded), as window.pinFirst does. A request the client builds
+// itself registers it on its caller's goroutine, right before its inbox's subscribe, which waits
+// for that lock too (requestConfirmedOn, RequestCore, StartRequestStoredTo). connLives' lock is not
+// held across that registration.
 func lifeOf(conn *nats.Conn) *connLife {
 	connLives.mu.Lock()
 	life := connLives.of[conn]
@@ -109,6 +112,18 @@ func (l *connLife) current() <-chan struct{} {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.life
+}
+
+// lifeCurrent reports whether life, a channel current returned, is still open: nats.go has
+// reported its connection neither reconnecting, disconnected nor closed since. It takes no lock
+// nats.go holds.
+func lifeCurrent(life <-chan struct{}) bool {
+	select {
+	case <-life:
+		return false
+	default:
+		return true
+	}
 }
 
 // drain takes each report on reports until quit closes, the connection closes or nats.go closes

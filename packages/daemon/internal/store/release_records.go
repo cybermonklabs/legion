@@ -29,10 +29,15 @@ type PodRelease struct {
 	// BundleBytes is the size of the bundle the release saved; zero when it saved none because
 	// the workspace held nothing unpushed.
 	BundleBytes int
+	// WakeTask is the workflow's rule for the task of a wake taken under the release's mark
+	// (workflow.ReleasedWakeTask), which RecordPodRelease uses and no read fills: it answers, from
+	// the kind of the wake's resume and the task its start carries, the task that start carries
+	// from now on. The store does not restate the wake's words. nil rewrites no task.
+	WakeTask func(kind, task string) string
 }
 
 // PodResume is one wake of a released pod and what it cost: which wake brought it back, when the
-// wake reached the daemon, when the pod was Ready, and when the woken role took its first turn.
+// daemon took the wake, when the pod was Ready, and when the woken role took its first turn.
 // Stuck is a resume with no first turn ten minutes after its wake, which also writes a warning to
 // the daemon's log.
 type PodResume struct {
@@ -46,7 +51,8 @@ type PodResume struct {
 	// Kind names the wake: a daemon delivery, a CI settlement, a role message, an agent message
 	// or the backstop.
 	Kind string
-	// At is when the wake reached the daemon or the Envoy listener.
+	// At is when the daemon took the wake, by the daemon's clock. A listener's report can wait
+	// for a release before it is taken, and At is the take, not the report's own time.
 	At time.Time
 	// ClockAt is when the resume's stuck clock started (pod_resumes.clock_at): the wake's own
 	// moment, moved later to the moment the wake pacing let its launch out and to the moment a
@@ -108,16 +114,104 @@ type PodReleaseRecords struct {
 // of releases is complete without reading any resume. It ends every hold streak of that pod: the
 // pod is gone, so whatever was keeping it is over, and a pod held again after it comes back is
 // a streak of its own.
+//
+// It also points at this release each wake taken while the release still stood: a resume of the
+// issue above the mark's wake_row, of a role in the mark's suspended set, with no first turn and
+// not closed. Such a wake came after a stop of this release recorded the role as `released`, so
+// it ends this release, but the take read the release before it, since this one had no row yet
+// (TakePodWake). Its release_id and seen_release become this release's id, and its time and its
+// stuck clock (clock_at) become this release's time when they were earlier, because the pod starts
+// to come back at the release's end. A resume dated before its release would count negative pod
+// hours, and a stuck clock started at the take would warn of a pod still being built. A
+// seen_release below this release would let the role's next wake close the resume as one whose pod
+// went away (ClosePodGoneResume), and take a second wake with a second start. A held wake, one a
+// project's pause holds (pod_resumes.pause_id), keeps release_id 0, as every held wake does
+// (pod_resumes_held_wake_pairs_with_no_release, decision 15 of dispatch://INFRA-3759): its
+// seen_release and its times move, and the release measurements leave its wait out. The teardown
+// records the release before it clears the mark (internal/daemon's releaseIssue), so the mark is
+// there to read in this transaction. With no mark, or no such resume, the update changes nothing.
+//
+// The same transaction retells the start of each such wake (PodRelease.WakeTask,
+// retellWakesUnderRelease). A wake of a role that a project's pause stopped, taken under the mark,
+// reads that pause as what stopped the role (StoppingPauseTx), because no release is recorded
+// after the pause's stop yet. So its start's task says that the pause kept the pod. This record
+// is the moment the release takes that pod, and the start's task becomes the task of the same
+// wake in the release's words. The retell changes only the start's task: a held wake keeps its
+// pause and release 0.
+//
+// The transaction locks the mark `for update` before it inserts the release's row. A take
+// (PodRecords.TakePodWake) locks the same mark `for share` before it reads the newest release, so
+// the take and this record run one after the other. When the take locks first, this lock waits
+// until the take commits. The update then reads the take's resume, and the retell reads the
+// start that the wake queued in the take's transaction. When this lock comes first, the take
+// waits until this transaction commits, and then reads this release. Without the lock, a take
+// still open when this transaction commits keeps the release before, and the update never reads
+// its resume.
+//
+// After the mark, and before it writes anything, the transaction locks the project's open pause
+// row `for share` (LockOpenPauseByTokenTx). A project's resume (Resume) locks that row `for
+// update`. It then writes the starts the pause holds (ResumeRequest.MarkHeld) and the project's
+// open resumes (SetProjectResumeClocksTx). This record writes a held wake's resume and then its
+// start, which is the other order. So the pause row makes the record and the resume run one after
+// the other. Without the lock, each could wait for a row the other wrote, and Postgres would abort
+// one of the two as a deadlock. An aborted record writes no release, and the held wake's start
+// keeps the pause's words. While the project runs there is no open pause, and this lock locks
+// nothing. The record holds no lock when it locks the mark, and only the mark when it locks the
+// pause row, so it cannot deadlock with a take, a cancel or a resume; PodRecords.TakePodWake
+// gives the whole lock order.
+//
+// The record is also the mark's one-way step: it writes the release's id on the mark
+// (issue_releases.released_id), in the transaction that inserts the row. The teardown records the
+// release once the runtime has answered it without an error, before the teardown's own later
+// steps (internal/daemon's releaseIssue), so a mark that names its release is a release whose pod
+// is gone. A teardown that runs again after one of those steps failed reads it: IssueRelease
+// answers ReleaseActs and the runtime is not asked again, and a cancel refuses the mark
+// (CancelIssueRelease). A step of the runtime that fails after the pod is gone comes before the
+// record; the mark's commit (CommitIssueRelease) keeps that release from being cancelled. Its
+// record answers the id the mark names and writes nothing, so the release has one row, and the
+// wakes it pointed at itself and retold stay as the first record left them. With no mark, as in a
+// record a test writes alone, there is nothing to stamp, and each call writes a row.
 func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, error) {
 	if rel.Project == "" || rel.Issue == "" {
 		return 0, errors.New("a pod release record needs its project and issue")
 	}
 	var id int64
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		id = 0
+		var recorded int64
+		err := tx.QueryRow(ctx, `select released_id from issue_releases where project = $1 and issue = $2 for update`,
+			rel.Project, rel.Issue).Scan(&recorded)
+		marked := err == nil
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("lock the release mark: %w", err)
+		}
+		if recorded != 0 {
+			id = recorded
+			return nil
+		}
+		if _, _, err := LockOpenPauseByTokenTx(ctx, tx, rel.Project); err != nil {
+			return err
+		}
 		if err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes)
 			values ($1, $2, $3, $4, $5, $6) returning id`,
 			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes).Scan(&id); err != nil {
 			return err
+		}
+		if _, err := tx.Exec(ctx, `update pod_resumes r set release_id = case when r.pause_id is null then $3::bigint else 0 end,
+			seen_release = $3, at = greatest(r.at, $4), clock_at = greatest(r.clock_at, $4)
+			from issue_releases m where m.project = $1 and m.issue = $2 and r.project = m.project and r.issue = m.issue
+			and r.id > m.wake_row and r.role = any(m.suspended) and r.first_turn_at is null and r.closed_at is null`,
+			rel.Project, rel.Issue, id, rel.At); err != nil {
+			return fmt.Errorf("point the wakes taken during the release at it: %w", err)
+		}
+		if err := retellWakesUnderRelease(ctx, tx, rel.Project, rel.Issue, rel.WakeTask); err != nil {
+			return err
+		}
+		if marked {
+			if _, err := tx.Exec(ctx, `update issue_releases set released_id = $3 where project = $1 and issue = $2`,
+				rel.Project, rel.Issue, id); err != nil {
+				return fmt.Errorf("write the release on its mark: %w", err)
+			}
 		}
 		return endPodHoldStreaks(ctx, tx, rel.Project, rel.Issue, "")
 	})
@@ -125,6 +219,29 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 		return 0, fmt.Errorf("record the release of %s: %w", rel.Issue, err)
 	}
 	return id, nil
+}
+
+// retellWakesUnderRelease rewrites the task of each start that a wake taken under the release's
+// mark queued, for the release's record (RecordPodRelease). The wakes are the ones the record
+// points at itself: a resume of a role of the mark's suspended set above the mark's wake_row,
+// with no first turn and not closed. Their starts are the starts of that role above the mark's
+// last_row that have a wake's own shape (wakeStartRow). A root architect's entry start and a
+// production check's look are no wake's start, and keep their task. retell answers the task a
+// start carries from now on, from the kind of the role's newest such resume and the task the
+// start carries now (PodRelease.WakeTask). A start of a role with no such resume is no such
+// wake's, and keeps its task. With no mark or a nil retell, it writes nothing.
+func retellWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, retell func(kind, task string) string) error {
+	if retell == nil {
+		return nil
+	}
+	return retellStarts(ctx, tx, issue, retell, `select outbox.id, coalesce(outbox.payload->>'task', ''), woken.kind
+		from issue_releases m join outbox on outbox.issue = m.issue and outbox.id > m.last_row and `+wakeStartRow+`
+			and outbox.payload->>'role' = any(m.suspended)
+		join lateral (select r.kind from pod_resumes r where r.project = m.project and r.issue = m.issue
+			and r.id > m.wake_row and r.role = outbox.payload->>'role' and r.first_turn_at is null and r.closed_at is null
+			order by r.id desc limit 1) woken on true
+		where m.project = $1 and m.issue = $2
+		order by outbox.id`, project, issue)
 }
 
 // MarkPodResumeReady stamps when the replacement pod was Ready. It is written once, by the first

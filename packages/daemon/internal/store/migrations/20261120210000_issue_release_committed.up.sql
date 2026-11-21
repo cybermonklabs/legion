@@ -1,0 +1,19 @@
+-- 20261120210000_issue_release_committed.up.sql — a release's mark records that its teardown was
+-- authorized to take the pod, so a release whose pod the runtime may have taken is never
+-- cancelled (dispatch://INFRA-3589).
+--
+-- committed is true once the runtime's own read of the release, under the pod's launch turn and
+-- just before the runtime takes the pod, answered that the release acts (the teardown's authorize,
+-- store.Store.CommitIssueRelease). It is written in the transaction of that read. The runtime's
+-- steps after it can fail once the pod is already gone: the wait for the pod, the delete of the
+-- Secrets, the record on the Sandbox, the delete of the Sandbox. The teardown row then runs again,
+-- and before this column its next read could cancel the release, which deleted the bundle of
+-- unpushed work and resumed roles in a pod that was gone. A committed mark makes that read act
+-- (store.Store.IssueRelease), and a cancel of it is refused (store.Store.CancelIssueRelease). The
+-- runtime is asked again, since each of its steps is done at most once, and the release is then
+-- recorded (20261120193000's released_id).
+--
+-- Every mark standing at this migration is uncommitted, and its teardown decides as the release
+-- before decided it. A rollback leaves the column in place, and the release before writes none
+-- of it.
+alter table issue_releases add column committed boolean not null default false;

@@ -5,6 +5,7 @@ import {
   type EnvoyClient,
   expandSubscriptionTopics,
   type Interest,
+  isBusUnanswered,
   newClientInstanceID,
   roleHeldBy,
   type SubscribeInput,
@@ -242,13 +243,15 @@ export interface TaskHandle {
   readonly readRoleHolder: (role: string) => Promise<string | undefined>;
   /** The listener's registered interests for a session; `undefined` when the read failed. */
   readonly readInterest: (sessionID: string) => Promise<Interest | undefined>;
-  /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned under
-   *  `warning`, the caller's own sentence for it, and swallowed, as a recovery's own unregister
-   *  was: the next pass reads the registry afresh. */
+  /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned in the
+   *  caller's own words and swallowed, as a recovery's own unregister was: the next pass reads
+   *  the registry afresh. The warning is `busUnanswered` when the listener's message bus did not
+   *  answer (`isBusUnanswered`), since the listener can have written the record before that, and
+   *  `failed` for any other failure. */
   readonly unregisterTopics: (
     sessionID: string,
     topics: readonly string[],
-    warning: string
+    warnings: { readonly failed: string; readonly busUnanswered: string }
   ) => Promise<void>;
 
   // — NATS —
@@ -318,6 +321,14 @@ export interface RegistrationState {
    *  successor instance's registration under the same id is left alone; within `timeoutMs`,
    *  where the caller has only that long (a shutdown's budget). */
   readonly deregister: (sessionID: string, timeoutMs?: number) => Promise<void>;
+  /**
+   * Hands back at the listener every role hold this process still has there, for a session that
+   * is stopping: the role it holds, under the session id the listener names for it, and each hold
+   * it gave up and has not handed back yet (`HandBackLedger.handBackAll`). Each release carries
+   * this instance's client instance id, so the listener frees only the claims this process made.
+   * It runs outside the queues and changes no state: nothing runs after a stop.
+   */
+  readonly handBackAllHolds: () => Promise<void>;
   /** Forgets the role the listener refused to this session, so a pass may claim it again. */
   readonly clearRefusal: (sessionID: string) => void;
   /**
@@ -840,13 +851,17 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
           .getInterest(sessionID)
           .catch(() => undefined);
       },
-      unregisterTopics: async (sessionID, topics, warning) => {
+      unregisterTopics: async (sessionID, topics, warnings) => {
         guard();
         await deps
           .client()
           .unsubscribe({ sessionID, topics: [...topics] })
           .catch((error: unknown) =>
-            deps.log.warn(warning, { sessionID, topics, error: messageFor(error) })
+            deps.log.warn(isBusUnanswered(error) ? warnings.busUnanswered : warnings.failed, {
+              sessionID,
+              topics,
+              error: messageFor(error),
+            })
           );
       },
       connect,
@@ -933,6 +948,12 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
       });
     },
+    handBackAllHolds: () =>
+      holds.handBackAll(
+        claimedRoleTopic === undefined || !claimedRoleSessionID
+          ? undefined
+          : { topic: claimedRoleTopic, id: claimedRoleSessionID }
+      ),
     clearRefusal: (sessionID) => {
       refusedRoles.delete(sessionID);
     },

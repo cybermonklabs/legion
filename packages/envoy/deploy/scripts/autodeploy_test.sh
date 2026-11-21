@@ -35,6 +35,8 @@ psql_run="^psql .*$url_without_password\$"
 schema_try='psql-sql select pg_try_advisory_lock(8150001)'
 schema_read='psql-sql select version from schema_migrations order by version'
 fresh_env() {
+  # The case before this one ends here, so its client runs are checked before the log is emptied.
+  clients_bounded
   cat >"$compose/.env" <<EOF
 ENVOY_IMAGE_TAG=old-image
 DATABASE_URL=${1:-postgres://dispatch:s%40cret-canary@db.test:5432/dispatch?sslmode=require}
@@ -197,8 +199,9 @@ EOF
 # duration, 0 (pg_client's unbounded) included, the command runs as it would have, so every case
 # runs as it did before this stand-in existed. Only a container run is recorded, because the
 # deployer also bounds its compose and manifest runs this way, and a case that reaches no client
-# reads an empty argument log as proof that nothing ran. With AUTODEPLOY_TEST_CONFIG_TIMEOUT=1 a
-# `docker compose ... config` run ends as a timeout ends it, status 124, without running.
+# reads an empty argument log as proof that nothing ran. clients_bounded reads these bounds back
+# after every case. With AUTODEPLOY_TEST_CONFIG_TIMEOUT=1 a `docker compose ... config` run ends
+# as a timeout ends it, status 124, without running.
 cat >"$bin/timeout" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$2 $3" == "docker run" ]]; then
@@ -428,6 +431,23 @@ no_secret() {
     grep -q -e 'cret-canary' -e 'review-secret' "$argv"; then
     fail "$1: a password or psql's stderr reached the output or a process's arguments"
   fi
+}
+# Every database client container runs under pg_client's timeout, so each one records its bound.
+# Each try of the schema read (a psql run) gets at least one second: pg_client reads 0 as
+# unbounded. The pre-deploy backup (pg_dump) asks pg_client for no bound (0), and this check
+# leaves it out. fresh_env runs this check before it empties the argument log, and the suite runs
+# it once more at its end. So it reads every client run of every case.
+clients_bounded() {
+  local bound
+  [[ -e "$argv" ]] || return 0
+  if [[ $(grep -c '^timeout [^ ]* docker run ' "$argv") -ne $(grep -c '^docker run ' "$argv") ]]; then
+    fail 'deployer ran a database client container with no bound recorded'
+  fi
+  while IFS= read -r bound; do
+    if ! [[ "$bound" =~ ^[0-9]+$ ]] || ((bound < 1)); then
+      fail "deployer gave a try of the schema read a bound of $bound seconds: pg_client reads 0 as unbounded"
+    fi
+  done < <(grep '^timeout [^ ]* docker run .* sh -c psql ' "$argv" | awk '{print $2}')
 }
 # The value the deployer records for the version set in $schema: <max>-<count>-<sha256 of the
 # versions, ascending, one per line>.
@@ -725,6 +745,45 @@ if ((first < 1 || first > 60)); then
   fail "the first try for the migration key was given $first seconds, not the minute the default deadline leaves it"
 fi
 
+# A try reads the clock once, and its deadline test and its bound both use that one reading. A
+# clock can reach the deadline between two reads. A try that read it twice would then pass the
+# test and get a bound of 0, which pg_client reads as unbounded. Here the deployer's clock moves
+# one second each time one of its commands reads SECONDS. Bash runs the file in BASH_ENV before
+# the deployer's script. That file unsets SECONDS, so SECONDS is a plain variable, and its DEBUG
+# trap sets SECONDS before each command that reads it. Under a four-second deadline the three
+# tries read seconds 1, 2 and 3, and get 3, 2 and 1 seconds. Second 4 ends the poll. A try that
+# read the clock twice would pass the test at second 3 and then read second 4 for its bound.
+cat >"$root/clock.sh" <<'EOF'
+unset BASH_ENV SECONDS
+autodeploy_test_clock=0
+set -o functrace
+trap '[[ "$BASH_COMMAND" != *SECONDS* ]] || SECONDS=$((autodeploy_test_clock++))' DEBUG
+EOF
+fresh_env
+printf 'always\n' >"$schema.key"
+if output=$(SCHEMA_READ_DEADLINE=4 BASH_ENV="$root/clock.sh" deploy_once); then
+  fail 'deployer deployed behind a key no session released under a four-second deadline'
+fi
+no_secret 'the clock that moves at each read'
+bounds=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk '{print $2}' || true)
+if [[ -z "$bounds" ]]; then
+  fail 'no container run of the schema read recorded the bound it was given'
+fi
+while IFS= read -r bound; do
+  if ((bound < 1)); then
+    fail "a try for the migration key was given $bound seconds: the clock reached the deadline between the deadline test and the bound, and pg_client reads 0 as unbounded"
+  fi
+done <<<"$bounds"
+if [[ "${bounds//$'\n'/ }" != '3 2 1' ]] || [[ $(grep -cF "$schema_try" "$argv") -ne 3 ]]; then
+  fail "the tries for the migration key were given ${bounds//$'\n'/ } seconds, not 3 2 1: each try gets what the deadline leaves at its own clock reading, and second 4 ends the poll"
+fi
+if grep -qF "$schema_read" "$argv"; then
+  fail 'deployer read the applied set while another session held the migration key'
+fi
+if [[ "$output" != *"could not read the schema version (status 1); not deploying new-image"* ]] || [[ -s "$log" ]]; then
+  fail 'deployer did not give up on the schema read (status 1) and stop once the moving clock reached the deadline'
+fi
+
 # Both URL loops below run under en_US.UTF-8, where bash's [[ =~ ]] ranges such as [a-z] and
 # [0-9] also match non-ASCII characters, so a grammar that left the locale in force would accept
 # what it should refuse. The control needs that locale installed and widening the ranges.
@@ -834,4 +893,5 @@ fi
 if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
   fail 'deployer persisted the failed image tag after a pull failure'
 fi
+clients_bounded
 printf '%s\n' 'autodeploy --once rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, migration-key polling, credential and pull-retry cases: PASS'

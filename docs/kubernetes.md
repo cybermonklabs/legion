@@ -3204,6 +3204,7 @@ The migrations recorded above this one are these.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
+20261120193000_issue_release_taken_pod and 20261120210000_issue_release_committed, of dispatch://INFRA-3589, add `issue_releases.released_id` at its default, 0, and `issue_releases.committed` at its default, false, and touch none of the six, so the block holds over them and leaves both columns standing, which the earlier release names in no statement; neither has a way back, and the earlier release writes neither column.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -6948,7 +6949,7 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   A person's targeted Dispatch message to the session is recorded `queued`, and its card says so.
   The listener stores it for a session its known-session store holds.
   For a session that neither the listener's registry nor that store holds, Dispatch publishes the message on the session's agent subject itself.
-  A copy on the session's agent subject (a person's answer, comment or message that a Dispatch claim routes there, or the targeted message Dispatch published there) stays in the stream: the listener gives up its delivery after its retry window (`ENVOY_UNPLACEABLE_RETRY_WINDOW`, 60 seconds) with the wake, and the woken session reads the copy;
+  A copy on the session's agent subject (a person's answer, comment or message that a Dispatch claim routes there, or the targeted message Dispatch published there) stays in the stream: the listener finds no record of the session, waits once for its agent wait (`ENVOY_UNPLACEABLE_RETRY_WINDOW`, 60 seconds), and then reports the wake, and the woken session reads the copy;
 
 - the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the six role Secrets it owns are deleted (`ReleaseIssue`, `internal/runtime/sandbox/issue_suspend.go`), as an issue's stop deletes them ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
   A Sandbox that owns a kept volume is the exception: it stays, `Suspended` and with the same uid, and the release deletes the seven Secrets it owns, the provisioning Secret and the six role Secrets ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
@@ -6967,11 +6968,11 @@ The wakes are these:
 - a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own reads of a pull request run at the moments [Running Legion](https://cybermonklabs.github.io/legion/legion/running-legion/) names).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
 
-- a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.
-  Envoy keeps it for one hour, until the `kept_until` its publish answers with, and it reaches the woken role if the role is back inside that hour.
-  If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
-  While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
-  One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running.
+- a message published to the role topic of a role of the pod, which the Envoy listener reports to the daemon, one sent with `keep: false` included.
+  A message that Envoy kept for the role reaches the woken role, for one hour after Envoy kept it: until the `kept_until` its publish answers with.
+  If the role is not back inside that hour, Envoy drops the message, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
+  While a kept message has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
+  A message that Envoy did not keep, such as one sent with `keep: false`, does not reach the woken role, and its sender must send it again.
   The daemon sets `keep: false` on each of its publishes but one, a hook prompt, which it publishes with `keep: true`.
   Its informational role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role, except one that a project's pause held for a role that a pause stopped, which it publishes after the resume and sends again until the role's session holds its topic ([Pausing a project](#pausing-a-project)).
   Its other messages to a role (a notice, a hook prompt, a merge-queue removal message, a merge-forward message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
@@ -6980,11 +6981,14 @@ The wakes are these:
   A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps it for that session; a merge-queue removal message and a merge-forward message wait instead until the woken session holds the role.
   A listener before #4079 keeps nothing for a claim whose holder is not live and answers a hook prompt `404`: its outbox row ends with it undelivered when that holder is `gone`, and retries while it is `unresponsive`;
 
-- a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
+- a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session.
+  A message that Envoy or Dispatch stored reaches the woken session from its own consumer, for 72 hours after it was stored.
+  A message that neither stored, such as a direct send that Envoy refused, does not reach it, and its sender must send it again;
 
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
+  A worker also gets no backstop when a wake of it came while the release ran, since that wake already brings the worker back in the new pod.
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
@@ -7001,9 +7005,32 @@ Two other boot steps can start a released claim.
 Admission's pass at a boot does what each of its passes does: when a released claim stands behind the entry that its phases row names, the pass sends that entry's task to the claim (`owedEntryRoles`, `internal/admit/admit.go`).
 The first boot of this release also queues, once, a start for each merger that the cutover from `awaiting_merge`, the phase of the builds before `legion-v20.5.0`, left stopped (`cutoverMergerRepair`, `internal/workflow/cutover_merger_repair.go`).
 That merger starts when its tree's design gate allows it, as at any start of the `merging` phase, which holds no admission slot.
-A wake that arrives while the release runs cancels it, up to the moment the first role process of the pod is stopped, and the roles go on in the same pod; after that moment the wake waits for the release to finish and then resumes the pod.
+A wake that arrives while the release runs cancels it, up to the moment the first role process of the pod is stopped, and the roles go on in the same pod.
+After that moment, the release's record of a role's claim as `released` is its point of no return for that role: a wake of that role no longer cancels the release.
+The release's teardown runs to its end, and the wake's start waits for it, because no start of a role of the issue runs while the issue's teardown row is in the outbox.
+The role then starts once, in the new pod.
+Its task says that its pod was released and that this wake brought it back, and the wake's resume is recorded against that release.
+A wake that a project's pause holds is recorded against no release, as every held wake is: the teardown's record moves only the release that wake saw and its times ([Pausing a project](#pausing-a-project)).
+A notice, hook prompt, merge-queue removal message or merge-forward message for a `released` role of the issue takes no wake while the release runs, whether or not the release stopped that role.
+It waits in its outbox row, reads the role again every 30 seconds, and wakes the role in the new pod once the teardown has finished.
+Such a message resumes the role inside the daemon, not through a start row, so nothing else keeps that resume out of the pod the teardown deletes.
+A wake of a role that the release did not stop still cancels the release, for example a role message to an architect that an earlier release left `released`.
+So do a phase start of any role of the pod and a claim of the pod that starts or holds a process again.
+A release can still be cancelled after such a wake, for another cause: a bundle above 40 MiB or a save that fails, a role stop that meets another role's start, or an issue that leaves the workflow.
+The pod then never goes away, so the cancel deletes the wake's resume and its queued start, and the role starts once, in the same pod.
+For a CI settlement or the backstop, that one start carries the wake's text under a preamble that says the release did not finish, because the role learns of either only from that text.
+For a message wake, the start carries no task, since the message itself reaches the session.
+While the project is paused, the cancel keeps that wake and its start instead: they are the launch that the pause owes the role, and the pause's resume runs that start.
 A cancel is one act: in one transaction the daemon queues the resume of each claim that release had suspended — the roles its own mark recorded, never a claim an earlier release left `released` — and deletes the mark.
+A wake report of the Envoy listener, for a role message or a session message, that names a live claim of a pod whose release has not ended does not cancel the release, whether or not its role processes are stopped yet: that claim is not `released` yet, so the report has nothing to wake.
+The daemon applies such a report again every 30 seconds until the release ends, for at most 15 minutes after the report's own time.
+Once the release records the claim `released`, the report wakes the role.
+A report still waiting 15 minutes after its time is dropped with one warning, `wake: a wake that came during a release was dropped: the release did not end within 15 minutes of the report`.
+This wait and the wait of the daemon's own messages through a parked resume (the role topic bullet above) hold different things.
+A listener's report waits in the daemon's intake for a release that has not ended, and a message of the daemon's waits in its outbox row for a resume that the wake pacing holds, so no wake waits in both.
 Each woken role is given one task or message that names the wake, so an agent reads why its pod came back.
+A listener's wake report that finds the role's start already queued by a cancelled release adds no task and no second start, since the pod never went away:
+the daemon logs `wake: the role is coming back on a start already queued; this wake takes nothing`.
 From the wake to the woken role's first turn is 5 minutes or less for 90% of wakes and 10 minutes or less for each one; a resume with no first turn 10 minutes after its wake writes a warning naming the issue, the role and the step it waits on.
 The 10 minutes of that warning run from the resume's stuck clock (`pod_resumes.clock_at`), which starts at the wake and moves to the moment the wake pacing lets the role's launch out, so a launch that waits its turn in a long pacing queue is not warned about for that wait.
 
@@ -7023,7 +7050,7 @@ It never reaches GitHub.
 sjawhar/legion is public and a working copy holds every file that is not ignored, so a save to a branch would publish files no agent chose to push and could start CI; the daemon's database is private and starts nothing.
 A bundle above 40 MiB, or a save that fails, stops the release, and the daemon records that reason.
 Only the pod's own launcher receives the bundle, over the launcher's authenticated connection, in `launcher_bundle` frames each under the 1 MiB frame limit (`shimwire.MaxFrameBytes`), and the launcher restores it in the roles container before any role starts, never in the token-holding `workspace-fetch` container.
-The daemon deletes the bundle once the launcher confirms the restore, and deletes it too, in the cancel's own transaction, when a wake cancels the release.
+The daemon deletes the bundle once the launcher confirms the restore, and deletes it too, in the cancel's own transaction, when the release is cancelled.
 A bundle is offered to one pod and one only: the first pod of the issue that is not the pod the work came off to ask for it, which in an ordinary release is the pod the teardown's next launch made.
 That pod is sent the bundle when it was created after the save, and refused when it was not — a pod the release did not replace, or the replacement itself on a node whose clock runs ahead of the API server's — and either way no later pod is sent it, because the roles of the pod that asked go on working and pushing from the workspace their own fetch provisioned.
 A pod of a kept Sandbox that was made before the save is sent no bundle, and the daemon drops the bundle, because the volume holds that work, so no `bundle_unrestored` hold keeps that pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).

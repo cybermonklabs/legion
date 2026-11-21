@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A send answered `no_receiver` is read as itself: the confirmation says the session runs but
+  takes no message into its conversation now, and that the stored message reaches it if it takes
+  messages within 72 hours; it does not say live, and such a result carries no
+  `recipientState`.
+time: 2026-11-16T18:39:59Z
+custom:
+    Issue: pr4194

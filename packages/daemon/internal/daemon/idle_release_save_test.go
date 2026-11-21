@@ -32,12 +32,12 @@ func (s *releaseSaveFaults) IssueReleaseSave(ctx context.Context, project, issue
 }
 
 func (s *releaseSaveFaults) CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow,
-	outOfWorkflow func(status string) bool, paused store.ReleaseCancelPause) (store.ReleaseCancelled, error) {
+	outOfWorkflow func(status string) bool, paused store.ReleaseCancelPause, woken ...store.ReleaseWokenRow) (store.ReleaseCancelled, error) {
 	s.cancelTried = true
 	if s.cancelErr != nil {
 		return store.ReleaseCancelled{}, s.cancelErr
 	}
-	return s.outboxTrees.CancelIssueRelease(ctx, project, issue, resume, outOfWorkflow, paused)
+	return s.outboxTrees.CancelIssueRelease(ctx, project, issue, resume, outOfWorkflow, paused, woken...)
 }
 
 // pendingSave is the release's workspace save as the drain left it after one failed attempt:

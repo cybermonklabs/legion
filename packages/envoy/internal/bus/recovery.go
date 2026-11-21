@@ -543,10 +543,11 @@ func (c *Client) recoverUntilHealthy() {
 	}
 }
 
+// subscriptionsHealthy reports whether the client holds a connection nats.go has not closed
+// (connOpen, which holds no lock of the client's across its status read) and every registered
+// subscription is bound to a valid handle.
 func (c *Client) subscriptionsHealthy() bool {
-	c.mu.Lock()
-	connOK := c.Conn != nil && c.Conn.Status() != nats.CLOSED
-	c.mu.Unlock()
+	connOK := c.connOpen()
 	c.subscriptionsMu.Lock()
 	defer c.subscriptionsMu.Unlock()
 	for _, subscription := range c.subscriptions {

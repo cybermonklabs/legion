@@ -108,6 +108,11 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // pause's suspension ends in, with the pause's records, in one store transaction, whose context
 // carries the machine's claim-write deadline. In order:
 //
+//   - the issue's release mark for share (store.PodRecords.LockReleaseMark), before any other
+//     lock: the owed launch below is a take, and a take locks the mark before the issue's lock,
+//     the pause's row and every write of a resume (store.PodRecords.TakePodWake gives the order),
+//     so a release's record or cancel of the same pod runs wholly before this transaction or
+//     wholly after it;
 //   - the issue's lock (store.LockIssueForPause), so two stops of one pod's roles, the resume's
 //     end of the pod's hold and a role's ready run one after another; then the row of the
 //     suspension's pause for share (store.LockPauseTx), open or ended, so a resume of it waits;
@@ -210,6 +215,9 @@ type pauseStopMade struct {
 // stopTx is stopped's transaction.
 func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, stop supervise.PauseStop, at time.Time) (pauseStopMade, error) {
 	var made pauseStopMade
+	if err := p.pods.LockReleaseMark(ctx, tx, c.Issue); err != nil {
+		return made, err
+	}
 	if err := store.LockIssueForPause(ctx, tx, c.Issue); err != nil {
 		return made, err
 	}

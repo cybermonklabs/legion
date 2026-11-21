@@ -73,7 +73,7 @@ func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBu
 		}
 	}
 	kv, epoch := r.watcher.Handle()
-	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	entry, answered, err := bus.Bounded(ctx, kv.Conn(), func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {
 		return Interest{}, 0, fmt.Errorf("read %s's interest record: %w", sessionID, err)
 	}

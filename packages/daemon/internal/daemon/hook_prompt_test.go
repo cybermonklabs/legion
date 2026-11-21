@@ -103,8 +103,8 @@ func TestAHookPromptNoSessionHoldsEndsTheRow(t *testing.T) {
 func TestAHookPromptForAReleasedPodWakesItAndWaits(t *testing.T) {
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
-	runner, sup, pool := hookRunner(t, publisher)
-	implementer := releasedClaim(t, sup, claim.RoleImplementer)
+	runner, _, pool := hookRunner(t, publisher)
+	implementer := recordedReleasedClaim(t, runner, claim.RoleImplementer)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
 
 	if err := runner.RunOnce(ctx); err != nil {
@@ -323,6 +323,25 @@ func releasedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Ma
 	return machine
 }
 
+// recordedReleasedClaim is releasedClaim with the claim's row in the rig's database too, suspended
+// with the source `released`, as the store's own tests put it (store.Store.PutClaim). A daemon's
+// supervisor writes the row of every claim it holds (supervisor.Create, store.Store.AdmitClaim),
+// and a delivery wake takes nothing for a claim the record holds no row of
+// (store.Store.TakeDeliveryWake). The rig's supervisor writes its claims to a store of its own
+// (outboxClaimStore), so the row is put here, in the store the runner reads.
+func recordedReleasedClaim(t *testing.T, runner *outbox, role claim.Role) *supervise.Machine {
+	t.Helper()
+	machine := releasedClaim(t, runner.supervisor, role)
+	st, ok := runner.trees.(*store.Store)
+	if !ok {
+		t.Fatalf("the runner's trees are a %T, want the store the delivery wake reads the claim's row from", runner.trees)
+	}
+	if err := st.PutClaim(context.Background(), machine.Claim()); err != nil {
+		t.Fatalf("record the released %s's claim: %v", role, err)
+	}
+	return machine
+}
+
 // keptAcrossTheWake drives one role-message row for role's released claim on LEGION-208 through
 // the two attempts a released role meets, against a listener that answers a keep: false publish
 // to the role's topic notify.ErrNoHolder and keeps a kept publish for the role's next holder
@@ -334,10 +353,10 @@ func keptAcrossTheWake(t *testing.T, payload record.OutboxPayload, role claim.Ro
 	t.Helper()
 	ctx := context.Background()
 	publisher := &holderPublisher{keeps: true}
-	runner, sup, pool := hookRunner(t, publisher)
+	runner, _, pool := hookRunner(t, publisher)
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))
 	publisher.setAbsent(topic)
-	machine := releasedClaim(t, sup, role)
+	machine := recordedReleasedClaim(t, runner, role)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute)))
 	id := noticeRowID(t, pool)
 
@@ -407,7 +426,7 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))
 	publisher.setAbsent(topic)
-	machine := releasedClaim(t, sup, role)
+	machine := recordedReleasedClaim(t, runner, role)
 	row := mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute))
 	enqueueOutbox(t, pool, runner.records, row)
 	row.ID = noticeRowID(t, pool)

@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test"
+import { expect, setSystemTime, spyOn, test } from "bun:test"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
-import { legacyAgentSubject } from "@legion/contracts"
+import { BUS_UNANSWERED_PREFIX, legacyAgentSubject } from "@legion/contracts"
+import { deliverSubject, INBOUND_FIRST_OPEN_BOUND_MS } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import {
   type DeliveryRequest,
@@ -18,6 +19,7 @@ import { createInboxNotifier, INBOX_CAPABILITIES } from "../src/legion-inbox"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
   FakeNats,
+  FakeNotifier,
   noInterest,
   recordingClient,
   sessionOptions,
@@ -265,7 +267,7 @@ for (const refusal of [
   { status: 503, reason: "no_grant" },
   { status: 409, reason: "not_requested" },
 ] as const) {
-  test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with one notice naming it, and the next heartbeat asks again`, async () => {
+  test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with one notice naming it, the next heartbeat asks again, and the accepted registration is told once`, async () => {
     const directory = scratchState()
     const nats = new FakeNats()
     const notifier = heldNotifier()
@@ -305,10 +307,17 @@ for (const refusal of [
       await waitFor(async () => registrations.length >= asked + 2, "two more registrations")
       expect(notices()).toHaveLength(1)
 
-      // Accepted at last: what the stream kept for the session arrives on its relay.
+      // Accepted at last: the session is told once that it receives again, and what the stream
+      // kept for the session arrives on its relay.
       refusing = false
       const accepted = registrations.length
       await waitFor(async () => registrations.length > accepted, "the accepted registration")
+      // Every write is let through as it comes: the notice, then the one behind it.
+      await waitFor(async () => {
+        for (const write of notifier.pending) write.resolve()
+        return notices().length === 2
+      }, "the notice that the session receives again")
+      expect(notices()[1]?.content).toContain("Envoy inbound restored")
       const message = peerMessage("after-refusal")
       nats.emitRelay(SESSION, {
         subject: DIRECT,
@@ -316,11 +325,14 @@ for (const refusal of [
         raw: message.raw,
         reply: "_INBOX.after-refusal",
       })
-      // Every write is let through as it comes: the notice, then the frame behind it.
       await waitFor(async () => {
         for (const write of notifier.pending) write.resolve()
         return notifier.written.some((written) => written.eventId === message.id)
       }, "the frame after the refusal")
+      // The heartbeats after the accepted one tell nothing more.
+      const after = registrations.length
+      await waitFor(async () => registrations.length >= after + 2, "two more registrations")
+      expect(notices()).toHaveLength(2)
 
       // The accepted registration ends the outage, and the session is told so once.
       const restored = () =>
@@ -350,6 +362,171 @@ for (const refusal of [
     }
   })
 }
+
+// Row (e) of check l23 (R24 of dispatch://INFRA-3589), for this server: the listener answers its
+// bus-outage 503 to a registration it may not have recorded, and the session's consumer may still
+// deliver. Such refusals are held for the bound. Past it, stderr says that the registration is
+// not recorded for certain, and the accepted registration after it says that the listener
+// recorded one. No line says that the session receives nothing or receives again.
+test("(e) past the bound a bus-outage 503 is written to stderr as a registration not recorded for certain, and the accepted registration after it as one the listener recorded", async () => {
+  const unrecorded = `${BUS_UNANSWERED_PREFIX}: write the known-session record of ${SESSION}: context deadline exceeded`
+  const directory = scratchState()
+  const nats = new FakeNats()
+  const notifier = heldNotifier()
+  let refusing = true
+  const { client, registrations } = listener(() => {
+    if (!refusing) return { ...noInterest(), delivery: CONSUMER }
+    throw new EnvoyApiError({
+      method: "POST",
+      url: "http://127.0.0.1:4000/v1/interests/subscribe",
+      status: 503,
+      responseBody: JSON.stringify({ error: unrecorded }),
+    })
+  })
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: nats,
+      notifier: notifier.notifier,
+      client,
+      heartbeatMs: 10,
+    }),
+  )
+  // A notice this server writes for itself is the one write that names no Envoy event.
+  const notices = () => notifier.written.filter((write) => write.eventId === undefined)
+  try {
+    // Inside the bound every refusal is held: nothing is said.
+    const asked = registrations.length
+    await waitFor(async () => registrations.length >= asked + 2, "two more registrations")
+    expect(notices()).toEqual([])
+
+    setSystemTime(new Date(Date.now() + INBOUND_FIRST_OPEN_BOUND_MS + 1_000))
+    await waitFor(async () => notices().length === 1, "the notice")
+    expect(notices()[0]?.content).toMatch(/not record/i)
+    expect(written).toContain(
+      `envoy-channel: this session's registration is not recorded for certain (${unrecorded}), and the session registers again at every heartbeat\n`,
+    )
+
+    refusing = false
+    await waitFor(async () => {
+      for (const write of notifier.pending) write.resolve()
+      return notices().length === 2
+    }, "the notice that the listener recorded a registration")
+    expect(notices()[1]?.content).toContain("Envoy inbound restored")
+    expect(notices()[1]?.content).toContain("The listener recorded a registration of this session")
+    expect(notices()[1]?.content).not.toMatch(/receive[sd]? nothing/)
+    expect(written).toContain(
+      "envoy-channel: the listener recorded a registration of this session\n",
+    )
+    expect(written.filter((line) => /receives (nothing|again)/.test(line))).toEqual([])
+  } finally {
+    setSystemTime()
+    for (const write of notifier.pending) write.resolve()
+    await session.shutdown()
+    stderr.mockRestore()
+  }
+})
+
+// R24 of dispatch://INFRA-3589, for this server: a session whose first relay open fails at its
+// start holds no relay subject, and it receives once a later try opens the relay. That start race
+// is held for the bound (`INBOUND_FIRST_OPEN_BOUND_MS`): inside it the session is told nothing.
+// Past the bound it is told once that it receives nothing, naming why, and the accepted
+// registration on the connection that opens the relay tells it once that it receives again.
+test("a first relay open that fails at the start is told only past the bound, and the registration that opens the relay tells the session it receives again", async () => {
+  const directory = scratchState()
+  const first = new FakeNats()
+  const second = new FakeNats()
+  const notifier = new FakeNotifier()
+  // The hub closes the start's connection for good before the start's flush reaches it, so the
+  // relay subject cannot be opened until a new connection is dialed.
+  await first.closeForGood(
+    Object.assign(new Error("'Authorization Violation'"), {
+      name: "NatsError",
+      code: "AUTHORIZATION_VIOLATION",
+    }),
+  )
+  const reopened = Promise.withResolvers<void>()
+  const { client, registrations } = listener(() => ({ ...noInterest(), delivery: CONSUMER }))
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  // Each registration reads the title first, so this counts the registrations the session tried,
+  // those refused before they reached the listener included.
+  let tried = 0
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: first,
+      notifier,
+      client,
+      heartbeatMs: 10,
+      title: () => {
+        tried += 1
+        return ""
+      },
+      reopen: async () => {
+        await reopened.promise
+        return { connection: second, followSession: async () => undefined }
+      },
+    }),
+  )
+  /** The notices this server wrote for itself under `heading`: the one write that names no event. */
+  const notices = (heading: string) =>
+    notifier.notifications
+      .filter((written) => written.eventId === undefined && written.content.includes(heading))
+      .map((written) => written.content)
+  try {
+    // Inside the bound every registration is refused before it reaches the listener, for want of
+    // a relay subject, and nothing is said.
+    await waitFor(async () => tried >= 5, "five registrations with no relay subject")
+    expect(written).toContainEqual(
+      expect.stringContaining(
+        "envoy-channel: registry heartbeat failed (this session holds no relay subject",
+      ),
+    )
+    expect(registrations).toEqual([])
+    expect(notifier.notifications.filter((written) => written.eventId === undefined)).toEqual([])
+
+    setSystemTime(new Date(Date.now() + INBOUND_FIRST_OPEN_BOUND_MS + 1_000))
+    await waitFor(
+      async () => notices("Envoy inbound unavailable").length === 1,
+      "the outage notice past the bound",
+    )
+    expect(notices("Envoy inbound unavailable")[0]).toContain(
+      "because its relay subject could not be opened: Authorization Violation",
+    )
+    expect(
+      written.filter((line) => line.startsWith("envoy-channel: this session receives nothing (")),
+    ).toHaveLength(1)
+
+    // A new connection opens the relay, and its registration is accepted: the session is told
+    // once that it receives again.
+    reopened.resolve()
+    await waitFor(
+      async () => notices("Envoy inbound restored").length === 1,
+      "the notice that the session receives again",
+    )
+    expect(notices("Envoy inbound restored")[0]).toContain(
+      "so the session receives Envoy messages again",
+    )
+    expect(second.liveSubscriptions(deliverSubject(SESSION))).toBe(1)
+    expect(delivery(registrations.at(-1))).toMatchObject({ consumer: true })
+    expect(written).toContain(
+      "envoy-channel: this session receives again: a registration was accepted\n",
+    )
+    expect(notices("Envoy inbound unavailable")).toHaveLength(1)
+  } finally {
+    setSystemTime()
+    reopened.resolve()
+    await session.shutdown()
+    stderr.mockRestore()
+  }
+})
 
 /** Dispatch's BTW to this session: a side question, which this session never advertises. */
 function btwFrame(label: string): { readonly raw: string; readonly id: string } {
@@ -576,6 +753,124 @@ test("a gap the registration reports is told once, through the notice path", asy
     expect(notices).toHaveLength(1)
     expect(notices[0]?.content).toContain("72 hours")
   } finally {
+    for (const write of notifier.pending) write.resolve()
+    await session.shutdown()
+  }
+})
+
+// R24 (INFRA-3589): a session is told it receives nothing only when that is so. A session that
+// closes its own relay on purpose - its shutdown closes the relay before the registration chain
+// is drained - has lost nothing, and a heartbeat that was waiting on that chain and runs after
+// the close is no outage. The tester found the race as the probe test above failing 15 of 20
+// runs on a loaded pod; this test holds it open on purpose.
+test("a heartbeat that runs after the session's shutdown closed its relay tells the session nothing", async () => {
+  const directory = scratchState()
+  const nats = new FakeNats()
+  const notifier = heldNotifier()
+  let hold: PromiseWithResolvers<void> | undefined
+  const registrations: SubscribeInput[] = []
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      registrations.push(input)
+      const gate = hold
+      if (gate !== undefined) await gate.promise
+      return noInterest(input.sessionID)
+    },
+  })
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: nats,
+      notifier: notifier.notifier,
+      client,
+      heartbeatMs: 10,
+    }),
+  )
+  // A notice this server writes for itself is the one write that names no Envoy event.
+  const notices = () => notifier.written.filter((written) => written.eventId === undefined)
+  try {
+    // The session is registered and receiving: a later relay-less registration is no start race.
+    await waitFor(async () => registrations.length >= 2, "two accepted registrations")
+    expect(notices()).toEqual([])
+
+    // A follow's registration is held on the wire, so the next heartbeat waits behind it on
+    // the registration chain.
+    hold = Promise.withResolvers<void>()
+    const asked = registrations.length
+    const following = session.follow(["notifications.team.r24-shutdown"])
+    await waitFor(async () => registrations.length > asked, "the held registration")
+    // The heartbeat's own interval timer is what puts its write on the chain, and nothing
+    // marks a write queued there, so the test lets several intervals pass.
+    await Bun.sleep(60)
+
+    // The session shuts down: it closes its relay, then waits out the chain, and the held
+    // registration is answered meanwhile.
+    const stopping = session.shutdown()
+    hold.resolve()
+    await following.catch(() => [])
+    await stopping
+    for (const write of notifier.pending) write.resolve()
+
+    expect(notices().map((written) => written.content)).toEqual([])
+  } finally {
+    hold?.resolve()
+    for (const write of notifier.pending) write.resolve()
+    await session.shutdown()
+  }
+})
+
+// The outage report's own rule says that a stopping session is told nothing
+// (`inboundUnavailable`'s `stopping`). `register` sends nothing once the stop began, but a
+// registration already on the wire when it began is answered during it, and its refusal says
+// nothing about what a session whose record is deleted next receives.
+test("a registration on the wire when the session's shutdown began and refused during it tells the session nothing", async () => {
+  const directory = scratchState()
+  const nats = new FakeNats()
+  const notifier = heldNotifier()
+  let hold: PromiseWithResolvers<void> | undefined
+  const registrations: SubscribeInput[] = []
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      registrations.push(input)
+      const gate = hold
+      if (gate === undefined) return noInterest(input.sessionID)
+      await gate.promise
+      throw new EnvoyApiError({
+        method: "POST",
+        url: "http://127.0.0.1:4000/v1/interests/subscribe",
+        status: 409,
+        responseBody: JSON.stringify({
+          error: "the listener could not give this session a consumer",
+          reason: "not_requested",
+        }),
+      })
+    },
+  })
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: nats,
+      notifier: notifier.notifier,
+      client,
+    }),
+  )
+  try {
+    // A follow's registration is held on the wire.
+    hold = Promise.withResolvers<void>()
+    const asked = registrations.length
+    const following = session.follow(["notifications.team.r24-refused"])
+    await waitFor(async () => registrations.length > asked, "the held registration")
+
+    // The session shuts down, and the listener refuses the held registration meanwhile.
+    const stopping = session.shutdown()
+    hold.resolve()
+    await following.catch(() => [])
+    await stopping
+    for (const write of notifier.pending) write.resolve()
+
+    // A notice this server writes for itself is the one write that names no Envoy event.
+    const notices = notifier.written.filter((written) => written.eventId === undefined)
+    expect(notices.map((written) => written.content)).toEqual([])
+  } finally {
+    hold?.resolve()
     for (const write of notifier.pending) write.resolve()
     await session.shutdown()
   }

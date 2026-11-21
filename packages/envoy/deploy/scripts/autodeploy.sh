@@ -368,7 +368,7 @@ pg_client() {
 # psql's stderr is dropped, since its diagnostics can quote the connection; a failure prints
 # nothing and returns psql's status, or 1 for an answer that is no list of versions.
 schema_applied() {
-  local sql answer versions line count max digest deadline try left
+  local sql answer versions line count max digest deadline try now left
   # The script reaches psql on its standard input, since \gset and \if are psql's own and -c
   # takes SQL alone. The here-document is the container shell's, so the script travels as part of
   # sh -c's argument (pg_client) and nothing of it reaches psql's own arguments; it carries no
@@ -392,12 +392,17 @@ PSQL
     # one); without it such a run would reach for the key as fast as it can until the deadline
     # passes. The deadline is tested here and nowhere else, so a poll that lost this test would
     # run its 60 tries out past it, which is what the suite's three-second case reads.
-    ((SECONDS < deadline && try++ < 60)) || return 1
+    # The clock is read once for each try. The test and the bound below both use that one reading.
+    # A clock read twice can reach the deadline between the two reads. Then the try passes the test
+    # and gets a bound of 0. The suite's case of a clock that moves at each read checks this.
+    now=$SECONDS
+    ((now < deadline && try++ < 60)) || return 1
     # What this try is given: the time the deadline leaves, capped at a minute. That is how the
     # read ends inside the deadline rather than a timeout past it, where a try starting a second
-    # before the deadline would otherwise get a minute of its own. The test above has left at
-    # least a second, and pg_client must never be given 0: it reads 0 as unbounded.
-    left=$((deadline - SECONDS))
+    # before the deadline would otherwise get a minute of its own. The test above read the same
+    # clock reading, so the deadline leaves at least a second. pg_client is never given 0, which it
+    # reads as unbounded.
+    left=$((deadline - now))
     ((left > 60)) && left=60
     answer=$(pg_client "$left" "$sql" 2>/dev/null) ||
       return

@@ -25,8 +25,8 @@
 #   5. a file calling more than 45 unique reusable workflows. GitHub allows 50 from a single
 #      workflow file, counting every tree of nested calls. This check follows only the calls to
 #      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
-#      repository's workflow as one call. ci.yaml calls 43 today, so 45 leaves room for two more
-#      calls and none for a surprise.
+#      repository's workflow as one call. ci.yaml calls 45 today, which is the limit itself, so
+#      the next reusable workflow it calls fails this check.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # two faults.

@@ -401,23 +401,34 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 // here would charge this release with a role it never touched and the hours that role's pod was
 // gone a second time.
 //
-// A record that cannot be written is logged: the pod is already released, and nothing undoes
-// that for want of a row.
-func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []claim.Role, bundleBytes int) {
+// The record also retells the start of each wake taken under the release's mark that a
+// project's pause told in its words: that start's task becomes the task of the same wake in the
+// release's words (workflow.ReleasedWakeTask, store.PodRelease.WakeTask), since the release takes
+// the pod.
+//
+// The record is the release's one-way step too: it writes the release on its mark
+// (store.Store.RecordPodRelease), and the teardown records the release once the runtime has
+// answered, before its own steps that can fail. So a teardown that runs again after such a step
+// failed finishes the release, asks the runtime nothing and cannot cancel it
+// (store.ReleaseDecision.PodTaken), and its record writes no second row. A step of the runtime
+// that fails comes before the record, and the commit of the runtime's read keeps that release
+// from being cancelled (store.Store.CommitIssueRelease). A record that cannot be written is
+// answered as the teardown's error, and the row's failure logs it once (settle): the row runs
+// again, and until a record lands, the mark names no release.
+func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []claim.Role, bundleBytes int) error {
 	if r.supervisor == nil || r.supervisor.store == nil {
-		return
+		return nil
 	}
 	roles := make([]string, 0, len(suspended))
 	for _, role := range suspended {
 		roles = append(roles, string(role))
 	}
 	slices.Sort(roles)
-	if _, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
+	_, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
 		Project: r.project, Issue: issue, Generation: generation, Roles: roles,
-		At: time.Now().UTC(), BundleBytes: bundleBytes,
-	}); err != nil {
-		r.log.Warn("outbox: could not record an issue pod's release", "issue", issue, "error", err)
-	}
+		At: time.Now().UTC(), BundleBytes: bundleBytes, WakeTask: workflow.ReleasedWakeTask,
+	})
+	return err
 }
 
 // releaseHold is the hold a cancel the store decided is recorded under, and the sentence the

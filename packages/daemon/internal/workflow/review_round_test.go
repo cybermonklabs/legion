@@ -503,7 +503,11 @@ func wakes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, se
 		if err != nil || !found {
 			return fmt.Errorf("read the released %s claim: found %t, %v", role, found, err)
 		}
-		woken, err := engine.wakeReleased(ctx, tx, released, kind, "its detail", engine.now())
+		issue, err := engine.store.Issue(ctx, tx, released.Issue)
+		if err != nil || issue == nil {
+			return fmt.Errorf("read the released %s claim's issue: found %t, %v", role, issue != nil, err)
+		}
+		woken, err := engine.wakeReleased(ctx, tx, issue, released, kind, "its detail")
 		if err == nil && !woken {
 			err = fmt.Errorf("the %s wake of the %s took no wake", kind, role)
 		}

@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import {
+  BUS_UNANSWERED_PREFIX,
   canonicalTopic,
   legacyDispatchIssueSubject,
   uncapturedTopicRefusal,
@@ -262,6 +263,67 @@ test("a registry removal that fails is reconciled by the next heartbeat, without
     expect([...entry].sort()).toEqual([directSubject, reFollowed])
   } finally {
     await session.shutdown()
+  }
+})
+
+// The listener answers its bus-outage 503 also after it wrote the entry, when only the update of
+// the consumer's filter met a NATS reconnect, so the line that says the removal could not be
+// dropped from the registry is for every other failure.
+test("a removal's registry write the listener's message bus did not answer is reported as that outage, and any other failure as not dropped", async () => {
+  const stateDirectory = scratchState()
+  const nats = new FakeNats()
+  const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_claude's session consumer: bus: NATS is reconnecting`
+  let failure: unknown
+  const client = recordingClient([], {
+    unsubscribe: async () => {
+      throw failure
+    },
+  })
+  const written: string[] = []
+  const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+      connection: nats,
+      client,
+    }),
+  )
+  const outageBody = JSON.stringify({ error: outage })
+  const url = "http://listener/v1/interests/unsubscribe"
+  const notDropped = "envoy-channel: could not drop a removed subscription from the registry"
+
+  try {
+    const rows = [
+      {
+        issue: "DSP-31",
+        error: new EnvoyApiError({ method: "POST", url, status: 503, responseBody: outageBody }),
+        line: `envoy-channel: the listener's message bus did not answer a request to drop a removed subscription from the registry — ${outage}; the registry may already be without it, and the next heartbeat reconciles the registry and sets the consumer's filter to the topics it holds\n`,
+      },
+      {
+        issue: "DSP-32",
+        error: new EnvoyApiError({ method: "POST", url, status: 500, responseBody: outageBody }),
+        line: `${notDropped} — ${outage}; the next heartbeat reconciles it\n`,
+      },
+      {
+        issue: "DSP-33",
+        error: new TypeError("fetch failed"),
+        line: `${notDropped} — fetch failed; the next heartbeat reconciles it\n`,
+      },
+    ]
+    const lines = () => written.filter((line) => line.includes("removed subscription"))
+    for (const [index, row] of rows.entries()) {
+      const topic = `notifications.dispatch.issue.${row.issue}`
+      await session.follow([topic])
+      failure = row.error
+      relayRemoval(nats, `remove-${row.issue}`, [topic], index + 1)
+      await waitFor(async () => lines().length > index, `the line about ${row.issue}'s removal`)
+      expect(lines()[index]).toBe(row.line)
+    }
+  } finally {
+    await session.shutdown()
+    stderr.mockRestore()
   }
 })
 

@@ -26,17 +26,25 @@ import (
 //
 // It is started the way scripts/e2e/envoy-session-delivery.sh starts one — a build of this
 // checkout's cmd/listener, then PORT, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and a HOME of
-// its own, waited on until /healthz says healthy — because that is the only configuration it
-// takes.
+// its own, waited on until /healthz says healthy — because that is the configuration it needs.
+// The rig adds one setting of its own, its agent wait (idleRigAgentWait).
 type idleRigListener struct {
 	t      *testing.T
 	url    string
-	logs   string
 	cmd    *exec.Cmd
 	client *http.Client
 	port   int
 	stop   func()
 }
+
+// idleRigAgentWait is the rig listener's ENVOY_UNPLACEABLE_RETRY_WINDOW: how long the listener
+// waits before it reports the wake of a message stored for a session with no record
+// (cmd/listener's noRecordAgentDelivery). The listener's default is 60 seconds. At ten seconds, a
+// pod woken only by that report, as a message routed straight onto the stream wakes one, comes
+// back well inside the rig's pod wait (idleRigPodWait). The held-stop pod's stop lasts longer than
+// this wait (idleRigStopDelay), so the listener's report of its stored copy comes during the
+// release, as the send route's report does.
+const idleRigAgentWait = 10 * time.Second
 
 // startIdleRigListener runs a listener of machine id against natsURL until t ends, and returns it
 // once /healthz answers healthy.
@@ -58,17 +66,35 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A test that fails prints the end of this listener's log, as it prints the daemon's
+	// (idleWakeRig.logFile), so a failure the listener caused shows its cause. The cleanup is
+	// registered before the two that close the file and stop the process, so it runs after them
+	// and the log holds the listener's shutdown too. It runs before the removal of the directory
+	// that holds the log, which testtmp.Dir registered first.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		tail, omitted, err := idleRigLogTail(logs)
+		switch {
+		case err != nil:
+			t.Logf("the Envoy listener's log %s could not be read back: %v", logs, err)
+		case tail == "":
+			t.Logf("the Envoy listener's log %s is empty: the listener wrote nothing to it", logs)
+		case omitted > 0:
+			t.Logf("the Envoy listener's log %s, its last %d bytes, %d earlier bytes left out:\n%s", logs, len(tail), omitted, tail)
+		default:
+			t.Logf("the Envoy listener's log %s, whole, %d bytes:\n%s", logs, len(tail), tail)
+		}
+	})
 	t.Cleanup(func() { _ = file.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, binary)
 	cmd.Dir = home
-	// The unplaceable window is ten seconds rather than the shipped minute: a copy stored on the
-	// agent subject of a session with no record is held for that window before the listener gives
-	// it up and reports the wake (cmd/listener's unplaceableAgentDelivery), so a pod woken that
-	// way comes back inside the rig's pod wait with room to spare.
 	cmd.Env = append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1",
-		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL, "ENVOY_UNPLACEABLE_RETRY_WINDOW=10s")
+		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL,
+		"ENVOY_UNPLACEABLE_RETRY_WINDOW="+idleRigAgentWait.String())
 	cmd.Stdout, cmd.Stderr = file, file
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -79,7 +105,7 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		defer close(done)
 		_ = cmd.Wait()
 	}()
-	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), logs: logs, cmd: cmd, port: port,
+	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), cmd: cmd, port: port,
 		client: &http.Client{Timeout: 10 * time.Second}}
 	var once sync.Once
 	l.stop = func() {
@@ -93,11 +119,6 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		})
 	}
 	t.Cleanup(l.stop)
-	defer func() {
-		if t.Failed() {
-			t.Logf("the Envoy listener's own log:\n%s", l.log())
-		}
-	}()
 	idleRigEventually(t, idleRigListenerStartWait, "the Envoy listener answering /healthz healthy", func() bool {
 		response, err := l.client.Get(l.url + "/healthz")
 		if err != nil {
@@ -113,15 +134,6 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		return body.Status == "healthy"
 	})
 	return l
-}
-
-// log is the listener's own output so far, which a failure names.
-func (l *idleRigListener) log() string {
-	read, err := os.ReadFile(l.logs)
-	if err != nil {
-		return "(the listener's log could not be read: " + err.Error() + ")"
-	}
-	return string(read)
 }
 
 // publish publishes one message to a topic, as a sender's envoy_publish does. It answers the

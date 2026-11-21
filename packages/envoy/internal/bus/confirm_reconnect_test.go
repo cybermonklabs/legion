@@ -110,7 +110,7 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the client never saw the server drop the connection")
 	}
-	if err := confirmPublished(conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
+	if err := confirmPublished(context.Background(), conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
 		t.Fatalf("a denied publish read as %v, want unconfirmed: last error %v, reconnecting %t",
 			err, conn.LastError(), conn.IsReconnecting())
 	}
@@ -146,7 +146,7 @@ func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) 
 	case <-time.After(5 * time.Second):
 		t.Fatal("the client never reconnected")
 	}
-	if err := confirmPublished(conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
+	if err := confirmPublished(context.Background(), conn, subject, before); !errors.Is(err, ErrPublishUnconfirmed) {
 		t.Fatalf("a denied publish read as %v, want unconfirmed: before %+v, after %+v", err, before, observe(conn))
 	}
 }

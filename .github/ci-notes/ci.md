@@ -1066,9 +1066,10 @@ included). The jobs that cache Go restore, in steps of their own, one of six fam
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
-of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
-build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
-listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
+of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local, envoy-session-stall and
+envoy-refill, which build the same listener and natsd, listener-server-change and
+envoy-go-checks, which build the listener, and envoy-go-race-docs and envoy-go-docs-finalizers),
+go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
 the API's of that set, and the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
@@ -2002,6 +2003,14 @@ so it needs a PostgreSQL and a Go, which this job is the only envoy-client lane 
 envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK would skip
 there for ever. The filter envoy_session_stall already selects packages/envoy/** and
 packages/envoy-client/**, so the suite brings no new path into this job's closure.
+
+## What the refill live proof shows
+
+packages/envoy/scripts/e2e-refill.sh, the refill live proof (INFRA-261): on a real listener
+and a NATS server of its own, the listener keeps its copy of a bucket while it reads the
+bucket again, and refuses its two list routes, with no active-sessions sample, while it cannot
+stand behind that copy. The job runs every scenario of the script: reread, interrupt (stop
+and restart), recreate-live (both shapes) and refuse.
 
 ## What the ci-filters job holds every filter and every workflow file to
 

@@ -99,7 +99,11 @@ func namedRequest(request string, err error) error {
 // stream names the step it serves and the request, `read KV_<bucket>: KV_<bucket> STREAM.INFO:
 // ...` at one copy and `raise KV_<bucket>: KV_<bucket> STREAM.INFO: ...` above it; a raise names
 // itself (raiseStream), and a refused create names the setting behind it after the step:
-// `KV_envoy_interests create: ENVOY_NATS_REPLICAS=3: ...`.
+// `KV_envoy_interests create: ENVOY_NATS_REPLICAS=3: ...`. Every request goes through js with its
+// errors named (namedJetStream), so one nats.go refuses while it reconnects the connection names
+// the reconnect: `KV_envoy_interests STREAM.INFO: bus: NATS is reconnecting`. Such a send is an
+// answer and not a silence (unanswered), so the step ends on it at once, as it would on any
+// answer, and sends it no more.
 //
 // The handle open this function ends with is sent again too when the server leaves it unanswered
 // (wrapKeyValue, sentAgain), on both of its paths: a bucket this start created and one it found
@@ -132,8 +136,10 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 	create := stream + " create"
 	// Every request of this call, the lookup, the create, the read of a found bucket's stream, its
 	// raise and the reads of the waits below, goes through js read for the server's refusal
-	// (readsRefusals), so a request the grant refuses ends its step at once naming the refusal.
-	js = readsRefusals(conn, js)
+	// (readsRefusals), so a request the grant refuses ends its step at once naming the refusal,
+	// and with its errors named (namedJetStream), so a send nats.go refuses while it reconnects
+	// ends its step at once as ErrReconnecting.
+	js = readsRefusals(conn, namedJetStream(conn, js))
 	// lookUpBucket is the one lookup this call makes, here and again while it waits a member out,
 	// so the two are the same request, and it names its own error rather than leave each caller
 	// to name it. The name wraps the server's answer with %w (namedRequest), so awaitBucketApplied
@@ -393,7 +399,9 @@ func copiesBehind(info *nats.StreamInfo, replicas int) string {
 // An age an answer never came for succeeds when the stream, read again, carries it, and is sent
 // again, set on that read, while it does not; one the server refused as overlapping the bucket's
 // own stream is sent again (updateStream). Its error names the bucket's stream:
-// `set KV_envoy_sessions max age: ...`.
+// `set KV_envoy_sessions max age: ...`. js sends on conn, and a request made while nats.go
+// reconnects conn fails as ErrReconnecting, whatever nats.go answers it (namedJetStream):
+// `set KV_envoy_sessions max age: KV_envoy_sessions STREAM.INFO: bus: NATS is reconnecting`.
 //
 // The session registry's start makes this call right after it opens the bucket, and a failed call
 // fails that start, so it waits on the cluster as EnsureKeyValue does: the read is sent again
@@ -408,7 +416,7 @@ func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamCo
 	ctx, cancel := hangGuard(ctx, startHangGuard)
 	defer cancel()
 	ctx = withReadLimit(ctx)
-	js = readsRefusals(conn, js)
+	js = readsRefusals(conn, namedJetStream(conn, js))
 	stream := "KV_" + bucket
 	read := stream + " STREAM.INFO"
 	info, err := readAgain(ctx, read, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })

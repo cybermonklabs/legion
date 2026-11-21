@@ -316,7 +316,16 @@ refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError`
 listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
 and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
 for the sender's rate as `retryAfterSeconds`. A 429 is not sent again: the client throws it at
-once, and the caller decides whether to wait `retryAfterSeconds` and send the message again. The
+once, and the caller decides whether to wait `retryAfterSeconds` and send the message again.
+`isBusUnanswered` tells the listener's bus-outage answer apart: an `EnvoyApiError` with status
+503 whose `error` begins with `BUS_UNANSWERED_PREFIX` (`@legion/contracts`), `envoy: the message
+bus did not answer`. Part of the request can have landed before it: an unsubscribe gets it after
+the record was written, when only the update of the consumer's filter met a NATS reconnect. A
+`subscribe` or an `unsubscribe` an attempt of which got that answer fails with it, also where its
+retry got no answer or a 5xx that names no reason: a registration is told as one that is not
+recorded for certain, and a removal is warned as one that may already have landed. A refusal on
+the retry is still the refusal: a 4xx, and a 5xx that names a reason, such as a registration's
+`consumer_limit` 503. Every other call throws what its last attempt got. The
 listener's bearer is the `token` the client is given (`envoySettings`); without one it sends no
 `Authorization` header.
 

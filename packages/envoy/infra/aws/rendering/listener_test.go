@@ -101,10 +101,10 @@ func TestListenerEnvCheck(t *testing.T) {
 		},
 		// The rest of the environment.
 		{
-			name:   "a machineId with a dot, refused by core.ListenerConfig.Check",
-			mutate: func(e *rendering.ListenerEnv) { e.MachineID = "example.host" },
+			name:   "a machineId holding '%', refused by core.ListenerConfig.Check",
+			mutate: func(e *rendering.ListenerEnv) { e.MachineID = "example%2Ehost" },
 			input:  "machineId",
-			err:    "machineId contains '.', which the listener's NATS names or the hub's grant entries cannot carry",
+			err:    "machineId holds '%', which starts an escape in the listener's NATS names, so another machine id can give the same names",
 		},
 		{
 			name:   "a blank listenHost",

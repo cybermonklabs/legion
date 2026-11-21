@@ -64,6 +64,14 @@ const (
 // while leaving each pass as far apart as the work it does.
 const idleRigTick = 250 * time.Millisecond
 
+// idleRigStopGrace is the rig's worker_stop_timeout_seconds: how long a release's role stop lets a
+// role process take to exit after its SIGTERM before the launcher kills it (the runtime's
+// LauncherStop names it as its grace). It is longer than the daemon's default of 10 seconds, so a
+// stop that a test holds past the daemon's 30-second wake retry (idleRigPlan.StopDelaySeconds)
+// ends on its own and not by the kill. A role process that holds nothing exits at its SIGTERM, so
+// the longer grace costs every other stop nothing.
+const idleRigStopGrace = 60 * time.Second
+
 // idleWakeRig is the acceptance rig of INFRA-945's A3: the Go daemon on a real Postgres, a real
 // nats-server, a real Envoy listener and the Sandbox runtime over a fake Kubernetes API whose
 // controller stand-in starts a real `legion launcher` for every pod it reports Ready, each
@@ -155,6 +163,7 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	// One admission slot per issue of the rig, and a cap with room for them all: an issue the
 	// daemon has not admitted is one its boot lingers closed.
 	cfg.AdmissionCap = len(issues) + 4
+	cfg.WorkerStopTimeout = idleRigStopGrace
 	// Every launcher of the rig reaches that database through its generation's proxy, which
 	// carries the launcher's own startup packet to it unchanged, so the password the rig's DSN
 	// names has to be in the environment before the first launcher starts
@@ -235,9 +244,10 @@ func (r *idleWakeRig) listenerReports() map[string]string {
 // consumer existed is started again rather than waited out.
 func (r *idleWakeRig) awaitListenerReady() {
 	r.t.Helper()
+	// The listener's own log is printed by its cleanup when the test fails
+	// (startIdleRigListenerOn), so this prints only what the daemon read of it.
 	defer func() {
 		if r.t.Failed() {
-			r.t.Logf("the Envoy listener's log:\n%s", r.listener.log())
 			r.t.Logf("listener_reports holds %v; this daemon's project token is %q and its project key is %q",
 				r.listenerReports(), r.project, r.cfg.Project)
 		}
@@ -770,6 +780,20 @@ func (r *idleWakeRig) quiet() {
 	}
 }
 
+// quietIssues is quiet for the claims of the given issues alone.
+func (r *idleWakeRig) quietIssues(issues ...idleRigIssue) {
+	r.t.Helper()
+	keys := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		keys = append(keys, issue.key)
+	}
+	if _, err := r.pool.Exec(context.Background(),
+		`update claims set updated_at = now() - interval '30 minutes'
+		 where project = $1 and issue = any($2) and activity_at is not null`, r.project, keys); err != nil {
+		r.t.Fatalf("back-date the claims of %v: %v", keys, err)
+	}
+}
+
 // idleRigGateAgeing is how often the gate is shut again while a test keeps it shut: a tenth of
 // the rig's tick, so the daemon reads a report this test has aged on every pass it makes.
 const idleRigGateAgeing = idleRigTick / 10
@@ -859,10 +883,12 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 	// The span is the rig's longest (idleRigReleaseWait): this is every launch undone at once.
 	idleRigEventually(r.t, idleRigReleaseWait, "every pod of the rig released", func() bool {
 		// The pods are back-dated rather than waited out: the idle rule reads the claim rows and
-		// nothing else (pods.IdleView), so those rows are the clock it is measured against.
+		// nothing else (pods.IdleView), so those rows are the clock it is measured against. Only
+		// the claims of the issues this waits for are back-dated, so a pod that a wake brings
+		// back while this waits is not made idle and released again.
 		if time.Since(quieted) > 2*time.Second {
 			quieted = time.Now()
-			r.quiet()
+			r.quietIssues(issues...)
 		}
 		// One listing for every pod of the rig, not one each: the operator's route answers every
 		// claim at once (daemon.claims, which daemon.claim reads to find one), and the pass this
@@ -882,6 +908,28 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 			}
 		}
 		return released
+	})
+}
+
+// awaitStopping waits until the issue's role process has begun a held stop
+// (idleRigPlan.StopDelaySeconds): the release has reached that role's stop, the process has
+// deleted its session record, and it still runs. The claim rows are back-dated as awaitReleased
+// back-dates them, because this wait is inside the same release wave, and the wave's span bounds
+// it.
+func (r *idleWakeRig) awaitStopping(issue idleRigIssue) {
+	r.t.Helper()
+	defer func() {
+		if r.t.Failed() {
+			r.t.Log(r.diagnose())
+		}
+	}()
+	var quieted time.Time
+	idleRigEventually(r.t, idleRigReleaseWait, "the role process of "+issue.key+" holding its stop", func() bool {
+		if time.Since(quieted) > 2*time.Second {
+			quieted = time.Now()
+			r.quiet()
+		}
+		return r.agents.role(issue.key, string(issue.role)).Stopping > 0
 	})
 }
 
@@ -1029,13 +1077,23 @@ func (r *idleWakeRig) releaseRecords(issue idleRigIssue) api.ReleaseRecordsRespo
 // logged is how many of the daemon's log lines say msg with each of attributes, as
 // check_wake_test.go's rig reads them.
 func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
+	return r.loggedWhere(msg, func(entry map[string]any) bool {
+		for key, want := range attributes {
+			if fmt.Sprint(entry[key]) != want {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// loggedWhere is how many of the daemon's log lines say msg and answer true to match. match reads
+// the line's attributes, so a caller can find a name inside a longer value, such as an error's
+// text.
+func (r *idleWakeRig) loggedWhere(msg string, match func(entry map[string]any) bool) int {
 	count := 0
 	for _, entry := range r.loggedEntries(msg) {
-		matches := true
-		for key, want := range attributes {
-			matches = matches && fmt.Sprint(entry[key]) == want
-		}
-		if matches {
+		if match(entry) {
 			count++
 		}
 	}
@@ -1089,7 +1147,8 @@ const (
 	// it, which waits on that same pod.
 	idleRigPodWait = 150 * time.Second
 	// idleRigReleaseWait bounds the release of every pod of the rig by one pass of the idle
-	// tick: a launch undone for every pod of the rig at once, and so the longest span here.
+	// tick: a launch undone for every pod of the rig at once, one of whose stops a test holds
+	// for most of a minute (idleRigPlan.StopDelaySeconds), and so the longest span here.
 	idleRigReleaseWait = 240 * time.Second
 	// idleRigRecordWait bounds a row the daemon writes, a task it gives or a message it
 	// delivers once the pod behind it is already up: a tick or two of the rig and the write

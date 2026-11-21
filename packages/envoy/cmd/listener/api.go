@@ -238,8 +238,10 @@ func writeNATSError(w http.ResponseWriter, err error, status int, message string
 // did not answer, so one string matches in a test and in a deployed log filter. It is deliberately
 // distinct from the starting gate's "service starting" 503 (main.go): that one says this listener
 // is not ready yet and the same request will be served here in a moment, this one says the bus
-// itself did not answer, and the two ask the caller for different actions.
-const busUnansweredPrefix = "envoy: the message bus did not answer"
+// itself did not answer, and the two ask the caller for different actions. The literal is
+// packages/contracts's BUS_UNANSWERED_PREFIX, generated into Go as contracts.BusUnansweredPrefix,
+// which envoy-client's isBusUnanswered reads to tell this 503 from any other.
+const busUnansweredPrefix = contracts.BusUnansweredPrefix
 
 // publishDeniedPrefix opens the body of every answer this listener gives a publish the NATS server
 // refused under its connection's own publish permissions, so one string matches in a test, in a
@@ -302,6 +304,19 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
 // has room, so the caller's retry is right.
+//
+// A send or a bucket call made while NATS reconnects is this 503 with Retry-After: 1, under
+// busUnansweredPrefix, which a deployed filter matches for every bus outage. The error after the
+// prefix wraps bus.ErrReconnecting and says `bus: NATS is reconnecting`, so the body names the
+// reconnect: `envoy: the message bus did not answer: refresh role claimant registration: write
+// session <id> to the bucket: bus: NATS is reconnecting: context deadline exceeded` for a write
+// that waited for the connection until its request's deadline, and the same without the deadline
+// for one the connection dropped under after its wait. Neither was sent, so the retry is safe,
+// unless the error also says that the stream did not acknowledge the publish, so it may hold the
+// message (bus.ErrUnacknowledged): a first send went out before the connection closed, and the
+// message may have reached the stream, as envoy-client assumes of every 5xx. No body holds
+// nats.go's own `nats: outbound buffer limit exceeded`, which internal/bus names away
+// (bus.Reconnecting).
 //
 // A publish that may have stored its message (mayHaveStored) is the 503 with
 // listenerwire.CodeMaybeStored, whichever answer ended it - a full stream's, or a refusal of the
@@ -658,12 +673,26 @@ func deliveryModeVerdictFor(sessionID, title string, capabilities []string, adve
 // then runs on within publishDeliveryWindow (confirmed.go). GET
 // /v1/sessions, GET /v1/registry/<session_id> and GET /v1/interests/<session_id> read within it as
 // well, and every route that writes does its store work within it: subscribe, unsubscribe, POST
-// /v1/roles/set, and DELETE of /v1/interests/<session_id> and /v1/sessions/<session_id>. The HTTP
-// client gives each attempt 5 s (packages/envoy-client/src/transport.ts) and this listener's HTTP
-// write timeout is 10 s (main.go), so answering inside 3.5 s leaves the rest for TLS, scheduling
-// and the body: a sender whose bus cannot be reached reads the 503 that names the reason, in time
-// to act on it, instead of the timeout it would otherwise retry blind.
-const sendRequestBudget = 3500 * time.Millisecond
+// /v1/roles/set, and DELETE of /v1/interests/<session_id> and /v1/sessions/<session_id>. The one
+// exception is subscribe's last write, the session's known-session record, which has a bound of
+// its own after this budget (knownRecordWriteTimeout). Three of those routes also make consumer
+// calls their client waits for, under the same context, so their store work and their consumer
+// calls share the budget: subscribe (the read of the stream's
+// identity and the consumer's create or update on each pass, consumerFor, and the repair after
+// the session's entry is written, confirmRegistered), and unsubscribe and DELETE
+// /v1/interests/<session_id> (the consumer's filter update, refollow). DELETE
+// /v1/sessions/<session_id> makes its consumer call after it answers (deleteAfterAnswer).
+//
+// The budget is seven tenths of the client's one attempt (contracts.ListenerCallTimeout,
+// LISTENER_CALL_TIMEOUT_MS, the 5 s packages/envoy-client/src/transport.ts gives each attempt):
+// 3.5 s. The client reads no answer that comes after its attempt ends: it gives up and tries
+// again. So a route that waits out a slow or a reconnecting server and answers at 5 s answers
+// nobody, and its client reads its own timeout, not the reason. The rest of the attempt is for
+// TLS, scheduling, the body and the answer's trip to the client; this listener's HTTP write
+// timeout is 10 s (main.go). So a sender whose bus cannot be reached reads the 503 that names the
+// reason, in time to act on it, instead of the timeout it would otherwise retry blind. The budget
+// comes from the client's attempt, so a change of that attempt moves it too.
+const sendRequestBudget = contracts.ListenerCallTimeout * 7 / 10
 
 // sendSessionReadTimeout bounds the send route's read of the target session from the bucket, so a
 // bucket that does not answer still leaves most of sendRequestBudget (~2.5 s) to the sender stamp,
@@ -690,7 +719,14 @@ const senderStampReadTimeout = 1 * time.Second
 //   - An entry within the gone horizon whose probe was answered, met silence or failed any other
 //     way (probeSessionConnection counts that as connected), or whose entry records no consumer
 //     delivery and so is not probed: 200, state connected, recipient_state live or unresponsive
-//     by the entry's age.
+//     by the entry's age. A probed entry that advertises no delivery mode gets the next answer.
+//   - A probed entry whose probe passed as above and that advertises no delivery mode, as a
+//     Claude Code terminal does while no mod is connected to it: 200, state no_receiver, no
+//     recipient_state, and last_seen the entry's. The session runs, but nothing writes a message
+//     into its conversation now, so an answer that named it live would be wrong. The message is
+//     stored, and it reaches the conversation from the session's own consumer once the session
+//     takes messages, within the stream's 72 hours. Only a plain send gets here: a payload that
+//     names a delivery mode is the 403 below, because the entry advertises none.
 //   - An entry within the gone horizon whose probe met no responders: 200, state stopped,
 //     recipient_state by the entry's age and last_seen the entry's. The probe wins over age.
 //   - No entry, or one past the gone horizon, and a known-session record: 200, state stopped,
@@ -700,16 +736,26 @@ const senderStampReadTimeout = 1 * time.Second
 //   - Neither: 404 "no live session <id>" (noLiveSession). The wording is load-bearing: Dispatch
 //     classifies a delivery failure on that prefix.
 //   - A stopped target whose request set connected_only: 409 "the session is stopped", with
-//     nothing stored.
+//     nothing stored. connected_only refuses no other state: a no_receiver target runs, and its
+//     message is stored for it.
 //
 // The entry is read from the session store itself and not merely from this listener's cache of
 // it: only the store's word that the key is gone can make a record-based stopped answer or a 404,
 // and a store or a bus that did not answer earns the 503 that asks the sender to try the same
 // route again. A target with no entry within the gone horizon raises the wake report whatever the
 // record says, exactly where a 404 always raised it; one whose probe met no responders raises
-// none, as a lingering entry never did. A target that cannot take the payload's delivery mode
-// (deliveryModeVerdict for a session with an entry, stoppedDeliveryModeVerdict for one with only a
-// record) is the 403 naming it. Every one of those answers is written through record, so this
+// none, as a lingering entry never did, and nor does a no_receiver target, which runs. The route
+// publishes that report off its answer, and again until the stream acknowledges it, the grant
+// refuses it, wakeReportBudget ends or the listener stops (reportAgentWake, publishWakeReport).
+// When wakeReportsInFlight reports are already retrying, the listener drops the report and logs
+// `legion wake report dropped` (wakeReporter.report). A message the route stores for a target
+// with no entry is on the session's agent subject, so each listener's durable reads it too. When
+// the session still has no entry within the gone horizon after the one wait, the listener the
+// session's interest row names, or each listener when the session has no row, stores one more
+// wake report (noRecordAgentDelivery). The daemon takes the first wake of a released role and no
+// second one (TakePodWake). A target that cannot take the payload's delivery mode
+// (deliveryModeVerdict for a session with an entry, stoppedDeliveryModeVerdict for one with only
+// a record) is the 403 naming it. Every one of those answers is written through record, so this
 // route's one line per request is written with it.
 //
 // Before any of them, a message of an agent session whose count under the operator's sender limit
@@ -743,8 +789,8 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		var body listenerwire.MessageBody
 		var targetSession string
 		var request listenerwire.SendRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "invalid json")
+		if status, message := readAPIBody(w, r, &request); status != 0 {
+			record.refuseBody(w, status, message)
 			return
 		}
 		body = request.MessageBody
@@ -830,9 +876,12 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// the two share (connectionProbeTimeout). It is sent only for a target whose entry records
 		// consumer delivery, whose plugin subscribes its relay subject before it registers: a
 		// target with no entry is stopped with nobody asked, and an entry an older listener wrote
-		// without the field counts as connected while it holds that entry.
+		// without the field counts as connected while it holds that entry. A probed target whose
+		// probe passed but whose entry advertises no delivery mode is no_receiver: its plugin holds
+		// the relay subject, but nothing writes a message into its conversation now.
+		probed := hasEntry && target.Delivery == session.DeliveryConsumer
 		connected := make(chan bool, 1)
-		if hasEntry && target.Delivery == session.DeliveryConsumer {
+		if probed {
 			go func() { connected <- probeSessionConnection(ctx, d.client, targetSession, logger) }()
 		} else {
 			connected <- hasEntry
@@ -842,8 +891,11 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		if !hasEntry {
 			lastSeen = known.LastSeen
 		}
-		if !<-connected {
+		switch {
+		case !<-connected:
 			state = sessionStateStopped
+		case probed && len(target.Capabilities) == 0:
+			state = sessionStateNoReceiver
 		}
 		if request.ConnectedOnly && state == sessionStateStopped {
 			record.refuse(w, http.StatusConflict, outcomeSessionStopped, "the session is stopped")
@@ -863,11 +915,17 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		if recipientState == session.Unresponsive && !duplicate {
 			d.sendsToUnresponsive.Inc()
 		}
+		// A no_receiver answer names no recipient_state (listenerwire.SendResponse.RecipientState):
+		// the entry's age may read live, and no message reaches that session's conversation now.
+		answered := recipientState
+		if state == sessionStateNoReceiver {
+			answered = ""
+		}
 		record.accept(w, listenerwire.SendResponse{
 			Envelope:       item,
 			ExpectsReply:   expectsReplyAnswer(body.ExpectsReply),
 			Recipient:      targetSession,
-			RecipientState: recipientState,
+			RecipientState: answered,
 			State:          state,
 			LastSeen:       lastSeen,
 			Duplicate:      duplicate,
@@ -1059,9 +1117,22 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 // to tell such a copy from one Dispatch's outbox kept under a key of its own.
 const publishDedupePrefix = "publish."
 
+// publisherLanes are the two lanes of notifications.> that one publisher alone writes, each with
+// the publisher the route's refusal names. The Legion daemon trusts an event on Dispatch's lane
+// as Dispatch's, and it applies a merge and a deciding review from an event on GitHub's lane.
+// The publish deny of every other user's grant refuses a direct publish there
+// (packages/envoy/natsgrant, dispatchLane and githubLane). No grant can refuse a caller of this
+// route on the two listeners whose own user holds a lane: the listener beside envoy-dispatch,
+// which shares Dispatch's user, and the webhook listener. Each publisher writes its lane straight
+// to NATS, so no caller of this route needs either lane.
+var publisherLanes = []struct{ prefix, publisher string }{
+	{bus.DispatchTopicPrefix, "Dispatch"},
+	{contracts.GithubTopicPrefix, "the listener that receives GitHub's webhook"},
+}
+
 // publishHandler rejects agent-targeted topics (must use /v1/messages/send
-// instead) and the listener's own lanes, the kept one and the session resume one, and sends the
-// envelope. A role
+// instead), Dispatch's lane and GitHub's lane (publisherLanes), and the listener's own lanes, the
+// kept one and the session resume one, and sends the envelope. A role
 // topic is forwarded to its holder, answered once confirmed or when
 // publishDeliveryWindow from the request's arrival has passed (sendToRole in
 // confirmed.go); a topic the stream captures is answered once the stream
@@ -1105,8 +1176,8 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		var request listenerwire.PublishRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "invalid json")
+		if status, message := readAPIBody(w, r, &request); status != 0 {
+			record.refuseBody(w, status, message)
 			return
 		}
 		// The topic is recorded as the envelope will carry it, untrimmed, so a request refused for
@@ -1131,6 +1202,17 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		if strings.HasPrefix(request.Topic, contracts.AgentTopicPrefix) {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "cannot publish to agent topics; use /v1/messages/send for direct agent messages")
 			return
+		}
+		// Dispatch's lane and GitHub's lane are refused by name, as the agent topics are: the Legion
+		// daemon acts on an event there as its publisher's own, and on the listener beside
+		// envoy-dispatch and on the webhook listener no grant refuses a caller of this route the
+		// lane (publisherLanes).
+		for _, lane := range publisherLanes {
+			if strings.HasPrefix(request.Topic, lane.prefix) {
+				record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
+					"cannot publish to "+lane.prefix+" topics; "+lane.publisher+" alone publishes that lane: publish it straight to NATS with the lane's own user", "topic")
+				return
+			}
 		}
 		// The wake subject is this listener's own report of a released Legion pod, and a Legion
 		// daemon acts on what it reads there: it wakes the pod a role token or a session names,
@@ -1655,12 +1737,14 @@ func interestRowFor(sessions *session.SessionRegistry, item store.Interest) list
 // bus-unavailable 503 with Retry-After: 1 (a key NATS refuses is still the 413 or 400
 // writeBusUnavailable gives it). DELETE removes within the same budget, and answers store work that
 // did not answer with that 503 too (writeStoreError). removed, when not nil, is called after a
-// DELETE removed a session's interests.
+// DELETE removed a session's interests, on the same context, since it makes a consumer call the
+// client waits for. An error it returns, which says that call failed because NATS is reconnecting
+// (refollow), is that 503 too.
 //
 // A DELETE presenting a broker access token may remove only the interests of the session that
 // token names, and is refused 403 for any other (sessionNotBound). The GET and the list are not
 // narrowed: reading another session's record is what those are for.
-func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRegistry, removed func(ctx context.Context, sessionID string), logger *logging.Logger) http.HandlerFunc {
+func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRegistry, removed func(ctx context.Context, sessionID string) error, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionID := strings.TrimPrefix(r.URL.Path, "/v1/interests/")
 
@@ -1734,7 +1818,10 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 				return
 			}
 			if removed != nil {
-				removed(r.Context(), sessionID)
+				if err := removed(ctx, sessionID); err != nil {
+					writeStoreError(ctx, w, err, http.StatusServiceUnavailable)
+					return
+				}
 			}
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -1812,7 +1899,9 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // goes to the claim that superseded this one when one has). That runs in a goroutine under a
 // context of its own, so this answer's status and body are exactly what they were and wait for
 // none of it. A try whose takeover record did not store writes no claim and answers 503
-// (errTakeoverUnrecorded).
+// (errTakeoverUnrecorded). When nothing answered the record's write (takeoverRecordUnanswered),
+// that 503's error opens with busUnansweredPrefix, as the claim's own write the bus did not answer
+// does (writeStoreError).
 //
 // The refresh of the claimant's registration can make its session live again, as a registration
 // that returns a session does (subscribeHandler): a process that resumed a session claims its role
@@ -1890,8 +1979,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			// by the renewal alone, since an absent instance matches no claim.
 			ClientInstanceID string `json:"client_instance_id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid json")
+		if !decodeAPIBody(w, r, &body) {
 			return
 		}
 		body.SessionID = strings.TrimSpace(body.SessionID)
@@ -2156,11 +2244,15 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			// Neither wrote a claim, and both are the client's to make again: every try met a
 			// conflict until the deadline, or a try's takeover record did not store.
 			if errors.Is(err, store.ErrRoleClaimContended) || errors.Is(err, errTakeoverUnrecorded) {
+				message := err.Error()
 				if errors.Is(err, errTakeoverUnrecorded) {
 					warnTakeoverUnrecorded(logger, body.Role, body.SessionID, err)
+					if takeoverRecordUnanswered(err) {
+						message = fmt.Sprintf("%s: %s", busUnansweredPrefix, err)
+					}
 				}
 				w.Header().Set("Retry-After", "1")
-				writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+				writeJSONError(w, http.StatusServiceUnavailable, message)
 				return
 			}
 			var stale *store.ErrRoleClaimRevisionMismatch
@@ -2597,7 +2689,10 @@ func (e *sessionEntryWriteError) Unwrap() error { return e.cause }
 // Each pass runs under the session's consumer lock, and the pass that answers writes the
 // session's entry and confirms its consumer under it too (registerPass). The error returned here
 // is the plan's, the interest row's or the session entry's, the last as a
-// sessionEntryWriteError with no registration beside it.
+// sessionEntryWriteError with no registration beside it. It is also the error of a consumer call
+// that failed because NATS is reconnecting (deliveryRefusal.unanswered): the bus did not answer
+// that call, as it does not answer store work in the same outage, and the route answers the two
+// alike (writeStoreError).
 //
 // A registration that is not answered leaves the filter of its last pass on the session's
 // consumer, and no entry of its own behind for the repair that judges that filter
@@ -2610,10 +2705,10 @@ func (e *sessionEntryWriteError) Unwrap() error { return e.cause }
 // every exit, an exit added later included. A registration refused before any consumer call was
 // sent has set no filter and settles nothing (deliveryRefusal.filtered).
 //
-// ctx bounds the store work (sendRequestBudget) and registerCtx the consumer calls, which take
-// the request's own context as they always have.
+// ctx bounds the store work and the consumer calls alike (sendRequestBudget, from when the route
+// took the request).
 func (d *listenerDeps) registerSession(
-	ctx, registerCtx context.Context,
+	ctx context.Context,
 	machineID string,
 	body listenerwire.SubscribeRequest, planned []string,
 	logger *logging.Logger,
@@ -2660,13 +2755,11 @@ func (d *listenerDeps) registerSession(
 		// answering has spent that budget already, and a fence that cannot read the bucket can
 		// judge nothing anyway (fenceFilterWrite), so holding the 503 for it would only spend
 		// the caller's attempt (write_routes_frozen_bus_test.go).
-		settleCtx := context.WithoutCancel(ctx)
-		if deadline, ok := ctx.Deadline(); ok {
-			var cancel context.CancelFunc
-			settleCtx, cancel = context.WithDeadline(settleCtx, deadline)
-			defer cancel()
-		}
-		d.consumers.storedFilterWrite(settleCtx, d.registry, body.SessionID, filterAfterUnansweredRegistration)
+		settleCtx, cancel := withoutCancel(ctx)
+		defer cancel()
+		// The registration fails with its own answer already, so a reconnect this settle meets
+		// is logged where it is met and changes nothing here.
+		_ = d.consumers.storedFilterWrite(settleCtx, d.registry, body.SessionID, filterAfterUnansweredRegistration)
 	}()
 	for attempt := 1; attempt <= registrationPlanAttempts; attempt++ {
 		plan := store.InterestPlan{}
@@ -2679,9 +2772,12 @@ func (d *listenerDeps) registerSession(
 		if err != nil {
 			return registeredSession{}, nil, err
 		}
-		registered, answeredPass, refusal, err := d.registerPass(ctx, registerCtx, machineID, body, plan)
+		registered, answeredPass, refusal, err := d.registerPass(ctx, machineID, body, plan)
 		if refusal != nil {
 			filtered = filtered || refusal.filtered
+			if refusal.unanswered != nil {
+				return registeredSession{}, nil, refusal.unanswered
+			}
 			return registeredSession{}, refusal, nil
 		}
 		// The pass was given its consumer, so its call was sent and the filter it carried is the
@@ -2715,6 +2811,17 @@ func (d *listenerDeps) registerSession(
 	}
 	return registeredSession{}, nil, fmt.Errorf("write %s's interest record: %w after %d plans",
 		body.SessionID, store.ErrInterestPlanConflict, registrationPlanAttempts)
+}
+
+// withoutCancel is ctx without its cancel but with its deadline: work done on it goes on when the
+// client goes away, and still ends at ctx's deadline, because the answer waits for it. The func it
+// returns releases the deadline's timer.
+func withoutCancel(ctx context.Context) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(ctx)
+	if deadline, ok := ctx.Deadline(); ok {
+		return context.WithDeadline(detached, deadline)
+	}
+	return detached, func() {}
 }
 
 // registerPass is one pass of a registration: it filters the session's consumer on plan, the
@@ -2755,11 +2862,11 @@ func (d *listenerDeps) registerSession(
 // (sessionEntryWriteError). The gap is the loop's own: it reads the answer this pass gives and
 // sets the gap on the answer of the pass that answers (registerSession).
 func (d *listenerDeps) registerPass(
-	ctx, registerCtx context.Context,
+	ctx context.Context,
 	machineID string,
 	body listenerwire.SubscribeRequest, plan store.InterestPlan,
 ) (registeredSession, bool, *deliveryRefusal, error) {
-	outcome, refusal, unlock := d.consumers.register(registerCtx, body, plan.Topics)
+	outcome, refusal, unlock := d.consumers.register(ctx, body, plan.Topics)
 	defer unlock()
 	if refusal != nil {
 		return registeredSession{}, false, refusal, nil
@@ -2808,8 +2915,12 @@ func (d *listenerDeps) registerPass(
 	if outcome.relayed() {
 		// The write stands whatever the client does with the answer, so the consumer this
 		// entry promises is confirmed on a context the client's own cannot cancel, as the
-		// consumer delete of a deregistration is (sessionDelivery.deleteAfterAnswer).
-		d.consumers.confirmRegistered(context.WithoutCancel(registerCtx), d, body.SessionID, outcome.ackFloor)
+		// consumer delete of a deregistration is (sessionDelivery.deleteAfterAnswer). The
+		// context keeps the registration's deadline (sendRequestBudget), because the answer
+		// waits for the confirm, and an answer after the client's attempt reaches nobody.
+		confirmCtx, cancel := withoutCancel(ctx)
+		d.consumers.confirmRegistered(confirmCtx, d, body.SessionID, outcome.ackFloor)
+		cancel()
 	}
 	return registered, true, nil, nil
 }
@@ -2820,10 +2931,16 @@ func (d *listenerDeps) registerPass(
 // (store.Registry.RenewRoleClaims) and the unwired-repository checks - runs within
 // sendRequestBudget of the request's own context, so a bus that does not answer is the
 // bus-unavailable 503 with Retry-After: 1 inside the caller's attempt (writeStoreError); a
-// refused key is still its 413 or 400.
+// refused key is still its 413 or 400. Its consumer calls run on the same context, within the
+// same budget, and one that failed because NATS is reconnecting is answered that same 503,
+// naming the reconnect. The budget has two gaps: each read of the connection's state made once it
+// has ended can add up to 100 ms (bus.ConnLockWait), and a send or subscribe that meets a
+// handshake begun just after its read waits for that attempt. The session's known-session record
+// is written after all of that, on a bound of its own, and the registration is answered 200 only
+// once it has landed (answerRegistration).
 //
-// The renewal is the one thing here that cannot fail the registration. It runs last, once the
-// records this route owns are written, and whatever it could not do is logged and passed over: a
+// The renewal is the one thing here that cannot fail the registration. It runs once the interest
+// row and the session entry are written, and whatever it could not do is logged and passed over: a
 // bucket call that did not answer, a claim record this build cannot read, a renewal that lost its
 // compare-and-swap. A heartbeat refused for any of those would take down the very sessions whose
 // claims it keeps alive.
@@ -2877,8 +2994,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			return
 		}
 		var body listenerwire.SubscribeRequest
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid json")
+		if !decodeAPIBody(w, r, &body) {
 			return
 		}
 		body.SessionID = strings.TrimSpace(body.SessionID)
@@ -2899,7 +3015,11 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			writeJSONError(w, http.StatusBadRequest, "port is not supported: this listener delivers nothing to a session's port. Register with no port (port 0) and receive the session's messages from its own consumer (delivery.consumer).", "port")
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		// One budget, taken here, bounds this registration's store work and every one of its
+		// consumer calls: each pass's create or update and the repair after the entry
+		// (sendRequestBudget, which says why it is shorter than the client's attempt).
+		budgetEnds := d.clk().Now().Add(sendRequestBudget)
+		ctx, cancel := d.clk().WithDeadline(r.Context(), budgetEnds)
 		defer cancel()
 		// One read and one merge decide this registration's topics, which are both the row it
 		// stores and the filter of the session's own consumer (store.Registry.PlanInterest). The
@@ -2927,7 +3047,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// loop below names each in its warning, after the private rule has had its say. The
 		// merge itself drops a private-subject topic from the plan (store.MergedTopics).
 		planned, uncaptured := d.consumers.splitUncapturedTopics(requested)
-		registered, refusal, err := d.registerSession(ctx, r.Context(), machineID, body, planned, logger)
+		registered, refusal, err := d.registerSession(ctx, machineID, body, planned, logger)
 		if refusal != nil {
 			logger.Warn("listener refused a registration it can give no session consumer",
 				slog.String("session_id", body.SessionID), slog.String("reason", refusal.Reason), slog.Int("status", refusal.status))
@@ -2939,13 +3059,15 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// words and not the interest row's: the row is stored, and nothing tells another reader
 		// the session is here (sessionEntryWriteError). It is answered before the ordinary store
 		// error below, and nothing past here reads a registration whose entry was never written.
+		// A consumer call that failed because NATS is reconnecting is answered as that ordinary
+		// store error, since the bus did not answer it either (registerSession).
 		//
-		// Either failure ends the registration before its renewal, so no claim the session
-		// holds is renewed by this heartbeat. Each is recorded as a failed renewal of every role
-		// the session may hold - the roles the role claim copy names for it and the role topics
-		// of its cached interest row, read with no bucket call, since the bus is what just
-		// failed - before the answer, so a second process of the session is not granted a role
-		// whose renewal this listener could not make (store.Registry.RecordRenewalFailures,
+		// Each of those failures ends the registration before its renewal, so no claim the
+		// session holds is renewed by this heartbeat. Each is recorded as a failed renewal of
+		// every role the session may hold - the roles the role claim copy names for it and the
+		// role topics of its cached interest row, read with no bucket call, since the bus is what
+		// just failed - before the answer, so a second process of the session is not granted a
+		// role whose renewal this listener could not make (store.Registry.RecordRenewalFailures,
 		// roleOwnSessionVerdict).
 		if err != nil {
 			d.registry.RecordRenewalFailures(body.SessionID, err)
@@ -3034,8 +3156,9 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// registration that states none has renewed it (store.RoleClaim.RenewedWithoutProcess).
 		// A registration stating no process renews the claims of this session that name none
 		// and adopts nothing, so the claim of a client that states none ages out for nobody
-		// while it runs. The write is the registration's last, so a renewal never costs the
-		// records above it.
+		// while it runs. The renewal comes after the records above, so it never costs them,
+		// and the known-session record written after it has a bound of its own
+		// (answerRegistration), so it never costs that one either.
 		//
 		// The roles it weighs are the role topics of the stored row this registration's own
 		// UpsertPlanned returned - the bucket's row, read by that write and merged with the
@@ -3078,20 +3201,6 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 				go runKeptRoleDrain(*d.delivery, role)
 			}
 		}
-		// The session is known for the next 30 days, with the topics just stored, which are the
-		// filter of the consumer the registration gave it: a registration reaches here only once
-		// that consumer call landed, since every one that could not get its consumer was refused
-		// above with nothing recorded. A failed write is this WARN and nothing else: the
-		// registration is answered whatever it did (session.KnownSessions).
-		if err := d.known.RecordWithin(ctx, session.KnownSession{
-			SessionID:    body.SessionID,
-			Title:        body.Title,
-			Capabilities: body.Capabilities,
-			Topics:       item.Topics,
-		}); err != nil {
-			logger.Warn("listener known-session record not written",
-				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
-		}
 		warningCtx, cancelWarnings := context.WithTimeout(ctx, unwiredRepositoryWarningTimeout)
 		defer cancelWarnings()
 		warnedRepositories := make(map[string]struct{})
@@ -3116,8 +3225,72 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 				warnings = append(warnings, warning)
 			}
 		}
-		writeJSON(w, http.StatusOK, listenerwire.SubscribeResponse{Interest: item, Warnings: warnings, Delivery: delivery.answer})
+		// The answer goes through answerRegistration, which writes the session's known-session
+		// record first and answers 200 only once it is written; its comment says why every 200
+		// of this route is answered there and no refusal is.
+		answerRegistration(w, r, d, session.KnownSession{
+			SessionID:    body.SessionID,
+			Title:        body.Title,
+			Capabilities: body.Capabilities,
+			Topics:       item.Topics,
+		}, listenerwire.SubscribeResponse{Interest: item, Warnings: warnings, Delivery: delivery.answer}, logger)
 	}
+}
+
+// knownRecordWriteTimeout bounds the one write of a session's known-session record a registration
+// makes before it answers (answerRegistration). The bound is the write's own, armed as the write
+// starts, so the store work before it cannot spend it: that work shares sendRequestBudget, which on
+// a loaded box it can take whole. One second is what the send route gives its one read of a target
+// (sendSessionReadTimeout); after the budget it keeps a registration's answer inside 4.5 s, within
+// the 5 s envoy-client gives each attempt (packages/envoy-client/src/transport.ts) and this
+// listener's 10 s write timeout (main.go), but for the two gaps subscribeHandler names: a read of
+// the connection's state once a bound has ended, and a handshake begun just after a send's or
+// subscribe's read.
+const knownRecordWriteTimeout = 1 * time.Second
+
+// answerRegistration is the one place subscribeHandler answers a registration it accepted: it
+// writes record, the session's known-session record with the topics the registration stored, and
+// answers answer with 200 only once that write has landed. The record is what a send to the
+// session is stored on once its entry is gone, which a released Legion pod's session is (the send
+// route's `200 stopped` with `recipient_state: gone`, sendHandler). A registration answered 200 that
+// left no record would make the next such send the 404 of a session no store knows, and a session
+// whose pod is released before its next heartbeat - which would write the record, since this
+// listener's copy holds none - is then not stored for at all: under 32 busy loops the store work
+// before this write spent the whole budget, the write was never sent (bus.Bounded starts no call on
+// a context that has ended), and the registration was answered 200 (dispatch://INFRA-3149).
+//
+// So the write is bounded on its own (knownRecordWriteTimeout), and a write that does not land in
+// that bound is answered as the store error it is (writeStoreError): the bus-unavailable 503 with
+// Retry-After: 1, which every client retries. envoy-client's transport makes a second attempt of
+// any status at or past 500, and each plugin's heartbeat then buys one extra call and asks again at
+// every heartbeat after it (pi-envoy's ensureHeartbeat, claude-envoy's heartbeat). Nothing the
+// registration stored is undone: its interest row, entry and consumer stand, and the retry is a
+// registration like any other, which writes the record because this listener's copy holds none.
+// That is the rule with one exception, and the exception is deliberate: a registration answered
+// with success has written the session's known-session record, except while this listener's
+// known-session store is not yet open. A store whose bucket is not open, or no store at all, writes
+// nothing and answers nil (session.KnownSessions.RecordWithin), so such a listener answers 200 as
+// it always has: it is the listener the known-session store's comment describes, which knows no
+// session past its entry. A 503 there would refuse every registration for as long as the bucket
+// stays shut, live sessions' heartbeats among them, which costs more than the 404 a send meets for
+// a session whose process is already gone.
+//
+// Every 200 this route answers is answered here, and nothing else is: a branch added later that
+// accepts a registration - cybermonklabs/legion#4194's registration that asked for no consumer and
+// is given one (sessionDelivery.consumerFor) - must answer through this function, so it writes the
+// record before its 200 as every other does; and a refusal - the delivery refusals, the 503s above,
+// and any refusal added later - must not, so a refused registration writes no record of a session
+// it did not register. Whichever of this change and #4194 lands second keeps both rules.
+func answerRegistration(w http.ResponseWriter, r *http.Request, d *listenerDeps, record session.KnownSession, answer listenerwire.SubscribeResponse, logger *logging.Logger) {
+	ctx, cancel := d.clk().WithTimeout(r.Context(), knownRecordWriteTimeout)
+	defer cancel()
+	if err := d.known.RecordWithin(ctx, record); err != nil {
+		logger.Warn("listener known-session record not written; the registration is refused for its client to retry",
+			slog.String("session_id", record.SessionID), slog.String("error", err.Error()))
+		writeStoreError(ctx, w, err, http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // registerV1Routes builds the /v1 routes over the listener's dependencies, which main hands over
@@ -3134,8 +3307,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		// The body is trimmed below: a request that leaves client_instance_id out states no
 		// process, as listenerwire.UnsubscribeRequest says.
 		var body listenerwire.UnsubscribeRequest
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid json")
+		if !decodeAPIBody(w, r, &body) {
 			return
 		}
 		body.SessionID = strings.TrimSpace(body.SessionID)
@@ -3150,7 +3322,9 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		}
 		logger.Info("listener unsubscribe", slog.String("session_id", body.SessionID), slog.Any("topics", body.Topics))
 		// The removal runs within sendRequestBudget of the request's own context, as subscribe's
-		// write does, and store work that did not answer is the bus-unavailable 503.
+		// write does, and store work that did not answer is the bus-unavailable 503. The
+		// consumer's filter update after it runs on the same context, as a registration's
+		// consumer calls do, since the client waits for it too.
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		// The role claims released are the ones this process holds, never the whole session's:
@@ -3165,18 +3339,31 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		// The session now follows what is left of its topics: its known-session record says so,
 		// so a publish stops counting it as a recipient of the ones just removed, and its
 		// consumer, when the relay serves it one, stops filtering on them. The record is written
-		// within this route's budget and before the consumer call, which has a budget of its own,
-		// so the record a publish counts its recipients by never waits on a consumer.
+		// before the consumer call, so the record a publish counts its recipients by never waits
+		// on a consumer; the call then gets what is left of the budget. A filter update that
+		// failed because NATS is reconnecting is answered as store work the bus did not answer,
+		// as a registration's consumer call is (refollow); the topics are out of the record
+		// already. envoy-client's retry removes them again and sets the filter; a caller whose
+		// retry finds them gone (Dispatch's unsubscribeSession) leaves the filter to the
+		// session's next registration. A first attempt that took the record's last topic
+		// deleted the record, and the retry finds none: the store answers that as nothing
+		// removed and no error (store.Registry.Remove), so the retry answers 200 once its own
+		// filter update is answered; one that meets the reconnect again is the same 503.
 		recordFollowedTopics(ctx, d, body.SessionID, logger)
-		d.consumers.refollow(r.Context(), d, body.SessionID)
-		// removed is what the store took out of the record, not the topics the request named.
-		// The two differ over a role lane topic the record kept: a release that may not free
-		// the claim leaves the lane topic standing (store.Registry.Remove), the interest half
-		// of a claim that still stands, and echoing the request would tell the client a topic
-		// was removed while the record still holds it. A deregistration, which names no topic
-		// and deletes the whole record, and a release whose every named topic was kept both
-		// answer the empty list, and the store's nil is written as that empty list rather than
-		// as null.
+		if err := d.consumers.refollow(ctx, d, body.SessionID); err != nil {
+			writeStoreError(ctx, w, err, http.StatusServiceUnavailable)
+			return
+		}
+		// removed is every topic the request named that the record no longer holds, with the
+		// other forms of them the record held (store.Registry.Remove), so a named topic the
+		// record never held is in it too. It differs from the request over a role lane topic the
+		// record kept: a release that may not free the claim leaves the lane topic standing
+		// (store.Registry.Remove), the interest half of a claim that still stands, and echoing
+		// the request would tell the client a topic was removed while the record still holds it.
+		// A deregistration, which names no topic and deletes the whole record, a release whose
+		// every named topic was kept, and a removal from a session the bucket holds no record
+		// for all answer the empty list, and the store's nil is written as that empty list
+		// rather than as null.
 		if removed == nil {
 			removed = []string{}
 		}
@@ -3191,10 +3378,12 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 
 	// A DELETE here removes every interest of a session, so its record is left naming none and a
 	// publish counts it for nothing, and its consumer is refollowed on what is left, as the
-	// unsubscribe route's are.
-	v1.Handle("/v1/interests/", adminInterestsHandler(d.registry, d.sessions, func(ctx context.Context, sessionID string) {
+	// unsubscribe route's are. Both run on the context adminInterestsHandler bounds by
+	// sendRequestBudget, and a refollow that failed because NATS is reconnecting is that route's
+	// 503.
+	v1.Handle("/v1/interests/", adminInterestsHandler(d.registry, d.sessions, func(ctx context.Context, sessionID string) error {
 		recordFollowedTopics(ctx, d, sessionID, logger)
-		d.consumers.refollow(ctx, d, sessionID)
+		return d.consumers.refollow(ctx, d, sessionID)
 	}, logger))
 	v1.Handle("/v1/sessions", sessionsHandler(d.registry, d.sessions))
 	v1.Handle("/v1/sessions/", deleteSessionHandler(d, logger))

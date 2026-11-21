@@ -142,11 +142,15 @@ const includeUnresponsive = "?include=" + StateUnresponsive
 // its record 200 with that state rather than 404.
 const includeUnresponsiveAndStopped = includeUnresponsive + "," + StateStopped
 
-// SendStateConnected and SendStateStopped are the two values a send's answer puts in `state`
-// (cmd/listener, sendHandler), beside the recipient_state the registry's age gives. Connected
-// means the session's relay subscriber answered the listener's probe or kept silent; stopped
-// means no subscriber holds the session, or the listener knows it only by its record, so the
-// message is stored for the session's own consumer and reaches it when it runs again.
+// SendStateConnected and SendStateStopped are two of the three values a send's answer puts in
+// `state` (cmd/listener, sendHandler), beside the recipient_state the registry's age gives.
+// Connected means the session's relay subscriber answered the listener's probe or kept silent;
+// stopped means no subscriber holds the session, or the listener knows it only by its record, so
+// the message is stored for the session's own consumer and reaches it when it runs again. The
+// third, no_receiver, means the probe passed but the session advertises no delivery mode, as a
+// Claude Code terminal does while no mod is connected to it; that answer names no
+// recipient_state. Only a send whose payload names no delivery mode can get it, and Dispatch
+// reads it as it reads connected: only stopped is queued.
 const (
 	SendStateConnected = "connected"
 	SendStateStopped   = "stopped"
@@ -257,8 +261,9 @@ type SendInput struct {
 // DELIVERY_DUPLICATE_WINDOW_MS in @legion/contracts (contracts.DeliveryDuplicateWindow here). The
 // envelope id then names an envelope JetStream discarded.
 //
-// State is what the target was when the listener stored the message, SendStateConnected or
-// SendStateStopped. A listener that predates the field answers none, which reads as a connected
+// State is what the target was when the listener stored the message: SendStateConnected,
+// SendStateStopped, or the listener's no_receiver for a running session that advertises no
+// delivery mode. A listener that predates the field answers none, which reads as a connected
 // target. A send for a role that the listener kept on the role's kept lane, because the role's
 // claim named another session than the target when the send arrived, answers no State, and
 // EnvelopeID names the copy the lane holds: the message reaches the session that holds the role,

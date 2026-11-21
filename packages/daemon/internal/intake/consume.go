@@ -205,12 +205,21 @@ type ConsumerSpec struct {
 	PrepareArtifact func(ctx context.Context, artifact DispatchArtifact) (DispatchArtifact, error)
 }
 
-// RetryLater is an error ConsumerSpec.ReviewPermission returns when its read must not be made again
-// sooner than After, which GitHub names when it answers with its rate limit: the delivery is nacked
-// with a delay of After, or of NakDelay when that is longer.
+// RetryLater is an error that asks for the delivery to be nacked with a delay of After, or of
+// NakDelay when that is longer. The daemon's preparations return one when a fact must wait for
+// something outside the daemon, such as GitHub's rate limit, a review App token GitHub has not
+// yet accepted, or a repository mapping that is being read again (internal/daemon's
+// repositories.go, review_body.go and review_permission.go). The workflow returns one, with
+// Waiting set, when a listener's wake report finds its claim in a release that has not ended
+// (workflow's listenerWakeInRelease).
+//
+// Waiting marks a retry that is expected rather than a failure: nakResolve logs it at INFO, and
+// every other retry at WARN. A wait that lasts minutes would otherwise write a WARN line each
+// delay, and those lines would hide the one WARN that says a wake was dropped.
 type RetryLater struct {
-	After time.Duration
-	Err   error
+	After   time.Duration
+	Waiting bool
+	Err     error
 }
 
 func (r *RetryLater) Error() string { return r.Err.Error() }
@@ -234,9 +243,11 @@ type Consumers struct {
 	// wake is the durable on the Envoy listener's wake reports (legionWakeSubject): a message
 	// published to a role topic of a released pod, a message sent to the agent subject of a
 	// released session, and the listener's own `listener_ready`. It is a durable of its own
-	// because every daemon consumes the subject: the listener does
-	// not know which daemon owns a session, so each reads every report and acts only on a
-	// released claim of its own.
+	// because every daemon consumes the subject: the listener does not know which daemon owns a
+	// session, so each reads every report and acts only on a claim of its own. A role report of
+	// another project decodes to no fact (decodeListenerWake). A report that finds its own claim
+	// live in a release that has not ended is sent back and applied again after its delay
+	// (RetryLater, Waiting), and one that finds its claim released wakes it.
 	wake jetstream.Consumer
 
 	progress struct{ dispatch, github, wake *consumerProgress }
@@ -959,6 +970,8 @@ func ackOutcome() messageOutcome { return messageOutcome{} }
 
 // nakOutcome asks for the nak nakResolve makes: what failed, which it logs at warn, nakWhat, which
 // it logs at error if the nak itself fails, and the failure, whose RetryLater can widen the delay.
+// A RetryLater that is Waiting is no failure: nakResolve logs it at info, with a line that says
+// the fact waits, in place of what.
 // The event both lines name is the caller's own, which holds the decoded message.
 func nakOutcome(what, nakWhat string, err error) messageOutcome {
 	return messageOutcome{nak: true, what: what, nakWhat: nakWhat, err: err}
@@ -1183,14 +1196,19 @@ func resolveReviewBody(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact,
 
 // nakResolve widens message's nak delay to a RetryLater's wait when it names one longer than
 // spec.NakDelay, logs what failed and the delay at warn, then naks the message with that delay,
-// logging nakWhat at error if the nak itself fails.
+// logging nakWhat at error if the nak itself fails. A RetryLater that is Waiting is no failure:
+// its line is at info and says the fact waits.
 func nakResolve(spec ConsumerSpec, message jetstream.Msg, eventID, what, nakWhat string, err error) {
 	delay := spec.NakDelay
+	level := slog.LevelWarn
 	var later *RetryLater
-	if errors.As(err, &later) && later.After > delay {
-		delay = later.After
+	if errors.As(err, &later) {
+		delay = max(delay, later.After)
+		if later.Waiting {
+			level, what = slog.LevelInfo, "an intake fact waits and is applied again after its delay"
+		}
 	}
-	logMessage(spec.Logger, slog.LevelWarn, what, message, "event_id", eventID, "retry_in", delay, "error", err)
+	logMessage(spec.Logger, level, what, message, "event_id", eventID, "retry_in", delay, "error", err)
 	if nakErr := message.NakWithDelay(delay); nakErr != nil {
 		logMessage(spec.Logger, slog.LevelError, nakWhat, message, "event_id", eventID, "error", nakErr)
 	}

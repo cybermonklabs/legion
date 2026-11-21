@@ -294,8 +294,12 @@ func OpenKnownSessions(ctx context.Context, conn *nats.Conn, options ...KnownSes
 
 // knownJetStream is the JetStream context one attempt to open the bucket asks through: its
 // requests wait knownBucketOpenWait rather than the 10 seconds nats.go gives its own by default.
+// The bus builds it (bus.JetStreamOn), so a request it sends while nats.go reconnects conn fails
+// as bus.ErrReconnecting. Without that, nats.go answers the bucket's lookup then with words of its
+// own, `nats: key-value requires at least server version 2.6.2`, since a reconnecting connection
+// reports no server version, and the start's WARN and the repair would carry those words.
 func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
-	return conn.JetStream(nats.MaxWait(knownBucketOpenWait))
+	return bus.JetStreamOn(conn, nats.MaxWait(knownBucketOpenWait))
 }
 
 // openKnownBucket makes one attempt to open the bucket on conn, creating it with the retention
@@ -739,9 +743,13 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // skip of an unchanged record younger than the refresh age; TouchWithin passes false, since a
 // clean stop is one write per session lifetime and the whole point of it is to move last_seen.
 //
-// No caller fails its request over what this answers: a registration and a subscription change
-// (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the error
-// is for the call site's WARN.
+// A registration fails its request over what this answers: it is answered 200 only once its
+// record is written, and an error here refuses it as the store error it is, the bus-unavailable
+// 503 its client retries for a write that did not land (cmd/listener's answerRegistration),
+// since a session registered with no record is one a send cannot be stored for once its entry is
+// gone. A subscription change (RecordWithin) and a clean stop (TouchWithin) each answer whatever
+// the write did, and their error is for the call site's WARN. A nil answer is no promise that a
+// record is stored: a store whose bucket is not open answers nil and writes nothing.
 func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool) error {
 	watcher := s.watch()
 	if watcher == nil || record.SessionID == "" {
@@ -770,7 +778,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		}
 	}
 	kv, epoch := watcher.Handle()
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(record.SessionID, buf) })
+	revision, answered, err := bus.Bounded(ctx, kv.Conn(), func() (uint64, error) { return kv.Put(record.SessionID, buf) })
 	if !answered {
 		return fmt.Errorf("write the known-session record of %s: %w", record.SessionID, err)
 	}

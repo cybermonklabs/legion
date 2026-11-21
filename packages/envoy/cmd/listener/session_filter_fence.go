@@ -43,13 +43,16 @@ const (
 	// filterWriteSessionGone is a pass that found the session gone: the bucket holds no record
 	// of it, so nothing of this listener's sets a filter this loop leaves, and the session
 	// registers no more. Only the repair of a session's consumer answers it (repairRegistered),
-	// and that repair runs inside the five-second budget of the act it follows
-	// (sessionConsumerCallTimeout): a reaper pass deletes the record before the consumer
-	// delete that the repair after a delete follows (deleteConsumer), and the
-	// record a registration wrote is gone to the repair after that registration only where such
-	// a delete ran after that write (confirmRegistered). The fence ends on it by logging what
-	// stands rather than on the line that leaves the filter to the next heartbeat, since this
-	// loop has none to wait on (fenceFilterWrite).
+	// and that repair runs inside the budget of the act it follows (sessionConsumerCallTimeout
+	// after a delete, the route's sendRequestBudget after a registration): a reaper pass
+	// deletes the record before the consumer delete that the repair after a delete follows
+	// (deleteConsumer), and the record a registration wrote is gone to the repair after that
+	// registration only where such a delete ran after that write (confirmRegistered). Each read
+	// of the connection's state the repair makes once that budget has ended can add up to 100 ms
+	// (bus.ConnLockWait), and a send or subscribe that meets a handshake begun just after its read
+	// waits for that attempt. The fence ends on it by logging what stands rather than on the line
+	// that leaves the filter to the next heartbeat, since this loop has none to wait on
+	// (fenceFilterWrite).
 	filterWriteSessionGone
 	// filterWriteNotMade is a pass that planned no write, or whose write the server refused with
 	// an answer of its own: nothing of this pass reached the consumer. The fence ends on it, and
@@ -75,11 +78,14 @@ const (
 // lock and no other session's. The count is what the caller's budget can really spend, since the
 // whole loop runs inside the caller's five-second call timeout (sessionConsumerCallTimeout), a
 // relay restart's own calls included: five passes are ten round trips to the server, and that
-// budget covers them at a quarter of a second each with the restart's beside them. One
-// writer racing a repair settles in two passes, and five leaves room for the two listeners of a
-// rolling deploy with an unsubscribe or a role claim of the same session between them; a row
-// still moving under five writes in a row is written to continuously rather than raced once,
-// which is what the line a loop out of passes ends on names.
+// budget covers them at a quarter of a second each with the restart's beside them. A loop a
+// route's client waits for - the repair after a registration, and an unsubscribe's refollow -
+// runs inside that route's shorter budget (sendRequestBudget), which the repair shares with the
+// registration's store work and its other consumer calls. One writer racing a repair settles in
+// two passes, and five leaves room for the two listeners of a rolling deploy with an unsubscribe
+// or a role claim of the same session between them; a row still moving under five writes in a
+// row is written to continuously rather than raced once, which is what the line a loop out of
+// passes ends on names.
 const filterFenceAttempts = 5
 
 // fenceFilterWrite makes a write of a session consumer's filter and lets no write built from an
@@ -289,22 +295,36 @@ const (
 //
 // It owns the three things its callers would otherwise each repeat (refollow, registerSession):
 // the listener that holds no session-consumer connection, which only a test builds and which
-// writes nothing; the budget every consumer call this listener makes is bounded by
-// (sessionConsumerCallTimeout), which here covers the whole loop, as it covers a relay restart's
+// writes nothing; the consumer-call budget (sessionConsumerCallTimeout) inside any earlier
+// deadline ctx carries, which here covers the whole loop, as it covers a relay restart's
 // calls and the corrections after them; and the session's lock, which orders these writes against
 // the registrations', the relay's restart and the delete a reaper or a stop makes of the same
-// session.
-func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store.Registry, sessionID, after string) {
+// session. A route whose client waits for the write passes its request's ctx, bounded by
+// sendRequestBudget (refollow); a registration this listener did not answer passes one bounded
+// by the same budget, with the client's cancel dropped (registerSession).
+//
+// It returns the failure of its last pass when that pass could not write the filter because NATS
+// is reconnecting (bus.ErrReconnecting), and nil otherwise: every failure is logged where it is
+// met (storedFilterStep), and a caller whose client waits answers that one (refollow).
+func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store.Registry, sessionID, after string) error {
 	if m == nil || m.consumers == nil {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	unlock := m.locks.lock(sessionID)
 	defer unlock()
+	var last error
 	fenceFilterWrite(ctx, m.logger, registry, sessionID, after, func() (uint64, filterWriteOutcome) {
-		return m.storedFilterStep(ctx, registry, sessionID, after)
+		var revision uint64
+		var outcome filterWriteOutcome
+		revision, outcome, last = m.storedFilterStep(ctx, registry, sessionID, after)
+		return revision, outcome
 	})
+	if errors.Is(last, bus.ErrReconnecting) {
+		return last
+	}
+	return nil
 }
 
 // storedFilterStep is one pass of a fenced write of the filter the bucket's newest interest row
@@ -320,31 +340,33 @@ func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store
 // sent nothing: both leave what the pass before them left and end the fence
 // (filterWriteNotMade). A call whose answer did not come back may have set this row's filter, so
 // it is the fence's to judge like one that answered (filterWriteLanded, consumerCallAnswered).
+// The read's or the call's failure, which it logs, is its third answer, nil for a pass that met
+// none (storedFilterWrite).
 //
 // It takes no lock and bounds nothing: the caller holds the session's lock over every pass of
 // the fence and bounds ctx (storedFilterWrite, and sessionRelays.settleFilter under a restart).
-func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.Registry, sessionID, after string) (uint64, filterWriteOutcome) {
+func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.Registry, sessionID, after string) (uint64, filterWriteOutcome, error) {
 	topics, revision, err := storedTopics(ctx, registry, sessionID)
 	if err != nil {
 		m.logger.Warn("session consumer filter left unchanged: the session's interests could not be read",
 			slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
-		return 0, filterWriteNotMade
+		return 0, filterWriteNotMade, err
 	}
 	if m.afterStoredRowRead != nil {
 		m.afterStoredRowRead()
 	}
 	if err := m.consumers.UpdateFilter(ctx, sessionID, m.storedRowFilter(registry, sessionID, topics)); err != nil {
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
-			return 0, filterWriteSettled
+			return 0, filterWriteSettled, nil
 		}
 		m.logger.Warn("session consumer filter update failed",
 			slog.String("session_id", sessionID), slog.String("after", after), slog.String("error", err.Error()))
 		if consumerCallAnswered(err) {
-			return 0, filterWriteNotMade
+			return 0, filterWriteNotMade, err
 		}
-		return revision, filterWriteLanded
+		return revision, filterWriteLanded, err
 	}
-	return revision, filterWriteLanded
+	return revision, filterWriteLanded, nil
 }
 
 // consumerCallAnswered reports whether err is the server's own answer to a consumer call, which

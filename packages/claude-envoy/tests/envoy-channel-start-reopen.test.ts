@@ -120,32 +120,34 @@ for (const host of HOSTS) {
           async () =>
             stderr().includes(`${CLOSED}; dialing a new one`) && stderr().includes(GAVE_UP),
         )
-        // The session is told once that it receives nothing, naming why; nothing was registered.
-        await whileRunning(run, "the outage told", async () =>
-          stderr().includes("envoy-channel: this session receives nothing ("),
+        // Nothing was registered. A registration with no relay subject is refused naming why,
+        // and the session is not told that it receives nothing: until the session's first
+        // accepted registration, that is the start race, held for its bound
+        // (`INBOUND_FIRST_OPEN_BOUND_MS`).
+        await whileRunning(run, "a registration refused naming why", async () =>
+          stderr().includes(
+            "because its relay subject could not be opened: Authorization Violation",
+          ),
         )
-        expect(count(stderr(), "this session receives nothing")).toBe(1)
-        expect(stderr()).toContain(
-          "because its relay subject could not be opened: Authorization Violation",
-        )
+        expect(count(stderr(), "this session receives nothing")).toBe(0)
         expect(run.sessions).toEqual([])
 
-        // The hub admits again: the session registers with its relay on a new connection.
+        // The hub admits again: the session registers with its relay on a new connection. It was
+        // told nothing of the outage, so it is told nothing of its end.
         broker.refuseConnects = false
         broker.answerPings = true
         await whileRunning(
           run,
-          "a registration with the relay on a new connection, and the end of the outage",
+          "a registration with the relay on a new connection",
           async () =>
             run.deliveries.length > 0 &&
             run.relaySubscriptions() === 2 &&
-            broker.liveConnections === 1 &&
-            stderr().includes("envoy-channel: this session receives again"),
+            broker.liveConnections === 1,
         )
         expect(run.sessions.every((session) => session === host.sessionId)).toBe(true)
         expect(run.deliveries.at(-1)).toMatchObject({ consumer: true })
-        expect(count(stderr(), "envoy-channel: this session receives again")).toBe(1)
-        expect(count(stderr(), "this session receives nothing")).toBe(1)
+        expect(count(stderr(), "envoy-channel: this session receives again")).toBe(0)
+        expect(count(stderr(), "this session receives nothing")).toBe(0)
         // The process keeps running: a heartbeat later it has not exited, and failed nothing.
         const registered = run.deliveries.length
         await whileRunning(run, "a heartbeat after the registration", async () => {

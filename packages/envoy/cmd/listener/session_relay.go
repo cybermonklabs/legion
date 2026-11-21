@@ -18,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -235,9 +236,77 @@ type sessionRelays struct {
 
 	// framesMu guards frames and each relay's outstanding and unanswered frames.
 	framesMu sync.Mutex
-	// frames maps the token of every frame awaiting done or nak to it.
-	frames    map[string]*relayFrame
-	nextToken atomic.Uint64
+	// frames maps the token of every frame awaiting done or nak to it. A token is 128 random bits
+	// (publishFrame), so a session that reads its own frames learns nothing of another frame's.
+	frames map[string]*relayFrame
+
+	// passed is the stored messages each relay acknowledged without a frame because the frame was
+	// too large to relay (passTooLarge), which each get one WARN (relayPassedSet).
+	passed relayPassedSet
+}
+
+// relayPassedSet is the stored messages the relays acknowledged without a frame, because the frame
+// was too large to relay (sessionRelays.passTooLarge), by session, then by stream and sequence.
+// The WARN for such a message is written once per listener process, also when a restart at the
+// ack floor hands it back: the relay acknowledges it out of order, so while an earlier frame is
+// unanswered it is above the floor, and a restart there delivers it again. The session is the
+// first key because one stored message on a followed topic reaches the consumer of each session
+// that follows it, and each such session gets its own WARN.
+//
+// Each start of a session's relay drops the entries its consumer can no longer hand back
+// (prune): those at or below the ack floor the start read, and those of another stream. So the
+// set holds, for each session, only the messages above the floor its relay last started from,
+// and the ones passed since. A session whose relay never starts here again keeps its few
+// entries. Such messages are rare: only a stored message within the frame's few hundred header
+// bytes of the server's max payload is one.
+type relayPassedSet struct {
+	mu        sync.Mutex
+	bySession map[string]map[relayPassed]struct{}
+}
+
+// relayPassed names, within one session's entries of relayPassedSet, a stored message a relay
+// acknowledged without a frame: the stream's identity and the message's stream sequence.
+type relayPassed struct {
+	streamID string
+	seq      uint64
+}
+
+// first records that sessionID's relay passed the message at seq on the stream streamID, and
+// reports whether it was not recorded yet, which is when the caller writes the WARN.
+func (s *relayPassedSet) first(sessionID, streamID string, seq uint64) bool {
+	key := relayPassed{streamID: streamID, seq: seq}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	passed, ok := s.bySession[sessionID]
+	if !ok {
+		if s.bySession == nil {
+			s.bySession = map[string]map[relayPassed]struct{}{}
+		}
+		passed = map[relayPassed]struct{}{}
+		s.bySession[sessionID] = passed
+	}
+	if _, logged := passed[key]; logged {
+		return false
+	}
+	passed[key] = struct{}{}
+	return true
+}
+
+// prune drops sessionID's entries that its consumer, started at start, can no longer hand back:
+// those of another stream than start.StreamID, and those at or below start.AckFloor, which the
+// consumer has every message acknowledged through.
+func (s *relayPassedSet) prune(sessionID string, start bus.SessionConsumerStart) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	passed := s.bySession[sessionID]
+	for key := range passed {
+		if key.streamID != start.StreamID || key.seq <= start.AckFloor {
+			delete(passed, key)
+		}
+	}
+	if len(passed) == 0 {
+		delete(s.bySession, sessionID)
+	}
 }
 
 // relayCancelReason is why the loop cancelled a run. It is the cause the cancellation carries
@@ -267,14 +336,16 @@ const (
 	// nak being a publish the server answers nothing to. A record that lapsed out of the bucket
 	// instead leaves the consumer standing with those messages on it for as long as it stands:
 	// the reaper judges the records the cache holds, and a record whose bucket age is under the
-	// gone horizon - five minutes against an hour where the deployment sets no
-	// ENVOY_SESSION_MAX_AGE (session.BucketMaxAge, session.GoneHorizon) - leaves that cache
-	// before a pass of it judges the session gone. The sweep is what ends such a consumer, one
-	// pass after the record left the bucket (sessionConsumerSweep), and the stream's inactive
-	// threshold (bus.SessionConsumerInactiveThreshold) is the backstop behind the sweep; until
-	// one of them takes it, the session is delivered those messages when it registers again,
-	// which is what a laptop that slept through its heartbeats does. The cache reports a record
-	// deleted and one lapsed the same way, so the hand-over line names both (relayHandOverLines).
+	// gone horizon leaves that cache before a pass of it judges the session gone. A bucket this
+	// listener creates keeps a record for 2 hours (session.BucketMaxAge), past the default
+	// horizon (session.GoneHorizon), but one an older build created keeps a record five minutes
+	// until ENVOY_SESSION_MAX_AGE raises it.
+	// The sweep is what ends such a consumer, one pass after the record left the bucket
+	// (sessionConsumerSweep), and the stream's inactive threshold
+	// (bus.SessionConsumerInactiveThreshold) is the backstop behind the sweep; until one of them
+	// takes it, the session is delivered those messages when it registers again, which is what a
+	// laptop that slept through its heartbeats does. The cache reports a record deleted and one
+	// lapsed the same way, so the hand-over line names both (relayHandOverLines).
 	relayCancelSessionGone
 	// relayCancelNewEpoch: the session registered with a new epoch, so a run starting at the ack
 	// floor replaced this one.
@@ -478,7 +549,8 @@ type relayFrame struct {
 	// count is the message's and not the reply's, so the frame carries it from publishFrame to
 	// the nak onReply sends (relayNakDelayFor).
 	delivered uint64
-	// answered is set once the session sent any reply for the frame, under framesMu.
+	// answered is set once the session sent any reply for the frame, or once NATS refused the
+	// frame as too large to relay (publishFrame), under framesMu.
 	answered bool
 }
 
@@ -928,7 +1000,9 @@ func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrot
 			restart = false
 			return wrote, filterWriteLanded
 		}
-		return m.delivery.storedFilterStep(ctx, m.registry, sessionID, filterAfterRestart)
+		// Each failure is logged where it is met; a relay restart has no client to answer.
+		revision, outcome, _ := m.delivery.storedFilterStep(ctx, m.registry, sessionID, filterAfterRestart)
+		return revision, outcome
 	})
 }
 
@@ -957,6 +1031,13 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 // ack wait, and the relay starts again at the ack floor after its pause backoff or at the
 // session's next registration, whichever comes first (sessionRelays.relay), so the messages it
 // was sending reach a session that was only slow without waiting for a registration.
+//
+// A frame NATS refuses as past the server's max payload (bus.ErrTooLarge) is refused again at
+// every send: the frame adds its headers to a stored message that fits the limit alone. The
+// relay acknowledges that message, logs one WARN and goes on to the next message, which carries
+// the Envoy-Gap header the refused frame carried, if any (passTooLarge). A restart at the ack
+// floor would only meet the same refusal and hold back every later message of the session. Any
+// other failed publish restarts at the ack floor.
 func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutcome {
 	sessionID := run.sessionID
 	start, pull, outcome := m.restart(ctx, run)
@@ -1027,6 +1108,9 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		return relayRetry
 	}
 	streamID, gap := start.StreamID, start.Gap
+	// The start read the consumer's ack floor, so the passed messages the consumer cannot hand
+	// back any more leave the set here (relayPassedSet.prune).
+	m.passed.prune(sessionID, start)
 	for {
 		next := ctx
 		cancelNext := context.CancelFunc(func() {})
@@ -1055,6 +1139,15 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			continue
 		}
 		if err := m.publishFrame(ctx, run, msg, streamID, gap); err != nil {
+			// A frame too large to relay is passed even when the run is ending, so its message is
+			// acknowledged and not left unsettled.
+			if errors.Is(err, bus.ErrTooLarge) {
+				if !m.passTooLarge(run, msg, streamID, err) {
+					return relayRetry
+				}
+				// No frame went out, so the gap, if any, goes on the next one.
+				continue
+			}
 			if ctx.Err() != nil {
 				return relayEnded
 			}
@@ -1065,10 +1158,17 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	}
 }
 
-// publishFrame publishes msg as a frame on the session's relay subject, its reply subject a token
-// of its own under the listener's reply inbox.
+// publishFrame publishes msg as a frame on the session's relay subject. Its reply subject is a
+// token of its own under the listener's reply inbox: 128 bits from crypto/rand, in hex (id.New),
+// one NATS subject token. A token tells nothing of any other frame's token, so a session that
+// reads only its own frames cannot name the reply subject of another session's frame (onReply).
+//
+// A frame NATS refuses as past the server's max payload (bus.ErrTooLarge) never went out, so no
+// reply can name it: it is dropped from the frames the relay awaits and marked answered, so the
+// receipt wait passes over it (receiptDeadline), and the error is returned for the caller to
+// acknowledge the message (passTooLarge).
 func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool) error {
-	token := strconv.FormatUint(m.nextToken.Add(1), 36)
+	token := id.New()
 	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered}
 	m.framesMu.Lock()
 	if run.outstanding == nil {
@@ -1087,12 +1187,56 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 	if gap {
 		header.Set(relayHeaderGap, "true")
 	}
-	return m.delivery.consumers.Publish(ctx, &nats.Msg{
+	err := m.delivery.consumers.Publish(ctx, &nats.Msg{
 		Subject: bus.DeliverSubject(run.sessionID),
 		Reply:   m.replyPrefix + token,
 		Header:  header,
 		Data:    msg.Data,
 	})
+	if errors.Is(err, bus.ErrTooLarge) {
+		m.framesMu.Lock()
+		frame.answered = true
+		delete(m.frames, token)
+		delete(run.outstanding, token)
+		m.framesMu.Unlock()
+	}
+	return err
+}
+
+// passTooLarge acknowledges msg, whose frame NATS refused as past the server's max payload
+// (refusal, bus.ErrTooLarge), so the relay goes on to the session's next message. It writes one
+// WARN for the message and the session in this listener process (sessionRelays.passed). The
+// session does not receive the message, and nothing tells it: no delivery_failed notice is
+// published. The WARN names the event by the stored message's event_id field alone, and by an
+// empty event_id when that field does not decode.
+//
+// It reports false when the acknowledgement could not be sent, which it logs: the caller then
+// restarts at the ack floor, which hands the message back, and the next pass writes the WARN.
+func (m *sessionRelays) passTooLarge(run *relayRun, msg bus.SessionMessage, streamID string, refusal error) bool {
+	if err := msg.Ack(); err != nil {
+		m.logger.Warn("session relay could not acknowledge a message too large to relay; restarting at the ack floor",
+			slog.String("session_id", run.sessionID),
+			slog.Uint64("stream_seq", msg.StreamSeq),
+			slog.String("error", err.Error()))
+		return false
+	}
+	if !m.passed.first(run.sessionID, streamID, msg.StreamSeq) {
+		return true
+	}
+	var stored struct {
+		EventID string `json:"event_id"`
+	}
+	if json.Unmarshal(msg.Data, &stored) != nil {
+		stored.EventID = ""
+	}
+	m.logger.Warn("session relay acknowledged a message too large to relay; the session does not receive it",
+		slog.String("session_id", run.sessionID),
+		slog.String("event_id", stored.EventID),
+		slog.String("subject", msg.Subject),
+		slog.Uint64("stream_seq", msg.StreamSeq),
+		slog.Int("size", len(msg.Data)),
+		slog.String("error", refusal.Error()))
+	return true
 }
 
 // receiptDeadline is when the oldest frame of run the session has not answered reaches the
@@ -1179,6 +1323,10 @@ func relayNakDelayFor(delivered uint64) time.Duration {
 // delivery count earns (relayNakDelayFor); done and nak end the frame. Any of them is the session
 // answering, which puts the run's pause backoff back to its first wait. A reply to a token no
 // frame awaits, or with any other body, is ignored.
+//
+// A reply names its frame only by the token of its subject, looked up exactly: NATS gives the
+// handler no sender to check, so the token is the whole proof that the reply comes from a reader
+// of that frame. That is why each token is random (publishFrame).
 func (m *sessionRelays) onReply(msg *nats.Msg) {
 	token, ok := strings.CutPrefix(msg.Subject, m.replyPrefix)
 	if !ok {

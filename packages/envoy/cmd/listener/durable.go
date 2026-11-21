@@ -38,10 +38,13 @@ const (
 // config. Shared by the create and drift-correction paths so the policy has
 // exactly one definition: the drift correction applies it to a copy of the
 // durable's config and updates the durable when the copy differs. The policy
-// has no idle heartbeat: the create path starts from a zero config, so a
-// durable the listener creates has none. listenerDurableRefusal refuses an
-// existing durable whose heartbeat or ack policy differs, since NATS cannot
-// change either in place.
+// has no idle heartbeat: the create path sets none, so a durable the listener
+// creates has none. listenerDurableRefusal refuses an existing durable whose
+// heartbeat or ack policy differs, since NATS cannot change either in place.
+// The policy sets no deliver policy, start sequence or start time: the create
+// path sets deliver-new itself (startListenerSubscription), and NATS refuses a
+// change of deliver policy in place, so the drift correction leaves an
+// existing durable's start as it is and the durable keeps its cursor.
 func applyListenerConsumerPolicy(config *nats.ConsumerConfig, subjects []string) {
 	config.FilterSubject = ""
 	config.FilterSubjects = subjects
@@ -80,8 +83,8 @@ const durableRefusedLine = "subscribe refused, shutting down"
 //     one still waiting for its retry.
 //
 // Recreating the durable would drop its cursor, so the listener leaves it to an operator, and the
-// refusal names every such setting the durable carries and says how to recreate it without
-// replaying the stream.
+// refusal names every such setting the durable carries. It says what a delete costs, since the
+// listener recreates a deleted durable at deliver policy new, and how to recreate it at its cursor.
 func listenerDurableRefusal(consumer string, config nats.ConsumerConfig) error {
 	var settings []string
 	if config.Heartbeat != 0 {
@@ -98,15 +101,17 @@ func listenerDurableRefusal(consumer string, config nats.ConsumerConfig) error {
 		without = "those settings"
 	}
 	return fmt.Errorf("%w: durable consumer %s has %s, which the listener's consumer policy forbids and NATS cannot change in place; "+
-		"deleting it lets the listener recreate it at deliver policy all, which replays every retained message, "+
-		"so to keep its cursor recreate it from its own config without %s, at deliver policy by_start_sequence "+
-		"with opt_start_seq one past its ack_floor.stream_seq (packages/envoy/deploy/README.md, Recreating a listener's durable)",
+		"deleting it lets the listener recreate it at deliver policy new, which skips every message stored before the create, "+
+		"including any the old durable had not acked, so to keep its cursor recreate it from its own config without %s, "+
+		"at deliver policy by_start_sequence with opt_start_seq one past its ack_floor.stream_seq (packages/envoy/deploy/README.md, Recreating a listener's durable)",
 		errListenerDurableRefused, consumer, strings.Join(settings, " and "), without)
 }
 
 // listenerDurable reads the machine's durable. It returns a nil info when there is none,
 // listenerDurableRefusal's error when the listener's policy cannot use the one there is, and the
-// lookup's error when NATS cannot say.
+// lookup's error when NATS cannot say: bus.ErrReconnecting while nats.go reconnects the
+// connection, since the read goes through the client's JetStream context, which waits for nothing
+// and names that refusal itself (bus.Client.JS).
 func listenerDurable(client *bus.Client, consumer string) (*nats.ConsumerInfo, error) {
 	info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
 	if errors.Is(err, nats.ErrConsumerNotFound) {
@@ -130,6 +135,10 @@ func listenerDurable(client *bus.Client, consumer string) (*nats.ConsumerInfo, e
 // drain paths trigger exactly that — silently resetting the durable cursor.
 // The config drift-correction also stamps consumerInactiveThreshold onto
 // consumers created before the threshold existed.
+//
+// Its requests go through the client's JetStream context and wait for no connection, so one made
+// while nats.go reconnects fails at once as bus.ErrReconnecting (bus.Client.JS), and the bind or
+// the rebuild that called it tries again.
 func startListenerSubscription(client *bus.Client, consumer string, handler nats.MsgHandler) (*nats.Subscription, error) {
 	subjects := bus.StreamSubjects()
 	info, err := listenerDurable(client, consumer)
@@ -141,9 +150,22 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		// shared NATS account a predictable subject would let any client
 		// hold interest on it — shadow-reading deliveries and making the
 		// consumer look push-bound so the listener could never attach.
+		//
+		// The durable starts at deliver policy new. A create happens only for a machine id with
+		// no durable, or for one whose durable was deleted, so every message stored before it is
+		// one this listener never held. Deliver-new needs no clock, where a start time would
+		// compare this listener's clock with the server's, and a create during a rebuild replays
+		// nothing either. What it gives up: a message stored between this process's start and the
+		// create is not seen by this new durable; the session's own consumer still delivers the
+		// message, and the other listeners' durables still decide its wake. On a self-health
+		// rebuild that recreates a deleted durable, a message stored between the deletion and the
+		// create is missed too, and where this listener holds the session's interest row the other
+		// listeners acknowledge it with no wake, so that wake is not reported; this is accepted,
+		// since the gap is one probe interval and the event is rare.
 		config := nats.ConsumerConfig{
 			Durable:        consumer,
 			DeliverSubject: nats.NewInbox(),
+			DeliverPolicy:  nats.DeliverNewPolicy,
 		}
 		applyListenerConsumerPolicy(&config, subjects)
 		if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
@@ -386,22 +408,20 @@ func waitWithin(ctx context.Context, wg *sync.WaitGroup) bool {
 }
 
 // durableNeedsDelivery reports whether the stored message on subject, stored at stream sequence
-// storedSeq, may need this listener's durable path, read from the subject alone, and when it does
-// not, how many sessions of this machine hold it in a consumer of their own
-// (session.SessionEntry.ConsumerHoldsStored; a message stored below a consumer's start is in no
-// consumer, and the durable path does not deliver it; which message it NAKs, defers or skips, and
-// what it logs, is decided by agentSubjectDelivery and fanoutDelivery in cmd/listener/delivery.go).
-// A role lane's subject always needs it. A session's agent subject does unless the session's
-// consumer holds it or the session is another listener's (agentSubjectNeedsDelivery). Any other
-// subject does when it matches a topic of an interest of this machine (the registry's subject
-// index) whose session's consumer does not hold it; with none, the fan-out would deliver it to
-// nobody and report nothing.
+// storedSeq, may need this listener's delivery handler, read from the subject alone, and when it
+// does not, how many sessions of this machine take it another way. A role lane's subject always
+// needs it. A session's agent subject does unless the session has a record or is another
+// listener's (agentSubjectNeedsDelivery). Any other subject does when it matches a topic of an
+// interest of this machine (the registry's subject index) whose session's consumer does not hold
+// it (session.SessionEntry.ConsumerHoldsStored; a message stored below a consumer's start is in
+// no consumer, and fanoutDelivery in cmd/listener/delivery.go decides it); with none, the fan-out
+// would deliver it to nobody and report nothing.
 func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, storedSeq uint64) (needed bool, skipped int) {
 	if strings.HasPrefix(subject, contracts.RoleTopicPrefix) {
 		return true, 0
 	}
 	if strings.HasPrefix(subject, contracts.AgentTopicPrefix) {
-		return agentSubjectNeedsDelivery(cfg, agentSubjectSession(subject), storedSeq)
+		return agentSubjectNeedsDelivery(cfg, agentSubjectSession(subject))
 	}
 	for _, interest := range cfg.registry.Match(cfg.machineID, subject) {
 		entry, err := cfg.sessions.Get(interest.SessionID)
@@ -413,15 +433,17 @@ func durableNeedsDelivery(cfg listenerDeliveryHandlerConfig, subject string, sto
 	return false, skipped
 }
 
-// agentSubjectNeedsDelivery is durableNeedsDelivery for sessionID's agent subject: not needed when
-// the session's live entry holds it in its own consumer (one skipped delivery), nor when its
-// cached interest names another listener, which delivers it (session.HandleAgentMessage's
-// OwnedElsewhere). Everything else is decoded and delivered: a session of this machine whose
-// entry records no consumer of its own holding it - an entry the previous build wrote for a
-// session on the core path, or one whose read did not answer - for which the path raises its
-// unreachable exception, and a session nobody has, for which it raises no_holder.
-func agentSubjectNeedsDelivery(cfg listenerDeliveryHandlerConfig, sessionID string, storedSeq uint64) (needed bool, skipped int) {
-	if entry, err := cfg.sessions.Get(sessionID); err == nil && entry.ConsumerHoldsStored(storedSeq) {
+// agentSubjectNeedsDelivery is durableNeedsDelivery for sessionID's agent subject. The session's
+// own consumer delivers every message on it, so this listener has nothing to deliver. It
+// acknowledges the message, counting one skipped delivery, when its cached record of the session
+// reads live or unresponsive, whatever that consumer holds: the consumer delivers the message, or
+// the consumer that the session's next registration starts does. A record past the gone horizon
+// counts as none. It acknowledges the message with no count when its cached interest row names
+// another listener, which decides the message itself (session.AgentOwnedElsewhere). Every other
+// message goes to agentSubjectDelivery, which reads the session bucket itself, since this cache
+// trails it, and waits once before it reports a wake.
+func agentSubjectNeedsDelivery(cfg listenerDeliveryHandlerConfig, sessionID string) (needed bool, skipped int) {
+	if _, state := cfg.sessions.Lookup(sessionID); notGone(state) {
 		return false, 1
 	}
 	interest, cached := cfg.registry.CachedInterest(sessionID)

@@ -69,6 +69,7 @@ env:
       "envoy-smoke": "envoy_smoke",
       "envoy-e2e-local": "envoy_e2e_local",
       "envoy-session-stall": "envoy_session_stall",
+      "envoy-refill": "envoy_refill",
       "ci-filters": "ci_filters",
       "ci-images": "ci_images",
       "tool-fallback": "tool_fallback",
@@ -208,6 +209,7 @@ jobs:
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_session_stall }}
+      envoy_refill: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_refill }}
       go_notices: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_notices }}
       ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_images }}
@@ -780,6 +782,18 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # why: .github/ci-notes/ci.md#what-the-refill-live-proof-shows
+  envoy-refill:
+    needs: changes
+    if: needs.changes.outputs.envoy_refill == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-envoy-refill.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # why: .github/ci-notes/ci.md#what-the-ci-filters-job-holds-every-filter-and-every-workflow-file-to
   ci-filters:
     needs: changes
@@ -939,6 +953,7 @@ jobs:
       - envoy-smoke
       - envoy-e2e-local
       - envoy-session-stall
+      - envoy-refill
       - ci-filters
       - proof-sdk-offline
       - worker-image

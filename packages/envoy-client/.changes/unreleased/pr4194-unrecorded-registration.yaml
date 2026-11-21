@@ -1,0 +1,28 @@
+kind: Fixed
+body: |-
+  `inboundUnavailable` holds a registration the listener answered with the bus-outage 503
+  (`isBusUnanswered`) as it holds the start race: the first such refusal since the last accepted
+  registration starts the `INBOUND_FIRST_OPEN_BOUND_MS` bound, an accepted registration inside it
+  ends the hold with nothing said, and only a refusal at or after its end tells the session.
+  `inboundUnavailableNoticeText` words a `why` that begins with `BUS_UNANSWERED_PREFIX` as a
+  registration that is not recorded for certain, which Envoy messages may still reach, not as a
+  session with no durable consumer. `restored` takes the last `why` the outage told, and so does
+  `inboundRestoredNoticeText`. After such a `why`, the restored notice says that the listener
+  recorded a registration of this session, and that a message the stream stored that has not
+  reached the session arrives now. It
+  does not say that the session receives again, as it still does after any other `why`. The new
+  `isUnrecordedRegistration(why)` says whether a told `why` is a registration that is not
+  recorded for certain, so each host picks the words of its own one-line texts by it and does
+  not test the prefix itself. A refusal or a lost relay subject after a told bus-outage 503 is
+  told once more, because it says that the session receives nothing, and the restored notice
+  after it is worded for that later `why`. A `subscribe` or an `unsubscribe` an attempt of which
+  got the bus-outage 503 now fails with that 503 also where its retry got no answer or a 5xx
+  that names no reason. So the hold and the words above apply to such a registration, and
+  `isBusUnanswered` reads true for such a removal, which its caller warns of as one that may
+  already have landed (the claim freed, or the record written). A refusal on the retry is still
+  the refusal: a 4xx, and a 5xx that names a reason (a registration's `no_grant`,
+  `consumer_limit` or `consumer_error` 503), which tells the session at once that it receives
+  nothing. Every other call still throws what its last attempt got.
+time: 2026-11-20T00:04:51Z
+custom:
+    Issue: pr4194

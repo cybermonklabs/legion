@@ -293,7 +293,12 @@ type Client struct {
 	// export_test.go) to hold the flush until the connection it would flush is gone, the
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
-	mu                 sync.Mutex
+	// replyWaitBegins, when set, runs as a request this client builds itself begins its wait for
+	// the reply, its publish and flush confirmed (requestConfirmedOn, RequestCore). It is nil
+	// outside tests: a row sets it to know each request waits for its reply before it holds a
+	// reconnect's handshake, or to keep each request there until the handshake is held.
+	replyWaitBegins atomic.Pointer[func()]
+	mu              sync.Mutex
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order
@@ -583,7 +588,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 // only a client it returns gets this far, so a caller holding a connection can find the client
 // that owns it (clientOwning) for as long as that client is a caller's to use.
 func (c *Client) install(nc *nats.Conn, ensure bool) error {
-	js, err := nc.JetStream(nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
+	js, err := JetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 	if err != nil {
 		return err
 	}
@@ -658,7 +663,7 @@ func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, def
 // elect one, so the hooks after it run, unless the stream must be reconciled, an update that fails
 // at once while the cluster has no quorum, as at main; a create or a raise it makes is waited out.
 func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := JetStreamOn(conn, nats.MaxWait(10*time.Second))
 	if err == nil {
 		err = c.ensureStreamReported(lookOnce(), ctx, conn, requestsUnder(ctx, js), atReconnect)
 	}
@@ -708,7 +713,7 @@ func (c *Client) untilStopped() (context.Context, context.CancelFunc) {
 // user cannot read them later either, so the client keeps deciding by what it holds, and reads no
 // more (subjectsRefused).
 func (c *Client) readDeployedSubjects(ctx context.Context, conn *nats.Conn, timeout time.Duration) bool {
-	js, err := conn.JetStream(nats.MaxWait(timeout))
+	js, err := JetStreamOn(conn, nats.MaxWait(timeout))
 	if err == nil {
 		var subjects []string
 		if subjects, err = readStreamSubjects(readsRefusals(conn, requestsUnder(ctx, js))); err == nil {
@@ -802,6 +807,9 @@ func (c *Client) awaitingFirstConnection() bool {
 	return c.awaitingConnection
 }
 
+// JS is the client's JetStream context. Its requests wait for no connection: one nats.go refuses
+// while it reconnects the connection fails at once as ErrReconnecting (namedRequests), so a caller
+// names no error of it again.
 func (c *Client) JS() nats.JetStreamContext {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -809,10 +817,17 @@ func (c *Client) JS() nats.JetStreamContext {
 }
 
 // Connected reports whether the client currently has a live NATS connection.
+//
+// It reads the connection under the client's lock (Connection) and its status with that lock
+// released. The status read waits for nats.go's connection lock, which nats.go holds through a
+// reconnect's dial and handshake. Held across that read, the client's lock kept every call that
+// takes it waiting until the attempt ended: the wait of a send for a connection
+// (ensureConnWithContext), Connection and JS, and the reads of the server's refusals. So a
+// Connected call made during a handshake waits for the attempt, and no other call waits behind it.
+// The keeper's pass, an outbox batch's check and a /healthz read call it.
 func (c *Client) Connected() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.Conn != nil && c.Conn.Status() == nats.CONNECTED
+	conn := c.Connection()
+	return conn != nil && conn.Status() == nats.CONNECTED
 }
 
 // Connection is the client's connection now, read under its lock. A KV handle opened outside this
@@ -1254,14 +1269,22 @@ func (c *Client) CoreSubOK() bool {
 }
 
 func (c *Client) subscriptionOK(transport subscriptionTransport) bool {
-	c.mu.Lock()
-	connOK := c.Conn != nil && c.Conn.Status() != nats.CLOSED
-	c.mu.Unlock()
+	connOK := c.connOpen()
 	c.subscriptionsMu.Lock()
 	subscription := &c.subscriptions[transport]
 	subOK := subscription.active != nil && subscription.active.IsValid() && !subscription.refused
 	c.subscriptionsMu.Unlock()
 	return connOK && subOK
+}
+
+// connOpen reports whether the client holds a connection nats.go has not closed. It reads the
+// connection under the client's lock and its status with that lock released, as Connected does:
+// the status read waits for nats.go's connection lock, which a reconnect's handshake holds, and no
+// lock of the client's is held across it. SubOK and CoreSubOK read it for a /healthz answer, and a
+// recovery reads it each pass (subscriptionsHealthy).
+func (c *Client) connOpen() bool {
+	conn := c.Connection()
+	return conn != nil && conn.Status() != nats.CLOSED
 }
 
 // subscriptionRefusal reads the server's refusal of a subscription: the subject, the queue group
@@ -1567,17 +1590,26 @@ const reconnectRecheck = time.Second
 // reconnecting is waited for, until it reconnects, ctx ends or the client stops, and read again at
 // each connection event (ConnectionChanged) and at least every reconnectRecheck, rather than
 // polled: with the reconnect buffer off, a publish while reconnecting would otherwise fail at once,
-// and a webhook that fails answers 503 to a sender that does not redeliver. A closed connection is
-// replaced by dialling a new one, unless the client is stopped. Callers that find the same
-// connection closed at once (the recovery its ClosedCB starts, and a publish) each dial one, and
-// only the first to finish replaces it: the others close theirs and serve with that one. So every
-// connection the client dials is either c.Conn, which Close and Drain close, or closed already; one
+// and a webhook that fails answers 503 to a sender that does not redeliver. A wait whose ctx ends
+// first returns ErrReconnecting with ctx's error (reconnectWaitEnded), so the caller's answer says
+// the bus is reconnecting, and the caller sends nothing. A closed connection is replaced by
+// dialling a new one, unless the client is stopped. Callers that find the same connection closed
+// at once (the recovery its ClosedCB starts, and a publish) each dial one, and only the first to
+// finish replaces it: the others close theirs and serve with that one. So every connection the
+// client dials is either c.Conn, which Close and Drain close, or closed already; one
 // left open beside it would outlive Close, and, with MaxReconnect -1, reconnect forever once its
 // server is gone. A client that connects in the background (WithConnectInBackground) holds, from
 // its constructor on, a connection nats.go has yet to connect for the first time and does not
 // close before then, so a caller waits for that first connection as for a reconnect, and nothing
 // here dials beside nats.go before it; a connection dialled later to replace a closed one is an
 // ordinary one, connected before it is installed.
+//
+// Each read of the connection's status waits for nats.go's connection lock, which nats.go holds
+// through a reconnect's dial and handshake, up to the attempt's connect timeout (connectTimeout,
+// 5 s). So each read is made within ctx (readWithin). A wait made during a handshake ends at ctx's
+// end too, with the same ErrReconnecting, and not when the attempt ends. A ctx that can never end
+// (ensureConn) reads at once on the caller's goroutine, and waits for the lock as long as nats.go
+// holds it.
 func (c *Client) ensureConnWithContext(ctx context.Context) error {
 	for {
 		c.mu.Lock()
@@ -1586,15 +1618,26 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 		// lands between the read and the wait below closes the channel the wait is on.
 		changed := c.connChangedLocked()
 		c.mu.Unlock()
+		// One read of conn's status, made within ctx (readWithin): the read waits for nats.go's
+		// connection lock, which nats.go holds through a reconnect's dial and handshake. A read that
+		// has not answered when ctx ends is a wait for a connection nats.go is reconnecting, and it
+		// ends as one (reconnectWaitEnded).
+		var status nats.Status
+		if conn != nil {
+			var answered bool
+			if status, answered = readWithin(ctx, conn.Status); !answered {
+				return reconnectWaitEnded(ctx)
+			}
+		}
 		// A live connection serves even a stopped client: deliveries still in their handlers during
 		// Drain publish their forwards and exceptions through it.
-		if conn != nil && (conn.IsConnected() || conn.IsDraining()) {
+		if conn != nil && (status == nats.CONNECTED || status == nats.DRAINING_SUBS || status == nats.DRAINING_PUBS) {
 			return nil
 		}
 		if c.stopped() {
 			return errStopped
 		}
-		if conn != nil && !conn.IsClosed() {
+		if conn != nil && status != nats.CLOSED {
 			c.reconnectWaits.Add(1)
 			if c.reconnectWaitTick != nil {
 				c.reconnectWaitTick()
@@ -1608,7 +1651,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				recheck.Stop()
-				return fmt.Errorf("bus: waiting for NATS to reconnect: %w", ctx.Err())
+				return reconnectWaitEnded(ctx)
 			case <-c.stopCh:
 				recheck.Stop()
 				return errStopped
@@ -1623,7 +1666,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		js, err := nc.JetStream(nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
+		js, err := JetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 		if err != nil {
 			nc.Close()
 			return err
@@ -1845,15 +1888,17 @@ func validSubject(subject string) bool {
 }
 
 // refused names nats.go's refusal of a message past the server's max payload as the ErrTooLarge it
-// is, naming its envelope of size bytes. checkSubject has already refused every subject nats.go
-// would.
+// is, naming its envelope of size bytes, and its refusal of a send while it reconnects the
+// connection as the ErrReconnecting it is (Reconnecting): a send can still meet that refusal after
+// its wait for the connection, when the connection drops again before the send. checkSubject has
+// already refused every subject nats.go would.
 func (c *Client) refused(err error, size int) error {
 	if errors.Is(err, nats.ErrMaxPayload) {
 		conn := c.Connection()
 		return fmt.Errorf("%w: an envelope of %d bytes against the server's max payload of %d bytes",
 			ErrTooLarge, size, conn.MaxPayload())
 	}
-	return err
+	return Reconnecting(err)
 }
 
 // publishBound bounds Publish and PublishReportingDuplicate, and the publishJetStream and
@@ -1874,10 +1919,13 @@ func (c *Client) Publish(item contracts.Envelope) error {
 	return err
 }
 
-// PublishWithin publishes as Publish does, with ctx as the whole publish's bound - the wait for a
-// reconnect, the flush and the JetStream acknowledgement all end with it - instead of publishBound.
-// The listener's HTTP handlers publish this way, so a bus they cannot reach is answered inside the
-// deadline their own caller gave them.
+// PublishWithin publishes as Publish does, with ctx as its bound instead of publishBound: the wait
+// for a reconnect, the flush and the JetStream acknowledgement each end with it. The send itself,
+// a core publish and its flush or a JetStream publish, takes nats.go's connection lock before it
+// waits on ctx, so a send made while a reconnect's handshake holds that lock waits for that
+// attempt, up to the client's connect timeout (connectTimeout, 5 s), past ctx; readWithin lists
+// such calls. The listener's HTTP handlers publish this way, so a bus they cannot reach is
+// answered inside the deadline their own caller gave them, but for that wait.
 func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) error {
 	_, err := c.PublishReportingDuplicateWithin(ctx, item)
 	return err
@@ -1901,21 +1949,21 @@ func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error
 }
 
 // PublishReportingDuplicateWithin publishes as PublishReportingDuplicate does, reporting the same
-// duplicate verdict over the same two transports, with ctx as the whole publish's bound instead of
-// publishBound. The verdict is PublishAckWithin's Duplicate, a resend's included.
+// duplicate verdict over the same two transports, with ctx as its bound instead of publishBound,
+// as PublishWithin's is. The verdict is PublishAckWithin's Duplicate, a resend's included.
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
 	ack, err := c.PublishAckWithin(ctx, item)
 	return ack.Duplicate, err
 }
 
 // PublishAckWithin publishes item on its own topic as PublishReportingDuplicateWithin does, over
-// the same two transports and within ctx's bound, and returns the stream's whole acknowledgement
-// rather than its duplicate verdict alone: the sequence, the verdict, and whether the verdict
-// answers a resend (StoredAck.Resent), which can make a duplicate this call's own first copy. A
-// core-transport topic has no acknowledgement, so it answers the zero StoredAck beside
-// PublishCoreContext's error. The listener's send and publish routes publish this way: their
-// sender limit charges nothing for a copy the stream already held, and one for a copy this call
-// may have stored (cmd/listener's senderCharge.published).
+// the same two transports and with ctx as its bound as PublishWithin's is, and returns the
+// stream's whole acknowledgement rather than its duplicate verdict alone: the sequence, the
+// verdict, and whether the verdict answers a resend (StoredAck.Resent), which can make a duplicate
+// this call's own first copy. A core-transport topic has no acknowledgement, so it answers the
+// zero StoredAck beside PublishCoreContext's error. The listener's send and publish routes publish
+// this way: their sender limit charges nothing for a copy the stream already held, and one for a
+// copy this call may have stored (cmd/listener's senderCharge.published).
 func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
 	if c.UsesCoreTransport(item.Topic) {
 		return StoredAck{}, c.PublishCoreContext(ctx, item.Topic, item)
@@ -1941,15 +1989,15 @@ type StoredAck struct {
 }
 
 // PublishStoredAck publishes item to the notification stream on subject, under Nats-Msg-Id msgID,
-// none when it is empty, within ctx's bound as PublishWithin's, for a caller that names both the
-// subject it is stored on and the stored message itself, and returns the stream's
-// acknowledgement. publishJetStream publishes an envelope on its own topic through it, under the
-// id it derives. It is also how the listener keeps a role message it could not deliver: stored on
-// that role's kept subject (KeptRoleSubject) while the envelope keeps its own topic field, so the
-// holder that later takes the role is handed the message as its sender sent it. Every listener
-// that keeps the same message writes it under one id (KeptMsgID), and the keep reads the
-// acknowledgement to tell a new copy from one the stream already held, and which copy that is
-// (cmd/listener/role_keep.go).
+// none when it is empty, with ctx as its bound as PublishWithin's is (the send's wait for nats.go's
+// connection lock is not bounded by it), for a caller that names both the subject it is stored on
+// and the stored message itself, and returns the stream's acknowledgement. publishJetStream
+// publishes an envelope on its own topic through it, under the id it derives. It is also how the
+// listener keeps a role message it could not deliver: stored on that role's kept subject
+// (KeptRoleSubject) while the envelope keeps its own topic field, so the holder that later takes
+// the role is handed the message as its sender sent it. Every listener that keeps the same message
+// writes it under one id (KeptMsgID), and the keep reads the acknowledgement to tell a new copy
+// from one the stream already held, and which copy that is (cmd/listener/role_keep.go).
 //
 // A duplicate is no error: it comes back Duplicate, with the sequence of the copy the stream
 // holds, and Resent where it answers a resend. Its refusals are those of every stored publish,
@@ -1979,16 +2027,16 @@ func (c *Client) PublishStoredAck(ctx context.Context, subject string, item cont
 }
 
 // PublishStoredAs is PublishStoredAck for a caller that needs no acknowledgement: the listener's
-// exception about a stored message, published on the exception's own topic, which every listener
-// that raises it from its own durable publishes under one id, so the stream keeps one copy. A
-// duplicate the stream drops counts as published, which is the ordinary case for such an
-// exception rather than a fault. Its refusals are PublishStoredAck's.
+// dead letter of a kept role copy it dropped, stored on the sender's agent subject
+// (cmd/listener's endKeptCopyWithDeadLetter), which every listener that sends it publishes under
+// one id, so the stream keeps one copy. A duplicate the stream drops counts as published, which is
+// the ordinary case for such a letter rather than a fault. Its refusals are PublishStoredAck's.
 func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contracts.Envelope, msgID string) error {
 	_, err := c.PublishStoredAck(ctx, subject, item, msgID)
 	return err
 }
 
-// publishJetStream publishes item to the notification stream within ctx's bound, and returns the
+// publishJetStream publishes item to the notification stream with ctx as its bound, and returns the
 // stream's acknowledgement (StoredAck). The MsgId, where the envelope earns one, is the dedupe key
 // and the topic together, because one upstream event can be published on several topics under one
 // key - a GitHub comment that mentions the trigger is published on its mention topic beside its
@@ -1996,7 +2044,10 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // earlier of the caller's own deadline and publishBound, since WithTimeout keeps the parent's
 // deadline when that is the earlier one; publishBound is what bounds a caller that passed none.
 // The acknowledgement wait is still taken from publishAcknowledgementClock, the seam a test uses
-// to expire that bound without spending it.
+// to expire that bound without spending it. The bound does not cover the send's wait for nats.go's
+// connection lock: js.Publish takes the lock to send before it waits on ctx, so a publish made
+// while a reconnect's handshake holds that lock waits for the attempt (readWithin lists such
+// calls).
 //
 // A publish the server refuses under the connection's own publish permissions is answered
 // ErrPublishDenied, as a publish window's sends are (window.acknowledged): a denied JetStream
@@ -2185,9 +2236,12 @@ func cursorMoved(err error) error {
 // to have accepted all return an error. The subject can differ from item.Topic when an
 // authoritative router forwards an envelope while retaining its original topic for the recipient.
 //
-// ctx is the whole publish's bound, so it is both what the wait for a reconnect ends with and the
-// window publishConfirmed flushes and confirms within, and a caller answering inside a deadline
-// of its own (the listener's routes: a publish through PublishWithin) is never held past it.
+// ctx is the publish's bound, so it is both what the wait for a reconnect ends with and the window
+// publishConfirmed flushes and confirms within. A caller answering inside a deadline of its own
+// (the listener's routes: a publish through PublishWithin) is held past it only by the publish's
+// and the flush's waits for nats.go's connection lock, which they take before they wait on ctx: a
+// publish made while a reconnect's handshake holds that lock waits for the attempt (readWithin
+// lists such calls).
 // The bound taken below is the earlier of ctx's own deadline and publishBound, since WithTimeout
 // keeps the parent's deadline when that is the earlier one; publishBound is what bounds a caller
 // that passed none.
@@ -2284,6 +2338,7 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	deadline, _ := ctx.Deadline()
 	conn := c.Conn
+	life := lifeOf(conn).current()
 	inbox := nats.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
@@ -2297,16 +2352,19 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	err = c.publishConfirmed(ctx, conn, forward, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
-		_ = replies.Unsubscribe()
+		endReplies(replies, false)
 		return nil, err
 	}
-	return &PendingForward{replies: replies, deadline: deadline, unconfirmed: err}, nil
+	return &PendingForward{replies: replies, life: life, deadline: deadline, unconfirmed: err}, nil
 }
 
 // PendingForward is a forward StartRequestStoredTo published, whose replies Wait reads.
 type PendingForward struct {
 	// replies is the forward's reply inbox, which the stream answers on.
-	replies  *nats.Subscription
+	replies *nats.Subscription
+	// life is the life of the connection replies was subscribed in (connLife), which says where
+	// Wait ends replies (endReplies).
+	life     <-chan struct{}
 	deadline time.Time
 	// unconfirmed is publishConfirmed's error for a publish it could not confirm, which the
 	// stream's acknowledgement may still overrule; nil when it confirmed the publish.
@@ -2314,12 +2372,18 @@ type PendingForward struct {
 }
 
 // Wait reads the forward's replies until the stream has acknowledged storing it or its window
-// ends, and releases its reply subscription. No acknowledgement by the deadline, the stream's
-// error answer, and the server's no-responders answer (nothing captured the subject) are each
-// ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
+// ends, and releases its reply subscription (endReplies). No acknowledgement by the deadline, the
+// stream's error answer, and the server's no-responders answer (nothing captured the subject) are
+// each ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
 // publish, the reason for that.
+//
+// Wait unsubscribes on its caller's goroutine only for a reply it took while the connection was
+// still in the life replies was subscribed in. Once nats.go reports the connection lost, a
+// reconnect's handshake can hold nats.go's connection lock, which the unsubscribe waits for. So a
+// reply taken then, also one that was waiting in the inbox, ends the inbox off that goroutine.
 func (f *PendingForward) Wait() error {
-	defer f.replies.Unsubscribe()
+	replied := false
+	defer func() { endReplies(f.replies, replied && lifeCurrent(f.life)) }()
 	for {
 		remaining := time.Until(f.deadline)
 		if remaining <= 0 {
@@ -2332,6 +2396,7 @@ func (f *PendingForward) Wait() error {
 		if err != nil {
 			// The server's no-responders answer: nothing, not even a stream, took the forward.
 			if errors.Is(err, nats.ErrNoResponders) {
+				replied = true
 				return fmt.Errorf("%w: %w", ErrForwardNotStored, err)
 			}
 			return err
@@ -2340,6 +2405,7 @@ func (f *PendingForward) Wait() error {
 		if !ok {
 			continue
 		}
+		replied = true
 		// The stream's error answer to the forward, which no later reply changes.
 		if ack.Error != nil {
 			return fmt.Errorf("%w: %w", ErrForwardNotStored, ack.Error)

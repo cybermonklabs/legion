@@ -143,8 +143,10 @@ func (w *Watcher) logEnd(err error) {
 		w.logger().Warn(w.name+" watcher's consumer was already gone at its end",
 			slog.String("bucket", w.bucket), slog.String("error", err.Error()))
 	case lostConnection(err):
+		// A delete refused while nats.go reconnects is logged by name (bus.Reconnecting), not as
+		// nats.go's "outbound buffer limit exceeded".
 		w.logger().Warn(w.name+" watcher's consumer was left to the server: the connection was lost before its delete",
-			slog.String("bucket", w.bucket), slog.String("error", err.Error()))
+			slog.String("bucket", w.bucket), slog.String("error", bus.Reconnecting(err).Error()))
 	default:
 		w.logger().Error(w.name+" watcher end failed",
 			slog.String("bucket", w.bucket), slog.String("error", err.Error()))
@@ -158,7 +160,7 @@ func (w *Watcher) logUnfinished(message string, cause error) {
 	if lostConnection(cause) {
 		level = slog.LevelWarn
 	}
-	w.logger().Log(context.Background(), level, message, slog.String("bucket", w.bucket), slog.String("error", cause.Error()))
+	w.logger().Log(context.Background(), level, message, slog.String("bucket", w.bucket), slog.String("error", bus.Reconnecting(cause).Error()))
 }
 
 // watchDone counts a watch out (watching), and wakes End once none is left.

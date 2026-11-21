@@ -12,9 +12,9 @@ import {
 import { z } from "zod";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
 import {
-  type ConnectionState,
   type MessageMetadataInput,
   type PublishResult,
+  type SendTargetState,
   type SessionInfo,
   type SessionState,
   UNRESPONSIVE_RULE,
@@ -29,7 +29,10 @@ const SESSION_STATE_GUIDE =
   "minutes, unresponsive after that and within an hour, gone past the hour or with no record at " +
   `all. ${UNRESPONSIVE_RULE} A session named with no state is live. A send answered with state ` +
   "stopped means that session is not running: the message is stored for it and reaches it if " +
-  `it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and nothing of its claims changes.`;
+  `it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, and nothing of its claims changes. ` +
+  "A send answered with state no_receiver means that session runs but takes no message into its " +
+  "conversation now, as a Claude Code terminal with no mod does: the message is stored for it and " +
+  `reaches it if it takes messages within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours.`;
 
 const DELIVERY_CONTRACT =
   "Delivery is at-least-once, possibly out of order across topics; use id for dedupe and at for freshness.";
@@ -40,12 +43,36 @@ const PUBLISH_COUNTS =
   "recipients_connected is how many of those are running now. A listener that counts neither " +
   "sends neither, and a role topic names its holder instead.";
 
-const STORED_DELIVERY =
-  "Every notification topic is stored (agent, dispatch, github, slack, legion, ghostwispr, " +
-  "whatsapp, team; a role message reaches its holder as a stored copy on the holder's agent " +
-  "topic), and reaches each subscribed session once from the durable consumer its listener " +
-  "relays to it, also one that was away or restarted. A 200 means the stream stored the message " +
-  "for each subscribed session's consumer, not that any recipient has read it.";
+/**
+ * The sentence `stored`, with the lanes it names (`lanes`), and what a stored message does: it
+ * reaches each subscribed session once from its durable consumer.
+ */
+const storedDelivery = (stored: string, lanes: string): string =>
+  `${stored} (${lanes}; a role message reaches its holder as a stored copy on the holder's ` +
+  "agent topic), and reaches each subscribed session once from the durable consumer its " +
+  "listener relays to it, also one that was away or restarted. A 200 means the stream stored " +
+  "the message for each subscribed session's consumer, not that any recipient has read it.";
+
+const STORED_DELIVERY = storedDelivery(
+  "Every notification topic is stored",
+  "agent, dispatch, github, slack, legion, ghostwispr, whatsapp, team"
+);
+
+// The listener's publish route refuses these topics by name (`publishHandler`, R7 of
+// dispatch://INFRA-3589): the agent topics, Dispatch's and GitHub's lanes, which no NATS grant can
+// refuse an HTTP caller of a listener whose own user holds one, the Legion wake subject, and the
+// listener's own lanes (`bus.ListenerOwnLaneOf`). So the publish tool lists none of them as stored.
+const PUBLISHED_DELIVERY =
+  "The listener refuses a publish to each of these topics by name, and stores nothing: an agent " +
+  "topic, since envoy_send sends to one session; a topic under notifications.dispatch., since " +
+  "only Dispatch publishes on Dispatch's lane; a topic under notifications.github., since only " +
+  "the listener that receives GitHub's webhook publishes on GitHub's lane; " +
+  "notifications.legion.wake, since only the listener reports a Legion pod wake; and a topic " +
+  "under notifications.envoy.kept., notifications.envoy.resume. or notifications.envoy.takeover., " +
+  `since those lanes are the listener's own. ${storedDelivery(
+    "Every other topic the stream captures is stored",
+    "slack, legion, ghostwispr, whatsapp, team"
+  )}`;
 
 const TOPIC_GUIDE =
   "Topic guide (all are under notifications.): agent.<session_id> (subscribe: own inbox); role.<role> " +
@@ -233,7 +260,7 @@ export const envoyToolSpecs = [
   },
   {
     name: "envoy_publish",
-    description: `Publish an Envoy message to a notifications. topic. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, or the forward is not stored within four seconds. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
+    description: `Publish an Envoy message to a notifications. topic. ${PUBLISHED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a live session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it. It does not say that the holder read it. It names the holder and the state the listener resolved the holder in. Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success. The result says that the listener kept the message, and its kept_until is the time that hour ends. For a holder that is not live, the result also names that holder and its state. The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again. If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, or the forward is not stored within four seconds. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${PUBLISH_COUNTS} ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
     arguments: (schema) => ({ topic: schema.string(), ...messageArguments(schema) }),
     operation: EnvoyToolOperation.publish,
   },
@@ -314,6 +341,12 @@ const STORED_ONCE =
  * `sent`, because nothing read the message and a model told "sent" waits for an answer that is
  * not coming.
  *
+ * A `no_receiver` target is queued too, for the same reason: the session runs, but it advertises
+ * no delivery mode, as a Claude Code terminal does while no mod is connected to it, so nothing
+ * takes the message into its conversation now. The message is stored, and it reaches the session
+ * if the session takes messages within the same hours. The listener names no registry state for
+ * it, so the line names none: `live` would say the message reaches it.
+ *
  * A connected target is sent to, and the line names its registry state and, for one that stopped
  * answering, since when (`lastSeen`, the listener's record of its last registration): a send to
  * an unresponsive session is stored for it, not a delivery that failed, and how long it has been
@@ -321,25 +354,28 @@ const STORED_ONCE =
  *
  * A `duplicate` answer is a resend of a message the listener already stored under the same
  * idempotency key. It stored nothing this time, so this answer's event id names no stored copy
- * and the line leaves the id out; the target's state still chooses the verb, because a stopped
+ * and the line leaves the id out; the target's state still chooses the verb, because a queued
  * target's one stored copy is waiting rather than delivered.
  *
  * `confirmed` is false only for a listener too old to echo the recipient, which is also too old
  * to answer a state, so the unconfirmed note belongs to the connected line alone.
  */
-export function sendConfirmationText(result: {
-  readonly envelope: { readonly event_id: string };
-  readonly recipient: string;
-  readonly recipientState: SessionState;
-  readonly state: ConnectionState;
-  readonly confirmed: boolean;
-  readonly lastSeen?: number;
-  readonly duplicate: boolean;
-}): string {
-  if (result.state === "stopped") {
+export function sendConfirmationText(
+  result: {
+    readonly envelope: { readonly event_id: string };
+    readonly recipient: string;
+    readonly confirmed: boolean;
+    readonly lastSeen?: number;
+    readonly duplicate: boolean;
+  } & SendTargetState
+): string {
+  if (result.state === "stopped" || result.state === "no_receiver") {
     const seen =
       result.lastSeen === undefined ? "" : ` (last seen ${lastSeenText(result.lastSeen)})`;
-    const waits = `the session is stopped${seen}; if it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, it gets the message`;
+    const waits =
+      result.state === "stopped"
+        ? `the session is stopped${seen}; if it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, it gets the message`
+        : `the session runs but takes no message into its conversation now; the message is stored, and if the session takes messages within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours, it gets the message`;
     if (result.duplicate) {
       return `queued once for ${result.recipient}: ${STORED_ONCE}; ${waits}`;
     }

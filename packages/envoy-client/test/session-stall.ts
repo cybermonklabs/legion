@@ -19,7 +19,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
+import { DELIVERY_CAPABILITIES, EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
 import { connect, Events, type KV, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
 import { createConsumerDelivery } from "../src/consumer-delivery";
@@ -210,6 +210,10 @@ async function runSessionChild(config: ChildConfig): Promise<never> {
       topics: [subject],
       port: 0,
       title: config.title,
+      // The modes a session advertises once something takes messages into its conversation, as
+      // this child does on stdout. A probed session that advertises none answers a plain send
+      // no_receiver with no recipient_state, so the states this rig reads would not be there.
+      capabilities: DELIVERY_CAPABILITIES,
       driving: false,
       selfSubscribed: true,
       plugin: PLUGIN,

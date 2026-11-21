@@ -1,11 +1,14 @@
 // The stand-in Oh My Pi host `extensions/envoy.ts` is driven against off a real session: the
 // surface the extension sees (`TestPi`) and a recorder of everything it registers, sends and
-// appends. Three callers share it, which is why it is a module of its own: the package's own suite
-// (`extensions/envoy.test.ts`, through its `createPi`, which adds the clipboard the suite mocks),
+// appends. Four callers share it, which is why it is a module of its own: the package's own suite
+// (`extensions/envoy.test.ts` and `extensions/consumer-delivery.test.ts`, through `createPi` in
+// `test/extension-harness.ts`, which adds the clipboard the suite mocks),
 // `scripts/smoke-role-takeover.sh`'s client process (`scripts/role-takeover/omp-client.ts`), one
-// client instance per OS process, and `test/session-pod-process.ts`, one session of a session pod
-// in an OS process of its own. A host method the extension starts to use is added here once, so
-// neither process can drift behind the suite.
+// client instance per OS process, `test/session-pod-process.ts`, one session of a session pod in
+// an OS process of its own, and `test/stopping-session.ts`, the instance
+// `extensions/stopping-session.test.ts` sends a SIGTERM to in an OS process of its own. A host
+// method the extension starts to use is added here once, so none of those processes can drift
+// behind the suite.
 import type { MessageRenderer, PiApi } from "@legion/pi-shared/pi-types";
 import { z } from "zod";
 

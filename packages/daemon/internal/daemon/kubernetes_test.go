@@ -1027,11 +1027,14 @@ func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) 
 	}
 }
 
-// awaitHealthz returns once the daemon answers /healthz, and fails if it exits first.
+// awaitHealthz returns once the daemon answers /healthz, and fails if it exits first. It waits up
+// to a minute, or what the test binary's deadline leaves (testwait.Bounded): a daemon that boots
+// beside six busy loops on a two-CPU pod took 14 s to reach its intake stage, after which a 15 s
+// bound failed the idle rig in its setup in 6 of 7 runs.
 func awaitHealthz(t *testing.T, cfg config.Config, done chan error) {
 	t.Helper()
 	var err error
-	if !testwait.Holds(15*time.Second, 20*time.Millisecond, func() bool {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 20*time.Millisecond, func() bool {
 		var response *http.Response
 		response, err = pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/healthz")
 		if err == nil {

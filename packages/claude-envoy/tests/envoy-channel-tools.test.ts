@@ -105,6 +105,83 @@ test("sends Envoy messages through the shared transport", async () => {
   })
 })
 
+/** Every value a JSON Schema node lists: an enum, a const, or the members of a union. */
+function listedValues(node: unknown): unknown[] {
+  if (typeof node !== "object" || node === null) return []
+  if ("enum" in node && Array.isArray(node.enum)) return [...node.enum]
+  if ("const" in node) return [node.const]
+  return [
+    ...("anyOf" in node && Array.isArray(node.anyOf) ? node.anyOf : []),
+    ...("oneOf" in node && Array.isArray(node.oneOf) ? node.oneOf : []),
+  ].flatMap(listedValues)
+}
+
+// Claude Code shows the model the envoy_send schema, and the model fills expects_reply from it.
+// The schema and the validation must name the same values, so a call that follows the schema is
+// never refused. On 2026-11-16 a Claude Code session on claude-envoy 2.32.3 reported a schema that
+// listed none, optional and required, and a refusal of its call with none
+// (dispatch://INFRA-3589/spec#b-r20).
+test("envoy_send's schema offers exactly the expects_reply values the call takes", async () => {
+  // The definition the server answers tools/list with. The field goes through JSON, as the stdio
+  // transport carries it to Claude Code.
+  const send = channelToolDefinitions().find(({ name }) => name === "envoy_send")
+  const field = JSON.stringify(send?.inputSchema.properties?.["expects_reply"] ?? null)
+  const offered = listedValues(JSON.parse(field))
+  expect(offered).toEqual([false, "optional", "required"])
+
+  const sent: unknown[] = []
+  const client = createEnvoyClient({
+    baseUrl: "http://envoy.test",
+    fetch: async (_request, init) => {
+      const body: unknown = JSON.parse(String(init?.body))
+      sent.push(
+        typeof body === "object" && body !== null && "expects_reply" in body
+          ? body.expects_reply
+          : undefined,
+      )
+      return Response.json({
+        event_id: "evt-sent",
+        source: "agent",
+        source_event_id: "agent.ses_claude.evt-sent",
+        source_session: "ses_claude",
+        topic: "notifications.agent.ses_receiver",
+        dedupe_key: "agent.ses_receiver.evt-sent",
+        issued_at: 1,
+        payload_summary: "ready",
+        trace_id: "trace-sent",
+        recipient: "ses_receiver",
+      })
+    },
+  })
+  const runtime: ChannelToolRuntime = {
+    identity,
+    client,
+    session: sessionWith([]),
+    clientInstanceID: INSTANCE,
+  }
+
+  // One call with each listed value. A refusal throws here and fails the test.
+  for (const value of offered) {
+    await executeEnvoyTool(runtime, "envoy_send", {
+      session_id: "ses_receiver",
+      message: "ready",
+      expects_reply: value,
+    })
+  }
+  expect(sent).toEqual(offered)
+
+  // The old none is not in the list, so the call refuses it and sends nothing. The delivery
+  // reader still takes none from an old sender and reads it as false.
+  await expect(
+    executeEnvoyTool(runtime, "envoy_send", {
+      session_id: "ses_receiver",
+      message: "ready",
+      expects_reply: "none",
+    }),
+  ).rejects.toThrow("expects_reply")
+  expect(sent).toEqual(offered)
+})
+
 // The list is what the model reads before it decides a peer is dead: a session past its live
 // window is still running, so it must be asked for and must arrive with the state and the
 // heartbeat that say so (dispatch://INFRA-392).

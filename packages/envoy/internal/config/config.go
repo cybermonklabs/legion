@@ -50,11 +50,15 @@ func (s Service) ListenAddress() string {
 // PORT is unset. With ENVOY_LISTEN_FD it inspects the inherited socket that names, and
 // ENVOY_LISTEN_HOST and PORT, each only when set, must name the socket's address: no default stands
 // in for one that is unset, and PORT=0 names no socket. It only inspects the socket; main adopts
-// it.
+// it. It refuses an ENVOY_MACHINE_ID whose NATS names another id can give, or NATS refuses
+// (bus.CheckListenerMachineID).
 func Load(defaultPort int) (Service, error) {
 	machine := strings.TrimSpace(os.Getenv("ENVOY_MACHINE_ID"))
 	if machine == "" {
 		return Service{}, fmt.Errorf("ENVOY_MACHINE_ID is required")
+	}
+	if err := bus.CheckListenerMachineID(machine); err != nil {
+		return Service{}, fmt.Errorf("ENVOY_MACHINE_ID %q %w", machine, err)
 	}
 	raw := strings.TrimSpace(os.Getenv("NATS_URLS"))
 	if raw == "" {

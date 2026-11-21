@@ -1,0 +1,20 @@
+-- 20261120193000_issue_release_taken_pod.up.sql — a release's mark records the release the
+-- teardown wrote once the pod is gone, so a release that took its pod is never cancelled
+-- (dispatch://INFRA-3589).
+--
+-- released_id is the pod_releases row of this release, 0 while its pod stands. The teardown's
+-- record writes it once the runtime has taken the pod, in the transaction that inserts that row
+-- (store.Store.RecordPodRelease), before any later step of the teardown. Those steps can fail, and
+-- the teardown row then runs again. The release before read the mark again on that attempt, and a
+-- claim taken over or a start queued since made it cancel a release whose pod was already gone:
+-- the cancel deleted the bundle of unpushed work that the pod's next start restores, and the next
+-- attempt of a teardown that did not cancel wrote a second pod_releases row. A mark that names its
+-- release now makes the teardown finish its remaining steps and no more
+-- (store.Store.IssueRelease), the record answers the row it wrote and writes none, and a cancel
+-- of such a mark is refused (store.Store.CancelIssueRelease).
+--
+-- Every mark standing at this migration names no release. A teardown that took its pod under the
+-- release before and has not finished is so decided as the release before decided it, which is
+-- the case this column closes from now on. A rollback leaves the column in place, and the release
+-- before writes none of it.
+alter table issue_releases add column released_id bigint not null default 0;

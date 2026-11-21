@@ -406,11 +406,11 @@ func TestSessionList_CacheOnlyAfterNATSShutdown(t *testing.T) {
 func TestOpenSessionRegistry_PrunesUsingBucketTTL(t *testing.T) {
 	client := setupNATS(t)
 	// Create the bucket with a 2-minute TTL — deliberately different from the
-	// 5-minute hardcoded default in OpenSessionRegistry.
+	// BucketMaxAge default in OpenSessionRegistry.
 	if _, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(2*time.Minute)); err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}
-	// Open a second registry WITHOUT a TTL option, so opts.ttl is the 5-minute
+	// Open a second registry WITHOUT a TTL option, so opts.ttl is the BucketMaxAge
 	// default. It must adopt the bucket's real 2-minute TTL via Status(), not
 	// the default — otherwise pruning is computed against the wrong window.
 	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1))
@@ -423,7 +423,7 @@ func TestOpenSessionRegistry_PrunesUsingBucketTTL(t *testing.T) {
 	// Rows are pruned for their age only once the copy follows the bucket (pruneLocked).
 	waitFor(t, 5*time.Second, reg.watcher.Following)
 	// An entry created 3 minutes ago is past the real 2-minute TTL but still
-	// within the 5-minute default. Pruning against the bucket TTL drops it;
+	// within the BucketMaxAge default. Pruning against the bucket TTL drops it;
 	// pruning against the default would wrongly keep it live.
 	created := time.Now().Add(-3 * time.Minute)
 	reg.mu.RLock()

@@ -1,15 +1,20 @@
 package session_test
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"testing"
+	"time"
 
+	"github.com/nats-io/nats.go"
 	session "github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
-// resolvedEntry is the session record the listener resolves before it hands a message to
-// HandleAgentMessage: the registry's entry for sessionID, or nil when it holds none. Delivery no
-// longer reads the registry itself, so every test here resolves it the way its caller does.
+// resolvedEntry is the session record a caller of session.Resolve reads first: the registry's
+// entry for sessionID, or nil when it holds none. Resolve reads no registry itself, so every test
+// of it resolves the entry the way its caller does.
 func resolvedEntry(t *testing.T, sessions *session.SessionRegistry, sessionID string) *session.SessionEntry {
 	t.Helper()
 	entry, err := sessions.Get(sessionID)
@@ -19,68 +24,77 @@ func resolvedEntry(t *testing.T, sessions *session.SessionRegistry, sessionID st
 	return &entry
 }
 
-// TestHandleAgentMessage_UnknownSession tests that when no registry has the session,
-// the handler signals no delivery (ACK, don't NAK).
-func TestHandleAgentMessage_UnknownSession(t *testing.T) {
-	newSessionRegistry(t)
-
-	result := session.HandleAgentMessage(
-		newTestEnvelope("agent", "notifications.agent.ses_unknown", "test"),
-		"ses_unknown", "test-machine", nil, nil, true, 0, true,
-	)
-
-	if result.Relayed {
-		t.Fatal("should not deliver to unknown session")
-	}
-	if result.Err != nil {
-		t.Fatalf("unknown session should ACK (skip), not NAK (retry forever), got error %v", result.Err)
-	}
+// readRecord is the answer the listener hands HandleAgentMessage: its read of sessionID's record
+// from the session bucket itself (SessionRegistry.Refresh), nil for a record and the bucket's own
+// error otherwise.
+func readRecord(t *testing.T, sessions *session.SessionRegistry, sessionID string) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := sessions.Refresh(ctx, sessionID)
+	return err
 }
 
-// TestHandleAgentMessage_StoredInterestOnAnotherMachine tests that a session whose stored
-// subscription names another listener is that listener's, though its session entry names none:
-// the handler reports it owned elsewhere and does not NAK, since the listener its topics are
-// fanned out on delivers the message from its own durable.
-func TestHandleAgentMessage_StoredInterestOnAnotherMachine(t *testing.T) {
+// A message on the agent subject of a session is decided by the session's interest row and its
+// record, and never by what the session's consumer holds. A row that names another listener makes
+// the message that listener's, whatever the record says. Otherwise a record is acknowledged, no
+// record waits for the wake, and a read that did not answer is neither: the listener sends the
+// message back and decides again.
+func TestHandleAgentMessageDecidesOnTheRowAndTheRecord(t *testing.T) {
 	sessions := newSessionRegistry(t)
-	if err := sessions.Put("ses_target", session.SessionEntry{Dir: "/test"}); err != nil {
-		t.Fatalf("failed to register session: %v", err)
+	// A record with no consumer of its own: the consumer the session's next registration starts
+	// delivers the message, so the record alone decides.
+	if err := sessions.Put("ses_recorded", session.SessionEntry{Dir: "/test"}); err != nil {
+		t.Fatalf("register ses_recorded: %v", err)
 	}
+	here := &store.Interest{SessionID: "ses_target", MachineID: "test-machine"}
+	elsewhere := &store.Interest{SessionID: "ses_target", MachineID: "other-machine"}
+	unanswered := fmt.Errorf("read session ses_unread from the bucket: %w", context.DeadlineExceeded)
 
-	interest := &store.Interest{
-		SessionID: "ses_target",
-		Dir:       "/test",
-		MachineID: "other-machine",
+	for _, tc := range []struct {
+		name     string
+		interest *store.Interest
+		readErr  error
+		want     session.AgentOutcome
+	}{
+		{"a record and no row", nil, readRecord(t, sessions, "ses_recorded"), session.AgentHasRecord},
+		{"a record and a row here", here, readRecord(t, sessions, "ses_recorded"), session.AgentHasRecord},
+		{"a record and a row elsewhere", elsewhere, readRecord(t, sessions, "ses_recorded"), session.AgentOwnedElsewhere},
+		{"no record and no row", nil, readRecord(t, sessions, "ses_unknown"), session.AgentNoRecord},
+		{"no record and a row here", here, readRecord(t, sessions, "ses_unknown"), session.AgentNoRecord},
+		{"no record and a row elsewhere", elsewhere, readRecord(t, sessions, "ses_unknown"), session.AgentOwnedElsewhere},
+		{"no record and a row naming no listener", &store.Interest{SessionID: "ses_target"}, readRecord(t, sessions, "ses_unknown"), session.AgentNoRecord},
+		{"an unanswered read and no row", nil, unanswered, session.AgentRecordUnread},
+		{"an unanswered read and a row here", here, unanswered, session.AgentRecordUnread},
+		{"an unanswered read and a row elsewhere", elsewhere, unanswered, session.AgentOwnedElsewhere},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := session.HandleAgentMessage("test-machine", tc.interest, tc.readErr); got != tc.want {
+				t.Fatalf("HandleAgentMessage(row %+v, read %v) = %d, want %d", tc.interest, tc.readErr, got, tc.want)
+			}
+		})
 	}
-
-	result := session.HandleAgentMessage(
-		newTestEnvelope("agent", "notifications.agent.ses_target", "test"),
-		"ses_target", "test-machine", interest, resolvedEntry(t, sessions, "ses_target"), false, 0, true,
-	)
-
-	if !result.OwnedElsewhere || result.Relayed || result.Err != nil {
-		t.Fatalf("result = %+v, want owned elsewhere with no delivery, NAK or error", result)
+	// The no-record rows above stand on the bucket's own word for a key it does not hold.
+	if err := readRecord(t, sessions, "ses_unknown"); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("the read of a session the bucket holds no record of answered %v, want %v", err, nats.ErrKeyNotFound)
 	}
 }
 
 // TestHandleAgentMessage_StoredInterestHereWithAnUnansweredRead tests that a session whose stored
-// subscription names this listener, and whose record read did not answer, is a failure the caller
-// NAKs. That read leaves the entry nil as a record that is gone does, but says nothing of the
-// session, so the message is neither relayed, nor left to another listener, nor held as one for a
-// session that is gone.
+// interest row names this listener, and whose record read did not answer, is an unread record:
+// the caller sends the message back for its wait and decides again. That read leaves the listener
+// with no record, as a record that is gone does, but it says nothing of the session. So the
+// message is neither acknowledged as one for a session with a record, nor left to another
+// listener, nor taken as one for a session with no record, which reports a wake.
 func TestHandleAgentMessage_StoredInterestHereWithAnUnansweredRead(t *testing.T) {
 	interest := &store.Interest{
 		SessionID: "ses_target",
 		Dir:       "/test",
 		MachineID: "test-machine",
 	}
+	unanswered := fmt.Errorf("read session ses_target from the bucket: %w", context.DeadlineExceeded)
 
-	result := session.HandleAgentMessage(
-		newTestEnvelope("agent", "notifications.agent.ses_target", "test"),
-		"ses_target", "test-machine", interest, nil, false, 0, true,
-	)
-
-	if result.Err == nil || result.Relayed || result.OwnedElsewhere {
-		t.Fatalf("result = %+v, want an error the caller NAKs, with no delivery and no owner elsewhere", result)
+	if got := session.HandleAgentMessage("test-machine", interest, unanswered); got != session.AgentRecordUnread {
+		t.Fatalf("HandleAgentMessage(row here, unanswered read) = %d, want AgentRecordUnread (%d)", got, session.AgentRecordUnread)
 	}
 }

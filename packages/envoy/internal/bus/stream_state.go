@@ -24,6 +24,9 @@ const sessionStreamReadWait = 5 * time.Second
 
 // streamRead is one read of the stream's state, which every streamState call waiting on it shares.
 type streamRead struct {
+	// client is the client the read is sent on, whose connection names a wait that ends first
+	// (wait).
+	client *Client
 	// done is closed once state and err are set.
 	done  chan struct{}
 	state sessionStreamState
@@ -34,7 +37,8 @@ type streamRead struct {
 // read: a call waits for the next read to begin, after the one in flight answers, and every call
 // waiting when it begins gets its answer. So no call gets a state read before it was made, and a
 // burst of calls, such as the restarts of every session at a listener's start, sends one stream
-// info per round trip rather than one per call. A call returns ctx's error if ctx ends first.
+// info per round trip rather than one per call. A call returns ctx's error if ctx ends first,
+// named ErrReconnecting while NATS is reconnecting (streamRead.wait).
 func (s *SessionConsumers) streamState(ctx context.Context) (sessionStreamState, error) {
 	return s.joinStreamRead().wait(ctx)
 }
@@ -45,7 +49,7 @@ func (s *SessionConsumers) joinStreamRead() *streamRead {
 	s.streamMu.Lock()
 	read := s.streamNext
 	if read == nil {
-		read = &streamRead{done: make(chan struct{})}
+		read = &streamRead{client: s.client, done: make(chan struct{})}
 		s.streamNext = read
 	}
 	start := !s.streamReading
@@ -57,13 +61,16 @@ func (s *SessionConsumers) joinStreamRead() *streamRead {
 	return read
 }
 
-// wait returns what the read read, once it has answered, or ctx's error if ctx ends first.
+// wait returns what the read read, once it has answered, or ctx's error if ctx ends first. While
+// nats.go connects or reconnects the client's connection, that error is ErrReconnecting (namedOn),
+// as the read's own error would be: the read is then waiting for the connection
+// (Client.requestConfirmed), and a caller whose ctx ends first is told why.
 func (r *streamRead) wait(ctx context.Context) (sessionStreamState, error) {
 	select {
 	case <-r.done:
 		return r.state, r.err
 	case <-ctx.Done():
-		return sessionStreamState{}, ctx.Err()
+		return sessionStreamState{}, namedOn(ctx, r.client.Connection(), ctx.Err())
 	}
 }
 

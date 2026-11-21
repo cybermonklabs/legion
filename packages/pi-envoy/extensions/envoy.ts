@@ -43,6 +43,7 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
+  isUnrecordedRegistration,
   NoRelaySubjectError,
   registerWithRelay,
 } from "@legion/envoy-client/consumer-delivery";
@@ -142,6 +143,7 @@ import {
   createEnvoyClient,
   expandSubscriptionTopics,
   holderStateOf,
+  isBusUnanswered,
   mayActOnRoleRecord,
   mergeInterestSources,
   type SubscribeResult,
@@ -193,7 +195,7 @@ import {
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
-import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
+import { logger as hostLogger, postmortem, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
 import { connect, Events, type NatsConnection, StringCodec, type Subscription } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
@@ -416,7 +418,9 @@ const MOVED_SESSION_REFUSAL = `The message was not sent: ${MOVED_SESSION_REASON}
 /**
  * Aside and Steer go through `pi.sendMessage` on every OMP build; BTW only where the host has a
  * side turn (`sideTurn` in src/side-turn.ts), so a host without one advertises every capability
- * but that one.
+ * but that one. So every registration of this extension advertises at least `aside` and `steer`,
+ * and a plain send to its session never reads `no_receiver`: the listener gives that answer only
+ * to a running session that advertises no delivery mode.
  */
 const CAPABILITIES_WITHOUT_BTW: readonly DeliveryCapability[] = DELIVERY_CAPABILITIES.filter(
   (capability) => capability !== "btw"
@@ -737,6 +741,20 @@ const timedDispatchClient = (ms: number, session: () => string = currentSessionI
 /** The host's logger, every message and field it is handed passing the scrub of the secrets this
  *  process holds (`../src/scrubbed-host`). */
 const logger = scrubbedLogger(hostLogger);
+
+/**
+ * The warning for a request to take `what` out of the listener's registry that the listener's
+ * message bus did not answer (`isBusUnanswered`). The listener writes the record before it sets
+ * the filter of the session's consumer, and it gives that answer also when only the filter update
+ * met a NATS reconnect, so the record may already be without what the request named. The error
+ * logged beside the warning says whether NATS was reconnecting. A registration sets the
+ * consumer's filter to the topics it stores in the record (the listener's `registerPass`), so the
+ * session's next one brings the filter in line with the record either way.
+ */
+const busUnansweredRemoval = (what: string): string =>
+  `envoy: the listener's message bus did not answer a request to take ${what} out of the registry. ` +
+  "The registry may already be without them. " +
+  "The session's next registration sets its consumer's filter to the topics the registry holds.";
 
 export default function envoyExtension(hostApi: PiApi): void {
   // Every notice, tool answer and tool error this extension gives the host passes the scrub of
@@ -2462,12 +2480,16 @@ export default function envoyExtension(hostApi: PiApi): void {
         relay: relay?.sessionID === sessionID ? relay.delivery : undefined,
         close: unfollow,
         unregister: async (topics) => {
-          await active?.client.unsubscribe({ sessionID, topics }).catch((error: unknown) =>
-            logger.warn("envoy: a subscription removal was not taken out of the registry", {
-              topics,
-              error: messageFor(error),
-            })
-          );
+          await active?.client
+            .unsubscribe({ sessionID, topics })
+            .catch((error: unknown) =>
+              logger.warn(
+                isBusUnanswered(error)
+                  ? busUnansweredRemoval("the topics of a subscription removal")
+                  : "envoy: a subscription removal was not taken out of the registry",
+                { topics, error: messageFor(error) }
+              )
+            );
         },
         followedChanged: ledgerFollowedChanged,
       }
@@ -3281,13 +3303,16 @@ export default function envoyExtension(hostApi: PiApi): void {
       for (const subject of subjects) unfollow(subject);
       const id = held === "" ? sessionID : held;
       if (subjects.length === 0 || id === "") return;
-      void active?.client.unsubscribe({ sessionID: id, topics: subjects }).catch((error: unknown) =>
-        logger.warn("envoy: a role's notice subjects were not taken out of the registry", {
-          topics: subjects,
-          sessionID: id,
-          error: messageFor(error),
-        })
-      );
+      void active?.client
+        .unsubscribe({ sessionID: id, topics: subjects })
+        .catch((error: unknown) =>
+          logger.warn(
+            isBusUnanswered(error)
+              ? busUnansweredRemoval("a role's notice subjects")
+              : "envoy: a role's notice subjects were not taken out of the registry",
+            { topics: subjects, sessionID: id, error: messageFor(error) }
+          )
+        );
     },
   });
 
@@ -3331,16 +3356,27 @@ export default function envoyExtension(hostApi: PiApi): void {
     return registering;
   };
 
-  /** The whole of what the `session_shutdown` handler gives its deregistration and its drain. Oh
-   *  My Pi abandons a shutdown handler after 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`), and the
-   *  second this leaves is for the synchronous work ahead of the race and for the host. The
-   *  shared `SHUTDOWN_SETTLE_MS` is what that path spends waiting on a registration still on the
+  /** The whole of what a stop (`stopSession`) gives its role release, its deregistration and its
+   *  drain. Oh My Pi abandons a shutdown handler after 2 s (`SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`),
+   *  and the second this leaves is for the synchronous work ahead of the race and for the host. A
+   *  SIGTERM gets no more: in a Legion pane the shim kills Oh My Pi 5 s after its SIGTERM
+   *  (`DefaultGrace`, `packages/daemon/internal/shim`), and the agent shares that grace. The
+   *  shared `SHUTDOWN_SETTLE_MS` is what the stop spends waiting on a registration still on the
    *  wire: `REGISTRATION_SETTLE_MS` is five times this whole deadline, so a registration slower
    *  than a second would mean no DELETE was sent at all and the record outlived this process by
-   *  the gone horizon, where a DELETE that races a slow registration only may lose. The quarter
-   *  of a second it spends instead leaves 750 ms here (1.75 s of the host's 2 s) for the DELETE
-   *  to reach the wire. */
+   *  the gone horizon, where a DELETE that races a slow registration only may lose. The release
+   *  of the session's role claims goes before both (`SHUTDOWN_RELEASE_MS`), so the two waits
+   *  leave at least 500 ms here (1.5 s of the host's 2 s) for the DELETE to reach the wire. */
   const SHUTDOWN_DEADLINE_MS = 1_000;
+
+  /** How long the DELETE of a stop waits for the release of the session's role claims, which goes
+   *  first: a quarter of a second, as the wait on a registration still on the wire. A listener
+   *  that answers at all answers a release in tens of milliseconds. A release that has not
+   *  answered by then is no longer waited for: the DELETE goes, and nothing sends the release
+   *  again. That release can still land while the process lives; when it does not, the claim
+   *  stands until its last renewal is older than the listener's live window. The DELETE goes all
+   *  the same, because it is what lets a message to the stopped session wake it. */
+  const SHUTDOWN_RELEASE_MS = 250;
 
   /** Deregisters a session this process has stopped heartbeating — its own at shutdown, the one
    *  it left at a `/new`, a fork or a branch — once that session's registration has settled or
@@ -3368,30 +3404,61 @@ export default function envoyExtension(hostApi: PiApi): void {
     await registrationState.deregister(id, endsAt === undefined ? undefined : endsAt - Date.now());
   };
 
-  // Said once per outage: the listener refused this session's registration, so no consumer
-  // delivers to it and Envoy inbound is unavailable. The session still starts and runs; the
-  // reason is the listener's own, one of those `ErrorWireSchema.reason` lists
-  // (`@legion/envoy-client`'s `transport.ts`), carried in the error's message, which
-  // `inboundUnavailableNoticeText` words for every host, and the heartbeat registers again
-  // every tick until one is accepted. That accepted registration is said too, in the same three
-  // places: without it the outage notice is the last word, and a session that recovered seconds
-  // later (the claim pass after a first dial the hub closed) reads itself as deaf for its life.
+  // Said once per outage: the listener refused this session's registration or may not have
+  // recorded it, or the session holds no relay subject. The session still runs, and the heartbeat
+  // registers again every tick until one is accepted. `why` is the error's message: for a
+  // refusal, the listener's own, with a reason `ErrorWireSchema.reason` lists.
+  // `inboundUnavailableNoticeText` words it for every host. A refusal leaves the session no
+  // consumer. After a bus-outage 503 (`isUnrecordedRegistration`) the consumer may still deliver,
+  // and a retry after it may have landed, so the log line and the pane note say only that the
+  // registration is not recorded for certain. A first relay open still being tried at the start,
+  // or a run of bus-outage 503s, is told only once `INBOUND_FIRST_OPEN_BOUND_MS` has passed. The
+  // log does not wait for the start race: the first registration that found no relay subject is
+  // logged at once, at warn (`held`). That line says only what the registration found, and why,
+  // and makes no claim about what the session receives. The notice, its card, its pane note and
+  // the warning that the session receives nothing wait for the bound. A told bus-outage 503 says
+  // that the consumer may still deliver, so a refusal or a lost relay subject after it is said
+  // once more.
+  // An accepted registration after a told outage tells the session once, by the same path, worded
+  // for the last `why` it was told. A session whose stop has begun is told neither (`stopping`):
+  // the stop closed the relay on purpose, and the record is deleted next.
   const inboundOutage = inboundUnavailable(
     (why) => {
-      logger.warn(`envoy: this session receives nothing: ${why}`);
-      activeSessionContext?.ui.notify(
-        `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
-        "warning"
-      );
+      if (isUnrecordedRegistration(why)) {
+        logger.warn(`envoy: this session's registration is not recorded for certain: ${why}`);
+        activeSessionContext?.ui.notify(
+          `envoy: this session's registration is not recorded for certain (${why}), and the session registers again at every heartbeat`,
+          "warning"
+        );
+      } else {
+        logger.warn(`envoy: this session receives nothing: ${why}`);
+        activeSessionContext?.ui.notify(
+          `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
+          "warning"
+        );
+      }
       unwritten.sendNotice(inboundUnavailableNoticeText(why));
     },
-    () => {
-      logger.warn("envoy: this session receives again: its registration was accepted");
-      activeSessionContext?.ui.notify(
-        "envoy: inbound messages reach this session again: its registration was accepted",
-        "warning"
-      );
-      unwritten.sendNotice(inboundRestoredNoticeText());
+    {
+      restored: (toldWhy) => {
+        if (isUnrecordedRegistration(toldWhy)) {
+          logger.info("envoy: the listener recorded a registration of this session");
+          activeSessionContext?.ui.notify(
+            "envoy: the listener recorded a registration of this session",
+            "info"
+          );
+        } else {
+          logger.info("envoy: this session receives again: a registration was accepted");
+          activeSessionContext?.ui.notify("envoy: inbound messages are back", "info");
+        }
+        unwritten.sendNotice(inboundRestoredNoticeText(toldWhy));
+      },
+      held: (relayMissing) => {
+        logger.warn(
+          `envoy: a registration found that this session holds no relay subject${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`
+        );
+      },
+      stopping: () => shuttingDown,
     }
   );
 
@@ -3425,10 +3492,19 @@ export default function envoyExtension(hostApi: PiApi): void {
   // `relayMissing` is why the pass could not open the relay, which the refusal of a registration
   // with none, and so the outage notice, names. A registration sent outside a pass while the
   // session's relay subject is missing names why it went (`Relay.missing`) instead.
+  //
+  // A stopping session registers nothing (R24 of dispatch://INFRA-3589). Its stop closes the
+  // relay on purpose and deletes the record next, so a registration that a queued pass or a timer
+  // makes once the stop began has nothing to ask for. It is refused here, before
+  // `registerWithRelay`, with an error that says why: a pass reads it as a pass that decided
+  // nothing (`reconcileNow`), and every other caller that reports it reports the truth.
   const sendRegistration = (
     send: (input: RegistrationInput) => Promise<SubscribeResult>,
     relayMissing?: string
   ): Promise<SubscribeResult> => {
+    if (shuttingDown) {
+      return Promise.reject(new Error("this session is stopping, so it registers nothing"));
+    }
     // Taken in the turn this call starts, with no await ahead of it, so the whole body is built
     // and posted without a tmux call in between: the session the deregistration at shutdown
     // waits out is the one that reaches the wire, and no registration can resume behind the
@@ -3474,8 +3550,12 @@ export default function envoyExtension(hostApi: PiApi): void {
           ...(place === undefined ? {} : { place }),
         }),
       // A registration the listener refused, for any of the reasons `ErrorWireSchema.reason`
-      // lists, leaves the session with no consumer at all: the outage tells the session once
-      // and the heartbeat asks again.
+      // lists, leaves the session with no consumer at all: the session is told once, at once, and
+      // the heartbeat asks again. A registration the bus-outage 503 answered (`isBusUnanswered`)
+      // is not recorded for certain, but its consumer may still deliver. That failure is held
+      // for the bound first (`INBOUND_FIRST_OPEN_BOUND_MS`): the session is told once only when
+      // such a failure comes at or after the bound's end, and an accepted registration inside
+      // the bound ends the hold with nothing said.
       answered: (result) => {
         if (asking !== undefined) takeDeliveryAnswer(registeringFor, asking, result);
       },
@@ -3711,13 +3791,13 @@ export default function envoyExtension(hostApi: PiApi): void {
       : [];
     // A step of this pass, so a pass the host left behind unregisters nothing: the listener keeps
     // the retired topics until the pass the move queued reads the registry itself. The failure is
-    // this branch's to name: the step warns under the sentence it is handed.
+    // this branch's to name: the step warns under the sentences it is handed, one for a bus that
+    // did not answer and one for any other failure.
     if (retired.length > 0)
-      await handle.unregisterTopics(
-        sessionID,
-        retired,
-        "envoy: could not unregister a resumed controller's retired Slack topics"
-      );
+      await handle.unregisterTopics(sessionID, retired, {
+        failed: "envoy: could not unregister a resumed controller's retired Slack topics",
+        busUnanswered: busUnansweredRemoval("a resumed controller's retired Slack topics"),
+      });
     // The newest ledger state's topics (`rememberedTopics`), but a retired Slack topic. They are
     // followed again, so the registration that ends this pass carries them and the session's
     // consumer relays what the stream kept for them.
@@ -4027,6 +4107,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     // The catch-all above turned whatever the registration threw into `registration.error`, a
     // refused step included: this says so rather than report a registration failure.
     handle.check();
+    // A registration the stop refused (`sendRegistration`), or one that failed once the stop
+    // began, is no outage to report: the stop deletes the record next, and nothing asks again. So
+    // the pass decides nothing and says nothing, as a pass whose session moved does.
+    if (registration !== undefined && shuttingDown) return false;
     // Established once the registration landed, which is what a bridge call asks before it runs
     // a pass of its own (`establishForBridge`): a pass this call queues reads the host as it
     // stands when its turn comes, so one queued for an established session would learn a session
@@ -4342,6 +4426,12 @@ export default function envoyExtension(hostApi: PiApi): void {
 
   pi.on("session_start", async (_event, context) => {
     if (await isSubagent(context)) return;
+    // The host's exit stops this session as its `session_shutdown` does (`stopSession`): in RPC
+    // mode a SIGTERM emits no `session_shutdown`. Once per instance, and never for a subagent's,
+    // which registers nothing. `exitOnly` keeps a cleanup pass the process lives on from it.
+    cancelStopAtExit ??= postmortem.register("pi-envoy-session-stop", () => stopSession(context), {
+      exitOnly: true,
+    });
     bindDispatchSession(context.sessionManager.getSessionId());
     restoreLocalSessionState(context);
     lastHeard = context.sessionManager.getSessionId();
@@ -4358,8 +4448,11 @@ export default function envoyExtension(hostApi: PiApi): void {
       await establish();
     } catch (error) {
       // Whatever the pass failed at: the NATS connection it dials, the relay subject it opens
-      // for the session's consumer, or the registration the listener refused. The session runs
-      // either way, and it receives nothing until a pass gets through.
+      // for the session's consumer, or the registration the listener refused or may not have
+      // recorded. The session runs either way. Until a pass gets through, a message reaches it
+      // only from a consumer a registration already made whose relay subject is still open: the
+      // consumer of an accepted registration, or the one the listener made before it answered a
+      // bus-outage 503 (`isBusUnanswered`).
       context.ui.notify(
         `envoy: this session is not registered (${messageFor(error)}); retrying in the background`,
         "warning"
@@ -4369,7 +4462,11 @@ export default function envoyExtension(hostApi: PiApi): void {
         if (established || attempting) return;
         attempting = true;
         void establish()
-          .then(() => context.ui.notify("envoy: this session is registered", "warning"))
+          // A pass that ends once the stop began says nothing: it registered nothing
+          // (`sendRegistration`), or the stop deletes the record it wrote.
+          .then(() => {
+            if (!shuttingDown) context.ui.notify("envoy: this session is registered", "warning");
+          })
           // Quiet on purpose: the initial warning disclosed the outage, and a
           // fresh warning every retry tick would spam the session.
           .catch(() => undefined)
@@ -4464,7 +4561,54 @@ export default function envoyExtension(hostApi: PiApi): void {
   pi.on("session_before_switch", async (event, context) => announce(event.reason, context));
   pi.on("session_before_branch", async (_event, context) => announce(undefined, context));
 
-  pi.on("session_shutdown", async (_event, context) => {
+  // Gives back at the listener each role claim this process holds, before the stop deletes the
+  // session's record, so the session's next process claims the role at once: the listener
+  // grants a claim under this session id to another process only once this one's claim is no
+  // longer renewed inside the live window. The release names this process
+  // (`handBackAllHolds`), so it frees no claim another process made. It gets its share of the
+  // stop (`SHUTDOWN_RELEASE_MS`); one that has not answered by then is left, and the stop goes
+  // on to the DELETE. The claim then waits out the live window.
+  const releaseRoleClaims = async (): Promise<void> => {
+    if (active === undefined) return;
+    try {
+      await within(
+        registrationState.handBackAllHolds(),
+        SHUTDOWN_RELEASE_MS,
+        "the release of this session's role claims"
+      );
+    } catch (error) {
+      logger.warn("envoy: the listener did not answer the release of the role claims in time", {
+        sessionID,
+        error: messageFor(error),
+      });
+    }
+  };
+
+  // The stop of this instance's session, run once (`stopSession`) whichever end of the host
+  // reaches it first. One end is the host's `session_shutdown`. The other is the host's own exit
+  // callbacks (`postmortem` of `@oh-my-pi/pi-utils`, the host's module), which Oh My Pi runs and
+  // waits for on a SIGTERM, a SIGINT, a SIGHUP, a quit and a fatal error before the process
+  // exits: `session_start` adds this stop to them (`cancelStopAtExit`). In RPC mode, which a
+  // Legion pane runs, the exit disposes no session, so a SIGTERM emits no `session_shutdown`,
+  // and this callback is the stop. The interactive mode disposes the session from an exit
+  // callback of its own, so there both ends come together, and the second waits for the stop
+  // the first began. A `/new`, a fork and a branch are no stop: they move this instance to
+  // another session and reach neither end, so this stop and its release do not run for them.
+  // The session the host left is deregistered on its own (`deregisterSession`, from
+  // `restoreLocalSessionState`). A `task` subagent's instance runs this stop at its own
+  // `session_shutdown`, but it holds no role and registered nothing, so it sends the listener
+  // nothing: its hand-back finds no hold (`handBackAllHolds`), and its `sessionID` is empty, so
+  // `deregisterSession` returns at once.
+  let stopping: Promise<void> | undefined;
+  let cancelStopAtExit: (() => void) | undefined;
+  const stopSession = (context: SessionContext): Promise<void> => {
+    stopping ??= shutDownSession(context);
+    return stopping;
+  };
+
+  const shutDownSession = async (context: SessionContext): Promise<void> => {
+    cancelStopAtExit?.();
+    cancelStopAtExit = undefined;
     shuttingDown = true;
     // A reading still away answers nobody from here on: the DELETE below is what the session
     // leaves behind, and a place written after it would be a registration the heartbeat has
@@ -4513,22 +4657,27 @@ export default function envoyExtension(hostApi: PiApi): void {
     const endsAt = Date.now() + SHUTDOWN_DEADLINE_MS;
     const timer = setTimeout(deadline.resolve, SHUTDOWN_DEADLINE_MS);
     try {
-      // The heartbeat has stopped (`shuttingDown`), so no new registration starts; one already on
-      // the wire is waited out before the DELETE, or it would land behind it and leave the session
-      // registered with nobody heartbeating it. That wait takes `SHUTDOWN_SETTLE_MS` here rather
+      // The role claims go back first (`releaseRoleClaims`), and the record only after them: the
+      // DELETE goes once the release answered or its share of the deadline ran out. The
+      // heartbeat has stopped and every registration is refused (`shuttingDown`,
+      // `sendRegistration`), so no new registration starts; one already on the wire is waited
+      // out before the DELETE, or it would land behind it and leave the session registered with
+      // nobody heartbeating it. That wait takes `SHUTDOWN_SETTLE_MS` here rather
       // than the whole of `REGISTRATION_SETTLE_MS`, which is longer than the deadline
-      // below: the DELETE has to be on the wire before the host abandons this handler, since a
-      // record left behind outlives the process by the gone horizon. The drain runs beside the
-      // wait: it needs no listener call, and both share that deadline, which is what the host's
+      // below: the DELETE has to be on the wire before the host abandons this stop, since a
+      // record left behind outlives the process by the gone horizon. The DELETE gets what is left
+      // of the deadline once the release is done (`endsAt`), so a broker credential still waiting
+      // on a trade leaves it time to go without one. The drain starts beside the deregistration:
+      // it needs no listener call, and all of them share that deadline, which is what the host's
       // own limit on a shutdown handler leaves them.
-      const deregistration = deregisterSession(sessionID, SHUTDOWN_SETTLE_MS, endsAt).catch(
-        () => undefined
+      const open = connection;
+      const stopped = releaseRoleClaims().then(() =>
+        Promise.allSettled([
+          deregisterSession(sessionID, SHUTDOWN_SETTLE_MS, endsAt).catch(() => undefined),
+          open?.drain().catch(() => undefined),
+        ])
       );
-      const draining = connection?.drain().catch(() => undefined) ?? Promise.resolve();
-      await Promise.race([
-        Promise.allSettled([deregistration, draining]).then(() => undefined),
-        deadline.promise,
-      ]);
+      await Promise.race([stopped.then(() => undefined), deadline.promise]);
     } finally {
       clearTimeout(timer);
       connection = undefined;
@@ -4546,7 +4695,9 @@ export default function envoyExtension(hostApi: PiApi): void {
       forgetShownPictures(sessionID);
       if (liveSessionID !== sessionID) forgetShownPictures(liveSessionID);
     }
-  });
+  };
+
+  pi.on("session_shutdown", async (_event, context) => stopSession(context));
 
   // An Envoy that is off registers no tool and no `/whoami`: there is no listener to reach. Every
   // tool validates its own arguments inside execute (one refusal naming every problem); the host's

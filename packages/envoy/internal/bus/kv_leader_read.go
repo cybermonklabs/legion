@@ -93,8 +93,9 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 	}
 	// The legacy JetStream context of the connection this handle reads the bucket's stream
 	// through: building one sends nothing, and this read is the only caller, so it is built here
-	// rather than kept on the handle.
-	js, err := kv.streams.Conn().JetStream()
+	// rather than kept on the handle. Its read names a refusal while nats.go reconnects
+	// (namedRequests).
+	js, err := JetStreamOn(kv.streams.Conn())
 	if err != nil {
 		return nil, named(err)
 	}
