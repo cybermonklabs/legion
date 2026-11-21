@@ -6,8 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"golang.org/x/oauth2"
-
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -54,16 +53,15 @@ const (
 
 // signInFailureCode is the code for err, and "" for a failure none of the codes names.
 func signInFailureCode(err error) string {
-	var retrieve *oauth2.RetrieveError
 	switch {
 	case errors.Is(err, oidc.ErrIssuerUnavailable):
 		return codeIssuerUnreachable
-	case errors.As(err, &retrieve):
+	case oauthrefusal.Refusal(err) != "":
 		// The token endpoint's own error code, kept only when it is one of the four named here:
 		// an issuer's word is not this page's vocabulary just because it arrived in the error
-		// field. It is read only from a 400 or 401 (oidc.Refusal): a 5xx or a 429 is the issuer
-		// unreachable, which the case above has already answered.
-		switch code := oidc.Refusal(err); code {
+		// field. It is read only from an answer whose status is a refusal (oauthrefusal.Refusal):
+		// any other answer is the issuer unreachable, which the case above has already answered.
+		switch code := oauthrefusal.Refusal(err); code {
 		case codeInvalidClient, codeUnauthorizedClient, codeRedirectURIMismatch, codeInvalidGrant:
 			return code
 		}

@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ctxlock"
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 	"github.com/sjawhar/envoy/internal/serverwait"
@@ -592,9 +593,9 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 // pollLogin polls the token endpoint for a pending machine login until a human decides it, at the
 // interval the broker named. On approval it keeps the login (keepLogin). access_denied records
 // "denied"; expired_token, a device code the broker no longer knows (invalid_grant) and the
-// code's own lifetime passing record "expired", each error only from a 400 or 401 answer
-// (brokerRefusal). A poll that does not reach the broker, or that it answers with anything else,
-// a 5xx or a 429 naming one of those errors included, polls again.
+// code's own lifetime passing record "expired", each error only from an answer whose status is a
+// refusal (oauthrefusal.Refusal). A poll that does not reach the broker, or that it answers with
+// anything else, a 5xx or a 429 naming one of those errors included, polls again.
 func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse, operator string) {
 	ctx := b.tokenContext(context.Background(), key)
 	settle := func(state string) { b.recordLogin(&loginState{Code: da.UserCode, State: state}) }
@@ -604,7 +605,7 @@ func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2
 			b.keepLogin(key, tok, da.UserCode, operator)
 			return
 		}
-		switch brokerRefusal(err) {
+		switch oauthrefusal.Refusal(err) {
 		case "access_denied":
 			settle("denied")
 			return
@@ -1048,14 +1049,14 @@ func (s *retrySchedule) after(err error, nextRefresh func() time.Duration) time.
 }
 
 // redeem spends cred's refresh token for the rotated login: the machine file the broker's answer
-// names, or refusal, the broker's invalid_grant code in a 400 or 401 answer (brokerRefusal), when
-// it has ended the login (revoked, lapsed or reused), or another error, logged, when the helper
-// did not learn the outcome or cannot keep the answer. A 5xx naming invalid_grant is one of those.
-// So is the broker's 429 (its token endpoint's rate limit): the login is kept and retried after
-// its Retry-After (retryAfter). An answer naming no new refresh token is another: x/oauth2 copies
-// the presented token into an answer without a refresh_token field, and saving that would keep a
-// token the broker may have rotated away, so the presented login is kept and the refresh retried.
-// The caller holds credMu.
+// names, or refusal, the broker's invalid_grant code in a 400 or 401 answer
+// (oauthrefusal.EndsGrant), when it has ended the login (revoked, lapsed or reused), or another
+// error, logged, when the helper did not learn the outcome or cannot keep the answer. A 5xx
+// naming invalid_grant is one of those, and so is the broker's 429 (its token endpoint's rate
+// limit): the login is kept and retried after its Retry-After (retryAfter). An answer naming no
+// new refresh token is another: x/oauth2 copies the presented token into an answer without a
+// refresh_token field, and saving that would keep a token the broker may have rotated away, so the
+// presented login is kept and the refresh retried. The caller holds credMu.
 func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *MachineFile, refusal string, err error) {
 	tok, err := b.oauthConfig().TokenSource(b.tokenContext(ctx, cred.key),
 		&oauth2.Token{RefreshToken: cred.refreshToken, Expiry: time.Unix(1, 0)}).Token()
@@ -1067,7 +1068,7 @@ func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *Mac
 			b.logger().Warn("the broker rate-limited the machine login's refresh; retrying after its Retry-After",
 				"credential_id", cred.id, "retry_after", retryAfter(err), "error", err)
 			return nil, "", err
-		case brokerRefusal(err) == "invalid_grant":
+		case oauthrefusal.EndsGrant(err):
 			return nil, "invalid_grant", err
 		}
 		b.logger().Warn("the machine login's refresh did not reach the broker; retrying", "credential_id", cred.id, "error", err)
@@ -1097,22 +1098,6 @@ func retryAfter(err error) time.Duration {
 	}
 	wait, _ := serverwait.Read(re.Response.Header, time.Now())
 	return wait
-}
-
-// brokerRefusal is the OAuth error code of the broker's token endpoint answer when it refused the
-// request, a 400 or a 401 (RFC 6749 section 5.2, RFC 8628 section 3.5), and empty for every other
-// failure: a 5xx or a 429 is a broker, or a proxy before it, that could not answer, whatever error
-// its body names, and it settles nothing. It is internal/oidc's Refusal rule for an issuer, kept
-// here because the helper does not import that package and its ID-token verifier.
-func brokerRefusal(err error) string {
-	var re *oauth2.RetrieveError
-	if !errors.As(err, &re) || re.Response == nil {
-		return ""
-	}
-	if status := re.Response.StatusCode; status != http.StatusBadRequest && status != http.StatusUnauthorized {
-		return ""
-	}
-	return re.ErrorCode
 }
 
 // removeRefusedFile deletes the machine file of a login the broker refused to refresh.

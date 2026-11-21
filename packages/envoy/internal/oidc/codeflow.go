@@ -14,6 +14,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 )
 
 // TokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
@@ -246,9 +248,10 @@ func (f *CodeFlow) Exchange(ctx context.Context, redirectURL, code, nonce string
 // there with options (the online exchange's PKCE verifier, and none for the other), verify the
 // ID token, and refuse one whose nonce is not the sign-in's with ErrNonce. An empty nonce is
 // refused as well, since it binds the token to no sign-in. A token endpoint that refuses the code
-// or the client, a 400 or 401 naming an OAuth error (Refusal), fails the exchange as that refusal;
-// any other failure of the request, a 5xx or a 429 whatever error its body names, or no answer at
-// all, is an issuer that could not answer and matches ErrIssuerUnavailable, as Refresh reads it.
+// or the client, an answer naming an OAuth error at a status oauthrefusal.Refusal reads, fails the
+// exchange as that refusal; any other failure of the request, a 5xx or a 429 whatever error its
+// body names, or no answer at all, is an issuer that could not answer and matches
+// ErrIssuerUnavailable, as Refresh reads it.
 func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string, options ...oauth2.AuthCodeOption) (Session, error) {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
@@ -256,7 +259,7 @@ func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string
 	}
 	token, err := issuer.config.Exchange(f.tokenContext(ctx), code, append(redirectTo(redirectURL), options...)...)
 	if err != nil {
-		if Refusal(err) != "" {
+		if oauthrefusal.Refusal(err) != "" {
 			return Session{}, fmt.Errorf("oidc: exchange code: %w", err)
 		}
 		return Session{}, fmt.Errorf("oidc: exchange code: %w: %w", ErrIssuerUnavailable, err)
@@ -344,11 +347,11 @@ func (f *CodeFlow) OnlineExchange(ctx context.Context, redirectURL, code string,
 
 // Refresh renews a sign-in with its refresh token, returning the person's claims as the issuer
 // holds them now. Its error matches ErrGrantRefused when the token endpoint answered 400 or 401
-// with the OAuth error invalid_grant (RFC 6749 section 5.2): the refresh token has expired, been
+// with the OAuth error invalid_grant (oauthrefusal.EndsGrant): the refresh token has expired, been
 // revoked, or is not this client's, so the sign-in is over. Every other failure matches
 // ErrIssuerUnavailable and says nothing about the sign-in: the issuer not discovered, no answer or
-// a timeout, a 5xx or a 429, any other OAuth error (invalid_client among them: the client's own
-// configuration, not the person), or an answer without an ID token that verifies.
+// a timeout, a 5xx or a 429, any other status or OAuth error (invalid_client among them: the
+// client's own configuration, not the person), or an answer without an ID token that verifies.
 func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, error) {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
@@ -356,7 +359,7 @@ func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, e
 	}
 	token, err := issuer.config.TokenSource(f.tokenContext(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token()
 	if err != nil {
-		if grantRefused(err) {
+		if oauthrefusal.EndsGrant(err) {
 			return Session{}, fmt.Errorf("oidc: refresh: %w: %w", ErrGrantRefused, err)
 		}
 		return Session{}, fmt.Errorf("oidc: refresh: %w: %w", ErrIssuerUnavailable, err)
@@ -366,24 +369,6 @@ func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, e
 		return Session{}, fmt.Errorf("oidc: refresh: %w: %w", ErrIssuerUnavailable, err)
 	}
 	return session, nil
-}
-
-// grantRefused reports whether err is the token endpoint's 400 or 401 naming invalid_grant.
-func grantRefused(err error) bool { return Refusal(err) == "invalid_grant" }
-
-// Refusal is the OAuth error code (RFC 6749 section 5.2) err names when err is a token endpoint's
-// answer 400 or 401, the statuses an issuer refuses a grant or a client with, and empty for every
-// other failure: a 5xx or a 429 is an issuer that cannot answer now, whatever error its body
-// names.
-func Refusal(err error) string {
-	var retrieve *oauth2.RetrieveError
-	if !errors.As(err, &retrieve) || retrieve.Response == nil {
-		return ""
-	}
-	if status := retrieve.Response.StatusCode; status != http.StatusBadRequest && status != http.StatusUnauthorized {
-		return ""
-	}
-	return retrieve.ErrorCode
 }
 
 // Revoke revokes refreshToken at the revocation endpoint the issuer's discovery document names
