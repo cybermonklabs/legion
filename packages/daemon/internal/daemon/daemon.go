@@ -1540,6 +1540,11 @@ type supervision struct {
 	// sessionStops counts the clean stops of session registrations in flight, which stop waits for
 	// last (sessionStopsInFlight says which).
 	sessionStops *sessionStopsInFlight
+	// withholds is the Envoy listener's role withholds (roleWithholds), nil with no listener
+	// configured: the boot withholds the role of a claim it could not stop from the session it does
+	// not hold, and the boot and the operator's resume lift it once the claim holds that session
+	// again (suspendSessionConflicts, liftRoleWithholdOf).
+	withholds notify.RoleWithholds
 }
 
 // promptAgents is the sorted names of every task agent the role prompts dispatch
@@ -1762,6 +1767,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
+		withholds: roleWithholds(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
 	}
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
 	// after their deps: the one callback whose receiver is supervision itself, set here before
@@ -1901,6 +1907,19 @@ func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role str
 		return nil
 	}
 	return notify.New(envoyURL, token).RoleHolder
+}
+
+// roleWithholds is the daemon's client of the Envoy listener's role withholds
+// (notify.RoleWithholds), on the base URL and bearer its notices and role lookups use
+// (roleHolderLookup), so it presents the credential the daemon already presents the listener.
+// The listener admits only a Legion daemon's own broker token there, and refuses this daemon's
+// every withhold and lift while that bearer is anything else, each refusal logged at Error. With
+// no listener configured it is nil, and nothing is withheld or lifted.
+func roleWithholds(envoyURL, token string) notify.RoleWithholds {
+	if envoyURL == "" {
+		return nil
+	}
+	return notify.New(envoyURL, token)
 }
 
 // sessionStop sends this daemon's clean stops, one call of send each; cleanSessionStop says when a
@@ -2786,6 +2805,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,
 		RoleHoldersChanged: roleHoldersChanged,
+		LiftRoleWithhold:   s.liftRoleWithholdOf,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
 		Pause:              pauses,

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -61,48 +63,79 @@ import (
 // stops (revokeUnheld); and the daemon publishes nothing to its Envoy role, whatever the claim's
 // state, or, for the daemon's own controller under `controller: daemon`, to the controller topic,
 // and sends that process no task and no compaction (holdRecorded, ensureEnrolled, outbox.publish,
-// sendPending, compactStart). The process runs on under the session until it is stopped, and the
-// Envoy listener does not yet withhold the role its session claimed: the daemon could free the
-// role, but the process claims a free role again at its next heartbeat. So a message another
-// session sends to that role reaches the session's subscriber until the session ends. Once no
-// process registers the session id, the listener frees the role at the role reaper's first pass
-// after the session's record is gone and the role claim's last renewal is a live window old: the
-// record leaves the session bucket at the bucket's maximum age (`ENVOY_SESSION_MAX_AGE`, five
-// minutes on a bucket created with it unset) or reads gone at the gone horizon (an hour) where
-// that age is longer, and the reaper runs every `ENVOY_ROLE_CLAIM_REAP_INTERVAL`, five minutes by
-// default, so the role is free at most `max(min(ENVOY_SESSION_MAX_AGE,
-// ENVOY_SESSION_GONE_HORIZON), ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL` after
-// the last registration (ten minutes with the defaults, about 65 minutes where the bucket keeps
-// records past the gone horizon), and later across a listener restart or a reaper read that fails
-// (supervise.roleFreedBound). That holds only while no other live process registers the same
-// session id: where the name is held for another claim whose live process runs under the same
-// id, as after a rollback, the listener keeps the role with that session while it lives, and the
-// role's messages reach that process. That is so for every claim this step names whose session
-// another claim's live process runs under, suspended here or not. The daemon withholds its own
-// messages from such a claim's role only while the claim records that session, so the one
-// decision that would open the role topic, the clear of that session, first asks the listener
-// who holds the claim's role and is refused while the listener names that session in any state
-// (supervise's mayForget). The operator stops the process under the session: it suspends the
-// claim holding the session if that claim runs, and otherwise only the wait helps, since the
-// process may be the contained claim's own. It forgets once the listener names no holder or
-// another session, within that bound of that process's last registration, resumes the contained
-// claim, and resumes the claim it suspended only once the listener names the contained claim's
-// new session as its role's holder: a holder resumed before then can take that role from a
-// transcript the two claims share (review round 16 of #4220, #59-#61). The contained claim takes
-// no forget while it is live, so the operator stops it (`legion claims suspend`, once its runtime
-// answers, or a stop of its pod or pane by hand) before the steps above, which need a daemon that
-// serves (review rounds 11 to 18 of #4220). A statement that makes such a claim the holder of its
-// session writes no claim, and the publication of an issue's role holders follows claim writes,
-// so Dispatch is shown that claim as its role's holder at the next boot, or once the claim is
-// suspended and resumed. A boot whose budget runs out on the suspensions still fails, since every
-// later step would too. A store that refuses
-// the conflicts' read refuses the boot, naming what failed, as the controller's boot stop does
-// (stopLaunchedController). A suspension the claim holds for later is no failure: a
-// working claim's is held for its turn and stops the process at the operator's stop timeout
+// sendPending, compactStart). The process runs on under the session until it is stopped, and its
+// session claimed the claim's Envoy role: the daemon could free the role, but the process claims a
+// free role again at its next heartbeat. So the boot asks the listener to withhold the role from
+// that session (withholdRole, notify.RoleWithholds): the listener frees the session's claim of the
+// role and refuses each claim of it the session makes, soft or hard, so no message to the role
+// reaches a process of that session, from any sender, another claim's process registered under the
+// same id included. The withhold stands until the claim holds that session again, when the boot
+// or the operator's resume lifts it (liftRoleWithholds); a claim given a new session records the
+// old one no longer, so its role stays withheld from the old session, which no process of the
+// claim runs under again. While it stands the listener names no holder for the role, so the clear
+// of the session, which first asks the listener who holds the claim's role (supervise's
+// mayForget), is not refused for that session.
+//
+// A withhold the listener refuses, as it refuses every caller but the daemon's own broker token,
+// or one that does not reach it, is logged at Error, and the claim is contained as above without
+// it: a message another session sends to that role reaches the session's subscriber until the
+// session ends. Once no process registers the session id, the listener frees the role at the role
+// reaper's first pass after the session's record is gone and the role claim's last renewal is a
+// live window old: the record leaves the session bucket at the bucket's maximum age
+// (`ENVOY_SESSION_MAX_AGE`, five minutes on a bucket created with it unset) or reads gone at the
+// gone horizon (an hour) where that age is longer, and the reaper runs every
+// `ENVOY_ROLE_CLAIM_REAP_INTERVAL`, five minutes by default, so the role is free at most
+// `max(min(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_GONE_HORIZON), ENVOY_SESSION_LIVE_WINDOW) +
+// ENVOY_ROLE_CLAIM_REAP_INTERVAL` after the last registration (ten minutes with the defaults,
+// about 65 minutes where the bucket keeps records past the gone horizon), and later across a
+// listener restart or a reaper read that fails (supervise.roleFreedBound). That holds only while
+// no other live process registers the same session id: where the name is held for another claim
+// whose live process runs under the same id, as after a rollback, the listener keeps the role
+// with that session while it lives, and the role's messages reach that process. That is so for
+// every claim this step names whose session another claim's live process runs under, suspended
+// here, or not stopped and its withhold refused. The daemon withholds its own messages from such
+// a claim's role only while the claim records that session, so the one decision that would open
+// the role topic, the clear of that session, first asks the listener who holds the claim's role
+// and is refused while the listener names that session in any state (supervise's mayForget). The
+// operator stops the process under the session: it suspends the claim holding the session if that
+// claim runs, and otherwise only the wait helps, since the process may be the contained claim's
+// own. It forgets once the listener names no holder or another session, within that bound of that
+// process's last registration, resumes the contained claim, and resumes the claim it suspended
+// only once the listener names the contained claim's new session as its role's holder: a holder
+// resumed before then can take that role from a transcript the two claims share (review round 16
+// of #4220, #59-#61). The contained claim takes no forget while it is live, so the operator stops
+// it (`legion claims suspend`, once its runtime answers, or a stop of its pod or pane by hand)
+// before the steps above, which need a daemon that serves (review rounds 11 to 18 of #4220). A
+// statement that makes such a claim the holder of its session writes no claim, and the
+// publication of an issue's role holders follows claim writes, so Dispatch is shown that claim as
+// its role's holder at the next boot, or once the claim is suspended and resumed. A boot whose
+// budget runs out on the suspensions still fails, since every later step would too. A store that
+// refuses the conflicts' read refuses the boot, naming what failed, as the controller's boot stop
+// does (stopLaunchedController). A suspension the claim holds for later is no failure: a working
+// claim's is held for its turn and stops the process at the operator's stop timeout
 // (holdSuspension), and a launching claim's is held until its agent is ready, which an agent
 // refused its registration never is, so its registration deadline suspends it
 // (registrationDeadline). Neither is relaunched meanwhile, and a restart before either completes
 // asks again.
+//
+// The lift is asked of each claim holding a name of its current session that another claim's
+// current or abandoned session records (liftRoleWithholds), lifted from that session. A withhold
+// is written only for a claim recording a name it does not hold, and such a claim comes to hold
+// the name in one of two ways: an operator records it as the name's holder with the settle
+// statement, when the claims it shared the name with record it still; or the name leaves every
+// other claim's records, by a forget and a release of their names, and the boot's hold gives it to
+// the one claim recording it (store.HoldRecordedSessions). The conflict read names the claims of
+// the first way with no record of what earlier boots withheld, and a project with no conflict
+// sends the listener nothing. A lift of a role not withheld answers 204 and changes nothing. The
+// boot asks it of every such claim after its suspensions, and the operator's resume of a claim
+// asks it of that claim alone, before the claim's machine is asked to relaunch it and whatever
+// that answers, though not where the project's pause refuses the resume: a claim the boot could
+// not stop is not suspended, so its resume is refused, though its process is the session's
+// rightful one once the name is settled. A claim of the second way, or one settled after the name
+// left the other claims' records, is named by no conflict, so its withhold stands; giving it a new
+// session (`legion claims forget-session`, then `legion claims resume`) lets its process claim the
+// role under that session. A lift the listener refuses, or that does not reach it, is logged at
+// Error, and the next boot or resume asks again.
 //
 // The settle statement is a statement an operator runs, and a session's names are the agent's own
 // text, so each is written into it as an escape string literal (supervise.SQLLiteral), never as it
@@ -121,7 +154,9 @@ func (s *supervision) holdRecordedSessions(ctx context.Context) error {
 	return nil
 }
 
-// suspendSessionConflicts is the boot's second step (holdRecordedSessions).
+// suspendSessionConflicts is the boot's second step (holdRecordedSessions), and the boot's pass of
+// the role withholds: it withholds the role of each claim it could not stop, and lifts that of
+// each claim that holds its session again (liftRoleWithholds).
 func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 	conflicts, err := s.supervisor.store.SessionConflicts(ctx, s.plan.project)
 	if err != nil {
@@ -179,10 +214,98 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 			case ctx.Err() != nil:
 				return fmt.Errorf("suspend %s, which records the %s %s it does not hold: %w", token, c.Hold.Kind, c.Hold.Name, err)
 			default:
-				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, contained: its hold refuses every relaunch, resume and new enrollment of it, its process's enrollment is revoked once the broker confirms the revocation (or recorded no longer if the broker refuses that for good), and the daemon publishes nothing to its role and sends it no task and no compaction; where the runtime refused the stop the process runs on, and the Envoy listener does not yet withhold its role, until it is stopped (legion claims suspend, or a stop of its pod or pane by hand); where another claim's live process runs under the same session id, the role stays with that session while it lives; the next boot asks again",
+				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, contained: its hold refuses every relaunch, resume and new enrollment of it, its process's enrollment is revoked once the broker confirms the revocation (or recorded no longer if the broker refuses that for good), and the daemon publishes nothing to its role and sends it no task and no compaction; where the runtime refused the stop the process runs on until it is stopped (legion claims suspend, or a stop of its pod or pane by hand), and the Envoy listener is asked to withhold its role from its session; the next boot asks again",
 					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name, "error", err)
+				s.withholdRole(ctx, token, m.View().Claim.Session)
 			}
 		}
 	}
+	s.liftRoleWithholds(ctx, conflicts, "")
 	return nil
+}
+
+// withholdRole asks the Envoy listener to withhold the role of the claim of token from session,
+// the session that claim records and does not hold, after the boot's suspension of the claim
+// failed (suspendSessionConflicts, notify.RoleWithholds). The listener frees the session's claim
+// of the role and refuses each claim of it the session makes, so the process the runtime would
+// not stop is sent nothing published to the role. Where the failure was a write the store refused
+// after the stop, no process runs under the session, and the withhold keeps the role from it as
+// well. A withhold refused, or one that does not reach the listener, is logged at Error and leaves
+// the claim as #4220 leaves it, contained; the next boot asks again. A claim recording no session
+// id has registered with no listener under one, so nothing is asked.
+func (s *supervision) withholdRole(ctx context.Context, token claim.Token, session string) {
+	if s.withholds == nil || session == "" {
+		return
+	}
+	if err := s.withholds.WithholdRole(ctx, string(token), session); err != nil {
+		s.log.Error("supervise: the Envoy listener refused to withhold the role of a claim the boot could not stop from the session it does not hold, or could not be asked; the claim stays contained, and its process keeps the role its session claimed until it is stopped, so a message another session sends to the role reaches it; the next boot asks again",
+			"role", token, "session", session, "error", err)
+		return
+	}
+	s.log.Info("supervise: the Envoy listener withholds the role of a claim the boot could not stop from the session it does not hold, until the claim holds that session again",
+		"role", token, "session", session)
+}
+
+// liftRoleWithholds asks the Envoy listener to lift the withhold of the role of each claim that
+// holds its session again from that session (notify.RoleWithholds.LiftRoleWithhold), from
+// conflicts, the boot's read of every name claims record without holding it
+// (store.SessionConflicts): each claim that holds such a name, holds every name of its own current
+// session, and records the name in that session. The package comment says why those are every
+// claim a withhold can have been written for that holds its session now. only, when set, is the
+// one claim to lift, the claim the operator resumes (liftRoleWithholdOf); the boot lifts every
+// such claim. A lift the listener refuses, or that does not reach it, is logged at Error.
+func (s *supervision) liftRoleWithholds(ctx context.Context, conflicts []store.SessionConflict, only claim.Token) {
+	if s.withholds == nil {
+		return
+	}
+	unheld := map[claim.Token]bool{}
+	for _, c := range conflicts {
+		for _, token := range c.Claims {
+			unheld[token] = true
+		}
+	}
+	asked := map[claim.Token]bool{}
+	for _, c := range conflicts {
+		holder := c.Holder
+		if holder == "" || unheld[holder] || asked[holder] || (only != "" && holder != only) {
+			continue
+		}
+		m, ok := s.supervisor.Machine(holder)
+		if !ok {
+			continue
+		}
+		held := m.View().Claim
+		if held.Session == "" || !slices.Contains(supervise.RecordedHolds(held.Session, held.SessionFile), c.Hold) {
+			continue
+		}
+		asked[holder] = true
+		if err := s.withholds.LiftRoleWithhold(ctx, string(holder), held.Session); err != nil {
+			s.log.Error("supervise: the Envoy listener refused to lift the withhold of the role of a claim that holds its session again, or could not be asked; its process cannot claim the role until a lift lands, and the next boot or resume of the claim asks again",
+				"role", holder, "session", held.Session, "error", err)
+			continue
+		}
+		s.log.Info("supervise: the Envoy listener lifted the withhold of the role of a claim that holds its session again",
+			"role", holder, "session", held.Session)
+	}
+}
+
+// liftRoleWithholdOf lifts the withhold of the role of the claim of token from its session where
+// the claim holds that session again (liftRoleWithholds), for the operator's resume of the claim
+// (api.Options.LiftRoleWithhold), which calls it before the claim's machine is asked. A claim
+// recording no session asks nothing. A store that does not answer the conflicts' read lifts
+// nothing, logged at Warn: the resume goes on, and the next boot asks again.
+func (s *supervision) liftRoleWithholdOf(ctx context.Context, token claim.Token) {
+	if s.withholds == nil {
+		return
+	}
+	if m, ok := s.supervisor.Machine(token); !ok || m.View().Claim.Session == "" {
+		return
+	}
+	conflicts, err := s.supervisor.store.SessionConflicts(ctx, s.plan.project)
+	if err != nil {
+		s.log.Warn("supervise: the store did not answer which session names claims record without holding them, so the resume lifts no withhold of the claim's Envoy role; the next boot asks again",
+			"claim", token, "error", err)
+		return
+	}
+	s.liftRoleWithholds(ctx, conflicts, token)
 }

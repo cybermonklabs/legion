@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  A claim the boot could not stop, because the runtime refused the stop, runs on under a session
+  it does not hold, and its process kept the Envoy role its session claimed, so a message another
+  session sent to that role reached it. The boot now asks the Envoy listener to withhold the role
+  from that session (`PUT /v1/role-withholds`, over the bearer the daemon presents the listener):
+  the listener frees the session's claim of the role and refuses each claim of it the session
+  makes, so no message to the role reaches that process. The daemon lifts the withhold (`DELETE
+  /v1/role-withholds`) once the claim holds its session again: at each boot, and at the operator's
+  `legion claims resume` of the claim, before it is relaunched and whatever its state makes of the
+  resume, unless the project's pause refuses it.
+  It asks both only of the claims a boot names: a claim recording a session name it does not
+  hold, for a withhold, and a claim holding a name of its current session that another claim
+  records, for a lift; a project with none sends the listener nothing. The listener takes a
+  withhold or a lift only from the daemon's own broker token, so a daemon presenting any other
+  bearer is refused `403`, which it logs at Error naming the role, the session and the status,
+  and the claim stays contained as before.
+time: 2026-11-21T01:54:04Z
+custom:
+    Issue: role-withhold

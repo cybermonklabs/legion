@@ -272,6 +272,15 @@ type Options struct {
 	// queued before any task goes. An error refuses the ready with 503: the machine has not taken
 	// it, no task goes, and the plugin tries the ready again. Nil queues nothing.
 	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
+	// LiftRoleWithhold is told of each operator resume of a claim the route takes, before the
+	// claim's machine is asked to relaunch it and whatever the machine then answers: the daemon
+	// lifts the Envoy listener's withhold of the claim's role from the session it records, where
+	// the claim holds that session again (internal/daemon's liftRoleWithholdOf), so the process
+	// the resume relaunches claims its role at once. A claim the boot could not stop is not
+	// suspended and its resume is refused, though its process is the session's rightful one once
+	// an operator settles the name, which is why the machine's answer does not decide it. Nil
+	// lifts nothing.
+	LiftRoleWithhold func(ctx context.Context, token claim.Token)
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route
 	// 500 and changes nothing else.
@@ -383,6 +392,8 @@ type server struct {
 	capabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	// roleHoldersChanged is Options.RoleHoldersChanged.
 	roleHoldersChanged func(ctx context.Context, c supervise.Claim) error
+	// liftRoleWithhold is Options.LiftRoleWithhold.
+	liftRoleWithhold   func(ctx context.Context, token claim.Token)
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
 	// pause is Options.Pause, nil for a daemon with no workflow.
@@ -454,6 +465,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		promptAgents:       opts.PromptAgents,
 		capabilityReported: opts.CapabilityReported,
 		roleHoldersChanged: opts.RoleHoldersChanged,
+		liftRoleWithhold:   opts.LiftRoleWithhold,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
 		pause:              opts.Pause,

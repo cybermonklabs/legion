@@ -268,9 +268,10 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 // it. A kept publish is held as much as any other: its copy waits on the role's kept lane for the
 // role's next live holder, and while the unheld session's process lives, that holder is it. A
 // claim's role topics are held whatever its state: a retired or failed claim's unheld session may
-// still be a live process the daemon no longer manages, and the Envoy listener does not yet
-// withhold the role from it, so the daemon withholds its own messages. A topic of no claim this
-// daemon supervises, and every other topic, is published as made.
+// still be a live process the daemon no longer manages, and the Envoy listener withholds the role
+// itself only from the session of a claim the boot could not stop (suspendSessionConflicts), so
+// the daemon withholds its own messages. A topic of no claim this daemon supervises, and every
+// other topic, is published as made.
 func (r *outbox) publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
 	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
 		return err

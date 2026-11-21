@@ -568,10 +568,15 @@ func suspendEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (su
 }
 
 // resumeEvent is the operator's resume of a suspended claim, a launch the pause holds for every
-// claim but the controller's (refusedWhilePaused).
+// claim but the controller's (refusedWhilePaused). Before the claim's machine is asked, the
+// daemon lifts the Envoy listener's withhold of the claim's role where the claim holds its session
+// again (Options.LiftRoleWithhold), so the process the resume relaunches claims its role at once.
 func (s *server) resumeEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
 	if s.refusedWhilePaused(w, r, "resume", c) {
 		return nil, false
+	}
+	if s.liftRoleWithhold != nil {
+		s.liftRoleWithhold(r.Context(), c.Token)
 	}
 	return supervise.RequestResume{Claim: c.Token}, true
 }

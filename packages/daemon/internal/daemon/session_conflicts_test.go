@@ -2,13 +2,22 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -569,5 +578,251 @@ func earlierBootClaim(project string, token claim.Token, issue, session string, 
 		BootTokenHash:  supervise.HashBootToken("boot-" + string(token)),
 		CapabilityHash: []byte{byte(n)},
 		PluginContract: api.DaemonAPIVersion,
+	}
+}
+
+// withholdCall is one request of the Envoy listener's role-withhold route as withholdListener
+// received it: its method, the role and session its body named, and the bearer it carried.
+type withholdCall struct {
+	method, role, session, bearer string
+}
+
+// withholdListener stands in for the Envoy listener: it records each PUT and DELETE of
+// /v1/role-withholds and answers it what answer gives for its method (204 with no body where
+// answer is nil), and answers every other request 404 naming no holder, as a listener that knows
+// no session and no role claim does.
+type withholdListener struct {
+	url    string
+	answer func(method string) (int, string)
+	mu     sync.Mutex
+	seen   []withholdCall
+}
+
+func newWithholdListener(t *testing.T, answer func(method string) (int, string)) *withholdListener {
+	t.Helper()
+	l := &withholdListener{answer: answer}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/role-withholds" || (r.Method != http.MethodPut && r.Method != http.MethodDelete) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":"not found","reason":"unclaimed"}`)
+			return
+		}
+		var body listenerwire.RoleWithholdRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("the daemon sent %s /v1/role-withholds a body that does not decode: %v", r.Method, err)
+		}
+		l.mu.Lock()
+		l.seen = append(l.seen, withholdCall{method: r.Method, role: body.Role, session: body.Session, bearer: r.Header.Get("Authorization")})
+		l.mu.Unlock()
+		status, answered := http.StatusNoContent, ""
+		if l.answer != nil {
+			status, answered = l.answer(r.Method)
+		}
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, answered)
+	}))
+	t.Cleanup(server.Close)
+	l.url = server.URL
+	return l
+}
+
+// calls is every withhold and lift the listener has received, oldest first.
+func (l *withholdListener) calls() []withholdCall {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.seen)
+}
+
+// asked reports whether the listener received a request of method for role and session.
+func (l *withholdListener) asked(method string, role claim.Token, session string) bool {
+	return slices.ContainsFunc(l.calls(), func(c withholdCall) bool {
+		return c.method == method && c.role == string(role) && c.session == session
+	})
+}
+
+// envoyTokenFile writes token as the daemon's listener bearer (`envoy_token_file`) and returns its
+// path.
+func envoyTokenFile(t *testing.T, token string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "envoy-token")
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatalf("write the Envoy token: %v", err)
+	}
+	return path
+}
+
+// A claim the boot could not stop runs on under a session it does not hold, and its process still
+// claims the role its session claimed. So the boot asks the Envoy listener to withhold that role
+// from that session (PUT /v1/role-withholds), over the bearer it presents the listener for every
+// other call: the listener frees the session's claim of the role and refuses each claim of it the
+// session makes, so no message to the role reaches that process, from any sender. Here the runtime
+// refuses both claims' stops, so both roles are withheld from the session they share, and neither
+// is lifted while neither holds it. Once the runtime answers, the operator stops both, records the
+// rightful holder with the boot's settle statement and resumes it: that claim's role is lifted
+// (DELETE /v1/role-withholds), and the other claim's stays withheld.
+//
+// The controls (the pull request records each run): suspendSessionConflicts without its
+// withhold; the listener is asked none, and the test fails naming the role. The resume route
+// without its lift; the test fails naming the rightful claim's role.
+func TestARefusedBootStopWithholdsTheRoleUntilTheClaimHoldsItsSession(t *testing.T) {
+	cfg := testConfig(t)
+	listener := newWithholdListener(t, nil)
+	cfg.EnvoyURL = listener.url
+	cfg.EnvoyTokenFile = envoyTokenFile(t, "envoy-bearer")
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := projectTokens(t, project)
+	rightful, contained := token("LEGION-951", claim.RoleImplementer), token("LEGION-952", claim.RoleImplementer)
+	const shared = "ses_withheld_951"
+	rt := fake.NewRuntime()
+	rt.FailSuspend(errors.New("the pod's container cannot be reached"))
+	d, settle, _ := settleLineOn(t, cfg, rt, project, shared, []conflictRow{
+		{rightful, "LEGION-951", shared, "/sessions/a/951.jsonl", supervise.StateIdle},
+		{contained, "LEGION-952", shared, "/sessions/b/952.jsonl", supervise.StateIdle},
+	}, []claim.Token{rightful, contained}, `($1, 'session', $2, '')`, project, shared)
+
+	for _, tok := range []claim.Token{rightful, contained} {
+		if !listener.asked(http.MethodPut, tok, shared) {
+			t.Fatalf("the boot asked the listener no withhold of role %s from session %s, though the runtime refused its stop; the listener received %v",
+				tok, shared, listener.calls())
+		}
+	}
+	for _, call := range listener.calls() {
+		if call.method != http.MethodPut {
+			t.Errorf("the boot sent the listener %+v, while neither claim holds %s; want withholds alone", call, shared)
+		}
+		if call.bearer != "Bearer envoy-bearer" {
+			t.Errorf("the boot's %s of role %s carried %q, want the bearer it presents the listener", call.method, call.role, call.bearer)
+		}
+	}
+
+	rt.FailSuspend(nil)
+	operator := func(target claim.Token, route string) {
+		t.Helper()
+		if status, answer := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(target)+"/"+route, nil, true); status != http.StatusOK {
+			t.Fatalf("the operator's %s of %s = %d %s, want 200", route, target, status, answer)
+		}
+	}
+	operator(rightful, "suspend")
+	operator(contained, "suspend")
+	if moved := operatorSQL(t, cfg.PostgresDSN, strings.ReplaceAll(settle, "<token>", string(rightful)), ""); moved != 1 {
+		t.Fatalf("the settle statement moved %d rows, want 1", moved)
+	}
+	operator(rightful, "resume")
+
+	if !listener.asked(http.MethodDelete, rightful, shared) {
+		t.Fatalf("the operator's resume of %s, which holds session %s again, lifted no withhold of role %s; the listener received %v",
+			rightful, shared, rightful, listener.calls())
+	}
+	if listener.asked(http.MethodDelete, contained, shared) {
+		t.Errorf("role %s was lifted from session %s, which %s does not hold", contained, shared, contained)
+	}
+}
+
+// The boot lifts the withhold of a claim that holds its session again. An earlier boot withheld
+// both claims' roles from the session they shared, and the operator recorded the rightful holder
+// with the settle statement while the daemon was down. This boot finds the other claim still
+// recording the name the rightful one holds: it suspends that claim, and since the runtime refuses
+// the stop, withholds its role again; and it lifts the rightful claim's role from its session. The
+// other claim's role is not lifted, and the rightful one's is not withheld. The rightful claim is
+// idle, not suspended, so the operator's resume of it is refused 409, and lifts its role all the
+// same: its process is the session's rightful one.
+//
+// The controls (the pull request records each run): suspendSessionConflicts without its lift;
+// the listener is asked none, and the test fails naming the rightful claim's role. The lift
+// asked after the machine's answer, and only on a resume it took; the refused resume lifts
+// nothing, and the test fails naming the role.
+func TestABootLiftsTheWithholdOfAClaimThatHoldsItsSessionAgain(t *testing.T) {
+	cfg := testConfig(t)
+	listener := newWithholdListener(t, nil)
+	cfg.EnvoyURL = listener.url
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := projectTokens(t, project)
+	rightful, contained := token("LEGION-961", claim.RoleImplementer), token("LEGION-962", claim.RoleImplementer)
+	const shared = "ses_settled_961"
+	seedConflicts(t, cfg.PostgresDSN, project, []conflictRow{
+		{rightful, "LEGION-961", shared, "/sessions/a/961.jsonl", supervise.StateIdle},
+		{contained, "LEGION-962", shared, "/sessions/b/962.jsonl", supervise.StateIdle},
+	}, `($1, 'session', $2, $3)`, project, shared, string(rightful))
+
+	rt := fake.NewRuntime()
+	rt.FailSuspend(errors.New("the pod's container cannot be reached"))
+	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
+
+	if !listener.asked(http.MethodDelete, rightful, shared) {
+		t.Fatalf("the boot lifted no withhold of role %s from session %s, which it holds again; the listener received %v",
+			rightful, shared, listener.calls())
+	}
+	if !listener.asked(http.MethodPut, contained, shared) {
+		t.Errorf("the boot withheld no role %s from session %s, which %s does not hold and whose stop the runtime refused", contained, shared, contained)
+	}
+	if listener.asked(http.MethodDelete, contained, shared) || listener.asked(http.MethodPut, rightful, shared) {
+		t.Errorf("the boot sent %v; want %s's role withheld and %s's lifted, and nothing else", listener.calls(), contained, rightful)
+	}
+
+	status, answer := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(rightful)+"/resume", nil, true)
+	if status != http.StatusConflict {
+		t.Fatalf("the operator's resume of %s, which is idle, answered %d %s; want 409, since it is not suspended", rightful, status, answer)
+	}
+	lifts := 0
+	for _, call := range listener.calls() {
+		if call.method == http.MethodDelete && call.role == string(rightful) && call.session == shared {
+			lifts++
+		}
+	}
+	if lifts != 2 {
+		t.Errorf("role %s was lifted from %s %d times, want twice, by the boot and by the operator's refused resume; the listener received %v",
+			rightful, shared, lifts, listener.calls())
+	}
+}
+
+// A withhold the listener refuses, here the 403 it gives every caller that is not the daemon's
+// own broker token, is logged at Error naming the role, the session and the status, and the boot
+// goes on: the claim is left as it was, contained, and the daemon serves.
+//
+// The control (the pull request records the run): the refusal logged at Warn; the test fails
+// naming the role.
+func TestARefusedWithholdIsLoggedAndTheBootGoesOn(t *testing.T) {
+	cfg := testConfig(t)
+	listener := newWithholdListener(t, func(string) (int, string) {
+		return http.StatusForbidden, `{"error":"role withholds are a Legion daemon's own"}`
+	})
+	cfg.EnvoyURL = listener.url
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := projectTokens(t, project)
+	first, second := token("LEGION-971", claim.RoleImplementer), token("LEGION-972", claim.RoleImplementer)
+	const twice = "ses_twice_971"
+	seedConflicts(t, cfg.PostgresDSN, project, []conflictRow{
+		{first, "LEGION-971", twice, "/sessions/971.jsonl", supervise.StateIdle},
+		{second, "LEGION-972", twice, "/sessions/972.jsonl", supervise.StateIdle},
+	}, `($1, 'session', $2, '')`, project, twice)
+
+	rt := fake.NewRuntime()
+	rt.FailSuspend(errors.New("the pod's container cannot be reached"))
+	logs := &syncBuffer{}
+	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)))
+
+	refused := map[string]map[string]any{}
+	for _, line := range loggedLines(t, logs.String(), "the Envoy listener refused to withhold") {
+		role, _ := line["role"].(string)
+		refused[role] = line
+	}
+	for _, tok := range []claim.Token{first, second} {
+		line := refused[string(tok)]
+		reason, _ := line["error"].(string)
+		if line["level"] != "ERROR" || line["session"] != twice || !strings.Contains(reason, "403") {
+			t.Errorf("the boot logged %v for the refused withhold of role %s, want an Error naming the role, session %s and the status 403", line, tok, twice)
+		}
+		if got := d.claim(tok); got.State != string(supervise.StateIdle) {
+			t.Errorf("%s, whose stop the runtime and whose withhold the listener refused, is %s after the boot, want it left idle as it was", tok, got.State)
+		}
 	}
 }

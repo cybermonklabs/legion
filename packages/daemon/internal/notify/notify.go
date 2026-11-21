@@ -1,6 +1,7 @@
 // Package notify is the daemon's client for the Envoy listener: it publishes persisted workflow
-// notices through its publish route, reads a role's holder through its role route, and ends a
-// session's registration through its session route.
+// notices through its publish route, reads a role's holder through its role route, withholds a
+// role from a session and lifts that through its role-withhold route, and ends a session's
+// registration through its session route.
 package notify
 
 import (
@@ -487,6 +488,73 @@ type RoleLookupRefused struct {
 
 func (e *RoleLookupRefused) Error() string {
 	return fmt.Sprintf("the Envoy listener refuses the role lookup (status %d): %s", e.Status, e.Reason)
+}
+
+// RoleWithholds is the Envoy listener's role withholds as the daemon writes them
+// (HTTPPublisher.WithholdRole and LiftRoleWithhold): the daemon's boot withholds the role of a
+// claim it could not stop from the session that claim does not hold, and the boot and the
+// operator's resume lift it once the claim holds that session again (suspendSessionConflicts and
+// liftRoleWithholds in packages/daemon/internal/daemon). It is an interface so that a test can
+// stand in for the listener, as Publisher is.
+type RoleWithholds interface {
+	WithholdRole(ctx context.Context, role, session string) error
+	LiftRoleWithhold(ctx context.Context, role, session string) error
+}
+
+// WithholdRole asks the listener to withhold role from session (PUT /v1/role-withholds): the
+// listener frees that session's standing claim of the role and refuses each claim of it the
+// session makes, soft or hard, until the withhold is lifted, so a message published to the role
+// reaches no process of that session. Another session may claim the role meanwhile. The listener
+// admits only a Legion daemon's own broker token, whose session is `legion-daemon:<project>`,
+// and only for a role of that project; asking again is no change, and answers 204 again.
+//
+// It is nil on the listener's 204, and every other answer is an error naming role, session, the
+// status and the listener's own words for it: the 403 of a caller that is not that daemon, which
+// is this client's whenever its bearer is not the daemon's broker token, the 409 of another
+// daemon's withhold, a 400, and the 503 of a bus that did not answer. A listener it cannot reach
+// is an error too. The error never carries the bearer.
+func (p *HTTPPublisher) WithholdRole(ctx context.Context, role, session string) error {
+	return p.roleWithhold(ctx, http.MethodPut, fmt.Sprintf("withhold role %s from session %s", role, session), role, session)
+}
+
+// LiftRoleWithhold asks the listener to lift the withhold of role from session (DELETE
+// /v1/role-withholds), after which the session may claim the role again. A role not withheld from
+// that session answers 204 and changes nothing, so a lift needs no record of the withhold it
+// lifts. The listener lifts only a withhold that the same daemon wrote, and refuses every other
+// caller 403, leaving the withhold standing. Its answers read as WithholdRole's do.
+func (p *HTTPPublisher) LiftRoleWithhold(ctx context.Context, role, session string) error {
+	return p.roleWithhold(ctx, http.MethodDelete, fmt.Sprintf("lift the withhold of role %s from session %s", role, session), role, session)
+}
+
+// roleWithhold sends one request of method to the listener's role-withhold route, with the body
+// listenerwire.RoleWithholdRequest, for the call what names: nil on its 204, and otherwise an
+// error naming what, the status and the listener's words, read within refusalBodyLimit.
+func (p *HTTPPublisher) roleWithhold(ctx context.Context, method, what, role, session string) error {
+	body, err := json.Marshal(listenerwire.RoleWithholdRequest{Role: role, Session: session})
+	if err != nil {
+		return fmt.Errorf("%s: encode the request: %w", what, err)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, p.baseURL+"/v1/role-withholds", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("%s: build the request: %w", what, err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if p.token != "" {
+		request.Header.Set("Authorization", "Bearer "+p.token)
+	}
+	response, err := p.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	answered, cut, readErr := redact.ReadBounded(response.Body, refusalBodyLimit)
+	if readErr != nil {
+		return unreadAnswer(what, response.Status, readErr)
+	}
+	return fmt.Errorf("%s: listener returned %s: %s", what, response.Status, excerpt(answered, cut))
 }
 
 // excerpt is body as an error names it, where cut says whether its read was cut

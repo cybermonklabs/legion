@@ -23,6 +23,15 @@ import (
 // its runtime, and the settle statement its boot logs for the name held for no claim.
 func settleLine(t *testing.T, cfg config.Config, project, name string, rows []conflictRow, open []claim.Token, holds string, args ...any) (*daemon, *fake.Runtime, string) {
 	t.Helper()
+	rt := fake.NewRuntime()
+	d, settle, _ := settleLineOn(t, cfg, rt, project, name, rows, open, holds, args...)
+	return d, rt, settle
+}
+
+// settleLineOn is settleLine on the runtime rt, which a test may set to refuse the boot's stops,
+// returning the daemon, the settle statement and the boot's log.
+func settleLineOn(t *testing.T, cfg config.Config, rt *fake.Runtime, project, name string, rows []conflictRow, open []claim.Token, holds string, args ...any) (*daemon, string, *syncBuffer) {
+	t.Helper()
 	seedConflicts(t, cfg.PostgresDSN, project, rows, holds, args...)
 	if len(open) > 0 {
 		ctx := context.Background()
@@ -43,17 +52,16 @@ func settleLine(t *testing.T, cfg config.Config, project, name string, rows []co
 			}
 		}
 	}
-	rt := fake.NewRuntime()
 	logs := &syncBuffer{}
 	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)))
 	for _, line := range loggedLines(t, logs.String(), "recorded by claims that do not hold it") {
 		if line["name"] == name {
 			settle, _ := line["settle"].(string)
-			return d, rt, settle
+			return d, settle, logs
 		}
 	}
 	t.Fatalf("the boot logged no settle statement for %q:\n%s", name, logs.String())
-	return nil, nil, ""
+	return nil, "", nil
 }
 
 // operatorSQL runs statement as an operator's session does, with standard_conforming_strings as
