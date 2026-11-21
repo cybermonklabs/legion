@@ -757,7 +757,9 @@ refuses to start on an entry that names a project and no person: an entry that n
 names its person, so no token held to a project is personless. A broker of a build older than the
 entry naming no person refuses to start on one, and an Envoy listener or a Dispatch of a build
 older than it answers such a token `401`, so deploy the broker, Dispatch and every Envoy listener
-before you write one.
+before you write one. Bring the session images' pi-envoy and claude-envoy builds that carry the
+same release's `dispatch` command there first too: an older `dispatch whoami` ignores Dispatch's
+`sign_in_required` and tells such a session that its writes are refused, though they succeed.
 `BROKER_EXCHANGE_READ_ACCOUNTS` lists the accounts whose tokens only read, as whitespace-separated
 `<service account>=<service>=<session>` entries, for example
 `BROKER_EXCHANGE_READ_ACCOUNTS=system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`.

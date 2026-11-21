@@ -434,17 +434,17 @@ func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	// read-only token passes only a verifier whose service serves one. A named token is an
 	// operator's entry's, which names one project, or none for an account entry that names none:
 	// such an entry names a person, or names no person and acts as its account, which is the
-	// token's service and is always a Kubernetes account's subject (oauthwire.AccountSubjectPrefix),
-	// so a named answer naming no person and any other service, a fleet's name among them, is no
-	// token the broker mints. A named answer naming two or more projects, which a reader holding a
-	// write to one project would take as no limit at all, is the same case. A list no exchange
-	// mints (oauthwire.ValidProjects) and a service's token naming a project, which the exchange
-	// refuses to mint, are refused for the same reason.
+	// token's service and is always a whole Kubernetes account subject (oauthwire.AccountSubject),
+	// so a named answer naming no person and any other service, a fleet's name or a string that
+	// only opens like an account among them, is no token the broker mints. A named answer naming
+	// two or more projects, which a reader holding a write to one project would take as no limit
+	// at all, is the same case. A list no exchange mints (oauthwire.ValidProjects) and a service's
+	// token naming a project, which the exchange refuses to mint, are refused for the same reason.
 	shape := shapeOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
 		(answer.ProjectScope == ProjectScopeNamed && len(answer.Projects) > 1) ||
-		(answer.ProjectScope == ProjectScopeNamed && answer.Person == "" && !strings.HasPrefix(answer.Service, oauthwire.AccountSubjectPrefix)) ||
+		(answer.ProjectScope == ProjectScopeNamed && answer.Person == "" && !oauthwire.AccountSubject.MatchString(answer.Service)) ||
 		(answer.Person == "" && len(answer.Projects) > 0) ||
 		oauthwire.ValidProjects(answer.Projects) != nil {
 		return Caller{}, ErrNotASession

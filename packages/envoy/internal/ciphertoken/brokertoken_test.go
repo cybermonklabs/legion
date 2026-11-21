@@ -199,17 +199,18 @@ func readOnlyToken(jkt string, life time.Duration) ciphertoken.Introspection {
 // refused with an outcome of its own rather than handed back as a Caller for whoever mounts
 // this check to fill in. Each leg of the rule is its own token: a machine login's own, one the
 // exchange issued that names neither a person nor a service, one that names a session and a
-// person but comes from another client, and the seven whose project scope or list this package
+// person but comes from another client, and the ten whose project scope or list this package
 // cannot read — an answer carrying no project scope at all, one carrying a word it does not know,
-// a named scope naming a fleet and no person and no project, a named scope naming an account and a
-// project, a named scope with two projects, and a list no exchange could have minted. Those are
-// refused rather than read as a token that names no project, which would hand their caller every
-// project the person may write; the one naming a project under no scope would otherwise be the
-// louder of the two, since the project beside the scope is then read under nothing at all. A
-// named scope naming no person is minted only by an account entry naming no person, whose service
-// is the account (TestANamedAnswerNamingNoPersonIsItsAccount), so the same answer naming a fleet
-// is no token the broker mints. The proof-checked Verify and the answer-only Live refuse every
-// one, so an open connection cannot keep one alive either.
+// a named scope naming no person and no project and a service that is no whole account subject (a
+// fleet, the bare account prefix, an account with no name, an upper-case account), a named scope
+// naming an account and a project, a named scope with two projects, and a list no exchange could
+// have minted. Those are refused rather than read as a token that names no project, which would
+// hand their caller every project the person may write; the one naming a project under no scope
+// would otherwise be the louder of the two, since the project beside the scope is then read under
+// nothing at all. A named scope naming no person is minted only by an account entry naming no
+// person, whose service is the account (TestANamedAnswerNamingNoPersonIsItsAccount), so the same
+// answer naming any other service is no token the broker mints. The proof-checked Verify and the
+// answer-only Live refuse every one, so an open connection cannot keep one alive either.
 func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -223,6 +224,14 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	unknownScope.ProjectScope = "organisation"
 	namedFleet := liveToken(caller.jkt, time.Hour)
 	namedFleet.Person, namedFleet.Service, namedFleet.Projects = "", "example-fleet", nil
+	// Services that open like an account and are no whole account subject, which no account
+	// entry can hold (exchange.NewSet holds each to oauthwire.AccountSubject).
+	namedPrefixOnly := liveToken(caller.jkt, time.Hour)
+	namedPrefixOnly.Person, namedPrefixOnly.Service, namedPrefixOnly.Projects = "", "system:serviceaccount:", nil
+	namedNoName := liveToken(caller.jkt, time.Hour)
+	namedNoName.Person, namedNoName.Service, namedNoName.Projects = "", "system:serviceaccount:ns", nil
+	namedUpperCase := liveToken(caller.jkt, time.Hour)
+	namedUpperCase.Person, namedUpperCase.Service, namedUpperCase.Projects = "", "system:serviceaccount:NS:Name", nil
 	namedServiceProject := liveToken(caller.jkt, time.Hour)
 	namedServiceProject.Person, namedServiceProject.Service = "", "system:serviceaccount:example-ns:example-public"
 	namedTwo := liveToken(caller.jkt, time.Hour)
@@ -236,6 +245,9 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 		"a token naming no project scope":               noScope,
 		"a token of an unknown project scope":           unknownScope,
 		"a named scope naming a fleet and no person":    namedFleet,
+		"a named scope naming the bare account prefix":  namedPrefixOnly,
+		"a named scope naming an account with no name":  namedNoName,
+		"a named scope naming an upper-case account":    namedUpperCase,
 		"a named scope naming an account and a project": namedServiceProject,
 		"a named scope naming two projects":             namedTwo,
 		"a list no exchange mints":                      unsorted,
@@ -349,8 +361,10 @@ func TestANamedAnswerNamingNoProjectIsAPublicSession(t *testing.T) {
 
 // TestANamedAnswerNamingNoPersonIsItsAccount: an account entry naming no person and no project
 // mints a named token naming no person and no project, whose service is the account it acts as;
-// its answer is that caller, under Verify, Live and the NATS auth service's SessionCaller alike.
-// The same answer naming a project, or naming no service, is no token the exchange mints.
+// its answer is that caller, under Verify, Live and the NATS auth service's SessionCaller alike,
+// and so is the answer of such an entry that fixes its session (<service account>===<session>),
+// whose service is the same account. The same answer naming a project, or naming no service, is
+// no token the exchange mints.
 func TestANamedAnswerNamingNoPersonIsItsAccount(t *testing.T) {
 	const account = "system:serviceaccount:example-ns:example-public"
 	rig := newRig(t)
@@ -373,6 +387,11 @@ func TestANamedAnswerNamingNoPersonIsItsAccount(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(decided, want) {
 			t.Errorf("%s = %+v, %v; want %+v", name, decided, err, want)
 		}
+	}
+	fixed := answer
+	fixed.Session = "example-public-session"
+	if decided, err := ciphertoken.SessionCaller(fixed); err != nil || !reflect.DeepEqual(decided, ciphertoken.Caller{Session: fixed.Session, Service: account, ProjectScope: ciphertoken.ProjectScopeNamed}) {
+		t.Errorf("SessionCaller of the answer of an entry naming no person that fixes its session = %+v, %v; want that session acting for %s", decided, err, account)
 	}
 	withProject := answer
 	withProject.Projects = []string{"INFRA"}

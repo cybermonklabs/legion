@@ -1160,6 +1160,47 @@ func TestAPersonlessTokenWritesAsItsAccount(t *testing.T) {
 	}
 }
 
+// TestWhoamiSaysNoSignInForEveryCredentialThatMayWrite: whoami answers sign_in_required false for
+// every credential the sign-in check lets write — a personal token, the deployment's shared
+// token, a verified service-account token and a broker token that names a person — so a client
+// reading the field tells none of them to run `agent-secrets login`. The two broker tokens naming
+// a service and no person are the tests above: a machine's answers true, an account's false.
+func TestWhoamiSaysNoSignInForEveryCredentialThatMayWrite(t *testing.T) {
+	issuer := newServiceTokenIssuer(t)
+	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
+	caller := newBrokerCaller(t)
+	const brokerToken = "a-token-that-names-a-person"
+	rig.broker.Says(brokerToken, personScopedTokenAnswer(caller.jkt))
+	for _, row := range []struct {
+		name string
+		call func() *httptest.ResponseRecorder
+	}{
+		{"a personal token", func() *httptest.ResponseRecorder {
+			return agentRequest(t, rig.handler, http.MethodGet, "/api/v1/whoami", nil, personalTokenHolding(t, rig.database, model.ScopePerson))
+		}},
+		{"the deployment's shared token", func() *httptest.ResponseRecorder {
+			return agentRequest(t, rig.handler, http.MethodGet, "/api/v1/whoami", nil, "agent-token")
+		}},
+		{"a verified service-account token", func() *httptest.ResponseRecorder {
+			return agentRequest(t, rig.handler, http.MethodGet, "/api/v1/whoami", nil, issuer.mint(t, serviceTokenAudience))
+		}},
+		{"a broker token that names a person", func() *httptest.ResponseRecorder {
+			return rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", brokerToken, nil))
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			response := row.call()
+			if response.Code != http.StatusOK {
+				t.Fatalf("whoami under %s: status=%d body=%s", row.name, response.Code, response.Body.String())
+			}
+			answer := decodeBody[whoamiAnswer](t, response)
+			if answer.Kind != "agent" || answer.SignInRequired == nil || *answer.SignInRequired {
+				t.Fatalf("whoami under %s answered %s, want kind agent and sign_in_required false: Dispatch lets it write", row.name, response.Body.String())
+			}
+		})
+	}
+}
+
 // TestAServiceOnlyBrokerTokenWithNoProofIsRefused: the new caller kind changes nothing about how
 // a token is presented. A DPoP-bound token sent with no proof at all is refused where it always
 // was — the broker holds it live and the proof check is what turns it down — so no write

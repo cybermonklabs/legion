@@ -146,11 +146,20 @@ const (
 )
 
 // AccountSubjectPrefix opens a Kubernetes service account's subject,
-// system:serviceaccount:<namespace>:<name>: the service a ProjectScopeNamed token that names no
-// person carries, since the one entry that mints that shape is an account entry naming no person,
-// whose token acts as the account (exchange.Set.Pod). A resource server reads a named token that
-// names no person and any other service as no token the broker mints (ciphertoken).
+// system:serviceaccount:<namespace>:<name>. It tells a Kubernetes subject from a Google account
+// address where a reader holds one string that may be either (exchange.Set.ProjectsForAccount);
+// whether a string is a whole subject is AccountSubject's to answer.
 const AccountSubjectPrefix = "system:serviceaccount:"
+
+// AccountSubject is a Kubernetes service account's whole subject, the one a pod's projected token
+// carries: system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS
+// subdomain. The exchange holds every account entry and read entry to it (exchange.NewSet), so it
+// is also the service a ProjectScopeNamed token that names no person carries: the one entry that
+// mints that shape is an account entry naming no person, whose token acts as the account
+// (exchange.Set.Pod). A resource server reads a named token that names no person and a service
+// this does not match whole as no token the broker mints (ciphertoken). The broker's
+// configuration states the same grammar for the accounts its settings name.
+var AccountSubject = regexp.MustCompile(`^` + AccountSubjectPrefix + `[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // MaxProjects is the most projects one token names.
 const MaxProjects = 16

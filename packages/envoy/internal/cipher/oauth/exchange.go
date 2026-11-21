@@ -796,7 +796,11 @@ func dispatchUnreachable(err error) error {
 // not know (unknownMemberKind) refuse every trade that meets them server_error: each is a
 // misconfiguration, never an outage to mint through.
 //
-// A token that names no person names no project (exchange.ErrProjectsNoPerson) and asks nothing.
+// A token that names no person names no project and asks nothing: a machine's or a read entry's,
+// whose trade naming a project the policy refuses (exchange.ErrProjectsNoPerson), and an account
+// entry's naming no person, whose entry names no project, so a trade naming one is refused as
+// under any entry naming none (exchange.ErrProjectsFixed). With no person there is nobody whose
+// member kind Dispatch could be asked about, so the restricted-member check does not run for it.
 func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, session *oauthstore.ExchangeSession) error {
 	person, _ := session.Extra[ClaimPerson].(string)
 	scope, _ := session.Extra[ClaimProjectScope].(string)

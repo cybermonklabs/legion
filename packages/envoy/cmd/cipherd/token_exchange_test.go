@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -742,9 +743,10 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 // presenting its projected token with a DPoP proof of its own key and no client credential is
 // answered a token, and the listed API account reads that token back as the account's own: the
 // project scope named, the account as its service, the session the entry fixes, no person, no
-// project and no scope, and this test's own key. The same pod naming a project is refused, as
-// under any entry naming none, and a broker whose entry names a project and no person refuses to
-// start, naming the rule.
+// project and no scope, and this test's own key. That very answer is a session's credential to
+// the rule every resource server reads (ciphertoken.SessionCaller), so the verifier admits what
+// the broker mints. The same pod naming a project is refused, as under any entry naming none, and
+// a broker whose entry names a project and no person refuses to start, naming the rule.
 func TestTheBinaryExchangesAPersonlessAccountEntrysPodToken(t *testing.T) {
 	const (
 		personlessAccount = "system:serviceaccount:example-ns:example-public"
@@ -800,6 +802,11 @@ func TestTheBinaryExchangesAPersonlessAccountEntrysPodToken(t *testing.T) {
 		}
 		if answer.ExpiresAt <= time.Now().Unix() {
 			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+		}
+		caller, err := ciphertoken.SessionCaller(answer)
+		wantCaller := ciphertoken.Caller{Session: personlessSession, Service: personlessAccount, ProjectScope: oauthwire.ProjectScopeNamed}
+		if err != nil || !reflect.DeepEqual(caller, wantCaller) {
+			t.Errorf("the shared verifier rule read the broker's answer as %+v, %v; want %+v: every resource server must admit the token the broker mints for an entry naming no person", caller, err, wantCaller)
 		}
 	})
 
