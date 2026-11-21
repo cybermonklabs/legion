@@ -125,24 +125,21 @@ export function useRetryHandOff(to: Parameters<typeof useFocusHandOff>[0]): Retr
  *  of issues the row lists, spread on its line (`DetailsErrorLine`): it sends the read under
  *  `queryKey` again (`retryRead`) and notes that key as the read it was pressed for; as Retry
  *  leaves the page with the focus after that press (`useRetryHandOff`), it hands the focus on to
- *  what `to` returns only where the read now drawn is that read and has answered after it failed
- *  (`isSuccess`, with an `errorUpdateCount` above 0). The counts alone would not tell: the cache
- *  keeps them for each set while that set stays cached, so a set whose read failed once and
- *  answered later, then changed away and back in another session while Retry's read of another
- *  set is out, holds them though nothing answered the press. */
+ *  what `to` returns only where the read now drawn is under that key. The key alone tells that
+ *  the read answered the press: the line stands while the read stands failed (`standsFailed`),
+ *  and a read that has failed stops standing failed only by holding its own answer - a names
+ *  read draws no placeholder once it failed (`keptUntilFailed`) - or by being reset or taken out
+ *  of the cache, which the app does only as the reader signs out and the page goes. A refresh
+ *  that fails over that answer before the page draws it draws no line, and the focus goes on all
+ *  the same. A line that goes under another key went with the set of issues the row lists. */
 export function useTitlesRetry(
-  read: Parameters<typeof retryRead>[0] & {
-    readonly errorUpdateCount: number;
-    readonly isSuccess: boolean;
-  },
+  read: Parameters<typeof retryRead>[0],
   queryKey: QueryKey,
   to: Parameters<typeof useRetryHandOff>[0]
 ): RetryHandOff & { readonly onRetry: () => void } {
   const pressedFor = useRef<string | null>(null);
   const handOff = useRetryHandOff((left) =>
-    read.isSuccess && read.errorUpdateCount > 0 && pressedFor.current === hashKey(queryKey)
-      ? to(left)
-      : null
+    pressedFor.current === hashKey(queryKey) ? to(left) : null
   );
   const onRetry = () => {
     pressedFor.current = hashKey(queryKey);
@@ -165,21 +162,6 @@ export function retryRead(read: {
   readonly refetch: (options: { cancelRefetch: boolean }) => Promise<unknown>;
 }): () => void {
   return () => void read.refetch({ cancelRefetch: false });
-}
-
-/** Whether a read of Details is said as failed, with its Retry: while it stands failed, and while
- *  it is read again after it failed holding no answer. A fetch of a read that holds no answer
- *  clears its error and puts it back to pending (`fetchState` in `@tanstack/query-core`), which
- *  would take the line, and its Retry with a reader's focus, away while the read Retry sent is
- *  out. Such a read has answered nothing since its last failure, so a failure it counts
- *  (`errorUpdateCount`) is one it still stands in; `failureCount` would not tell, since the
- *  fetch sets it back to 0 as it starts. */
-export function readFailed(read: {
-  readonly errorUpdateCount: number;
-  readonly isError: boolean;
-  readonly isPending: boolean;
-}): boolean {
-  return read.isError || (read.isPending && read.errorUpdateCount > 0);
 }
 
 /** What a row reads of a write whose failure it says: `useMutation`'s state of its last press. */

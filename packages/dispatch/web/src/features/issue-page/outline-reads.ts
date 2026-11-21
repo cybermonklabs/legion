@@ -1,7 +1,6 @@
 import { type QueryObserverResult, useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { api } from "../../api/client";
 import { primarySpec, roleDocument } from "../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
@@ -9,7 +8,14 @@ import { issueDecisionsQuery } from "../doc/spec-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
-import { issueAsksQuery, standsFailed, treeDocumentIds, useIssueTree } from "./useIssueTree";
+import {
+  issueAsksQuery,
+  issueCommentsQuery,
+  issueMessagesQuery,
+  standsFailed,
+  treeDocumentIds,
+  useIssueTree,
+} from "./useIssueTree";
 
 /** One line the outline draws over the tree (`FailedReadLine`), with a Retry. A read the rows
  *  come from has one while it stands failed (`standsFailed`), and its Retry asks that read alone
@@ -120,15 +126,14 @@ function sixReads(key: string) {
       bringsQuestions: false,
       line: "comments",
       message: STATE_LINES.comments_unreadable,
-      query: { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...EVENT_FRESH },
+      query: { ...issueCommentsQuery(key), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,
       line: "messages",
       message: STATE_LINES.messages_unreadable,
       query: {
-        queryFn: () => api.listIssueMessages(key),
-        queryKey: ["issue-messages", key],
+        ...issueMessagesQuery(key),
         ...EVENT_FRESH,
       },
     },

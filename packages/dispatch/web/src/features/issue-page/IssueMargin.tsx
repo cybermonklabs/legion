@@ -31,7 +31,6 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { BlockedByControl } from "./BlockedByControl";
 import {
   DetailsErrorLine,
-  readFailed,
   retryRead,
   useRetryHandOff,
   useSaidFailure,
@@ -76,6 +75,7 @@ import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
+import { standsFailed } from "./useIssueTree";
 import { useMarginSections } from "./useMarginSections";
 import { usePriorityHandOffs } from "./usePriorityHandOffs";
 import { waitingOnReader } from "./waiting";
@@ -116,9 +116,9 @@ function issueTitleIn(read: ReferenceTargets | undefined, key: string): string |
 /** What a names read under `queryKey` draws while it holds no answer (`placeholderData`): the
  *  answer of the set of issues before (`before`), as a change to the set gives the read a new key,
  *  so a title drawn stays drawn while the new read is out - until that read first fails. A read
- *  that failed holding no answer draws the keys with its failure line (`readFailed`), and keeps
- *  that line while the read its Retry sent is out; drawing the old answer then would take the
- *  line, and its Retry with a reader's focus, away. */
+ *  that failed holding no answer stands failed (`standsFailed`) and draws the keys with its
+ *  failure line, which stays while the read its Retry sent is out; the old answer drawn then would
+ *  be an answer held, which would take the line, and its Retry with a reader's focus, away. */
 function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
   return <T,>(before: T | undefined): T | undefined =>
     (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) > 0 ? undefined : before;
@@ -360,27 +360,26 @@ export function IssueMarginPanel({
   });
   // A waiting issue whose title is not read is drawn by its key alone, as Blocked by draws one.
   const blocks = waiting.map((key) => ({ key, title: issueTitleIn(waitingTitles.data, key) }));
-  // The line of a read that failed goes once the read answers. Each titles' line notes the press
-  // of its own Retry and the read it was pressed for (`useTitlesRetry`), and hands the focus Retry
-  // held on in the row only once the read the row draws now is that read and has answered after
-  // it failed: the read the press sent, or a read of the same issues an event sent while it was
-  // out, which reached what the press asked for, so the row takes it for the press's answer. The
-  // answer of another set is not: one changed in another session to a set not read yet, whose
-  // read is out while the row draws the titles of the set before, or emptied, whose read is not
-  // sent, or back to one already read, whose answer is cached, even where that read failed before
-  // it answered. A line that goes with no press of its Retry - a read answering on an event or a
-  // window focus - or before that answer - the set changed or emptied in another session while
-  // the read is out, or the other line of Blocks drawn in its place - leaves the focus on the
-  // page's body. In Blocked by the focus goes to the row's control, found by its name as the add
-  // menu finds it (`blockedByControlName`), and where the row draws none - on a closed issue, or
-  // while its editor is open - to the first issue the row waits on, each passing over a control
-  // that takes no press (`usableControl`). The row draws that issue whenever the read has
-  // answered, since the titles are read only for a set that holds one. In Blocks, which has no
-  // control, the focus of the Retry of what waits on the issue goes to the first issue the row
-  // draws, or else to the None it says, which the row draws only once that read has answered;
-  // and that of the Retry of their titles goes to the first issue the row draws, which a failed
-  // read of what waits on the issue, drawn in the list's place, takes away, and the focus then
-  // stays on the page's body.
+  // The line of a read that stands failed (`standsFailed`) goes once the read answers; a refresh
+  // that fails over an answer the read holds draws no line, and the row keeps what that answer
+  // drew. Each titles' line notes the press of its own Retry and the read it was pressed for
+  // (`useTitlesRetry`), and hands the focus Retry held on in the row only once the read the row
+  // draws now is that read and has answered after it failed: the read the press sent, or a read
+  // of the same issues an event sent while it was out, which reached what the press asked for, so
+  // the row takes it for the press's answer. The answer of another set is not: one changed in
+  // another session to a set not read yet, whose read is out while the row draws the titles of
+  // the set before, or emptied, whose read is not sent, or back to one already read, whose answer
+  // is cached, even where that read failed before it answered. A line that goes with no press of
+  // its Retry - a read answering on an event or a window focus - or before that answer - the set
+  // changed or emptied in another session while the read is out - leaves the focus on the page's
+  // body. In Blocked by the focus goes to the row's control, found by its name as the add menu
+  // finds it (`blockedByControlName`), and where the row draws none - on a closed issue, or while
+  // its editor is open - to the first issue the row waits on, each passing over a control that
+  // takes no press (`usableControl`). The row draws that issue whenever the read has answered,
+  // since the titles are read only for a set that holds one. In Blocks, which has no control, the
+  // focus of the Retry of what waits on the issue goes to the first issue the row draws, or else
+  // to the None it says, which the row draws only once that read has answered; and that of the
+  // Retry of their titles goes to the first issue the row draws.
   const blockedByValue = useRef<HTMLDivElement>(null);
   const titlesRetry = useTitlesRetry(blockerTitles, blockerRead.queryKey, () =>
     firstUsable(
@@ -398,20 +397,22 @@ export function IssueMarginPanel({
   const priority = usePriorityHandOffs(issue, developmentHeading);
   // The Repository row's control draws its own failed read of the mappings and its own refused
   // write, and hands each to the row to say (`sayFailure`), as Details says its own. A read's
-  // line keeps its words while its Retry reads again, as Details' own read lines do: the read
-  // that is out holds no error, so words taken from the error would change as Retry is pressed. A
-  // press of a write's Retry clears the refusal as it sends the pick again, taking the line with
-  // it, so that Retry never waits on the write it sent and reads no busy. Each line notes the
-  // press of its own Retry. As a line goes with a reader's focus on its Retry after their press of
-  // that Retry - a write's at that press, a read's once the mappings answer - the focus goes on to
-  // the row's own control: the box, drawn while a write is out, else the text or None the row
-  // draws in its place; and where the row holds nothing that takes it, on a closed issue, to
-  // Development's heading. A line that goes with no press of its own Retry - the mappings read
-  // again on an event, or a write's Retry taken away by a close made in another session, after a
-  // press of the read's Retry or of none - hands nothing on. On a closed issue a write's line has
-  // no Retry: Dispatch refuses every repository of a closed issue (`ISSUE_CLOSED`), so the pick
-  // sent again would be refused again, and a pick the reader stopped says the issue is closed in
-  // place of the Retry its line would offer; the control says which pick the reader stopped
+  // line stands while the mappings stand failed (`standsFailed`), so a refresh that fails over
+  // mappings the control holds draws none, and the box still suggests them. The line keeps its
+  // words while its Retry reads again, as Details' own read lines do: the read that is out holds
+  // no error, so words taken from the error would change as Retry is pressed. A press of a
+  // write's Retry clears the refusal as it sends the pick again, taking the line with it, so that
+  // Retry never waits on the write it sent and reads no busy. Each line notes the press of its
+  // own Retry. As a line goes with a reader's focus on its Retry after their press of that Retry
+  // - a write's at that press, a read's once the mappings answer - the focus goes on to the row's
+  // own control: the box, drawn while a write is out, else the text or None the row draws in its
+  // place; and where the row holds nothing that takes it, on a closed issue, to Development's
+  // heading. A line that goes with no press of its own Retry - the mappings read again on an
+  // event, or a write's Retry taken away by a close made in another session, after a press of the
+  // read's Retry or of none - hands nothing on. On a closed issue a write's line has no Retry:
+  // Dispatch refuses every repository of a closed issue (`ISSUE_CLOSED`), so the pick sent again
+  // would be refused again, and a pick the reader stopped says the issue is closed in place of the
+  // Retry its line would offer; the control says which pick the reader stopped
   // (`RepoControlFailure`'s `stopped`).
   const repoValue = useRef<HTMLDivElement>(null);
   const repoControlLeft = () =>
@@ -433,7 +434,7 @@ export function IssueMarginPanel({
         onRetry={isClosed ? undefined : failure.retry}
         {...repoWriteRetry}
       />
-    ) : readFailed(failure.read) ? (
+    ) : standsFailed(failure.read) ? (
       <DetailsErrorLine
         failure={failure.read.errorUpdateCount}
         message={failure.message}
@@ -634,7 +635,7 @@ export function IssueMarginPanel({
           />
           {/* The blockers are drawn by their keys where their titles could not be read, and the
               row says so rather than drawing keys alone as though they had none. */}
-          {readFailed(blockerTitles) ? (
+          {standsFailed(blockerTitles) ? (
             <DetailsErrorLine
               error={blockerTitles.error}
               failure={blockerTitles.errorUpdateCount}
@@ -646,12 +647,13 @@ export function IssueMarginPanel({
         </Row>
         {/* What this issue blocks: drawn whenever the panel is, with None where the answer holds
             nothing that waits on it, nothing while that answer is still out, and the failure
-            where the read failed, as every other row of the panel says what it holds. The issues
-            are drawn by their keys where their titles could not be read, and the row says so, as
-            Blocked by does. This row's None takes the focus of the failure's Retry when it
-            replaces that line once the read the reader's press of Retry sent answers. */}
+            where the read stands failed (`standsFailed`), as every other row of the panel says
+            what it holds. The issues are drawn by their keys where their titles could not be
+            read, and the row says so, as Blocked by does. This row's None takes the focus of the
+            failure's Retry when it replaces that line once the read the reader's press of Retry
+            sent answers. */}
         <Row glyph={CIRCLED_DOT} label={PROPERTY_LABELS.blocks} valueRef={blocksValue}>
-          {readFailed(blocking) ? (
+          {standsFailed(blocking) ? (
             <DetailsErrorLine
               error={blocking.error}
               failure={blocking.errorUpdateCount}
@@ -672,7 +674,7 @@ export function IssueMarginPanel({
           ) : (
             <>
               <IssueList issues={blocks} />
-              {readFailed(waitingTitles) ? (
+              {standsFailed(waitingTitles) ? (
                 <DetailsErrorLine
                   error={waitingTitles.error}
                   failure={waitingTitles.errorUpdateCount}

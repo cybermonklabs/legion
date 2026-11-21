@@ -103,10 +103,9 @@ export type RepoControlFailure =
       readonly message: string;
       /** The read of the repositories Dispatch maps to projects, failed or not. */
       readonly read: {
+        readonly data: unknown;
         readonly errorUpdateCount: number;
-        readonly isError: boolean;
         readonly isFetching: boolean;
-        readonly isPending: boolean;
         readonly refetch: (options: { cancelRefetch: boolean }) => Promise<unknown>;
       };
     }
