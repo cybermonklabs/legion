@@ -551,6 +551,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
   The issuer's discovery document is read in the background from boot, on the service-account issuer's schedule (above), and an issuer that cannot be reached refuses nothing:
   until the document has been read, `/auth/start` and the callback answer `503 SIGNIN_UNAVAILABLE`, and the rest of Dispatch serves.
+  A callback whose code exchange the issuer's token endpoint answers `5xx` or `429`, whatever OAuth error its body names, or does not answer, is `503 SIGNIN_UNAVAILABLE` too; an exchange the endpoint refuses (`400` or `401` with an OAuth error) is `502`.
   A sign-in in flight (its state, its nonce, the page it returns to and when it lapses, ten minutes after it started) travels in the browser's `dispatch_oauth_state` cookie, signed under a key derived from the current signing key for that purpose alone, and no process keeps it:
   a sign-in one process started completes on whichever process the issuer's redirect reaches, given one `DISPATCH_SERVER_URL` on every process:
   the exchange must send the callback URL the sign-in started with, and each process builds it from that setting, or without one from the request's `Host`.
@@ -3820,7 +3821,8 @@ Each item below names a path with its method and identity, then its purpose.
   Record the person and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account held it), issue the cookie.
   Any process holding a key of the set completes a sign-in another process started.
   `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
-  `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document;
+  `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, or when the issuer's token endpoint answers the exchange `5xx` or `429`, or not at all;
+  `502` when the token endpoint refuses the exchange (`400` or `401` with an OAuth error);
   `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie.
 
 - `/auth/logout` (POST; cookie or trusted header)

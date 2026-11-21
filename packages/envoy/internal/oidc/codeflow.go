@@ -229,7 +229,8 @@ func (f *CodeFlow) AuthURL(ctx context.Context, redirectURL, state, nonce string
 // token and refresh token. The ID token must carry nonce, the value the sign-in that sent the
 // browser to AuthURL bound it to; one carrying another, and a caller naming no nonce, fail with
 // ErrNonce. An issuer that returns no refresh token is refused, since this mode renews the
-// sign-in with one. It fails with ErrIssuerUnavailable while the issuer is not discovered.
+// sign-in with one. It fails with ErrIssuerUnavailable while the issuer is not discovered, and
+// when its token endpoint cannot answer the exchange (exchange).
 func (f *CodeFlow) Exchange(ctx context.Context, redirectURL, code, nonce string) (Session, error) {
 	session, err := f.exchange(ctx, redirectURL, code, nonce)
 	if err != nil {
@@ -244,7 +245,10 @@ func (f *CodeFlow) Exchange(ctx context.Context, redirectURL, code, nonce string
 // exchange is the steps both exchanges share: discover the issuer, trade code for its tokens
 // there with options (the online exchange's PKCE verifier, and none for the other), verify the
 // ID token, and refuse one whose nonce is not the sign-in's with ErrNonce. An empty nonce is
-// refused as well, since it binds the token to no sign-in.
+// refused as well, since it binds the token to no sign-in. A token endpoint that refuses the code
+// or the client, a 400 or 401 naming an OAuth error (Refusal), fails the exchange as that refusal;
+// any other failure of the request, a 5xx or a 429 whatever error its body names, or no answer at
+// all, is an issuer that could not answer and matches ErrIssuerUnavailable, as Refresh reads it.
 func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string, options ...oauth2.AuthCodeOption) (Session, error) {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
@@ -252,7 +256,10 @@ func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string
 	}
 	token, err := issuer.config.Exchange(f.tokenContext(ctx), code, append(redirectTo(redirectURL), options...)...)
 	if err != nil {
-		return Session{}, fmt.Errorf("oidc: exchange code: %w", err)
+		if Refusal(err) != "" {
+			return Session{}, fmt.Errorf("oidc: exchange code: %w", err)
+		}
+		return Session{}, fmt.Errorf("oidc: exchange code: %w: %w", ErrIssuerUnavailable, err)
 	}
 	session, err := f.session(ctx, issuer, token)
 	if err != nil {
@@ -323,7 +330,7 @@ func redirectTo(redirectURL string) []oauth2.AuthCodeOption {
 // the flow has a hosted domain). The ID token must carry signIn's nonce, and fails with ErrNonce
 // when it carries another. A refresh token the issuer returns anyway is dropped, never returned:
 // an online sign-in keeps none. It fails with ErrIssuerUnavailable while the issuer is not
-// discovered.
+// discovered, and when its token endpoint cannot answer the exchange (exchange).
 func (f *CodeFlow) OnlineExchange(ctx context.Context, redirectURL, code string, signIn OnlineSignIn) (Claims, error) {
 	if signIn.Nonce == "" || signIn.Verifier == "" {
 		return Claims{}, errors.New("oidc: an online sign-in needs its nonce and PKCE verifier")

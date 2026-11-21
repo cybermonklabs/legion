@@ -264,6 +264,40 @@ func TestCodeFlowExchangeRefusesACodeTheIssuerRefuses(t *testing.T) {
 	}
 }
 
+// A code exchange the token endpoint refuses, a 400 or 401 naming an OAuth error (Refusal), fails
+// as that refusal. Any other failure of the request, a 5xx or a 429 whatever error its body names,
+// or no answer at all, is an issuer that could not answer, and matches ErrIssuerUnavailable in
+// both modes, so a caller answers the person as it answers an issuer it cannot reach rather than
+// as a sign-in that did not verify.
+func TestCodeFlowExchangeReadsAnAnswerThatIsNoRefusalAsTheIssuerUnavailable(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		fail        func(issuer *oidctest.Issuer)
+		unavailable bool
+	}{
+		{"400 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "invalid_grant") }, false},
+		{"401 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusUnauthorized, "invalid_client") }, false},
+		{"503 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "") }, true},
+		{"503 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "invalid_grant") }, true},
+		{"500 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusInternalServerError, "invalid_client") }, true},
+		{"429 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusTooManyRequests, "invalid_grant") }, true},
+		{"no answer", func(i *oidctest.Issuer) { i.DropToken() }, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issuer, flow := newCodeFlowForDomain(t, flowDomain)
+			c.fail(issuer)
+			_, err := flow.Exchange(context.Background(), flowRedirect, "a-code", "a-nonce")
+			if err == nil || errors.Is(err, ErrIssuerUnavailable) != c.unavailable {
+				t.Fatalf("Exchange against a token endpoint answering %s: err = %v, want an error matching ErrIssuerUnavailable: %t", c.name, err, c.unavailable)
+			}
+			_, err = flow.OnlineExchange(context.Background(), flowRedirect, "a-code", onlineSignIn("a-nonce"))
+			if err == nil || errors.Is(err, ErrIssuerUnavailable) != c.unavailable {
+				t.Fatalf("OnlineExchange against a token endpoint answering %s: err = %v, want an error matching ErrIssuerUnavailable: %t", c.name, err, c.unavailable)
+			}
+		})
+	}
+}
+
 func TestCodeFlowRefreshReadsThePersonsCurrentClaims(t *testing.T) {
 	issuer, flow := newCodeFlowFor(t)
 	issuer.SignInAs(personClaims("dispatch-members"))

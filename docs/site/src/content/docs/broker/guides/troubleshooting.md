@@ -294,7 +294,7 @@ that page says when it refuses.
 
 | Message | Cause | Fix |
 | --- | --- | --- |
-| **Sign-in unavailable**: `The secrets broker could not reach its sign-in provider, …` (503) | The broker could not read the provider's discovery document. Machines are served as before. | Try again shortly. An operator reads `GET /signin/status`, whose `client_check` says `issuer_unreachable` ([What the sign-in is doing](/legion/broker/operate/#what-the-sign-in-is-doing)). |
+| **Sign-in unavailable**: `The secrets broker could not reach its sign-in provider, …` (503) | The broker could not read the provider's discovery document, or the provider's token endpoint answered the sign-in `429` or `5xx`, or did not answer. Machines are served as before. | Try again shortly. An operator reads `GET /signin/status`, whose `last_failed_sign_in_reason` says `issuer_unreachable` ([What the sign-in is doing](/legion/broker/operate/#what-the-sign-in-is-doing)). |
 | **Sign-in refused**: `Only an account of the … Workspace may sign in to the secrets broker.` or `Your account's email address is not verified, …` | The account signed in is outside `BROKER_SIGNIN_DOMAIN`, or its email is unverified. | Sign in with your Workspace account. |
 | **Page expired**: `This page is more than an hour old, so nothing was decided. Open the request again.` | A decision is accepted for an hour from the moment the page was drawn. | Open the request again and decide it there. |
 | **Refused**: `This form was not made for your sign-in, …` or `This form names a request its page did not print, …` | The form came from another sign-in, another browser, or a page that never printed that request. | Open the request again and decide it there. |

@@ -121,8 +121,8 @@ func TestSignInStatusReportsWhatHappenedOnThePage(t *testing.T) {
 // TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet drives each failure the codes name through
 // the real callback and pins the word written for it. A failure none of them names writes
 // nothing at all rather than a word meaning "something else": the last named failure stands, at
-// the time it was written. The token endpoint's own code is written only from a 400 or 401, the
-// statuses it refuses with: a 5xx or a 429 naming one is a provider that could not answer.
+// the time it was written. The token endpoint's own code is written from its 400 or 401 answer;
+// a 5xx or a 429 is the provider unreachable (TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503).
 func TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -147,10 +147,6 @@ func TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet(t *testing.T) 
 		{name: "an ID token naming no email", claims: map[string]any{"sub": "sub-" + ada, "email_verified": true, "hd": domain}, want: ""},
 		{name: "an expired ID token", spoil: func(c map[string]any) { c["exp"] = time.Now().Add(-time.Hour).Unix() }, want: ""},
 		{name: "a 401 naming invalid_client", tokenStatus: http.StatusUnauthorized, tokenCode: "invalid_client", want: "invalid_client"},
-		{name: "a 503 naming invalid_client", tokenStatus: http.StatusServiceUnavailable, tokenCode: "invalid_client", want: ""},
-		{name: "a 503 naming invalid_grant", tokenStatus: http.StatusServiceUnavailable, tokenCode: "invalid_grant", want: ""},
-		{name: "a 500 naming redirect_uri_mismatch", tokenStatus: http.StatusInternalServerError, tokenCode: "redirect_uri_mismatch", want: ""},
-		{name: "a 429 naming unauthorized_client", tokenStatus: http.StatusTooManyRequests, tokenCode: "unauthorized_client", want: ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t)
@@ -201,10 +197,19 @@ func TestSignInStatusWritesAFailedSignInWithACodeFromTheClosedSet(t *testing.T) 
 }
 
 // failSignIn takes one sign-in at the provider as claims and sends its callback back to the
-// broker, which must refuse it. foreignKey re-arms the provider's client with a key of the same
-// id that it does not publish, so its ID tokens do not verify; spoilCallback, when given,
-// changes the callback URL before the browser follows it.
+// broker, which must refuse it (signInCallback).
 func (r *rig) failSignIn(t *testing.T, recordID string, claims map[string]any, foreignKey bool, spoilCallback func(*url.URL)) {
+	t.Helper()
+	if res := r.signInCallback(t, recordID, claims, foreignKey, spoilCallback); res.Status != http.StatusForbidden {
+		t.Fatalf("the refused callback = %d, want 403:\n%s", res.Status, res.Body)
+	}
+}
+
+// signInCallback takes one sign-in at the provider as claims, person(ada) when nil, sends its
+// callback back to the broker and answers what the broker answered. foreignKey re-arms the
+// provider's client with a key of the same id that it does not publish, so its ID tokens do not
+// verify; spoilCallback, when given, changes the callback URL before the browser follows it.
+func (r *rig) signInCallback(t *testing.T, recordID string, claims map[string]any, foreignKey bool, spoilCallback func(*url.URL)) ciphertest.Response {
 	t.Helper()
 	if claims == nil {
 		claims = person(ada)
@@ -224,8 +229,49 @@ func (r *rig) failSignIn(t *testing.T, recordID string, claims map[string]any, f
 	if spoilCallback != nil {
 		spoilCallback(u)
 	}
-	if res := b.Get(t, u.String()); res.Status != http.StatusForbidden {
-		t.Fatalf("the refused callback = %d, want 403:\n%s", res.Status, res.Body)
+	return b.Get(t, u.String())
+}
+
+// TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503: a callback whose code exchange the
+// provider's token endpoint does not refuse but cannot answer (a 5xx or a 429, whatever error its
+// body names, or no answer at all) is the provider unreachable. The person is answered 503 "Sign-in
+// unavailable", no session is made, and the status writes issuer_unreachable. An exchange the
+// token endpoint refuses, 400 invalid_grant, is still refused 403 and written invalid_grant.
+func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		fail   func(issuer *oidctest.Issuer)
+		status int
+		want   string
+	}{
+		{"503 naming no OAuth error", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "") }, http.StatusServiceUnavailable, "issuer_unreachable"},
+		{"503 invalid_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "invalid_client") }, http.StatusServiceUnavailable, "issuer_unreachable"},
+		{"503 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusServiceUnavailable, "invalid_grant") }, http.StatusServiceUnavailable, "issuer_unreachable"},
+		{"500 redirect_uri_mismatch", func(i *oidctest.Issuer) { i.FailToken(http.StatusInternalServerError, "redirect_uri_mismatch") }, http.StatusServiceUnavailable, "issuer_unreachable"},
+		{"429 unauthorized_client", func(i *oidctest.Issuer) { i.FailToken(http.StatusTooManyRequests, "unauthorized_client") }, http.StatusServiceUnavailable, "issuer_unreachable"},
+		{"no answer", func(i *oidctest.Issuer) { i.DropToken() }, http.StatusServiceUnavailable, "issuer_unreachable"},
+		{"400 invalid_grant", func(i *oidctest.Issuer) { i.FailToken(http.StatusBadRequest, "invalid_grant") }, http.StatusForbidden, "invalid_grant"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRig(t)
+			enrollmentID, key := r.benSession(t, "ben-box")
+			p := r.request(t, enrollmentID, key, "deploy", nil, "", "TEST_SECRET")
+			c.fail(r.issuer)
+			t.Cleanup(func() { r.issuer.FailToken(0, "") })
+			res := r.signInCallback(t, p.recordID, nil, false, nil)
+			unavailable := strings.Contains(res.Body, "Sign-in unavailable")
+			if res.Status != c.status || unavailable != (c.status == http.StatusServiceUnavailable) {
+				t.Fatalf("the callback whose token endpoint answers %s = %d, want %d, the page saying Sign-in unavailable: %t:\n%s",
+					c.name, res.Status, c.status, c.status == http.StatusServiceUnavailable, res.Body)
+			}
+			status, body := r.signInStatus(t)
+			if status.LastFailedSignInReason == nil || *status.LastFailedSignInReason != c.want {
+				t.Fatalf("after a callback whose token endpoint answers %s the reason = %s, want %q", c.name, body, c.want)
+			}
+			if r.sessions(t) != 0 {
+				t.Fatalf("a callback whose token endpoint answers %s made a session", c.name)
+			}
+		})
 	}
 }
 
