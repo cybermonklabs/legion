@@ -220,7 +220,9 @@ func collide(t *testing.T, where topology, order collisionOrder, specFor func(je
 	}
 	ctx := context.Background()
 
-	openIntake(t, js, pool, spec)
+	clustered := where.servers > 0
+	bootAs(t, "the first boot", js, stream, pool, spec)
+	awaitGroups(t, "after the first boot", stream, clustered, where.replicas)
 	publishWakes(t, js, 30)
 	predecessor := current(pool)
 	ackThrough(t, stream, predecessor, 20)
@@ -232,7 +234,8 @@ func collide(t *testing.T, where topology, order collisionOrder, specFor func(je
 		wake, applied.Time.Truncate(time.Microsecond)); err != nil {
 		t.Fatalf("keep the checkpoint of message 20: %v", err)
 	}
-	openIntake(t, js, pool, spec)
+	bootAs(t, "the second boot", js, stream, pool, spec)
+	awaitGroups(t, "after the second boot", stream, clustered, where.replicas)
 
 	target := copyOf(t, servers, stream, predecessor, where.replicas)
 	held := hooks.Hold(order.predecessor, testnatsinprocess.OnServer(target), testnatsinprocess.Consumer(predecessor), ackFloorOf(21))
@@ -284,17 +287,106 @@ func collide(t *testing.T, where topology, order collisionOrder, specFor func(je
 		after, err = restarted.Stream(read, notificationStream)
 		return err == nil
 	})
-	testwait.Eventually(t, selected+" answering after the restart", func() bool {
-		read, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		_, err := after.Consumer(read, selected)
-		return err == nil
-	})
+	if clustered {
+		awaitGroups(t, "after the restart", after, clustered, where.replicas)
+	} else {
+		testwait.Eventually(t, selected+" answering after the restart", func() bool {
+			read, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			_, err := after.Consumer(read, selected)
+			return err == nil
+		})
+	}
 	if where.replicas > 1 {
 		leadOn(t, restarted.Conn(), after, selected, target.Name())
 	}
 	result.delivered = fetchSeqs(t, after, selected)
 	return result
+}
+
+// bootAs boots the daemon's intake once, as openIntake does, and on a refusal fails t naming the
+// boot (label) and every consumer's replica group as the stream reports it, so a boot that times
+// out says which boot and which group was not ready.
+func bootAs(t *testing.T, label string, js jetstream.JetStream, stream jetstream.Stream, pool *pgxpool.Pool, spec ConsumerSpec) {
+	t.Helper()
+	if _, err := OpenConsumers(context.Background(), js, pool, spec); err != nil {
+		t.Fatalf("%s: OpenConsumers: %v; the consumers' groups: %s", label, err, describeGroups(stream))
+	}
+}
+
+// awaitGroups waits, on a cluster, until every consumer stream holds names a leader and, on a
+// replicated stream, every replica current, and the consumers read number what the stream counts:
+// a create or an update that follows a group still electing, or a follower still catching up,
+// waits on that election past the client's request timeout (5 s) and fails a boot that has nothing
+// to do with the order under test. One copy has no groups and returns at once.
+func awaitGroups(t *testing.T, when string, stream jetstream.Stream, clustered bool, replicas int) {
+	t.Helper()
+	if !clustered {
+		return
+	}
+	var why string
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+		why = groupsNotReady(stream, replicas)
+		return why == ""
+	}) {
+		t.Fatalf("%s, the consumers' replica groups did not form within a minute: %s", when, why)
+	}
+}
+
+// groupsNotReady says why stream's consumers' groups are not ready (awaitGroups), "" when they are.
+func groupsNotReady(stream jetstream.Stream, replicas int) string {
+	read, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := stream.Info(read)
+	if err != nil {
+		return "the stream: " + err.Error()
+	}
+	count := 0
+	lister := stream.ListConsumers(read)
+	for consumer := range lister.Info() {
+		count++
+		switch {
+		case consumer.Cluster == nil || consumer.Cluster.Leader == "":
+			return consumer.Name + " names no leader"
+		case len(consumer.Cluster.Replicas) != max(replicas, 1)-1:
+			return fmt.Sprintf("%s names %d replicas, want %d", consumer.Name, len(consumer.Cluster.Replicas), max(replicas, 1)-1)
+		}
+		for _, replica := range consumer.Cluster.Replicas {
+			if !replica.Current {
+				return fmt.Sprintf("%s's replica %s is not current", consumer.Name, replica.Name)
+			}
+		}
+	}
+	if err := lister.Err(); err != nil {
+		return "the consumer listing: " + err.Error()
+	}
+	if count != info.State.Consumers {
+		return fmt.Sprintf("read %d consumers of the %d the stream counts", count, info.State.Consumers)
+	}
+	return ""
+}
+
+// describeGroups is every consumer's replica group as stream reports it, for a failure message.
+func describeGroups(stream jetstream.Stream) string {
+	read, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var groups []string
+	lister := stream.ListConsumers(read)
+	for consumer := range lister.Info() {
+		if consumer.Cluster == nil {
+			groups = append(groups, consumer.Name+": no cluster block")
+			continue
+		}
+		replicas := make([]string, 0, len(consumer.Cluster.Replicas))
+		for _, replica := range consumer.Cluster.Replicas {
+			replicas = append(replicas, fmt.Sprintf("%s current=%t active=%s lag=%d", replica.Name, replica.Current, replica.Active, replica.Lag))
+		}
+		groups = append(groups, fmt.Sprintf("%s: leader %q, replicas %v", consumer.Name, consumer.Cluster.Leader, replicas))
+	}
+	if err := lister.Err(); err != nil {
+		groups = append(groups, "the listing: "+err.Error())
+	}
+	return strings.Join(groups, "; ")
 }
 
 // copyOf is the server holding the copy of consumer name whose write a collision holds: the one
