@@ -1895,6 +1895,22 @@ func (s *Postgres) GatesByPendingAsk(ctx context.Context, tx pgx.Tx, ask string)
 	return gatesWhere(ctx, tx, "basis_pending_ask = $1", ask, "pending on request "+ask)
 }
 
+// GatesOnBasisOfOtherProjects is every gate of an issue of project, which Dispatch does not show
+// done, whose basis names an issue of another project, standing or pending, in issue and then
+// step order. An issue key's project is the text before its first "-", as everywhere the daemon
+// reads one. PutGate writes basis_issue only while a basis stands or waits, and the row as read
+// decides, as GatesForBasisArtifact's does: a row an earlier release left naming an ancestor reads
+// back with no basis (basisAsWritten) and is left out. A done issue is left out as GatedIssues
+// leaves it out: its steps are read by nothing.
+func (s *Postgres) GatesOnBasisOfOtherProjects(ctx context.Context, tx pgx.Tx, project string) ([]DesignGate, error) {
+	gates, err := gatesWhere(ctx, tx, `basis_issue is not null and split_part(basis_issue, '-', 1) <> $1
+		and issue in (select key from issues where project = $1 and dispatch_status <> 'done')`, project, "of project "+project+" on a basis of another project")
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(gates, func(gate DesignGate) bool { return gate.Basis == nil }), nil
+}
+
 // GatesRestingOn is every gate that rests on one of ancestors in this generation
 // (DesignGate.RestsOnIssue), of every tree, in issue and then step order: rests_on names each
 // ancestor a basis opened the step on, and basis_issue the ancestor of the basis the step stands

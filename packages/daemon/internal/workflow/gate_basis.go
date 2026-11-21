@@ -330,8 +330,14 @@ func servesSentence(root, ancestor string, serves []string) string {
 
 // ancestorInLiveTree says whether the daemon records key in a live tree: key is recorded, and the
 // root of the tree its record names is live (record.TreeLive). It is where a notice keyed by key
-// reaches an architect.
+// reaches an architect. An issue of another project than the daemon's own is in none, whatever a
+// record shared with that project's daemon says: that daemon runs its tree, and this daemon's
+// outbox takes no row keyed by it, so the ancestor's architect hears nothing of a root of this
+// project (no resting-root, no basis-changes-requested) and sees it as an open child instead.
 func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+	if project, _, _ := strings.Cut(key, "-"); e.cfg.Project != "" && project != e.cfg.Project {
+		return false, nil
+	}
 	ancestor, err := e.store.Issue(ctx, tx, key)
 	if err != nil || ancestor == nil || ancestor.Tree == "" {
 		return false, err

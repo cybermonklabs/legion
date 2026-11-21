@@ -833,33 +833,12 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		if len(pending) == 0 {
 			return nil
 		}
-		keys := make([]string, 0, len(pending))
-		for _, gate := range pending {
-			keys = append(keys, gate.Issue)
-		}
-		roots, err := w.records.IssuesOf(scoped, tx, w.dispatchProject, slices.Compact(keys))
+		generations, err := w.rootGenerations(scoped, tx, pending)
 		if err != nil {
 			return err
 		}
-		generations := make(map[string]uint64, len(roots))
-		for _, root := range roots {
-			generations[root.Key] = root.Generation
-		}
-		for _, gate := range pending {
-			generation, recorded := generations[gate.Issue]
-			if !recorded {
-				continue
-			}
-			row, err := record.NewOutboxRow(gate.Issue, record.PendingBasisSeedOf(gate, generation), now)
-			if err != nil {
-				return err
-			}
-			if err := w.records.Enqueue(scoped, tx, row); err != nil {
-				return err
-			}
-			queued++
-		}
-		return nil
+		queued, err = w.queueBasisSeeds(scoped, tx, pending, generations, now)
+		return err
 	}); err != nil {
 		return fmt.Errorf("queue the recorded design-gates publications and pending-basis seeds of %s: %w", w.dispatchProject, err)
 	}
@@ -868,6 +847,96 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		w.log.Info("legion workflow boot queued a pending-basis seed for each step waiting on an ancestor's request", "steps", queued)
 	}
 	return nil
+}
+
+// rootGenerations is the generation of the root of each of gates, by key, read in one query
+// (IssuesOf); an issue the daemon does not record has none.
+func (w *workflowRuntime) rootGenerations(ctx context.Context, tx pgx.Tx, gates []record.DesignGate) (map[string]uint64, error) {
+	keys := make([]string, 0, len(gates))
+	for _, gate := range gates {
+		keys = append(keys, gate.Issue)
+	}
+	slices.Sort(keys)
+	roots, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, slices.Compact(keys))
+	if err != nil {
+		return nil, err
+	}
+	generations := make(map[string]uint64, len(roots))
+	for _, root := range roots {
+		generations[root.Key] = root.Generation
+	}
+	return generations, nil
+}
+
+// queueBasisSeeds queues, in tx, the seed that reads Dispatch again for each of gates that rests
+// on an ancestor's document: a pending-basis seed (record.PendingBasisSeedOf) for a step that waits,
+// closed, on the ancestor's open approval request, which the person's approval opens and a changes
+// request, a newer version or the request's close ends; and a gate seed (record.GateSeed) at the
+// step's latest version for a step that stands open on the ancestor's approval, which reads the
+// root's own document as ever and the ancestor's reviews of the version the basis names, so a
+// changes request on it reaches the root's architect and the step stays open. Each seed carries
+// its root's generation (generations); a gate whose issue has none
+// there, or that rests on nothing, is left out. It answers how many seeds it queued. The boot
+// hands it the steps that wait on a request (queueRecordedGatesPublish), and the controller tick
+// every step that rests on an issue of another project (queueBasisSeedsOfOtherProjects).
+func (w *workflowRuntime) queueBasisSeeds(ctx context.Context, tx pgx.Tx, gates []record.DesignGate, generations map[string]uint64, now time.Time) (int, error) {
+	queued := 0
+	for _, gate := range gates {
+		generation, recorded := generations[gate.Issue]
+		if !recorded {
+			continue
+		}
+		var seed record.OutboxPayload
+		switch {
+		case gate.PendingOnBasis():
+			seed = record.PendingBasisSeedOf(gate, generation)
+		case gate.OnBasis():
+			seed = record.GateSeed{ArtifactID: gate.ArtifactID, Step: gate.Step.OrSpec(), Version: gate.LatestVersion, Generation: generation}
+		default:
+			continue
+		}
+		row, err := record.NewOutboxRow(gate.Issue, seed, now)
+		if err != nil {
+			return queued, err
+		}
+		if err := w.records.Enqueue(ctx, tx, row); err != nil {
+			return queued, err
+		}
+		queued++
+	}
+	return queued, nil
+}
+
+// queueBasisSeedsOfOtherProjects is the controller tick's read of every step of the project that
+// rests on, or waits on, an issue of another project (record.Store.GatesOnBasisOfOtherProjects):
+// the daemon drops every event of another project's issue, so nothing else tells such a step that
+// the person approved the version it waits on or asked for changes on the version it stands open
+// on. It queues one seed for each (queueBasisSeeds), so a pending step opens, and a changes request
+// reaches the root's architect, within one controller wake interval, as a blocker of another
+// project's close does (readObserved). A read that fails is logged, and the next tick reads again.
+func (w *workflowRuntime) queueBasisSeedsOfOtherProjects(ctx context.Context) {
+	now := time.Now().UTC()
+	scoped, committed := intake.WithCommitHooks(ctx)
+	queued := 0
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		gates, err := w.records.GatesOnBasisOfOtherProjects(scoped, tx, w.dispatchProject)
+		if err != nil || len(gates) == 0 {
+			return err
+		}
+		generations, err := w.rootGenerations(scoped, tx, gates)
+		if err != nil {
+			return err
+		}
+		queued, err = w.queueBasisSeeds(scoped, tx, gates, generations, now)
+		return err
+	}); err != nil {
+		w.log.Warn("the controller tick could not queue the seeds of the steps resting on an issue of another project; the next tick reads them again", "error", err)
+		return
+	}
+	committed()
+	if queued > 0 {
+		w.log.Info("the controller tick queued a seed for each step resting on an issue of another project", "steps", queued)
+	}
 }
 
 // roleHoldersPublishWindow is how far back the boot looks for a claim change that a release

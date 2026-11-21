@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  The controller tick reads again every step of the project whose design-gate basis is an issue of
+  another project (`record.Store.GatesOnBasisOfOtherProjects`), since the daemon drops every event
+  of another project's issue. It queues a pending-basis seed for a step that waits on that issue's
+  open approval request, so the person's approval opens it at the next tick, and a gate seed for a
+  step that stands open on its approval, so a changes request on that version reaches the root's
+  architect as `basis-changes-requested` at the next tick and the step stays open. The boot queues
+  its pending-basis seeds through the same pass (`queueBasisSeeds`), as before. A daemon queues no
+  notice keyed by an issue of another project (`resting-root`, `basis-changes-requested`), even
+  where its record shares that issue's row with the other project's daemon: that project's daemon
+  runs the issue's tree.
+time: 2026-11-21T19:54:29.000000000Z
+custom:
+    Issue: parent-across-projects
