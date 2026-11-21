@@ -1370,7 +1370,11 @@ func TestIssuePatchParentValidation(t *testing.T) {
 	}
 	expectRefusal("self parent", patchParent(issueA.Key, issueA.Key), http.StatusBadRequest, "own parent")
 	expectRefusal("unknown parent", patchParent(issueA.Key, "CORE-999"), http.StatusBadRequest, "CORE-999 not found")
-	expectRefusal("foreign project", patchParent(issueA.Key, foreign.Key), http.StatusBadRequest, "same project")
+	// A parent of another project is taken, so it is no refusal; the cycle row below still reads
+	// A's chain through it.
+	if moved := patchParent(issueA.Key, foreign.Key); moved.Code != http.StatusOK {
+		t.Fatalf("foreign project: status=%d body=%s, want 200", moved.Code, moved.Body.String())
+	}
 	expectRefusal("blank parent", patchParent(issueA.Key, "  "), http.StatusBadRequest, "blank")
 	// A ← B ← C stands; making C the parent of A closes the loop.
 	expectRefusal("cycle", patchParent(issueA.Key, issueC.Key), http.StatusConflict, "would create a cycle")
@@ -1388,7 +1392,7 @@ func TestIssuePatchParentValidation(t *testing.T) {
 }
 
 // Creating with a bad parent is a named 400, not the FK's opaque 500, and a parent from
-// another project is refused.
+// another project is taken.
 func TestIssueCreateParentValidation(t *testing.T) {
 	handler := newTestHandler(t)
 	for _, project := range []string{"CORE", "SIDE"} {
@@ -1405,16 +1409,20 @@ func TestIssueCreateParentValidation(t *testing.T) {
 		t.Fatalf("create foreign issue: status=%d body=%s", foreignResponse.Code, foreignResponse.Body.String())
 	}
 	foreign := decodeBody[model.Issue](t, foreignResponse)
-	for name, parent := range map[string]string{
-		"unknown parent": "CORE-999",
-		"foreign parent": foreign.Key,
-	} {
-		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-			"project": "CORE", "title": "Child", "parent": parent, "force": true,
-		}, "alice")
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"PARENT_INPUT"`) {
-			t.Fatalf("%s: status=%d body=%s, want 400 PARENT_INPUT", name, response.Code, response.Body.String())
-		}
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Child", "parent": "CORE-999", "force": true,
+	}, "alice")
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"PARENT_INPUT"`) {
+		t.Fatalf("unknown parent: status=%d body=%s, want 400 PARENT_INPUT", response.Code, response.Body.String())
+	}
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Child", "parent": foreign.Key, "force": true,
+	}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("foreign parent: status=%d body=%s, want 201", created.Code, created.Body.String())
+	}
+	if parent := decodeBody[model.Issue](t, created).Parent; parent == nil || *parent != foreign.Key {
+		t.Fatalf("foreign parent: the created issue's parent = %v, want %s", parent, foreign.Key)
 	}
 }
 

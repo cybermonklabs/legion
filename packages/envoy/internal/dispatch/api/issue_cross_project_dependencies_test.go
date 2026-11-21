@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -123,8 +124,8 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 	}
 
 	// What stays refused. The cycle walk is project-blind, so a ring of two cross-project links
-	// is refused exactly as one inside a project is; a parent cannot cross a project, so the
-	// parent rules are read inside one.
+	// is refused exactly as one inside a project is. The parent rules are read inside one project
+	// here; TestParentCrossesAProjectAndStillRefusesACycle reads them across two.
 	setBlockers("the first half of a cross-project ring", alpha[1], []string{beta[2]})
 	expectRefusal("a ring of two cross-project links", patchBlockers(beta[2], []string{alpha[1]}),
 		http.StatusConflict, "DEPENDENCY_CYCLE")
@@ -348,4 +349,380 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 			t.Fatalf("blocked_by = %v, want %v", got, []string{sibling})
 		}
 	})
+}
+
+// createIssueUnder creates an issue of project titled title as alice, under parent where parent
+// is not empty, and answers the response as it came.
+func createIssueUnder(t *testing.T, handler http.Handler, project, title, parent string, fields map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	body := map[string]any{"project": project, "title": title, "force": true}
+	if parent != "" {
+		body["parent"] = parent
+	}
+	for name, value := range fields {
+		body[name] = value
+	}
+	return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", body, "alice")
+}
+
+// createdIssue is the issue a create answered 201 with, failing the test on any other answer.
+func createdIssue(t *testing.T, what string, response *httptest.ResponseRecorder) model.Issue {
+	t.Helper()
+	if response.Code != http.StatusCreated {
+		t.Fatalf("%s: status=%d body=%s, want 201", what, response.Code, response.Body.String())
+	}
+	return decodeBody[model.Issue](t, response)
+}
+
+// patchIssueParent moves key under parent as alice.
+func patchIssueParent(t *testing.T, handler http.Handler, key, parent string) *httptest.ResponseRecorder {
+	t.Helper()
+	return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"parent": parent}, "alice")
+}
+
+// TestParentCrossesAProjectAndStillRefusesACycle: an issue's parent may be an issue of another
+// project, on create and on PATCH, so a root that delivers part of another project's issue can
+// stand under it. The parent lists the child and hears child.added as it does for a child of its
+// own project, and every refusal that stood inside one project stands across two: a ring of
+// parent links, and a chain past the depth cap, whichever projects its links alternate between.
+func TestParentCrossesAProjectAndStillRefusesACycle(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	alpha := createListedIssues(t, handler, "ALPHA", 3)
+	beta := createListedIssues(t, handler, "BETA", 3)
+
+	created := createdIssue(t, "a create under a parent of another project",
+		createIssueUnder(t, handler, "BETA", "Delivers part of another project's issue", alpha[0], nil))
+	if created.Parent == nil || *created.Parent != alpha[0] {
+		t.Fatalf("created %s with parent %v, want %s", created.Key, created.Parent, alpha[0])
+	}
+
+	moved := patchIssueParent(t, handler, beta[1], alpha[1])
+	if moved.Code != http.StatusOK {
+		t.Fatalf("move %s under %s: status=%d body=%s, want 200", beta[1], alpha[1], moved.Code, moved.Body.String())
+	}
+	if parent := decodeBody[model.Issue](t, moved).Parent; parent == nil || *parent != alpha[1] {
+		t.Fatalf("moved %s has parent %v, want %s", beta[1], parent, alpha[1])
+	}
+	listed := false
+	for _, child := range readIssueChildren(t, handler, alpha[1]) {
+		listed = listed || child.Key == beta[1]
+	}
+	if !listed {
+		t.Fatalf("%s does not list %s among its children", alpha[1], beta[1])
+	}
+	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+alpha[1]+"/events", nil, "alice")
+	if events.Code != http.StatusOK {
+		t.Fatalf("read the events of %s: status=%d body=%s", alpha[1], events.Code, events.Body.String())
+	}
+	heard := false
+	for _, event := range decodeBody[[]struct {
+		Type    string `json:"type"`
+		Payload struct {
+			ChildKey string `json:"child_key"`
+		} `json:"payload"`
+	}](t, events) {
+		heard = heard || (event.Type == "child.added" && event.Payload.ChildKey == beta[1])
+	}
+	if !heard {
+		t.Fatalf("no child.added of %s names %s", alpha[1], beta[1])
+	}
+
+	// A ring through two projects: BETA-3 under ALPHA-3 stands, so ALPHA-3 under BETA-3 closes it.
+	if response := patchIssueParent(t, handler, beta[2], alpha[2]); response.Code != http.StatusOK {
+		t.Fatalf("move %s under %s: status=%d body=%s, want 200", beta[2], alpha[2], response.Code, response.Body.String())
+	}
+	ring := patchIssueParent(t, handler, alpha[2], beta[2])
+	if ring.Code != http.StatusConflict || !strings.Contains(ring.Body.String(), `"code":"PARENT_INPUT"`) ||
+		!strings.Contains(ring.Body.String(), "would create a cycle") {
+		t.Fatalf("a ring of parents through two projects: status=%d body=%s, want 409 PARENT_INPUT would create a cycle",
+			ring.Code, ring.Body.String())
+	}
+
+	// A chain of parentDepthCap links whose projects alternate takes no further link, on create
+	// or by moving its root under another issue.
+	chain := []string{createdIssue(t, "the chain's root",
+		createIssueUnder(t, handler, "ALPHA", "The root of a chain over two projects", "", nil)).Key}
+	for link := 1; link <= 32; link++ {
+		project := "ALPHA"
+		if link%2 == 1 {
+			project = "BETA"
+		}
+		chain = append(chain, createdIssue(t, "link "+strconv.Itoa(link)+" of the chain",
+			createIssueUnder(t, handler, project, "Link "+strconv.Itoa(link)+" of a chain over two projects", chain[link-1], nil)).Key)
+	}
+	deeper := createIssueUnder(t, handler, "ALPHA", "One link past the cap", chain[32], nil)
+	if deeper.Code != http.StatusConflict || !strings.Contains(deeper.Body.String(), `"code":"PARENT_INPUT"`) ||
+		!strings.Contains(deeper.Body.String(), "at most 32 links") {
+		t.Fatalf("a create 33 links below its root: status=%d body=%s, want 409 PARENT_INPUT", deeper.Code, deeper.Body.String())
+	}
+	lifted := patchIssueParent(t, handler, chain[0], alpha[0])
+	if lifted.Code != http.StatusConflict || !strings.Contains(lifted.Body.String(), `"code":"PARENT_INPUT"`) ||
+		!strings.Contains(lifted.Body.String(), "at most 32 links") {
+		t.Fatalf("moving the chain's root under %s: status=%d body=%s, want 409 PARENT_INPUT", alpha[0], lifted.Code, lifted.Body.String())
+	}
+}
+
+// TestAProjectScopedCallerIsRefusedAParentOfAnotherProject: a credential that may write one
+// project is refused a parent outside it, as it is refused such a blocked_by target, though the
+// issue it writes is of its own project: 403 PROJECT_SCOPE naming the parent and its project,
+// with nothing written. A parent of its own project is the control.
+func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	for _, project := range []string{"ALPHA", "BETA"} {
+		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
+		}
+	}
+	createIssue := func(project, title string) string {
+		t.Helper()
+		return createdIssue(t, "create "+title, rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": project, "title": title, "spec": "# Spec", "force": true,
+		})).Key
+	}
+	approved := createIssue("ALPHA", "Another project's approved issue")
+	own := createIssue("BETA", "Its own project's issue")
+	sibling := createIssue("BETA", "Another issue of its own project")
+	const token = "a-token-scoped-to-beta"
+	answer := liveNamedToken(caller.jkt)
+	answer.Projects = []string{"BETA"}
+	rig.broker.Says(token, answer)
+	betaIssues := func() int {
+		t.Helper()
+		var count int
+		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from issues where project_key = 'BETA'`).Scan(&count); err != nil {
+			t.Fatalf("count BETA's issues: %v", err)
+		}
+		return count
+	}
+
+	before := betaIssues()
+	refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "BETA", "title": "Filed under another project's issue", "spec": "# Spec", "parent": approved, "force": true,
+	}))
+	expectRefusal(t, "a scoped create under a parent of another project", refused, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	if after := betaIssues(); after != before {
+		t.Fatalf("the refused create took BETA from %d issues to %d, want none written", before, after)
+	}
+
+	moved := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"parent": approved}))
+	expectRefusal(t, "a scoped move under a parent of another project", moved, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	if parent := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)).Parent; parent != nil {
+		t.Fatalf("the refused move left %s under %s, want no parent", own, *parent)
+	}
+
+	allowed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"parent": sibling}))
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("a scoped move under its own project's issue: status=%d body=%s, want 200", allowed.Code, allowed.Body.String())
+	}
+	if parent := decodeBody[model.Issue](t, allowed).Parent; parent == nil || *parent != sibling {
+		t.Fatalf("%s's parent = %v, want %s", own, parent, sibling)
+	}
+}
+
+// TestInheritedValuesStopAtTheProjectEdge: an issue inherits its repository, its components, its
+// architecture owner and the legion label only from ancestors of its own project, because one
+// project's deployment acts on each. A parent of another project passes on none of them, and
+// neither does a chain that leaves the project and comes back into it: BETA's issue under
+// ALPHA's issue under BETA's issue is a root of its own for every one of the four. A child and a
+// grandchild of the issue's own project still inherit each, which is the control.
+func TestInheritedValuesStopAtTheProjectEdge(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	for _, project := range []string{"ALPHA", "BETA"} {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+			"key": project, "name": project,
+		}, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, response.Code, response.Body.String())
+		}
+	}
+	for repo, project := range map[string]string{"acme/alpha-default": "ALPHA", "acme/beta": "BETA"} {
+		if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+repo, map[string]any{
+			"project": project, "default": true,
+		}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("map %s as %s's default: status=%d body=%s", repo, project, response.Code, response.Body.String())
+		}
+	}
+	// Each project's model holds a component named web, so an attachment that crossed the edge
+	// would land on the other project's web.
+	for _, statement := range []string{
+		`insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by) values
+			('ALPHA', 1, 'acme/alpha-model', 'main', 1, '{"kind":"system","id":"test"}'),
+			('BETA', 1, 'acme/beta-model', 'main', 1, '{"kind":"system","id":"test"}')`,
+		`insert into architecture_snapshots (id, project_key, commit, files) values (901, 'ALPHA', 'c1', '{}'), (902, 'BETA', 'c1', '{}')`,
+		`insert into components (project_key, id, title, prose, parent, snapshot_id, source_id) values
+			('ALPHA', 'web', 'Web', '', null, 901, 1), ('BETA', 'web', 'Web', '', null, 902, 1)`,
+	} {
+		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("seed the architecture models: %v\n%s", err, statement)
+		}
+	}
+	everyValue := map[string]any{
+		"components": map[string]any{"mode": "explicit", "ids": []string{"web"}},
+		"labels":     []string{"legion"},
+	}
+	withRepo := func(repo string) map[string]any {
+		fields := map[string]any{"repo": repo}
+		for name, value := range everyValue {
+			fields[name] = value
+		}
+		return fields
+	}
+	alphaRoot := createdIssue(t, "ALPHA's root", createIssueUnder(t, handler, "ALPHA", "Approved work of ALPHA", "", withRepo("acme/alpha"))).Key
+
+	// The child of another project is filed by a session, whose create's advice answers who owns
+	// the status from the row the create is about to write (legionManagedStatusOfRow).
+	sessionCreate := func(project, title, parent string) (string, *testWriteAdvice) {
+		t.Helper()
+		response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": project, "title": title, "parent": parent, "force": true,
+			"components": map[string]any{"mode": "inherit"},
+			"actor":      adviceSessionActor("session-across-projects"),
+		})
+		advice := adviceFromResponse(t, response.Code, response.Body.String())
+		return decodeBody[model.Issue](t, response).Key, advice
+	}
+	betaChild, betaChildAdvice := sessionCreate("BETA", "Delivers part of ALPHA's work", alphaRoot)
+	alphaChild, alphaChildAdvice := sessionCreate("ALPHA", "A child of ALPHA's own", alphaRoot)
+	betaGrandchild := createdIssue(t, "BETA's grandchild of ALPHA's root", createIssueUnder(t, handler, "BETA", "Under the child of another project", betaChild, nil)).Key
+	alphaGrandchild := createdIssue(t, "ALPHA's grandchild", createIssueUnder(t, handler, "ALPHA", "A grandchild of ALPHA's own", alphaChild, nil)).Key
+
+	// The chain that comes back: BETA's issue under ALPHA's issue under BETA's top, the top
+	// holding every value.
+	betaBack := createdIssue(t, "BETA's issue that comes back", createIssueUnder(t, handler, "BETA", "Back in BETA", "", nil)).Key
+	betaTop := createdIssue(t, "BETA's top", createIssueUnder(t, handler, "BETA", "BETA's own top", "", withRepo("acme/beta4"))).Key
+	alphaBetween := createdIssue(t, "ALPHA's issue between", createIssueUnder(t, handler, "ALPHA", "ALPHA between two BETA issues", betaTop, nil)).Key
+	if response := patchIssueParent(t, handler, betaBack, alphaBetween); response.Code != http.StatusOK {
+		t.Fatalf("move %s under %s: status=%d body=%s, want 200", betaBack, alphaBetween, response.Code, response.Body.String())
+	}
+
+	legionManaged := func(key string) bool {
+		t.Helper()
+		tx, err := database.Pool.Begin(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(context.Background())
+		managed, err := legionManagedStatus(context.Background(), tx, key)
+		if err != nil {
+			t.Fatalf("read who owns the status of %s: %v", key, err)
+		}
+		return managed
+	}
+	type tree struct {
+		Components []struct {
+			ID     string `json:"id"`
+			Issues []struct {
+				Key      string `json:"key"`
+				Attached string `json:"attached"`
+			} `json:"issues"`
+		} `json:"components"`
+		Unassigned []struct {
+			Key string `json:"key"`
+		} `json:"unassigned"`
+	}
+	readTree := func(project string) tree {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/"+project+"/architecture", nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s's architecture: status=%d body=%s", project, response.Code, response.Body.String())
+		}
+		return decodeBody[tree](t, response)
+	}
+	trees := map[string]tree{"ALPHA": readTree("ALPHA"), "BETA": readTree("BETA")}
+	// owner is how key's project's web component counts it, "" where it does not, and whether
+	// the project's tree lists key as unassigned.
+	owner := func(project, key string) (string, bool) {
+		t.Helper()
+		attached := ""
+		for _, component := range trees[project].Components {
+			for _, issue := range component.Issues {
+				if component.ID == "web" && issue.Key == key {
+					attached = issue.Attached
+				}
+			}
+		}
+		unassigned := false
+		for _, issue := range trees[project].Unassigned {
+			unassigned = unassigned || issue.Key == key
+		}
+		return attached, unassigned
+	}
+
+	for _, want := range []struct {
+		key, project, is string
+		repo             string
+		inheritedFrom    string
+		legion           bool
+		attached         string
+	}{
+		{betaChild, "BETA", "a child of another project's issue", "acme/beta", "", false, ""},
+		{betaBack, "BETA", "an issue whose chain leaves the project and comes back", "acme/beta", "", false, ""},
+		{alphaBetween, "ALPHA", "an issue under an issue of another project", "acme/alpha-default", "", false, ""},
+		{betaGrandchild, "BETA", "a grandchild under the child of another project", "acme/beta", "", false, ""},
+		{alphaChild, "ALPHA", "a child of its own project's issue", "acme/alpha", alphaRoot, true, "inherited"},
+		{alphaGrandchild, "ALPHA", "a grandchild of its own project's issue", "acme/alpha", alphaRoot, true, "inherited"},
+	} {
+		issue := readTestIssue(t, handler, want.key)
+		if repo := valueOrNone(issue.ResolvedRepo); repo != want.repo {
+			t.Errorf("%s, %s: resolved_repo = %s, want %s", want.key, want.is, repo, want.repo)
+		}
+		inheritedFrom := valueOrNone(issue.Components.InheritedFrom)
+		if want.inheritedFrom == "" && (issue.Components.Mode != "inherit" || inheritedFrom != "none" || len(issue.Components.IDs) != 0) {
+			t.Errorf("%s, %s: components mode %s ids %v inherited from %s, want none inherited",
+				want.key, want.is, issue.Components.Mode, issue.Components.IDs, inheritedFrom)
+		}
+		if want.inheritedFrom != "" && (inheritedFrom != want.inheritedFrom || !slices.Equal(issue.Components.IDs, []string{"web"})) {
+			t.Errorf("%s, %s: components mode %s ids %v inherited from %s, want web inherited from %s",
+				want.key, want.is, issue.Components.Mode, issue.Components.IDs, inheritedFrom, want.inheritedFrom)
+		}
+		if got := legionManaged(want.key); got != want.legion {
+			t.Errorf("%s, %s: legionManagedStatus = %t, want %t", want.key, want.is, got, want.legion)
+		}
+		attached, unassigned := owner(want.project, want.key)
+		if attached != want.attached || unassigned != (want.attached == "") {
+			t.Errorf("%s, %s: %s's web counts it %q and unassigned is %t, want %q", want.key, want.is, want.project, attached, unassigned, want.attached)
+		}
+	}
+	if advice := betaChildAdvice.LegionManagedStatus; advice == nil || *advice {
+		t.Errorf("the create of %s under %s answered legion_managed_status %s, want false", betaChild, alphaRoot, answerOrNone(advice))
+	}
+	if advice := alphaChildAdvice.LegionManagedStatus; advice == nil || !*advice {
+		t.Errorf("the create of %s under %s answered legion_managed_status %s, want true", alphaChild, alphaRoot, answerOrNone(advice))
+	}
+
+	// Once the child of another project holds values of its own, its grandchild of the same
+	// project takes each of them from it, across the edge above.
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+betaChild, withRepo("acme/beta1"), "alice"); response.Code != http.StatusOK {
+		t.Fatalf("give %s values of its own: status=%d body=%s", betaChild, response.Code, response.Body.String())
+	}
+	grandchild := readTestIssue(t, handler, betaGrandchild)
+	if repo := valueOrNone(grandchild.ResolvedRepo); repo != "acme/beta1" {
+		t.Errorf("%s under %s: resolved_repo = %s, want acme/beta1", betaGrandchild, betaChild, repo)
+	}
+	if inheritedFrom := valueOrNone(grandchild.Components.InheritedFrom); inheritedFrom != betaChild {
+		t.Errorf("%s under %s: components inherited from %s, want %s", betaGrandchild, betaChild, inheritedFrom, betaChild)
+	}
+	if !legionManaged(betaGrandchild) {
+		t.Errorf("%s under %s: legionManagedStatus = false, want true", betaGrandchild, betaChild)
+	}
+	trees["BETA"] = readTree("BETA")
+	if attached, _ := owner("BETA", betaGrandchild); attached != "inherited" {
+		t.Errorf("%s under %s: BETA's web counts it %q, want inherited", betaGrandchild, betaChild, attached)
+	}
+}
+
+// valueOrNone renders an optional string of a read in a failure message.
+func valueOrNone(value *string) string {
+	if value == nil {
+		return "none"
+	}
+	return *value
+}
+
+// answerOrNone renders an optional answer of a read in a failure message.
+func answerOrNone(value *bool) string {
+	if value == nil {
+		return "none"
+	}
+	return strconv.FormatBool(*value)
 }
