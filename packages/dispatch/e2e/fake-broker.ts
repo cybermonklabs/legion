@@ -189,11 +189,12 @@ async function dismiss(recordID: string, request: Request): Promise<Response> {
   if (row === undefined) {
     return brokerError(404, "NOT_FOUND", "no such credential request");
   }
+  // The fake seeds no group rows, so the broker's group-member arm has nothing to admit here.
   if (row.approver !== "anyone" && row.approver !== approver) {
     return brokerError(
       403,
       "NOT_APPROVER",
-      "only the record's approver, or anyone signed in for a request whose approver is anyone, may dismiss it"
+      "only the record's approver, a member of the group that is its approver, or anyone signed in for a request whose approver is anyone, may dismiss it"
     );
   }
   if (rowState(row) === "pending") {

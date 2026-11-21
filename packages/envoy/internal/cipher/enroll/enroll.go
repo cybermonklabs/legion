@@ -2529,7 +2529,8 @@ func (s *Service) revokeCredential(ctx context.Context, id, person, actor string
 		}
 		svc = *service
 	}
-	if !record.MayDecide(record.KindLauncherCredential, approver, svc, person) {
+	// A machine login's approver is never a group, so no group reader is asked.
+	if !record.MayDecide(record.KindLauncherCredential, approver, svc, person, nil) {
 		return ErrNotApprover
 	}
 	if revokedAt != nil {

@@ -1,0 +1,111 @@
+{
+  "id": 10599,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 27,
+  "type": "ask.edited",
+  "actor": {
+    "kind": "session",
+    "id": "01a1612d-a20e-767c-9aa7-3d8aed5d47f6",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit ",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolo",
+      "session_title": "lorem ipsum dolor sit amet l"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-22T03:56:20.729906Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "approval": {
+      "artifact_id": "a2ac3a07-0ab4-4c39-aefb-1acacd96b4d4",
+      "name": "lorem i",
+      "requested_version": 8,
+      "version": 10
+    },
+    "approval_artifact": {
+      "project": "ACME",
+      "slug": "lore",
+      "name": "lorem i",
+      "primary": true
+    },
+    "artifact_id": null,
+    "author": {
+      "id": "01a1612d-a20e-767c-9aa7-3d8aed5d47f6",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolo",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit ",
+        "session_title": "lorem ipsum dolor sit amet l"
+      }
+    },
+    "block_id": null,
+    "created_at": "2026-10-22T02:03:43.553742Z",
+    "edited_at": "2026-10-22T03:56:20.745419Z",
+    "edited_by": {
+      "id": "01a1612d-a20e-767c-9aa7-3d8aed5d47f6",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolo",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit ",
+        "session_title": "lorem ipsum dolor sit amet l"
+      }
+    },
+    "id": "96a6017a-c43a-4ce1-ad19-2e8af8ccdaef",
+    "issue_key": "ACME-1",
+    "kind": "approval",
+    "multiple": false,
+    "opened_event_id": 10489,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsu",
+        "id": "b2",
+        "label": "lorem i"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor si",
+        "id": "b3",
+        "label": "lorem ipsum dol"
+      }
+    ],
+    "previous": {
+      "multiple": false,
+      "options": [
+        {
+          "description": "lorem ipsum dolor sit amet lorem ipsu",
+          "label": "lorem i"
+        },
+        {
+          "description": "lorem ipsum dolor sit amet lorem ipsum dolor si",
+          "label": "lorem ipsum dol"
+        }
+      ],
+      "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ",
+      "urgency": "high"
+    },
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore",
+    "referenced_by_count": 1,
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-3",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-4",
+        "kind": "issue"
+      }
+    ],
+    "revision": 1,
+    "state": "open",
+    "urgency": "high"
+  }
+}
