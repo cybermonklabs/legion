@@ -2,6 +2,7 @@ package approval_test
 
 import (
 	"crypto/ecdsa"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // privProject is the private project of the page's project tests: ada owns it and its access
@@ -233,12 +235,13 @@ const unansweredNote = "the secrets broker could not ask Dispatch whether you ma
 // TestADispatchOutageShowsOnlyItsRequestAsUnavailable: nothing is tagged, and ben's request for
 // the shared secret names an issue, INFRA-12, beside one that names none. Both are listed for ben,
 // the person the session acts for (requests.responsiblePerson), and his page prints both while
-// Dispatch answers. Dispatch then goes down and he approves all he was shown: the request naming
-// no issue is granted, and the one naming INFRA-12 is decided by nobody and stays pending. The
-// page he lands on answers 200 with each outcome, the INFRA-12 one saying only that it is
-// unavailable; the INFRA-12 request's own page answers 503 showing that one request as
-// unavailable and nothing of it, its reason included. Once Dispatch answers it is shown and
-// decidable again.
+// Dispatch answers. Dispatch then cannot answer for a project, its person route still answering,
+// and he approves all he was shown: the request naming no issue is granted, and the one naming
+// INFRA-12 is decided by nobody and stays pending. The page he lands on answers 200 with each
+// outcome, the INFRA-12 one saying only that it is unavailable; the INFRA-12 request's own page
+// answers 503 showing that one request as unavailable and nothing of it, its reason included.
+// Once Dispatch answers it is shown and decidable again. (While the person route fails too, an
+// approval of either is refused, since it asks what kind of member the session's person is.)
 func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
 	up := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
 	access := &projectaccesstest.Swappable{}
@@ -256,7 +259,7 @@ func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
 		t.Fatalf("ben's page offers %q; want both requests shown while Dispatch answers", label)
 	}
 	down := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
-	down.SetDown(true)
+	down.SetProjectsDown(true)
 	access.Serve(down)
 
 	res := b.FromPage(t, "/approve", all)
@@ -291,5 +294,48 @@ func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
 	access.Serve(projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil))
 	if back := b.Page(t, keyed.recordID); back.Status != http.StatusOK || decisionForm(t, back.Body, keyed.recordID) == nil {
 		t.Fatalf("the INFRA-12 request's page once Dispatch answers = %d with no button; want it decidable again:\n%s", back.Status, pageText(t, back.Body))
+	}
+}
+
+// TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable: ben's page prints his request, and
+// then Dispatch stops answering altogether, its person route included. His approval is refused,
+// since the broker cannot learn whether ben is a restricted member, and the request stays
+// pending. The page he lands on says it could not be decided, try again shortly, and the broker
+// writes no ERROR line: Dispatch not answering is no fault of the page's.
+func TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable(t *testing.T) {
+	access := &projectaccesstest.Swappable{}
+	access.Serve(projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil))
+	r := newRig(t, func(s *rigSetup) { s.projects = access })
+	session, key := r.benSession(t, "ben-member-kind-box")
+	req := r.request(t, session, key, "rotate the wiki key", nil, "", "SHARED_SECRET")
+	b := r.browser(t)
+	b.SignIn(t, req.recordID, person(ben))
+	form := decisionForm(t, b.Page(t, req.recordID).Body, req.recordID)
+	if form == nil {
+		t.Fatalf("ben's page for %s offers no decision while Dispatch answers", req.recordID)
+	}
+	down := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	down.SetDown(true)
+	access.Serve(down)
+	var records logtest.Recorder
+	logtest.SetDefault(t, &records)
+
+	res := b.FromPage(t, "/approve", decision(form, "approve"))
+	if res.Status != http.StatusSeeOther {
+		t.Fatalf("approve while Dispatch is down = %d, want 303:\n%s", res.Status, res.Body)
+	}
+	r.requirePending(t, req.recordID)
+	landed := b.Get(t, res.Header.Get("Location"))
+	const couldNotDecide = "still pending; it was not decided: the secrets broker could not decide it. Try again shortly."
+	if text := pageText(t, landed.Body); landed.Status != http.StatusOK || !strings.Contains(text, couldNotDecide) {
+		t.Fatalf("the page the approval lands on = %d; want 200 saying %q:\n%s", landed.Status, couldNotDecide, text)
+	}
+	for _, rec := range records.Records() {
+		if rec.Level >= slog.LevelError {
+			t.Errorf("the approval wrote the ERROR line %q; want none: Dispatch not answering is no fault of the page's", rec.Message)
+		}
+	}
+	if down.Calls() == 0 {
+		t.Fatal("the down Dispatch was never asked: the test is blind")
 	}
 }
