@@ -2298,6 +2298,12 @@ type Store interface {
 	// GatesByPendingAsk is every gate pending on ask, the ancestor's open approval request, in
 	// issue and then step order, of every tree.
 	GatesByPendingAsk(ctx context.Context, tx pgx.Tx, ask string) ([]DesignGate, error)
+	// GatesOnBasisOfOtherProjects is every gate of an issue of project that Dispatch does not show
+	// done whose basis, standing or pending, is an issue of another project (the text of its key
+	// before the first "-"), in issue and then step order: the steps whose ancestor's events the
+	// daemon never hears, since it drops every event of another project's issue, so the controller
+	// tick reads each again. A step whose basis has ended is not among them.
+	GatesOnBasisOfOtherProjects(ctx context.Context, tx pgx.Tx, project string) ([]DesignGate, error)
 	// GatesRestingOn is every gate that rests on one of ancestors in this generation
 	// (DesignGate.RestsOnIssue), in issue and then step order, of every tree: each a basis on
 	// such an ancestor opened at some point, and each whose basis names one now, standing or

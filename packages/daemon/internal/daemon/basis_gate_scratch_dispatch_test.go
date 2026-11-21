@@ -1517,3 +1517,92 @@ func TestSignOffAndCloseRootRefuseAChildOfAnotherProjectFiledAfterTheTick(t *tes
 	}
 	t.Logf("the close of %s was refused: %s", admitted.Key, refusal.Error)
 }
+
+// c4's basis half (R1 across projects): a step waiting on the open approval request of an
+// ancestor of another project opens at the controller tick after the person approves, and a
+// changes request on that version reaches the root's own architect at the next tick while the
+// step stays open. OTHR-1 carries legion, marks two requirement blocks, and its approval request
+// is open on the person; LEGION-1, labelled, admitted and a view under OTHR-1, registers its spec
+// step on OTHR-1's requested version, and the step is pending. LEGION's daemon drops every event of
+// OTHR-1, so neither the person's approval nor their changes request moves anything until a tick
+// reads OTHR-1 again. Nothing of it is keyed by OTHR-1 in LEGION's outbox: OTHR's daemon runs
+// OTHR-1's tree. That half can fail only where the daemon records OTHR-1, which this rig's daemon
+// never does; TestAGateSeedTellsNoArchitectOfAnotherProject holds the case where it does.
+func TestPendingBasisOnAnotherProjectOpensAtTheTick(t *testing.T) {
+	ticks := make(chan time.Time)
+	natsURL := testnats.URL(t)
+	r := newProjectRigOn(t, startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL}), natsURL, "LEGION", "acme/widgets", 2)
+	r.tune = func(o *overrides) { o.controllerTicks = ticks }
+	r.boot()
+	scratchProject(t, r.baseURL, "OTHR", "acme/gadgets")
+
+	// OTHR-1, its approval request open on the person, and LEGION-1 a view under it, pending on
+	// that request.
+	ancestor := r.create(asSession, "Quarterly billing overhaul",
+		map[string]any{"project": "OTHR", "labels": []string{"legion"}, "spec": requirementsMarkdown("Billing", "o1", "o2")})
+	ask := r.requestApproval(ancestor.PrimaryArtifactID, "The billing overhaul is ready for review.")
+	root := r.create(asSession, "Ledger export rewrite", map[string]any{"labels": []string{"legion"}})
+	grant := r.admit(root.Key)
+	r.mustLinkAcross(root.Key, ancestor.Key)
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(ancestor.Key, "o1")}}))
+	r.registerBasis(grant(), root, 1, ancestor, 1, basisReasonOf(400))
+	settled(t, r.d, root.Key+" to wait on "+ask, func(s api.State) bool {
+		step := stepOf(s, root.Key)
+		return step.Status == api.GatedStepPendingOnBasis && step.Basis != nil && step.Basis.Issue == ancestor.Key && step.Basis.AskID == ask
+	})
+
+	// The person approves OTHR-1. A later event of LEGION-1, applied, follows the approval's own
+	// events, which the daemon dropped; no tick has run, and the step still waits.
+	ticked := controllerTicks(t, r.pool)
+	approval := r.approve(ancestor.PrimaryArtifactID)
+	r.patch(root.Key, asSession, map[string]any{"title": "Ledger export rewrite, phase one"})
+	r.quiet(root.Key)
+	if step := stepOf(r.d.state(), root.Key); step.Status != api.GatedStepPendingOnBasis || controllerTicks(t, r.pool) != ticked {
+		t.Fatalf("after the person's approval of %s and before a tick, the spec step of %s = %+v (ticks %d, were %d), want it pending",
+			ancestor.Key, root.Key, step, controllerTicks(t, r.pool), ticked)
+	}
+
+	// One tick: the step opens on the approval, and the message on LEGION-1 names OTHR-1.
+	r.controllerTick(ticks)
+	settled(t, r.d, "open the spec step of "+root.Key+" on "+ancestor.Key+"'s approval at the tick", func(s api.State) bool {
+		step := stepOf(s, root.Key)
+		return step.Status == api.GatedStepOpenOnBasis && step.Basis != nil && step.Basis.Issue == ancestor.Key && step.Basis.Version == approval.Version
+	})
+	if message := r.oneBasisMessage(root.Key); !strings.Contains(message, "- The ancestor is "+ancestor.Key+".") {
+		t.Fatalf("the gate-opened message on %s does not name %s:\n%s", root.Key, ancestor.Key, message)
+	}
+	t.Logf("%s's step opened at the tick on %s's approval of version %d", root.Key, ancestor.Key, approval.Version)
+
+	// A changes request on that version reaches LEGION-1's architect at the next tick, and the step
+	// stays open.
+	r.dispatchRowsDone(root.Key)
+	r.requestChanges(ancestor.PrimaryArtifactID, "Name the rollback path.")
+	r.patch(root.Key, asSession, map[string]any{"title": "Ledger export rewrite, phase two"})
+	r.quiet(root.Key)
+	if told := r.notices(root.Key, "basis-changes-requested"); len(told) != 0 {
+		t.Fatalf("%s's architect was told %+v before a tick read the changes request, want nothing", root.Key, told)
+	}
+	r.controllerTick(ticks)
+	testwait.Eventually(t, "the changes request on "+ancestor.Key+" to reach the architect of "+root.Key, func() bool {
+		return len(r.notices(root.Key, "basis-changes-requested")) > 0
+	})
+	told := r.notices(root.Key, "basis-changes-requested")
+	if len(told) != 1 || told[0].Ref != "dispatch://"+ancestor.Key+"/spec" || told[0].Version != approval.Version ||
+		!strings.Contains(told[0].Reason, `"Name the rollback path."`) || !strings.Contains(told[0].Reason, "The step stays open.") {
+		t.Fatalf("the basis-changes-requested notices to %s's architect = %+v, want one naming %s's version %d and the reason", root.Key, told, ancestor.Key, approval.Version)
+	}
+	r.dispatchRowsDone(root.Key)
+	if step := stepOf(r.d.state(), root.Key); step.Status != api.GatedStepOpenOnBasis {
+		t.Fatalf("the spec step of %s after the changes request = %+v, want it still open on %s's approval", root.Key, step, ancestor.Key)
+	}
+	var keyed int
+	if err := r.pool.QueryRow(t.Context(), `select count(*) from outbox where issue = $1`, ancestor.Key).Scan(&keyed); err != nil || keyed != 0 {
+		t.Fatalf("outbox rows keyed by %s = %d, %v; want none", ancestor.Key, keyed, err)
+	}
+	for _, line := range loggedLines(t, r.logs.String(), `"issue":"`+ancestor.Key+`"`) {
+		if _, outboxRow := line["row"]; outboxRow {
+			t.Fatalf("the outbox ran a row keyed by %s: %v", ancestor.Key, line)
+		}
+	}
+	t.Logf("the changes request on %s reached %s's architect at the next tick and nothing was keyed by %s: %s", ancestor.Key, root.Key, ancestor.Key, told[0].Reason)
+}
