@@ -115,25 +115,25 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 //
 // The confirmed Request's flush runs on a goroutine of its own, bounded by the request's deadline,
 // and a timeout that came before that goroutine ran would end the flush unconfirmed, the verdict
-// the scheduler's rather than the flush's. So the first confirmed Request runs out of time at once
-// (WithRequestExpiry) with an hour to its deadline: its timeout waits for its flush, which the hour
-// bounds, so the answer carries the flush's verdict however late the flush runs. The second runs
-// out of time 300 ms after it is sent, with the same hour, so its flush, which takes a round trip,
-// nearly always returns first and is settled where a flush that beats the timeout is; a flush
-// slower than that is waited for as the first's is, so its verdict stays the flush's. The frozen
+// the scheduler's rather than the flush's. So both confirmed Requests have an hour to their
+// deadline, and the test sets which of the two each settles first (WithRequestExpiry). The first
+// runs out of time at once: its timeout waits for its flush, which the hour bounds, so the answer
+// carries the flush's verdict however late the flush runs. The second runs out of time only once
+// it has settled its flush, so it settles a flush that beat its timeout, every time. The frozen
 // Request below keeps its timer.
 func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
 	var requests atomic.Int32
-	server, _, client := requestClient(t, bus.WithRequestExpiry(func(time.Time) <-chan time.Time {
+	server, _, client := requestClient(t, bus.WithRequestExpiry(func(time.Time) (<-chan time.Time, func()) {
 		switch requests.Add(1) {
 		case 1:
 			expired := make(chan time.Time, 1)
 			expired <- time.Now()
-			return expired
+			return expired, nil
 		case 2:
-			return time.After(300 * time.Millisecond)
+			expired := make(chan time.Time, 1)
+			return expired, func() { expired <- time.Now() }
 		}
-		return nil
+		return nil, nil
 	}))
 	window := client.WindowUntil(nil)
 

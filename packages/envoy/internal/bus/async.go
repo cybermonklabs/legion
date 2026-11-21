@@ -560,8 +560,9 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 			return fmt.Errorf("bus: %w: the window's connection was lost or reconnected before the request to %q was answered", ErrUnavailable, subject)
 		}
 		var expired <-chan time.Time
+		var flushSettled func()
 		if expiry := w.client.requestExpiry; expiry != nil {
-			expired = expiry(deadline)
+			expired, flushSettled = expiry(deadline)
 		}
 		if expired == nil {
 			timer := time.NewTimer(time.Until(deadline))
@@ -582,6 +583,9 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 			case err := <-flushed:
 				if settled := settleFlush(err); settled != nil {
 					return settled
+				}
+				if flushSettled != nil {
+					flushSettled()
 				}
 			case reply := <-replies:
 				if settled, err := outcome(reply); settled {

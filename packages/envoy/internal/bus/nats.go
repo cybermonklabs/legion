@@ -47,7 +47,7 @@ type connectOpts struct {
 	streamSubjectsRefresh       time.Duration
 	reconnectWaitTick           func()
 	beforeRequestFlush          func()
-	requestExpiry               func(deadline time.Time) <-chan time.Time
+	requestExpiry               func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
 	background                  bool
 	silentCutDetection          bool
 	immediateReconnect          bool
@@ -298,11 +298,12 @@ type Client struct {
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
 	// requestExpiry, when not nil, gives each Request the channel its timeout fires on, in place of
-	// a timer at the request's deadline, or nil to keep that timer (window.request). It is nil
-	// outside tests: a test sets it (WithRequestExpiry, export_test.go) to have a Request run out
-	// of time before its flush has run, which the timeout then waits for, so the order of the two
-	// is the test's and not the scheduler's.
-	requestExpiry func(deadline time.Time) <-chan time.Time
+	// a timer at the request's deadline, or nil to keep that timer, and a func the request calls
+	// once it has settled a flush that returned before its timeout fired, or nil (window.request).
+	// It is nil outside tests: a test sets it (WithRequestExpiry, export_test.go) to choose which
+	// of the request's timeout and its flush it settles first, so the order of the two is the
+	// test's and not the scheduler's.
+	requestExpiry func(deadline time.Time) (expired <-chan time.Time, flushSettled func())
 	mu            sync.Mutex
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
