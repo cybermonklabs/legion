@@ -1,7 +1,9 @@
 package gcp_test
 
 import (
+	"fmt"
 	"maps"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -25,9 +27,9 @@ func wantRouteEnv() map[string]any {
 		"NATS_ROUTE_PASSWORD": map[string]any{"valueFrom": map[string]any{"secretKeyRef": map[string]any{
 			"name": "envoy-nats-route", "key": "route",
 		}}},
-		"NATS_ROUTE_URLS": "[nats://route:$(NATS_ROUTE_PASSWORD)@envoy-nats-0.envoy-nats-headless:6222, " +
-			"nats://route:$(NATS_ROUTE_PASSWORD)@envoy-nats-1.envoy-nats-headless:6222, " +
-			"nats://route:$(NATS_ROUTE_PASSWORD)@envoy-nats-2.envoy-nats-headless:6222]",
+		"NATS_ROUTE_URLS": "[nats://route:$(NATS_ROUTE_PASSWORD)@envoy-nats-0.envoy-nats-headless.envoy.svc.cluster.local.:6222, " +
+			"nats://route:$(NATS_ROUTE_PASSWORD)@envoy-nats-1.envoy-nats-headless.envoy.svc.cluster.local.:6222, " +
+			"nats://route:$(NATS_ROUTE_PASSWORD)@envoy-nats-2.envoy-nats-headless.envoy.svc.cluster.local.:6222]",
 	}
 }
 
@@ -98,6 +100,32 @@ func TestClusteredNatsHubRouteURLsNameTheStatefulSetsPods(t *testing.T) {
 	env := chartValues(t, runClusteredHub(t, args))["container"].(map[string]any)["env"].(map[string]any)
 	require.Equal(t, wantRouteEnv()["NATS_ROUTE_URLS"], env["NATS_ROUTE_URLS"])
 	require.NotContains(t, env["NATS_ROUTE_URLS"], "envoy-hub-client", "the URLs name no pod of the client Service's name")
+}
+
+// Each route URL names its pod by an absolute name, <name>-<i>.<name>-headless.<namespace>.svc.
+// cluster.local. with the trailing dot, so no resolver's search list can complete it into another
+// namespace's name: a relative <name>-<i>.<name>-headless that fails while a pod is re-created is
+// next tried as <name>-<i>.<name>-headless.svc.cluster.local, Service <name>-<i> in a namespace
+// named <name>-headless, which would be sent the route password. The hub's namespace is in each
+// name; the row runs in two namespaces, so a name fixed to one fails the other.
+func TestClusteredNatsHubRouteURLsAreAbsolute(t *testing.T) {
+	for _, namespace := range []string{"envoy", "hubs"} {
+		t.Run(namespace, func(t *testing.T) {
+			args := clusteredArgs()
+			args.Namespace = namespace
+			args.RouteAuthorization = routeAuthorization("env")
+			env := chartValues(t, runClusteredHub(t, args))["container"].(map[string]any)["env"].(map[string]any)
+			list := strings.TrimSuffix(strings.TrimPrefix(env["NATS_ROUTE_URLS"].(string), "["), "]")
+			urls := strings.Split(list, ", ")
+			require.Len(t, urls, 3)
+			for i, raw := range urls {
+				u, err := url.Parse(strings.ReplaceAll(raw, "$(NATS_ROUTE_PASSWORD)", "password"))
+				require.NoError(t, err)
+				require.Equal(t, fmt.Sprintf("envoy-nats-%d.envoy-nats-headless.%s.svc.cluster.local.", i, namespace), u.Hostname(), "route URL %d: %s", i, raw)
+				require.Equal(t, "6222", u.Port())
+			}
+		})
+	}
 }
 
 // Kubernetes expands $(NATS_ROUTE_PASSWORD) in NATS_ROUTE_URLS only when the password's variable

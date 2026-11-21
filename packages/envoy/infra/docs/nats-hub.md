@@ -1126,8 +1126,12 @@ finished:
 | `authorization` | Also `authorization { user: "route", password: $NATS_ROUTE_PASSWORD }` in the `cluster` block. | The reloader applies it: each server refuses a route that does not present the credential. |
 
 The component renders no TLS for the cluster, so NATS sends each route URL's password unencrypted,
-on every route a server opens. The route URLs name the pods by their headless Service,
-`<n>-<i>.<n>-headless:6222`, which resolves to the pods' internal IPs, and the address a server
+on every route a server opens. The route URLs name the pods by their headless Service, by the
+absolute name `<n>-<i>.<n>-headless.<namespace>.svc.cluster.local.:6222` with the trailing dot,
+which resolves to the pods' internal IPs and nothing else: a relative name that failed while a
+pod is re-created would go down the resolver's search list to `<n>-<i>.<n>-headless.svc.cluster.local`,
+Service `<n>-<i>` of a namespace named `<n>-headless`, and a route sends its credential before it
+reads its peer's INFO (`server/route.go:2087-2094`). The address a server
 gossips to its peers for another server is the one it saw on that server's connection, its pod IP
 (nats-server 2.15.1 `server/route.go:859-871`), so the hub's own servers never send the password
 outside the cluster's VPC. `noAdvertise` is no part of that: it only keeps the cluster's addresses

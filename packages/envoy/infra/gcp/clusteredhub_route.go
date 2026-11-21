@@ -93,13 +93,18 @@ func newClusteredHubRoute(args *ClusteredHubRouteAuthorizationArgs, namespace st
 
 // env is the nats container's route variables, as chart container.env entries: the password from
 // the Secret, and the URLs of the three servers' routes with it as each URL's password, which
-// Kubernetes expands in the pod. The URLs name the pods as the chart's own cluster.routes does,
-// <name>-<i>.<name>-headless on the route port.
-func (r *clusteredHubRoute) env(release string) pulumi.Map {
+// Kubernetes expands in the pod. The URLs name the pods of the chart's headless Service,
+// <name>-<i>.<name>-headless, on the route port, by the absolute name in the hub's namespace with
+// the trailing dot. A relative name that fails while a pod is re-created goes down the resolver's
+// search list, whose next name is <name>-<i>.<name>-headless.svc.cluster.local: Service <name>-<i>
+// of a namespace named <name>-headless, which would be sent the password, since a route sends its
+// CONNECT, credential and all, before it reads its peer's INFO (nats-server 2.15.1
+// server/route.go:2087-2094).
+func (r *clusteredHubRoute) env(release, namespace string) pulumi.Map {
 	urls := make([]string, clusteredHubServers)
 	for i := range urls {
-		urls[i] = fmt.Sprintf("nats://%s:$(%s)@%s-%d.%s-headless:%d",
-			clusteredHubRouteUser, clusteredHubRoutePasswordEnv, release, i, release, clusteredHubClusterPort)
+		pod := clusterLocal(fmt.Sprintf("%s-%d.%s-headless", release, i, release), namespace) + "."
+		urls[i] = fmt.Sprintf("nats://%s:$(%s)@%s:%d", clusteredHubRouteUser, clusteredHubRoutePasswordEnv, pod, clusteredHubClusterPort)
 	}
 	return pulumi.Map{
 		clusteredHubRoutePasswordEnv: pulumi.Map{"valueFrom": pulumi.Map{"secretKeyRef": pulumi.Map{

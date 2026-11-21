@@ -247,7 +247,7 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 	}
 	env := pulumi.Map{"GOMEMLIMIT": pulumi.String(s.size.goMemLimit)}
 	if s.route != nil {
-		maps.Copy(env, s.route.env(s.name))
+		maps.Copy(env, s.route.env(s.name, s.namespace))
 	}
 	return pulumi.Map{
 		"fullnameOverride": pulumi.String(s.name),
