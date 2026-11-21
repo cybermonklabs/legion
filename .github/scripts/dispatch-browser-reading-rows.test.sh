@@ -5,9 +5,9 @@
 # cancelled, was skipped, or ended in a conclusion the script does not know. The selection after
 # a download that succeeded ("Take the newest attempt of each leg's blob report") succeeded,
 # failed, was skipped, or was cancelled part of the way or after it had copied every leg. Where
-# both succeeded, the cases cover a leg's blob or count absent, a count that holds no number, a
-# merged report that is absent, not JSON or holds stats that sum to no whole number, and a merged
-# total equal to, under or over the legs'.
+# both succeeded, the cases cover a leg's blob or count absent, every leg's blob absent, a count
+# that holds no number, a merged report that is absent, not JSON, JSON whose stats jq cannot sum,
+# or stats that sum to no whole number, and a merged total equal to, under or over the legs'.
 #
 # The case it was written for is run 44754426131, attempt 1. There the job's time limit
 # cancelled the merge job's `bun install`, both steps were skipped, and this reading said "no
@@ -304,13 +304,45 @@ run_rows "$root" success success
 check "fails the step" "$(is "$status" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the leg that sent no blob" \
-  "$(contains "$(error_line)" 'no blob report arrived from: shard-4;')"
+  "$(contains "$(error_line)" "no blob report arrived from: shard-4; the merged report is short of those legs' rows$")"
 check "and neither input step, both of which ran" \
   "$(is "$(contains "$(error_line)" 'the step ')" false)"
 check "the table marks that leg's blob MISSING" \
   "$(is "$(table_rows "$root" '^| shard-4 | not read | MISSING |$')" 1)"
 check "the notice counts the three legs read" \
   "$(contains "$(notice_line)" 'holds 120 rows, against 120 printed by the 3 legs whose count this job read')"
+
+echo "case: the download and the selection succeeded and no leg uploaded a blob"
+# The download succeeds with no artifact, the selection writes empty directories and exits 0, and
+# the merge step fails with nothing to merge. There is no merged report to be short of rows.
+root=$(fixture success-none)
+run_rows "$root" success success
+check "fails the step" "$(is "$status" 1)"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "naming every leg as having sent no blob, and that this job has no merged report" \
+  "$(contains "$(error_line)" '::error::no blob report arrived from: shard-1, shard-2, shard-3, shard-4; this job has no merged report$')"
+check "rather than a merged report short of rows" \
+  "$(is "$(contains "$(error_line)" 'short')" false)"
+check "the table marks each leg's blob MISSING" "$(is "$(table_rows "$root" '| not read | MISSING |$')" 4)"
+check "the notice says this job has no merged report" \
+  "$(contains "$(notice_line)" "rows::this job has no merged report to hold against the legs' counts: shard-1 not read, shard-2 not read, shard-3 not read, shard-4 not read$")"
+
+echo "case: the download and the selection succeeded, one leg uploaded no blob, and there is no merged report"
+# The merge step failed or the job's limit stopped it. The leg that sent no blob is named; there
+# is no merged report to be short of its rows.
+root=$(fixture success-one-missing-no-report)
+leg "$root" shard-1 30
+leg "$root" shard-2 40
+leg "$root" shard-3 50
+run_rows "$root" success success
+check "fails the step" "$(is "$status" 1)"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "naming the leg that sent no blob, and that this job has no merged report" \
+  "$(contains "$(error_line)" '::error::no blob report arrived from: shard-4; this job has no merged report$')"
+check "rather than a merged report short of rows" \
+  "$(is "$(contains "$(error_line)" 'merged report is short')" false)"
+check "the notice says the same of the report" \
+  "$(contains "$(notice_line)" "rows::this job has no merged report to hold against the legs' counts: shard-1 30, shard-2 40, shard-3 50, shard-4 not read$")"
 
 echo "case: the download failed"
 root=$(fixture failure)
@@ -323,6 +355,10 @@ check "and the four legs, and that this job made no merged report" \
   "$(contains "$(error_line)" 'read no blob report of: shard-1, shard-2, shard-3, shard-4, and made no merged report;')"
 check "rather than a merged report short of rows" \
   "$(is "$(contains "$(error_line)" 'merged report is short')" false)"
+check "saying this error is not a failed browser row" \
+  "$(contains "$(error_line)" "This error is a failed read of the run's artifacts, not a failed browser row\.$")"
+check "nor that no row failed, which this job did not read" \
+  "$(is "$(contains "$(error_line)" 'no row of the suite failed')" false)"
 check "the table says no blob was read, not that each is missing" \
   "$(is "$(table_rows "$root" '| not read | not read |$')" 4)"
 
@@ -412,9 +448,9 @@ check "and the table calls their counts not read, not 0" \
 check "the notice counts the one leg read, as one leg" \
   "$(contains "$(notice_line)" 'holds 180 rows, against 30 printed by the 1 leg whose count this job read (shard-1 30, shard-2 not read, shard-3 not read, shard-4 not read)$')"
 
-echo "case: every owed blob arrived and the merge step made no merged report"
-# The merge step's own failure names that. This reading has nothing to hold the counts against,
-# and says so in its notice.
+echo "case: every owed blob arrived and there is no merged report"
+# The merge step failed, or the job's limit or cancellation skipped it; the job's log says which.
+# This reading has nothing to hold the counts against, and says so in its notice.
 root=$(fixture no-report)
 leg "$root" shard-1 30
 leg "$root" shard-2 40
@@ -426,46 +462,88 @@ check "prints no ::error:: line" "$(is "$(errors)" 0)"
 check "the notice says this job has no merged report, with the legs' counts" \
   "$(contains "$(notice_line)" "rows::this job has no merged report to hold against the legs' counts: shard-1 30, shard-2 40, shard-3 50, shard-4 60$")"
 
-echo "case: every owed blob arrived and the merged report is not JSON"
-root=$(fixture report-not-json)
+echo "case: every owed blob arrived, one leg's count file holds no number, and there is no merged report"
+# As in the case above, with nothing to hold the counts against. The unread count is then no
+# failure of this step's, and the notice names it.
+root=$(fixture no-report-count-empty)
 leg "$root" shard-1 30
 leg "$root" shard-2 40
 leg "$root" shard-3 50
 leg "$root" shard-4 60
-printf 'not json\n' > "$root/temp/report.json"
+: > "$root/temp/selected-blobs/rows/shard-4.txt"
 run_rows "$root" success success
-check "fails the step" "$(is "$status" 1)"
-check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
-check "naming the report jq could not read" \
-  "$(contains "$(error_line)" "the merged report $root/temp/report.json is not JSON that jq can read")"
-check "the notice says this job could not read the merged report" \
-  "$(contains "$(notice_line)" "rows::this job could not read the merged report to hold against the legs' counts: shard-1 30, ")"
+check "exits 0" "$(is "$status" 0)"
+check "prints no ::error:: line" "$(is "$(errors)" 0)"
+check "the notice says this job has no merged report, and names the count it did not read" \
+  "$(contains "$(notice_line)" "rows::this job has no merged report to hold against the legs' counts: shard-1 30, shard-2 40, shard-3 50, shard-4 not read$")"
 
-echo "case: every owed blob arrived and the merged report's stats hold no number"
-# A test on `null` fails inside the comparison's `if`, where `set -e` does not reach, so the
-# step passed having compared nothing.
-root=$(fixture stats-null)
-leg "$root" shard-1 30
-leg "$root" shard-2 40
-leg "$root" shard-3 50
-leg "$root" shard-4 60
-printf '{}\n' > "$root/temp/report.json"
-run_rows "$root" success success
-check "fails the step" "$(is "$status" 1)"
-check "naming the stats it could not read" \
-  "$(contains "$(error_line)" "the merged report's stats sum to 'null', not a whole number of rows")"
+echo "case: every owed blob arrived and jq cannot sum the merged report's stats"
+# Not JSON, JSON of another shape (an array), and a count that is a string each end jq with an
+# error of its own. The step names the sum it could not make, and claims nothing of the report's
+# syntax, which only the first of the three gets wrong.
+for shape in not-json array string-count; do
+  root=$(fixture "report-$shape")
+  leg "$root" shard-1 30
+  leg "$root" shard-2 40
+  leg "$root" shard-3 50
+  leg "$root" shard-4 60
+  case "$shape" in
+    not-json) printf 'not json\n' > "$root/temp/report.json" ;;
+    array) printf '[]\n' > "$root/temp/report.json" ;;
+    string-count)
+      printf '{"stats": {"expected": "180", "unexpected": 0, "flaky": 0, "skipped": 0}}\n' \
+        > "$root/temp/report.json"
+      ;;
+  esac
+  run_rows "$root" success success
+  check "$shape: fails the step" "$(is "$status" 1)"
+  check "$shape: prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+  check "$shape: naming the stats jq could not sum, and the report" \
+    "$(contains "$(error_line)" "::error::jq could not sum the stats of the merged report $root/temp/report.json (jq's own message is above)")"
+  check "$shape: with jq's own message in the output" "$(contains "$out" '^jq: ')"
+  check "$shape: and claiming nothing of the report's syntax" \
+    "$(is "$(contains "$(error_line)" 'not JSON')" false)"
+  check "$shape: the notice says this job could not sum the stats" \
+    "$(contains "$(notice_line)" "rows::this job could not sum the merged report's stats to hold against the legs' counts: shard-1 30, ")"
+done
 
-echo "case: every owed blob arrived and the merged report's stats sum to a fraction"
-root=$(fixture stats-fraction)
-leg "$root" shard-1 30
-leg "$root" shard-2 40
-leg "$root" shard-3 50
-leg "$root" shard-4 60
-merged "$root" 179.5 0 0 0
-run_rows "$root" success success
-check "fails the step" "$(is "$status" 1)"
-check "naming the sum that is not a whole number" \
-  "$(contains "$(error_line)" "the merged report's stats sum to '179.5', not a whole number of rows")"
+echo "case: every owed blob arrived and the merged report's stats sum to no whole number"
+# An empty report, a report with no stats and one whose stats sum to a fraction: jq sums each,
+# to nothing, `null` and 179.5. A test on such a sum fails inside the comparison's `if`, where
+# `set -e` does not reach, so the step passed having compared nothing. The notice and the summary
+# are written before the errors, and give no row count for such a report.
+for shape in empty null fraction; do
+  root=$(fixture "stats-$shape")
+  leg "$root" shard-1 30
+  leg "$root" shard-2 40
+  leg "$root" shard-3 50
+  leg "$root" shard-4 60
+  case "$shape" in
+    empty)
+      : > "$root/temp/report.json"
+      sum_shown=''
+      ;;
+    null)
+      printf '{}\n' > "$root/temp/report.json"
+      sum_shown=null
+      ;;
+    fraction)
+      merged "$root" 179.5 0 0 0
+      sum_shown=179.5
+      ;;
+  esac
+  run_rows "$root" success success
+  check "$shape: fails the step" "$(is "$status" 1)"
+  check "$shape: prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+  check "$shape: naming the sum that is not a whole number" \
+    "$(contains "$(error_line)" "the merged report's stats sum to '$sum_shown', not a whole number of rows")"
+  check "$shape: the notice gives no row count for the report" \
+    "$(contains "$(notice_line)" "rows::the merged report's stats sum to '$sum_shown', so this job has no whole number of rows to hold against the legs' counts: shard-1 30, shard-2 40, shard-3 50, shard-4 60$")"
+  check "$shape: nor says the report holds rows" \
+    "$(is "$(contains "$(notice_line)" 'merged report holds')" false)"
+  check "$shape: and the summary says the same" \
+    "$(contains "$(cat "$root/summary.md")" "^The merged report's stats sum to '$sum_shown', so this job has no whole number of rows to hold against the legs' counts in the table above\.$")"
+done
 
 echo "case: the script given one conclusion"
 root=$(fixture one-argument)

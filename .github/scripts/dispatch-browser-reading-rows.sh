@@ -196,28 +196,31 @@ while IFS= read -r leg; do
   line="$line$leg $cell, "
   echo "| $leg | $cell | $held |" >> "$GITHUB_STEP_SUMMARY"
 done <<< "$legs"
-# `unknown` where there is no merged report: the merge step did not run or failed, and this
-# reading still names the legs that owed a blob, which is what says why. A report jq cannot read
-# is `unknown` too, and is named as unreadable; jq's own message says what it could not read.
-merged=unknown
-unreadable_report=""
+# What this job holds of the merged report, as `report_state`:
+# - `none`: there is no report. The merge step did not run or failed, and this reading still
+#   names the legs that owed a blob, which is what says why.
+# - `unsummed`: jq could not sum its stats - not JSON, or JSON of another shape such as `[]` or a
+#   count that is a string. jq's own message, above this step's lines, says why.
+# - `not_whole`: its stats sum to something that is not a whole number of rows - nothing, `null`
+#   or a fraction - which no count can be held against.
+# - `read`: its stats sum to a whole number of rows, $merged.
+merged=""
+report_state=none
 sum='.stats.expected + .stats.unexpected + .stats.flaky + .stats.skipped'
-if [ -f "$report" ] && ! merged=$(jq "$sum" "$report"); then
-  merged=unknown
-  unreadable_report=yes
-fi
-# With no merged report there is no row count to hold against the legs', so the notice and the
-# summary say what this job saw instead - no merged report, or one it could not read - and give
-# each leg's count as this job read it.
-if [ "$merged" = unknown ]; then
-  if [ -n "$unreadable_report" ]; then
-    seen="this job could not read the merged report"
+if [ -f "$report" ]; then
+  if ! merged=$(jq "$sum" "$report"); then
+    report_state=unsummed
   else
-    seen="this job has no merged report"
+    case "$merged" in
+      '' | *[!0-9]*) report_state=not_whole ;;
+      *) report_state="read" ;;
+    esac
   fi
-  summary_line="${seen^} to hold against the legs' counts in the table above."
-  notice="$seen to hold against the legs' counts: ${line%, }"
-else
+fi
+# With no whole number of rows from a merged report there is nothing to hold against the legs'
+# counts, so the notice and the summary say what this job saw instead, and give each leg's count
+# as this job read it.
+if [ "$report_state" = read ]; then
   if [ -z "$unread_legs" ]; then
     printed_words="$printed_total printed by the legs"
   elif [ "$counted" -eq 0 ]; then
@@ -229,6 +232,16 @@ else
   fi
   summary_line="The merged report holds $merged rows, against $printed_words."
   notice="the merged report holds $merged rows, against $printed_words (${line%, })"
+else
+  case "$report_state" in
+    none) seen="this job has no merged report" ;;
+    unsummed) seen="this job could not sum the merged report's stats" ;;
+    not_whole)
+      seen="the merged report's stats sum to '$merged', so this job has no whole number of rows"
+      ;;
+  esac
+  summary_line="${seen^} to hold against the legs' counts in the table above."
+  notice="$seen to hold against the legs' counts: ${line%, }"
 fi
 {
   echo
@@ -250,8 +263,8 @@ case "$input" in
     # the download failed rather than that each leg's blob is waiting on the run.
     echo "::error::the download of the legs' blob reports failed, so this job read no blob" \
       "report of: $missing, and made no merged report; the step \"Download every leg's blob" \
-      "report\" carries that download's own error line. This is a failed read of the run's" \
-      "artifacts and not a failed browser row: no row of the suite failed here."
+      "report\" carries that download's own error line. This error is a failed read of the" \
+      "run's artifacts, not a failed browser row."
     exit 1
     ;;
   download | selection)
@@ -275,25 +288,34 @@ case "$input" in
     exit 1
     ;;
 esac
-# Both steps succeeded, so a leg with no blob here sent none.
+# Both steps succeeded, so a leg with no blob here sent none. Where no leg sent one, the download
+# succeeds with no artifact, the selection writes empty directories, and the merge step fails
+# with nothing to merge; the job's limit can also stop the merge. With no merged report, there is
+# none to be short of rows.
 if [ -n "$missing" ]; then
-  echo "::error::no blob report arrived from: $missing;" \
-    "the merged report is short of those legs' rows"
+  if [ -f "$report" ]; then
+    said="the merged report is short of those legs' rows"
+  else
+    said="this job has no merged report"
+  fi
+  echo "::error::no blob report arrived from: $missing; $said"
   exit 1
 fi
 # Every owed blob arrived.
-if [ -n "$unreadable_report" ]; then
-  echo "::error::the merged report $report is not JSON that jq can read (jq's own message is" \
-    "above), so this reading cannot hold its rows against the legs' counts"
-  exit 1
-fi
-# No merged report at all is the merge step's own failure, which that step's error names, and
-# leaves nothing to compare. Stats that do not sum to a whole number cannot be held against the
-# legs' counts, and a test on them would fail inside an `if` below, where `set -e` does not
-# reach, and let the step pass having compared nothing.
-case "$merged" in
-  unknown) exit 0 ;;
-  '' | *[!0-9]*)
+case "$report_state" in
+  # No merged report after both steps that feed the merge succeeded: the merge step failed, or
+  # the job's limit or its cancellation stopped it, in which case that step was skipped and
+  # printed nothing. The notice above says this job has no merged report, the job's log says what
+  # stopped the merge, and there is nothing here to compare.
+  none) exit 0 ;;
+  unsummed)
+    echo "::error::jq could not sum the stats of the merged report $report (jq's own message is" \
+      "above), so this reading cannot hold its rows against the legs' counts"
+    exit 1
+    ;;
+  # A test on a sum that is not a whole number would fail inside an `if` below, where `set -e`
+  # does not reach, and let the step pass having compared nothing.
+  not_whole)
     echo "::error::the merged report's stats sum to '$merged', not a whole number of rows," \
       "so this reading cannot hold it against the legs' counts"
     exit 1
