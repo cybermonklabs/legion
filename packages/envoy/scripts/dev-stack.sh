@@ -121,11 +121,16 @@
 #
 # One trap stops every process by the pid this script started it as, drops the two databases it
 # created and nothing else, and leaves the logs; it runs on a normal exit, on Ctrl-C, on SIGTERM
-# and on a failure part way through, so a start that fails before "ready" leaves nothing running.
-# A SIGTERM sent to the whole process group, as a supervisor's stop sends it, is that same stop,
-# and so is the same signal repeated while the stop runs. The exception is a signal this script
-# cannot take: a run ended by SIGKILL, which no process can trap, leaves its two databases on the
-# server for someone to drop by hand, as does any other signal this script does not trap.
+# and on a failure part way through, so a start that fails before "ready" leaves nothing running,
+# and ends within seconds of the process that failed, one that exited after it reported its port
+# among them: every readiness request gives up after 5 s. Each process gets 10 s after its SIGTERM
+# and is then killed, which the log says, so one that ignores the signal delays the drops and does
+# not prevent them. A SIGTERM sent to the whole process group, as a supervisor's stop sends it, is
+# that same stop, and so is the same signal repeated while the stop runs, and so is either with
+# this script's output piped to a reader the signal stops too (`dev-stack.sh | tee`). The exception
+# is a signal this script cannot take: a run ended by SIGKILL, which no process can trap, leaves
+# its two databases on the server for someone to drop by hand, as does any other signal this
+# script does not trap.
 #
 # With --callout the hub runs behind the NATS auth service, in two brokers, which
 # scripts/callout-check.sh drives; scripts/lib/callout-stack.sh's header says what that adds. It
@@ -468,41 +473,70 @@ DISPATCH_PID=""
 BROKER_DB_CREATED=false
 DISPATCH_DB_CREATED=false
 
+# stop_bounded NAME PID stops one process of the stack for cleanup: SIGTERM, then up to 10 s for it
+# to exit, then SIGKILL, which the log names, so a process that ignores or outlives its SIGTERM
+# holds the stop 10 s at most and the drops below still run. Cleanup ignores every further INT and
+# TERM, so a `wait` on such a process would have held the stop, and both databases, for good. The
+# look is kill -0 every 0.1 s, which a process this shell has reaped fails.
+stop_bounded() {
+  local name="$1" pid="$2" deadline
+  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  kill "$pid" 2>/dev/null
+  deadline=$((SECONDS + 10))
+  while kill -0 "$pid" 2>/dev/null && ((SECONDS < deadline)); do
+    sleep 0.1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "dev-stack: $name (pid $pid) did not stop within 10 s of its SIGTERM; killing it" >&2
+    kill -KILL "$pid" 2>/dev/null
+  fi
+  wait "$pid" 2>/dev/null
+}
+
 # cleanup stops what this run started and exits with rc, the status the trap that ran it passes:
 # this script's own for EXIT, and the conventional 128 plus the signal's number for INT and TERM,
 # so an interrupted run never reports success. Each process is stopped by the pid this script
-# started it as, in the reverse of the order they were started, and each database is dropped with
-# (force) once its server has no connection of this run's left to lose.
+# started it as, in the reverse of the order they were started (stop_bounded, below), and each
+# database is dropped with (force) once its server has no connection of this run's left to lose.
 #
 # A stop by signal reaches this shell more than once: a process group's SIGTERM is delivered to
 # this shell as well as to every process of the stack, a supervisor repeats the signal, and a run
 # already on its way out through the EXIT trap (a process of the stack took that same signal
-# first) has its own still to take. So the first thing cleanup does is ignore INT and TERM for
-# the rest of the run, and it returns at once when it is already running. What it must not do is
-# put either signal back on its default disposition, as `trap - INT TERM` here once did: a repeat
-# arriving then kills the run between the kills and the drops below, and a signal bash has taken
-# but not yet run the handler for is re-raised by bash at its next trap check, the `wait` in the
-# loop below among them ("run_pending_traps: bad value in trap_list[15]: (nil)", then "signal
+# first) has its own still to take. So the first thing cleanup does is ignore INT, TERM and PIPE
+# for the rest of the run, and it returns at once when it is already running. What it must not do
+# is put any of them back on its default disposition, as `trap - INT TERM` here once did: a
+# repeat arriving then kills the run between the kills and the drops below, and a signal bash has
+# taken but not yet run the handler for is re-raised by bash at its next trap check, the `wait` in
+# the loop below among them ("run_pending_traps: bad value in trap_list[15]: (nil)", then "signal
 # handler is SIG_DFL, resending 15 (SIGTERM) to myself"). Either way the two databases outlived
-# the run. Ignoring is also the one disposition a child inherits through the exec, so the psql
+# the run. PIPE because the same stop can take this script's output reader first: a group's
+# SIGTERM stops the tee of `dev-stack.sh | tee` too, and a run whose reader is gone comes here
+# through the EXIT trap, which bash runs on the SIGPIPE of the next line it writes. Every line
+# cleanup writes then raises SIGPIPE, and left as it was that ended the run at the first of them,
+# after the broker's drop and before Dispatch's; ignored, a line nobody reads fails and the stop
+# goes on. Ignoring is also the one disposition a child inherits through the exec, so the psql
 # each drop runs is out of the reach of a signal sent to the whole group too, and no drop is
 # killed half done.
 cleanup_running=false
 cleanup() {
-  local rc="$1" pid
+  local rc="$1"
   if [ "$cleanup_running" = true ]; then
     return 0
   fi
   cleanup_running=true
   trap - EXIT
-  trap '' INT TERM
+  trap '' INT TERM PIPE
   set +e
-  for pid in "$DISPATCH_PID" "$LISTENER_PID" "$LISTENER_KEEPER_PID" "$BROKER2_PID" "$BROKER_PID" "$NATS_PID" "$ISSUER_PID" "$KEEPER_PID"; do
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null
-      wait "$pid" 2>/dev/null
-    fi
-  done
+  stop_bounded dispatch "$DISPATCH_PID"
+  stop_bounded listener "$LISTENER_PID"
+  stop_bounded 'the listener port keeper' "$LISTENER_KEEPER_PID"
+  stop_bounded 'the second broker' "$BROKER2_PID"
+  stop_bounded broker "$BROKER_PID"
+  stop_bounded natsd "$NATS_PID"
+  stop_bounded dev-oidc-issuer "$ISSUER_PID"
+  stop_bounded 'the Dispatch port keeper' "$KEEPER_PID"
   # The stands' container, when this run started one (airlock_stands_stop is the library's).
   if [ -n "${AIRLOCK_STANDS_CONTAINER:-}" ]; then
     airlock_stands_stop
@@ -576,10 +610,11 @@ else
   done
 fi
 
-# --- Each process's readiness is read from its own log, never from a port this script chose:
-# await runs one reader until it prints a value, and fails the moment the process it watches is
-# gone. The readers each end in `|| true` territory: under this script's pipefail a grep that has
-# not matched yet is the normal case on every pass before the line is written, not a failure. ---
+# --- Each process's readiness is read from its own log, or from its answer at the port it reported
+# there, never from a port this script chose: await runs one reader until it prints a value, and
+# fails once a read comes back empty and the process it watches is gone. The readers each end in
+# `|| true` territory: under this script's pipefail a grep that has not matched yet is the normal
+# case on every pass before the line is written, not a failure. ---
 awaited=""
 await() {
   local name="$1" pid="$2" log="$3" source="$4" what="$5"
@@ -603,21 +638,15 @@ await() {
   return 1
 }
 
-# until_true runs a command until it succeeds, for the reason await exists: nothing here waits on
-# a fixed delay.
-until_true() {
-  local name="$1"
-  shift
-  local deadline=$((SECONDS + 60))
-  while ((SECONDS < deadline)); do
-    if "$@" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 0.25
-  done
-  echo "dev-stack: $name did not answer within 60s" >&2
-  return 1
-}
+# answered_at URL is await's reader for a server's answer: it prints "answered" once URL answers
+# with no HTTP error (curl -f), so a server is watched by its process as well as by its port. Each
+# request gives up after 5 s, over the listener's own 3 s health budget, and that bound is what lets
+# await's deadline and its look at the process hold: the listener and Dispatch serve on a socket
+# their keeper holds for the whole run, so once either has exited the kernel still queues a request
+# on its port and no process ever answers it. A request with no bound waited there for good, and a
+# stop signal to this script with it, since bash runs a trap only once the command in the
+# foreground has returned.
+answered_at() { curl -sf --max-time 5 "$1" >/dev/null && echo answered; }
 
 issuer_url_in() { grep -o 'issuer listening url=[^ ]*' "$1" | head -n1 | cut -d= -f2-; }
 broker_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "broker listening") | .addr][0] // empty' "$1"; }
@@ -775,7 +804,7 @@ start_broker "$BROKER_LOG"
 BROKER_PID=$started_pid
 await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its bound address' broker_addr_in
 BROKER_URL="http://$awaited"
-until_true "the broker's health check" curl -sf "$BROKER_URL/healthz"
+await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_URL/healthz" 'its health check answering' answered_at
 echo "dev-stack: broker $BROKER_URL" >&2
 # Under --project-access, the broker's proxy must be on the port this run picked, or the run stops.
 project_access_proxy_check
@@ -849,7 +878,8 @@ start_listener() {
   LISTENER_PID=$!
   await listener "$LISTENER_PID" "$LISTENER_LOG" "$LISTENER_LOG" 'its address' listener_addr_in
   LISTENER_ADDRESS="$awaited"
-  until_true "the listener's health check" curl -sf "http://$LISTENER_ADDRESS/healthz"
+  await listener "$LISTENER_PID" "$LISTENER_LOG" "http://$LISTENER_ADDRESS/healthz" \
+    'its health check answering' answered_at
 }
 echo "dev-stack: starting listener..." >&2
 start_listener
@@ -894,7 +924,7 @@ python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD --
 DISPATCH_PID=$!
 await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_LOG" 'the address it serves on' dispatch_addr_in
 DISPATCH_URL="http://$awaited"
-until_true "Dispatch's route index" curl -sf "$DISPATCH_URL/api/v1"
+await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_URL/api/v1" 'its route index answering' answered_at
 echo "dev-stack: dispatch $DISPATCH_URL" >&2
 
 # --- The stand-in for a Compute Engine metadata server, written here and started by whoever

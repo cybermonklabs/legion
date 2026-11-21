@@ -29,8 +29,15 @@
 # (d) the two instances mint different database names, different ports and different work
 # directories, and neither names the other's; (e) the one trap stops every process it started and
 # drops exactly the two databases it created, on a normal exit, on INT, on a SIGTERM to its whole
-# process group sent again while the stop runs, and on a failure part way through, which leaves
-# nothing running; (f) a run given no database URL refuses with exit 2, naming all three sources;
+# process group sent again while the stop runs, on that SIGTERM with the run's output piped
+# through tee, which the signal stops too, on a normal exit after its output's reader is gone, and
+# on a failure part way through, which leaves nothing running: one before a process reports its
+# port, and one after, a listener or Dispatch that reports its address and exits while its keeper
+# still holds the port, which the run reports inside 15 s rather than waiting on a request that
+# port never answers; a SIGTERM to the run while such a request is outstanding at a server that
+# stays alive ends it inside 15 s with 143; and a process that ignores SIGTERM is killed 10 s into
+# the stop, which says so and still drops both databases; (f) a run given no database URL refuses
+# with exit 2, naming all three sources;
 # (g) the second box is printed with a path of its own for each of the first box's, every one
 # of them under this run's own work directory, the directories it writes into already there, and
 # its metadata stand-in taking its port file from the environment rather than from the one baked
@@ -87,6 +94,9 @@ temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/dev-stack-test.XXXXXX")"
 readonly temporary_dir
 readonly fake_bin_dir="${temporary_dir}/bin"
 mkdir -p "$fake_bin_dir"
+# The ports a server stub stopped serving while its keeper still holds the socket, which the fake
+# curl below answers as nothing ever answers a request there (DEV_STACK_TEST_UNSERVED_FILE).
+readonly unserved_file="${temporary_dir}/unserved-ports"
 
 # The Postgres server every instance below is told to use. Nothing connects to it: the fake psql
 # answers every call.
@@ -138,10 +148,37 @@ chmod +x "${fake_bin_dir}/psql"
 # listener's health and its own Dispatch's route index; record the exact command line (which names
 # the port dev-stack.sh read from each process's own log) to the instance's own
 # DEV_STACK_TEST_CURL_CALL_FILE and answer success at once, so no readiness loop ever opens a
-# socket. ---
+# socket. The one exception is a port listed in DEV_STACK_TEST_UNSERVED_FILE, which a server stub
+# writes when it serves nothing on the socket its keeper holds: the kernel queues a connection
+# there and no process ever accepts it, so the real curl waits out its --max-time and exits 28,
+# and with no --max-time waits until it is killed, and so does this one. It first names that port
+# in <DEV_STACK_TEST_UNSERVED_FILE>.asked, which a stub that exits waits for, so a row knows the
+# request was outstanding. ---
 cat >"${fake_bin_dir}/curl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${DEV_STACK_TEST_CURL_CALL_FILE:?}"
+max_time="" port=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --max-time)
+      max_time="${2:?--max-time takes a value}"
+      shift 2
+      ;;
+    http://127.0.0.1:*)
+      port="${1#http://127.0.0.1:}"
+      port="${port%%/*}"
+      shift
+      ;;
+    *) shift ;;
+  esac
+done
+if [[ -n "$port" && -s "${DEV_STACK_TEST_UNSERVED_FILE:-}" ]] && grep -qx "$port" "$DEV_STACK_TEST_UNSERVED_FILE"; then
+  echo "$port" >>"${DEV_STACK_TEST_UNSERVED_FILE}.asked"
+  # With no bound it waits until it is killed. It stays this process rather than exec the sleep, so
+  # a list of a stuck run's processes names this request.
+  sleep "${max_time:-999999}"
+  exit 28
+fi
 exit 0
 EOF
 chmod +x "${fake_bin_dir}/curl"
@@ -257,7 +294,10 @@ chmod +x "${fake_bin_dir}/python3"
 # server binds it: natsd one named by -p or -m, and the listener the one held-port.py put in its
 # ENVOY_PUBLIC_URL, which is its keeper's. With DEV_STACK_TEST_BROKER_FAILS set at build time the
 # broker stub instead exits 1 without reporting an address, which is a failure part way through a
-# start, and with DEV_STACK_TEST_NATSD_MOVES set the natsd stub reports its own PID as its client
+# start; with DEV_STACK_TEST_UNANSWERED set (unanswered_before, below) the listener or Dispatch stub
+# serves nothing on the port it reports, and exits once a request is outstanding or stays alive,
+# which is a failure after a process reported its port; and with
+# DEV_STACK_TEST_NATSD_MOVES set the natsd stub reports its own PID as its client
 # port whatever -p names, which is a server that came back on another port; each is baked in
 # rather than read from the environment because dev-stack.sh starts every process with env -i,
 # so nothing of this test's environment reaches one. The client stubs (agent-secrets,
@@ -283,6 +323,31 @@ if [[ -z "$out" || ${#packages[@]} -eq 0 ]]; then
   exit 1
 fi
 mkdir -p "$out"
+# unanswered_before NAME and unanswered_after NAME append to the stub of server NAME (the listener
+# or Dispatch, the two that serve on a socket a keeper holds) what DEV_STACK_TEST_UNANSWERED gives
+# it. NAME:exits or NAME:stays: before it reports its address it names its port in
+# DEV_STACK_TEST_UNSERVED_FILE, so the fake curl answers no request there, as nothing answers one on
+# a kept socket that nothing serves. After it, NAME:exits waits up to 10 s for the first such
+# request and exits 1, as a server whose start fails once it serves does (a listener refused its
+# notification stream), so the request is outstanding when it goes; NAME:stays stays alive and
+# serves nothing, as a stuck server does. The file is baked in for the reason the switches are.
+unanswered_before() {
+  [[ "${DEV_STACK_TEST_UNANSWERED:-}" == "$1":* ]] || return 0
+  printf 'unserved=%q\n' "${DEV_STACK_TEST_UNSERVED_FILE:?}" >>"$target"
+  cat >>"$target" <<'UNSERVED'
+echo "$port" >>"$unserved"
+UNSERVED
+}
+unanswered_after() {
+  [[ "${DEV_STACK_TEST_UNANSWERED:-}" == "$1:exits" ]] || return 0
+  cat >>"$target" <<'EXITS'
+for _ in $(seq 1 100); do
+  grep -qx "$port" "$unserved.asked" 2>/dev/null && break
+  sleep 0.1
+done
+EXITS
+  printf 'echo "fake %s: its start fails once it serves; exiting" >&2\nexit 1\n' "$1" >>"$target"
+}
 for package in "${packages[@]}"; do
   name="${package##*/}"
   target="${out%/}/$name"
@@ -408,17 +473,24 @@ echo "$starts" >"$starts_file"
 ((starts == 1)) || port=$$
 MOVES
       fi
+      unanswered_before listener
       cat >>"$target" <<'LISTENER'
 printf '{"level":"INFO","msg":"envoy-listener listening","addr":"127.0.0.1:%s"}\n' "$port" >&2
 LISTENER
+      unanswered_after listener
       ;;
     dispatch)
       cat >"$target" <<'DISPATCH'
 #!/usr/bin/env bash
 echo "fake dispatch: database=${DATABASE_URL:-} server-url=${DISPATCH_SERVER_URL:-} listen-fd=${DISPATCH_LISTEN_FD:-} envoy=${ENVOY_URL:-} broker=${DISPATCH_AGENT_SECRETS_URL:-} nats=${NATS_URLS:-} home=${HOME:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
 echo "fake dispatch: oidc-issuer=${DISPATCH_OIDC_ISSUER:-} oidc-audience=${DISPATCH_OIDC_AUDIENCE:-} oidc-accounts=${DISPATCH_OIDC_ACCOUNTS:-} access-accounts=${DISPATCH_ACCESS_ACCOUNTS:-}" >&2
-echo "time=2026-01-01T00:00:00.000Z level=INFO msg=\"dispatch: listening\" addr=127.0.0.1:$$" >&2
+port=$$
 DISPATCH
+      unanswered_before dispatch
+      cat >>"$target" <<'DISPATCH'
+echo "time=2026-01-01T00:00:00.000Z level=INFO msg=\"dispatch: listening\" addr=127.0.0.1:$port" >&2
+DISPATCH
+      unanswered_after dispatch
       ;;
     cipher | cipher-helper | natsprobe | dev-proxy-stands)
       cat >"$target" <<'CLIENT'
@@ -434,14 +506,24 @@ CLIENT
       ;;
   esac
   # Every server stub ends the same way: stay alive as the backgrounded process dev-stack.sh waits
-  # on, and end at 0 when it is stopped, killing the sleep so nothing of the stub outlives it.
-  cat >>"$target" <<'IDLE'
+  # on, and end at 0 when it is stopped, killing the sleep so nothing of the stub outlives it. The
+  # one named by DEV_STACK_TEST_IGNORES_TERM instead ignores SIGTERM and INT, as a server stuck in
+  # its shutdown does, and ends only at SIGKILL: it becomes the sleep (exec keeps both its pid, the
+  # port it reported, and the ignored signals), so nothing of it outlives that SIGKILL either.
+  if [[ "${DEV_STACK_TEST_IGNORES_TERM:-}" == "$name" ]]; then
+    cat >>"$target" <<'IGNORES'
+trap '' TERM INT
+exec sleep 999999
+IGNORES
+  else
+    cat >>"$target" <<'IDLE'
 sleeper=""
 trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM INT
 sleep 999999 &
 sleeper=$!
 wait "$sleeper"
 IDLE
+  fi
   chmod +x "$target"
 done
 EOF
@@ -457,28 +539,58 @@ chmod +x "${fake_bin_dir}/go"
 # fourth are dev-stack.sh's own, after its --database-url. DEV_STACK_TEST_PATH, when set, is the
 # run's whole PATH in place of the fakes before this test's own.
 run_instance() {
-  local which="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4"
+  local which="$1" log_file="$2"
+  prepare_instance "$@"
   shift 4
+  "${instance_command[@]}" "$@" >"$log_file" 2>&1 &
+  instance_pid[which]=$!
+}
+
+# run_piped_instance takes run_instance's arguments and starts the same run with its output piped
+# through tee into the log, as `dev-stack.sh ... 2>&1 | tee <log>` does: one job, so one process
+# group under set -m, holding tee as well, which a signal to the whole group reaches as it reaches
+# a terminal's or a supervisor's pipeline. instance_pid gets dev-stack.sh's pid, the group's id
+# (the first command of a job leads its group), and tee_pid tee's. The job is disowned, so this
+# shell prints no "Terminated" notice when a row's signal stops tee, which would read as a failure
+# in a log of this test; this shell still reaps both processes.
+tee_pid=""
+run_piped_instance() {
+  local which="$1" log_file="$2"
+  prepare_instance "$@"
+  shift 4
+  "${instance_command[@]}" "$@" 2>&1 | tee "$log_file" >/dev/null &
+  tee_pid=$!
+  instance_pid[which]="$(jobs -p %+)"
+  disown %+
+}
+
+# prepare_instance empties an instance's log and call files and sets instance_command to the run
+# both launchers above start, up to its --database-url.
+declare -a instance_command=()
+prepare_instance() {
+  local log_file="$2" psql_call_file="$3" curl_call_file="$4"
   : >"$log_file"
   : >"$psql_call_file"
   : >"$curl_call_file"
   if [[ -n "${DEV_STACK_TEST_GO_CALL_FILE:-}" ]]; then
     : >"$DEV_STACK_TEST_GO_CALL_FILE"
   fi
-  env -u LEGION_TEST_PG_DSN -u DATABASE_URL \
-    PATH="${DEV_STACK_TEST_PATH:-${fake_bin_dir}:${PATH}}" TMPDIR="$temporary_dir" \
-    DEV_STACK_TEST_PSQL_CALL_FILE="$psql_call_file" DEV_STACK_TEST_CURL_CALL_FILE="$curl_call_file" \
-    DEV_STACK_TEST_BROKER_FAILS="${DEV_STACK_TEST_BROKER_FAILS:-}" \
-    DEV_STACK_TEST_NATSD_MOVES="${DEV_STACK_TEST_NATSD_MOVES:-}" \
-    DEV_STACK_TEST_NATSD_MONITOR_MOVES="${DEV_STACK_TEST_NATSD_MONITOR_MOVES:-}" \
-    DEV_STACK_TEST_LISTENER_MOVES="${DEV_STACK_TEST_LISTENER_MOVES:-}" \
-    DEV_STACK_TEST_GO_CALL_FILE="${DEV_STACK_TEST_GO_CALL_FILE:-}" \
-    DEV_STACK_TEST_DOCKER_CALL_FILE="${DEV_STACK_TEST_DOCKER_CALL_FILE:-}" \
-    DEV_STACK_TEST_DOCKER_STATE="${DEV_STACK_TEST_DOCKER_STATE:-}" \
-    DEV_STACK_TEST_PICKED_PORT="${DEV_STACK_TEST_PICKED_PORT:-}" \
-    DEV_STACK_TEST_AIRLOCK_BOUND="${DEV_STACK_TEST_AIRLOCK_BOUND:-}" \
-    bash "$driver" --database-url "$admin_url" "$@" >"$log_file" 2>&1 &
-  instance_pid[which]=$!
+  instance_command=(env -u LEGION_TEST_PG_DSN -u DATABASE_URL
+    PATH="${DEV_STACK_TEST_PATH:-${fake_bin_dir}:${PATH}}" TMPDIR="$temporary_dir"
+    DEV_STACK_TEST_PSQL_CALL_FILE="$psql_call_file" DEV_STACK_TEST_CURL_CALL_FILE="$curl_call_file"
+    DEV_STACK_TEST_BROKER_FAILS="${DEV_STACK_TEST_BROKER_FAILS:-}"
+    DEV_STACK_TEST_UNANSWERED="${DEV_STACK_TEST_UNANSWERED:-}"
+    DEV_STACK_TEST_IGNORES_TERM="${DEV_STACK_TEST_IGNORES_TERM:-}"
+    DEV_STACK_TEST_UNSERVED_FILE="$unserved_file"
+    DEV_STACK_TEST_NATSD_MOVES="${DEV_STACK_TEST_NATSD_MOVES:-}"
+    DEV_STACK_TEST_NATSD_MONITOR_MOVES="${DEV_STACK_TEST_NATSD_MONITOR_MOVES:-}"
+    DEV_STACK_TEST_LISTENER_MOVES="${DEV_STACK_TEST_LISTENER_MOVES:-}"
+    DEV_STACK_TEST_GO_CALL_FILE="${DEV_STACK_TEST_GO_CALL_FILE:-}"
+    DEV_STACK_TEST_DOCKER_CALL_FILE="${DEV_STACK_TEST_DOCKER_CALL_FILE:-}"
+    DEV_STACK_TEST_DOCKER_STATE="${DEV_STACK_TEST_DOCKER_STATE:-}"
+    DEV_STACK_TEST_PICKED_PORT="${DEV_STACK_TEST_PICKED_PORT:-}"
+    DEV_STACK_TEST_AIRLOCK_BOUND="${DEV_STACK_TEST_AIRLOCK_BOUND:-}"
+    bash "$driver" --database-url "$admin_url")
 }
 
 wait_for_ready() {
@@ -490,24 +602,41 @@ wait_for_ready() {
   return 1
 }
 
-# Waits up to 15 s for instance <n> to exit by itself and sets the global "exited_status" to its
-# exit status. A run meant to stop that is still running then went on serving: it is killed and
-# "exited_status" stays 0, which each caller reads as the failure, so the wait is bounded and
-# reports that case rather than hanging.
+# Waits up to 15 s, or the seconds of its second argument, for instance <n> to exit by itself and
+# sets the global "exited_status" to its exit status. A run meant to stop that is still running
+# then went on serving, or is stuck: "timed_out" is set, its processes are listed in the global
+# "left_running", its whole process group is stopped, and "exited_status" stays 0, which each caller
+# reads as the failure, so the wait is bounded and reports that case rather than hanging. The
+# group, not the run alone: a run stuck in a command takes its own signal only once that command
+# returns, so only a signal to the command ends it; and SIGKILL after 10 s more, since a run whose
+# stop ignores TERM, as dev-stack.sh's own does, would hold this wait for good too.
+# A piped run (run_piped_instance) has no status here: its job is disowned, so its wait fails and
+# its rows read none.
 exited_status=0
+left_running=""
+timed_out=false
 wait_for_exit() {
-  local n="$1"
+  local n="$1" bound="${2:-15}"
   local pid="${instance_pid[$n]}"
   exited_status=0
-  for _ in $(seq 1 150); do
+  left_running=""
+  timed_out=false
+  for _ in $(seq 1 $((bound * 10))); do
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.1
   done
   if kill -0 "$pid" 2>/dev/null; then
-    kill -TERM "$pid" 2>/dev/null || true
+    timed_out=true
+    left_running="$(pgrep -a -g "$pid" | cut -c1-200 || true)"
+    kill -TERM -"$pid" 2>/dev/null || true
+    for _ in $(seq 1 100); do
+      kill -0 -"$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL -"$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
   else
-    wait "$pid" || exited_status=$?
+    wait "$pid" 2>/dev/null || exited_status=$?
   fi
   instance_pid[n]=""
 }
@@ -522,6 +651,9 @@ fail() {
 # input exit 0, so that 1 would become the pipeline's status and trip errexit before the caller's
 # own emptiness check could print its diagnostic.
 work_dir_of() { grep -o 'dev-stack: workdir .*' "$1" | head -n1 | awk '{print $3}' || true; }
+# The suffix a run's database names are made from: the random part of its work directory's name,
+# lowercased as dev-stack.sh lowercases it.
+suffix_of() { printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]'; }
 created_databases() { grep -o 'create database dev_stack_[a-z0-9_]*' "$1" | awk '{print $3}' | sort | tr '\n' ' ' || true; }
 dropped_databases() { grep -o 'drop database if exists dev_stack_[a-z0-9_]*' "$1" | awk '{print $5}' | sort | tr '\n' ' ' || true; }
 # The port dev-stack.sh printed for one process, from its own "dev-stack: <name> <url>" line.
@@ -555,7 +687,7 @@ assert_instance_ready() {
   fi
   work_dir="$(work_dir_of "$log_file")"
   [[ -n "$work_dir" && -d "$work_dir" ]] || fail "$label named no work directory"
-  run_suffix="$(printf '%s' "${work_dir##*.}" | tr '[:upper:]' '[:lower:]')"
+  run_suffix="$(suffix_of "$work_dir")"
   process_port=()
   server_pid=()
   restarted_pids=()
@@ -699,13 +831,14 @@ assert_instance_ready() {
     fail "$label printed no line that starts the second box's helper from this run's own binaries"
 
   # Each readiness check this run made named its own process's port, so no check of it could have
-  # been answered by another run's server.
-  grep -qxF -e "-sf http://127.0.0.1:${process_port[broker]}/healthz" "$curl_call_file" ||
-    fail "$label did not check its own broker's health at port ${process_port[broker]}"
-  grep -qxF -e "-sf http://127.0.0.1:${process_port[listener]}/healthz" "$curl_call_file" ||
-    fail "$label did not check its own listener's health at port ${process_port[listener]}"
-  grep -qxF -e "-sf http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
-    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]}"
+  # been answered by another run's server, and gave up after 5 s, so none could wait on a port
+  # nothing serves any longer (e7).
+  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[broker]}/healthz" "$curl_call_file" ||
+    fail "$label did not check its own broker's health at port ${process_port[broker]} with a 5 s bound"
+  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[listener]}/healthz" "$curl_call_file" ||
+    fail "$label did not check its own listener's health at port ${process_port[listener]} with a 5 s bound"
+  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
+    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]} with a 5 s bound"
 
   # Two databases of this run's own, named for it, and no other; each server pointed at its own,
   # the broker with production's pool size (k), whole URL to whole URL.
@@ -914,12 +1047,156 @@ process_port[natsd]="$(nats_log_port "${failed_work_dir}/logs/natsd.log")"
 [[ -n "${process_port[natsd]}" ]] || fail "the failed run started no natsd to stop"
 kept_port="$(cat "${failed_work_dir}/dispatch-port")"
 assert_everything_stopped 'the failed run'
-assert_databases_dropped 'the failed run' "$psql_calls1" "$(printf '%s' "${failed_work_dir##*.}" | tr '[:upper:]' '[:lower:]')"
+assert_databases_dropped 'the failed run' "$psql_calls1" "$(suffix_of "$failed_work_dir")"
 for name in listener dispatch; do
   [[ ! -s "${failed_work_dir}/logs/${name}.log" ]] ||
     fail "the failed run started $name after its broker had refused"
 done
 printf 'PASS: a broker that refuses to start leaves nothing running: the issuer, natsd and the keeper are stopped and both databases dropped\n'
+
+# (e5) The stop of (e3) with the run's output piped through tee, as a terminal or a supervisor's log
+# pipes it: the group's SIGTERM stops tee too, before the run has finished its own stop, so every
+# line that stop writes goes to a pipe nobody reads. Both databases are dropped all the same. The
+# run that found this left its Dispatch database on the server: the first line its stop wrote after
+# the broker's drop raised SIGPIPE, whose default action killed it between the two drops.
+run_piped_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+assert_instance_ready 'the SIGTERM stop through tee' "$log1" "$psql_calls1" "$curl_calls1"
+for _ in $(seq 1 200); do
+  kill -TERM -"${instance_pid[1]}" 2>/dev/null || break
+done
+wait_for_exit 1
+[[ "$timed_out" == false ]] || fail "the SIGTERM stop through tee was still running 15 s later: ${left_running:-no process listed}"
+kill -0 "$tee_pid" 2>/dev/null && fail "the SIGTERM stop through tee left tee (pid $tee_pid) running"
+assert_everything_stopped 'the SIGTERM stop through tee'
+assert_databases_dropped 'the SIGTERM stop through tee' "$psql_calls1" "$run_suffix"
+printf 'PASS: SIGTERM to the whole process group of a run piped through tee, which the signal stops too, stopped every process of the run and dropped both its databases\n'
+
+# (e6) A run whose output reader is gone and which then stops by itself: tee stopped alone, then a
+# process of the stack. The run reports that process's stop on a line nobody reads, then stops the
+# rest and drops both databases, as (e1) does. A run stopped by its group's SIGTERM comes this way
+# whenever a process of the stack takes the signal before this shell does (the 0 of (e3)). Bash
+# runs its EXIT trap on the SIGPIPE that first line raises, so the stop begins; before the stop
+# ignored PIPE, its own first line after the broker's drop raised a second SIGPIPE, on which bash,
+# already ending on one, killed itself, and the Dispatch database outlived the run.
+run_piped_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+assert_instance_ready 'the run whose output reader is gone' "$log1" "$psql_calls1" "$curl_calls1"
+kill -TERM "$tee_pid"
+for _ in $(seq 1 50); do
+  kill -0 "$tee_pid" 2>/dev/null || break
+  sleep 0.1
+done
+kill -0 "$tee_pid" 2>/dev/null && fail "tee (pid $tee_pid) outlived its SIGTERM"
+kill -TERM "${process_port[natsd]}"
+wait_for_exit 1
+[[ "$timed_out" == false ]] ||
+  fail "the run whose output reader is gone was still running 15 s after natsd stopped: ${left_running:-no process listed}"
+assert_everything_stopped 'the run whose output reader is gone'
+assert_databases_dropped 'the run whose output reader is gone' "$psql_calls1" "$run_suffix"
+printf 'PASS: a run whose output reader was gone stopped every process and dropped both its databases when a process of it stopped\n'
+
+# collect_started DIR sets process_port, server_pid and kept_port to every process the run with work
+# directory DIR started, from the logs and port files it got far enough to write, for
+# assert_everything_stopped after a run that ended before it was ready.
+collect_started() {
+  local dir="$1" pid
+  process_port=()
+  server_pid=()
+  restarted_pids=()
+  [[ ! -f "${dir}/logs/dev-oidc-issuer.log" ]] || process_port[dev-oidc-issuer]="$(issuer_log_port "${dir}/logs/dev-oidc-issuer.log")"
+  [[ ! -f "${dir}/logs/natsd.log" ]] || process_port[natsd]="$(nats_log_port "${dir}/logs/natsd.log")"
+  [[ ! -f "${dir}/logs/broker.log" ]] || process_port[broker]="$(broker_log_port "${dir}/logs/broker.log")"
+  [[ ! -f "${dir}/logs/dispatch.log" ]] || process_port[dispatch]="$(dispatch_log_port "${dir}/logs/dispatch.log")"
+  if [[ -f "${dir}/logs/listener.log" ]]; then
+    pid="$(sed -n 's/^fake listener: pid=\([0-9]*\) .*/\1/p' "${dir}/logs/listener.log" | head -n1 || true)"
+    [[ -z "$pid" ]] || server_pid[listener]="$pid"
+  fi
+  [[ ! -s "${dir}/listener-port" ]] || server_pid[listener-keeper]="$(cat "${dir}/listener-port")"
+  kept_port="$(cat "${dir}/dispatch-port" 2>/dev/null || true)"
+}
+
+# (e7) A process that fails after it reported its port, while its keeper still holds that port: the
+# listener, then Dispatch, reports its address and exits 1, as a listener refused its notification
+# stream does once it serves. The kernel queues a request to that port and no process ever answers
+# it, so the run must not wait on one: inside wait_for_exit's 15 s it reports that the server
+# exited, with the server's own log, stops the rest and drops both databases. The run that found
+# this sent its health check with no time bound, which waited there for good, and a SIGTERM to the
+# run with it, since bash runs a trap only once the command in the foreground has returned:
+# callout-check.sh's own stop then waited on that run until its caller's 40-minute timeout. Each
+# stub exits only once the run's request is outstanding at its port, so a run that never asked (its
+# reader saw the server gone first) cannot pass the row without testing it.
+for server in listener dispatch; do
+  asked_path=/healthz
+  [[ "$server" == listener ]] || asked_path=/api/v1
+  label="the run whose $server exited after it reported its address"
+  : >"$unserved_file"
+  : >"${unserved_file}.asked"
+  DEV_STACK_TEST_UNANSWERED="${server}:exits" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+  wait_for_exit 1
+  [[ "$timed_out" == false ]] || fail "$label was still running 15 s later: ${left_running:-no process listed}"
+  [[ "$exited_status" -ne 0 ]] || fail "$label reported success"
+  grep -q 'dev-stack: ready\.' "$log1" && fail "$label reported ready"
+  grep -qx "dev-stack: $server exited during startup" "$log1" || fail "$label did not say so: $(cat "$log1")"
+  grep -qx "fake $server: its start fails once it serves; exiting" "$log1" ||
+    fail "$label did not print the ${server}'s own log"
+  asked_port="$(head -n1 "${unserved_file}.asked" 2>/dev/null || true)"
+  [[ -n "$asked_port" ]] || fail "$label never sent it a readiness request, so the row tested nothing"
+  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${asked_port}${asked_path}" "$curl_calls1" ||
+    fail "$label asked port $asked_port without the 5 s bound"
+  exited_work_dir="$(work_dir_of "$log1")"
+  [[ -n "$exited_work_dir" ]] || fail "$label named no work directory"
+  collect_started "$exited_work_dir"
+  for name in dev-oidc-issuer natsd broker; do
+    [[ -n "${process_port[$name]:-}" ]] || fail "$label started no $name to stop"
+  done
+  assert_everything_stopped "$label"
+  assert_databases_dropped "$label" "$psql_calls1" "$(suffix_of "$exited_work_dir")"
+  printf 'PASS: a %s that exited after it reported its address, its keeper still holding the port, was reported with its log, and the run stopped the rest and dropped both databases inside 15 s\n' "$server"
+done
+
+# (e8) A SIGTERM to the run alone, as callout-check.sh's stop sends it, while a readiness request is
+# outstanding at a server that stays alive and answers nothing: the run takes the signal once that
+# request gives up, inside 15 s, and stops with 143. Before, the request waited for good and the
+# signal with it.
+label='the run whose listener answers nothing'
+: >"$unserved_file"
+: >"${unserved_file}.asked"
+DEV_STACK_TEST_UNANSWERED=listener:stays run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+for _ in $(seq 1 150); do
+  [[ -s "${unserved_file}.asked" ]] && break
+  sleep 0.1
+done
+[[ -s "${unserved_file}.asked" ]] || fail "$label never sent it a health check, so the row tested nothing"
+silent_work_dir="$(work_dir_of "$log1")"
+kill -TERM "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$timed_out" == false ]] || fail "$label was still running 15 s after its SIGTERM: ${left_running:-no process listed}"
+[[ "$exited_status" -eq 143 ]] || fail "$label exited $exited_status on SIGTERM, not 143"
+grep -q 'dev-stack: ready\.' "$log1" && fail "$label reported ready"
+collect_started "$silent_work_dir"
+[[ -n "${server_pid[listener]:-}" ]] || fail "$label started no listener to stop"
+assert_everything_stopped "$label"
+assert_databases_dropped "$label" "$psql_calls1" "$(suffix_of "$silent_work_dir")"
+: >"$unserved_file"
+: >"${unserved_file}.asked"
+printf 'PASS: SIGTERM to a run whose health check was outstanding at a listener that answers nothing stopped it with 143 inside 15 s, every process stopped and both databases dropped\n'
+
+# (e9) A process of the stack that ignores SIGTERM, as a server stuck in its shutdown does: the stop
+# gives each process 10 s after its SIGTERM, then SIGKILL, saying so, and still drops both
+# databases, inside 20 s here. Before, the stop waited on that process for good, with its
+# databases, and ignored every further INT and TERM while it waited.
+label='the run whose issuer ignores SIGTERM'
+DEV_STACK_TEST_IGNORES_TERM=dev-oidc-issuer run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+assert_instance_ready "$label" "$log1" "$psql_calls1" "$curl_calls1"
+stubborn_issuer="${process_port[dev-oidc-issuer]}"
+kill -INT "${instance_pid[1]}"
+wait_for_exit 1 20
+[[ "$timed_out" == false ]] || fail "$label was still stopping 20 s after its INT: ${left_running:-no process listed}"
+[[ "$exited_status" -eq 130 ]] || fail "$label exited $exited_status on INT, not 130"
+grep -qxF "dev-stack: dev-oidc-issuer (pid ${stubborn_issuer}) did not stop within 10 s of its SIGTERM; killing it" "$log1" ||
+  fail "$label did not say it killed the issuer: $(grep 'did not stop' "$log1" || true)"
+assert_everything_stopped "$label"
+assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
+printf 'PASS: an issuer that ignores SIGTERM was killed 10 s into the stop, which said so and dropped both databases\n'
 
 # (f) No database URL at all: the refusal names all three sources and exits 2, before anything is
 # created.
