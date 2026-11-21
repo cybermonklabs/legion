@@ -14,21 +14,25 @@ import (
 )
 
 // standIn is a provider endpoint that records every request it gets and answers each with the next
-// of its replies, or, where every is set, with that one reply however many requests come.
+// of its replies, or, where every is set, with that one reply however many requests come. A reply
+// is used up only by an answer that went out whole: a request whose answer was lost, its
+// connection dropped or its client gone before the stand-in wrote it, leaves its reply at the head
+// of the script, so the transport's one retry of a call whose connection broke is answered as the
+// call would have been (transport.go, RoundTrip; doc.go, "The retry").
 type standIn struct {
 	server  *httptest.Server
 	mu      sync.Mutex
 	replies []reply
 	// every is the reply to each request, where the endpoint answers every request alike, as
-	// one that redirects does, rather than a script of calls in turn: a run may ask it more than
-	// once, through its transport's one retry, and a client that is not the run's may reach its
-	// port, and neither takes the reply away from a later request.
+	// one that redirects does, rather than a script of calls in turn: a request from a client
+	// that is not the run's, reaching its port, takes no reply away from the run's call.
 	every *reply
-	// drops is how many of the first requests have their connection closed with no answer, once
-	// the stand-in has recorded each and taken the reply it would have answered with, as when a
-	// call reaches the endpoint and its connection breaks before the answer.
+	// drops is how many of the first requests have their connection closed with no answer, as
+	// when a call reaches the endpoint and its connection breaks before the answer. Each is a
+	// lost answer, so the reply it would have had answers the next request.
 	drops int
-	got   []recorded
+	// got is every request the stand-in got, in order, a lost one and its retry each counted.
+	got []recorded
 }
 
 // reply is one response a stand-in gives: an SSE stream, or an error status with a body, after a
@@ -48,6 +52,9 @@ type recorded struct {
 	query  string
 	header http.Header
 	body   []byte
+	// lost is whether the answer to it never went out: its connection was dropped, or closed
+	// before the stand-in had written the answer whole.
+	lost bool
 }
 
 func newStandIn(t *testing.T, replies ...reply) *standIn {
@@ -80,13 +87,15 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	s.mu.Lock()
 	s.got = append(s.got, recorded{path: r.URL.Path, query: r.URL.RawQuery, header: r.Header.Clone(), body: body})
+	at := len(s.got) - 1
 	drop := len(s.got) <= s.drops
 	var next reply
+	taken := false
 	switch {
 	case s.every != nil:
 		next = *s.every
 	case len(s.replies) > 0:
-		next = s.replies[0]
+		next, taken = s.replies[0], true
 		s.replies = s.replies[1:]
 	case !drop:
 		s.mu.Unlock()
@@ -94,6 +103,20 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Unlock()
+	// Every way out of here but an answer written whole loses the answer: the request is marked
+	// lost and the reply it took goes back to the head of the script, for the retry.
+	answered := false
+	defer func() {
+		if answered {
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.got[at].lost = true
+		if taken {
+			s.replies = append([]reply{next}, s.replies...)
+		}
+	}()
 	if drop {
 		if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
 			_ = conn.Close()
@@ -113,15 +136,37 @@ func (s *standIn) serve(w http.ResponseWriter, r *http.Request) {
 	if next.status != 0 && next.status != http.StatusOK {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(next.status)
-		_, _ = w.Write(next.body)
-		return
+	} else {
+		w.Header().Set("Content-Type", "text/event-stream")
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	_, _ = w.Write(next.body)
+	// The flush puts the answer on the connection now, so a connection that broke under it is
+	// a write error here rather than one the server meets after the handler has returned.
+	_, err := w.Write(next.body)
+	answered = err == nil && http.NewResponseController(w).Flush() == nil
 }
 
-// requests are the requests the stand-in got, in order.
+// requests are the model calls the stand-in got, in order: every request but one whose answer was
+// lost and that the next request asks again, path, query and body alike, as the transport's one
+// retry of a call whose connection broke does. A call and that retry are one model call, and a
+// stand-in that got any request has at least one; attempts has every request.
 func (s *standIn) requests() []recorded {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var calls []recorded
+	for i, r := range s.got {
+		if r.lost && i+1 < len(s.got) {
+			if again := s.got[i+1]; again.path == r.path && again.query == r.query && bytes.Equal(again.body, r.body) {
+				continue
+			}
+		}
+		calls = append(calls, r)
+	}
+	return calls
+}
+
+// attempts are every request the stand-in got, in order: a retry and the call whose answer it
+// replaces are two, as a row about the retry itself counts them.
+func (s *standIn) attempts() []recorded {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]recorded(nil), s.got...)

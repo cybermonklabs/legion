@@ -38,7 +38,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // The environment the operator names the gateway and the System One API in.
@@ -101,7 +100,7 @@ func liveProof(t *testing.T, kind Kind) {
 		System: "You answer questions about what a warehouse holds. Call the inventory tool for the item the question names, and then answer with the object you are asked for, carrying the count and the aisle the tool gave you. Never guess either.",
 		Input:  []Message{{Role: User, Blocks: []Block{{Kind: TextBlock, Text: "How many " + liveItem + "s are in stock, and in which aisle are they?"}}}},
 		Tools:  []Tool{tool.register()},
-		Bounds: Bounds{Time: 2 * time.Minute, Calls: 3, OutputTokens: 2000},
+		Bounds: Bounds{Time: runnerTime(t), Calls: 3, OutputTokens: 2000},
 		Final:  json.RawMessage(liveFinal),
 	}
 
@@ -164,7 +163,7 @@ func TestLiveDecide(t *testing.T) {
 					`{"true":"the label gives a count above zero","false":"the label gives no count, or a count of zero"}`),
 			},
 		},
-		Bounds: Bounds{Time: 2 * time.Minute},
+		Bounds: Bounds{Time: runnerTime(t)},
 	}
 
 	result, err := Decide(context.Background(), req)

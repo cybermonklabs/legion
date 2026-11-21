@@ -66,7 +66,8 @@ type fixture struct {
 }
 
 // newFixture is a request against s on the protocol kind speaks, allowed calls model calls, with
-// the one recording tool registered and a token read from a file on every attempt.
+// the one recording tool registered, a token read from a file on every attempt, and the time
+// bound the test binary's deadline leaves (runnerTime).
 func newFixture(t *testing.T, s *standIn, kind Kind, calls int) *fixture {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "token")
@@ -90,11 +91,42 @@ func newFixture(t *testing.T, s *standIn, kind Kind, calls int) *fixture {
 			System: "You answer the question with the tools you are given.",
 			Input:  []Message{{Role: User, Blocks: []Block{{Kind: TextBlock, Text: "What does note.txt say?"}}}},
 			Tools:  []Tool{tool.register()},
-			Bounds: Bounds{Time: 30 * time.Second, Calls: calls, OutputTokens: 4000},
+			Bounds: Bounds{Time: runnerTime(t), Calls: calls, OutputTokens: 4000},
 		},
 		tool: tool, token: path,
 	}
 }
+
+// runnerTime is the time bound of a fixture's run or decision, whose subject is not the time
+// bound: what the test binary's deadline (go test's -timeout) leaves, less runnerMargin. A call
+// that is merely slow on a loaded machine is then no time fault, and one that never answers still
+// ends, as a fault the test reports by name, before go test's alarm panics the binary. Under
+// -timeout 0 the binary has no deadline and the bound is runnerTimeCap. A row whose subject is the
+// time bound sets a short bound of its own (TestARunPastItsTimeBoundIsAFault). A deadline that
+// leaves no more than runnerMargin fails the test at once, by name: that reads like a
+// misconfigured run.
+func runnerTime(t *testing.T) time.Duration {
+	t.Helper()
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		return runnerTimeCap
+	}
+	left := time.Until(deadline)
+	if left <= runnerMargin {
+		t.Fatalf("the test binary's deadline leaves %s, not more than runnerMargin (%s): this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), runnerMargin)
+	}
+	return left - runnerMargin
+}
+
+const (
+	// runnerMargin is what runnerTime leaves of the test binary's deadline for a run that met its
+	// bound to end, its test to report the fault and its stand-ins to close: a run past its
+	// bound ends within milliseconds of it (TestARunPastItsTimeBoundIsAFault).
+	runnerMargin = 30 * time.Second
+	// runnerTimeCap is the bound under -timeout 0, where the binary has no deadline to derive one
+	// from: a day, far past any run against a stand-in.
+	runnerTimeCap = 24 * time.Hour
+)
 
 // writeToken writes the endpoint's token to its file.
 func writeToken(t *testing.T, path, token string) {
@@ -619,7 +651,7 @@ func TestAServerErrorIsRetriedOnceAndARequestErrorIsNot(t *testing.T) {
 	if err != nil || result.Fault != "" || result.Text != "The note says plum." {
 		t.Fatalf("after a 500: result %+v, %v", result, err)
 	}
-	if n := len(retried.requests()); n != 2 {
+	if n := len(retried.attempts()); n != 2 {
 		t.Errorf("a 500 then a reply took %d requests, want 2", n)
 	}
 
@@ -628,7 +660,7 @@ func TestAServerErrorIsRetriedOnceAndARequestErrorIsNot(t *testing.T) {
 	if err != nil || result.Fault != FaultProviderError {
 		t.Errorf("after two 500s: result %+v, %v; want %q", result, err, FaultProviderError)
 	}
-	if n := len(twice.requests()); n != 2 {
+	if n := len(twice.attempts()); n != 2 {
 		t.Errorf("two 500s took %d requests, want 2: one retry only", n)
 	}
 
@@ -637,8 +669,25 @@ func TestAServerErrorIsRetriedOnceAndARequestErrorIsNot(t *testing.T) {
 	if err != nil || result.Fault != FaultProviderError {
 		t.Errorf("after a 400: result %+v, %v; want %q", result, err, FaultProviderError)
 	}
-	if n := len(bad.requests()); n != 1 {
+	if n := len(bad.attempts()); n != 1 {
 		t.Errorf("a 400 took %d requests, want 1: a request error is not retried", n)
+	}
+}
+
+// A call whose connection drops before any answer is a transport error, retried once a second
+// later, and the retry's reply is the answer: the endpoint hears the call twice, and that is one
+// model call. The stand-in's one reply answers the retry, since an answer that never went out
+// uses no reply up.
+func TestACallThatLosesItsConnectionIsRetriedOnce(t *testing.T) {
+	t.Parallel()
+	answered := anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText("The note says plum."))
+	s := newStandIn(t, answered).dropping(1)
+	result, err := Run(context.Background(), newFixture(t, s, AnthropicMessages, 1).req)
+	if err != nil || result.Fault != "" || result.Text != "The note says plum." {
+		t.Fatalf("after a dropped connection: result %+v, %v", result, err)
+	}
+	if n, calls := len(s.attempts()), len(s.requests()); n != 2 || calls != 1 {
+		t.Errorf("the endpoint got %d requests, counted as %d model calls, want 2 and 1: the call and its one retry", n, calls)
 	}
 }
 
@@ -650,9 +699,9 @@ func TestAServerErrorIsRetriedOnceAndARequestErrorIsNot(t *testing.T) {
 // nothing at all. That holds for the transport's one retry too: a call that loses its connection
 // before the redirect answers is asked again a second later, meets the redirect, and follows it
 // no further. The redirecting endpoint redirects every request it gets, as a real one does: a
-// stand-in that answered once would answer that retry, or the run's call after a request from a
-// client that is not the run's, with "the stand-in has no more replies", and the detail would
-// name no redirect at all.
+// stand-in that answered once would answer the run's call after a request from a client that is
+// not the run's with "the stand-in has no more replies", and the detail would name no redirect at
+// all.
 func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -694,7 +743,7 @@ func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 				if result.Text != "" {
 					t.Errorf("the run answered %q, want no answer from the redirect's target", result.Text)
 				}
-				if n := len(s.requests()); n < 2 {
+				if n := len(s.attempts()); n < 2 {
 					t.Errorf("the redirecting endpoint got %d requests, want the call and its retry", n)
 				}
 				return result.Fault, result.Detail
@@ -731,7 +780,7 @@ func TestARedirectIsNotFollowedAndItsTargetIsNeverCalled(t *testing.T) {
 			if host := target.server.Listener.Addr().String(); !strings.Contains(detail, host) {
 				t.Errorf("the detail is %q, want the redirect's target host, %s, named in it", detail, host)
 			}
-			got := target.requests()
+			got := target.attempts()
 			if len(got) != 0 {
 				t.Errorf("the redirect's target got %d requests, want none", len(got))
 			}
