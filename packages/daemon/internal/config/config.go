@@ -1182,18 +1182,20 @@ func resolveControllerLaunch(file fileConfig, cfg *Config) error {
 	return nil
 }
 
-// resolveConsumerNames settles `consumer_names`: `fixed` when the file names none.
+// resolveConsumerNames settles `consumer_names` as every creator reads its mode
+// (consumernames.ParseMode): `fixed` when the file names none or names it empty. The refusal names
+// the file's key, not ParseMode's environment variable, since the daemon reads no variable for it.
 func resolveConsumerNames(file fileConfig, cfg *Config) error {
-	cfg.ConsumerNames = consumernames.ModeFixed
-	if file.ConsumerNames == nil {
-		return nil
+	raw := ""
+	if file.ConsumerNames != nil {
+		raw = *file.ConsumerNames
 	}
-	switch mode := consumernames.Mode(*file.ConsumerNames); mode {
-	case consumernames.ModeFixed, consumernames.ModeFresh:
-		cfg.ConsumerNames = mode
-		return nil
+	mode, err := consumernames.ParseMode(raw)
+	if err != nil {
+		return fmt.Errorf("consumer_names must be 'fixed' or 'fresh' (got %q)", raw)
 	}
-	return fmt.Errorf("consumer_names must be 'fixed' or 'fresh' (got %q)", *file.ConsumerNames)
+	cfg.ConsumerNames = mode
+	return nil
 }
 
 // checkProviderKeyFiles refuses a `provider_keys` entry naming a file (`file:/abs/path`) under

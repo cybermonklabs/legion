@@ -7,11 +7,12 @@ import (
 	"github.com/sjawhar/envoy/consumernames"
 )
 
-// `consumer_names` in legion.yaml says how the daemon names its durable consumers: absent is the
-// fixed names the daemon has always used, `fixed` is the same, and `fresh` is the selection
-// records' fresh names. The listener's and Dispatch's ENVOY_CONSUMER_NAMES is no setting of the
-// daemon's: set in the daemon's environment with no key in the file, it leaves the daemon on the
-// fixed names, as every other daemon setting is the file's.
+// `consumer_names` in legion.yaml says how the daemon names its durable consumers, read as every
+// creator reads its mode (consumernames.ParseMode): absent or empty is the fixed names the daemon
+// has always used, `fixed` is the same, and `fresh` is the selection records' fresh names. The
+// listener's and Dispatch's ENVOY_CONSUMER_NAMES is no setting of the daemon's: set in the
+// daemon's environment with no key in the file, it leaves the daemon on the fixed names, as every
+// other daemon setting is the file's.
 func TestTheConsumerNamingModeIsTheFilesConsumerNames(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -20,6 +21,7 @@ func TestTheConsumerNamingModeIsTheFilesConsumerNames(t *testing.T) {
 		want  consumernames.Mode
 	}{
 		{name: "absent, the default", want: consumernames.ModeFixed},
+		{name: "empty, as an unset ENVOY_CONSUMER_NAMES reads", block: "consumer_names: \"\"\n", want: consumernames.ModeFixed},
 		{name: "fixed", block: "consumer_names: fixed\n", want: consumernames.ModeFixed},
 		{name: "fresh", block: "consumer_names: fresh\n", want: consumernames.ModeFresh},
 		{name: "the environment's variable, which the daemon does not read", env: map[string]string{"ENVOY_CONSUMER_NAMES": "fresh"}, want: consumernames.ModeFixed},
@@ -40,7 +42,7 @@ func TestTheConsumerNamingModeIsTheFilesConsumerNames(t *testing.T) {
 // A value that is neither mode refuses the load, naming the key and the value, at `legion start`
 // and at `legion config check` (LoadForValidation) alike: a typo is never read as the default.
 func TestAnUnknownConsumerNamingModeIsRefused(t *testing.T) {
-	for _, value := range []string{"Fresh", `"fresh "`, "on", `""`} {
+	for _, value := range []string{"Fresh", `"fresh "`, "on"} {
 		t.Run(value, func(t *testing.T) {
 			for _, load := range []struct {
 				name string
