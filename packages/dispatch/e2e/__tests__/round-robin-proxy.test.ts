@@ -172,13 +172,10 @@ function openSocket(headers: Record<string, string>) {
 }
 
 describe("round-robin proxy", () => {
-  // Each row has a proxy of its own, which these hooks start before it and stop after it. Once a
-  // row passes its timeout, Bun's test runner kills every process that a row or hook of the file
-  // started and that is still running (it prints `killed N dangling processes`), whichever row
-  // started it. A proxy the rows shared died with the first row that timed out, and each row after
-  // it failed on a refused connection. A and B are servers in this process, which the runner does
-  // not kill, so the rows share them. A new proxy starts with empty logs and both alternations at
-  // A.
+  // Each row starts a proxy of its own and stops it after, because once a row passes its timeout
+  // Bun's test runner sends SIGTERM to every process a row or hook of the file started that still
+  // runs (https://github.com/oven-sh/bun/issues/46373), so a proxy the rows shared failed every
+  // row after a slow one. A new proxy starts with empty logs and both alternations at A.
   beforeEach(async () => {
     a.seen.length = 0;
     b.seen.length = 0;
@@ -218,11 +215,9 @@ describe("round-robin proxy", () => {
   // A proxy the runner killed already, as one whose row timed out, has exited, and its stop
   // returns at once.
   afterEach(async () => {
-    const stopping = proxy;
+    proxy?.kill();
+    await proxy?.exited;
     proxy = undefined;
-    if (stopping === undefined) return;
-    stopping.kill();
-    await stopping.exited;
   });
 
   test("alternates requests between A and B, forwarding Host and Origin unchanged", async () => {
@@ -366,9 +361,20 @@ describe("round-robin proxy", () => {
     expect(await proxyRequests()).toEqual([{ method: "GET", path: "/who", upstream: "a" }]);
     expect([...a.seen, ...b.seen].map((seen) => seen.path)).toEqual(["/who"]);
 
+    // The reset empties both logs and starts both alternations over at A: an unpinned socket took
+    // the websocket turn before it, and the next one goes to A again.
+    const before = openSocket({});
+    expect(await before.received(1)).toEqual(["opened on a"]);
+    before.socket.close();
+    await before.closed;
     expect((await Bun.fetch(`${origin}/_proxy/reset`, { method: "POST" })).status).toBe(204);
     expect(await proxyRequests()).toEqual([]);
+    expect(await proxySockets()).toEqual([]);
     expect(await answeredBy("/who")).toBe("a");
+    const after = openSocket({});
+    expect(await after.received(1)).toEqual(["opened on a"]);
+    after.socket.close();
+    await after.closed;
   });
 
   test(

@@ -23,12 +23,10 @@ import { plainHttpHost } from "../plain-http-origin";
 // the global `Response`, which is Bun's own here: this half loads no preload and registers no DOM,
 // so nothing replaces it.
 //
-// Each row has a proxy of its own, which the hooks start before it and stop after it. Once a row
-// passes its timeout, Bun's test runner kills every process that a row or hook of the file
-// started and that is still running (it prints `killed N dangling processes`), whichever row
-// started it. A proxy the rows shared died with the first row that timed out, and each row after
-// it failed on a refused connection. The stand-in upstream is a server in this process, which the
-// runner does not kill, so the rows share it.
+// Each row starts a proxy of its own and stops it after, because once a row passes its timeout
+// Bun's test runner sends SIGTERM to every process a row or hook of the file started that still
+// runs (https://github.com/oven-sh/bun/issues/46373), so a proxy the rows shared failed every row
+// after a slow one.
 const proxyModule = fileURLToPath(new URL("../plain-http-proxy.ts", import.meta.url));
 
 /** One request the stand-in upstream saw. */
@@ -94,11 +92,9 @@ beforeEach(async () => {
 // A proxy the runner killed already, as one whose row timed out, has exited, and its stop
 // returns at once.
 afterEach(async () => {
-  const stopping = proxy;
+  proxy?.kill();
+  await proxy?.exited;
   proxy = undefined;
-  if (stopping === undefined) return;
-  stopping.kill();
-  await stopping.exited;
 });
 
 interface PlainResponse {
