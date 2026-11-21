@@ -875,15 +875,18 @@ before, and the broker revokes the whole login when a rotated refresh token is p
 after its five-minute grace. So each trade runs under the login's lock, the file beside it with
 `.lock` added, which its holder touches every 5 s; a lock untouched for 15 s is taken as one whose
 holder died (`device-login-lock.ts` holds the protocol). A holder stopped for longer, as a laptop
-that sleeps is, loses the lock the same way: once it goes on, it refreshes and keeps nothing, and
-its trade may be refused and traded again. Under the lock a process reads the file again,
-refreshes when the access token kept there has less than a minute left, or when the broker refuses
-it (a revoke ends a login before its token lapses), keeps the rotated login, and trades. A refresh
-the broker did not answer is sent once more at once: the broker redeems the spent refresh token
-again within its five-minute grace, and past it the login ends. The broker's `invalid_grant` to a
-refresh is final (`DeviceLoginEndedError` in `token-errors.ts`): the login was revoked or ran out,
-and only a new `dispatch login --device` cures it. A trade whose time ran out while another
-process of the machine held the lock says so, and not that the broker did not answer.
+that sleeps is, loses the lock the same way: once it goes on, it refreshes and keeps nothing, it
+looks at the lock again just before it replaces the file, and a trade of it the broker refuses is
+traded again. Under the lock a process reads the file again, refreshes when the access token kept
+there has less than a minute left, or when the broker refuses it as a token it no longer honours
+("Token is not valid or has expired", or the login ended: a revoke ends a login before its token
+lapses), keeps the rotated login, and trades. A refusal of the trade's session or projects is
+not refreshed: a refresh cures none of those. A refresh the broker did not answer is sent once
+more at once: the broker redeems the spent refresh token again within its five-minute grace, and
+past it the login ends. The broker's `invalid_grant` to a refresh is final (`DeviceLoginEndedError`
+in `token-errors.ts`): the login was revoked or ran out, and only a new `dispatch login --device`
+cures it. A trade whose time ran out while another process of the machine held the lock says so
+(`LockHeldError`), and not that the broker did not answer.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1060,14 +1063,17 @@ pi-envoy's), or `bun packages/envoy-client/bin/dispatch.ts` from a checkout of t
 It reads no host, no session and no envoy.json. It reads `AGENT_SECRETS_URL`, and the person who
 approves the login from `--person`, else `AGENT_SECRETS_PERSON`. It prints the broker's page and
 the code to type there, waits while that person approves it in Dispatch, and keeps the login
-(above). Without `--device`, a person, or a broker a device login may use (https, or http on this
-machine's loopback), it exits 2 before any request. It exits 1 when the broker refuses the login,
-the person denies it, its code expires, or the broker answers a poll with any other 4xx, with an
-OAuth error or without one (a proxy's page, a bare challenge), naming its status; a poll the
-broker did not answer, its 429 and a 5xx are polled again, at the broker's interval, at least 1 s,
-and 5 s where it names none. It then writes no file. What the broker answers for the person to
-read (the page, the code, the credential's id) is refused where it holds a control character, and
-an OAuth code is shown only where it is one the clients know. The host it names is this
+(above). Without `--device`, a person, a broker a device login may use (https, or http on this
+machine's loopback), or a login directory of this user's own that others cannot write to, it
+exits 2 before any request, so no person approves a login the machine could not keep. It exits 1
+when the broker refuses the login, the person denies it, its code expires, or the broker answers a
+poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
+naming its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the
+broker's interval, from 1 s to 60 s, and 5 s where it names none. A code or an access token is
+taken to live an hour at most, whatever the broker says. It then writes no file. What the broker
+answers for the person to read (the page, the code, the credential's id) is refused where it holds
+a control or format character (a right-to-left override), and an OAuth code is shown only where
+it is one the clients know. The host it names is this
 machine's name in the form the broker takes (`Adas-MacBook-Pro.local` is
 `adas-macbook-pro.local`). A second login of the machine replaces the file, and the earlier
 login's credential stays live at the broker until it lapses or is revoked, so the command names

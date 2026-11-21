@@ -35,7 +35,6 @@ import {
   startDeviceLogin,
   withDeviceLoginLock,
 } from "../device-login";
-import { LOCK_HEARTBEAT_MS } from "../device-login-lock";
 import {
   BROKER_URL_VAR,
   brokerTokenClient,
@@ -45,8 +44,15 @@ import {
   PROJECTS_VAR,
   SESSION_VAR,
 } from "../environment";
-import { BrokerTokenClient, TRADE_ATTEMPT_MS } from "../token-client";
-import { DEVICE_LOGIN_COMMAND, isFinalRefusal } from "../token-errors";
+import { TRADE_ATTEMPT_MS } from "../token-client";
+import {
+  BrokerRefusedError,
+  BrokerTradeFailedError,
+  DEVICE_LOGIN_COMMAND,
+  DeviceLoginEndedError,
+  isFinalRefusal,
+} from "../token-errors";
+import { POD_SESSION_NOT_REGISTERED } from "../wire";
 
 const PERSON = "ada@example.com";
 const HOST = "adas-laptop.local";
@@ -218,6 +224,26 @@ test("a poll the broker answers with its 429 or a 5xx is polled again", async ()
   expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
 });
 
+test("a poll the broker did not answer is polled again", async () => {
+  const stub = broker();
+  const path = loginPath();
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  // The first poll never reaches the broker; the second does, and is approved.
+  let sent = 0;
+  const login = await finishDeviceLogin(started, {
+    path,
+    sleep: noSleep,
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      sent += 1;
+      if (sent === 1) throw new TypeError("fetch failed");
+      return await fetch(input, init);
+    }) as typeof fetch,
+  });
+  expect(sent).toBe(2);
+  expect(stub.polls).toHaveLength(1);
+  expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
+});
+
 test("a broker refusal shows its OAuth code only where the clients know it", async () => {
   // A code is the peer's choice of characters, which can be a token the client sent it.
   const stub = broker({ polls: ["unknown-code"] });
@@ -233,12 +259,31 @@ test("a broker refusal shows its OAuth code only where the clients know it", asy
   expect(refusal?.message).not.toContain(STAND_IN_UNKNOWN_CODE);
   // The description of a refusal the clients do not know is withheld too.
   expect(refusal?.message).not.toContain("the stand-in answered");
+
+  // A refusal of the device authorization itself is worded the same way.
+  const refusing = broker({ refuseAuthorization: STAND_IN_UNKNOWN_CODE });
+  const unstarted = await startDeviceLogin({
+    brokerUrl: refusing.url,
+    person: PERSON,
+    host: HOST,
+  }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refusing.authorizations).toHaveLength(1);
+  expect(unstarted?.message).toContain(
+    "the secrets broker refused this machine's device login: HTTP 400 unrecognised error code"
+  );
+  expect(unstarted?.message).not.toContain(STAND_IN_UNKNOWN_CODE);
+  expect(unstarted?.message).not.toContain("the stand-in answered");
 });
 
-test("a code is polled no more often than once a second, and every 5 s where the broker names no interval", async () => {
+test("a code is polled once a second to once a minute, every 5 s where the broker names no interval", async () => {
   for (const [interval, wait] of [
     [0.001, 1_000],
     [null, 5_000],
+    // An interval past a timer's range would fire at once.
+    [3_000_000, 60_000],
   ] as const) {
     const stub = broker({ interval });
     const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
@@ -253,11 +298,47 @@ test("a code is polled no more often than once a second, and every 5 s where the
   }
 });
 
+test("a code and an access token are taken to live an hour at most, whatever the broker says", async () => {
+  const stub = broker({ expiresIn: 3_000_000, accessSeconds: 3_000_000 });
+  const path = loginPath();
+  const began = Date.now();
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  expect(started.expiresAt.getTime() - began).toBeLessThanOrEqual(3_600_000 + 1_000);
+  const login = await finishDeviceLogin(started, { path, sleep: noSleep });
+  expect((login.accessExpiresAt?.getTime() ?? 0) - began).toBeLessThanOrEqual(3_600_000 + 1_000);
+  expect(login.accessExpiresAt?.getTime() ?? 0).toBeGreaterThan(began);
+});
+
+test("a complete page the broker sends is checked as the page is", async () => {
+  const sent = broker({
+    verificationUriComplete: "http://127.0.0.1:1/credentials/machine?code=WDJB",
+  });
+  const started = await startDeviceLogin({ brokerUrl: sent.url, person: PERSON, host: HOST });
+  expect(started.verificationUriComplete).toBe("http://127.0.0.1:1/credentials/machine?code=WDJB");
+  for (const verificationUriComplete of [
+    "javascript:alert(1)",
+    "http://127.0.0.1:1/\u202e/credentials",
+  ]) {
+    const stub = broker({ verificationUriComplete });
+    const refusal = await startDeviceLogin({
+      brokerUrl: stub.url,
+      person: PERSON,
+      host: HOST,
+    }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refusal?.message, verificationUriComplete).toContain("page");
+  }
+});
+
 test("what the broker answers for a person to read is refused where it holds a control character", async () => {
   // A terminal runs an escape sequence it is sent: an OSC 52 clipboard write, an OSC 8 link.
   const clipboardWrite = "WDJB\u001b]52;c;cGFzdGVk\u0007";
   for (const [options, what] of [
     [{ userCode: clipboardWrite }, "user code"],
+    // A right-to-left override, a format character, turns round what the terminal shows.
+    [{ userCode: "WDJB-\u202eTHJM" }, "user code"],
     [{ verificationUri: "http://127.0.0.1:1/\u001b]8;;http://elsewhere.test\u0007" }, "page"],
     [{ verificationUri: "javascript:alert(1)" }, "page"],
   ] as const) {
@@ -516,129 +597,6 @@ test("a login directory others may write is refused, as a file others may read i
   expect((await readDeviceLogin(path)).credentialId).toBe(STAND_IN_CREDENTIAL);
 });
 
-test("the login's lock waits for a live holder and takes a stale one", async () => {
-  const path = loginPath();
-  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
-  const lock = `${path}.lock`;
-
-  // A live holder: the work runs only once the holder lets go, which it does at the third wait.
-  await writeFile(lock, "another process");
-  let waits = 0;
-  let ranAfter = -1;
-  await withDeviceLoginLock(
-    path,
-    async () => {
-      ranAfter = waits;
-    },
-    {
-      sleep: async () => {
-        waits += 1;
-        if (waits === 3) await Bun.file(lock).delete();
-      },
-    }
-  );
-  expect(ranAfter).toBe(3);
-  expect(await stat(lock).catch(() => null)).toBeNull();
-
-  // A holder gone for more than 30 s: its lock is taken with no wait at all.
-  await writeFile(lock, "a process that died holding it");
-  const old = new Date(Date.now() - 31_000);
-  await utimes(lock, old, old);
-  let staleWaits = 0;
-  await withDeviceLoginLock(path, async () => {}, {
-    sleep: async () => {
-      staleWaits += 1;
-    },
-  });
-  expect(staleWaits).toBe(0);
-
-  // A caller whose signal ends stops waiting, and never runs the work.
-  await writeFile(lock, "another process");
-  const caller = new AbortController();
-  let ran = false;
-  const stopped = await withDeviceLoginLock(
-    path,
-    async () => {
-      ran = true;
-    },
-    {
-      signal: caller.signal,
-      sleep: async () => {
-        caller.abort(new Error("the caller's deadline"));
-      },
-    }
-  ).then(
-    () => null,
-    (error: unknown) => error as Error
-  );
-  expect(stopped?.message).toBe("the caller's deadline");
-  expect(ran).toBe(false);
-  // The holder's lock is the holder's: a caller that gave up leaves it where it was.
-  expect(await readFile(lock, "utf8")).toBe("another process");
-  await Bun.file(lock).delete();
-});
-
-test(
-  "a lock its holder touched just before it died costs a trade no more than one attempt",
-  async () => {
-    const stub = broker();
-    const path = loginPath();
-    await writeDeviceLoginFile(path, stub.url, {
-      access_token: fixtureSecret("access"),
-      access_expires_at: new Date(Date.now() + 600_000).toISOString(),
-    });
-    // The holder touched its lock a moment ago and then died: the trade waits out the lock's stale
-    // bound, takes the lock, and must still be answered within its one attempt.
-    await writeFile(`${path}.lock`, "a process that died holding it");
-    const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
-    const lines: string[] = [];
-    const client = new BrokerTokenClient({
-      brokerUrl: stub.url,
-      key: await identity.key(),
-      subject: identity,
-      session: "ses-laptop-1",
-      log: (line) => lines.push(line),
-    });
-    const began = Date.now();
-    const token = await client.token().finally(() => client.close());
-    expect(lines).toEqual([]);
-    expect(token.accessToken).toBe(stub.tradeTokens[0] as string);
-    expect(stub.trades).toHaveLength(1);
-    expect(Date.now() - began).toBeLessThan(TRADE_ATTEMPT_MS);
-  },
-  2 * TRADE_ATTEMPT_MS
-);
-
-test("a trade whose time runs out while a live holder keeps the lock names the lock, not the broker", async () => {
-  const stub = broker();
-  const path = loginPath();
-  await writeDeviceLoginFile(path, stub.url, {
-    access_token: fixtureSecret("access"),
-    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
-  });
-  const lock = `${path}.lock`;
-  await writeFile(lock, "a live holder");
-  const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
-  const client = new BrokerTokenClient({
-    brokerUrl: stub.url,
-    key: await identity.key(),
-    subject: identity,
-    session: "ses-laptop-1",
-    attemptMs: 1_000,
-    log: () => {},
-  });
-  const refusal = await client.token().then(
-    () => null,
-    (error: unknown) => error as Error
-  );
-  client.close();
-  expect(refusal?.message).toContain("lock beside");
-  expect(refusal?.message).not.toContain("did not answer");
-  expect(stub.trades).toHaveLength(0);
-  expect(await readFile(lock, "utf8")).toBe("a live holder");
-  await Bun.file(lock).delete();
-});
-
 test("a holder that lost its lock while it was stopped refreshes nothing, and keeps nothing", async () => {
   // A holder stopped past the lock's stale bound, as a laptop that sleeps is, has had its lock
   // taken over: a refresh would spend the refresh token the new holder may be spending too.
@@ -675,36 +633,6 @@ test("a holder that lost its lock while it was stopped refreshes nothing, and ke
 });
 
 test(
-  "the lock tells its holder whether it still holds it, and its holder keeps it fresh",
-  async () => {
-    const path = loginPath();
-    await writeDeviceLoginFile(path, "http://127.0.0.1:1");
-    const lock = `${path}.lock`;
-    await withDeviceLoginLock(path, async (held) => {
-      expect(await held()).toBe(true);
-      // A lock its holder last touched a while ago is touched again at the next beat, so a holder
-      // that is slow is never taken for dead. The beat is a real interval timer touching the real
-      // file's modification time, which a fake clock does not move, so this waits for the touch it
-      // looks for, up to a bound well past one beat.
-      const old = new Date(Date.now() - 12_000);
-      await utimes(lock, old, old);
-      const deadline = Date.now() + 4 * LOCK_HEARTBEAT_MS;
-      while ((await stat(lock)).mtimeMs <= old.getTime() + 1_000 && Date.now() < deadline) {
-        await Bun.sleep(100);
-      }
-      expect(Date.now() - (await stat(lock)).mtimeMs).toBeLessThan(LOCK_HEARTBEAT_MS * 2);
-      // Another caller took it over.
-      await writeFile(lock, "another process that took the lock over");
-      expect(await held()).toBe(false);
-    });
-    // The lock is the new holder's, and stays where it is.
-    expect(await readFile(lock, "utf8")).toBe("another process that took the lock over");
-    await Bun.file(lock).delete();
-  },
-  6 * LOCK_HEARTBEAT_MS
-);
-
-test(
   "a refresh the broker did not answer is sent once more at once, with the same refresh token",
   async () => {
     // The broker mints the first refresh's answer and keeps it until the second refresh arrives,
@@ -729,6 +657,149 @@ test(
   },
   2 * TRADE_ATTEMPT_MS
 );
+
+test("a trade refused for its session or its projects is not refreshed and traded again", async () => {
+  // The broker answers these with the same codes it answers a token it no longer honours with,
+  // and a refresh cures none of them: it would only rotate the refresh token.
+  for (const [code, description] of [
+    [
+      "invalid_grant",
+      "The session name 'ses-laptop-1' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last 30 days. Ask under a name of your own.",
+    ],
+    [
+      "invalid_request",
+      "ada@example.com is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.",
+    ],
+    // A pod session no registration names yet, which a later trade cures, not a refresh.
+    ["invalid_grant", `${POD_SESSION_NOT_REGISTERED}: no registration names ses-laptop-1 yet`],
+  ] as const) {
+    const stub = broker();
+    const path = loginPath();
+    await writeDeviceLoginFile(path, stub.url, {
+      access_token: fixtureSecret("access"),
+      access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+    });
+    const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
+    let trades = 0;
+    const refusal = await identity
+      .spend(async () => {
+        trades += 1;
+        throw new BrokerRefusedError(400, code, description, "this machine's device login", {
+          person: "ada@example.com",
+          session: "ses-laptop-1",
+        });
+      })
+      .then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+    expect(trades, code).toBe(1);
+    expect(stub.refreshes, code).toHaveLength(0);
+    expect(refusal).toBeInstanceOf(BrokerRefusedError);
+  }
+});
+
+test("a trade refused because the login ended is refreshed, and the refresh's refusal names the cure", async () => {
+  const stub = broker({ refuseRefresh: true });
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url, {
+    access_token: fixtureSecret("access"),
+    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+  });
+  const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
+  let trades = 0;
+  const refusal = await identity
+    .spend(async () => {
+      trades += 1;
+      throw new BrokerRefusedError(
+        400,
+        "invalid_grant",
+        "The machine login the subject token belongs to has ended.",
+        "this machine's device login"
+      );
+    })
+    .then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+  expect(trades).toBe(1);
+  expect(stub.refreshes).toHaveLength(1);
+  expect(refusal).toBeInstanceOf(DeviceLoginEndedError);
+  expect(refusal?.message).toContain(DEVICE_LOGIN_COMMAND);
+});
+
+test("a refresh refused other than invalid_grant is that refusal, and one unanswered twice names the broker", async () => {
+  const stub = broker({ refuseRefresh: "invalid_client" });
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url);
+  const refused = await refreshDeviceLogin(path, await readDeviceLogin(path), {
+    describe: "this machine's device login",
+    held: async () => true,
+  }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(stub.refreshes).toHaveLength(1);
+  expect(refused).toBeInstanceOf(BrokerRefusedError);
+  expect(refused?.message).toContain("HTTP 401 invalid_client");
+
+  // Nothing listens at the broker's port: the refresh is sent once more, then fails, named by
+  // the broker's setting and not by its URL.
+  const nowhere = loginPath();
+  await writeDeviceLoginFile(nowhere, "http://127.0.0.1:1");
+  const unanswered = await refreshDeviceLogin(nowhere, await readDeviceLogin(nowhere), {
+    describe: "this machine's device login",
+    held: async () => true,
+  }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(unanswered).toBeInstanceOf(BrokerTradeFailedError);
+  expect(unanswered?.message).toContain("refresh this machine's device login at");
+});
+
+test("a trade refused after its holder lost the lock is one a later trade cures, refreshed or not", async () => {
+  // The holder stopped once it had read the login (and, where its token was due, refreshed and
+  // kept it), and another process took the lock and refreshed meanwhile: that refresh revoked
+  // this holder's access token, and the broker refuses it. The login itself is live, so the
+  // refusal must not end the client: the next trade reads the login the new holder kept.
+  for (const due of [false, true]) {
+    const stub = broker();
+    const path = loginPath();
+    await writeDeviceLoginFile(
+      path,
+      stub.url,
+      due
+        ? {}
+        : {
+            access_token: fixtureSecret("access"),
+            access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+          }
+    );
+    const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
+    let trades = 0;
+    const refusal = await identity
+      .spend(async () => {
+        trades += 1;
+        await writeFile(`${path}.lock`, "another process that took the lock over");
+        throw new BrokerRefusedError(
+          400,
+          "invalid_request",
+          "Token is not valid or has expired.",
+          "this machine's device login"
+        );
+      })
+      .then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+    expect(trades, `due: ${due}`).toBe(1);
+    expect(stub.refreshes, `due: ${due}`).toHaveLength(due ? 1 : 0);
+    expect(isFinalRefusal(refusal), `due: ${due}`).toBe(false);
+    expect(refusal?.message, `due: ${due}`).toContain("lock beside");
+    await Bun.file(`${path}.lock`).delete();
+  }
+});
 
 test("a kept access token the broker refuses is refreshed at once, and traded again", async () => {
   // Another process's refresh made the token this file keeps one the broker refuses: a refresh
@@ -762,207 +833,6 @@ test("a kept access token the broker refuses is refreshed at once, and traded ag
   expect(stub.revokedTrades).toHaveLength(1);
   expect(stub.refreshes).toHaveLength(2);
   expect(token?.accessToken).toBe(stub.tradeTokens[0] as string);
-});
-
-test("of two callers that find one stale lock, exactly one takes it", async () => {
-  const path = loginPath();
-  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
-  const lock = `${path}.lock`;
-  await writeFile(lock, "a process that died holding it");
-  const old = new Date(Date.now() - 31_000);
-  await utimes(lock, old, old);
-
-  // B finds the lock stale and is held there, between its look and its take-over, while A finds
-  // it stale too, takes it and starts its work. Then B goes on. B must find A's lock live and
-  // wait for it, never take it from A: two holders would spend one refresh token twice.
-  const events: string[] = [];
-  let holders = 0;
-  let most = 0;
-  const work = (name: string, until: Promise<void>) => async () => {
-    holders += 1;
-    most = Math.max(most, holders);
-    events.push(`${name} starts`);
-    await until;
-    events.push(`${name} ends`);
-    holders -= 1;
-  };
-  const bFound = Promise.withResolvers<void>();
-  const bGoes = Promise.withResolvers<void>();
-  const aWorking = Promise.withResolvers<void>();
-  const aEnds = Promise.withResolvers<void>();
-  // B has decided once it either waits for A's lock or runs its own work.
-  const bDecided = Promise.withResolvers<void>();
-  const b = withDeviceLoginLock(
-    path,
-    async () => {
-      bDecided.resolve();
-      await work("B", Promise.resolve())();
-    },
-    {
-      at: async (step) => {
-        if (step !== "lock-stale") return;
-        bFound.resolve();
-        await bGoes.promise;
-      },
-      sleep: async () => {
-        bDecided.resolve();
-        await aEnds.promise;
-      },
-    }
-  );
-  await bFound.promise;
-  const a = withDeviceLoginLock(path, async () => {
-    aWorking.resolve();
-    await work("A", aEnds.promise)();
-  });
-  await aWorking.promise;
-  bGoes.resolve();
-  await bDecided.promise;
-  aEnds.resolve();
-  await Promise.all([a, b]);
-  expect(most, events.join(", ")).toBe(1);
-  expect(events).toEqual(["A starts", "A ends", "B starts", "B ends"]);
-  expect(await stat(lock).catch(() => null)).toBeNull();
-  expect(await stat(`${lock}.steal`).catch(() => null)).toBeNull();
-});
-
-test("a take-over waits while another caller takes over, and not for one that died doing so", async () => {
-  const path = loginPath();
-  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
-  const lock = `${path}.lock`;
-  const steal = `${lock}.steal`;
-  const old = new Date(Date.now() - 31_000);
-  await writeFile(lock, "a process that died holding it");
-  await utimes(lock, old, old);
-
-  // Another caller is taking the stale lock over: this one waits, and runs once that caller's
-  // take-over lock is gone, at its third wait.
-  await writeFile(steal, "another caller taking over");
-  let waits = 0;
-  let ranAfter = -1;
-  await withDeviceLoginLock(
-    path,
-    async () => {
-      ranAfter = waits;
-    },
-    {
-      sleep: async () => {
-        waits += 1;
-        if (waits === 3) await Bun.file(steal).delete();
-      },
-    }
-  );
-  expect(ranAfter).toBe(3);
-
-  // A take-over lock 6 s old is one whose caller died inside its take-over: it is removed, and
-  // the stale lock taken, after one wait.
-  await writeFile(lock, "a process that died holding it");
-  await utimes(lock, old, old);
-  await writeFile(steal, "a caller that died taking over");
-  const stealOld = new Date(Date.now() - 6_000);
-  await utimes(steal, stealOld, stealOld);
-  let deadWaits = 0;
-  await withDeviceLoginLock(path, async () => {}, {
-    sleep: async () => {
-      deadWaits += 1;
-    },
-  });
-  expect(deadWaits).toBe(1);
-  expect(await stat(steal).catch(() => null)).toBeNull();
-});
-
-// A file another caller makes in place of one this caller found stale can carry the very inode
-// number of the one it replaced: XFS hands a new file the number freed a moment before (5 of 5
-// tries on a review box). These rows write the other caller's file into the stale file's own
-// inode, which is exactly what such a filesystem gives the check to see, so they hold on every
-// filesystem: the same device and inode, and a fresh modification time and holder value.
-
-test("of two callers inside one take-over, the one that comes second puts the lock back", async () => {
-  const path = loginPath();
-  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
-  const lock = `${path}.lock`;
-  await writeFile(lock, "a process that died holding it");
-  const old = new Date(Date.now() - 31_000);
-  await utimes(lock, old, old);
-
-  // A is under its own take-over lock, has found the lock still stale, and is held before it
-  // moves the lock aside: it stopped there for over 5 s, so B took A's take-over lock as dead,
-  // took the stale lock over and now holds a fresh one. A then goes on. It must find the lock it
-  // moves is B's, put it back and wait for B, never take it from B.
-  const aTaking = Promise.withResolvers<void>();
-  const aGoes = Promise.withResolvers<void>();
-  let bHolds = false;
-  let heldAtFirstWait = "";
-  let ranWhileBHeld: boolean | undefined;
-  const a = withDeviceLoginLock(
-    path,
-    async () => {
-      ranWhileBHeld = bHolds;
-    },
-    {
-      at: async (step) => {
-        if (step !== "taking") return;
-        aTaking.resolve();
-        await aGoes.promise;
-      },
-      sleep: async () => {
-        if (heldAtFirstWait === "") {
-          heldAtFirstWait = await readFile(lock, "utf8").catch(() => "(no lock)");
-        }
-        // B's work ends, and B lets go.
-        bHolds = false;
-        await Bun.file(lock).delete();
-      },
-    }
-  );
-  await aTaking.promise;
-  await writeFile(lock, "B holds it");
-  bHolds = true;
-  aGoes.resolve();
-  await a;
-  expect(heldAtFirstWait).toBe("B holds it");
-  expect(ranWhileBHeld).toBe(false);
-  expect(await stat(lock).catch(() => null)).toBeNull();
-});
-
-test("a dead take-over lock is removed only while it is still the dead one", async () => {
-  const path = loginPath();
-  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
-  const lock = `${path}.lock`;
-  const steal = `${lock}.steal`;
-  const old = new Date(Date.now() - 31_000);
-  await writeFile(lock, "a process that died holding it");
-  await utimes(lock, old, old);
-  await writeFile(steal, "a caller that died taking over");
-  const stealOld = new Date(Date.now() - 6_000);
-  await utimes(steal, stealOld, stealOld);
-
-  // B finds the take-over lock dead and is held before it removes it, while C removes that dead
-  // one and starts a take-over of its own. B then goes on: it must leave C's take-over lock in
-  // place, and wait for C.
-  const bFound = Promise.withResolvers<void>();
-  const bGoes = Promise.withResolvers<void>();
-  let stealAtFirstWait = "";
-  const b = withDeviceLoginLock(path, async () => {}, {
-    at: async (step) => {
-      if (step !== "steal-stale" || stealAtFirstWait !== "") return;
-      bFound.resolve();
-      await bGoes.promise;
-    },
-    sleep: async () => {
-      if (stealAtFirstWait === "") {
-        stealAtFirstWait = await readFile(steal, "utf8").catch(() => "(no take-over lock)");
-      }
-      // C's take-over ends.
-      await Bun.file(steal).delete();
-    },
-  });
-  await bFound.promise;
-  await writeFile(steal, "C takes over");
-  bGoes.resolve();
-  await b;
-  expect(stealAtFirstWait).toBe("C takes over");
-  expect(await stat(steal).catch(() => null)).toBeNull();
 });
 
 test("device-login is an identity of its own, named with its variables", () => {

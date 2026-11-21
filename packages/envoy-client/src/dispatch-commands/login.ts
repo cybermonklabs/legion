@@ -17,6 +17,7 @@ import {
   deviceLoginBroker,
   deviceLoginFile,
   deviceLoginHost,
+  deviceLoginPlace,
   finishDeviceLogin,
   readDeviceLogin,
   startDeviceLogin,
@@ -60,7 +61,7 @@ export interface LoginIo {
   print(text: string): void;
   readonly fetchImpl?: typeof fetch | undefined;
   /** Waits between two polls of the code; a timer unless a test replaces it. */
-  readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
+  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
 }
 
 /** The flags `argv` sets, or the problem with them. */
@@ -95,8 +96,9 @@ function parseLogin(argv: readonly string[]): ParsedLogin {
  * Runs `dispatch login` with `argv` (the words after `login`) in `env`, and answers its exit
  * code: 0 once the login is approved and kept; 1 when the broker refused it, the person denied it,
  * its code expired, or it could not be kept; 2 for a usage error, before any request: no
- * `--device`, no person (`--person`, else `AGENT_SECRETS_PERSON`), or no broker
- * (`AGENT_SECRETS_URL`) a device login may use: https, or http on this machine's loopback.
+ * `--device`, no person (`--person`, else `AGENT_SECRETS_PERSON`), no broker
+ * (`AGENT_SECRETS_URL`) a device login may use (https, or http on this machine's loopback), or a
+ * login directory others may write to or another user owns.
  */
 export async function loginCommand(
   argv: readonly string[],
@@ -137,9 +139,12 @@ export async function loginCommand(
   }
   let path: string;
   try {
-    // An http broker off this machine's loopback is refused here, before any request.
+    // An http broker off this machine's loopback is refused here, before any request, and so is
+    // a login directory another user could replace the login in: no person approves a login
+    // this machine could not keep.
     deviceLoginBroker(brokerUrl);
     path = deviceLoginFile(env);
+    await deviceLoginPlace(path);
   } catch (error) {
     return refuse(messageFor(error), USAGE);
   }

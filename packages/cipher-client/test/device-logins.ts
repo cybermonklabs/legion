@@ -83,13 +83,20 @@ export interface DeviceLoginBrokerOptions {
   readonly refreshesBeforeTrade?: number;
   /** How long an access token the stand-in mints lasts. Default 900 s, the broker's own. */
   readonly accessSeconds?: number;
-  /** Answer every refresh `400 invalid_grant`, as the broker answers one whose login ended. */
-  readonly refuseRefresh?: boolean;
+  /** Answer every refresh `400 invalid_grant`, as the broker answers one whose login ended, or
+   *  `401 invalid_client`, a refusal of the refresh that is no end of the login. */
+  readonly refuseRefresh?: true | "invalid_client";
+  /** Refuse the device authorization `400` with this OAuth error code. */
+  readonly refuseAuthorization?: string;
   /** The device authorization's `interval`, in seconds; 1 by default, and none where null. */
   readonly interval?: number | null;
-  /** The device authorization's user code and page, in place of the stand-in's own. */
+  /** The device authorization's `expires_in`, in seconds; 600 by default. */
+  readonly expiresIn?: number;
+  /** The device authorization's user code and pages, in place of the stand-in's own; it sends a
+   *  `verification_uri_complete` only where one is given. */
   readonly userCode?: string;
   readonly verificationUri?: string;
+  readonly verificationUriComplete?: string;
   /** The credential id a grant answers, in place of {@link STAND_IN_CREDENTIAL}. */
   readonly credentialId?: string;
 }
@@ -227,11 +234,17 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
       const seen = await recorded(request);
       if (request.method === "POST" && pathname === "/v1/oauth/device_authorization") {
         authorizations.push(seen);
+        if (options.refuseAuthorization !== undefined) {
+          return oauthError(options.refuseAuthorization);
+        }
         return Response.json({
           device_code: deviceCode,
           user_code: options.userCode ?? STAND_IN_USER_CODE,
           verification_uri: options.verificationUri ?? `${origin}/credentials/machine`,
-          expires_in: 600,
+          ...(options.verificationUriComplete === undefined
+            ? {}
+            : { verification_uri_complete: options.verificationUriComplete }),
+          expires_in: options.expiresIn ?? 600,
           ...(options.interval === null ? {} : { interval: options.interval ?? 1 }),
         });
       }
@@ -285,6 +298,7 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
           releaseReached(awaitingRefreshes);
           if (options.refreshOverlapMs !== undefined) await hold(holding, options.refreshOverlapMs);
           if (options.refuseRefresh === true) return oauthError("invalid_grant");
+          if (options.refuseRefresh === "invalid_client") return oauthError("invalid_client", 401);
           const answer = loginAnswer();
           live = loginTokens.at(-1);
           for (const release of trading.splice(0)) release();

@@ -9,7 +9,7 @@
 // broker revokes a login whose rotated refresh token is presented again past its grace.
 
 import { expect, test } from "bun:test";
-import { statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
@@ -124,6 +124,18 @@ test("dispatch login refuses a call it cannot make, and says why", async () => {
   });
   expect(offMachine.code, offMachine.stdout).toBe(2);
   expect(offMachine.stdout).toContain("loopback");
+  // A login directory others may write is refused before any code is asked for, so no person
+  // approves a login this machine cannot keep.
+  const open = path.join(tempDir(), "open", "device-login.json");
+  mkdirSync(path.dirname(open));
+  chmodSync(path.dirname(open), 0o775);
+  const openDirectory = await dispatch(["login", "--device", "--person", PERSON], {
+    ...env,
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: open,
+  });
+  expect(openDirectory.code, openDirectory.stdout).toBe(2);
+  expect(openDirectory.stdout).toContain("chmod 700");
+  expect(stub.authorizations).toHaveLength(0);
 
   const denied = await dispatch(["login", "--device", "--person", PERSON], env);
   expect(denied.code).toBe(1);

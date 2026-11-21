@@ -35,6 +35,14 @@ const INVALID_GRANT = "invalid_grant";
 /** What the broker answers a trade naming a person Dispatch holds (`oauthwire.MembershipHeld`). */
 const MEMBERSHIP_HELD = "membership_held";
 
+/** How the broker's OAuth library ends its `invalid_request` to a subject token it no longer
+ *  honours: one revoked, or one past its expiry. */
+const TOKEN_NOT_VALID = "Token is not valid or has expired.";
+
+/** The broker's `invalid_grant` to a trade of a machine login's access token once that login
+ *  has ended (`oauth/exchange.go`). */
+const MACHINE_LOGIN_ENDED = "The machine login the subject token belongs to has ended.";
+
 /**
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
  * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
@@ -57,6 +65,12 @@ export class BrokerRefusedError extends Error {
    *  The same words under another code, or anywhere but at the start, are some other refusal.
    *  Read from the description as the broker sent it, which is then kept nowhere. */
   readonly podSessionUnregistered: boolean;
+  /** Whether this is the broker's refusal of a subject token it no longer honours, and of nothing
+   *  else: the library's `400 invalid_request` ending "Token is not valid or has expired." (a
+   *  revoked or lapsed token), or `400 invalid_grant` "The machine login the subject token belongs
+   *  to has ended.". A refusal of the trade's session or projects uses the same codes and is not
+   *  one. Read from the description as the broker sent it, which is then kept nowhere. */
+  readonly subjectNotHonoured: boolean;
 
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
    *  person's sign-in on it; `context` is what the trade sent that a known refusal may name. */
@@ -86,6 +100,10 @@ export class BrokerRefusedError extends Error {
     this.said = said;
     this.podSessionUnregistered =
       code === INVALID_GRANT && description.startsWith(`${POD_SESSION_NOT_REGISTERED}:`);
+    this.subjectNotHonoured =
+      status === 400 &&
+      ((code === "invalid_request" && description.endsWith(TOKEN_NOT_VALID)) ||
+        (code === INVALID_GRANT && description === MACHINE_LOGIN_ENDED));
   }
 
   /**

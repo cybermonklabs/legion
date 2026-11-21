@@ -36,6 +36,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import { readErrorCode } from "./error-text";
 import { sleep, TRADE_ATTEMPT_MS } from "./token-client";
+import { LockHeldError } from "./token-errors";
 
 /**
  * A lock its holder has not touched for this long is taken as one whose holder died: half of a
@@ -56,7 +57,7 @@ const STEAL_STALE_MS = 5_000;
 
 /** How {@link withLoginLock} waits. */
 export interface DeviceLoginLockOptions {
-  /** Ends the wait for a lock another process holds, with the signal's reason. */
+  /** Ends the wait for a lock another process holds, as `LockHeldError`. */
   readonly signal?: AbortSignal | undefined;
   /** Waits between two tries of a held lock; a timer that holds the process open unless a test
    *  replaces it. */
@@ -64,6 +65,17 @@ export interface DeviceLoginLockOptions {
   /** Runs at each step of a take-over where another caller can act between this caller's look
    *  and what it does next ({@link TakeOverStep}). Only a test holds a caller there. */
   readonly at?: ((step: TakeOverStep) => Promise<void>) | undefined;
+  /** Starts the holder's beats, which call `touch`, and answers what stops them: every
+   *  {@link LOCK_HEARTBEAT_MS} unless a test drives them by hand. */
+  readonly beats?: ((touch: () => Promise<void>) => () => void) | undefined;
+}
+
+/** The holder's beats: `touch` every {@link LOCK_HEARTBEAT_MS}, on a timer that holds no process
+ *  open. */
+function everyHeartbeat(touch: () => Promise<void>): () => void {
+  const timer = setInterval(() => void touch(), LOCK_HEARTBEAT_MS);
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 /**
@@ -194,12 +206,13 @@ async function takeStale(
 /**
  * Runs `work` holding the lock of the login at `path`, `<path>.lock`, and answers what it
  * answers. A lock another process holds is tried again every 100 ms until it is free, `signal`
- * ends (rejecting with its reason, `work` never run), or it is stale and this caller alone takes
- * it ({@link takeStale}). The holder touches the lock every {@link LOCK_HEARTBEAT_MS} while
- * `work` runs, so a holder that is slow is never taken for dead, and removes it when `work`
- * settles, only while it still holds its own value. `work` is handed `held`, which reads the
- * lock again and says whether it still holds this call's value: false once another caller took
- * it from a holder that was stopped. `named` names the login in an error.
+ * ends (rejecting with `LockHeldError`, which names the lock, with the signal's reason as its
+ * cause, and `work` never run), or it is stale and this caller alone takes it ({@link takeStale}).
+ * The holder touches the lock at each beat ({@link LOCK_HEARTBEAT_MS}) while `work` runs, so a
+ * holder that is slow is never taken for dead, and removes it when `work` settles, only while it
+ * still holds its own value. `work` is handed `held`, which reads the lock again and says whether
+ * it still holds this call's value: false once another caller took it from a holder that was
+ * stopped. `named` names the login in an error.
  */
 export async function withLoginLock<T>(
   path: string,
@@ -216,33 +229,39 @@ export async function withLoginLock<T>(
     throw new Error(`make the directory of ${named}: ${readErrorCode(error)}`);
   }
   while (true) {
-    options.signal?.throwIfAborted();
+    if (options.signal?.aborted === true) {
+      throw new LockHeldError(`the lock beside ${named}`, { cause: options.signal.reason });
+    }
     if (await createOwn(lock, mine, named)) break;
     if (await takeStale(lock, mine, named, options)) continue;
     await wait(LOCK_RETRY_MS, options.signal);
   }
-  const beat = setInterval(() => {
+  const stopBeats = (options.beats ?? everyHeartbeat)(async () => {
     const now = new Date();
     // A touch that fails leaves the lock as it was; the holder is still the one working.
-    utimes(lock, now, now).catch(() => {});
-  }, LOCK_HEARTBEAT_MS);
-  beat.unref();
+    await utimes(lock, now, now).catch(() => {});
+  });
   try {
     return await work(async () => (await readFile(lock, "utf8").catch(() => "")) === mine);
   } finally {
-    clearInterval(beat);
+    stopBeats();
     await removeOwn(lock, mine);
   }
 }
 
+/** Whether `name` is `prefix` and a UUID: a file a caller named with a fresh value of its own. */
+function namedWithUuid(name: string, prefix: string): boolean {
+  return name.startsWith(prefix) && /^[0-9a-f-]{36}$/.test(name.slice(prefix.length));
+}
+
 /**
- * Removes each file in `dir` whose name `left` matches and that is untouched for
+ * Removes each file in `dir` that `left` takes by its name and that is untouched for
  * {@link DEVICE_LOGIN_STALE_LOCK_MS}: a file another caller left when it died. A younger one may be
  * a live caller's, mid-step, and is left alone, and so is one that cannot be read.
  */
-export async function removeUntouched(dir: string, left: RegExp): Promise<void> {
+export async function removeUntouched(dir: string, left: (name: string) => boolean): Promise<void> {
   const names = await readdir(dir).catch(() => [] as string[]);
-  for (const name of names.filter((one) => left.test(one))) {
+  for (const name of names.filter(left)) {
     const path = join(dir, name);
     const info = await stat(path).catch(() => null);
     if (info !== null && Date.now() - info.mtimeMs > DEVICE_LOGIN_STALE_LOCK_MS) {
@@ -254,14 +273,16 @@ export async function removeUntouched(dir: string, left: RegExp): Promise<void> 
 /**
  * Removes what a caller that died mid take-over left beside the login at `path`: a lock or a
  * take-over lock it moved aside (`<path>.lock.stale-<uuid>`, `<path>.lock.steal.stale-<uuid>`)
- * and never removed or linked back ({@link removeUntouched}). A file moved aside lives for a look
- * and a removal; a younger one may be another caller's, mid take-over, whose link back its removal
- * would break. A caller holds the lock.
+ * and never removed or linked back ({@link removeUntouched}). A move aside keeps the file's
+ * modification time, so a lock moved aside by a live caller mid take-over can read as old too;
+ * removing it only makes that caller find nothing to link back and try again. A caller holds the
+ * lock.
  */
 export async function removeLeftLocks(path: string): Promise<void> {
-  const name = basename(path).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const name = basename(path);
   await removeUntouched(
     dirname(path),
-    new RegExp(`^${name}\\.lock(\\.steal)?\\.stale-[0-9a-f-]{36}$`)
+    (one) =>
+      namedWithUuid(one, `${name}.lock.stale-`) || namedWithUuid(one, `${name}.lock.steal.stale-`)
   );
 }

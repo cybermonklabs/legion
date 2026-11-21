@@ -79,7 +79,6 @@ import {
   BrokerTradeFailedError,
   DEVICE_LOGIN_COMMAND,
   DeviceLoginEndedError,
-  LockHeldError,
 } from "./token-errors";
 import {
   DEVICE_AUTHORIZATION_PATH,
@@ -119,18 +118,29 @@ const ACCESS_MARGIN_MS = 2 * TRADE_ATTEMPT_MS;
 const BROKER_REQUEST_MS = TRADE_ATTEMPT_MS / 2;
 
 /** How many seconds apart a code is polled where the broker names no interval (RFC 8628 Section
- *  3.2), and the least it is polled apart whatever interval the broker names. */
+ *  3.2), and the least and the most it is polled apart whatever interval the broker names: a wait
+ *  past a timer's range would fire at once, and no broker means a code to wait minutes between
+ *  polls. */
 const DEFAULT_POLL_SECONDS = 5;
 const LEAST_POLL_SECONDS = 1;
+const MOST_POLL_SECONDS = 60;
+
+/** The most a code or an access token the broker answers is taken to live, whatever lifetime it
+ *  names: an hour, four times the broker's own access tokens' 900 s. A longer one would keep a
+ *  poll, or a token the broker no longer honours, past any use. */
+const MOST_LIFETIME_SECONDS = 3600;
 
 /** A host an http broker may be on: this machine's loopback, as a dev stack's broker is. */
 const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
 
-/** A control character, which a terminal may run as an escape sequence rather than print. */
-const CONTROL_CHARACTER = /\p{Cc}/u;
+/** A control or format character: a terminal may run the one as an escape sequence rather than
+ *  print it, and the other (a right-to-left override) changes what it shows. */
+const UNPRINTABLE = /[\p{Cc}\p{Cf}]/u;
 
-/** A temporary copy of a login a save left when it died (`saveDeviceLogin`). */
-const TEMPORARY_COPY = /^\.device-login-[0-9a-f-]{36}\.json\.tmp$/;
+/** Whether `name` is a temporary copy of a login a save left when it died (`saveDeviceLogin`). */
+function isTemporaryCopy(name: string): boolean {
+  return /^\.device-login-[0-9a-f-]{36}\.json\.tmp$/.test(name);
+}
 
 /** The file a machine keeps its device login in: {@link DEVICE_LOGIN_FILE_VAR}, else
  *  `$HOME/.config/legion/device-login.json`. */
@@ -225,13 +235,14 @@ function loginDpopKey(key: KeyObject): DpopKey {
 
 /**
  * `value`, a field of the broker's answer at `endpoint` that this machine prints, refused where it
- * holds a control character: a terminal runs an escape sequence it is sent (an OSC 8 link, an OSC
- * 52 clipboard write) rather than print it. `what` names the field.
+ * holds a control or format character ({@link UNPRINTABLE}): a terminal runs an escape sequence it
+ * is sent (an OSC 8 link, an OSC 52 clipboard write) rather than print it, and a right-to-left
+ * override turns round what it shows. `what` names the field.
  */
 function printable(value: string, what: string, endpoint: string): string {
-  if (CONTROL_CHARACTER.test(value)) {
+  if (UNPRINTABLE.test(value)) {
     throw new BrokerTradeFailedError(
-      `the secrets broker at ${urlForText(endpoint, BROKER_URL_SETTING)} answered a ${what} holding a control character, which this machine does not print`
+      `the secrets broker at ${urlForText(endpoint, BROKER_URL_SETTING)} answered a ${what} holding a control or format character, which this machine does not print`
     );
   }
   return value;
@@ -249,6 +260,28 @@ function page(uri: string, endpoint: string): string {
 }
 
 /**
+ * Refuses `what`, the login's file or its directory, whose status is `info`, where its mode has a
+ * bit of `forbidden` (`opens` says what that lets others do, and the fix), or where this user does
+ * not own it (`notOwned` says the fix).
+ */
+function checkPrivate(
+  info: Stats,
+  what: string,
+  forbidden: number,
+  opens: string,
+  notOwned: string
+): void {
+  const mode = info.mode & 0o777;
+  if ((mode & forbidden) !== 0) {
+    throw new Error(`${what} is mode ${mode.toString(8).padStart(4, "0")}, which ${opens}`);
+  }
+  const uid = process.getuid?.();
+  if (uid !== undefined && info.uid !== uid) {
+    throw new Error(`${what} is owned by uid ${info.uid}, not this user (uid ${uid}); ${notOwned}`);
+  }
+}
+
+/**
  * Refuses `dir`, the login's directory, where another user could replace the login or its lock
  * in it: a directory whose mode lets its group or anyone else write to it, or that this user does
  * not own. A directory others may only read and enter is taken, as `mkdir -p` leaves the
@@ -262,18 +295,28 @@ async function checkLoginDirectory(dir: string): Promise<void> {
   } catch (error) {
     throw new Error(`read the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   }
-  const mode = info.mode & 0o777;
-  if ((mode & 0o022) !== 0) {
-    throw new Error(
-      `the directory of ${DEVICE_LOGIN_FILE_NAMED} is mode ${mode.toString(8).padStart(4, "0")}, which lets others replace the login in it; run chmod 700 on it`
-    );
+  checkPrivate(
+    info,
+    `the directory of ${DEVICE_LOGIN_FILE_NAMED}`,
+    0o022,
+    "lets others replace the login in it; run chmod 700 on it",
+    "keep the login in a directory of this user's own"
+  );
+}
+
+/**
+ * Makes the directory of the login at `path`, 0700, where it is absent, and refuses one another
+ * user could replace the login in ({@link checkLoginDirectory}). `dispatch login --device` runs it
+ * before it asks for a code, so no person approves a login this machine could not keep.
+ */
+export async function deviceLoginPlace(path: string): Promise<void> {
+  const dir = dirname(path);
+  try {
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw new Error(`make the directory of ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
   }
-  const uid = process.getuid?.();
-  if (uid !== undefined && info.uid !== uid) {
-    throw new Error(
-      `the directory of ${DEVICE_LOGIN_FILE_NAMED} is owned by uid ${info.uid}, not this user (uid ${uid}); keep the login in a directory of this user's own`
-    );
-  }
+  await checkLoginDirectory(dir);
 }
 
 /**
@@ -298,19 +341,13 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
         : `read ${DEVICE_LOGIN_FILE_NAMED}: ${code}`
     );
   }
-  const info = await stat(path);
-  const mode = info.mode & 0o777;
-  if ((mode & 0o077) !== 0) {
-    throw new Error(
-      `${DEVICE_LOGIN_FILE_NAMED} is mode ${mode.toString(8).padStart(4, "0")}, which lets others read the login's key; run chmod 600 on it`
-    );
-  }
-  const uid = process.getuid?.();
-  if (uid !== undefined && info.uid !== uid) {
-    throw new Error(
-      `${DEVICE_LOGIN_FILE_NAMED} is owned by uid ${info.uid}, not this user (uid ${uid}); remove it and log in again with: ${DEVICE_LOGIN_COMMAND}`
-    );
-  }
+  checkPrivate(
+    await stat(path),
+    DEVICE_LOGIN_FILE_NAMED,
+    0o077,
+    "lets others read the login's key; run chmod 600 on it",
+    `remove it and log in again with: ${DEVICE_LOGIN_COMMAND}`
+  );
   await checkLoginDirectory(dirname(path));
   let json: Record<string, unknown>;
   try {
@@ -375,9 +412,14 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
  * untouched for the lock's stale bound, as the Go helper's `RemoveLeftoverMachineTemps` removes its
  * own; a younger one may be a live caller's. A caller holds the login's lock
  * ({@link withDeviceLoginLock}), so no other process's refresh writes between its read and this
- * write.
+ * write; `held` reads that lock again just before the rename, and a lock that is no longer the
+ * caller's keeps nothing. What is left is the instant between that look and the rename.
  */
-async function saveDeviceLogin(path: string, login: DeviceLogin): Promise<void> {
+async function saveDeviceLogin(
+  path: string,
+  login: DeviceLogin,
+  held: () => Promise<boolean>
+): Promise<void> {
   const dir = dirname(path);
   const data = JSON.stringify({
     key: login.key.export({ format: "der", type: "pkcs8" }).toString("base64"),
@@ -392,13 +434,8 @@ async function saveDeviceLogin(path: string, login: DeviceLogin): Promise<void> 
           access_expires_at: login.accessExpiresAt.toISOString(),
         }),
   });
-  try {
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-  } catch (error) {
-    throw new Error(`save ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
-  }
-  await checkLoginDirectory(dir);
-  await removeUntouched(dir, TEMPORARY_COPY);
+  await deviceLoginPlace(path);
+  await removeUntouched(dir, isTemporaryCopy);
   await removeLeftLocks(path);
   const temp = join(dir, `.device-login-${randomUUID()}.json.tmp`);
   try {
@@ -409,6 +446,15 @@ async function saveDeviceLogin(path: string, login: DeviceLogin): Promise<void> 
     } finally {
       await handle.close();
     }
+  } catch (error) {
+    await rm(temp, { force: true });
+    throw new Error(`save ${DEVICE_LOGIN_FILE_NAMED}: ${readErrorCode(error)}`);
+  }
+  if (!(await held())) {
+    await rm(temp, { force: true });
+    throw lockLost();
+  }
+  try {
     await rename(temp, path);
   } catch (error) {
     await rm(temp, { force: true });
@@ -431,8 +477,7 @@ async function saveDeviceLogin(path: string, login: DeviceLogin): Promise<void> 
  * Runs `work` holding the device login's lock, `<path>.lock` (`device-login-lock.ts`, which
  * holds its protocol), and answers what it answers. `work` is handed `held`, which reads the lock
  * again and says whether it is still this call's: false once another caller took it from a holder
- * that was stopped. `signal` ends the wait for a lock another process holds, rejecting with its
- * reason.
+ * that was stopped. `signal` ends the wait for a lock another process holds, as `LockHeldError`.
  */
 export async function withDeviceLoginLock<T>(
   path: string,
@@ -446,13 +491,12 @@ export async function withDeviceLoginLock<T>(
  * The OAuth client of the broker's machine-login routes at `brokerUrl`, sending through
  * `fetchImpl`: with a proof of `proved`'s key on every request where it is given (the device code
  * poll and the refresh), and with none where it is not (the device authorization). Each request
- * waits {@link BROKER_REQUEST_MS} at most for its answer, beside `signal`: one the broker never
- * answers is one it did not answer.
+ * waits {@link BROKER_REQUEST_MS} at most for its answer: one the broker never answers is one it
+ * did not answer.
  */
 function brokerConfiguration(
   brokerUrl: string,
   fetchImpl: typeof fetch,
-  signal: AbortSignal | undefined,
   proved?: { readonly key: DpopKey; readonly nonce: DpopNonce }
 ): Configuration {
   const config = new Configuration(
@@ -469,14 +513,13 @@ function brokerConfiguration(
   if (new URL(brokerUrl).protocol === "http:") allowInsecureRequests(config);
   config[customFetch] = (url, options) => {
     const deadline = AbortSignal.timeout(BROKER_REQUEST_MS);
-    const bounded = signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
     return proved === undefined
-      ? fetchImpl(url, requestInit(options, bounded, options.headers))
+      ? fetchImpl(url, requestInit(options, deadline, options.headers))
       : sendWithProof(
           { key: proved.key, fetch: fetchImpl, nonce: proved.nonce },
           url,
           options,
-          bounded
+          deadline
         );
   };
   return config;
@@ -501,7 +544,7 @@ function loginOf(
     typeof answered["credential_expires_at"] === "string" ? answered["credential_expires_at"] : ""
   );
   const refreshToken = answered.refresh_token ?? "";
-  const seconds = answered.expires_in ?? 0;
+  const seconds = Math.min(answered.expires_in ?? 0, MOST_LIFETIME_SECONDS);
   if (
     credentialId === "" ||
     Number.isNaN(expiresAt.getTime()) ||
@@ -557,10 +600,11 @@ export interface DeviceAuthorization {
  * `exp` 600 s on, one `launcher_credential` detail naming `host`, and `login_hint` naming
  * `person` — and posts it to the broker's device authorization endpoint with the key's thumbprint
  * as `dpop_jkt`, as the machine-login client and its one scope. It answers what the person types
- * and where, each refused where it holds a control character, and the page where it is no http or
- * https URL; the interval it polls at is the broker's, at least {@link LEAST_POLL_SECONDS}, and
- * {@link DEFAULT_POLL_SECONDS} where the broker names none. A refusal is worded as every broker
- * refusal is (`brokerRefusal`).
+ * and where, each refused where it holds a control or format character, and the page where it is
+ * no http or https URL; the interval it polls at is the broker's, from {@link LEAST_POLL_SECONDS}
+ * to {@link MOST_POLL_SECONDS}, and {@link DEFAULT_POLL_SECONDS} where the broker names none, and
+ * the code lives as long as the broker says, {@link MOST_LIFETIME_SECONDS} at most. A refusal is
+ * worded as every broker refusal is (`brokerRefusal`).
  */
 export async function startDeviceLogin(options: {
   readonly brokerUrl: string;
@@ -588,7 +632,7 @@ export async function startDeviceLogin(options: {
   const request = await new CompactSign(new TextEncoder().encode(JSON.stringify(claims)))
     .setProtectedHeader({ alg: "ES256", typ: REQUEST_OBJECT_TYPE, jwk })
     .sign(privateKey);
-  const config = brokerConfiguration(brokerUrl, options.fetch ?? fetch, undefined);
+  const config = brokerConfiguration(brokerUrl, options.fetch ?? fetch);
   let answered: DeviceAuthorizationResponse;
   try {
     answered = await initiateDeviceAuthorization(config, {
@@ -599,7 +643,9 @@ export async function startDeviceLogin(options: {
   } catch (error) {
     throw brokerRefusal("ask for a code for", "this machine's device login", endpoint, error);
   }
-  const expiresAt = new Date(Date.now() + answered.expires_in * 1000);
+  const expiresAt = new Date(
+    Date.now() + Math.min(answered.expires_in, MOST_LIFETIME_SECONDS) * 1000
+  );
   return {
     brokerUrl,
     person,
@@ -610,7 +656,10 @@ export async function startDeviceLogin(options: {
         ? undefined
         : page(answered.verification_uri_complete, endpoint),
     expiresAt,
-    intervalSeconds: Math.max(answered.interval ?? DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS),
+    intervalSeconds: Math.min(
+      Math.max(answered.interval ?? DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS),
+      MOST_POLL_SECONDS
+    ),
     deviceCode: holdSecret(answered.device_code, expiresAt),
     key: privateKey,
   };
@@ -634,11 +683,11 @@ export async function finishDeviceLogin(
   options: {
     readonly path: string;
     readonly fetch?: typeof fetch | undefined;
-    readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
+    readonly sleep?: ((ms: number) => Promise<void>) | undefined;
   }
 ): Promise<DeviceLogin> {
   const wait = options.sleep ?? ((ms: number) => sleep(ms, undefined, true));
-  const config = brokerConfiguration(started.brokerUrl, options.fetch ?? fetch, undefined, {
+  const config = brokerConfiguration(started.brokerUrl, options.fetch ?? fetch, {
     key: loginDpopKey(started.key),
     nonce: { value: "" },
   });
@@ -683,7 +732,7 @@ export async function finishDeviceLogin(
       continue;
     }
     const login = loginOf(started.key, started.brokerUrl, answered, Date.now());
-    await withDeviceLoginLock(options.path, () => saveDeviceLogin(options.path, login));
+    await withDeviceLoginLock(options.path, (held) => saveDeviceLogin(options.path, login, held));
     return login;
   }
 }
@@ -703,16 +752,12 @@ export interface DeviceLoginIdentityOptions {
   readonly brokerUrl: string;
 }
 
-/** Whether `error` is the broker's refusal of a trade's subject token: the `400 invalid_request`
- *  it answers an access token it no longer honours (a revoked credential's), or the
- *  `invalid_grant` an OAuth server may answer it with instead. */
+/** Whether `error` is the broker's refusal of a trade's subject token as one it no longer
+ *  honours (`BrokerRefusedError.subjectNotHonoured`): a revoked or lapsed access token, or a
+ *  login that ended. The broker answers a trade's session or projects with the same codes, and a
+ *  refresh cures none of those. */
 function subjectRefused(error: unknown): boolean {
-  return (
-    error instanceof BrokerRefusedError &&
-    error.status === 400 &&
-    (error.code === "invalid_request" || error.code === "invalid_grant") &&
-    !error.podSessionUnregistered
-  );
+  return error instanceof BrokerRefusedError && error.subjectNotHonoured;
 }
 
 /**
@@ -772,62 +817,57 @@ export class DeviceLoginIdentity implements TokenSource {
    * proves (a `dispatch login --device` since it started), each naming what cures it.
    *
    * An access token with under a minute left is refreshed first ({@link refreshDeviceLogin}), and
-   * the login it answers is kept before `trade` runs. A kept access token the broker refuses
-   * ({@link subjectRefused}) is refreshed at once and traded once more: a revoke ends a login
-   * before its token lapses, and only the refresh tells that, as `DeviceLoginEndedError`, which
-   * names {@link DEVICE_LOGIN_COMMAND}. A refresh is made only while the lock is still this
-   * process's (`refreshDeviceLogin`'s `held`). A trade made under a lock another caller took from
-   * this one while it was stopped risks no more than the broker refusing it, which the loop trades
-   * again on.
+   * the login it answers is kept before `trade` runs. A kept access token the broker refuses as one
+   * it no longer honours ({@link subjectRefused}) is refreshed at once and traded once more: a
+   * revoke ends a login before its token lapses, and only the refresh tells that, as
+   * `DeviceLoginEndedError`, which names {@link DEVICE_LOGIN_COMMAND}. A refresh is made only while
+   * the lock is still this process's (`refreshDeviceLogin`'s `held`).
    *
-   * `signal` ends the wait for the lock: a trade whose time ran out there is
-   * {@link LockHeldError}, which names the lock, since nothing was sent. A refresh does not run on
-   * it: it waits on deadlines of its own.
+   * A trade made under a lock another caller took from this one while it was stopped may be
+   * refused: the new holder's refresh revoked its token. That refusal, refreshed first or not, is
+   * the retryable {@link lockLost}, which a later trade cures by reading the login the new holder
+   * kept; a refusal under a lock still held after a refresh just made is the broker's, and final.
+   *
+   * `signal` ends the wait for the lock, as `LockHeldError`, which names the lock, since nothing
+   * was sent. A refresh does not run on it: it waits on deadlines of its own.
    */
   async spend<T>(trade: (subject: SubjectToken) => Promise<T>, signal?: AbortSignal): Promise<T> {
     const { thumbprint } = await this.#loaded();
-    let locked = false;
-    try {
-      return await withDeviceLoginLock(
-        this.#path,
-        async (held) => {
-          locked = true;
-          let login = await readDeviceLogin(this.#path);
-          if (withoutTrailingSlashes(login.broker) !== this.#brokerUrl) {
-            throw new Error(
-              `${DEVICE_LOGIN_FILE_NAMED} was made at another secrets broker than ${BROKER_SETTING} names; log this machine in at this one with: ${DEVICE_LOGIN_COMMAND}`
-            );
-          }
-          if ((await calculateJwkThumbprint(loginDpopKey(login.key).publicJwk)) !== thumbprint) {
-            throw new Error(
-              `${DEVICE_LOGIN_FILE_NAMED} holds another login than the one this process started with, since ${DEVICE_LOGIN_COMMAND} ran again; start this session again to trade the new one`
-            );
-          }
-          const refresh = (): Promise<DeviceLogin> =>
-            refreshDeviceLogin(this.#path, login, { describe: this.describe(), held });
-          const expires = login.accessExpiresAt?.getTime() ?? 0;
-          const due = login.accessToken === "" || expires - Date.now() < ACCESS_MARGIN_MS;
-          if (due) login = await refresh();
-          const subject = (): SubjectToken => ({
-            token: login.accessToken,
-            tokenType: SUBJECT_TYPE_ACCESS,
-          });
-          try {
-            return await trade(subject());
-          } catch (error) {
-            if (due || !subjectRefused(error)) throw error;
-            login = await refresh();
-            return await trade(subject());
-          }
-        },
-        { signal }
-      );
-    } catch (error) {
-      if (!locked && signal?.aborted === true) {
-        throw new LockHeldError(`the lock beside ${DEVICE_LOGIN_FILE_NAMED}`, { cause: error });
-      }
-      throw error;
-    }
+    return await withDeviceLoginLock(
+      this.#path,
+      async (held) => {
+        let login = await readDeviceLogin(this.#path);
+        if (withoutTrailingSlashes(login.broker) !== this.#brokerUrl) {
+          throw new Error(
+            `${DEVICE_LOGIN_FILE_NAMED} was made at another secrets broker than ${BROKER_SETTING} names; log this machine in at this one with: ${DEVICE_LOGIN_COMMAND}`
+          );
+        }
+        if ((await calculateJwkThumbprint(loginDpopKey(login.key).publicJwk)) !== thumbprint) {
+          throw new Error(
+            `${DEVICE_LOGIN_FILE_NAMED} holds another login than the one this process started with, since ${DEVICE_LOGIN_COMMAND} ran again; start this session again to trade the new one`
+          );
+        }
+        const refresh = (): Promise<DeviceLogin> =>
+          refreshDeviceLogin(this.#path, login, { describe: this.describe(), held });
+        const expires = login.accessExpiresAt?.getTime() ?? 0;
+        const due = login.accessToken === "" || expires - Date.now() < ACCESS_MARGIN_MS;
+        if (due) login = await refresh();
+        const subject = (): SubjectToken => ({
+          token: login.accessToken,
+          tokenType: SUBJECT_TYPE_ACCESS,
+        });
+        try {
+          return await trade(subject());
+        } catch (error) {
+          if (!subjectRefused(error)) throw error;
+          if (!(await held())) throw lockLost();
+          if (due) throw error;
+          login = await refresh();
+          return await trade(subject());
+        }
+      },
+      { signal }
+    );
   }
 
   /** The login's access token, read under its lock; {@link spend} is what a trade uses, since
@@ -848,9 +888,9 @@ function lockLost(): Error {
  * Refreshes `login`, kept at `path`, proving its key: the refresh grant as the machine-login
  * client, which rotates the refresh token and moves the credential's expiry, keeping the login it
  * answers at `path` and answering it. A caller holds the login's lock, and `held` says whether it
- * still does: it is read before the refresh is sent and again before its answer is kept, and a
- * lock that is no longer the caller's refreshes or keeps nothing, since another process may be
- * spending the same refresh token.
+ * still does: it is read before each send of the refresh and again just before its answer is kept
+ * ({@link saveDeviceLogin}), and a lock that is no longer the caller's refreshes or keeps nothing,
+ * since another process may be spending the same refresh token.
  *
  * Each request waits for its answer on a deadline of its own, apart from the trade's attempt, so
  * an answer that rotated the refresh token is never cut off for the attempt's sake. A refresh the
@@ -868,7 +908,7 @@ export async function refreshDeviceLogin(
   login: DeviceLogin,
   options: { readonly describe: string; readonly held: () => Promise<boolean> }
 ): Promise<DeviceLogin> {
-  const config = brokerConfiguration(login.broker, fetch, undefined, {
+  const config = brokerConfiguration(login.broker, fetch, {
     key: loginDpopKey(login.key),
     nonce: { value: "" },
   });
@@ -889,7 +929,6 @@ export async function refreshDeviceLogin(
     }
   }
   const next = loginOf(login.key, login.broker, answered, Date.now());
-  if (!(await options.held())) throw lockLost();
-  await saveDeviceLogin(path, next);
+  await saveDeviceLogin(path, next, options.held);
   return next;
 }
