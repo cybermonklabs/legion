@@ -30,6 +30,10 @@ import (
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
+// DeviceLoginFunc opens a device login's record from the device authorization request's form and
+// the user code the provider minted, in the provider's transaction (Deps.DeviceLogin).
+type DeviceLoginFunc func(ctx context.Context, form url.Values, userCode string) error
+
 type Deps struct {
 	PublicURL string
 	// APIAccounts is the Kubernetes half of BROKER_API_ACCOUNTS: the ServiceAccount subject of
@@ -146,7 +150,7 @@ type Deps struct {
 	// DeviceLogin opens a device login's record from the device authorization request's form and
 	// the user code the provider minted, in the provider's transaction (oauthstore.TxFrom on ctx);
 	// an error refuses the request (deviceLoginRefusal maps it to the broker's code).
-	DeviceLogin func(ctx context.Context, form url.Values, userCode string) error
+	DeviceLogin DeviceLoginFunc
 	// TokenHooks are the broker's steps around each token the provider issues.
 	TokenHooks oauth.TokenHooks
 	// Approval is the broker's own approval page and its sign-in (internal/cipher/approval),
@@ -209,10 +213,10 @@ type server struct {
 	// BROKER_MACHINE_LOGIN_URL on the broker's own address (oauth.Provider.VerificationURL), and
 	// BROKER_EDGE_MACHINE_LOGIN_URL at its edge.
 	verificationURI string
-	// port is answer.PortEdge at the edge and "" on the broker's own address. At the edge, GET
-	// /healthz writes no line of its own for a failed ping: its cached ping writes one per ping,
-	// naming this port (cachedPing).
-	port string
+	// pingLogsItself is whether deps.DatabasePing writes its own line for a failed ping, so GET
+	// /healthz writes none: at the edge, whose DatabasePing is a cachedPing, so a caller on the
+	// internet writes no line of its own (RegisterEdge sets the two together).
+	pingLogsItself bool
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -730,9 +734,22 @@ func writeInternal(w http.ResponseWriter, op string, err error) {
 	writeError(w, http.StatusInternalServerError, "INTERNAL", op+" failed")
 }
 
-// writeUnavailable logs a dependency that could not answer and answers 503 with code naming it.
+// writeUnavailable logs a dependency that could not answer (logUnavailable) and answers 503 with
+// code naming it (answerUnavailable).
 func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
-	slog.Error("broker: "+op+" failed", "error", err)
+	logUnavailable(op, err)
+	answerUnavailable(w, code, op)
+}
+
+// logUnavailable writes the ERROR line of a dependency op could not reach: "broker: <op> failed",
+// with err and any attrs after it.
+func logUnavailable(op string, err error, attrs ...any) {
+	slog.Error("broker: "+op+" failed", append([]any{"error", err}, attrs...)...)
+}
+
+// answerUnavailable answers 503 with code naming the dependency op could not reach, and writes no
+// line.
+func answerUnavailable(w http.ResponseWriter, code, op string) {
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
 }
 
@@ -771,11 +788,8 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.deps.pingDatabase(r.Context()); err != nil {
-		if s.port != "" {
-			// The edge's ping writes its own line, once a ping and naming its port
-			// (cachedPing), so a caller here, anyone on the internet, writes none: not while the
-			// database stalls and the caller gives up, and not once a second ping has failed.
-			writeError(w, http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "ping Postgres failed: a dependency the broker needs is unavailable")
+		if s.pingLogsItself {
+			answerUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres")
 			return
 		}
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres", err)
@@ -798,7 +812,7 @@ const healthCacheFor = time.Second
 type cachedPing struct {
 	ping func(context.Context) error
 	now  func() time.Time
-	// port is the value of the port field the line of a failed ping names.
+	// port is the value of the port field the line of a failed ping names (answer.PortEdge).
 	port string
 
 	mu  sync.Mutex
@@ -838,7 +852,7 @@ func (c *cachedPing) result(ctx context.Context) error {
 		if ctx.Err() == nil {
 			c.at, c.err = c.now(), err
 			if err != nil {
-				slog.Error("broker: ping Postgres failed", "error", err, "port", c.port)
+				logUnavailable("ping Postgres", err, "port", c.port)
 			}
 		}
 		c.running = nil

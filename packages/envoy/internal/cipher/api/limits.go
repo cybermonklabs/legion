@@ -379,8 +379,7 @@ type launcherLimiter struct {
 	address func(*http.Request) string
 	// overall is the one bucket every caller of a device authorization shares beside its own
 	// address's (DefaultEdgeDeviceLimit), at the edge alone, under the one key overallKey; nil on
-	// the broker's own address. It is spent only by a request that can open a login
-	// (server.deviceLoginCanOpen), so requests that store nothing cannot empty it.
+	// the broker's own address. Who spends it, and when, is deviceAuthorization's.
 	overall *ratelimit.Keyed
 }
 
@@ -397,17 +396,11 @@ const overallKey = "edge"
 
 // DefaultEdgeDeviceLimit bounds the device authorizations the broker's edge takes from every
 // caller together, per process, beside each address's own bucket: a burst of 30 and one every
-// two seconds. Each device authorization the edge serves writes a device code, a machine login
-// and the jti of its request object, and each stays until the login's PendingTTL (15 minutes by
-// default). Every login the edge opens spends exactly one token of it (deviceAuthorization): a
-// request the pre-check judges able to open a login (server.deviceLoginCanOpen, the device login's
-// own checks short of the jti) spends it first, and a login opened without that judgment, as one
-// whose iat crosses a second between the two clock reads is, spends it once open, or is rolled
-// back. So one pod holds at most about 30 + 900/2 = 480 pending edge logins, three rows each,
-// whatever the number of addresses a flood comes from. An outside collaborator opens a few logins
-// a day, so the limit is far above any real use. A request the pre-check refuses (another
-// client's id, an object the device login would refuse) spends nothing; one that passes it and
-// opens no login (a replay, whose jti only the device login reads, among them) spends one.
+// two seconds. Each login the edge opens writes a device code, a machine login and the jti of its
+// request object, and each stays until the login's PendingTTL (15 minutes by default), so one pod
+// holds at most about 30 + 900/2 = 480 pending edge logins, three rows each, whatever the number of
+// addresses a flood comes from. An outside collaborator opens a few logins a day, so the limit is
+// far above any real use. Who spends it, and when, is deviceAuthorization's.
 //
 // Its cost: it caps new device logins at the edge for every outside person together. A caller
 // who sends valid device authorizations from about 15 addresses (each within its own address

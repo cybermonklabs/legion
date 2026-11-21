@@ -41,9 +41,11 @@ type Edge struct {
 	// DeviceLogin wraps the edge's device login, the machine-login service's LoginDevice at the
 	// edge's address (machine.Service.AtEdge), and answers the one the edge opens logins with; nil
 	// means that login as it is. cmd/cipherd leaves it nil. A test sets it to open a login the
-	// edge's pre-check refused (deviceLoginCanOpen), which happens otherwise only when a request's
-	// iat crosses a second between the two clock reads.
-	DeviceLogin func(open func(ctx context.Context, form url.Values, userCode string) error) func(ctx context.Context, form url.Values, userCode string) error
+	// edge's pre-check refused, to hold what deviceAuthorization does with such a login.
+	DeviceLogin func(DeviceLoginFunc) DeviceLoginFunc
+	// Now is the clock the edge's health cache reads (cachedPing); nil means time.Now.
+	// cmd/cipherd leaves it nil. A test sets it to hold the cache's one-second window still.
+	Now func() time.Time
 }
 
 // edgeLoginKeyPrefix opens the key of every per-login bucket the edge spends, so a key the edge
@@ -101,8 +103,13 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 	edgeDeps.TokenHooks = edgeTokenHooks(deps.TokenHooks, edge.WorkspaceDomains)
 	// The edge's GET /healthz is public, so it answers from the database ping through a
 	// one-second cache (cachedPing): a caller on the internet costs the database at most one
-	// ping a second per pod however often it asks, and a failing database writes one line a ping.
-	edgeDeps.DatabasePing = (&cachedPing{ping: deps.pingDatabase, now: time.Now, port: answer.PortEdge}).result
+	// ping a second per pod however often it asks, and a failing database writes one line a ping,
+	// which is why the edge's server sets pingLogsItself.
+	now := time.Now
+	if edge.Now != nil {
+		now = edge.Now
+	}
+	edgeDeps.DatabasePing = (&cachedPing{ping: deps.pingDatabase, now: now, port: answer.PortEdge}).result
 	limits := DefaultLauncherLimits
 	if deps.LauncherLimits != nil {
 		limits = *deps.LauncherLimits
@@ -128,7 +135,7 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 		loginKeyPrefix:    edgeLoginKeyPrefix,
 		loginKeyByAddress: true,
 		verificationURI:   edge.VerificationURL,
-		port:              answer.PortEdge,
+		pingLogsItself:    true,
 	}
 	for _, route := range routes() {
 		pattern := route.Method + " " + route.Pattern

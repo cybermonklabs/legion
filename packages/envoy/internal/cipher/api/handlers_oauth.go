@@ -19,20 +19,28 @@ import (
 
 // deviceAuthorization is POST /v1/oauth/device_authorization: a machine login's device
 // authorization request (RFC 8628), public. It spends its source address's launcher bucket before
-// the provider does any work, as the token login does (refuseAddress). At the edge, every login
-// it opens spends exactly one token of the edge's one bucket every caller shares
-// (launcherLimiter.overall): a request the pre-check judges able to open a login
-// (deviceLoginCanOpen) spends it before the provider does any work, and a login
-// Deps.DeviceLogin opens that the pre-check did not judge so, as one whose iat crossed a second
-// between the two clock reads does, spends it once opened, a refusal rolling the login back. A
-// request that opens no login spends nothing of it. Deps.DeviceLogin verifies the request and
-// opens the login in the provider's transaction, and only a login it opened spends the bucket of
-// the person its login_hint names (spendDeviceLoginBucket), so a request that writes nothing costs
-// that person nothing; a refusal there rolls the login back too. A refused request is 429 with
-// Retry-After. Deps.DeviceLogin's refusals are OAuth errors (invalid_request) whose description
-// names the broker's code: a request object that does not verify, repeats a jti or names another
-// key than dpop_jkt REQUEST_INVALID, one naming a service SERVICE_LOGS_IN_WITH_TOKEN. The answer's
-// verification_uri is this listener's page (server.verificationURI).
+// the provider does any work, as the token login does (refuseAddress).
+//
+// At the edge it also spends the one bucket every caller shares (launcherLimiter.overall), and
+// this comment is where that rule is written. Every login the edge opens spends exactly one token
+// of it: a request the pre-check (deviceLoginCanOpen) judges able to open a login spends it
+// before the provider does any work, and a login Deps.DeviceLogin opens that the pre-check did not
+// judge so, as one whose iat crossed a second between the two clock reads does, spends it once
+// opened, a refusal rolling the login back. A request the pre-check refuses and that opens no
+// login spends nothing of it. A request the pre-check passes and that still opens no login
+// spends one: a replay, whose jti only Deps.DeviceLogin reads; one the provider refuses for a
+// reason of its own after the pre-check; and one the named person's bucket refuses below, whose
+// login is rolled back. Each needs an object signed for the edge, which anyone with a key of
+// their own makes as they make a valid login.
+//
+// Deps.DeviceLogin verifies the request and opens the login in the provider's transaction, and
+// only a login it opened spends the bucket of the person its login_hint names
+// (spendDeviceLoginBucket), so a request that writes nothing costs that person nothing; a refusal
+// there rolls the login back too. A refused request is 429 with Retry-After. Deps.DeviceLogin's
+// refusals are OAuth errors (invalid_request) whose description names the broker's code: a
+// request object that does not verify, repeats a jti or names another key than dpop_jkt
+// REQUEST_INVALID, one naming a service SERVICE_LOGS_IN_WITH_TOKEN. The answer's verification_uri
+// is this listener's page (server.verificationURI).
 func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	if !s.launcherLimiter.addressAllows(r) {
 		oauth.WriteRefusal(w, rateLimitedRefusal(s.launcherLimiter.perAddress.Every()))
@@ -61,17 +69,9 @@ func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 }
 
 // deviceLoginCanOpen reports whether form is a device authorization the provider can open a login
-// for: the device login's own client, and a person's machine login Deps.DeviceLogin would open
-// short of its jti (machine.Service.CheckPersonLogin: the object's signature, audience, times, one
-// launcher_credential detail, its reason, no service, a person's login_hint and a dpop_jkt that is
-// its key), none of which reads the database. A request that fails it, a mismatched dpop_jkt, a
-// service's login, a missing login_hint and agent_secret details among them, spends nothing of the
-// edge's shared bucket. A request that passes it and still opens no login spends one token: a
-// replay, whose jti only Deps.DeviceLogin reads; one the provider refuses for a reason of its own
-// after this check; and one the named person's bucket refuses (spendDeviceLoginBucket), whose login
-// is rolled back. Each needs an object signed for the edge, which anyone with a key of their own
-// makes as they make a valid login. The judgment reads its own clock, so a login it refuses can
-// still open; such a login spends the bucket once open (deviceAuthorization).
+// for: the device login's own client, and a person's machine login that passes
+// machine.Service.CheckPersonLogin, the device login's own checks short of the jti, none of which
+// reads the database. What its answer spends is deviceAuthorization's.
 func (s *server) deviceLoginCanOpen(form url.Values) bool {
 	if form.Get("client_id") != oauthwire.ClientID {
 		return false

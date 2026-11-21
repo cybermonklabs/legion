@@ -173,8 +173,7 @@ func (s *Service) checkLauncherRequest(compact string, now time.Time, check func
 // nothing, so a caller can judge a request before it spends anything on it (the edge's shared
 // device bucket).
 func (s *Service) CheckPersonLogin(compact, dpopJKT string, now time.Time) error {
-	var approver string
-	_, err := s.checkLauncherRequest(compact, now, personLoginCheck(dpopJKT, &approver))
+	_, err := s.checkLauncherRequest(compact, now, personLoginCheck(dpopJKT))
 	return err
 }
 
@@ -219,24 +218,25 @@ func (s *Service) LoginDevice(ctx context.Context, form url.Values, userCode str
 // ErrServiceLogsInWithToken, and one naming no person, or record.AnyoneApprover, or whose key
 // thumbprint is not dpopJKT, is record.ErrRequestInvalid, each checked before the jti is recorded
 // (personLoginCheck).
-func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now time.Time, dpopJKT string) (approver string, err error) {
-	_, err = s.verifyLauncherRequest(ctx, compact, now, personLoginCheck(dpopJKT, &approver))
-	return approver, err
+func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now time.Time, dpopJKT string) (string, error) {
+	obj, err := s.verifyLauncherRequest(ctx, compact, now, personLoginCheck(dpopJKT))
+	if err != nil {
+		return "", err
+	}
+	return record.CanonicalLogin(obj.LoginHint), nil
 }
 
 // personLoginCheck is the check of a person's machine login request object: no service, a login_hint
-// naming a person other than record.AnyoneApprover, which it writes to approver, and a key
-// thumbprint that is dpopJKT.
-func personLoginCheck(dpopJKT string, approver *string) func(record.RequestObject) error {
+// naming a person other than record.AnyoneApprover, and a key thumbprint that is dpopJKT.
+func personLoginCheck(dpopJKT string) func(record.RequestObject) error {
 	return func(obj record.RequestObject) error {
 		if obj.Service() != "" {
 			return ErrServiceLogsInWithToken
 		}
-		*approver = record.CanonicalLogin(obj.LoginHint)
-		if *approver == "" {
+		switch record.CanonicalLogin(obj.LoginHint) {
+		case "":
 			return fmt.Errorf("%w: login_hint is required for a person's machine login", record.ErrRequestInvalid)
-		}
-		if *approver == record.AnyoneApprover {
+		case record.AnyoneApprover:
 			return fmt.Errorf("%w: a person's machine login's login_hint names its operator, never %q", record.ErrRequestInvalid, record.AnyoneApprover)
 		}
 		if dpopJKT != obj.Thumbprint {

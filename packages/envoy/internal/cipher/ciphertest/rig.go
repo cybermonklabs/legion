@@ -15,7 +15,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -170,7 +169,7 @@ type rigConfig struct {
 	edgeDeviceLimit *ratelimit.Limit
 	// edgeDeviceLogin wraps the edge's device login (api.Edge.DeviceLogin); nil is the login as
 	// it is.
-	edgeDeviceLogin func(open func(context.Context, url.Values, string) error) func(context.Context, url.Values, string) error
+	edgeDeviceLogin func(api.DeviceLoginFunc) api.DeviceLoginFunc
 }
 
 // EdgeMachineLoginURL is the page a device authorization made at a Rig's edge sends its person
@@ -198,7 +197,7 @@ func WithEdgeDeviceLimit(limit ratelimit.Limit) Option {
 
 // WithEdgeDeviceLogin is WithEdge with wrap around the edge's device login (api.Edge.DeviceLogin),
 // for a test of what the edge does with a login its pre-check refused and its login opened.
-func WithEdgeDeviceLogin(wrap func(open func(context.Context, url.Values, string) error) func(context.Context, url.Values, string) error) Option {
+func WithEdgeDeviceLogin(wrap func(api.DeviceLoginFunc) api.DeviceLoginFunc) Option {
 	return func(c *rigConfig) { c.edge, c.edgeDeviceLogin = true, wrap }
 }
 

@@ -43,7 +43,8 @@ func newTestEdgeMux(t *testing.T) *http.ServeMux {
 }
 
 // newTestEdgeMuxPinging is newTestEdgeMux with ping as the Deps' DatabasePing, the ping its GET
-// /healthz answers from.
+// /healthz answers from, and a health cache whose clock stands still (Edge.Now), so every check
+// of a test falls in one cache window however long the checks take.
 func newTestEdgeMuxPinging(t *testing.T, ping func(context.Context) error) *http.ServeMux {
 	t.Helper()
 	provider, err := oauth.New(oauth.Config{
@@ -67,14 +68,17 @@ func newTestEdgeMuxPinging(t *testing.T, ping func(context.Context) error) *http
 		DatabasePing: ping,
 	}
 	mux := http.NewServeMux()
-	RegisterEdge(mux, deps, Edge{URL: testEdgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine", WorkspaceDomains: []string{"example.com"}})
+	frozen := time.Unix(1_700_000_000, 0)
+	RegisterEdge(mux, deps, Edge{URL: testEdgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine", WorkspaceDomains: []string{"example.com"},
+		Now: func() time.Time { return frozen }})
 	return mux
 }
 
 // TestTheEdgesHealthIsServedFromItsCachedPing: RegisterEdge sets the edge's Deps.DatabasePing to
 // the cached ping (cachedPing) over the Deps' own, and the edge's GET /healthz answers from it, so
-// fifty checks of the edge within a second cost one ping of the database, and each answers 200
-// ok.
+// fifty checks of the edge within one cache window cost one ping of the database, and each
+// answers 200 ok. The cache's clock stands still (newTestEdgeMuxPinging), so no load makes the
+// checks cross a window.
 //
 // The named revert: leave the edge's Deps.DatabasePing the broker's own, so its GET /healthz pings
 // on each check as the API port's does, and the fifty checks cost fifty pings.
@@ -96,8 +100,9 @@ func TestTheEdgesHealthIsServedFromItsCachedPing(t *testing.T) {
 // TestTheEdgesHealthWritesOneLineAPingAndNoneForACallerWhoLeft: anyone on the internet can call
 // the edge's GET /healthz, so no caller writes a log line of its own. While the database stalls,
 // five callers that give up each get their answer and write no line; once the database fails,
-// fifty callers within a second all get 503 DATABASE_UNAVAILABLE and the one ping they share
-// writes one ERROR line, naming port=edge.
+// fifty callers within one cache window all get 503 DATABASE_UNAVAILABLE and the one ping they
+// share writes one ERROR line, naming port=edge. The cache's clock stands still
+// (newTestEdgeMuxPinging), so no load makes the checks cross a window.
 //
 // The named reverts: log every failed check through writeUnavailable at the edge too, and the
 // stalled callers write five lines and the failing ones fifty, none naming a port.
@@ -136,7 +141,7 @@ func TestTheEdgesHealthWritesOneLineAPingAndNoneForACallerWhoLeft(t *testing.T) 
 	}
 	records := log.Records()
 	if len(records) != 1 {
-		t.Fatalf("fifty edge health checks within a second of a failing database wrote %d log lines, want 1: %v", len(records), records)
+		t.Fatalf("fifty edge health checks within one cache window of a failing database wrote %d log lines, want 1: %v", len(records), records)
 	}
 	var port string
 	records[0].Attrs(func(a slog.Attr) bool {
