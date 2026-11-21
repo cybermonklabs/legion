@@ -138,7 +138,7 @@ func TestAStoppedTradeLoopSaysNothingTradesAgain(t *testing.T) {
 	}
 
 	stopped := "no machine credential; " + cipherclient.Hint(cipherclient.FailureIdentityStopped)
-	if _, _, err := r.helper.EnrollSessionKey(context.Background(), "box-after-the-stop", sessionThumbprint(t), nil); !errors.Is(err, errNoCredential) || err.Error() != stopped {
+	if _, _, err := r.helper.EnrollSessionKey(context.Background(), "box-after-the-stop", sessionThumbprint(t), nil, nil); !errors.Is(err, errNoCredential) || err.Error() != stopped {
 		t.Fatalf("an enrolment after the loop stopped answered %v; want %q", err, stopped)
 	}
 	if signed := r.signLauncher(t); signed.Code != CodeNoCredential || signed.Error != stopped {
@@ -201,7 +201,7 @@ func TestAStoppedTradeLoopHoldingACredentialPromisesNoRenewal(t *testing.T) {
 	waitFor(t, func() bool { return !r.helper.HasCredential() })
 	waitForRecord(t, r.out, dropExpired+"; cleared: no session can enroll under this machine's credential; "+cipherclient.Hint(cipherclient.FailureIdentityStopped))
 	stopped := "no machine credential; " + cipherclient.Hint(cipherclient.FailureIdentityStopped)
-	if _, _, err := r.helper.EnrollSessionKey(context.Background(), "box-after-the-lapse", sessionThumbprint(t), nil); !errors.Is(err, errNoCredential) || err.Error() != stopped {
+	if _, _, err := r.helper.EnrollSessionKey(context.Background(), "box-after-the-lapse", sessionThumbprint(t), nil, nil); !errors.Is(err, errNoCredential) || err.Error() != stopped {
 		t.Fatalf("an enrolment after the lapse answered %v; want %q", err, stopped)
 	}
 	if status := r.loginStatus(t); status.CredentialHeld || !status.IdentityStopped {
