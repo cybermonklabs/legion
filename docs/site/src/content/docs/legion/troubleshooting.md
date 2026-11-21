@@ -105,11 +105,11 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
 - **A launch on an issue that names no repository.** `<KEY> names no repository: set the
   repository of <KEY>, or the default repository of project <PROJECT>, in Dispatch`. A claim an
   operator starts on an issue the workflow does not record works the repository Dispatch resolves
-  for that issue (its own, else its nearest ancestor's, else the project's default), and this issue
-  resolves to none. Set the issue's repository, or the project's default repository, in Dispatch,
-  and start the claim again. The daemon refuses that launch alone and stays up. The same launch is
-  refused, naming the cause, when Dispatch does not answer, when a role App is not installed on the
-  repository, or when GitHub does not answer its read.
+  for that issue (its own, else its nearest ancestor's in its own project, else the project's
+  default), and this issue resolves to none. Set the issue's repository, or the project's default
+  repository, in Dispatch, and start the claim again. The daemon refuses that launch alone and
+  stays up. The same launch is refused, naming the cause, when Dispatch does not answer, when a
+  role App is not installed on the repository, or when GitHub does not answer its read.
 - **A stamped repository.** The daemon compares `projects.<KEY>.commit_issue_trailer_repos` with
   nothing at boot: the loader checks each name's shape and two names of one repository (the table
   above), and a pane stamps a commit when the repository it works is on the list. A misspelled name
