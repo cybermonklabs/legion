@@ -1199,7 +1199,7 @@ pass.
 
 Every log rule reads only lines in the form nats-server's logger writes (`logger/log.go`: the
 process id, the date and time to the microsecond, the level), at one level, and matches their
-message: whole for the start line, the hangup and `Reloaded: cluster`; whole, or by the prefix
+message: whole for the start line and `Reloaded: cluster`; whole, or by the prefix
 before its digest, for `Reloaded server configuration`; by prefix for a failed reload; by a
 pattern from the message's start for a route connection's lines; and by substring for a
 credentialed URL, in the server's lines of itself alone. Never does a rule match the end of a line

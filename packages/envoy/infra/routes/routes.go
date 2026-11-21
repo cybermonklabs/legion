@@ -243,7 +243,7 @@ func serverID(ctx context.Context, src Source, pod string) (string, error) {
 
 // The messages of a nats-server (v2.15.1) log the check reads. A rule reads only a line in the
 // logger's form that the server wrote (serversLines), at one level, and matches its message: whole
-// for the start line, the hangup and "Reloaded: cluster"; whole or by the prefix that comes before a
+// for the start line and "Reloaded: cluster"; whole or by the prefix that comes before a
 // digest for "Reloaded server configuration"; and by prefix for a failed reload, by pattern for a
 // route connection's lines, and by substring for a credentialed URL, each in the server's own
 // lines, or a connection's lines with their prefix, alone. Never does a rule match the end of a
@@ -253,9 +253,6 @@ func serverID(ctx context.Context, src Source, pod string) (string, error) {
 const (
 	// startMessage is the first line of a log: Start logs it before anything else (server.go:2295).
 	startMessage = "Starting nats-server"
-	// hangupMessage begins a reload by SIGHUP, which the chart's config reloader sends
-	// (signal.go:58).
-	hangupMessage = `Trapped "hangup" signal`
 	// clusterReloadedMessage is the line a reload logs when it applies a change to the cluster
 	// block's options, the authorization among them (reload.go:470). A change of the routes alone
 	// logs "Reloaded: cluster routes" instead (reload.go:553).
