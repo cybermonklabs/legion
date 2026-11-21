@@ -89,8 +89,8 @@ func (a DispatchArtifact) WithStatusChange(events []json.RawMessage) (DispatchAr
 // since a log the daemon cannot read cannot say the status stayed.
 //
 // The walk reads the log from sequence 0 because an event carries the status it leaves, not the
-// one it found: no event after seq says what the status was at seq, so only the events at or
-// before it tell a rename, which carries the same status, from a change.
+// one it found: no event after seq says what the status was at seq, and the walk tells a change
+// by comparing each issue event's status with the issue event before it.
 func statusChangedAfter(events []json.RawMessage, seq int64) (int64, error) {
 	status, known := "", false
 	for event, err := range walkIssueEvents(events) {
