@@ -135,9 +135,10 @@ func TestEveryGrantWritesAnIDOfItsOwnThatRenewalsTheAdoptionAndTheMarkKeep(t *te
 // A claim the release before grant ids stored carries no grant id, and this release reads it as
 // that release did. Its own process renews it, and the renewal adds no grant id; its own
 // process's release frees it. A hand-back that states no process marks one that names no process,
-// also when the holder's renewal lands under the mark's first write. What tells the claim from a
-// grant made since is that grant's id where the grant is this release's, which no millisecond can
-// hide, and the moment it was claimed at where the earlier release made it, as that release did.
+// also when the holder's renewal or the adoption by its session's first heartbeat lands under the
+// mark's first write, since neither adds a grant id. What tells the claim from a grant made since
+// is that grant's id where the grant is this release's, which no millisecond can hide, and the
+// moment it was claimed at where the earlier release made it, as that release did.
 func TestAClaimTheEarlierReleaseStoredRenewsReleasesAndIsMarked(t *testing.T) {
 	const (
 		role   = "legion-controller"
@@ -216,6 +217,28 @@ func TestAClaimTheEarlierReleaseStoredRenewsReleasesAndIsMarked(t *testing.T) {
 			stood := storedRoleClaim(t, reg, role)
 			if want := stored.ClaimedAt + beat.Milliseconds(); !stood.HandedBack || stood.GrantID != "" || stood.RenewedAt != want || stood.ClaimedAt != stored.ClaimedAt {
 				t.Fatalf("the claim after the hand-back is %+v, want the claim the renewal left (renewed at %d, no grant id) marked handed back", stood, want)
+			}
+		})
+
+		t.Run("a hand-back that races the adoption by the first heartbeat marks the adopted claim", func(t *testing.T) {
+			reg, advance, stored := storeEarlierClaim(t, "")
+			advance(beat)
+			racing := raceFirstMarkWith(reg, func() {
+				if _, err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
+					t.Errorf("the first heartbeat that adopts the claim: %v", err)
+				}
+			})
+
+			if _, err := reg.Remove(context.Background(), holder, []string{lane}, RoleReleaseAuthority{}); err != nil {
+				t.Fatalf("the hand-back: %v", err)
+			}
+
+			if racing.updates < 2 {
+				t.Fatalf("the hand-back sent %d conditional writes, want its first lost to the adoption and a second", racing.updates)
+			}
+			stood := storedRoleClaim(t, reg, role)
+			if !stood.HandedBack || stood.ClientInstanceID != roleClaimInstance || stood.GrantID != "" || stood.ClaimedAt != stored.ClaimedAt {
+				t.Fatalf("the claim after the hand-back is %+v, want the claim adopted by %q, still with no grant id, marked handed back", stood, roleClaimInstance)
 			}
 		})
 

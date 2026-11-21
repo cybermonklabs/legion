@@ -115,8 +115,10 @@ func (c RoleClaim) HeldByProcess(instance string) bool {
 // write (Registry.markRoleClaimHandedBack). Where c carries a grant id, that id decides, so a
 // grant made since read, which drew an id of its own, is never read's, whatever millisecond it
 // was stamped in. Where c carries none, an earlier build wrote it - its grant draws no id, and
-// its renewal drops the one it read - so ClaimedAt decides, as it did in that build: a grant that
-// build stamped in read's own millisecond reads as read until no such build writes the bucket.
+// its renewal drops the one it read - so ClaimedAt decides, as it did in that build. Two grants
+// in read's own millisecond therefore read as read while such a build writes the bucket: one that
+// build wrote, and one this build wrote that such a build renewed before this read, which has
+// lost its id. No code here can tell either apart; both end when no such build writes the bucket.
 func (c RoleClaim) sameGrant(read RoleClaim) bool {
 	if c.GrantID != "" {
 		return c.GrantID == read.GrantID

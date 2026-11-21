@@ -134,8 +134,16 @@ it gave the role up and no registration renews a marked claim, so a role an olde
 back comes free one live window plus up to one reap interval later — about ten minutes with the
 shipped defaults — while that client is still registering. The mark lands only on the grant the
 hand-back read: every grant writes a `grant_id` it draws at random, which renewals and the
-adoption carry over, so a claim granted again before the mark's write, in the same millisecond
-or later, is left unmarked. A registration renews every unmarked
+adoption carry over, so once every listener runs a build that writes it, a claim granted again
+before the mark's write, in the same millisecond or later, is left unmarked. A record with no
+`grant_id`, which an earlier build wrote, is told from a grant by its `claimed_at`, as that build
+tells it. While a listener of an earlier build still writes the bucket, three gaps stay open: a
+grant that build writes in the millisecond of the claim a hand-back read reads as that claim; a
+hand-back that listener serves follows its own `claimed_at` rule and drops `grant_id` from the
+claim it marks; and a grant written in that millisecond with a `grant_id`, which that listener
+renews before the mark reads the claim again, has lost its id and is marked, which no code can
+prevent. All three close when the last listener of the earlier build is upgraded. A registration
+renews every unmarked
 claim its own process holds among the roles it weighs: the role topics of the interest record its
 own write read from the bucket, and the roles the listener's copy of the claims names for the
 session, each renewed as its own claim record says, whatever topics the registration carries. One
