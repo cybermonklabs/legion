@@ -69,39 +69,117 @@ func TestASignalDuringTheReceiveIsNoFailure(t *testing.T) {
 }
 
 // A receive whose server accepts and never sends ends with EAGAIN once its bound has passed, however
-// many signals interrupt it: each try is bounded by the time left of the one bound. The test sends
-// the receiving thread SIGURG each time it sleeps in recvmsg again, until the receive returns. The
-// receive returns at its own timeout, or at the first signal after its bound passed, so it always
-// ends. A receive that gives each try a whole bound of its own sleeps in recvmsg again after each
-// signal, so it returns only if a whole bound passes before the test's next signal; one that sets no
-// receive timeout never returns, since the kernel restarts its recvmsg after each signal. testwait's
-// hang guard fails a receive that does not return.
+// many signals interrupt it, and each of its tries is bounded by the time left of that one bound.
+// The test sends the receiving thread SIGURG each time it sleeps in recvmsg again, until the receive
+// returns, and boundTry records each try's receive timeout. The verdict reads those facts:
+//   - Each try's timeout is at most the time left of the bound (checkTries). A receive that bounds a
+//     try by more, as one that takes a later deadline or gives each try a whole bound, fails it.
+//   - The receive ends with EAGAIN. One that sets no receive timeout never returns, since the kernel
+//     restarts its recvmsg after each signal, and testwait's hang guard fails it.
+//   - A signal ended a try and the receive tried again: boundTry saw a second try. A receive the test
+//     did not interrupt before its bound passed proves nothing of that, so the row starts another; a
+//     row that sees no receive tried again before its hang guard fails, naming that.
 func TestASignalledReceiveEndsAtItsBound(t *testing.T) {
 	requireThreadRecord(t)
 	const bound = time.Second
-	// The kernel completes the connection in the listener's backlog, so the receive waits on a
+	var last *signalledReceive
+	// Registered before serveOnce, so it runs after serveOnce's cleanup closed the socket, which
+	// ends the last receive whatever it does; only then does it take the hook away.
+	t.Cleanup(func() {
+		if last != nil && last.r != nil {
+			<-last.r.returned
+		}
+		boundTry = nil
+	})
+	// The kernel completes each connection in the listener's backlog, so a receive waits on a
 	// connection the server holds and never writes to, accepted or not.
 	name, _ := serveOnce(t)
-	r := startReceive(t, name, bound)
-	signals, after := 0, -1
-	ended := testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
-		if r.ended() {
+	giveUp := time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))
+	for receives := 1; ; receives++ {
+		last = &signalledReceive{}
+		signalReceive(t, last, name, bound, giveUp)
+		if !last.ended && last.signals > 0 {
+			t.Fatalf("receive %d still waited after %d signals, long past its bound of %s: its tries are not bounded by the time left of that bound", receives, last.signals, bound)
+		}
+		if last.ended {
+			t.Logf("receive %d: %d signals, %d tries", receives, last.signals, len(last.tries))
+			checkTries(t, last, bound)
+			if !errors.Is(last.r.err, syscall.EAGAIN) {
+				t.Fatalf("receive %d returned descriptor %d, %v; want EAGAIN once its bound of %s passed", receives, last.r.fd, last.r.err, bound)
+			}
+			if len(last.tries) >= 2 {
+				return
+			}
+		}
+		if !last.ended || !time.Now().Before(giveUp) {
+			t.Fatalf("no receive of %d was tried again after a signal ended a try, so the row proves nothing of the bound under signals", receives)
+		}
+	}
+}
+
+// signalledReceive is one receive of the bound row: when the test started it, its result, the tries
+// boundTry recorded, the signals the test sent it, and whether it returned before the row gave up.
+type signalledReceive struct {
+	start   time.Time
+	r       *receiving
+	tries   []boundedTry
+	signals int
+	ended   bool
+}
+
+// boundedTry is one try of a receive as boundTry saw it: its receive timeout, and when it was set.
+type boundedTry struct {
+	timeout time.Duration
+	at      time.Time
+}
+
+// signalReceive starts receive(name, bound) as s, with boundTry recording its tries, and sends its
+// thread SIGURG each time it sleeps in recvmsg again, until it returns or giveUp passes.
+func signalReceive(t *testing.T, s *signalledReceive, name string, bound time.Duration, giveUp time.Time) {
+	t.Helper()
+	s.start = time.Now()
+	// The receiving thread appends to tries; the test reads them only after the receive returned.
+	boundTry = func(timeout syscall.Timeval) {
+		s.tries = append(s.tries, boundedTry{timeout: time.Duration(timeout.Nano()), at: time.Now()})
+	}
+	s.r = startReceive(t, name, bound)
+	after := -1
+	s.ended = testwait.Holds(time.Until(giveUp), testwait.Poll, func() bool {
+		if s.r.ended() {
 			return true
 		}
-		switches, again := sleepsInRecvmsgAgain(t, r.tid, after)
+		switches, again := sleepsInRecvmsgAgain(t, s.r.tid, after)
 		if !again {
 			return false
 		}
-		signal(t, r.tid)
-		signals, after = signals+1, switches
+		signal(t, s.r.tid)
+		s.signals, after = s.signals+1, switches
 		return false
 	})
-	if !ended {
-		t.Fatalf("the receive still waited after %d signals, long past its bound of %s: its tries are not bounded by the time left of that bound", signals, bound)
+}
+
+// checkTries fails the row when a try of s was bounded by more than the time left of its bound. The
+// receive took its deadline before it bounded its first try, so that deadline is no later than the
+// first try's record plus the bound; and it read each try's time left after s started and after
+// the try before was recorded. A try's timeout is that time left rounded up to the microsecond.
+func checkTries(t *testing.T, s *signalledReceive, bound time.Duration) {
+	t.Helper()
+	if len(s.tries) == 0 {
+		t.Fatalf("the receive returned descriptor %d, %v before boundTry saw it bound a try", s.r.fd, s.r.err)
 	}
-	t.Logf("signalled the receive %d times before it returned", signals)
-	if !errors.Is(r.err, syscall.EAGAIN) {
-		t.Fatalf("the receive returned descriptor %d, %v; want EAGAIN once its bound of %s passed", r.fd, r.err, bound)
+	latest := s.tries[0].at.Add(bound)
+	from := s.start
+	over, first := 0, ""
+	for i, try := range s.tries {
+		if most := latest.Sub(from) + time.Microsecond; try.timeout > most {
+			if over++; over == 1 {
+				first = fmt.Sprintf("try %d was bounded by %s, past the %s at most left", i+1, try.timeout, most)
+			}
+		}
+		from = try.at
+	}
+	if over > 0 {
+		t.Fatalf("%d of %d tries were bounded by more than the time left of the receive's bound of %s; the first: %s", over, len(s.tries), bound, first)
 	}
 }
 

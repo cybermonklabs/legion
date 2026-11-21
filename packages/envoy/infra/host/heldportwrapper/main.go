@@ -131,6 +131,11 @@ func receive(socket string, bound time.Duration) (int, error) {
 	return -1, fmt.Errorf("the server sent %d descriptors, want exactly one", len(fds))
 }
 
+// boundTry, when set, is given the receive timeout of each try receiveBefore makes, once it is set
+// and before the try's recvmsg. Only this package's tests set it, to count the tries and hold each
+// to the time left of the receive's one bound.
+var boundTry func(timeout syscall.Timeval)
+
 // receiveBefore receives one message with its control data on conn by recvmsg before deadline.
 //
 // A recvmsg with a receive timeout fails with EINTR when a signal handler interrupts it,
@@ -149,6 +154,9 @@ func receiveBefore(conn int, data, oob []byte, deadline time.Time) (oobn, flags 
 		timeout := syscall.NsecToTimeval(left.Nanoseconds())
 		if err := syscall.SetsockoptTimeval(conn, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &timeout); err != nil {
 			return 0, 0, fmt.Errorf("bound the receive: %w", err)
+		}
+		if boundTry != nil {
+			boundTry(timeout)
 		}
 		_, oobn, flags, _, err = syscall.Recvmsg(conn, data, oob, syscall.MSG_CMSG_CLOEXEC)
 		if !errors.Is(err, syscall.EINTR) {
