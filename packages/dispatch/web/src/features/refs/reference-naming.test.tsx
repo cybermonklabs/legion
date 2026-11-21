@@ -18,6 +18,7 @@ import { ThreadTitle } from "../inbox/ThreadTitle";
 import { MarkdownBody } from "./MarkdownBody";
 import { useMarkdownHeadline, warmMarkdownRenderer } from "./markdown-engine";
 import { PlainText } from "./plain-text";
+import { WordedLinksMarked } from "./RefLink";
 import { partyLink } from "./ref-picker";
 import { ReferenceHostIs } from "./reference-host";
 import { shortForm } from "./routes";
@@ -141,6 +142,30 @@ test("a worded link to an issue draws the status mark before its author's words 
     expect(mark?.matches("svg[data-status-glyph]")).toBeTrue();
     expect(mark).toHaveAttribute("aria-label", "In progress");
     expect(words(drawn)).toBe("the rollout plan");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A surface that keeps a worded link exactly as its author wrote it - the new issue page's rows -
+// says so once (`WordedLinksMarked`): there a worded link to an issue draws its words with no
+// status mark, even once the issue is read, while a bare address beside it still draws the mark
+// and the key.
+test("where worded links are not marked, a worded link to an issue keeps its words with no mark, and a bare address still draws one", async () => {
+  const view = draw(
+    <WordedLinksMarked.Provider value={false}>
+      <MarkdownBody markdown="See [the rollout plan](dispatch://CORE-1) and dispatch://CORE-1 first." />
+    </WordedLinksMarked.Provider>
+  );
+  try {
+    const bare = await within(view.container).findByRole("link", { name: CORE_1_NAME });
+    expectMarkAndKey(bare);
+    const worded = within(view.container).getByRole("link", { name: "the rollout plan" });
+    expect(worded).toHaveAttribute("href", "/issues/CORE-1");
+    expect(worded).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1");
+    expect(worded).not.toHaveAttribute("aria-label");
+    expect(worded.querySelector("svg[data-status-glyph]")).toBeNull();
+    expect(words(view.container)).toBe("See the rollout plan and CORE-1 first.");
   } finally {
     view.unmount();
   }
