@@ -607,13 +607,12 @@ wait_for_ready() {
 # wait_for_exit N [BOUND [LABEL]] waits up to BOUND seconds (15 by default) for instance N to exit
 # by itself and sets the global "exited_status" to its exit status. A run meant to stop that is
 # still running then went on serving, or is stuck, and that is a failure of the row whatever status
-# the row expects: its whole process group is stopped, "exited_status" becomes 124, a status no
-# run of dev-stack.sh exits with, and the row fails, naming LABEL (instance N by default) and every
-# process the run left running. Before, a timeout left "exited_status" at 0, which a row that
-# expects a clean exit (e1, and e3's 0) read as a pass. The group, not the run alone: a run stuck in
-# a command takes its own signal only once that command returns, so only a signal to the command
-# ends it; and SIGKILL after 10 s more, since a run whose stop ignores TERM, as dev-stack.sh's own
-# does, would hold this wait for good too.
+# the row expects: its whole process group is stopped and the row fails, naming LABEL (instance N
+# by default) and every process the run left running. Before, a timeout left "exited_status" at 0,
+# which a row that expects a clean exit (e1, and e3's 0) read as a pass. The group, not the run
+# alone: a run stuck in a command takes its own signal only once that command returns, so only a
+# signal to the command ends it; and SIGKILL after 10 s more, since a run whose stop ignores TERM,
+# as dev-stack.sh's own does, would hold this wait for good too.
 # A piped run (run_piped_instance) has no status here: its job is disowned, so its wait fails and
 # its rows read none.
 exited_status=0
@@ -635,7 +634,6 @@ wait_for_exit() {
     kill -KILL -"$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
     instance_pid[n]=""
-    exited_status=124
     fail "$label was still running ${bound} s after it was meant to stop: ${left_running:-no process listed}"
   fi
   wait "$pid" 2>/dev/null || exited_status=$?
@@ -1012,7 +1010,7 @@ for name in "${!process_port[@]}"; do term_port["$name"]="${process_port[$name]}
 for _ in $(seq 1 200); do
   kill -TERM -"${instance_pid[1]}" 2>/dev/null || break
 done
-wait_for_exit 1
+wait_for_exit 1 15 'the SIGTERM stop'
 # 143 when dev-stack.sh's own TERM trap ran the stop, 0 when a process of the stack took the
 # same signal first and the stop ran from the EXIT trap of that clean exit: a group's signal
 # reaches both, and which of the two gets there first is the kernel's to decide.
@@ -1031,7 +1029,7 @@ printf 'PASS: SIGTERM to the whole process group, sent again while the stop ran,
 # (e4) A failure part way through, before ready: the broker refuses to start, so the run fails,
 # and the processes it had already started are stopped and its databases dropped all the same.
 DEV_STACK_TEST_BROKER_FAILS=1 run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
-wait_for_exit 1
+wait_for_exit 1 15 'a run whose broker refused to start'
 [[ "$exited_status" -ne 0 ]] || fail "a run whose broker refused to start reported success"
 if grep -q 'dev-stack: ready\.' "$log1"; then
   fail "a run whose broker refused to start reported ready"
@@ -1179,28 +1177,42 @@ printf 'PASS: SIGTERM to a run whose health check was outstanding at a listener 
 # (e9) A process of the stack that ignores SIGTERM, as a server stuck in its shutdown does: the stop
 # gives each process 10 s after its SIGTERM, then SIGKILL, saying so, and still drops both
 # databases, inside 20 s here. Before, the stop waited on that process for good, with its
-# databases, and ignored every further INT and TERM while it waited.
+# databases, and ignored every further INT and TERM while it waited. The same row takes the
+# SIGHUP a terminal sends the group as it closes, here to the run alone, while the stop runs: it
+# is sent once natsd is gone and before either drop, which the row checks, so it lands inside the
+# stop's 10 s on the issuer, and the stop goes on. Before, HUP kept its default action there and
+# ended the run between the kills and the drops, with 129.
 label='the run whose issuer ignores SIGTERM'
 DEV_STACK_TEST_IGNORES_TERM=dev-oidc-issuer run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 assert_instance_ready "$label" "$log1" "$psql_calls1" "$curl_calls1"
 stubborn_issuer="${process_port[dev-oidc-issuer]}"
+stopped_natsd="${process_port[natsd]}"
 kill -INT "${instance_pid[1]}"
+for _ in $(seq 1 50); do
+  kill -0 "$stopped_natsd" 2>/dev/null || break
+  sleep 0.1
+done
+kill -0 "$stopped_natsd" 2>/dev/null && fail "$label had not stopped natsd 5 s after its INT"
+[[ -z "$(dropped_databases "$psql_calls1")" ]] ||
+  fail "$label had dropped its databases before the SIGHUP, so the row tested nothing"
+kill -HUP "${instance_pid[1]}"
 wait_for_exit 1 20 "$label"
-[[ "$exited_status" -eq 130 ]] || fail "$label exited $exited_status on INT, not 130"
+[[ "$exited_status" -eq 130 ]] || fail "$label exited $exited_status, not the 130 of the INT that began its stop"
 grep -qxF "dev-stack: dev-oidc-issuer (pid ${stubborn_issuer}) did not stop within 10 s of its SIGTERM; killing it" "$log1" ||
   fail "$label did not say it killed the issuer: $(grep 'did not stop' "$log1" || true)"
 assert_everything_stopped "$label"
 assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
-printf 'PASS: an issuer that ignores SIGTERM was killed 10 s into the stop, which said so and dropped both databases\n'
+printf 'PASS: an issuer that ignores SIGTERM was killed 10 s into the stop, which said so, went on through a SIGHUP and dropped both databases\n'
 
 # (e10) The stop signals only a process this run started that is still running. A process of the
 # stack that exited early (a crash, or the second broker callout-check.sh kills) is reaped, and the
 # kernel can give its pid to another process within minutes on a busy box; a stop that went by
 # kill -0 sent that process SIGTERM, and 10 s later SIGKILL. No test can make the kernel reuse a
 # pid, so the stop's own helpers are read out of the driver, as (p) reads its bash gate, and run in
-# a shell of their own: one handed the pid of a child of that shell stops it, and one handed, in
-# place of a child that exited, the pid of a process that shell never started leaves it running,
-# signals it nothing and returns at once.
+# a shell of their own: one handed the pid of a child of that shell stops it; one handed the pid of
+# a child that has exited and been reaped signals nothing and prints nothing; and one handed, in
+# place of that child, the pid of a process that shell never started leaves it running, signals it
+# nothing and returns at once.
 stop_helpers="$(sed -n -e '/^running_child() {$/,/^}$/p' -e '/^stop_bounded() {$/,/^}$/p' \
   -e '/^stop_process() {$/,/^}$/p' "$driver")"
 for helper in running_child stop_bounded stop_process; do
@@ -1218,7 +1230,10 @@ child=$!
 stop_bounded child "$child"
 kill -0 "$child" 2>/dev/null && echo "a running child outlived its stop"
 sleep 0.1 &
+early=$!
 sleep 0.5
+stop_bounded "a process that exited early" "$early"
+stop_process "$early"
 reused="$1"
 stop_bounded "a process that exited early" "$reused"
 stop_process "$reused"
@@ -1231,32 +1246,6 @@ kill "$stranger" 2>/dev/null || true
   fail "the stop signalled pid $stranger, a process the run never started, in place of one that exited: $(cat "$stop_out")"
 [[ "$(cat "$stop_out")" == returned ]] || fail "the stop's helpers printed more than they should: $(cat "$stop_out")"
 printf 'PASS: the stop stopped a running child and left alone pid %s, which a process it never started held in place of one that exited\n' "$stranger"
-
-# (e11) The SIGHUP a terminal sends the group as it closes, here to the run alone, while the stop
-# runs: the stop goes on and drops both databases. The issuer ignores SIGTERM, so the stop
-# spends 10 s on it after it has stopped natsd; the HUP is sent once natsd is gone and before
-# either drop, which the row checks, so it lands inside the stop. Before, HUP kept its default
-# action there and ended the run between the kills and the drops.
-label='the stop that took a SIGHUP'
-DEV_STACK_TEST_IGNORES_TERM=dev-oidc-issuer run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
-assert_instance_ready "$label" "$log1" "$psql_calls1" "$curl_calls1"
-hup_natsd="${process_port[natsd]}"
-kill -INT "${instance_pid[1]}"
-for _ in $(seq 1 50); do
-  kill -0 "$hup_natsd" 2>/dev/null || break
-  sleep 0.1
-done
-kill -0 "$hup_natsd" 2>/dev/null && fail "$label had not stopped natsd 5 s after its INT"
-[[ -z "$(dropped_databases "$psql_calls1")" ]] ||
-  fail "$label had dropped its databases before the SIGHUP, so the row tested nothing"
-kill -HUP "${instance_pid[1]}"
-wait_for_exit 1 20 "$label"
-[[ "$exited_status" -eq 130 ]] || fail "$label exited $exited_status, not the 130 of the INT that began it"
-grep -q 'did not stop within 10 s of its SIGTERM; killing it' "$log1" ||
-  fail "$label did not reach the issuer's kill: $(cat "$log1")"
-assert_everything_stopped "$label"
-assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
-printf 'PASS: a SIGHUP while the stop ran left it to finish: every process stopped and both databases dropped\n'
 
 # (f) No database URL at all: the refusal names all three sources and exits 2, before anything is
 # created.
@@ -1305,7 +1294,7 @@ for binary in "${prebuilt_binaries[@]}"; do
     fail "the --binaries run's own $binary is not the prebuilt one it was given"
 done
 kill -INT "${instance_pid[1]}"
-wait_for_exit 1
+wait_for_exit 1 15 'the --binaries run'
 [[ "$exited_status" -eq 130 ]] || fail "the --binaries run exited $exited_status on INT, not 130"
 assert_everything_stopped 'the --binaries run'
 assert_databases_dropped 'the --binaries run' "$psql_calls1" "$run_suffix"
@@ -1497,7 +1486,7 @@ if grep -q 'a process of this stack stopped' "$log1"; then
   fail "the --callout run stopped across its restarts"
 fi
 kill -INT "${instance_pid[1]}"
-wait_for_exit 1
+wait_for_exit 1 15 'the --callout run'
 [[ "$exited_status" -eq 130 ]] || fail "the --callout run exited $exited_status on INT, not 130"
 assert_everything_stopped 'the --callout run'
 assert_databases_dropped 'the --callout run' "$psql_calls1" "$run_suffix"
@@ -1512,7 +1501,7 @@ DEV_STACK_TEST_NATSD_MOVES=1 run_instance 1 "$log1" "$psql_calls1" "$curl_calls1
 assert_instance_ready 'the run whose natsd moves' "$log1" "$psql_calls1" "$curl_calls1"
 nats_port="${process_port[natsd]}"
 kill -USR1 "${instance_pid[1]}"
-wait_for_exit 1
+wait_for_exit 1 15 'a run whose natsd came back on another port'
 [[ "$exited_status" -ne 0 ]] || fail "a run whose natsd came back on another port reported success"
 grep -Eq "^dev-stack: natsd came back on port [0-9]+ \(monitor none\), not port ${nats_port} \(monitor none\) it served before the restart; stopping$" "$log1" || {
   cat "$log1" >&2
@@ -1532,7 +1521,7 @@ DEV_STACK_TEST_NATSD_MONITOR_MOVES=1 run_instance 1 "$log1" "$psql_calls1" "$cur
 assert_instance_ready 'the run whose natsd monitor moves' "$log1" "$psql_calls1" "$curl_calls1"
 nats_port="${process_port[natsd]}"
 kill -USR1 "${instance_pid[1]}"
-wait_for_exit 1
+wait_for_exit 1 15 'a run whose natsd monitor came back on another port'
 [[ "$exited_status" -ne 0 ]] || fail "a run whose natsd monitor came back on another port reported success"
 grep -Eq "^dev-stack: natsd came back on port ${nats_port} \(monitor [0-9]+\), not port ${nats_port} \(monitor ${nats_port}\) it served before the restart; stopping$" "$log1" || {
   cat "$log1" >&2
@@ -1550,7 +1539,7 @@ DEV_STACK_TEST_LISTENER_MOVES=1 run_instance 1 "$log1" "$psql_calls1" "$curl_cal
 assert_instance_ready 'the run whose listener moves' "$log1" "$psql_calls1" "$curl_calls1"
 listener_url="$(exported "$log1" ENVOY_URL)"
 kill -USR2 "${instance_pid[1]}"
-wait_for_exit 1
+wait_for_exit 1 15 'a run whose listener came back on another port'
 [[ "$exited_status" -ne 0 ]] || fail "a run whose listener came back on another port reported success"
 grep -Eq "^dev-stack: the listener came back at http://127\.0\.0\.1:[0-9]+, not ${listener_url} it served before the restart; stopping$" "$log1" || {
   cat "$log1" >&2
