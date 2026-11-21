@@ -404,6 +404,9 @@ func TestNatsHubRefusesASeedInAnyPlainInput(t *testing.T) {
 		{"a seed in a listener allowed host", "listener.allowedHosts[0]", func(a *gcp.NatsHubArgs) {
 			a.Listener.AllowedHosts = []string{lower + ".example.com"}
 		}},
+		{"a lowercase seed as the listener's NATS audience", "listener.natsAudience", func(a *gcp.NatsHubArgs) {
+			a.Listener.NatsAudience = lower
+		}},
 		{"a seed inside the machine type", "machineType", func(a *gcp.NatsHubArgs) { a.MachineType = pulumi.StringRef(inside) }},
 		{"a seed inside the disk type", "diskType", func(a *gcp.NatsHubArgs) { a.DiskType = pulumi.StringRef(inside) }},
 		{"a lowercase disk type", "diskType", func(a *gcp.NatsHubArgs) { a.DiskType = pulumi.StringRef("pd-" + lower) }},

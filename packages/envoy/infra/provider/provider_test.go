@@ -133,10 +133,13 @@ func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
 	// The listener's whole property set is pinned, not its required inputs alone, so a property
 	// added to it cannot stay invisible here.
 	require.ElementsMatch(t, []string{
-		"image", "seedSecret", "nkey", "allowedHosts", "senderMessagesPerMinute", "senderMessageBurst",
+		"image", "seedSecret", "nkey", "natsAudience", "allowedHosts", "senderMessagesPerMinute", "senderMessageBurst",
 		"agentSecretsUrl", "agentSecretsAudience", "publicUrl",
 	}, slices.Collect(maps.Keys(s.Types["envoy-infra:gcp:HubListener"].Properties)))
-	require.ElementsMatch(t, []string{"image", "seedSecret", "nkey"}, s.Types["envoy-infra:gcp:HubListener"].Required)
+	// The listener connects as its seed's user without authCallout and by natsAudience with it, so
+	// neither identity's inputs are required by the schema; the hub requires the one its
+	// authCallout calls for.
+	require.ElementsMatch(t, []string{"image"}, s.Types["envoy-infra:gcp:HubListener"].Required)
 	require.ElementsMatch(t, []string{"name", "nkey"}, s.Types["envoy-infra:gcp:SessionUser"].Required)
 	require.ElementsMatch(t, []string{"natsUrl", "instanceGroup"}, slices.Collect(maps.Keys(hub.Properties)))
 
@@ -198,10 +201,11 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	require.Equal(t, "integer", tailnet.Properties["replicas"].Type)
 	listener := s.Types["envoy-infra:gcp:ClusteredHubListener"]
 	require.ElementsMatch(t, []string{
-		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "clientNamespaces", "allowedHosts",
+		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "natsAudience", "clientNamespaces", "allowedHosts",
 		"oidcIssuer", "oidcAudience", "oidcAccounts", "senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
+		"agentSecretsUrl", "publicUrl", "brokerAudience", "privacySourceUrl", "allProjectsAccounts",
 	}, slices.Collect(maps.Keys(listener.Properties)))
-	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
+	require.ElementsMatch(t, []string{"image"}, listener.Required, "the identity's inputs are the hub's to require, by authCallout")
 
 	require.ElementsMatch(t, []string{"serviceUrl", "podSelector", "statefulSetName", "tailnetNatsUrl", "tailnetEnvoyUrl"},
 		slices.Collect(maps.Keys(hub.Properties)))

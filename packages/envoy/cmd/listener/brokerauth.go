@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -53,15 +54,33 @@ const (
 	// path and never against a forwarded header, so a caller behind a proxy cannot choose the
 	// URL its proof names.
 	EnvPublicURL = "ENVOY_PUBLIC_URL"
+	// EnvBrokerIntrospectionsPerSecond and EnvBrokerIntrospectionBurst are the bucket each source
+	// address's introspections are bounded by (ciphertoken.Options.AddressLimit): how many a
+	// second it refills, from 1 to maxIntrospectionsPerSecond, and how many it holds, from 1 to
+	// maxIntrospectionBurst. Each is optional, and unset takes ciphertoken.DefaultAddressLimit's
+	// part (five a second, a burst of 20). A deployment raises them where its callers reach the
+	// listener through a forwarder, which every caller then shares one address of: the clustered
+	// hub's tailnet hosts are two such addresses for every tailnet session.
+	EnvBrokerIntrospectionsPerSecond = "ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND"
+	EnvBrokerIntrospectionBurst      = "ENVOY_AGENT_SECRETS_INTROSPECTION_BURST"
 )
 
-// listenerBrokerConfig is what the four variables above say. The zero value is a listener that
-// takes no broker token.
+// The bounds of the two introspection-limit settings: a thousand a second is a refill every
+// millisecond, and a burst past a hundred thousand bounds nothing a flood could not already spend.
+const (
+	maxIntrospectionsPerSecond = 1000
+	maxIntrospectionBurst      = 100000
+)
+
+// listenerBrokerConfig is what the variables above say. The zero value is a listener that takes
+// no broker token. AddressLimit is the zero ratelimit.Limit when neither limit setting is set,
+// which ciphertoken reads as its DefaultAddressLimit.
 type listenerBrokerConfig struct {
 	BrokerURL        string
 	AccountTokenFile string
 	GoogleAudience   string
 	Origin           string
+	AddressLimit     ratelimit.Limit
 }
 
 // configured reports whether this listener takes broker access tokens at all.
@@ -93,12 +112,17 @@ func resolveListenerBrokerConfig(getenv func(string) string) (listenerBrokerConf
 		GoogleAudience:   strings.TrimSpace(getenv(EnvBrokerGoogleAudience)),
 		Origin:           strings.TrimSpace(getenv(EnvPublicURL)),
 	}
+	limit, err := resolveListenerIntrospectionLimit(getenv)
+	if err != nil {
+		return listenerBrokerConfig{}, err
+	}
+	config.AddressLimit = limit
 	if config == (listenerBrokerConfig{}) {
 		return listenerBrokerConfig{}, nil
 	}
 	if config.BrokerURL == "" {
-		return listenerBrokerConfig{}, fmt.Errorf("%s is required to take broker access tokens, which %s, %s or %s asks for",
-			EnvBrokerURL, EnvBrokerAccountTokenFile, EnvBrokerGoogleAudience, EnvPublicURL)
+		return listenerBrokerConfig{}, fmt.Errorf("%s is required to take broker access tokens, which %s, %s, %s, %s or %s asks for",
+			EnvBrokerURL, EnvBrokerAccountTokenFile, EnvBrokerGoogleAudience, EnvPublicURL, EnvBrokerIntrospectionsPerSecond, EnvBrokerIntrospectionBurst)
 	}
 	if config.AccountTokenFile != "" && config.GoogleAudience != "" {
 		return listenerBrokerConfig{}, fmt.Errorf("%s and %s are two identities to call %s as; set one",
@@ -112,6 +136,43 @@ func resolveListenerBrokerConfig(getenv func(string) string) (listenerBrokerConf
 		return listenerBrokerConfig{}, fmt.Errorf("%s is required when %s is set: a DPoP proof's target URI is checked against this listener's own origin", EnvPublicURL, EnvBrokerURL)
 	}
 	return config, nil
+}
+
+// resolveListenerIntrospectionLimit reads the two introspection-limit settings: the zero
+// ratelimit.Limit when neither is set, and otherwise the bucket they name, an unset one taking
+// ciphertoken.DefaultAddressLimit's part. A value that is no whole number within its bounds is a
+// refusal naming its variable.
+func resolveListenerIntrospectionLimit(getenv func(string) string) (ratelimit.Limit, error) {
+	read := func(name string, most int) (int, error) {
+		value := strings.TrimSpace(getenv(name))
+		if value == "" {
+			return 0, nil
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > most {
+			return 0, fmt.Errorf("%s=%q must be a whole number from 1 to %d", name, value, most)
+		}
+		return n, nil
+	}
+	perSecond, err := read(EnvBrokerIntrospectionsPerSecond, maxIntrospectionsPerSecond)
+	if err != nil {
+		return ratelimit.Limit{}, err
+	}
+	burst, err := read(EnvBrokerIntrospectionBurst, maxIntrospectionBurst)
+	if err != nil {
+		return ratelimit.Limit{}, err
+	}
+	if perSecond == 0 && burst == 0 {
+		return ratelimit.Limit{}, nil
+	}
+	limit := ciphertoken.DefaultAddressLimit
+	if perSecond > 0 {
+		limit.Every = time.Second / time.Duration(perSecond)
+	}
+	if burst > 0 {
+		limit.Burst = burst
+	}
+	return limit, nil
 }
 
 // errBrokerTokensStarting is a DPoP presentation that arrives after /v1 is mounted and before the
@@ -167,9 +228,11 @@ func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) 
 		Replay:    spentProofs{kv: kv},
 		// The listener trusts no forwarding header for this: it has no proxy-trust setting of
 		// its own, and a bucket keyed on a header a caller writes bounds nothing. The connection
-		// is what is left, which is right for the listener's own deployments, where /v1 is
-		// reached directly.
-		Address: listenerSourceAddress,
+		// is what is left, which is right where /v1 is reached directly; where a forwarder stands
+		// in front, every caller it forwards shares its address's bucket, which
+		// EnvBrokerIntrospectionsPerSecond and EnvBrokerIntrospectionBurst size.
+		Address:      listenerSourceAddress,
+		AddressLimit: b.config.AddressLimit,
 	})
 	if err != nil {
 		return fmt.Errorf("%s: %w", EnvBrokerURL, err)
@@ -208,7 +271,11 @@ func (b *brokerTokens) describe() string {
 	if b.config.AccountTokenFile != "" {
 		identity = "projected token " + b.config.AccountTokenFile
 	}
-	return "broker tokens at " + b.config.BrokerURL + " as " + identity
+	described := "broker tokens at " + b.config.BrokerURL + " as " + identity
+	if limit := b.config.AddressLimit; limit != (ratelimit.Limit{}) {
+		described += fmt.Sprintf(" (introspections per source address: %d a second, a burst of %d)", int(time.Second/limit.Every), limit.Burst)
+	}
+	return described
 }
 
 // listenerSourceAddress is the address one introspection bucket is keyed on: the connection's

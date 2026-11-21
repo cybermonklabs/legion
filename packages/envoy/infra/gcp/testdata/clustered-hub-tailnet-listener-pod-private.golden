@@ -1,0 +1,220 @@
+{
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "listener",
+      "app.kubernetes.io/instance": "envoy-nats",
+      "app.kubernetes.io/name": "nats-listener"
+    }
+  },
+  "spec": {
+    "containers": [
+      {
+        "env": [
+          {
+            "name": "PORT",
+            "value": "9020"
+          },
+          {
+            "name": "ENVOY_LISTEN_HOST",
+            "value": "0.0.0.0"
+          },
+          {
+            "name": "ENVOY_ALLOWED_HOSTS",
+            "value": "envoy-hub.example-tailnet.ts.net"
+          },
+          {
+            "name": "ENVOY_MACHINE_ID",
+            "value": "envoy-hub"
+          },
+          {
+            "name": "NATS_URLS",
+            "value": "nats://envoy-nats.envoy.svc.cluster.local:4222"
+          },
+          {
+            "name": "ENVOY_ALLOW_REMOTE_NATS",
+            "value": "1"
+          },
+          {
+            "name": "ENVOY_AGENT_SECRETS_URL",
+            "value": "https://example-broker.example-dispatch.svc.cluster.local:8443"
+          },
+          {
+            "name": "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE",
+            "value": "/var/run/secrets/envoy-broker/token"
+          },
+          {
+            "name": "ENVOY_PUBLIC_URL",
+            "value": "http://envoy-hub.example-tailnet.ts.net:9020"
+          },
+          {
+            "name": "ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND",
+            "value": "50"
+          },
+          {
+            "name": "ENVOY_AGENT_SECRETS_INTROSPECTION_BURST",
+            "value": "200"
+          },
+          {
+            "name": "NATS_SERVICE_TOKEN_FILE",
+            "value": "/var/run/secrets/envoy/nats-token"
+          },
+          {
+            "name": "ENVOY_PROJECT_PRIVACY_URL",
+            "value": "https://example-broker.example-dispatch.svc.cluster.local:8443"
+          },
+          {
+            "name": "ENVOY_PROJECT_PRIVACY_REQUIRED",
+            "value": "true"
+          },
+          {
+            "name": "ENVOY_ALL_PROJECTS_ACCOUNTS",
+            "value": "system:serviceaccount:example-dispatch:example-dispatch"
+          },
+          {
+            "name": "ENVOY_V1_OPEN_WITH_TOKEN_CHECKS",
+            "value": "true"
+          },
+          {
+            "name": "ENVOY_OIDC_ISSUER",
+            "value": "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-hub"
+          },
+          {
+            "name": "ENVOY_OIDC_AUDIENCE",
+            "value": "envoy"
+          },
+          {
+            "name": "ENVOY_OIDC_ACCOUNTS",
+            "value": "system:serviceaccount:legion:legion-worker,system:serviceaccount:example-dispatch:example-dispatch"
+          }
+        ],
+        "image": "example.invalid/envoy:v99.0.0@sha256:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        "lifecycle": {
+          "preStop": {
+            "exec": {
+              "command": [
+                "sleep",
+                "5"
+              ]
+            }
+          }
+        },
+        "livenessProbe": {
+          "exec": {
+            "command": [
+              "curl",
+              "-sS",
+              "-o",
+              "/dev/null",
+              "--max-time",
+              "8",
+              "http://127.0.0.1:9020/livez"
+            ]
+          },
+          "failureThreshold": 6,
+          "periodSeconds": 10,
+          "timeoutSeconds": 9
+        },
+        "name": "listener",
+        "readinessProbe": {
+          "exec": {
+            "command": [
+              "curl",
+              "-sS",
+              "-o",
+              "/dev/null",
+              "--max-time",
+              "8",
+              "http://127.0.0.1:9020/livez"
+            ]
+          },
+          "failureThreshold": 3,
+          "periodSeconds": 10,
+          "timeoutSeconds": 9
+        },
+        "resources": {
+          "limits": {
+            "cpu": "500m",
+            "memory": "1Gi"
+          },
+          "requests": {
+            "cpu": "500m",
+            "memory": "1Gi"
+          }
+        },
+        "securityContext": {
+          "allowPrivilegeEscalation": false,
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          }
+        },
+        "startupProbe": {
+          "exec": {
+            "command": [
+              "/bin/sh",
+              "-c",
+              "curl -fsS --max-time 5 http://127.0.0.1:9020/metrics | grep -q '^envoy_active_interests '"
+            ]
+          },
+          "failureThreshold": 60,
+          "periodSeconds": 10,
+          "timeoutSeconds": 6
+        },
+        "volumeMounts": [
+          {
+            "mountPath": "/var/run/secrets/envoy",
+            "name": "nats-token",
+            "readOnly": true
+          },
+          {
+            "mountPath": "/var/run/secrets/envoy-broker",
+            "name": "envoy-broker-token",
+            "readOnly": true
+          }
+        ]
+      }
+    ],
+    "enableServiceLinks": false,
+    "securityContext": {
+      "runAsGroup": 999,
+      "runAsNonRoot": true,
+      "runAsUser": 999,
+      "seccompProfile": {
+        "type": "RuntimeDefault"
+      }
+    },
+    "serviceAccountName": "envoy-nats-listener",
+    "terminationGracePeriodSeconds": 40,
+    "volumes": [
+      {
+        "name": "nats-token",
+        "projected": {
+          "sources": [
+            {
+              "serviceAccountToken": {
+                "audience": "example-nats-audience",
+                "expirationSeconds": 3600,
+                "path": "nats-token"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "envoy-broker-token",
+        "projected": {
+          "sources": [
+            {
+              "serviceAccountToken": {
+                "audience": "example-broker-audience",
+                "expirationSeconds": 3600,
+                "path": "token"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+kind: Fixed
+body: |-
+  `gcp:NatsHub` quotes and escapes for systemd every value its listener unit passes the container when it holds `%`, `$`, a quote or a backslash: `listener.natsAudience`, `listener.agentSecretsUrl`, `listener.agentSecretsAudience`, `listener.publicUrl` and `listener.allowedHosts`. Before, a `%2F` in one of them made systemd refuse to load the unit, and a `$`, a quote or a backslash reached the listener changed.
+  A hub whose listener values hold none of these renders the same user data as before. One whose values hold one renders new user data, so its next update replaces the VM's instance template; a value written pre-escaped as `%%` or `$$` to work around the bug now reaches the listener doubled, and must be written plainly.

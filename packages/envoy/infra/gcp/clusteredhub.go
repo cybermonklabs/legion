@@ -208,22 +208,31 @@ func (t *ClusteredHubTailnetArgs) Annotate(a infer.Annotator) {
 
 // ClusteredHubListenerArgs are the session listener the hub runs as a workload of its own, which
 // the tailnet hosts forward the Tailscale Service's port 9020 to and the pods of
-// clientNamespaces reach at its cluster Service: its image, its machine id, the public key of its
-// NATS user's seed, and the existing Kubernetes Secret in the hub's namespace, and the key in it,
-// holding that seed, which the component mounts by reference and never reads. The hub renders
-// the listener's user itself, named after the machine id and granted core.ListenerPermissions
-// for it, as gcp:NatsHub renders its own listener's. Declared as the hub's own listener input, or
-// with clientNamespaces, the listener requires a credential of every caller (oidcIssuer,
-// oidcAudience, oidcAccounts); a tailnet.listener without clientNamespaces serves the tailnet
-// hosts with none, as it always has.
+// clientNamespaces reach at its cluster Service: its image, its machine id, and the NATS identity
+// it connects with. Without authCallout that is a user with a seed: the seed's public key, and the
+// existing Kubernetes Secret in the hub's namespace, and the key in it, holding that seed, which
+// the component mounts by reference and never reads; the hub renders the user itself, named after
+// the machine id and granted core.ListenerPermissions for it, as gcp:NatsHub renders its own
+// listener's. With authCallout it is a projected token of the listener's own ServiceAccount for
+// natsAudience, which the auth service admits it by: the hub renders no
+// user and mounts no Secret, so the seed's inputs are refused. Declared as the hub's own listener
+// input, or with clientNamespaces, the listener requires a credential of every caller
+// (oidcIssuer, oidcAudience, oidcAccounts); a tailnet.listener without clientNamespaces serves the
+// tailnet hosts with none, as it always has.
 type ClusteredHubListenerArgs struct {
 	Image string `pulumi:"image"` // pinned: <name>@sha256:<digest>
 	// The listener's machine id: tailnet.serviceName by default with tailnet, and required
 	// without it.
 	MachineID      *string `pulumi:"machineId,optional"`
-	NKey           string  `pulumi:"nkey"` // the seed's public key; never the seed
-	SeedSecretName string  `pulumi:"seedSecretName"`
-	SeedSecretKey  string  `pulumi:"seedSecretKey"`
+	NKey           string  `pulumi:"nkey,optional"`           // the seed's public key, never the seed: required without authCallout
+	SeedSecretName string  `pulumi:"seedSecretName,optional"` // required without authCallout
+	SeedSecretKey  string  `pulumi:"seedSecretKey,optional"`  // required without authCallout
+	// NatsAudience is the audience of the projected ServiceAccount token the listener presents to
+	// the auth service as its NATS credential (NATS_SERVICE_TOKEN_FILE names its file): the
+	// broker's BROKER_NATS_K8S_AUDIENCE, whose BROKER_NATS_SERVICES lists the listener's account,
+	// system:serviceaccount:<namespace>:<name>-listener, as a listener of its machine id. Required
+	// with authCallout and refused without.
+	NatsAudience string `pulumi:"natsAudience,optional"`
 	// The namespaces whose pods reach the listener's port at its cluster Service,
 	// <name>-listener.<namespace>.svc.cluster.local, which the listener then serves beside the
 	// tailnet hosts: none when unset, and at least one without tailnet, where no tailnet host
@@ -260,6 +269,26 @@ type ClusteredHubListenerArgs struct {
 	// limit: 500m and 1Gi by default.
 	Cpu    *string `pulumi:"cpu,optional"`
 	Memory *string `pulumi:"memory,optional"`
+	// What a listener of a hub that may make a project private reads each decision's privacy
+	// with, each required with the hub's privateProjects and read nowhere without it, so an
+	// all-public hub's listener renders what it rendered before these inputs existed, whatever
+	// they hold (newClusteredHubListenerPrivacy). agentSecretsUrl is the secrets broker's base
+	// URL (ENVOY_AGENT_SECRETS_URL), publicUrl the listener's own origin, which a caller's DPoP
+	// proof names (ENVOY_PUBLIC_URL), and brokerAudience the audience of the projected token of
+	// the listener's own account it introspects and reads privacy with, the broker's
+	// BROKER_K8S_OIDC_AUDIENCE, mounted at /var/run/secrets/envoy-broker/token
+	// (ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE) and never natsAudience's. privacySourceUrl is the
+	// secrets broker's base URL (ENVOY_PROJECT_PRIVACY_URL), the same value as agentSecretsUrl, to
+	// which the listener appends GET /v1/project-privacy itself, so it names no path; and
+	// allProjectsAccounts the
+	// callers the listener serves every project's sessions to (ENVOY_ALL_PROJECTS_ACCOUNTS), each
+	// a subject oidcAccounts lists, Dispatch's among them: their namespaces reach the listener's
+	// port, and its replicas at the headless Service <name>-listener-instances.
+	AgentSecretsUrl     string   `pulumi:"agentSecretsUrl,optional"`
+	PublicUrl           string   `pulumi:"publicUrl,optional"`
+	BrokerAudience      string   `pulumi:"brokerAudience,optional"`
+	PrivacySourceUrl    string   `pulumi:"privacySourceUrl,optional"`
+	AllProjectsAccounts []string `pulumi:"allProjectsAccounts,optional"`
 }
 
 // Annotate names the type gcp:ClusteredHubListener in the schema, for the reason NATSUserArgs's
@@ -367,7 +396,8 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 			return
 		}
 		fields = append(fields, field{path + ".image", l.Image},
-			field{path + ".seedSecretName", l.SeedSecretName}, field{path + ".seedSecretKey", l.SeedSecretKey})
+			field{path + ".seedSecretName", l.SeedSecretName}, field{path + ".seedSecretKey", l.SeedSecretKey},
+			field{path + ".natsAudience", l.NatsAudience})
 		opt(path+".machineId", l.MachineID)
 		opt(path+".cpu", l.Cpu)
 		opt(path+".memory", l.Memory)
@@ -375,6 +405,9 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 		list(path+".allowedHosts", l.AllowedHosts)
 		fields = append(fields, field{path + ".oidcIssuer", l.OidcIssuer}, field{path + ".oidcAudience", l.OidcAudience})
 		list(path+".oidcAccounts", l.OidcAccounts)
+		fields = append(fields, field{path + ".agentSecretsUrl", l.AgentSecretsUrl}, field{path + ".publicUrl", l.PublicUrl},
+			field{path + ".brokerAudience", l.BrokerAudience}, field{path + ".privacySourceUrl", l.PrivacySourceUrl})
+		list(path+".allProjectsAccounts", l.AllProjectsAccounts)
 	}
 	listener("listener", args.Listener)
 	if t := args.Tailnet; t != nil {
@@ -477,9 +510,6 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	listenerArgs, listenerPath, err := clusteredHubListenerArgs(args)
 	if err != nil {
 		return clusteredHubSettings{}, err
-	}
-	if args.AuthCallout != nil && listenerArgs != nil {
-		return clusteredHubSettings{}, listenerBesideCallout(listenerPath)
 	}
 	if s.tailnet, err = newClusteredHubTailnet(args); err != nil {
 		return clusteredHubSettings{}, err

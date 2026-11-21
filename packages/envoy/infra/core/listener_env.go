@@ -4,6 +4,7 @@ package core
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -51,22 +52,93 @@ type ListenerConfig struct {
 	// with a rate and no burst it takes the rate as the burst.
 	SenderMessagesPerMinute int
 	SenderMessageBurst      int
-	// AgentSecretsURL, AgentSecretsAudience and PublicURL are the listener's broker check,
-	// which the listener reads as one all-or-nothing set (cmd/listener/brokerauth.go,
+	// AgentSecretsURL, AgentSecretsAudience or BrokerTokenFile, and PublicURL are the listener's
+	// broker check, which the listener reads as one all-or-nothing set (cmd/listener/brokerauth.go,
 	// resolveListenerBrokerConfig): the secrets broker a caller's broker access token is
-	// introspected at, ENVOY_AGENT_SECRETS_URL; the audience this listener's own Google
-	// identity token is minted for, ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, which is the
-	// identity each introspection presents; and this listener's own origin,
-	// ENVOY_PUBLIC_URL, which a DPoP proof's target URI is checked against. Set all three or
-	// none: CheckBroker holds that rule. All three empty leaves every variable unset, and the
-	// listener then takes no broker token at all.
-	//
-	// The audience is a VM's identity. A listener in a pod presents a projected
-	// ServiceAccount token instead, through a variable of its own, and the listener refuses
-	// that file beside the audience, so a component renders one identity and never both.
+	// introspected at, ENVOY_AGENT_SECRETS_URL; the identity each introspection presents, which is
+	// either the audience this listener's own Google identity token is minted for,
+	// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, a VM's identity, or the file a pod's projected
+	// ServiceAccount token for the broker's audience is read from,
+	// ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE; and this listener's own origin, ENVOY_PUBLIC_URL,
+	// which a DPoP proof's target URI is checked against. Set the URL, one identity and the origin,
+	// or none: CheckBroker holds that rule, and the listener refuses both identities at once. All
+	// empty leaves every variable unset, and the listener then takes no broker token at all.
+	// ServiceTokenFile below is the NATS connection's identity, not this one: its audience is the
+	// auth service's, which the broker's own routes do not accept.
 	AgentSecretsURL      string
 	AgentSecretsAudience string
+	BrokerTokenFile      string
 	PublicURL            string
+	// ServiceTokenFile and ServiceGoogleAudience are the platform identity the listener's NATS
+	// connection presents to a hub whose connections the auth service in the secrets broker
+	// admits (internal/cipher/natscallout): the path of a projected
+	// ServiceAccount token, NATS_SERVICE_TOKEN_FILE, which a listener in a pod reads afresh at
+	// each connect, or the audience of the Google identity token a VM's metadata server mints,
+	// NATS_SERVICE_GOOGLE_AUDIENCE (bus.ServiceTokenFileEnvVar, bus.ServiceGoogleAudienceEnvVar).
+	// The audience or the token's is the one the broker's BROKER_NATS_GOOGLE_AUDIENCE or
+	// BROKER_NATS_K8S_AUDIENCE names. A listener connects as one identity, so at most one is set,
+	// and a component that sets one gives the listener no seed (EnvNATSSeed): the bus refuses
+	// either beside a seed when it starts. Both empty leaves both variables unset.
+	ServiceTokenFile      string
+	ServiceGoogleAudience string
+	// PrivacySourceURL, PrivacyRequired and AllProjectsAccounts are the listener's privacy
+	// settings, which a listener of a hub that may make a Dispatch project private carries and every
+	// other listener renders none of: the secrets broker's base URL, ENVOY_PROJECT_PRIVACY_URL, to
+	// which the listener appends the privacy route (GET /v1/project-privacy) and reads each
+	// decision's private projects there with its broker credential, so it names no path, the
+	// route's included; its required mode, ENVOY_PROJECT_PRIVACY_REQUIRED=true, in which a
+	// decision whose privacy cannot be read is refused; and the callers it serves every project's
+	// sessions to, ENVOY_ALL_PROJECTS_ACCOUNTS, each a ServiceAccount's subject. PlanC's #t-c-8
+	// makes the listener read them; a component sets PrivacyRequired from its own hub's
+	// privateProjects and never from an input of its own, and holds the set to CheckPrivacySource.
+	// The URL and the flag are one mode, both or neither, which Check holds. Unset, none is
+	// rendered, which renders what the listener rendered before the fields existed.
+	PrivacySourceURL    string
+	PrivacyRequired     bool
+	AllProjectsAccounts []string
+	// IntrospectionsPerSecond and IntrospectionBurst are the bucket each source address's
+	// introspections of a broker token are bounded by in the listener,
+	// ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND (1 to 1000) and
+	// ENVOY_AGENT_SECRETS_INTROSPECTION_BURST (1 to 100000), each only with the broker check, and
+	// 0 renders none, which the listener reads as its default (five a second, a burst of 20). A
+	// component raises them where every caller reaches the listener through a forwarder whose
+	// address they then share.
+	IntrospectionsPerSecond int
+	IntrospectionBurst      int
+	// V1OpenWithTokenChecks keeps /v1 open to a caller that presents no credential beside a token
+	// check, ENVOY_V1_OPEN_WITH_TOKEN_CHECKS=true (cmd/listener/apiauth.go): a presented token is
+	// verified and refused when it does not verify, and a request with none is served as the open
+	// listener serves it. A private hub's tailnet-only session listener renders it, so the private
+	// mode narrows no caller before the open /v1 itself is removed; a listener of an all-public hub
+	// renders none (CheckPrivacySource).
+	V1OpenWithTokenChecks bool
+}
+
+// The listener's own names and bounds of the two introspection-limit settings and the open
+// setting, written here for brokerVars's reason.
+const (
+	introspectionsPerSecondVar = "ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND"
+	introspectionBurstVar      = "ENVOY_AGENT_SECRETS_INTROSPECTION_BURST"
+	maxIntrospectionsPerSecond = 1000
+	maxIntrospectionBurst      = 100000
+	v1OpenWithTokenChecksVar   = "ENVOY_V1_OPEN_WITH_TOKEN_CHECKS"
+)
+
+// privacyVars are the names of the three privacy settings, in the order Env renders them, each
+// with the input a refusal names it by. core may not import the listener's packages, for the
+// reason brokerVars gives, so the names are written here once; they are unexported, as brokerVars
+// is: a component sets the fields and never renders a variable itself.
+var privacyVars = [3]struct{ input, variable string }{
+	{"privacySourceUrl", "ENVOY_PROJECT_PRIVACY_URL"},
+	{"privacyRequired", "ENVOY_PROJECT_PRIVACY_REQUIRED"},
+	{"allProjectsAccounts", "ENVOY_ALL_PROJECTS_ACCOUNTS"},
+}
+
+// serviceVars are the two variables of the listener's service identity, in the order Env renders
+// them, each with the input a refusal names it by: the bus's own names.
+var serviceVars = [2]struct{ input, variable string }{
+	{"serviceTokenFile", bus.ServiceTokenFileEnvVar},
+	{"serviceGoogleAudience", bus.ServiceGoogleAudienceEnvVar},
 }
 
 // TailnetHostName is the address a client reaches the listener of the tailnet machine hostname by,
@@ -138,40 +210,54 @@ func CheckAllowedHosts(input string, hosts []string) error {
 	return nil
 }
 
-// brokerVars are the three variables of the listener's broker check, in the order Env renders
+// brokerVars are the four variables of the listener's broker check, in the order Env renders
 // them, each with the schema input a refusal names it by. The names are copied from
 // packages/envoy/cmd/listener/brokerauth.go by hand, as the allowed-host rule above copies its
 // own: core may not import that package, since it is a main package and since a non-test import
 // would put it in `go list -deps ./cmd/...`, the path list a plugin release is cut from
-// (packages/envoy/infra/README.md, "Changing the module").
-var brokerVars = [3]struct{ input, variable string }{
+// (packages/envoy/infra/README.md, "Changing the module"). The two in the middle are the two
+// identities, of which a listener takes one.
+var brokerVars = [4]struct{ input, variable string }{
 	{"agentSecretsUrl", "ENVOY_AGENT_SECRETS_URL"},
 	{"agentSecretsAudience", "ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE"},
+	{"brokerTokenFile", "ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"},
 	{"publicUrl", "ENVOY_PUBLIC_URL"},
 }
 
+// CheckEnvValue refuses value, which a component renders as variable's value in the listener's
+// environment and names by its own input, input, where the environment cannot carry it. A value
+// holding an nkey seed is refused first, naming input and never the value, for Check's reason; and
+// one holding whitespace or a control character is refused because a component renders each
+// variable as one KEY=value argument of the unit's docker run command, where a space splits the
+// argument and a line break ends the heredoc a watchdog writes it into, and because the listener
+// trims what it reads, so a blank value is no value there at all.
+func CheckEnvValue(input, variable, value string) error {
+	if bus.HoldsSeed(value) {
+		return InputErrorf(input, "%w", SeedRefusal(input))
+	}
+	if strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsFunc(value, unicode.IsControl) {
+		return InputErrorf(input, "%s holds whitespace or a control character, which %s cannot carry (not echoed)", input, variable)
+	}
+	return nil
+}
+
 // CheckBroker refuses a broker check the listener would refuse at boot. prefix is the caller's
-// own path for the three inputs — "" for a listener's config, and a component's spelling, such
-// as "listener.", where it carries them under one input — so each refusal names the input as the
-// operator wrote it, as CheckAllowedHosts names the list.
+// own path for the inputs — "" for a listener's config, and a component's spelling, such as
+// "listener.", where it carries them under one input — so each refusal names the input as the
+// operator wrote it, as CheckAllowedHosts names the list. The identity is audience, a VM's Google
+// identity token's audience, or tokenFile, the file of a pod's projected token.
 //
-// The listener reads the three as one all-or-nothing set (cmd/listener/brokerauth.go,
+// The listener reads the set as one all-or-nothing group (cmd/listener/brokerauth.go,
 // resolveListenerBrokerConfig), so a partial set is refused here, naming the missing input and
 // the one that asks for it, rather than deploying a listener that refuses its own environment at
-// boot. A value holding an nkey seed is refused first, naming the input and never the value, for
-// Check's reason; and one holding whitespace or a control character is refused because a
-// component renders each as one KEY=value argument of the unit's docker run command, where a
-// space splits the argument and a line break ends the heredoc a watchdog writes it into, and
-// because the listener trims what it reads, so a blank value is no value there at all.
-func CheckBroker(prefix, brokerURL, audience, origin string) error {
-	values := [3]string{brokerURL, audience, origin}
+// boot: the URL, then one identity, then the origin. The two identities together are refused,
+// naming both, since the listener refuses them together too. Each value is held to CheckEnvValue
+// first.
+func CheckBroker(prefix, brokerURL, audience, tokenFile, origin string) error {
+	values := [4]string{brokerURL, audience, tokenFile, origin}
 	for i, v := range brokerVars {
-		input := prefix + v.input
-		if bus.HoldsSeed(values[i]) {
-			return InputErrorf(input, "%w", SeedRefusal(input))
-		}
-		if strings.ContainsFunc(values[i], unicode.IsSpace) || strings.ContainsFunc(values[i], unicode.IsControl) {
-			return InputErrorf(input, "%s holds whitespace or a control character, which %s cannot carry (not echoed)", input, v.variable)
+		if err := CheckEnvValue(prefix+v.input, v.variable, values[i]); err != nil {
+			return err
 		}
 	}
 	set := -1
@@ -184,13 +270,84 @@ func CheckBroker(prefix, brokerURL, audience, origin string) error {
 	if set < 0 {
 		return nil
 	}
-	for i, value := range values {
-		if value == "" {
-			return InputErrorf(prefix+brokerVars[i].input,
-				"%s is required when %s is set: the listener takes a broker access token only with %s, %s and %s together, and refuses a partial set when it boots",
-				prefix+brokerVars[i].input, prefix+brokerVars[set].input,
-				brokerVars[0].variable, brokerVars[1].variable, brokerVars[2].variable)
+	name := func(i int) string { return prefix + brokerVars[i].input }
+	if audience != "" && tokenFile != "" {
+		return InputErrorf(name(2), "%s and %s are both set: the listener introspects as one identity, and refuses %s beside %s when it boots",
+			name(1), name(2), brokerVars[2].variable, brokerVars[1].variable)
+	}
+	required := func(i int) error {
+		return InputErrorf(name(i),
+			"%s is required when %s is set: the listener takes a broker access token only with %s, %s or %s, and %s together, and refuses a partial set when it boots",
+			name(i), name(set), brokerVars[0].variable, brokerVars[1].variable, brokerVars[2].variable, brokerVars[3].variable)
+	}
+	switch {
+	case brokerURL == "":
+		return required(0)
+	case audience == "" && tokenFile == "":
+		return required(1)
+	case origin == "":
+		return required(3)
+	}
+	return nil
+}
+
+// CheckPrivacySource holds c, the environment a component is about to render for the listener it
+// names as listener (its own path for it, such as "tailnet.listener"), to the privacy mode of the
+// hub the listener serves. A listener of a hub that may make a project private (hubPrivate) runs
+// in required mode, and its every privacy decision is a read of the secrets broker's privacy
+// route with the projected token of its own account, so it needs the privacy URL, the flag, the
+// all-projects callers and the broker check in its token-file form: the broker URL, the token file
+// and the origin, and no Google audience beside the file. The privacy URL is the broker's base
+// URL, to which the listener appends the route itself, so one naming a path other than "/" is
+// refused: the listener would read the route under the route, and the source it reports would
+// match no source Dispatch's inventory names. A listener of any other hub renders no privacy
+// setting (R9). Each refusal is an InputError naming listener and the variable.
+//
+// It runs on what the component renders, after the component's own input rules, so a render that
+// drops a piece its inputs gave is refused before anything registers rather than deploying a
+// listener that reads every project as public or refuses its own environment at boot.
+func CheckPrivacySource(listener string, c ListenerConfig, hubPrivate bool) error {
+	if !hubPrivate {
+		for i, set := range [3]bool{c.PrivacySourceURL != "", c.PrivacyRequired, len(c.AllProjectsAccounts) > 0} {
+			if set {
+				return InputErrorf(listener, "%s renders %s on a hub that makes no project private, which renders no privacy setting", listener, privacyVars[i].variable)
+			}
 		}
+		if c.V1OpenWithTokenChecks {
+			return InputErrorf(listener, "%s renders %s on a hub that makes no project private, where an open listener needs no token check to stay open", listener, v1OpenWithTokenChecksVar)
+		}
+		return nil
+	}
+	for _, missing := range []struct {
+		absent   bool
+		variable string
+	}{
+		{c.PrivacySourceURL == "", privacyVars[0].variable},
+		{!c.PrivacyRequired, privacyVars[1].variable + "=true"},
+		{len(c.AllProjectsAccounts) == 0, privacyVars[2].variable},
+		{c.AgentSecretsURL == "", brokerVars[0].variable},
+		{c.BrokerTokenFile == "", brokerVars[2].variable},
+		{c.PublicURL == "", brokerVars[3].variable},
+	} {
+		if missing.absent {
+			return InputErrorf(listener, "%s renders no %s, which a listener of a hub that may make a project private needs: it reads each decision's privacy from the secrets broker, as the projected token of its own account",
+				listener, missing.variable)
+		}
+	}
+	source, err := url.Parse(c.PrivacySourceURL)
+	if err == nil && source.Path != "" && source.Path != "/" {
+		return InputErrorf(listener, "%s renders %s %q with the path %q: it is the secrets broker's base URL, to which the listener appends /v1/project-privacy itself",
+			listener, privacyVars[0].variable, c.PrivacySourceURL, source.Path)
+	}
+	// The listener presents its broker token at the privacy URL, so it is the broker's own origin
+	// and no other.
+	if broker, berr := url.Parse(c.AgentSecretsURL); err != nil || berr != nil || source.Scheme != broker.Scheme || source.Host != broker.Host {
+		return InputErrorf(listener, "%s renders %s %q at an origin other than %s %q: the listener presents its broker token there, so it is the secrets broker's own origin",
+			listener, privacyVars[0].variable, c.PrivacySourceURL, brokerVars[0].variable, c.AgentSecretsURL)
+	}
+	if c.AgentSecretsAudience != "" {
+		return InputErrorf(listener, "%s renders %s beside %s: in a pod the listener presents its own projected token to the broker, and refuses a second identity",
+			listener, brokerVars[1].variable, brokerVars[2].variable)
 	}
 	return nil
 }
@@ -243,7 +400,9 @@ func CheckSenderLimit(prefix string, perMinute, burst *int) (int, int, error) {
 // 0, each of which the listener refuses when it boots; CheckSenderLimit holds a component's own
 // rule for the two inputs, which also refuses a 0 an operator gave. CheckBroker owns the broker
 // check's rule, under core's own input names, so a component that renders those three under an
-// input of its own calls it with its own prefix first.
+// input of its own calls it with its own prefix first. Each of the service identity's two values
+// is held to CheckEnvValue, and the two together are refused: the listener's bus connects as one
+// identity and refuses both variables at start.
 func (c ListenerConfig) Check() error {
 	if bus.HoldsSeed(c.MachineID) {
 		return InputErrorf("machineId", "%w", SeedRefusal("machineId"))
@@ -286,10 +445,88 @@ func (c ListenerConfig) Check() error {
 			"senderMessageBurst %d is set with no senderMessagesPerMinute, and the listener refuses a burst with no rate when it boots",
 			c.SenderMessageBurst)
 	}
-	if err := CheckBroker("", c.AgentSecretsURL, c.AgentSecretsAudience, c.PublicURL); err != nil {
+	if err := CheckBroker("", c.AgentSecretsURL, c.AgentSecretsAudience, c.BrokerTokenFile, c.PublicURL); err != nil {
 		return err
 	}
+	for i, value := range [2]string{c.ServiceTokenFile, c.ServiceGoogleAudience} {
+		if err := CheckEnvValue(serviceVars[i].input, serviceVars[i].variable, value); err != nil {
+			return err
+		}
+	}
+	if c.ServiceTokenFile != "" && c.ServiceGoogleAudience != "" {
+		return InputErrorf(serviceVars[1].input,
+			"%s and %s are both set: the listener connects to NATS as one identity, and its bus refuses %s beside %s when it starts",
+			serviceVars[0].input, serviceVars[1].input, serviceVars[0].variable, serviceVars[1].variable)
+	}
+	for _, limit := range []struct {
+		input, variable string
+		value, most     int
+	}{
+		{"introspectionsPerSecond", introspectionsPerSecondVar, c.IntrospectionsPerSecond, maxIntrospectionsPerSecond},
+		{"introspectionBurst", introspectionBurstVar, c.IntrospectionBurst, maxIntrospectionBurst},
+	} {
+		if limit.value < 0 || limit.value > limit.most {
+			return InputErrorf(limit.input, "%s %d must be from 1 to %d, or 0 for the listener's default", limit.input, limit.value, limit.most)
+		}
+		if limit.value > 0 && c.AgentSecretsURL == "" {
+			return InputErrorf(limit.input, "%s is set without agentSecretsUrl: %s bounds the listener's introspections of broker tokens, which it takes only with %s, and the listener refuses it alone when it boots",
+				limit.input, limit.variable, brokerVars[0].variable)
+		}
+	}
+	return c.checkPrivacy()
+}
+
+// checkPrivacy is Check's rule for the privacy settings: the URL and the flag are one mode, both
+// or neither, since plan C's listener refuses one without the other; the URL is an http or https
+// URL with a host, held to CheckEnvValue first; and each all-projects caller is a ServiceAccount's
+// subject, system:serviceaccount:<namespace>:<name>, rendered comma-joined, so one holding a
+// comma or blank is refused, and none repeats an earlier one. A component's own rule for its hub,
+// which settings a listener of a private or an all-public hub must carry, is CheckPrivacySource.
+func (c ListenerConfig) checkPrivacy() error {
+	urlInput, flagInput, accountsInput := privacyVars[0].input, privacyVars[1].input, privacyVars[2].input
+	if err := CheckEnvValue(urlInput, privacyVars[0].variable, c.PrivacySourceURL); err != nil {
+		return err
+	}
+	switch {
+	case c.PrivacySourceURL != "" && !c.PrivacyRequired:
+		return InputErrorf(flagInput, "%s is set without %s: the listener reads a privacy URL only in its required mode, and refuses %s without %s=true when it boots",
+			urlInput, flagInput, privacyVars[0].variable, privacyVars[1].variable)
+	case c.PrivacyRequired && c.PrivacySourceURL == "":
+		return InputErrorf(urlInput, "%s is required with %s: the listener's required mode reads each decision's privacy from it",
+			urlInput, flagInput)
+	case c.PrivacySourceURL != "":
+		// https alone: the listener presents its broker-audience token at this URL.
+		if source, err := url.Parse(c.PrivacySourceURL); err != nil || source.Scheme != "https" || source.Host == "" {
+			return InputErrorf(urlInput, "%s %q must be an https URL with a host: the listener presents its own broker token there", urlInput, c.PrivacySourceURL)
+		}
+	}
+	seen := make(map[string]int, len(c.AllProjectsAccounts))
+	for i, account := range c.AllProjectsAccounts {
+		entry := fmt.Sprintf("%s[%d]", accountsInput, i)
+		if err := CheckEnvValue(entry, privacyVars[2].variable, account); err != nil {
+			return InputErrorf(accountsInput, "%w", err)
+		}
+		namespace, name, ok := ServiceAccountSubject(account)
+		if !ok || strings.Contains(account, ",") || namespace == "" || name == "" {
+			return InputErrorf(accountsInput, "%s %q must be system:serviceaccount:<namespace>:<name>, a ServiceAccount's subject", entry, account)
+		}
+		if first, repeated := seen[account]; repeated {
+			return InputErrorf(accountsInput, "%s %q repeats %s[%d]", entry, account, accountsInput, first)
+		}
+		seen[account] = i
+	}
 	return nil
+}
+
+// ServiceAccountSubject splits subject, a projected token's subject, into the namespace and name
+// of its ServiceAccount: system:serviceaccount:<namespace>:<name>. ok is false for any other shape.
+func ServiceAccountSubject(subject string) (namespace, name string, ok bool) {
+	rest, prefixed := strings.CutPrefix(subject, "system:serviceaccount:")
+	if !prefixed {
+		return "", "", false
+	}
+	namespace, name, ok = strings.Cut(rest, ":")
+	return namespace, name, ok && !strings.Contains(name, ":")
 }
 
 // Env returns the listener's non-secret environment, KEY=value, in a fixed order, for the config
@@ -309,9 +546,13 @@ func (c ListenerConfig) Check() error {
 // bus.SenderMessagesPerMinuteEnvVar then bus.SenderMessageBurstEnvVar, each only when its field
 // is above 0 too. aws/rendering's ListenerEnv sets no NATSReplicas here and writes its own
 // ENVOY_NATS_REPLICAS after all of Env's variables, the sender limit's included. The broker check
-// comes last, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
-// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it, so
-// a listener without one renders what it always rendered, byte for byte.
+// follows, in brokerVars's order — ENVOY_AGENT_SECRETS_URL, ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE or
+// ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, ENVOY_PUBLIC_URL — then its introspection limit,
+// ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND then ENVOY_AGENT_SECRETS_INTROSPECTION_BURST, then
+// the service identity's one variable, then the privacy settings, in privacyVars's order —
+// ENVOY_PROJECT_PRIVACY_URL, ENVOY_PROJECT_PRIVACY_REQUIRED=true, ENVOY_ALL_PROJECTS_ACCOUNTS
+// comma-joined — and ENVOY_V1_OPEN_WITH_TOKEN_CHECKS=true last, each only on a config that sets
+// it, so a listener without them renders what it always rendered, byte for byte.
 func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	if err := c.Check(); err != nil {
 		return nil, err
@@ -369,10 +610,33 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	if c.SenderMessageBurst > 0 {
 		env = append(env, bus.SenderMessageBurstEnvVar+"="+strconv.Itoa(c.SenderMessageBurst))
 	}
-	for i, value := range [3]string{c.AgentSecretsURL, c.AgentSecretsAudience, c.PublicURL} {
+	for i, value := range [4]string{c.AgentSecretsURL, c.AgentSecretsAudience, c.BrokerTokenFile, c.PublicURL} {
 		if value != "" {
 			env = append(env, brokerVars[i].variable+"="+value)
 		}
+	}
+	if c.IntrospectionsPerSecond > 0 {
+		env = append(env, introspectionsPerSecondVar+"="+strconv.Itoa(c.IntrospectionsPerSecond))
+	}
+	if c.IntrospectionBurst > 0 {
+		env = append(env, introspectionBurstVar+"="+strconv.Itoa(c.IntrospectionBurst))
+	}
+	for i, value := range [2]string{c.ServiceTokenFile, c.ServiceGoogleAudience} {
+		if value != "" {
+			env = append(env, serviceVars[i].variable+"="+value)
+		}
+	}
+	if c.PrivacySourceURL != "" {
+		env = append(env, privacyVars[0].variable+"="+c.PrivacySourceURL)
+	}
+	if c.PrivacyRequired {
+		env = append(env, privacyVars[1].variable+"=true")
+	}
+	if len(c.AllProjectsAccounts) > 0 {
+		env = append(env, privacyVars[2].variable+"="+strings.Join(c.AllProjectsAccounts, ","))
+	}
+	if c.V1OpenWithTokenChecks {
+		env = append(env, v1OpenWithTokenChecksVar+"=true")
 	}
 	return env, nil
 }

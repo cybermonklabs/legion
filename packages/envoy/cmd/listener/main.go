@@ -1052,14 +1052,19 @@ func main() {
 		log.Fatal(err)
 	}
 	brokerTokenAuth := newBrokerTokens(brokerConfig)
+	openWithTokenChecks, err := resolveListenerV1OpenWithTokenChecks(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	apiAuthConfig := listenerAPIAuth{
-		token:        apiToken,
-		verifier:     apiVerifier,
-		accounts:     oidcAccounts,
-		google:       googleCallers,
-		brokers:      brokerTokenAuth,
-		allowedHosts: cfg.AllowedHosts,
-		logger:       logger,
+		token:               apiToken,
+		verifier:            apiVerifier,
+		accounts:            oidcAccounts,
+		google:              googleCallers,
+		brokers:             brokerTokenAuth,
+		allowedHosts:        cfg.AllowedHosts,
+		logger:              logger,
+		openWithTokenChecks: openWithTokenChecks,
 	}
 	if err := validateListenerAPIAuth(cfg, apiAuthConfig, os.Getenv("ENVOY_API_ALLOW_UNAUTHENTICATED")); err != nil {
 		log.Fatal(err)

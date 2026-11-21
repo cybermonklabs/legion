@@ -7,9 +7,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -635,5 +639,81 @@ func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) 
 				t.Fatalf("log = %q, want no refusal line for a served request", logged.String())
 			}
 		})
+	}
+}
+
+// TestAnAllPublicListenerAcceptsADaemonsDPoPToken: a listener in the all-public mode, no privacy
+// variable set, whose environment carries the four broker settings in their token-file form, as
+// the webhook listener envoy-listener renders them wherever the deployment names its broker,
+// answers a Legion daemon's POST /v1/messages/publish presented under the DPoP scheme, with its
+// proof for the listener's own URL, 2xx. That listener requires a bearer of every other caller, as
+// envoy-listener does, and it introspects the daemon's token as its own account: the broker is
+// presented the projected token the token file holds, which the broker resolves to its caller
+// listener. The daemon's request is the wire shape the Go client's DPoP transport produces
+// (ciphertokentest.Caller: Authorization: DPoP <token> and a DPoP proof for the method and the
+// listener's URL); the daemon's own sender is on no branch yet.
+//
+// Control: the same listener without the broker settings, the all-public render before them; it
+// answers the daemon 401, and the test fails naming the status.
+func TestAnAllPublicListenerAcceptsADaemonsDPoPToken(t *testing.T) {
+	const (
+		shared       = "shared-bearer-of-the-webhook-listener"
+		daemonToken  = "access-token-of-a-legion-daemon"
+		accountToken = "projected-token-of-the-listeners-own-account"
+	)
+	broker := ciphertokentest.NewStubBroker(t)
+	daemon := ciphertokentest.NewCaller(t)
+	broker.Says(daemonToken, serviceAnswer("legion-go-example", "legion-daemon", daemon.JKT()))
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte(accountToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withBroker := map[string]string{
+		EnvBrokerURL:              broker.Server.URL,
+		EnvBrokerAccountTokenFile: tokenFile,
+		EnvPublicURL:              listenerBrokerOrigin,
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if caller, ok := brokerCaller(r); !ok || caller.Session != "legion-go-example" {
+			t.Errorf("the publish reached its handler as %+v (bound %v), want the daemon's session", caller, ok)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	publish := func(env map[string]string) int {
+		t.Helper()
+		for _, name := range []string{"ENVOY_PROJECT_PRIVACY_URL", "ENVOY_PROJECT_PRIVACY_REQUIRED"} {
+			if env[name] != "" {
+				t.Fatalf("%s is set: this listener is in the all-public mode", name)
+			}
+		}
+		brokers, err := resolveListenerBrokerConfig(func(name string) string { return env[name] })
+		if err != nil {
+			t.Fatalf("resolveListenerBrokerConfig: %v", err)
+		}
+		tokens := newBrokerTokens(brokers)
+		if tokens != nil {
+			verifier, err := ciphertoken.New(ciphertoken.Options{
+				BrokerURL: brokers.BrokerURL, Account: brokers.account(), Origin: brokers.Origin,
+				Replay: &spentProofsInMemory{}, Address: listenerSourceAddress,
+			})
+			if err != nil {
+				t.Fatalf("build the broker-token verifier: %v", err)
+			}
+			tokens.verifier.Store(verifier)
+		}
+		auth := listenerAPIAuth{token: shared, brokers: tokens, logger: logging.NewWithWriter("test-machine", io.Discard)}
+		recorder := httptest.NewRecorder()
+		apiAuth(auth, next).ServeHTTP(recorder, brokerTokenRequest(t, daemon, http.MethodPost, "/v1/messages/publish", daemonToken, `{}`))
+		return recorder.Code
+	}
+
+	if status := publish(withBroker); status < 200 || status > 299 {
+		t.Fatalf("the daemon's DPoP publish to an all-public listener with the broker settings: status = %d, want 2xx", status)
+	}
+	if bearers := broker.Bearers(); len(bearers) != 1 || bearers[0] != "Bearer "+accountToken {
+		t.Fatalf("the broker was presented %q, want the listener's own account token from %s, once", bearers, EnvBrokerAccountTokenFile)
+	}
+	if status := publish(map[string]string{}); status != http.StatusUnauthorized {
+		t.Fatalf("the control, the same listener without the broker settings: status = %d, want 401", status)
 	}
 }

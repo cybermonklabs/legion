@@ -1991,6 +1991,55 @@ func TestLoadReadsTheAPIAccounts(t *testing.T) {
 	}
 }
 
+// apiAccountsLiteral is BROKER_API_ACCOUNTS as the deployment writes it once every listener that
+// verifies a broker token introspects it as its own account: Dispatch's server, the webhook
+// listener envoy-listener, the clustered hub's session listener envoy-nats-listener, Dispatch's
+// own listener dispatch-listener, and the access review's reader. The deployment's own test holds
+// its rendered value to this literal, so a change to one is quoted with both runs.
+const apiAccountsLiteral = "dispatch=system:serviceaccount:dispatch:dispatch" +
+	" listener=system:serviceaccount:envoy:envoy-listener" +
+	" listener=system:serviceaccount:envoy:envoy-nats-listener" +
+	" listener=system:serviceaccount:dispatch:dispatch-listener" +
+	" access-review=system:serviceaccount:legion:legion-worker"
+
+// TestAPIAccountsTakeEveryListener: Load takes apiAccountsLiteral and resolves each of the three
+// listener accounts to the caller listener, whose one power is reading the broker's access tokens
+// back (api's accountPowers, the introspection route's readsTokensBack), and Dispatch's account to
+// dispatch. A listener with broker settings introspects each broker token as that caller, so an
+// account missing here is a listener that answers every broker token 401.
+//
+// Control: the literal with one listener entry spelled listeners=; Load refuses it naming the
+// caller, and the test fails naming the entry.
+func TestAPIAccountsTakeEveryListener(t *testing.T) {
+	e := withK8sIssuer()
+	e["BROKER_API_ACCOUNTS"] = apiAccountsLiteral
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load(BROKER_API_ACCOUNTS=%q): %v", apiAccountsLiteral, err)
+	}
+	listener, _ := api.AccountFor("listener")
+	dispatchCaller, _ := api.AccountFor("dispatch")
+	for account, want := range map[string]api.Account{
+		"system:serviceaccount:envoy:envoy-listener":       listener,
+		"system:serviceaccount:envoy:envoy-nats-listener":  listener,
+		"system:serviceaccount:dispatch:dispatch-listener": listener,
+		"system:serviceaccount:dispatch:dispatch":          dispatchCaller,
+	} {
+		if got, ok := cfg.APIAccounts[account]; !ok || got != want || got.Name != want.Name {
+			t.Errorf("APIAccounts[%q] = %+v (listed %v), want the caller %q", account, got, ok, want.Name)
+		}
+	}
+	if len(cfg.APIAccounts) != 5 {
+		t.Errorf("APIAccounts holds %d accounts, want the literal's five: %v", len(cfg.APIAccounts), cfg.APIAccounts)
+	}
+
+	misspelt := strings.Replace(apiAccountsLiteral, "listener=system:serviceaccount:envoy:envoy-nats-listener", "listeners=system:serviceaccount:envoy:envoy-nats-listener", 1)
+	e["BROKER_API_ACCOUNTS"] = misspelt
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "listeners") {
+		t.Fatalf("Load(BROKER_API_ACCOUNTS with listeners=) = %v, want a refusal naming the caller listeners", err)
+	}
+}
+
 // TestLoadReadsAGoogleAPIAccount pins the other kind of BROKER_API_ACCOUNTS entry: an account
 // written google:<address> is a Google service account, kept apart from the Kubernetes accounts
 // and keyed by the address its identity token carries in email, which is how the Envoy listener

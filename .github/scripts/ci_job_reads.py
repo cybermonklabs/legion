@@ -819,6 +819,11 @@ RULES = {
     f"{ENVOY}/cmd/listener/api_test.go": reads(
         (f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:176,421,465"),
         (f"{FIX}/envoy-session-no-interests.json", "cmd/listener/api_test.go:4605")),
+    f"{ENVOY}/cmd/listener/brokerauth_render_test.go": reads(
+        (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod-private.golden",
+         "cmd/listener/brokerauth_render_test.go:74,117 renderedListenerEnv (os.ReadFile :24 under ../../infra/gcp/testdata)"),
+        (f"{INFRA}/gcp/testdata/clustered-hub-tailnet-listener-pod-private.golden",
+         "cmd/listener/brokerauth_render_test.go:75 renderedListenerEnv (os.ReadFile :24 under ../../infra/gcp/testdata)")),
     f"{ENVOY}/cmd/listener/grace_margin_doc_test.go": reads(
         (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:17"),
         (f"{INFRA}/docs/nats-hub.md", "cmd/listener/grace_margin_doc_test.go:18")),
@@ -834,6 +839,11 @@ RULES = {
         (f"{ENVOY}/internal/dispatch/specgraph/testdata/**",
          "cmd/spec-check/main_test.go:432 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
          "lists at :69 and its built binary reads")),
+    f"{ENVOY}/internal/cipher/api/limits_render_test.go": reads(
+        (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod-private.golden",
+         "internal/cipher/api/limits_render_test.go:24-25 os.ReadFile under ../../../infra/gcp/testdata"),
+        (f"{INFRA}/gcp/testdata/clustered-hub-tailnet-listener-pod-private.golden",
+         "internal/cipher/api/limits_render_test.go:24-25 os.ReadFile under ../../../infra/gcp/testdata")),
     f"{ENVOY}/internal/cipher/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem",
                                                             "internal/cipher/config/config_test.go:1836,1866 Load the URL whose sslrootcert is this bundle (rdsBundle :1796), which pgx reads to build the root pool")),
     f"{ENVOY}/internal/cipher/store/storetest/storetest_test.go": [

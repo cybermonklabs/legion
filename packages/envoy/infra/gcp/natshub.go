@@ -138,8 +138,11 @@ type NatsHubArgs struct {
 	// of the hub's users; see docs/nats-hub.md, "The auth service". Unset, the hub renders exactly
 	// what it rendered before callouts existed.
 	AuthCallout *nats.AuthCalloutArgs `pulumi:"authCallout,optional"`
-	// The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862): it needs
-	// authCallout and no user but authCallout.serviceUser, so no session user and no listener.
+	// The deployment may make a Dispatch project private (the private-projects work's R12): it needs
+	// authCallout and no user but authCallout.serviceUser, so no session user. The VM hub is never
+	// a private project's hub, so it is refused beside the hub's own listener
+	// (privateProjectsBesideListener): a private hub's listener reads each decision's privacy from
+	// the secrets broker, which is gcp:ClusteredNatsHub's listener's form.
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
 }
 
@@ -170,14 +173,23 @@ type PermissionsArgs struct {
 // Annotate names the type gcp:Permissions in the schema, for the reason NATSUserArgs's gives.
 func (p *PermissionsArgs) Annotate(a infer.Annotator) { a.SetToken("gcp", "Permissions") }
 
-// HubListenerArgs are the hub's own Envoy listener: its image, the Secret Manager secret in the
-// hub's project that holds its NATS user's seed, and that seed's public key. The hub renders the
-// user itself, named after the hub's hostname, the listener's machine id, and granted
-// core.ListenerPermissions for that machine.
+// HubListenerArgs are the hub's own Envoy listener: its image and the NATS identity it connects
+// with. Without authCallout that is a user with a seed: the Secret Manager secret in the hub's
+// project that holds the seed, and the seed's public key, from which the hub renders the user
+// itself, named after the hub's hostname, the listener's machine id, and granted
+// core.ListenerPermissions for that machine. With authCallout it is the VM's own Google identity
+// token for natsAudience, which the auth service admits it by: the hub
+// renders no user for the listener and fetches no seed, so seedSecret and nkey are refused.
 type HubListenerArgs struct {
-	Image      string `pulumi:"image"`      // pinned: <name>@sha256:<digest>
-	SeedSecret string `pulumi:"seedSecret"` // a secret id, never the seed
-	NKey       string `pulumi:"nkey"`       // the seed's public key; never the seed
+	Image      string `pulumi:"image"`               // pinned: <name>@sha256:<digest>
+	SeedSecret string `pulumi:"seedSecret,optional"` // a secret id, never the seed: required without authCallout
+	NKey       string `pulumi:"nkey,optional"`       // the seed's public key, never the seed: required without authCallout
+	// NatsAudience is the audience of the Google identity token this VM's metadata server mints,
+	// which the listener presents to the auth service as its NATS credential
+	// (NATS_SERVICE_GOOGLE_AUDIENCE): the broker's BROKER_NATS_GOOGLE_AUDIENCE, whose
+	// BROKER_NATS_SERVICES lists this VM's account as a listener of machine id hostname. Required
+	// with authCallout and refused without.
+	NatsAudience string `pulumi:"natsAudience,optional"`
 	// Any further address a client dials this hub by, beyond the hub's own
 	// <hostname>.<tailnetDnsName>, which the hub always serves. Each entry is rendered as written,
 	// since the listener normalizes what it reads.
@@ -311,12 +323,17 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 	if args.Subnetwork != nil && args.Network == nil {
 		return settings{}, errors.New("subnetwork is set without network; the firewall needs the network the subnetwork belongs to")
 	}
-	if args.Listener != nil && args.AuthCallout != nil {
-		return settings{}, listenerBesideCallout("listener")
+	if args.PrivateProjects && args.Listener != nil {
+		return settings{}, privateProjectsBesideListener()
 	}
 	var hubListener *listenerUser
-	if args.Listener != nil {
-		hubListener = &listenerUser{machineID: args.Hostname, nkey: args.Listener.NKey}
+	if l := args.Listener; l != nil {
+		service := args.AuthCallout != nil
+		if err := listenerIdentity("listener.", service, l.NatsAudience, bus.ServiceGoogleAudienceEnvVar, "BROKER_NATS_GOOGLE_AUDIENCE",
+			[][2]string{{"nkey", l.NKey}, {"seedSecret", l.SeedSecret}}); err != nil {
+			return settings{}, err
+		}
+		hubListener = &listenerUser{machineID: args.Hostname, nkey: l.NKey}
 	}
 	auth, err := authorization(args.Users, hubListener, args.SessionUser, args.AuthCallout, args.PrivateProjects)
 	if err != nil {
@@ -358,6 +375,12 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 // the VM that cannot start, so the hub refuses one at preview, naming the input left out; a hub
 // that sets none renders none of the three. Its sender limit is core's rule too
 // (core.CheckSenderLimit), naming listener.senderMessagesPerMinute or listener.senderMessageBurst.
+//
+// Its NATS identity was checked against authCallout before the authorization was rendered
+// (listenerIdentity): without authCallout, the seed in listener.seedSecret, which the VM fetches
+// before each start; with it, the VM's Google identity token for listener.natsAudience
+// (NATS_SERVICE_GOOGLE_AUDIENCE), and no seed secret at all. A hub with privateProjects has no
+// listener here: newSettings refuses the two together (privateProjectsBesideListener).
 func resolveListener(args *NatsHubArgs) (*listener, error) {
 	l := args.Listener
 	if l == nil {
@@ -366,11 +389,14 @@ func resolveListener(args *NatsHubArgs) (*listener, error) {
 	if !imageRule.MatchString(l.Image) {
 		return nil, fmt.Errorf("listener.image %q must be pinned by digest, as <name>@sha256:<64 lowercase hex digits>", l.Image)
 	}
-	if !secretIDRule.MatchString(l.SeedSecret) {
-		return nil, fmt.Errorf("listener.seedSecret %q must be a secret id in the hub's project, matching %s", l.SeedSecret, secretIDRule)
-	}
-	if l.SeedSecret == args.Hostname+tailnetAuthKeySuffix {
-		return nil, fmt.Errorf("listener.seedSecret %q is the hub's own tailnet auth key secret", l.SeedSecret)
+	service := args.AuthCallout != nil
+	if !service {
+		if !secretIDRule.MatchString(l.SeedSecret) {
+			return nil, fmt.Errorf("listener.seedSecret %q must be a secret id in the hub's project, matching %s", l.SeedSecret, secretIDRule)
+		}
+		if l.SeedSecret == args.Hostname+tailnetAuthKeySuffix {
+			return nil, fmt.Errorf("listener.seedSecret %q is the hub's own tailnet auth key secret", l.SeedSecret)
+		}
 	}
 	if args.TailnetDnsName == "" {
 		return nil, errors.New("tailnetDnsName is required for a hub with a listener: the hub renders the " +
@@ -379,14 +405,14 @@ func resolveListener(args *NatsHubArgs) (*listener, error) {
 	if err := core.CheckAllowedHosts("listener.allowedHosts", l.AllowedHosts); err != nil {
 		return nil, err
 	}
-	if err := core.CheckBroker("listener.", l.AgentSecretsUrl, l.AgentSecretsAudience, l.PublicUrl); err != nil {
+	if err := core.CheckBroker("listener.", l.AgentSecretsUrl, l.AgentSecretsAudience, "", l.PublicUrl); err != nil {
 		return nil, err
 	}
 	rate, burst, err := core.CheckSenderLimit("listener.", l.SenderMessagesPerMinute, l.SenderMessageBurst)
 	if err != nil {
 		return nil, err
 	}
-	env, err := core.ListenerConfig{
+	config := core.ListenerConfig{
 		MachineID:               args.Hostname,
 		Port:                    core.DefaultListenerPort,
 		ListenHost:              "127.0.0.1",
@@ -396,7 +422,11 @@ func resolveListener(args *NatsHubArgs) (*listener, error) {
 		AgentSecretsURL:         l.AgentSecretsUrl,
 		AgentSecretsAudience:    l.AgentSecretsAudience,
 		PublicURL:               l.PublicUrl,
-	}.Env([]string{localNATS})
+	}
+	if service {
+		config.ServiceGoogleAudience = l.NatsAudience
+	}
+	env, err := config.Env([]string{localNATS})
 	if err != nil {
 		return nil, err
 	}
@@ -444,6 +474,7 @@ func seededInput(args *NatsHubArgs) (string, bool) {
 	}
 	if args.Listener != nil {
 		fields = append(fields, field{"listener.image", args.Listener.Image}, field{"listener.seedSecret", args.Listener.SeedSecret},
+			field{"listener.natsAudience", args.Listener.NatsAudience},
 			field{"listener.agentSecretsUrl", args.Listener.AgentSecretsUrl},
 			field{"listener.agentSecretsAudience", args.Listener.AgentSecretsAudience},
 			field{"listener.publicUrl", args.Listener.PublicUrl})
@@ -479,14 +510,49 @@ func calloutSeedFields(callout *nats.AuthCalloutArgs) []struct{ path, value stri
 	}
 }
 
-// listenerBesideCallout refuses input, the hub's own listener, beside authCallout. Today the
-// listener connects to NATS as a user whose seed the hub stores; behind the auth service it is to
-// connect through the service with a service identity of its own instead, which arrives with
-// dispatch://INFRA-840's task t-e-13. Until then a hub with authCallout runs no listener.
-func listenerBesideCallout(input string) error {
-	return core.InputErrorf(input, "%s and authCallout: the hub's own listener connects to NATS as a user whose seed the hub stores (%s.nkey and its seed secret); "+
-		"behind the auth service it connects with a service identity instead, and its service identity arrives with dispatch://INFRA-840 (t-e-13), "+
-		"so until then a hub with authCallout runs no listener of its own", input, input)
+// privateProjectsBesideListener refuses gcp:NatsHub's privateProjects beside the hub's own
+// listener, naming privateProjects. The VM hub is never a private project's hub: a listener of a
+// hub that may make a project private reads each decision's privacy from the secrets broker with
+// the projected token of its own account (core.CheckPrivacySource), which a VM's listener has no
+// form of, so a VM hub that may hold a private project runs no listener of its own.
+func privateProjectsBesideListener() error {
+	return core.InputErrorf("privateProjects", "privateProjects and listener: the VM hub is never private, and a listener of a hub that may make a project private reads each decision's privacy from the secrets broker as the projected token of its own account, which gcp:ClusteredNatsHub's session listener does; drop listener, or privateProjects")
+}
+
+// listenerIdentity refuses a hub's own listener's NATS identity where it does not fit the hub,
+// each refusal a core.InputError naming the input by prefix, the hub's path for its listener.
+// callout says the hub has authCallout, audience is the listener's natsAudience, carrier what
+// carries the audience to the listener (core.CheckEnvValue names it in a refusal of whitespace
+// or a control character), brokerVariable the broker's setting it must equal, and seed the
+// listener's seed inputs, each as {name, value}.
+//
+// Without the callout the listener connects as the user the hub renders for its seed, so
+// natsAudience, which only the auth service reads, is refused, and the seed's inputs are left to
+// the rules that require them. With the callout it connects by its service identity, a platform
+// token for natsAudience, which the auth service admits it by: the hub
+// renders no user for it and hands it no seed, so natsAudience is required and each seed input
+// that is set is refused, since a listener connects as one identity.
+func listenerIdentity(prefix string, callout bool, audience, carrier, brokerVariable string, seed [][2]string) error {
+	input := prefix + "natsAudience"
+	if !callout {
+		if audience != "" {
+			return core.InputErrorf(input, "%s is set without authCallout: the listener presents a platform identity only to a hub whose "+
+				"connections the auth service admits, and without authCallout it connects as the user the hub renders for its seed", input)
+		}
+		return nil
+	}
+	for _, f := range seed {
+		if f[1] != "" {
+			return core.InputErrorf(prefix+f[0], "%s%s is set beside authCallout: behind the auth service the listener connects by its "+
+				"platform identity for %s, and the hub renders no user for it and hands it no seed, since a listener connects as one identity",
+				prefix, f[0], input)
+		}
+	}
+	if audience == "" {
+		return core.InputErrorf(input, "%s is required with authCallout: behind the auth service the listener connects by its platform "+
+			"identity token for this audience, the one the broker's %s names", input, brokerVariable)
+	}
+	return core.CheckEnvValue(input, carrier, audience)
 }
 
 // calloutRefusal is a refusal of the hub's authorization, with core's refusal of the callout, a
@@ -569,8 +635,10 @@ func selectedUserKind(where string, u NATSUserArgs) (userKind, error) {
 	return selected, nil
 }
 
-// listenerUser is the Envoy listener a hub renders a NATS user for: the listener's machine id,
-// which names the user and its grant, and the public key of its seed.
+// listenerUser is a hub's own Envoy listener: the listener's machine id, which names its durable
+// and, for a listener with a seed, its user and the user's grant, and the public key of its seed.
+// Behind the auth service (a callout) the listener connects by its service identity: the hub then
+// renders no user for it, and its durable is still its own.
 type listenerUser struct {
 	machineID string
 	nkey      string
@@ -582,22 +650,23 @@ type listenerUser struct {
 // listener-host set when it names a listener machine id, Dispatch's set when it names a Dispatch
 // machine id, the daemon's set when daemon is true, and its own when it names permissions. The
 // listener's user follows them, named after the listener's machine id, with the listener's set for
-// that machine and a seed; the session user comes last, with the session's set and no seed, as the
-// authorization's noAuthUser. A hub needs users or a listener: with the session user alone, no
-// client could hold more than a session's grant, and no listener could run. core validates the rest
-// when it renders, a seed in a name or a rule entry first. Each machine id, of any kind, passes
-// core's shared machine-id rule and names a listener durable and queue group. An id whose durable
-// repeats another user's, of any kind, or the hub's own listener's (bus.ListenerDurable turns a
-// space into a hyphen, so "a b" and "a-b" collide) is refused as a core.InputError naming the later
-// input. The hub's own refusals name a user by its index alone: they come before core has read the
-// names, so quoting one could quote a seed. callout and privateProjects pass to core as they are:
-// core derives auth_users from the users above and refuses, as a core.InputError naming
-// privateProjects, a private project beside any of them but the callout's service user, and a
-// service user granted more than an auth service needs. With privateProjects the hub also refuses
-// a service user that names an entry of another kind than permissions: a machineId,
-// listenerMachineId, dispatchMachineId or daemon entry is a client whose seed that client stores,
-// and naming it the service's would let it connect past the service by that seed. Quoting the
-// service user's name is safe there: seededInput has refused a seed in it.
+// that machine and a seed, unless the listener connects by its service identity, when it has no
+// user and only its durable is reserved; the session user comes last, with the session's set and
+// no seed, as the authorization's noAuthUser. A hub needs users or a listener: with the session
+// user alone, no client could hold more than a session's grant, and no listener could run. core
+// validates the rest when it renders, a seed in a name or a rule entry first. Each machine id, of
+// any kind, passes core's shared machine-id rule and names a listener durable and queue group. An
+// id whose durable repeats another user's, of any kind, or the hub's own listener's
+// (bus.ListenerDurable turns a space into a hyphen, so "a b" and "a-b" collide) is refused as a
+// core.InputError naming the later input. The hub's own refusals name a user by its index alone:
+// they come before core has read the names, so quoting one could quote a seed. callout and
+// privateProjects pass to core as they are: core derives auth_users from the users above and
+// refuses, as a core.InputError naming privateProjects, a private project beside any of them but
+// the callout's service user, and a service user granted more than an auth service needs. With
+// privateProjects the hub also refuses a service user that names an entry of another kind than
+// permissions: a machineId, listenerMachineId, dispatchMachineId or daemon entry is a client whose
+// seed that client stores, and naming it the service's would let it connect past the service by
+// that seed. Quoting the service user's name is safe there: seededInput has refused a seed in it.
 func authorization(users []NATSUserArgs, l *listenerUser, session *SessionUserArgs, callout *nats.AuthCalloutArgs, privateProjects bool) (core.Authorization, error) {
 	if len(users) == 0 && l == nil {
 		return core.Authorization{}, errors.New("users: at least one user is required, or a listener")
@@ -640,7 +709,7 @@ func authorization(users []NATSUserArgs, l *listenerUser, session *SessionUserAr
 			Name: u.Name, NKey: u.NKey, Publish: &perms.Publish, Subscribe: &perms.Subscribe, HasSeed: true,
 		})
 	}
-	if l != nil {
+	if l != nil && callout == nil {
 		if l.nkey == "" {
 			return core.Authorization{}, errors.New("listener.nkey is required")
 		}
@@ -723,9 +792,10 @@ func NewNatsHub(ctx *pulumi.Context, name string, args *NatsHubArgs, opts ...pul
 	if err != nil {
 		return nil, err
 	}
-	// The listener's seed secret is the consumer's, as the seed in it is: the hub only reads it.
+	// The listener's seed secret is the consumer's, as the seed in it is: the hub only reads it. A
+	// listener behind the auth service has no seed secret, and its account is granted none.
 	readsSecrets := []pulumi.Resource{version, accessor}
-	if l := s.vm.listener; l != nil {
+	if l := s.vm.listener; l != nil && l.seedSecret != "" {
 		seedAccessor, err := secretmanager.NewSecretIamMember(ctx, hostname+"-listener-seed-accessor", &secretmanager.SecretIamMemberArgs{
 			SecretId: pulumi.String(l.seedSecret),
 			Role:     pulumi.String("roles/secretmanager.secretAccessor"),
