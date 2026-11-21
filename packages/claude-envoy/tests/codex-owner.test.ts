@@ -34,6 +34,24 @@ function probeOf(table: Record<number, string | undefined>): ProcessProbe {
   }
 }
 
+/** The timeout of each row that waits for an event, given to its `test`: the package's own
+ *  `--timeout=60000` (`bun run test`), stated here so the row keeps it under any runner. */
+const WAITING_ROW_TIMEOUT_MS = 60_000
+
+/** How long before its timeout a waiting row's waits give up. It covers the time from Bun starting
+ *  the row's timer to the row's first line, and the last turn of `waitFor` (a 5 ms sleep and one
+ *  look at the condition), so a wait that never ends fails by its own name before Bun's timeout
+ *  fails the row by none. */
+const WAITING_ROW_MARGIN_MS = 1_000
+
+/** Read at a waiting row's start: the time its waits have left from now, its timeout less the
+ *  margin. A wait takes it as its deadline, so the waits share the row's budget, not a bound of
+ *  their own. */
+function rowBudget(): () => number {
+  const end = performance.now() + WAITING_ROW_TIMEOUT_MS - WAITING_ROW_MARGIN_MS
+  return () => end - performance.now()
+}
+
 describe("the owner of a codex process's Envoy session", () => {
   const root = temporaryDirectory("codex-owner")
 
@@ -90,62 +108,68 @@ describe("the owner of a codex process's Envoy session", () => {
     expect((await currentOwner(directory, probeOf({ 102: "s102" })))?.pid).toBe(102)
   })
 
-  test("a server whose entry vanished publishes it again, at the back", async () => {
-    const directory = join(root, "c")
-    await registerServer(directory, 101, "s101")
-    const abort = new AbortController()
-    const table = probeOf({ 101: "s101", [process.pid]: "me" })
-    // A look decides whether to publish, then asks the probe whether server 101 still runs. 101's
-    // entry stays first throughout, so the asks about it count the looks, and the row waits for
-    // looks, never for a time.
-    let looks = 0
-    const probe: ProcessProbe = {
-      ...table,
-      signal: (pid) => {
-        if (pid === 101) looks += 1
-        table.signal(pid)
-      },
-    }
-    const published: number[] = []
-    const state = () => `${looks} looks, published ${published.join(", ") || "nothing"}`
-    const waited = waitForOwnership(
-      directory,
-      process.pid,
-      "me",
-      abort.signal,
-      (entry) => published.push(entry.seq),
-      10,
-      probe,
-    )
-    // The wait ends before the abort below only if the server owns, and its looks end with it; a
-    // wait for looks then stops too, so the assertions say what went wrong.
-    let ended = false
-    void waited.then(() => {
-      ended = true
-    })
-    try {
-      // The first look publishes; the second finds the entry there and publishes nothing more.
-      await waitFor(async () => looks >= 2 || ended, "two looks", state)
-      expect(published).toHaveLength(1)
-      rmSync(join(directory, `${published[0]}.json`))
-      // A look under way may have read the directory before the removal. The next finds the entry
-      // gone and publishes it again, and the one after finds it there.
-      const removed = looks
-      await waitFor(
-        async () => looks >= removed + 3 || ended,
-        "three looks after the removal",
-        state,
+  test(
+    "a server whose entry vanished publishes it again, at the back",
+    async () => {
+      const left = rowBudget()
+      const directory = join(root, "c")
+      await registerServer(directory, 101, "s101")
+      const abort = new AbortController()
+      const table = probeOf({ 101: "s101", [process.pid]: "me" })
+      // A look decides whether to publish, then asks the probe whether server 101 still runs. 101's
+      // entry stays first throughout, so the asks about it count the looks, and the row waits for
+      // looks, never for a time.
+      let looks = 0
+      const probe: ProcessProbe = {
+        ...table,
+        signal: (pid) => {
+          if (pid === 101) looks += 1
+          table.signal(pid)
+        },
+      }
+      const published: number[] = []
+      const state = () => `${looks} looks, published ${published.join(", ") || "nothing"}`
+      const waited = waitForOwnership(
+        directory,
+        process.pid,
+        "me",
+        abort.signal,
+        (entry) => published.push(entry.seq),
+        10,
+        probe,
       )
-      // Published again, behind the live server that published first, and reported, so the server
-      // can remove it when it stops.
-      expect(published).toHaveLength(2)
-      expect(published[1]).toBeGreaterThan(1)
-      expect(readdirSync(directory)).toContain(`${published[1]}.json`)
-    } finally {
-      abort.abort()
-    }
-    expect(await waited).toBeUndefined()
-  })
+      // The wait ends before the abort below only if the server owns, and its looks end with it; a
+      // wait for looks then stops too, so the assertions say what went wrong.
+      let ended = false
+      void waited.then(() => {
+        ended = true
+      })
+      try {
+        // The first look publishes; the second finds the entry there and publishes nothing more.
+        await waitFor(async () => looks >= 2 || ended, "two looks", state, left())
+        expect(published).toHaveLength(1)
+        rmSync(join(directory, `${published[0]}.json`))
+        // A look under way may have read the directory before the removal. The next finds the entry
+        // gone and publishes it again, and the one after finds it there.
+        const removed = looks
+        await waitFor(
+          async () => looks >= removed + 3 || ended,
+          "three looks after the removal",
+          state,
+          left(),
+        )
+        // Published again, behind the live server that published first, and reported, so the server
+        // can remove it when it stops.
+        expect(published).toHaveLength(2)
+        expect(published[1]).toBeGreaterThan(1)
+        expect(readdirSync(directory)).toContain(`${published[1]}.json`)
+      } finally {
+        abort.abort()
+      }
+      expect(await waited).toBeUndefined()
+    },
+    WAITING_ROW_TIMEOUT_MS,
+  )
 
   test("two server processes racing for a dead owner's place: exactly one owns", async () => {
     for (let run = 0; run < 10; run++) {
@@ -201,32 +225,37 @@ describe("a session's end", () => {
 describe("watching the record", () => {
   const root = temporaryDirectory("codex-watch-record")
 
-  test("reads an end marked before the watch began, though nothing moves the record again", async () => {
-    const record = codexSessionRecordFile(root, 9)
-    await writeCodexSessionRecord(record, {
-      codex_executable: null,
-      codex_home: "/h",
-      codex_started: processStarted(process.pid) ?? "1",
-      cwd: "/w",
-      session_id: "s-1",
-      source: null,
-      transcript_path: "/t",
-    })
-    await markSessionEnded(root, 9, "s-1")
-    const seen: [string, boolean][] = []
-    const stop = watchRecord(
-      record,
-      process.pid,
-      (sessionId) => sessionEnded(codexEndedFile(root, 9, sessionId)),
-      (next, ended) => seen.push([next.session_id, ended]),
-      50,
-    )
-    try {
-      // The watch reads the record once at once; nothing moves the record after that.
-      await waitFor(async () => seen.length > 0, "the watch's first look")
-    } finally {
-      stop()
-    }
-    expect(seen[0]).toEqual(["s-1", true])
-  })
+  test(
+    "reads an end marked before the watch began, though nothing moves the record again",
+    async () => {
+      const left = rowBudget()
+      const record = codexSessionRecordFile(root, 9)
+      await writeCodexSessionRecord(record, {
+        codex_executable: null,
+        codex_home: "/h",
+        codex_started: processStarted(process.pid) ?? "1",
+        cwd: "/w",
+        session_id: "s-1",
+        source: null,
+        transcript_path: "/t",
+      })
+      await markSessionEnded(root, 9, "s-1")
+      const seen: [string, boolean][] = []
+      const stop = watchRecord(
+        record,
+        process.pid,
+        (sessionId) => sessionEnded(codexEndedFile(root, 9, sessionId)),
+        (next, ended) => seen.push([next.session_id, ended]),
+        50,
+      )
+      try {
+        // The watch reads the record once at once; nothing moves the record after that.
+        await waitFor(async () => seen.length > 0, "the watch's first look", undefined, left())
+      } finally {
+        stop()
+      }
+      expect(seen[0]).toEqual(["s-1", true])
+    },
+    WAITING_ROW_TIMEOUT_MS,
+  )
 })
