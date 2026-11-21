@@ -170,7 +170,21 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 // service it starts admits.
 func StartClusterWithCallout(t testing.TB, n int, keys CalloutKeys, static ...StaticUser) *Cluster {
 	t.Helper()
-	cluster := startCluster(t, n, calloutAuthorization(keys, static...))
+	return startClusterWithCallout(t, n, keys, nil, static...)
+}
+
+// StartClusterWithCalloutRouteAuth is StartClusterWithCallout with route authorization of user and
+// password, as StartClusterRouteAuth gives it: a route that presents no credential, or others, is
+// refused and never joins the cluster.
+func StartClusterWithCalloutRouteAuth(t testing.TB, n int, keys CalloutKeys, user, password string, static ...StaticUser) *Cluster {
+	t.Helper()
+	return startClusterWithCallout(t, n, keys, newRouteAuth(t, user, password), static...)
+}
+
+// startClusterWithCallout is StartClusterWithCallout with route authorization when auth is not nil.
+func startClusterWithCallout(t testing.TB, n int, keys CalloutKeys, auth *routeAuth, static ...StaticUser) *Cluster {
+	t.Helper()
+	cluster := startCluster(t, n, calloutAuthorization(keys, static...), auth)
 	cluster.awaitMeta(t)
 	for _, server := range cluster.Servers {
 		awaitSeed(t, server.URL(), keys.ServiceSeed)

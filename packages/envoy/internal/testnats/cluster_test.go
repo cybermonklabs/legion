@@ -3,9 +3,12 @@ package testnats
 import (
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 )
 
@@ -119,4 +122,75 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 	}
 	cluster.Servers[0].Start(t)
 	cluster.AwaitReady(t)
+}
+
+// A cluster with route authorization (StartClusterRouteAuth) routes its members to each other with
+// the credential, and refuses a server that routes to a member with none: the member logs the
+// route's authentication error and never lists it. Its control is the same server with the
+// credential, which the member lists among its routes, so the refusal is the credential's. It fails
+// when the members do not route (StartClusterRouteAuth's AwaitReady), when the cluster block takes no
+// authorization (the server with no credential joins), or when the route URLs carry none (the
+// members cannot route to each other).
+func TestAClusterWithRouteAuthorizationRefusesARouteWithoutItsCredential(t *testing.T) {
+	cluster := StartClusterRouteAuth(t, 2, "route", "secret1", "")
+	member := cluster.Servers[0]
+	target := member.natsServer().ClusterAddr().String()
+	listed := func() bool {
+		routez, err := member.natsServer().Routez(&natsserver.RoutezOptions{})
+		if err != nil {
+			t.Fatalf("read member %s's routes: %v", member.Name(), err)
+		}
+		for _, route := range routez.Routes {
+			if route.RemoteName == "outsider" {
+				return true
+			}
+		}
+		return false
+	}
+
+	startOutsider(t, (&url.URL{Scheme: "nats-route", User: url.UserPassword("route", "secret1"), Host: target}).String())
+	for deadline := time.Now().Add(connectTimeout); !listed(); time.Sleep(retryInterval) {
+		if time.Now().After(deadline) {
+			t.Fatalf("member %s did not list the server that routed to it with the cluster's credential within %s", member.Name(), connectTimeout)
+		}
+	}
+
+	cluster = StartClusterRouteAuth(t, 2, "route", "secret1", "")
+	member = cluster.Servers[0]
+	target = member.natsServer().ClusterAddr().String()
+	startOutsider(t, "nats-route://"+target)
+	for deadline := time.Now().Add(connectTimeout); !strings.Contains(member.Log(), "authentication error"); time.Sleep(retryInterval) {
+		if time.Now().After(deadline) {
+			t.Fatalf("member %s logged no route authentication error within %s of a route with no credential:\n%s", member.Name(), connectTimeout, member.Log())
+		}
+	}
+	if listed() {
+		t.Fatalf("member %s lists the server that routed to it with no credential", member.Name())
+	}
+}
+
+// startOutsider runs a server named outsider, with no JetStream, whose one route is route, in the
+// members' cluster name, shut down when the test ends.
+func startOutsider(t *testing.T, route string) {
+	t.Helper()
+	routeURL, err := url.Parse(route)
+	if err != nil {
+		t.Fatalf("the outsider's route %q: %v", route, err)
+	}
+	srv, err := natsserver.NewServer(&natsserver.Options{
+		ServerName: "outsider", Host: "127.0.0.1", Port: -1, NoSigs: true, NoLog: true,
+		Cluster: natsserver.ClusterOpts{Name: "envoy-test", Host: "127.0.0.1", Port: -1},
+		Routes:  []*url.URL{routeURL},
+	})
+	if err != nil {
+		t.Fatalf("create the outsider: %v", err)
+	}
+	go srv.Start()
+	t.Cleanup(func() {
+		srv.Shutdown()
+		srv.WaitForShutdown()
+	})
+	if !srv.ReadyForConnections(connectTimeout) {
+		t.Fatalf("the outsider did not start within %s", connectTimeout)
+	}
 }
