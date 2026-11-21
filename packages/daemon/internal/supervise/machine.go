@@ -1568,21 +1568,17 @@ type Machine struct {
 	// own closure (retryHolding). The mark itself is the claim's and durable, written by the
 	// launch that commits this intent.
 	pluginRelaunch *pluginIntent
-	// refreshCredit is whether this machine holds a credit of the stale-plugin refresh gate: one
-	// of the K the lane may have in the wake pacing at once, taken before the relaunch it pays
-	// for was decided — by the daemon's pass, which hands what it took on the event it posts
-	// (StalePlugin.Admitted), or inside the decision itself, where a relaunch reached with none
-	// asks for its own (refreshPlugin's guard, admitRefresh) — and given back at the end of the
-	// decision that holds it unless a refresh wake of this machine's own is waiting for its turn
-	// (endRefreshLane, releaseRefresh).
-	//
-	// One is enough, and one is all a machine can hold: refreshPlugin decides nothing for a
-	// claim that already holds a wake, and a post that arrives carrying a credit over a machine
-	// that already holds one gives the new one straight back to the gate rather than losing it
-	// behind this one flag (refreshPlugin). It is memory only, as the wake it is taken for is: a
-	// restart leaves the gate empty and the first pass fills it from the claims it reads
-	// (RefreshGate, refreshStalePlugins).
-	refreshCredit bool
+	// refreshCredit is the credit of the stale-plugin refresh gate this machine holds, nil for
+	// none: one of the K the lane may have in the wake pacing at once, taken before the relaunch
+	// it pays for was decided — by the daemon's pass, which hands it over on the post it makes
+	// (StalePlugin.Credit), or inside the decision itself (refreshPlugin, admitRefresh) — and made
+	// this machine's own in one place (holdCredit). It goes back at the end of the decision that
+	// holds it unless a refresh wake of this machine's own is waiting (endRefreshLane), and a
+	// sweep's correction takes it back from a machine that holds it for no such wake
+	// (reclaimCredit). One is all a machine holds: a post that arrives carrying a credit over one
+	// held gives its own straight back (refreshPlugin). It is memory only, as the wake it is
+	// taken for is: a restart leaves the gate empty.
+	refreshCredit *RefreshCredit
 	// identity is the latest hello2 identity for the claim's current incarnation,
 	// kept until its enrollment lands; enrollmentSent is whether that enrollment has been handed
 	// to the shim over the claim's current connection.
@@ -1740,6 +1736,12 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	}
 	m.mu.Lock()
 	defer m.unlock()
+	// A refresh post carries a credit of the gate, and this decision is the last place that credit
+	// can come back if the machine does not take it: a state whose row ignores the post, a settle
+	// or fence that returns first, or a post for another claim (RefreshGate, the rule of return).
+	if stale, ok := ev.(StalePlugin); ok && stale.Credit != nil {
+		defer m.settleUntakenCredit(stale.Credit)
+	}
 	m.decide(ev)
 	if token := claimOf(ev); token != m.claim.Token {
 		return fmt.Errorf("supervise: %T for claim %s reached the machine of %s", ev, token, m.claim.Token)
@@ -2308,9 +2310,10 @@ func (m *Machine) stoppingProcess() func() {
 // section that takes mu without it reads the claim or counts goroutines and changes none of the
 // three. The sections that defer it are Handle, which every event and every timer of this package
 // comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold), PublishUpdateAsk, StartedBy,
-// ReadProcess and Retree; the sections that take mu without it are Claim, OnDurableState, Wait,
-// compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a section
-// added later has to keep, rather than this list of the sections there are now.
+// ReadProcess, Retree and the refresh gate's reclaimCredit; the sections that take mu without it
+// are Claim, OnDurableState, Wait, compaction and the two goroutine tails in delivery.go and
+// secrets.go. It is that rule a section added later has to keep, rather than this list of the
+// sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.publish()

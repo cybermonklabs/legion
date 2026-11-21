@@ -211,19 +211,15 @@ type Timer struct {
 type StalePlugin struct {
 	Claim   claim.Token
 	Trigger string
-	// Admitted is whether the pass that posted this took a credit of the stale-plugin refresh
-	// gate for this claim, which bounds how much of the wake pacing the lane holds at once
-	// (RefreshGate, dispatch://INFRA-2712 R1). The pass posts no refused claim at all — it
-	// re-reads every stale claim at the next sweep, so nothing is lost by the refusal — so what
-	// arrives here is admitted but three: the project controller's claim, whose relaunch is
-	// exempt from the pacing and takes no credit (reserveWake); a claim the pass read in a
-	// turn, whose relaunch takes no wake until that turn's end asks the gate itself
-	// (holdStaleRelaunch, afterTurn, R2); and a post a test or another daemon path makes with
-	// no gate behind it. The machine holds what it is handed until the decision that raises the
-	// relaunch ends with no refresh wake of this claim's waiting, and gives it straight back to
-	// the gate where it already holds one of its own (refreshPlugin, refreshCredit,
-	// endRefreshLane).
-	Admitted bool
+	// Credit is the credit of the stale-plugin refresh gate the pass that posted this took for
+	// this claim, or nil: the pass posts the controller's claim and a claim it read in a turn
+	// with none (internal/daemon's refreshStalePlugins). The decision of this post gives the
+	// credit back unless the machine takes it as its own (Machine.Handle, settleUntakenCredit,
+	// refreshPlugin): a row that ignores the post, a settle or fence that returns first, and a
+	// post over a credit already held all give it back as that decision ends. A credit the
+	// machine takes goes back at the end of the decision that ends with no refresh wake of this
+	// claim's waiting (endRefreshLane), and so at once where its decision raises none.
+	Credit *RefreshCredit
 }
 
 // StallBackstop is the daemon's stall backstop reaching this claim: the orphan sweep found it in
@@ -2151,7 +2147,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 func (m *Machine) afterTurn(ctx context.Context) error {
 	if held := m.staleRelaunch; held != nil {
 		m.staleRelaunch = nil
-		if err := m.refreshPlugin(ctx, *held, false); err != nil {
+		if err := m.refreshPlugin(ctx, *held, nil); err != nil {
 			return err
 		}
 	}

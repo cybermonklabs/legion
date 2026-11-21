@@ -251,7 +251,7 @@ func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
 // relaunch that lane raises for it, parked in the wake pacing over that process. The pacing gives
 // the relaunch a turn an hour ahead and the machines' clock fires no timer the test does not fire
 // (heldClock), so the relaunch waits through the whole test. It is posted as the daemon's pass
-// posts an idle claim's, holding a credit of the refresh gate (StalePlugin.Admitted).
+// posts an idle claim's, holding a credit of the refresh gate (StalePlugin.Credit).
 func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role claim.Role) *supervise.Machine {
 	t.Helper()
 	ctx := context.Background()
@@ -266,7 +266,7 @@ func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role clai
 	if err != nil {
 		t.Fatalf("create the live %s's claim: %v", role, err)
 	}
-	if err := machine.Handle(ctx, supervise.StalePlugin{Claim: token, Trigger: "sweep", Admitted: true}); err != nil {
+	if err := machine.Handle(ctx, supervise.StalePlugin{Claim: token, Trigger: "sweep", Credit: sup.deps.RefreshGate.Admit()}); err != nil {
 		t.Fatalf("raise the stale-plugin relaunch of the %s: %v", role, err)
 	}
 	if held := machine.View(); held.State != supervise.StateIdle || held.Locator == nil ||

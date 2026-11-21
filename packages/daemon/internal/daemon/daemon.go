@@ -1465,6 +1465,10 @@ type supervision struct {
 	// hand gives it supervise.NewRefreshGate(0), the gate of a daemon that paces nothing, which
 	// grants every refresh.
 	refreshGate supervise.RefreshAdmitter
+	// afterRefreshAdmit is a test's seam between Admit and supervisor.post in
+	// refreshStalePlugins, run for each admitted claim with no lock held; nil runs nothing. A
+	// test sets it on the supervision it builds by hand, and no production path sets it.
+	afterRefreshAdmit func(claim.Token, *supervise.RefreshCredit)
 	// pauses is the project's pause (projectPause), nil without a workflow: the boot loads its
 	// flag before it restores any claim, and asks the stop of every claim it finds live while the
 	// project is paused (start).
@@ -2203,27 +2207,25 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // admissions have had their turns — posts the next K. Nothing of the refresh is lost by a
 // refusal, since this pass re-reads every stale claim at every sweep, which is why the refused
 // claim is passed over in silence rather than remembered anywhere. The admission is taken
-// before the post, never after the machine has decided, so a refresh in flight is counted: that
-// is what the gate's own floor is for (Correct). The gate is put right before any of this, from
-// the refresh wakes the machines really hold — the lane's own kind, the one kind only this lane
-// parks (supervise.WakePluginRefresh, parkedWakes). That correction is what takes back a credit
-// lost to a path that returns none, which the gate itself names: a machine gives its credit
-// back at the end of the decision that holds it, unless a refresh wake of its own is waiting,
-// and what is left to the correction is a post to a claim this daemon stopped supervising
-// (supervise.RefreshGate, supervise's endRefreshLane). It is the pass's own first act rather
-// than part of the read it counts from, because it resets the gate's admission window: a second
-// caller asking which claims hold a wake — a question parkedWakes is named for and nothing of
-// the gate's — would reset that window mid-sweep and let the lane admit a second K. The boot
-// pass corrects an empty gate, which is what a restart leaves: no machine of this daemon holds
-// a wake yet, so the reading is zero and the fleet's refresh starts with every credit free
-// (supervise.RefreshGate.Correct, which states what each half of it costs).
+// before the post, never after the machine has decided, so a refresh in flight is counted: the
+// gate counts every credit it has granted and not had back (supervise.RefreshGate, its rule of
+// return). The pass gives back the credit of a post the supervisor drops, because no machine ever
+// decides that post (supervisor.post). Before any of this the gate is corrected: it takes back
+// each credit, granted before its previous correction, that the machine holding it no longer
+// holds for a refresh wake of its own, which is the backstop for a credit lost to a path
+// that gives none back, and then sets its count from the refresh wakes the machines really hold
+// — the lane's own kind, the one kind only this lane parks (supervise.WakePluginRefresh,
+// parkedWakes) — which raises the count when the lane holds wakes no admission is behind, and
+// otherwise leaves it at the credits out. The boot pass corrects an empty gate, which is what a
+// restart leaves: no machine of this daemon holds a wake yet, so the reading is zero and the
+// fleet's refresh starts with every credit free (supervise.RefreshGate.Correct).
 //
 // A claim whose machine already holds a waiting wake is passed over before the gate is asked at
 // all, read from the same snapshot the correction counts (parkedWakes). The machine decides such
 // a claim nothing — refreshPlugin returns over a claim that already holds a wake of any kind, and
 // gives back whatever credit the post carried — so asking for one here would spend an admission
-// on a claim that raises no relaunch, and spend it for the whole of the pass, since the machine's
-// release lands after the pass has walked every claim. At a fleet's worth of stale claims that is
+// on a claim that raises no relaunch, and spend it for most of the pass, since the machine's
+// release lands only when its own goroutine decides the post. At a fleet's worth of stale claims that is
 // the lane admitting the K claims it already has waiting and none of the ones it has not, which
 // is the drain this change exists to shorten standing still for a sweep.
 //
@@ -2286,11 +2288,17 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 			s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger})
 			continue
 		}
-		if !s.refreshGate.Admit() {
+		credit := s.refreshGate.Admit()
+		if credit == nil {
 			refused++
 			continue
 		}
-		s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Admitted: true})
+		if s.afterRefreshAdmit != nil {
+			s.afterRefreshAdmit(c.Token, credit)
+		}
+		if !s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Credit: credit}) {
+			credit.Release()
+		}
 	}
 	if refused > 0 {
 		s.log.Info("supervise: the stale-plugin refresh gate is full; these claims are left to a later sweep",
