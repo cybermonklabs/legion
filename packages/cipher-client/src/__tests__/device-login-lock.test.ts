@@ -2,13 +2,15 @@
 //
 // The device login's lock (`device-login-lock.ts`), through `withDeviceLoginLock`: a live holder
 // is waited for, a stale lock is taken by one caller alone, each removal is of the very file the
-// caller looked at, and a holder can tell it still holds its lock. No row sends anything to a
-// broker. Each row holds a caller at one step of the protocol (`at`, `sleep`), or runs the
-// holder's timer callback by hand, so no row is decided by a clock.
+// caller looked at, a holder that lets go removes only its own lock, and a holder can tell it
+// still holds its lock. No row sends anything to a broker. Each row holds a caller at one step of
+// the protocol (`at`, `sleep`, or the read of its look, {@link holdTheRead}), or runs the holder's
+// timer callback by hand, so no row is decided by a clock.
 
 import { expect, spyOn, test } from "bun:test";
-import { readFile, stat, utimes, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import * as fs from "node:fs/promises";
+import { readdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { writeDeviceLoginFile } from "../../test/device-logins";
 import { withDeviceLoginLock } from "../device-login";
@@ -26,6 +28,38 @@ function loginPath(): string {
 /** A modification time past the lock's stale bound: a holder that is gone. */
 function staleTime(): Date {
   return new Date(Date.now() - DEVICE_LOGIN_STALE_LOCK_MS - 1_000);
+}
+
+/**
+ * Holds the first read of a file, once `arm` is called, that `match` takes by its path and what
+ * it read, until `go` settles: the caller has read the file for a look, and does what it does
+ * with that look only after. Any read of the file holds, by whatever name the caller reads it,
+ * so the hold is between a look and what follows it however the protocol takes its look.
+ * `read` answers what the held read read; `restore` ends the hold for every later row.
+ */
+function holdTheRead(match: (path: string, read: string) => boolean, go: Promise<void>) {
+  const reached = Promise.withResolvers<string>();
+  const real = fs.readFile;
+  let armed = false;
+  let held = false;
+  const spy = spyOn(fs, "readFile").mockImplementation((async (
+    ...args: Parameters<typeof fs.readFile>
+  ) => {
+    const read = await real(...args);
+    if (armed && !held && typeof read === "string" && match(String(args[0]), read)) {
+      held = true;
+      reached.resolve(read);
+      await go;
+    }
+    return read;
+  }) as typeof fs.readFile);
+  return {
+    read: reached.promise,
+    arm: () => {
+      armed = true;
+    },
+    restore: () => spy.mockRestore(),
+  };
 }
 
 test("a dead holder's lock costs a trade at most half its attempt", () => {
@@ -291,4 +325,186 @@ test("a dead take-over lock is removed only while it is still the dead one", asy
   await b;
   expect(stealAtFirstWait).toBe("C takes over");
   expect(await stat(steal).catch(() => null)).toBeNull();
+});
+
+test("a take-over that finds the holder back just before it moves the lock puts the lock back", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  await writeFile(lock, "a process that stopped holding it");
+  const old = staleTime();
+  await utimes(lock, old, old);
+
+  // A has found the lock still stale under its take-over lock, and is held just before it moves
+  // the lock aside. The holder comes back then and touches its lock: the same file, holding the
+  // same value, touched a moment ago. A goes on: it must put the holder's lock back and wait for
+  // it, never take it from a holder that is back.
+  const aTaking = Promise.withResolvers<void>();
+  const aGoes = Promise.withResolvers<void>();
+  let takingOnce = false;
+  let lockAtFirstWait = "";
+  let ran = false;
+  const a = withDeviceLoginLock(
+    path,
+    async () => {
+      ran = true;
+    },
+    {
+      at: async (step) => {
+        if (step !== "taking" || takingOnce) return;
+        takingOnce = true;
+        aTaking.resolve();
+        await aGoes.promise;
+      },
+      sleep: async () => {
+        if (lockAtFirstWait === "") {
+          lockAtFirstWait = await readFile(lock, "utf8").catch(() => "(no lock)");
+        }
+        // The holder's work ends, and it lets go.
+        await Bun.file(lock).delete();
+      },
+    }
+  );
+  await Promise.race([aTaking.promise, a]);
+  const now = new Date();
+  await utimes(lock, now, now).catch(() => {});
+  aGoes.resolve();
+  await a;
+  expect(lockAtFirstWait).toBe("a process that stopped holding it");
+  expect(ran).toBe(true);
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
+});
+
+// A holder lets go of its lock, and a caller of its take-over lock, in two steps: a look that
+// reads the file and finds its own value there, and then what it does with it. It can be stopped
+// for longer than the stale bound between the two; its timer is stopped by then, so another caller
+// takes the lock over as stale and starts work under it. A removal by name in the second step
+// would remove that caller's lock, and a third caller could then take the lock beside it: two
+// holders, two refreshes of one refresh token. These rows hold the caller just after the read of
+// its look ({@link holdTheRead}).
+
+test("a holder that lets go leaves the lock another caller took from it while it was stopped", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  let aValue = "";
+  const aGoes = Promise.withResolvers<void>();
+  const look = holdTheRead((_, read) => read === aValue, aGoes.promise);
+  const bWorking = Promise.withResolvers<() => Promise<boolean>>();
+  const bEnds = Promise.withResolvers<void>();
+  let b: Promise<void> | undefined;
+  try {
+    // A's work ends, and A lets go: it is held just after it read its own value back.
+    const a = withDeviceLoginLock(path, async () => {
+      aValue = await readFile(lock, "utf8");
+      look.arm();
+    });
+    await look.read;
+    // A was stopped there for over 15 s, so B finds A's lock stale, takes it over and works.
+    const old = staleTime();
+    await utimes(lock, old, old);
+    b = withDeviceLoginLock(path, async (held) => {
+      bWorking.resolve(held);
+      await bEnds.promise;
+    });
+    const bHeld = await bWorking.promise;
+    const bValue = await readFile(lock, "utf8");
+    expect(bValue).not.toBe(aValue);
+    expect(await bHeld()).toBe(true);
+    // A goes on: B's lock is where it was, and B still holds it.
+    aGoes.resolve();
+    await a;
+    expect(await readFile(lock, "utf8").catch(() => "(no lock)")).toBe(bValue);
+    expect(await bHeld()).toBe(true);
+  } finally {
+    aGoes.resolve();
+    bEnds.resolve();
+    await b;
+    look.restore();
+  }
+  // B let go too, and nothing either caller made is left beside the login.
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
+});
+
+test("a caller that lets go of its take-over lock leaves the one another caller took from it", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  const steal = `${lock}.steal`;
+  const old = staleTime();
+  await writeFile(lock, "a process that stopped holding it");
+  await utimes(lock, old, old);
+
+  // A finds the lock stale and is held before it takes its take-over lock, while the lock's
+  // holder comes back and touches it. A goes on: under its take-over lock it finds the lock live,
+  // and lets go of the take-over lock. It is held just after it read that lock's value back.
+  const aFound = Promise.withResolvers<void>();
+  const aGoesOn = Promise.withResolvers<void>();
+  const aLetsGo = Promise.withResolvers<void>();
+  const aWaits = Promise.withResolvers<void>();
+  const dDone = Promise.withResolvers<void>();
+  const dTaking = Promise.withResolvers<void>();
+  const dGoes = Promise.withResolvers<void>();
+  const look = holdTheRead((file) => file.startsWith(steal), aLetsGo.promise);
+  let aFoundOnce = false;
+  let d: Promise<void> | undefined;
+  let a: Promise<void> | undefined;
+  try {
+    a = withDeviceLoginLock(path, async () => {}, {
+      at: async (step) => {
+        if (step !== "lock-stale" || aFoundOnce) return;
+        aFoundOnce = true;
+        aFound.resolve();
+        await aGoesOn.promise;
+      },
+      sleep: async () => {
+        aWaits.resolve();
+        await dDone.promise;
+      },
+    });
+    await aFound.promise;
+    const now = new Date();
+    await utimes(lock, now, now);
+    look.arm();
+    aGoesOn.resolve();
+    const aSteal = await look.read;
+
+    // A was stopped there for over 5 s, and the holder has died for good: D finds the lock stale
+    // and A's take-over lock dead, removes that, and is under a take-over lock of its own.
+    const stealOld = new Date(Date.now() - 6_000);
+    await utimes(steal, stealOld, stealOld);
+    await utimes(lock, old, old);
+    let dTakingOnce = false;
+    d = withDeviceLoginLock(path, async () => {}, {
+      at: async (step) => {
+        if (step !== "taking" || dTakingOnce) return;
+        dTakingOnce = true;
+        dTaking.resolve();
+        await dGoes.promise;
+      },
+      sleep: async () => {},
+    });
+    await Promise.race([dTaking.promise, d]);
+    const dSteal = await readFile(steal, "utf8").catch(() => "(no take-over lock)");
+    expect(dSteal).not.toBe(aSteal);
+    expect(dSteal).not.toBe("(no take-over lock)");
+
+    // A goes on: D's take-over lock is where it was, so no third caller can take over beside D.
+    aLetsGo.resolve();
+    await aWaits.promise;
+    expect(await readFile(steal, "utf8").catch(() => "(no take-over lock)")).toBe(dSteal);
+
+    dGoes.resolve();
+    await d;
+  } finally {
+    aGoesOn.resolve();
+    aLetsGo.resolve();
+    dGoes.resolve();
+    dDone.resolve();
+    await d;
+    await a;
+    look.restore();
+  }
+  // D took the dead holder's lock and let go, then A did: nothing is left beside the login.
+  expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
 });

@@ -8,16 +8,24 @@
 // - A lock untouched for 15 s is taken as one whose holder died. Only one caller takes it over:
 //   the one that creates the take-over's own lock, `<file>.lock.steal`, and finds the lock still
 //   stale under it. A `.lock.steal` left for 5 s by a caller that died or stopped is removed.
-// - Every removal is of the very file the caller looked at: the file is moved aside to
-//   `<name>.stale-<uuid>`, and removed only where its device, inode, modification time and holder
-//   value are all the ones the caller saw; otherwise it is linked back. The inode alone tells
-//   nothing, since a filesystem can give a new file the number of one removed a moment before
-//   (XFS does at once).
+// - Every removal is of the very file the caller means: a stale lock it takes over, a dead
+//   `.lock.steal` it clears, and its own lock or `.lock.steal` as it lets go. The caller looks at
+//   the file first, and leaves one that is not the one untouched. A look and a removal by name are
+//   still two steps, and another caller can put a file of its own in the place between them, so
+//   the caller never removes by name: it moves the file aside to `<name>.stale-<uuid>`, looks at
+//   what it moved, removes that only where it is the one, and otherwise links it back. A
+//   take-over's file is the one whose device, inode, modification time and holder value are all
+//   the ones the caller saw: the inode alone tells nothing, since a filesystem can give a new file
+//   the number of one removed a moment before (XFS does at once). A caller's own file is the one
+//   that holds the caller's value, which no other caller writes.
 // - Two windows can still leave two holders. One is a file made in the instant between a move
-//   aside and its link back, after a caller stopped inside a take-over for over 5 s. The other
-//   needs no race: a holder alive but stopped for over 15 s (a laptop asleep, a process stopped)
-//   cannot touch its lock, so another caller takes it while the first still works. `work` is
-//   handed `held`, which reads the lock again, so such a holder can stop before it does harm.
+//   aside and its link back, which needs the file to change in the instant between the caller's
+//   look and its move: a holder back from a stop of over 15 s, or another caller's take-over after
+//   this caller stopped there, for over 5 s in a take-over or for over 15 s as it let go. The
+//   other needs no race: a holder alive but stopped for over 15 s (a laptop asleep, a process
+//   stopped) cannot touch its lock, so another caller takes it while the first still works.
+//   `work` is handed `held`, which reads the lock again, so such a holder can stop before it does
+//   harm.
 
 import { randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
@@ -103,13 +111,6 @@ async function createOwn(path: string, value: string, named: string): Promise<bo
   return true;
 }
 
-/** Removes `path` where it still holds `value`, the one its creator wrote, and leaves it where
- *  another caller's file has taken its place. */
-async function removeOwn(path: string, value: string): Promise<void> {
-  const held = await readFile(path, "utf8").catch(() => "");
-  if (held === value) await rm(path, { force: true });
-}
-
 /** A lock file as a caller looked at it: its status and the holder value written in it. */
 interface Seen {
   readonly stats: Stats;
@@ -124,31 +125,53 @@ async function look(path: string, named: string): Promise<Seen | null> {
   return { stats, value };
 }
 
+/** Whether a file as a caller looks at it is the very file `was` names: the same device, inode,
+ *  modification time and holder value. */
+function sameFile(was: Seen): (seen: Seen) => boolean {
+  return (seen) =>
+    seen.stats.dev === was.stats.dev &&
+    seen.stats.ino === was.stats.ino &&
+    seen.stats.mtimeMs === was.stats.mtimeMs &&
+    seen.value === was.value;
+}
+
 /**
- * Removes `path` where it is still the file `was` names, and says whether the caller may go on:
- * true where it removed that file or nothing was there. It moves the file aside first, and then
- * compares what it moved with `was`: the device, the inode, the modification time and the holder
- * value. A file that is not the one `was` names is linked back in place, unless a file is there
- * again, and the answer is false. `what` names the file in an error.
+ * Removes `path` where it is still the file `isIt` takes it for, and says whether the caller may
+ * go on: true where it removed that file or nothing was there. It moves the file aside first, and
+ * then looks at what it moved: a file `isIt` does not take is linked back in place, unless a file
+ * is there again, and the answer is false. `what` names the file in an error.
  */
-async function removeIfStill(path: string, was: Seen, what: string): Promise<boolean> {
+async function removeIfStill(
+  path: string,
+  isIt: (seen: Seen) => boolean,
+  what: string
+): Promise<boolean> {
   const moved = `${path}.stale-${randomUUID()}`;
   try {
     await rename(path, moved);
   } catch (error) {
     if (readErrorCode(error) === "ENOENT") return true;
-    throw new Error(`take ${what}: ${readErrorCode(error)}`);
+    throw new Error(`move ${what} aside: ${readErrorCode(error)}`);
   }
   const took = await look(moved, what);
-  const same =
-    took !== null &&
-    took.stats.dev === was.stats.dev &&
-    took.stats.ino === was.stats.ino &&
-    took.stats.mtimeMs === was.stats.mtimeMs &&
-    took.value === was.value;
+  const same = took !== null && isIt(took);
   if (!same) await link(moved, path).catch(() => {});
   await rm(moved, { force: true });
   return same;
+}
+
+/**
+ * Lets go of `path`, a lock or a take-over lock this caller made holding `value`. It looks at the
+ * file first and leaves one holding another caller's value untouched: another caller took it over
+ * while this one was stopped. It removes its own only through {@link removeIfStill}, never by
+ * name, since another caller can take it over between that look and the removal too, where this
+ * caller stops there for longer than the file's stale bound. `what` names the file in an error,
+ * and `named` the login.
+ */
+async function removeOwn(path: string, value: string, what: string, named: string): Promise<void> {
+  const seen = await look(path, named);
+  if (seen === null || seen.value !== value) return;
+  await removeIfStill(path, (took) => took.value === value, what);
 }
 
 /**
@@ -177,7 +200,7 @@ async function takeStale(
     const taking = await look(steal, named);
     if (taking !== null && Date.now() - taking.stats.mtimeMs > STEAL_STALE_MS) {
       await options.at?.("steal-stale");
-      await removeIfStill(steal, taking, `the dead take-over lock beside ${named}`);
+      await removeIfStill(steal, sameFile(taking), `the dead take-over lock beside ${named}`);
     }
     return false;
   }
@@ -186,9 +209,9 @@ async function takeStale(
     if (again === null) return true;
     if (Date.now() - again.stats.mtimeMs <= DEVICE_LOGIN_STALE_LOCK_MS) return false;
     await options.at?.("taking");
-    return await removeIfStill(lock, again, `the stale lock beside ${named}`);
+    return await removeIfStill(lock, sameFile(again), `the stale lock beside ${named}`);
   } finally {
-    await removeOwn(steal, mine);
+    await removeOwn(steal, mine, `the take-over lock beside ${named}`, named);
   }
 }
 
@@ -198,11 +221,11 @@ async function takeStale(
  * ends (rejecting with `LockHeldError`, which names the lock, with the signal's reason as its
  * cause, and `work` never run), or it is stale and this caller alone takes it ({@link takeStale}).
  * The holder touches the lock every {@link LOCK_HEARTBEAT_MS} while `work` runs, on a timer that
- * holds no process open, so a holder that is slow is never taken for dead, and removes it when
- * `work` settles, only while it
- * still holds its own value. `work` is handed `held`, which reads the lock again and says whether
- * it still holds this call's value: false once another caller took it from a holder that was
- * stopped. `named` names the login in an error.
+ * holds no process open, so a holder that is slow is never taken for dead, and lets go of it when
+ * `work` settles, removing it only while it still holds its own value ({@link removeOwn}). `work`
+ * is handed `held`, which reads the lock again and says whether it still holds this call's value:
+ * false once another caller took it from a holder that was stopped. `named` names the login in an
+ * error.
  */
 export async function withLoginLock<T>(
   path: string,
@@ -237,7 +260,7 @@ export async function withLoginLock<T>(
     return await work(async () => (await readFile(lock, "utf8").catch(() => "")) === mine);
   } finally {
     clearInterval(beat);
-    await removeOwn(lock, mine);
+    await removeOwn(lock, mine, `the lock beside ${named}`, named);
   }
 }
 
@@ -263,12 +286,12 @@ export async function removeUntouched(dir: string, left: (name: string) => boole
 }
 
 /**
- * Removes what a caller that died mid take-over left beside the login at `path`: a lock or a
- * take-over lock it moved aside (`<path>.lock.stale-<uuid>`, `<path>.lock.steal.stale-<uuid>`)
- * and never removed or linked back ({@link removeUntouched}). A move aside keeps the file's
- * modification time, so a lock moved aside by a live caller mid take-over can read as old too;
- * removing it only makes that caller find nothing to link back and try again. A caller holds the
- * lock.
+ * Removes what a caller that died mid take-over or mid release left beside the login at `path`: a
+ * lock or a take-over lock it moved aside (`<path>.lock.stale-<uuid>`,
+ * `<path>.lock.steal.stale-<uuid>`) and never removed or linked back ({@link removeUntouched}). A
+ * move aside keeps the file's modification time, so a lock moved aside by a live caller can read
+ * as old too; removing it only makes that caller find nothing to link back and try again, or, as
+ * it lets go of its own, nothing left to remove. A caller holds the lock.
  */
 export async function removeLeftLocks(path: string): Promise<void> {
   const name = basename(path);
