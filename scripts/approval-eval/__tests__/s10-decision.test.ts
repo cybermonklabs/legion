@@ -34,7 +34,7 @@ const ENDED = "dispatch://ACME-1/comment/claim-result";
 const HERE = join(import.meta.dir, "..");
 
 /** The digest of the pinned closure at this head, as `sha256sum` over its six files prints it. */
-const PINNED_DIGEST = "39d0c7e29e765a1751009adb17a4ad3821949d9dc97500fbd5f19b2dd6ccfe9c";
+const PINNED_DIGEST = "69054a419016dde5f1be9a73c910320202eafbabb0e593f962e029b3f8c00fad";
 
 let scratch: string | undefined;
 
@@ -265,6 +265,25 @@ describe("the decision's children", () => {
       "RESERVE_ENDED: string | null = null;",
       `RESERVE_ENDED: string | null = "${ENDED}";`
     );
+    expect(await decide("kept")).toBe("error");
+  });
+
+  test("a child whose claim.ts throws as it loads decides nothing, and is no hold", async () => {
+    const beside = await directory("throwing-claim");
+    for (const name of [DECISION_PRELOAD_FILE, RESERVE_ASK_REGISTRATION]) {
+      await cp(join(HERE, name), join(beside, name));
+    }
+    const stub = join(beside, "decide.ts");
+    await writeFile(stub, STUB, "utf8");
+    const claim = join(beside, RESERVE_ASK_REGISTRATION);
+    await writeFile(
+      claim,
+      `${await readFile(claim, "utf8")}throw new Error("claim.ts throws as it loads");\n`,
+      "utf8"
+    );
+    // The preload's handlers are registered before it loads claim.ts, so the child exits 70, an
+    // error, before the stub would keep the ask; Bun's own exit 1 would read as held.
+    const decide = spawnDecision(stub, join(beside, DECISION_PRELOAD_FILE), ENV);
     expect(await decide("kept")).toBe("error");
   });
 });

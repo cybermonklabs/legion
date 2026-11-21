@@ -56,7 +56,7 @@ import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
-import { NATS_DIAL_PLAN } from "@legion/envoy-client/nats-connection";
+import { NATS_DIAL_PLAN, NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection";
 import {
   renderSessionAnswers,
   sessionAnswersFailureLine,
@@ -21378,6 +21378,46 @@ console.log(JSON.stringify(args));
     ).toBe(false);
     await fixture.handlers.get("session_shutdown")?.({}, context);
   }, 60_000);
+
+  test("a first NATS dial whose broker token the hub refuses twice drops it, starts another trade, and says so", async () => {
+    // The pass's dials share the keeper's count of the token's refusals (`connectNats`'
+    // `hooks.credential`), so the dial drops a token the hub refused twice, as the keeper does on
+    // an open connection. The waits between the dials are recorded, not slept.
+    const { minted } = brokerPod(() => "grant");
+    natsState.failConnects = 2;
+    natsState.failError = () =>
+      new NatsError("'Authorization Violation'", ErrorCode.AuthorizationViolation);
+    setNatsConnectForTests(
+      natsStandInConnect,
+      { firstDelayMs: 5, maxDelayMs: 5, budgetMs: 30_000 },
+      { delay: async () => {}, random: () => 0 }
+    );
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push(entry.message);
+    });
+    try {
+      const { context, notifications } = timedContext("ses_first_dial_refused", Date.now());
+      const { default: envoyExtension } = await import("./envoy.ts?first-dial-refused-twice");
+      const fixture = createPi();
+      envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, context);
+      expect(
+        natsState.failConnects,
+        notifications.map(({ message }) => message).join(" | ")
+      ).toBe(0);
+      // The start's token, and the trade the drop started.
+      await until(() => minted.size === 2, "the trade the drop started");
+      expect([...minted.values()]).toEqual(["ses_first_dial_refused", "ses_first_dial_refused"]);
+      expect(warnings.filter((message) => message.includes(NATS_DIAL_TOKEN_DROPPED))).toHaveLength(
+        1
+      );
+      await fixture.handlers.get("session_shutdown")?.({}, context);
+    } finally {
+      stopSink();
+      setNatsConnectForTests(natsStandInConnect);
+    }
+  }, 30_000);
 
   test("natsCredential follows a session switch", async () => {
     // A session that presents its broker token (NATS_AUTH=broker) is admitted to its own subjects
