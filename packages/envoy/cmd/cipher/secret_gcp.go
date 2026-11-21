@@ -531,7 +531,9 @@ func killRunningGcloud() {
 // ignored, until stop is called, where no form watches them (formWatchesSignals), and ends the
 // process by the first that comes (exitBySignal, which kills the running gcloud first), as the
 // signal's default action would have, once the value prompt, where it reads, has finished
-// (promptBusy). A signal that came before the stop still ends the process.
+// (promptBusy). stop never returns once the watch has taken a signal, since the process is ending
+// by it, as watchCreateSignals' stop does; a signal that came with the stop still ends the
+// process.
 func watchSignalsWhileGcloudRuns() (stop func()) {
 	if formWatchesSignals.Load() > 0 {
 		return func() {}
@@ -551,16 +553,18 @@ func watchSignalsWhileGcloudRuns() (stop func()) {
 		promptBusy.Lock()
 		exitBySignal(sig)
 	}
-	done := make(chan struct{})
+	done, exited := make(chan struct{}), make(chan struct{})
 	go func() {
 		select {
 		case sig := <-signals:
 			end(sig)
 		case <-done:
+			close(exited)
 		}
 	}()
 	return func() {
 		close(done)
+		<-exited
 		signal.Stop(signals)
 		select {
 		case sig := <-signals:
