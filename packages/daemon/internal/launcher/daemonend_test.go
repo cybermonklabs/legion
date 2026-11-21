@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -23,8 +24,9 @@ import (
 // code under test's only when its first line is the opening that code sends (opens says which).
 // Another process of the machine can reach the listener too, since the kernel can hand it a
 // loopback port that a client of another test binary still redials. Each connection's first line
-// is read on a goroutine of its own, so one that sends nothing holds up no other. One that opens
-// with anything but a frame of the wire is closed and logged, and fails nothing (read), and so is
+// is read on a goroutine of its own, so one that sends nothing holds up no other. One whose first
+// line is no modelled frame of the wire (shimwire's Raw, or no frame at all), or is the hello of a
+// launcher or shim of another listener, is closed and logged, and fails nothing (read), and so is
 // one still silent when the case ends. The code under test's opening carries a token of this
 // listener's own (ownToken), so no launcher or shim of another rig, this package's own included,
 // opens as this one's code. No code but the loop accepts from the listener (a case reads only its
@@ -45,14 +47,16 @@ type daemonEnd struct {
 }
 
 // arrival is one thing next receives: a connection that opened as the code under test opens, with
-// its first frame and the reader that read it, or the report that the code returned, with what it
+// its first frame and the reader that read it; a connection that opened with a modelled frame that
+// is no opening, with that frame (misopened); or the report that the code returned, with what it
 // returned.
 type arrival struct {
-	conn     net.Conn
-	reader   *bufio.Reader
-	frame    shimwire.Frame
-	returned bool
-	err      error
+	conn      net.Conn
+	reader    *bufio.Reader
+	frame     shimwire.Frame
+	misopened bool
+	returned  bool
+	err       error
 }
 
 // waitingArrivals is how many arrivals the daemon end keeps that no case has taken: more than a
@@ -124,10 +128,11 @@ func (end *daemonEnd) accept() {
 
 // read reads conn's first line and hands the connection on when it is the code under test's
 // opening. It closes and logs any other connection, which fails nothing: one that sent nothing, a
-// line that is no frame of the wire, or a hello under a token that is not this listener's. A first
-// frame that is no hello fails the test, though: the launcher and the shim each open with their
-// hello, as does any other process's launcher or shim, so such a frame is the code under test
-// opening with something else.
+// line that is no modelled frame of the wire (shimwire's Raw, such as a stranger's JSON object, or
+// no frame at all), or the hello of a launcher or shim under a token that is not this listener's.
+// A first frame that is a modelled frame and no hello fails the test, though, and ends the wait for
+// the code's next opening at once (next): the launcher and the shim each open with their hello, as
+// does any other process's launcher or shim, so such a frame is the code under test opening wrong.
 func (end *daemonEnd) read(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	line, readErr := reader.ReadBytes('\n')
@@ -149,11 +154,12 @@ func (end *daemonEnd) read(conn net.Conn) {
 	default:
 		_ = conn.Close()
 		switch frame.(type) {
-		case nil, shimwire.LauncherHello, shimwire.Hello2:
+		case nil, shimwire.Raw, shimwire.Hello, shimwire.Hello2, shimwire.LauncherHello:
 			end.t.Logf("the daemon end closed a connection from %s that opened with no opening of the code under test (%.200q, %v)",
 				conn.RemoteAddr(), line, readErr)
 		default:
-			end.t.Errorf("a connection from %s opened with a %T, which no launcher or shim sends first (%.200q)", conn.RemoteAddr(), frame, line)
+			end.t.Errorf("a connection from %s opened with a %T, a modelled frame that no launcher or shim sends first (%.200q)", conn.RemoteAddr(), frame, line)
+			end.deliver(arrival{frame: frame, misopened: true})
 		}
 	}
 }
@@ -208,13 +214,17 @@ func (end *daemonEnd) stop() {
 
 // next is the code under test's next connection, opened with what names. It waits for that
 // opening alone, and the one bound of the wait is the test binary's deadline (testwait.Receive);
-// code that returns first fails the test at once, naming what it returned. The test's cleanup
-// closes the connection.
+// code that returns first, or opens a connection with a modelled frame that is no opening, fails
+// the test at once, naming what it returned or the frame. The test's cleanup closes the connection.
 func (end *daemonEnd) next(t *testing.T, what string) arrival {
 	t.Helper()
 	got := testwait.Receive(t, "a connection to "+end.Addr().String()+" that opens with "+what, end.arrivals)
-	if got.returned {
+	switch {
+	case got.returned:
 		t.Fatalf("the code under test returned (%v) before it opened the connection this case waits for", got.err)
+	case got.misopened:
+		t.Fatalf("the code under test opened a connection with a %T, a modelled frame that is no opening, while this case waited for a connection that opens with %s",
+			got.frame, what)
 	}
 	t.Cleanup(func() { _ = got.conn.Close() })
 	return got
@@ -355,6 +365,63 @@ func TestEachOwnTokenIsItsOwn(t *testing.T) {
 	first, second := ownToken("launcher-token"), ownToken("launcher-token")
 	if first == second || !strings.HasPrefix(first, "launcher-token-") || !strings.HasPrefix(second, "launcher-token-") {
 		t.Fatalf("ownToken gave %q and %q, want two different tokens, each launcher-token and a suffix", first, second)
+	}
+}
+
+// A stranger whose first line is a JSON object of no frame this package models (shimwire's Raw) is
+// closed and logged as any other stranger is, and fails nothing: any process can reach a reused
+// loopback port, and an object is no opening of a launcher or shim. A child run's stranger sends
+// {"x":1} first and waits for the daemon end's close; the child passes and logs that close once, by
+// the stranger's own address.
+func TestAStrangersJSONObjectIsClosedAndLoggedAndFailsNothing(t *testing.T) {
+	const object = `{"x":1}` + "\n"
+	if os.Getenv(helloWaitChildEnv) == "json-stranger" {
+		end := listenForLauncher(t, ownToken("launcher-token"))
+		conn, err := net.Dial("tcp", end.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("the stranger dials from %s", conn.LocalAddr())
+		if _, err := io.WriteString(conn, object); err != nil {
+			t.Fatal(err)
+		}
+		requireClosedByTheDaemonEnd(t, "the stranger's connection", conn)
+		return
+	}
+	out, code := runChild(t, "^TestAStrangersJSONObjectIsClosedAndLoggedAndFailsNothing$", "json-stranger", 20*time.Second)
+	_, after, _ := strings.Cut(out, "the stranger dials from ")
+	stranger, _, _ := strings.Cut(after, "\n")
+	stranger = strings.TrimSpace(stranger)
+	line := fmt.Sprintf("the daemon end closed a connection from %s that opened with no opening of the code under test (%.200q, <nil>)", stranger, object)
+	if code != 0 || stranger == "" || strings.Count(out, line) != 1 {
+		t.Fatalf("the child run exited %d, want 0 and the line %q once; its output:\n%s", code, line, out)
+	}
+}
+
+// A connection of the code under test that opens with a modelled frame other than a hello fails
+// the wait for its opening at once, naming the frame, and not at the wait's margin: the launcher
+// and the shim each open with their hello, so such a frame is the code opening wrong. A child run's
+// code opens with launcher_hello_ack, keeps its connection open, and waits for its hello under a
+// -timeout of 20 s; the child fails by the frame's name and gives up no wait. A hello under a token
+// not this listener's cannot fail so: the daemon end cannot tell it from a stranger's.
+func TestAnOpeningThatIsAnotherModelledFrameFailsTheWaitAtOnce(t *testing.T) {
+	if os.Getenv(helloWaitChildEnv) == "misopened" {
+		end := listenForLauncher(t, ownToken("launcher-token"))
+		conn, err := net.Dial("tcp", end.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		if err := shimwire.NewWriter(conn).WriteFrame(shimwire.LauncherHelloAck{}); err != nil {
+			t.Fatal(err)
+		}
+		acceptRole(t, end)
+		return
+	}
+	out, code := runChild(t, "^TestAnOpeningThatIsAnotherModelledFrameFailsTheWaitAtOnce$", "misopened", 20*time.Second)
+	const want = "the code under test opened a connection with a shimwire.LauncherHelloAck, a modelled frame that is no opening"
+	if code != 1 || !strings.Contains(out, want) || strings.Contains(out, "gave up waiting for") {
+		t.Fatalf("the child run exited %d, want 1, %q and no wait given up; its output:\n%s", code, want, out)
 	}
 }
 
