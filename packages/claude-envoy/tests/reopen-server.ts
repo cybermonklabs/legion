@@ -134,6 +134,9 @@ export interface ReopenServerOptions {
   readonly args?: readonly string[]
   /** The hub's nonce, which a seed or a broker token signs. */
   readonly nonce?: string
+  /** The loopback address the hub and its gate listen on (fake-nats-server.ts's fakeHost), else
+   *  one of the hub's own that the fake picks. */
+  readonly brokerHost?: string
   /** The host's variables and the credential's, given the server's state directory. */
   readonly env: (stateDirectory: string) => Readonly<Record<string, string>>
   /** Writes what the server reads before it registers into its state directory (a Codex
@@ -188,10 +191,13 @@ export interface ReopenServer {
  *  once it has written its first stderr line (`awaitRegistration`). */
 export async function startReopenServer(options: ReopenServerOptions): Promise<ReopenServer> {
   const relay = deliverSubject(options.sessionId)
-  const broker = new FakeNatsServer(options.nonce === undefined ? {} : { nonce: options.nonce })
+  const broker = new FakeNatsServer({
+    ...(options.nonce === undefined ? {} : { nonce: options.nonce }),
+    ...(options.brokerHost === undefined ? {} : { host: options.brokerHost }),
+  })
   // Each client's owner is looked up as the gate accepts it, while its socket is still up.
   const owners = new Map<number, Promise<string>>()
-  const gate = natsGate(Number(new URL(broker.url).port), (leg) => {
+  const gate = natsGate(broker.url, (leg) => {
     owners.set(leg.clientPort, socketOwner(leg.clientPort))
   })
   if (options.gateOpen !== false) gate.open()
