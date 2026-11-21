@@ -52,8 +52,9 @@ const stateReadBound = 60 * time.Second
 type Options struct {
 	// State answers GET /legion/v1/state.
 	State StateSource
-	// StateTransactions opens the repeatable-read, read-only snapshot the state projection uses.
-	// Unset, it is Pool; a test sets it to a fake that opens no database transaction.
+	// StateTransactions opens the repeatable-read, read-only snapshot the state projection uses:
+	// the daemon's store pool, which the daemon's serve sets. A test sets a fake that opens no
+	// database transaction. Unset, the state route answers a failure.
 	StateTransactions store.TxPool
 	// StateReadBound is how long the state route's read may take before it answers a failure and
 	// gives its connection back; zero is stateReadBound, which is the value the daemon runs. A
@@ -406,13 +407,9 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	if serving == nil {
 		serving = func(recorded ghrepo.Repository) ghrepo.Repository { return recorded }
 	}
-	stateTransactions := opts.StateTransactions
-	if stateTransactions == nil && opts.Pool != nil {
-		stateTransactions = opts.Pool
-	}
 	s := &server{
 		state:              opts.State,
-		stateTransactions:  stateTransactions,
+		stateTransactions:  opts.StateTransactions,
 		stateBound:         opts.StateReadBound,
 		consumerLag:        opts.ConsumerLag,
 		callerPod:          opts.CallerPod,

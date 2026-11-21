@@ -234,10 +234,9 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		t.Fatalf("run an admission pass: %v", err)
 	}
 
-	// The state route answers from the server's own pool when no StateTransactions is given, as
-	// the daemon's server does.
+	// The state route answers from the store's pool, as the daemon's server does.
 	server := api.NewServer("127.0.0.1", 8437, api.Options{
-		Steps: steps, State: projectedSource{records: records, steps: steps}, Pool: st.Pool(),
+		Steps: steps, State: projectedSource{records: records, steps: steps}, Pool: st.Pool(), StateTransactions: st.Pool(),
 	})
 	request := httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil)
 	recorder := httptest.NewRecorder()

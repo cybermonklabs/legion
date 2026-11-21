@@ -2767,6 +2767,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Decisions:          s.decided,
 		Log:                s.log,
 		Pool:               st.Pool(),
+		StateTransactions:  st.Pool(),
 		Handlers:           handlers,
 		PrepareRepository:  prepare,
 		RepositoryUnread:   unread,
