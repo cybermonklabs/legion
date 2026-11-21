@@ -387,7 +387,10 @@ Each item below names a script, then what it proves.
   a root architect's own `legion` tool makes the registration that opens its design-gate step on an ancestor's approval (dispatch://INFRA-3320's k8, R1), driven against the real Dispatch server this checkout builds, on a database of its own with its events on a `nats-server` of the run's own, and the daemon in the driver's process reading them, over a PostgreSQL the caller names, through `packages/pi-legion`'s tool under bun with the plugin's own daemon client and envoy-client's `DispatchClient`:
   `register_gate` with step `spec`, the root's own primary document, the basis `dispatch://<P>/spec` at the version the person approved and a reason is looked up on P and sent with one grant, and the daemon records the root's spec step open on P's approval;
   with a decision block open in the root's spec, the same call is refused by the tool, naming the block, before any request reaches the daemon, and the daemon records nothing.
-  Run with `REGISTER_GATE_BASIS_TOOL_ROOT` at the commit the branch starts from, it is the change's negative control.
+  `REGISTER_GATE_BASIS_DISPATCH_ROOT` names another checkout to build that Dispatch from.
+  With `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1` the roots are of project `LEGION` and the issues they rest on of project `OTHR`: the root is set under P through Dispatch's own parent route, a second root's step waits on another issue's open approval request and opens at the first controller tick after the person approves it, and a third root's registration is refused with `BASIS_ACCEPTED` once the issue it rests on stands in retro.
+  Every run keeps the scratch Dispatch's whole event log, `dispatch-events.jsonl`, in its evidence directory.
+  Run with `REGISTER_GATE_BASIS_TOOL_ROOT` at the commit the branch starts from, it is the change's negative control; across projects, run with `REGISTER_GATE_BASIS_DISPATCH_ROOT` at a Dispatch that takes no parent of another project, it fails at `world`.
   No GitHub, no cluster
 
 - `parent-waits.sh`
@@ -5050,7 +5053,8 @@ The issues, pull requests, slots and the claims the boot relaunches are seeded t
 
 ```sh
 LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/register-gate-basis.sh     # → "register gate basis e2e: PASS in <n>s", exit 0
+  [LEGION_E2E_NATS_BIN=<nats-server>] [REGISTER_GATE_BASIS_ACROSS_PROJECTS=1] [REGISTER_GATE_BASIS_DISPATCH_ROOT=<checkout>] \
+  bash scripts/e2e/register-gate-basis.sh     # → "register gate basis e2e: PASS in <n>s", exit 0
 ```
 
 dispatch://INFRA-3320's check k8: a root architect's own `legion` tool makes the registration that R1 takes, which opens the root's design-gate step on an ancestor's approval.
@@ -5063,7 +5067,10 @@ The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh);
 a `LEGION_TEST_NATS_URL` in the caller's environment is not read.
 A run takes one to five minutes, most of it building the driver and Dispatch.
 The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
-before them the script refuses a host with no `bun`, no `node_modules` at the checkout's root or at the root of the tool's checkout, or no driver file in the tool's checkout, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from, and `LEGION_E2E_TOOL_ROOT`, the checkout whose tool it runs (`REGISTER_GATE_BASIS_TOOL_ROOT`, this checkout by default).
+before them the script refuses a host with no `bun`, no `node_modules` at the checkout's root or at the root of the tool's checkout, no driver file in the tool's checkout, or no `packages/envoy/go.mod` in the Dispatch checkout, and a `REGISTER_GATE_BASIS_ACROSS_PROJECTS` that is neither `1` nor empty with exit 2.
+It exports `LEGION_E2E_REPO_ROOT`, this checkout, `LEGION_E2E_DISPATCH_ROOT`, the checkout the driver builds Dispatch from and runs it in (`REGISTER_GATE_BASIS_DISPATCH_ROOT`, this checkout by default; a relative path is read from the directory the script runs in; it needs no `bun install`), `LEGION_E2E_TOOL_ROOT`, the checkout whose tool it runs (`REGISTER_GATE_BASIS_TOOL_ROOT`, this checkout by default), and, for `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1`, `LEGION_E2E_ACROSS_PROJECTS=1`, the run across two projects.
+When the first `bun` on `PATH` is a script or mise itself, as on a devbox, the script puts the directory of the real `bun` that `mise which bun` names first on `PATH`, which the driver hands the tool's `bun`: under the run's own `HOME` a mise shim finds the operator's mise config untrusted and exits 1 before `bun` starts.
+A real `bun`, such as CI's, is left alone.
 
 | check | what it holds |
 | :--- | :--- |
@@ -5072,23 +5079,38 @@ before them the script refuses a host with no `bun`, no `node_modules` at the ch
 | `driver` | a test binary of `TestRegisterGateBasisToolLive` (`internal/daemon/register_gate_basis_live_test.go`, `-tags e2e`) |
 | `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
-The rig is the person-handover proofs' (`internal/daemon/person_handover_scratch_dispatch_test.go`), which `newPersonHandoverRigOn` points at the script's broker and checkout:
-the real Dispatch server `packages/envoy` builds, with the agent token the daemon's `dispatch_token_file` carries, the trusted identity header a person's act goes through, its events on the broker and a database of its own;
+The rig is the person-handover proofs' (`internal/daemon/person_handover_scratch_dispatch_test.go`), which `newPersonHandoverRigOn` points at the script's broker and the Dispatch checkout, or, across projects, `newProjectRigOn` with project `LEGION`:
+the real Dispatch server the Dispatch checkout's `packages/envoy` builds, with the agent token the daemon's `dispatch_token_file` carries, the trusted identity header a person's act goes through, its events on the broker and a database of its own;
 and the daemon in the driver's process, booted through `run` with `dispatch_url` at that server, reading those events, on a database of its own.
 The tool is `packages/pi-legion`'s `createLegionTool`, which [`packages/pi-legion/test/register-gate-basis-driver.ts`](../../packages/pi-legion/test/register-gate-basis-driver.ts) builds under bun for each call:
 the plugin's own daemon client (`createLegionDaemonClient`) at the daemon's API, envoy-client's `DispatchClient` at the scratch Dispatch with the agent bearer a pane's `DISPATCH_TOKEN` carries, and the claim the daemon registered for the root's architect — its session, secret, claim token and generation, handed on stdin — from which the tool mints each grant in its own process, as a pane's tool does.
 Each client records every request it sends, and the driver prints the tool's answer and those requests as one JSON object.
 Bun runs with `PATH` and a home and temporary directory of the run's own, and nothing else of the caller's environment.
 
+Each step prints what it proves as its first line.
+
 | step | driven by | read back as |
 | :--- | :--- | :--- |
-| `p-is-approved-with-requirement-blocks-and-r-is-a-view-under-it` | a session creates R with the `legion` label, the person sets it todo, and the daemon admits it and launches its architect, whose session the rig registers as the plugin's boot does; a session creates P with the label and a primary document marking `p1` to `p3`, and the person sets P in progress, approves its latest version and sets it as R's parent; R's Verification document gets one check serving `p2` | R recorded with a slot, its spec step `unregistered`, no gate fact |
-| `the-tool-registers-rs-spec-step-on-ps-approval-and-the-daemon-records-the-basis` | the tool's `register_gate` with `issue` R, `artifactId` `spec`, `version` 1, `step` `spec`, `basis` `dispatch://<P>/spec`, `basisVersion` the version the person approved, and a `reason` | a success; the daemon was sent `POST /legion/v1/grants` and `POST /legion/v1/gates/register` and nothing else, and Dispatch a read of P, where the reference is looked up; `GET /legion/v1/state` shows R in `planning` with its spec step `open_on_basis` on P's primary document at that version, approved by `user:smoke`; R's architect has one `design-approved` notice naming P's document as the basis, and R one message starting `Design gate opened on an ancestor's approval.`; R's gate row holds the basis, with the tool's reason and the architect's session; one gate fact |
-| `with-a-decision-block-open-in-rs-spec-the-tool-refuses-before-the-daemon-and-nothing-is-recorded` | a session inserts a decision block (`wave`) into R's spec, Dispatch opens its ask, and the tool makes the same call at the version that holds the block | the tool's refusal, `legion register_gate was not called: spec.md (version <n>) has 1 open decision block`, naming block `wave` and its ask, with no request sent to the daemon; R's record (phase, status, generation, view fact, Dispatch sequence), its gate rows, its gate facts and R's Dispatch issue as they were before the call |
+| `world` | a session creates R with the `legion` label, the person sets it todo, and the daemon admits it and launches its architect, whose session the rig registers as the plugin's boot does; a session creates P with the label and a primary document marking `p1` to `p3`, and the person sets P in progress, approves its latest version and sets it as R's parent; R's Verification document gets one check serving `p2` | R recorded with a slot, its spec step `unregistered`, no gate fact |
+| `registration` | the tool's `register_gate` with `issue` R, `artifactId` `spec`, `version` 1, `step` `spec`, `basis` `dispatch://<P>/spec`, `basisVersion` the version the person approved, and a `reason` | a success; the daemon was sent `POST /legion/v1/grants` and `POST /legion/v1/gates/register` and nothing else, and Dispatch a read of P, where the reference is looked up; `GET /legion/v1/state` shows R in `planning` with its spec step `open_on_basis` on P's primary document at that version, approved by `user:smoke`; R's architect has one `design-approved` notice naming P's document as the basis, and R one message starting `Design gate opened on an ancestor's approval.`; R's gate row holds the basis, with the tool's reason and the architect's session; one gate fact |
+| `refusal` | a session inserts a decision block (`wave`) into R's spec, Dispatch opens its ask, and the tool makes the same call at the version that holds the block | the tool's refusal, `legion register_gate was not called: spec.md (version <n>) has 1 open decision block`, naming block `wave` and its ask, with no request sent to the daemon; R's record (phase, status, generation, view fact, Dispatch sequence), its gate rows, its gate facts and R's Dispatch issue as they were before the call |
+
+With `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1` the daemon is project `LEGION`'s, with a cap of three, and its controller ticks only when the driver hands it a moment (`overrides.controllerTicks`).
+The roots R, R2 and R3 are issues of `LEGION`, and P, P2 and P3, the issues they rest on, are issues of a second project of the same Dispatch, `OTHR`, which no daemon runs.
+In `world` the person sets P as R's parent through Dispatch's own route, `PATCH /api/v1/issues/<R>` with `parent`; a Dispatch that takes no parent of another project answers `400 PARENT_INPUT` `parent must be in the same project`, and the run fails there.
+In `registration` the message on R names P on its line `- The ancestor is <P>.`, as `scripts/dispatch/cross-project-basis-census.ts` reads it.
+Two steps follow `refusal`:
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `pending` | a session creates P2 in `OTHR` with the label and a primary document marking `q1` and `q2`, and opens its approval request; R2, labelled and admitted, is set under P2, and its one check serves `q1`; the tool registers R2 on `dispatch://<P2>/spec` at version 1, the version the request asks about; the person approves P2, and a session retitles R2; the driver then hands the daemon one controller tick | the registration a success after one grant and one registration; R2's spec step `pending_on_basis` on P2's request, its gate row's basis pending, one gate fact; after the approval and the retitle, applied, the step still pending and no tick applied; after the tick, R2 in `planning` with its step `open_on_basis` on P2's approved version, one `design-approved` notice naming it, and one message naming P2 as the ancestor |
+| `accepted` | a session creates P3 in `OTHR` with the label and a primary document marking `u1` and `u2`; the person sets it in progress and approves its latest version; its status is then written `retro` as P3's daemon's `sign_off` writes it (`SetAcceptanceStatus`, with `refuse_open_foreign_children`); R3, labelled and admitted, is set under P3, and its one check serves `u1`; the tool registers R3 on P3's approved version | the tool's error, `POST /legion/v1/gates/register failed with 409 BASIS_ACCEPTED`, naming P3 retro in Dispatch, after one grant and one registration sent to the daemon; no gate row and no gate fact of R3, its spec step `unregistered` |
 
 What the proof stands in for lies outside the registration:
 GitHub is one REST stand-in (`blockersGitHub`), the Apps' tokens are placeholders, the package's fake runtime launches the architect, and Envoy's listener answers nothing, so every notice stays in the daemon's outbox to be read.
-`REGISTER_GATE_BASIS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own (`daemon.log`, its JSON log at debug, written when the driver ends), Dispatch's (`dispatch.log`) and the driver's output.
+`REGISTER_GATE_BASIS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own (`daemon.log`, its JSON log at debug, written when the driver ends), Dispatch's (`dispatch.log`), the driver's output, and the scratch Dispatch's whole event log, `dispatch-events.jsonl`.
+The driver writes that log once the daemon has stopped and before Dispatch stops, from every page of `GET /api/v1/events/log`, one event to a line exactly as the route serves it; an empty log is a failure of the run.
+`bun scripts/dispatch/cross-project-basis-census.ts --events-file <evidence>/dispatch-events.jsonl --project LEGION --project OTHR --json` reads it; on the run across projects it lists the two openings the run made, `registration`'s on R and `pending`'s on R2.
 
 The negative control is the tool of the commit the branch starts from, whose `register_gate` takes no basis.
 It runs as the same script, with `REGISTER_GATE_BASIS_TOOL_ROOT` at a copy of that commit holding this checkout's driver file:
@@ -5104,6 +5126,19 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 
 Dispatch, the daemon and the world are this checkout's in both runs, and only the tool differs.
 The run fails at the registration step, and `proof.log` holds that tool's own refusal, `register_gate does not accept field "basis"; register_gate does not accept field "basisVersion"; register_gate does not accept field "reason"; it takes issue, artifactId, version, step`, with no request sent to the daemon or to Dispatch.
+
+Across projects, the negative control is a Dispatch that takes no parent of another project: the same run, with `REGISTER_GATE_BASIS_DISPATCH_ROOT` at a checkout of the commit before the change that lets a parent be in another project.
+
+```sh
+dispatch_base=$(mktemp -d "$TMPDIR/dispatch-base.XXXXXX")
+git archive <commit> | tar -x -C "$dispatch_base"
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  REGISTER_GATE_BASIS_ACROSS_PROJECTS=1 REGISTER_GATE_BASIS_DISPATCH_ROOT="$dispatch_base" \
+  bash scripts/e2e/register-gate-basis.sh     # → "register gate basis e2e: FAIL at proof after <n>s", exit 1
+```
+
+The daemon, the tool and the world are this checkout's in both runs, and only Dispatch differs.
+The run fails at `world`, and `proof.log` holds Dispatch's answer to R's link under P: `= 400 {"code":"PARENT_INPUT","error":"parent must be in the same project"}`.
 
 ## parent-waits.sh
 
