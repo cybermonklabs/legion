@@ -72,7 +72,8 @@ func TestReceiveReturnsASentValueAndAClose(t *testing.T) {
 	}
 }
 
-// Until and Receive give up the margin before the test binary's deadline, which the test names.
+// Eventually, Until and Receive give up the margin before the test binary's deadline, which the
+// test names.
 func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	deadline, bounded := t.Deadline()
 	end, ok := giveUpAt(t)
@@ -81,9 +82,9 @@ func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	}
 }
 
-// Under a short -timeout Until and Receive give up 30 s before the deadline, before Go's alarm:
-// each writes its line to stderr and fails the test with the same text, which carries Until's last
-// reading.
+// Under a short -timeout Eventually, Until and Receive give up 30 s before the deadline, before
+// Go's alarm: each writes its line to stderr and fails the test with the same text, which carries
+// Until's last reading.
 func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	child := exec.Command(os.Args[0], "-test.run=^TestTheWaitsGiveUpChild$", "-test.timeout="+childTimeout, "-test.v")
 	child.Env = append(os.Environ(), childEnv+"=1")
@@ -99,6 +100,7 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	ending := " 30s before the test binary's deadline"
 	want := []string{
 		"testwait: " + name + "until: gave up waiting for a reading that never holds" + ending + `; last read: a later\nreading`,
+		"testwait: " + name + "eventually: gave up waiting for a condition that never holds" + ending,
 		"testwait: " + name + "receive: gave up waiting for a send no one makes" + ending,
 	}
 	written := strings.Split(stderr.String(), "\n")
@@ -112,8 +114,8 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 	}
 }
 
-// Under -timeout 0 there is no deadline: Until asks until its reading holds, however many false
-// readings come first, and Receive waits until a value comes.
+// Under -timeout 0 there is no deadline: Eventually and Until ask until their condition holds,
+// however many false answers come first, and Receive waits until a value comes.
 func TestUnderNoTimeoutAWaitHasNoEnd(t *testing.T) {
 	child := exec.Command(os.Args[0], "-test.run=^TestNoDeadlineChild$", "-test.timeout=0", "-test.v")
 	child.Env = append(os.Environ(), childEnv+"=1")
@@ -124,7 +126,7 @@ func TestUnderNoTimeoutAWaitHasNoEnd(t *testing.T) {
 }
 
 // TestTheWaitsGiveUpChild is the child of TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure,
-// run under -timeout 35s: its first wait gives up 5 s in, and the later one starts past the margin
+// run under -timeout 35s: its first wait gives up 5 s in, and each later one starts past the margin
 // and asks once. It runs only when the parent re-executes this binary.
 func TestTheWaitsGiveUpChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
@@ -140,20 +142,28 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 			return "a later\nreading", false
 		})
 	})
+	t.Run("eventually", func(t *testing.T) {
+		Eventually(t, "a condition that never holds", func() bool { return false })
+	})
 	t.Run("receive", func(t *testing.T) {
 		Receive(t, "a send no one makes", make(chan int))
 	})
 }
 
-// TestNoDeadlineChild is the child of TestUnderNoTimeoutAWaitHasNoEnd, run under -timeout 0: Until
-// reads false twice and true the third time, and Receive's value is sent 100 ms after it begins.
-// A wait that gave up on a false reading or on an empty channel fails it. The 100 ms decides no
-// verdict here, since the wait has no end; it keeps the channel empty when the wait begins, so a
-// Receive that gave up at once would find nothing. It runs only when the parent re-executes this
-// binary.
+// TestNoDeadlineChild is the child of TestUnderNoTimeoutAWaitHasNoEnd, run under -timeout 0:
+// Eventually's condition and Until's reading are false twice and true the third time, and
+// Receive's value is sent 100 ms after it begins. A wait that gave up on a false answer or on an
+// empty channel fails it. The 100 ms decides no verdict here, since the wait has no end; it keeps
+// the channel empty when the wait begins, so a Receive that gave up at once would find nothing. It
+// runs only when the parent re-executes this binary.
 func TestNoDeadlineChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestUnderNoTimeoutAWaitHasNoEnd")
+	}
+	conditions := 0
+	Eventually(t, "the third answer", func() bool { conditions++; return conditions == 3 })
+	if conditions != 3 {
+		t.Errorf("under -timeout 0 Eventually asked its condition %d times, want 3: it returned before the third answer, the first that held", conditions)
 	}
 	asks := 0
 	if got := Until(t, "the third reading", func() (int, bool) { asks++; return asks, asks == 3 }); got != 3 || asks != 3 {
