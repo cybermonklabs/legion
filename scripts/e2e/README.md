@@ -124,6 +124,15 @@ Each item below names a script, then what it proves.
   an answer while no controller runs is found by the next controller's start walk.
   Devbox only (INFRA-214, A3 and A4)
 
+- `private-project-devbox.sh`
+
+  a private project's own Legion daemon works on the deployment's shared hub and listener behind the auth service, and nothing crosses between it and a public project (check c-private-legion):
+  a private scratch issue goes through the workflow to done and its pull request merges into the scratch repository;
+  the private and the control proof daemons' own records hold none of the other project's events;
+  a deployed public daemon's consumers, read with `CONSUMER.INFO`, filter only its own project's subjects;
+  and the private controller runs under its own account in its own namespace and deletes a finished pod of its project.
+  Devbox only, after private-project support is deployed
+
 - `dispatch-user-turns.sh`
 
   a person's direct Send or Aside from Dispatch's conversation page reaches a real Oh My Pi session
@@ -985,6 +994,51 @@ The trap still closes the run's pull requests in two further cases ([`lib/transc
   The run keeps going, and its output still reaches anyone reading.
   GNU `tee`, the devbox's, keeps the transcript only up to the point its disk filled and never reopens it, even once space returns;
   busybox `tee` picks the transcript up again once there is room.
+
+## private-project-devbox.sh
+
+```sh
+LEGION_E2E_PRIVATE_PROJECT=<private scratch project> LEGION_E2E_PUBLIC_PROJECT=<public scratch project> \
+LEGION_E2E_PUBLIC_PEER_SESSION=<a session of the public project> LEGION_E2E_KUBE_CONTEXT=<context> \
+LEGION_E2E_NATS_URL=<the shared hub> LEGION_E2E_DAEMON_CONFIG=<legion.yaml template> \
+LEGION_E2E_PRIVATE_DAEMON_TOKEN_FILE=<file> LEGION_E2E_CONTROL_DAEMON_TOKEN_FILE=<file> \
+  bash scripts/e2e/private-project-devbox.sh     # → "private project devbox e2e: PASS after <n>s", exit 0
+```
+
+**Devbox only; CI does not run this script.**
+It is the live proof of check c-private-legion, and it runs against a deployment that has private-project support:
+the private scratch project is provisioned private with `Open: true`, so the deployment's quota lets its pods run, and its namespace `legion-<p>` and controller account `legion-<p>-controller` exist, which `deployment` checks before anything starts.
+It writes only to the two scratch projects it is given and to the scratch repository (`LEGION_E2E_SCRATCH_REPO`, default `sjawhar/legion-smoke`).
+
+It runs two proof daemons of its own, this checkout's `legion`, each on a scratch Postgres of the run's own (`--cpus 2 --memory 2g`, on `tmpfs`):
+the private daemon, connected to the shared hub as the private project's own daemon identity (`LEGION_E2E_PRIVATE_DAEMON_TOKEN_FILE`), whose `legion-go-<P>-*` consumers are this proof's alone, since that identity's grant names them and no deployed daemon holds it;
+and the control daemon, the same for the public scratch project (`LEGION_E2E_CONTROL_DAEMON_TOKEN_FILE`).
+`LEGION_E2E_DAEMON_CONFIG` is the operator's `legion.yaml` template for both, in which the run fills `@PROJECT@`, `@DATABASE_URL@`, `@STATE_DIR@`, `@NATS_URL@` and `@NATS_TOKEN_FILE@`:
+the deployment's own keys stay out of this repository.
+
+The private daemon drives one scratch issue to done, and the operator approves its spec in their Dispatch when it waits on a person.
+Meanwhile the run writes one comment on a public issue and sends one message to `LEGION_E2E_PUBLIC_PEER_SESSION`, so the private daemon has a public message to be refused.
+
+What each proof daemon received is read from its own record, never from a second connection that would take its messages:
+the events its store took (`processed_events`, each named with the project the operator's Dispatch event log gives it) and the issues it admitted.
+The deployed daemons are read without taking a message:
+with `LEGION_E2E_DEPLOYED_DAEMON_TOKEN_FILE`, a deployed public daemon's own credential, its four consumers' `CONSUMER.INFO` before and after the run;
+with `LEGION_E2E_LISTENER_METRICS_URL`, the listener's `envoy_listener_project_withheld_total{family}`, before and after.
+A read whose identity the run does not hold prints `not run: <read> (<the input it needs>)` and fails the run.
+The pods deleted in `legion-<p>` during the run are watched, and a deletion counts as the controller's when the controller's own log names the pod.
+
+[`lib/private-project-audit.ts`](lib/private-project-audit.ts) judges what was recorded, one line per judgement, `PASS`, `FAIL` or `UNKNOWN`:
+neither daemon's record holds a message of the other project (a GitHub event of the scratch repository reaches both and is not judged);
+the deployed daemon's consumers filter only its own project's subjects or a subject of no project, and were delivered more during the run;
+the controller's pod runs as `legion-<p>-controller` in `legion-<p>`;
+and the controller deleted a finished pod of its project.
+A record that holds nothing to judge is `UNKNOWN`, which fails the run as a `FAIL` does, so an empty read never passes.
+Its unit test is `bun test scripts/e2e/lib/private-project-audit.test.ts`.
+
+The check's negative controls, each run on its own:
+let the auth service grant the private project's daemon identity every project's names, and the private daemon's record holds the public project's events;
+let it grant the control daemon's identity every project's names, and the control daemon's record holds the private project's.
+Each time the audit fails, naming the event.
 
 ## stage3-4b13b-acceptance.sh
 

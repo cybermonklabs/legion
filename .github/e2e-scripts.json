@@ -239,6 +239,10 @@
       "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, a project key, and the key of one issue of that project a deployed Legion ran to done after the release that rates each plan; it reads the project's finished issues and starts nothing, and needs no checkout of this repository, only lib/dispatch-read.sh beside it"
     },
     {
+      "script": "private-project-devbox.sh",
+      "needs": "a devbox reaching a deployment with private-project support: its cluster through the operator's kube context, its shared hub, the operator's Dispatch with a private and a public scratch project, the two proof daemon identities' tokens, the operator's legion.yaml template, docker for the proof daemons' Postgres containers, and go, kubectl, gh, bun, jq, curl and psql"
+    },
+    {
       "script": "provider-error-retry.sh",
       "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
     },
