@@ -44,7 +44,9 @@ func TestAHistoryParkingPastTheRoomsDeleteRangeCapIsUnloadableUntilItsRebuildKee
 // room's cap: the room's own decode refuses it.
 //
 // Each time, a read of the document (/text's, Text) answers ErrDocumentUnloadable naming the cap,
-// and logs parkedPastCapReadLine; a socket opened on it is answered 503 at its admission, as a
+// and logs parkedPastCapReadLine, and so does a request's read of the stored document (storedTree:
+// a mark's verify, a precondition, a version taken where the room budget has no opening for the
+// room); a socket opened on it is answered 503 at its admission, as a
 // socket on a history that does not decode is, never ygo's 500 for a room whose load failed; a
 // room's load (a settlement's warm-up) fails with crdt.ErrPendingCap and logs
 // parkedPastCapLoadLine; an agent's write is refused ErrDocumentUnloadable; no room is resident;
@@ -98,7 +100,11 @@ func requireParkedPastCapUnloadable(t *testing.T, parked []byte, want *parkedPas
 		if !errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, ErrServiceUnavailable) || !errors.As(err, &refused) || *refused != *want || !errors.Is(err, crdt.ErrPendingCap) {
 			t.Fatalf("access %d: a read of the document = %q (%v), want ErrDocumentUnloadable for the history parking past %+v", access, text, err, want)
 		}
-		requireLogged(t, logs, parkedPastCapReadLine, readLine, access)
+		requireLogged(t, logs, parkedPastCapReadLine, readLine, 2*access-1)
+		if tree, err := service.storedTree(ctx, artifactID); !errors.Is(err, ErrDocumentUnloadable) || !errors.As(err, &refused) || *refused != *want {
+			t.Fatalf("access %d: a read of the stored document (storedTree) = %v (%v), want ErrDocumentUnloadable for the history parking past %+v", access, tree, err, want)
+		}
+		requireLogged(t, logs, parkedPastCapReadLine, readLine, 2*access)
 
 		awaitRecovered(t, service, artifactID)
 		opened := time.Now()
@@ -167,18 +173,17 @@ func requireParkedPastCapUnloadable(t *testing.T, parked []byte, want *parkedPas
 	})
 }
 
-// requireLogged requires logs to hold access lines with msg, each line, the line from its level
-// on.
-func requireLogged(t *testing.T, logs *storetest.LockedLog, msg, line string, access int) {
+// requireLogged requires logs to hold want lines with msg, each line, the line from its level on.
+func requireLogged(t *testing.T, logs *storetest.LockedLog, msg, line string, want int) {
 	t.Helper()
 	logged := logs.Lines(fmt.Sprintf("msg=%q", msg))
 	lines := slices.Collect(strings.Lines(logged))
-	if len(lines) != access {
-		t.Fatalf("access %d: the log holds %d lines %q, want %d:\n%s", access, len(lines), msg, access, logged)
+	if len(lines) != want {
+		t.Fatalf("the log holds %d lines %q, want %d:\n%s", len(lines), msg, want, logged)
 	}
 	for _, logged := range lines {
 		if !strings.HasSuffix(logged, line) {
-			t.Fatalf("access %d: the log line %q, want it to end %q", access, logged, line)
+			t.Fatalf("the log line %q, want it to end %q", logged, line)
 		}
 	}
 }

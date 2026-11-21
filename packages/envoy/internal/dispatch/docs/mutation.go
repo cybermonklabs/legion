@@ -2378,6 +2378,10 @@ func (s *Service) storedTree(ctx context.Context, artifactID string) (*pmdoc.Nod
 // the room, where coldFork's does: coldFork reads the store in place of a room, so its failure is
 // the document's, while here the room is sound and only behind, and its catch-up brings it to the
 // head (roomCatchUps). The caller answers ErrServiceUnavailable instead, and its caller retries.
+// A history that parks past a room's caps is one no room loads, so it is answered
+// ErrDocumentUnloadable here as the cold read answers it (parkedPastRoomCaps), whether or not the
+// room budget had an opening for the caller's room: a read that loads a room meets the room's own
+// refusal of it.
 func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unstored []byte) (*pmdoc.Node, error) {
 	loaded, err := s.persistence.LoadDocument(ctx, artifactID)
 	if err != nil {
@@ -2385,6 +2389,10 @@ func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unst
 			return nil, err
 		}
 		return nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+	}
+	if parked := s.parkedPastRoomCaps(loaded.Doc); parked != nil {
+		slog.Warn(parkedPastCapReadLine, parked.attrs(artifactID)...)
+		return nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, parked)
 	}
 	doc := loaded.Doc
 	if doc == nil {

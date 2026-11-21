@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -803,8 +804,9 @@ func (s *Service) consumeSuppressedPersistence(room string, update []byte) bool 
 	}
 }
 
-// consumeHeadSlotLocked marks room's first suppression slot consumed and removes it. The caller
-// holds suppressMu.
+// consumeHeadSlotLocked marks room's first suppression slot consumed and removes it, clearing the
+// slot it vacates so the backing array keeps no reference to its update (as roomSyncLane.pop
+// does). The caller holds suppressMu.
 func (s *Service) consumeHeadSlotLocked(room string) {
 	slots := s.suppressed[room]
 	slots[0].consumed = true
@@ -812,6 +814,7 @@ func (s *Service) consumeHeadSlotLocked(room string) {
 		delete(s.suppressed, room)
 		return
 	}
+	slots[0] = nil
 	s.suppressed[room] = slots[1:]
 }
 
@@ -824,7 +827,7 @@ func (s *Service) cancelSuppressedPersistence(room string, slot *suppressSlot) {
 	slots := s.suppressed[room]
 	for index, candidate := range slots {
 		if candidate == slot {
-			slots = append(slots[:index], slots[index+1:]...)
+			slots = slices.Delete(slots, index, index+1)
 			break
 		}
 	}
