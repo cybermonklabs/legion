@@ -2133,7 +2133,7 @@ type Store interface {
 	// wrote. Each is written once: an experiment issue already holds a row for keeps that row
 	// whatever is passed for it now, so a later pass under another mode leaves a unit on the arm
 	// it has been running under, and nothing ever updates a row. Writing nothing is no error, and
-	// an issue the daemon holds no record of — an operator's spawn — takes no row at all.
+	// an issue the daemon holds no record of takes no row at all.
 	PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []Assignment) (int, error)
 	// CarryAssignments settles the assignments of key, a child handed over as a tree of its own,
 	// from the tree it left: every tree-unit assignment of from's root copied verbatim — its arm,

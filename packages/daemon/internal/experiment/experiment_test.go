@@ -1,15 +1,21 @@
 package experiment
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // twoArms is the experiment the mode cases below draw over: two arms of equal weight, the first of
@@ -263,6 +269,40 @@ func TestAZeroTotalWeightAndAnOverflowingWeightSumAreRefused(t *testing.T) {
 	}
 }
 
+// A key the daemon holds no issue record of — an operator's spawn of a tree it never recorded — is
+// drawn for nothing: DrawAndRecord answers nil without reading the source or writing anything, so a
+// source that fails refuses nothing. The same declared experiment for a key the daemon holds a
+// record of reads the source once and writes that key its one row.
+func TestAKeyWithNoIssueRecordIsDrawnForNothing(t *testing.T) {
+	ctx := context.Background()
+	drawnAt := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	declared := []config.Experiment{twoArms(config.ExperimentRandom)}
+	records := &fakeRecords{issues: map[string]record.Issue{"LEGION-1": {Key: "LEGION-1"}}}
+
+	failing := &seededSource{err: errors.New("the random source is closed")}
+	if err := DrawAndRecord(ctx, nil, records, "LEGION-404", declared, config.ExperimentTree, failing.draw, drawnAt); err != nil {
+		t.Fatalf("the draw for a key with no record over a failing source = %v, want nil: nothing is drawn for it", err)
+	}
+	if failing.reads != 0 || len(records.puts) != 0 {
+		t.Fatalf("the draw for a key with no record read the source %d times and wrote %v, want no read and no write",
+			failing.reads, records.puts)
+	}
+
+	working := &seededSource{answers: []uint64{1}}
+	if err := DrawAndRecord(ctx, nil, records, "LEGION-1", declared, config.ExperimentTree, working.draw, drawnAt); err != nil {
+		t.Fatalf("the draw for a recorded key: %v", err)
+	}
+	if working.reads != 1 {
+		t.Fatalf("the draw for a recorded key read the source %d times, want once", working.reads)
+	}
+	want := []recordedPut{{issue: "LEGION-1", rows: []record.Assignment{
+		{Experiment: "memory", Unit: "tree", Variant: "none", Mode: "random", DrawnAt: &drawnAt},
+	}}}
+	if !reflect.DeepEqual(records.puts, want) {
+		t.Fatalf("the draw for a recorded key wrote %+v, want its one row %+v", records.puts, want)
+	}
+}
+
 // The source the daemon draws `random` with is crypto/rand's, not math/rand's. Many draws answer
 // inside the bound and are no constant; and the source read is crypto/rand.Reader itself, which
 // this test proves by putting a reader of its own there: CryptoSource reads that reader — a
@@ -362,3 +402,31 @@ func (r *countingReader) Read(p []byte) (int, error) {
 }
 
 var _ io.Reader = (*countingReader)(nil)
+
+// fakeRecords stands in for the records a draw reads and writes: it holds the issue records of
+// issues' keys, nil for every other key, and keeps every PutAssignments call in its order.
+type fakeRecords struct {
+	issues map[string]record.Issue
+	puts   []recordedPut
+}
+
+// recordedPut is one PutAssignments call fakeRecords was given: the key and the rows.
+type recordedPut struct {
+	issue string
+	rows  []record.Assignment
+}
+
+func (r *fakeRecords) Issue(_ context.Context, _ pgx.Tx, key string) (*record.Issue, error) {
+	issue, ok := r.issues[key]
+	if !ok {
+		return nil, nil
+	}
+	return &issue, nil
+}
+
+func (r *fakeRecords) PutAssignments(_ context.Context, _ pgx.Tx, issue string, rows []record.Assignment) (int, error) {
+	r.puts = append(r.puts, recordedPut{issue: issue, rows: rows})
+	return len(rows), nil
+}
+
+var _ Records = (*fakeRecords)(nil)

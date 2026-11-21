@@ -8161,7 +8161,7 @@ each issue's pod (every role of it alike) and the image probe's.
   a change of a project's mode, and turning the block on at all, reach only the trees opened after the change, and a child handed over out of such a tree is never drawn for either, since the hand-over gives it that tree's answer whether it is a draw or none.
   A root out of a tree the daemon never opened — one with no lifecycle row, whose work never ran — takes no answer with it, so its own first open draws it like any other new tree.
   The hand-over decides both, in the transaction that records it, so which of the two roots is promoted first changes nothing.
-  An operator's spawn whose tree has no issue record records no draw and runs without memory; nothing is refused and no record is invented.
+  An operator's spawn whose tree has no issue record reads no random source and records no draw, so a failing random source refuses nothing; the tree runs without memory and no record is invented.
 
 - **What a memory-group role is given.**
   Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the project's memory overlays, which outrank both;
