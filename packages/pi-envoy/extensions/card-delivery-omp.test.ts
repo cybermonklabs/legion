@@ -898,22 +898,17 @@ test.skipIf(skip)(
   120_000
 );
 
-// A card that reaches pi-envoy while Oh My Pi starts holds none of the host's RPC input. The
-// stand-in holds the registration envoy.ts's `session_start` awaits, with the relay subject
-// already open (it is opened before the registration that asks for the consumer), so both cards
-// reach pi-envoy inside the host's startup. The pinned build (18.18.6-sami.20261119-162325) reads
-// RPC input while its startup runs (`rpc-mode.ts` `runRpcMode`): it answers at once a command
-// that starts no turn, as `get_state`, holds one that starts a turn or changes the session
-// (`waitsForStartup`) until its startup is over, and calls `initializeExtensions` with
-// `drainSends: false`, so that startup waits on no extension send. So the `get_state` written
-// once both cards are in is answered while the startup is still held. 18.16.0 held every RPC
-// command but `set_ask_dialog`, in arrival order, until its startup was over, after
-// `initializeExtensions` had returned, and this test then held that the `get_state` written during
-// startup went unanswered until the startup was released. On 18.12.2, when this test was written,
-// RPC mode also drained every startup send first (`runner.sends.drain()`), so a card's own turn
-// there would have held `get_state` and `prompt` back until it ended.
+// Cards that reach pi-envoy while Oh My Pi starts are folded into the context with no turn and
+// read in one wake turn after startup (src/card-wake.ts, "The startup phase"). The stand-in holds
+// the registration envoy.ts's `session_start` awaits, with the relay subject already open (it is
+// opened before the registration that asks for the consumer), so both cards reach pi-envoy inside
+// the host's startup. The two `get_state` reads are preconditions about the host, not pi-envoy's
+// decision: the pinned build (18.18.6-sami.20261119-162325) answers at once a command that starts
+// no turn while its startup runs, and holds one that starts a turn or changes the session until
+// startup ends (`rpc-mode.ts` `waitsForStartup`), so neither read waits for the startup or for the
+// wake's turn.
 test.skipIf(skip)(
-  "a card that arrives while the session starts holds no RPC input",
+  "cards that arrive while the session starts reach the model in one wake turn after startup",
   async () => {
     const session = await startSession({ holdStartup: true });
     const cards = [await session.card("s1"), await session.card("s2")];

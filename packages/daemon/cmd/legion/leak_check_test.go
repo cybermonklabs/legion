@@ -67,16 +67,19 @@ func noSharedCheck(t *testing.T, checker string) {
 // it would name.
 var theChecker = strings.Repeat("5e", 32)
 
-// aPushFixture is a repository holding one commit whose message is message, and the line git
-// hands a pre-push hook for a push of it to a remote that holds the ref yet.
-func aPushFixture(t *testing.T, message string) (dir, line string) {
+// aPushFixture is a repository holding one commit whose message is message, the URL of the
+// remote it is pushed to, and the line git hands a pre-push hook for a push of it to a remote that
+// does not hold the ref yet. The remote is an empty local bare repository, which the guard reads
+// what it holds from with git ls-remote.
+func aPushFixture(t *testing.T, message string) (dir, url, line string) {
 	t.Helper()
-	dir = t.TempDir()
+	dir, url = t.TempDir(), filepath.Join(t.TempDir(), "remote.git")
 	fixture := fixturegit.Isolated(t, t.TempDir())
 	fixture.Run(dir, fixturegit.InitWorkTree("", "main")...)
+	fixture.Run(dir, fixturegit.InitBare(url, "main")...)
 	fixture.Run(dir, "git", "commit", "--allow-empty", "--quiet", "-m", message)
 	sha := fixture.Run(dir, "git", "rev-parse", "HEAD")
-	return dir, "refs/heads/main " + sha + " refs/heads/main " + noSHA + "\n"
+	return dir, url, "refs/heads/main " + sha + " refs/heads/main " + noSHA + "\n"
 }
 
 // leakCheck runs the command as git's hook and a pod's scripts run it: stdin is what they pipe
@@ -170,7 +173,7 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dir, line := aPushFixture(t, tc.message)
+			dir, url, line := aPushFixture(t, tc.message)
 			// git runs its hook in the repository the push is made from, and that working
 			// directory is where the command reads the push's commits from.
 			t.Chdir(dir)
@@ -181,7 +184,7 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 			}
 			// A local path names no github.com repository, so the guard reads no visibility and
 			// this test starts no gh.
-			code, printed := leakCheck(t, line, "pre-push", "origin", dir+".git")
+			code, printed := leakCheck(t, line, "pre-push", "origin", url)
 			if code != tc.code {
 				t.Errorf("exited %d, want %d: %s", code, tc.code, printed)
 			}
@@ -215,7 +218,9 @@ func legionLeakCheckPrePush(t *testing.T, dir string, env map[string]string, lin
 // visibility with `gh`, which in a pane or pod is `legion gh`, and it blanks the variable for that
 // read, so the read reaches the real gh and the push is cleared. Under the variable the read would
 // be refused as a real gh leading back to `legion gh`, and the push with it, leaving the
-// repository gh created empty.
+// repository gh created empty. The stand-in gh answers the destination public, so the guard also
+// reads what the destination holds, which a stand-in git answers (gitStandInLsRemote): no test
+// reaches github.com.
 func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -227,9 +232,10 @@ func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T)
 		t.Fatal(err)
 	}
 	record := filepath.Join(t.TempDir(), "gh")
-	dir, line := aPushFixture(t, "a commit of nothing in particular")
+	dir, _, line := aPushFixture(t, "a commit of nothing in particular")
 	code, printed := legionLeakCheckPrePush(t, dir, map[string]string{
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"PATH":              ghWrapperDir(t) + ":" + gitStandInLsRemote(t, os.DevNull) + ":" + os.Getenv("PATH"),
 		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
 		"GH_STANDIN_RECORD": record, leakguard.RunByRealGhVar: stub,
 	}, line, "https://github.com/acme/widgets.git")
@@ -261,7 +267,7 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
 	}
-	dir, line := aPushFixture(t, "a commit of nothing in particular")
+	dir, url, line := aPushFixture(t, "a commit of nothing in particular")
 	for _, shape := range []struct {
 		name  string
 		stdin string
@@ -273,7 +279,7 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 		seconds map[syscall.Signal]string
 	}{
 		{
-			name: "leak-check pre-push", stdin: line, args: []string{"leak-check", "pre-push", "origin", dir + ".git"},
+			name: "leak-check pre-push", stdin: line, args: []string{"leak-check", "pre-push", "origin", url},
 			seconds: map[syscall.Signal]string{syscall.SIGINT: "293", syscall.SIGHUP: "294"},
 		},
 		{

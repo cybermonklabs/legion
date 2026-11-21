@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  The leak guard now reads every file a pushed commit changes as text, whatever `.gitattributes`
+  says of it, the pushed commit's own `.gitattributes` included. A push could mark a file `-diff`
+  or `binary` in its own `.gitattributes`, and such a file added no line to the private-name pass,
+  so a private name in it passed the guard. A file is now binary only where its blob holds a zero
+  byte in its first 8000 bytes, as git's own diff decides when no attribute says otherwise, and
+  the guard reads no line of such a file.
+  The guard reads a commit's added lines from its files, not from a diff: the lines of each text
+  file the commit changes that the file it is compared with does not hold, which is the parent's
+  file at the same path, or the file a rename comes from. A line that the parent's file already
+  holds elsewhere is not read: the destination holds that line already, or the guard reads it
+  where the parent is pushed.
+  A text file above 32 MiB that the guard reads on either side of a pushed commit or merge now
+  refuses the push as a setup failure that names the file and its size: a commit's own file, or
+  the parent's file the commit's is compared with, and a merge's own file, or a parent's at a path
+  the merge changes. A merge reads no parent's file at a path where its own file is binary or
+  where earlier parents' files already hold every line of it, and a commit reads nothing of a
+  file it renames or changes the mode of and leaves as it is. The guard does not read a file above
+  the bound, so it holds no such file in an issue pod, whose roles share one memory limit. The
+  bound holds for every push the guard scans: one to a repository GitHub reports public, or to
+  one the guard cannot name, such as a local path.

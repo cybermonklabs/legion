@@ -30,9 +30,9 @@ const ControllerStartMessage = "Legion controller start: follow skill://legion-c
 // Oh My Pi, which runs command-line words as prompts once its startup is over and its TUI listens.
 // pi-legion's extension command of that name claims the controller and sends
 // ControllerStartMessage as the session's first turn. A claim from pi-legion's session_start
-// handler instead would run inside Oh My Pi's startup, which drains every send made there at its
-// end: the start turn would run inside the startup wait, with no TUI and no input, and a card on
-// the controller role's lane could start its own turn first.
+// handler instead would claim inside Oh My Pi's startup, which holds every send made there until
+// its startup has subscribed to the agent and then starts them without waiting for their turn:
+// a card on the controller role's lane could start its own turn ahead of the start message.
 const ControllerStartCommand = "/legion-controller-start"
 
 // The waits before a failed or retired controller is retried: the first (plan.controllerRetry,

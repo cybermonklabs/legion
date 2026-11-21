@@ -41,6 +41,8 @@ on:
       - ".github/go-release-targets.json"
       # The worker image's remaining inputs (worker_image below).
       - ".omp-pin"
+      - ".omp-pin.sha256"
+      - ".github/scripts/omp-digest.sh"
       - ".bun-version"
       - ".dockerignore"
       - ".github/workflows/worker-image.yaml"

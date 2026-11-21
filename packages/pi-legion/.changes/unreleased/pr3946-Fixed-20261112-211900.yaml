@@ -1,0 +1,5 @@
+kind: Fixed
+body: The github capability row runs its gh viewer query from /, a directory that is no git repository, so it measures the role's credential, and a fork checkout whose remotes name two owners no longer reads as a credential failure.
+time: 2026-11-12T21:19:00.109084812Z
+custom:
+    Issue: pr3946

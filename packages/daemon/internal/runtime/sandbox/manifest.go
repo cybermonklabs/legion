@@ -1815,23 +1815,23 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	return env
 }
 
-// gitConfigPairs are the git configuration entries gitConfigEnv sets: the helper for
-// https://github.com reset, then set to `legion git-credential` (workspace.GitHubCredentialHelper),
-// and credential.useHttpPath on for github.com, so git hands the helper the path whose owner picks
-// the token; then core.fsmonitor off and core.hooksPath at /dev/null, so no git a role runs starts
-// the fsmonitor program or a hook any configuration file names. The issue's roles share the
-// clone, and each can write its `.git/config` and hooks, so without these a `git status` or `git
-// commit` of one role would run a program another planted, with the first role's credentials.
-// These are two of the settings that can do so, not all: a diff driver, a filter driver or a
-// signing program a role plants in the shared clone still runs in a sibling's git, and the roles
-// are no boundary against each other's code (docs/kubernetes.md).
-var gitConfigPairs = [][2]string{
-	{"credential.https://github.com.helper", ""},
-	{"credential.https://github.com.helper", workspace.GitHubCredentialHelper},
-	{"credential.https://github.com.useHttpPath", "true"},
+// gitConfigPairs are the git configuration entries gitConfigEnv sets: the pod's GitHub credential
+// (workspace.GitHubCredentialPairs), which is the helper for https://github.com reset, then set to
+// `legion git-credential` (workspace.GitHubCredentialHelper), and credential.useHttpPath on for
+// github.com, so git hands the helper the path whose owner picks the token; then core.fsmonitor
+// off and core.hooksPath at /dev/null, so no git a role runs starts the fsmonitor program or a
+// hook any configuration file names. The leak guard's read of what a push's destination holds
+// keeps none of this block and passes the credential's entries on its own command line instead
+// (leakguard's heldReadCredential). The issue's roles share the clone, and each can write its
+// `.git/config` and hooks, so without these a `git status` or `git commit` of one role would run
+// a program another planted, with the first role's credentials. These are two of the settings
+// that can do so, not all: a diff driver, a filter driver or a signing program a role plants in
+// the shared clone still runs in a sibling's git, and the roles are no boundary against each
+// other's code (docs/kubernetes.md).
+var gitConfigPairs = slices.Concat(workspace.GitHubCredentialPairs, [][2]string{
 	{"core.fsmonitor", ""},
 	{"core.hooksPath", "/dev/null"},
-}
+})
 
 // GitConfigPairs is gitConfigPairs, the git settings every process of a pod gets, for `legion
 // gh`, which hands the git gh runs a caller's GIT_CONFIG pair only where it is one of these, key

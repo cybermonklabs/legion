@@ -762,12 +762,16 @@ until_true 90 "the GitHub ingress bridge to report ready" grep -q 'BRIDGE READY'
 # The repository's pin, or under box-login the operator's own build: panes sharing the operator's
 # login must refresh it with the refresh-race fix (lib/install-box-login-route.sh). Resolved before
 # the plugin installs, which run the same build as the daemon and panes, never .omp-pin behind its
-# back: under box-login the profile's agent.db is the operator's login database.
+# back: under box-login the profile's agent.db is the operator's login database. lib/pinned-omp.sh
+# installs it and holds .omp-pin's install to .omp-pin.sha256 before anything runs it; the
+# operator's build has no recorded digest, so its install is not checked, and pinned-omp.sh says so
+# on stderr.
 pin=${box_pin:-$(<"$root/.omp-pin")}
-mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+omp_bin=$(bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$pin") ||
+  fail "Oh My Pi $pin could not be installed, or its install does not match .omp-pin.sha256 (the reason is above)"
 # The program every pane's Oh My Pi runs (daemon_runs_the_pinned_omp holds the daemon to it), by
 # which omp_descendant knows a pane's agent.
-omp_exe=$(realpath -e -- "$(mise where "$pin")/bin/omp") || fail "the Oh My Pi $pin has no bin/omp"
+omp_exe=$(realpath -e -- "$omp_bin") || fail "the Oh My Pi $pin has no bin/omp"
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp "$pin")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion" --omp "$pin")
 cat >"$work/instructions.md" <<'EOF'

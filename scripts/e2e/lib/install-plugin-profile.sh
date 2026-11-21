@@ -22,7 +22,9 @@
 # names: a stage proof passes the one build its daemon and panes run, so the profile is never
 # opened by another (under LEGION_E2E_MODEL_ROUTE=box-login the profile's agent.db is the
 # operator's own login database, which only a build with the refresh-race fix may open;
-# lib/install-box-login-route.sh).
+# lib/install-box-login-route.sh). lib/pinned-omp.sh installs it and, for .omp-pin's build, holds
+# the install to .omp-pin.sha256 before step 2 runs it; a build --omp names that is not .omp-pin's
+# has no recorded digest, so its install is not checked, and pinned-omp.sh says so on stderr.
 # Each source is cited by what it runs, never by line number: the lines move with every edit
 # above them. The tarball is written under this run's temp directory, so an interrupted run strands
 # no .tgz in the checkout (the release's `rm -f ./*.tgz` guards the same stale-glob case).
@@ -117,13 +119,12 @@ fi
 # runs it (packages/daemon/internal/omplaunch): `mise x <pin> --` for the tool's environment, and
 # the install's own bin/omp by its absolute path, never an `omp` looked up on PATH, where an
 # operator's wrapper could answer instead (and a wrapper's own setup could rewrite the profile,
-# whose agent.db is the operator's login database under the box-login route).
+# whose agent.db is the operator's login database under the box-login route). lib/pinned-omp.sh
+# names that bin/omp once it has checked .omp-pin's install against .omp-pin.sha256; it refuses,
+# and nothing here runs, when the install holds other bytes or anything beside them.
 pin=${omp_spec:-$(<"$root/.omp-pin")}
-mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
-omp=$(realpath -e -- "$(mise where "$pin")/bin/omp" 2>/dev/null) && [ -x "$omp" ] || {
-  echo "$me: mise has no executable bin/omp for $pin" >&2
-  exit 1
-}
+omp=$(bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$pin")
+omp=$(realpath -e -- "$omp")
 mise_data=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}
 run_omp() { (cd "$dest" && HOME=$home MISE_DATA_DIR=$mise_data OMP_PROFILE=$profile mise x "$pin" -- "$omp" "$@"); }
 

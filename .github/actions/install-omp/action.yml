@@ -1,9 +1,11 @@
 name: Install the pinned Oh My Pi
 description: >-
   Installs the Oh My Pi build .omp-pin pins (the repository's one copy of the pin, a mise tool
-  spec on one line) through mise, and exports its path as LEGION_TEST_OMP for the
-  tests that run it; they refuse on GitHub Actions without one. Needs the repository checked out
-  and mise at ~/.local/bin/mise.
+  spec on one line) through mise, holds its bin/omp to the digest .omp-pin.sha256 records and
+  refuses an install directory holding anything else (.github/scripts/omp-digest.sh) before
+  anything runs it, and exports its path as
+  LEGION_TEST_OMP for the tests that run it; they refuse on GitHub Actions without one. Needs the
+  repository checked out and mise at ~/.local/bin/mise.
 runs:
   using: composite
   steps:
@@ -17,7 +19,9 @@ runs:
         test -n "$pin"
         started=$(date +%s)
         "$HOME/.local/bin/mise" install "$pin"
-        omp="$("$HOME/.local/bin/mise" where "$pin")/bin/omp"
+        dir=$("$HOME/.local/bin/mise" where "$pin")
+        .github/scripts/omp-digest.sh "$dir" .omp-pin.sha256
+        omp="$dir/bin/omp"
         "$omp" --version
         echo "installed $pin in $(( $(date +%s) - started ))s"
         echo "LEGION_TEST_OMP=$omp" >> "$GITHUB_ENV"

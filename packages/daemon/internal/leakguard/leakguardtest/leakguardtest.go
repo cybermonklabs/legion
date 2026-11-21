@@ -15,6 +15,8 @@
 // one of a shape GitHub's is not. GhReadNotFound and GhReadServerError are what gh prints for
 // the guard's own REST visibility read of a repository GitHub answers 404 and 500 for, which a
 // stand-in gh of the guard's tests and of `legion gh`'s prints in the real gh's place.
+// RecordsGitCall begins a stand-in git that records each call it is handed, and ReadCalls reads
+// such a record back.
 //
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/fixturegit says

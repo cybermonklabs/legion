@@ -718,10 +718,13 @@ dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$proj
 # The claude-envoy plugin the panes load, built from this checkout outside it: a pull request's tree
 # carries no fresh dist/ or legion/ (packages/claude-envoy/scripts/build.ts --out).
 bun "$root/packages/claude-envoy/scripts/build.ts" --out "$work/claude-envoy" >/dev/null
+# The pinned Oh My Pi, installed and held to .omp-pin.sha256 (lib/pinned-omp.sh) before anything
+# runs it: the plugin installs below, then the daemon's boot probes and panes.
+pin=$(<"$root/.omp-pin")
+bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$pin" >/dev/null ||
+  fail "the pinned Oh My Pi $pin could not be installed, or its install does not match .omp-pin.sha256 (the reason is above)"
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion")
-pin=$(<"$root/.omp-pin")
-mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
 # The program every Oh My Pi pane runs: the daemon starts from this environment, so LEGION_OMP_PATH
 # outranks the invocation when it is set (omp_program, lib/process-tree.sh). agent_descendant knows
 # a pane's Oh My Pi by it.

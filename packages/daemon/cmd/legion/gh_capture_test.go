@@ -88,8 +88,13 @@ func ghWrapperFirstOnPath(t *testing.T) {
 // marker that is not origin's `base`, an origin URL gh may read otherwise — and one naming an owner
 // the bundle does not hold are refused with exit 2 and send nothing, but a read naming only such
 // owners where no remote names a github.com repository for it, which carries GH_CONFIG_DIR's token
-// (R4 of dispatch://INFRA-3399); no alias or extension runs, none is installed, and gh's own help
-// and version answer.
+// (R4 of dispatch://INFRA-3399). A read of one such owner's repository that a remote names, which
+// R4 leaves refused, first asks GitHub whether anyone may read it, with an anonymous `git
+// ls-remote` that carries no credential at all: refused, as GitHub refuses a private
+// repository's, it is refused after that one request; answered with the repository's refs, it
+// carries the issue owner's token on every request of its own. A write naming such a repository
+// still sends nothing. No alias or extension runs, none is installed, and gh's own help and
+// version answer.
 func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	gh := realGHForCapture(t)
 	git, err := exec.LookPath("git")
@@ -97,6 +102,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		t.Skip("no git on this machine")
 	}
 	proxy := startCaptureProxy(t)
+	proxy.servePublic("octocat/spoon-knife")
 	root := filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
 	tokens := map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_write"}
@@ -225,9 +231,14 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghEnv := []string{testMainEnv + "=1"}
-	// check runs `legion gh args…` in dir: refused with exit 2 and refuse's text, sending nothing,
-	// or sending GitHub alone owner's token on every request. A refusal of an option a gh version
-	// lacks names both texts, joined by "||", either of which passes.
+	// anonymousRead, as a refused row's owner, is a read of a repository of an owner the bundle
+	// does not hold, refused after its one request: the anonymous git ls-remote of that
+	// repository, which carries no credential.
+	const anonymousRead = "anonymous git ls-remote"
+	// check runs `legion gh args…` in dir: refused with exit 2 and refuse's text, sending nothing
+	// or, where owner is anonymousRead, the one anonymous ls-remote; or sending GitHub alone
+	// owner's token on every request. A refusal of an option a gh version lacks names both texts,
+	// joined by "||", either of which passes.
 	check := func(dir string, env, args []string, owner, refuse string) {
 		t.Helper()
 		what := "legion gh " + strings.Join(args, " ")
@@ -236,8 +247,12 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 			if code != 2 || !slices.ContainsFunc(strings.Split(refuse, "||"), func(text string) bool { return strings.Contains(out, text) }) {
 				t.Errorf("%s = exit %d, %q; want exit 2 containing %q", what, code, out, refuse)
 			}
-			if sent := proxy.take(); len(sent) != 0 {
+			sent := proxy.take()
+			switch {
+			case owner == "" && len(sent) != 0:
 				t.Errorf("%s sent %+v, want nothing", what, sent)
+			case owner == anonymousRead && (len(sent) != 1 || sent[0].host != "github.com" || !capturedGitOwner.MatchString(sent[0].path) || sent[0].auth != ""):
+				t.Errorf("%s sent %+v, want only the anonymous git ls-remote of its repository, with no credential", what, sent)
 			}
 			return
 		}
@@ -249,8 +264,8 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	for _, tc := range []struct {
 		env    []string
 		args   []string
-		owner  string // the owner whose token every request carries; "" when refused
-		refuse string // the refusal's text, exit 2 and no request
+		owner  string // the owner whose token every request carries; "" when refused with no request
+		refuse string // the refusal's text, exit 2 and no request but an anonymousRead
 	}{
 		// The first re-review's reproductions.
 		{nil, []string{"-R", "sjawhar/legion", "pr", "view", "1", "--json", "title"}, "sjawhar", ""},
@@ -320,6 +335,40 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	} {
 		check(home, tc.env, tc.args, tc.owner, tc.refuse)
 	}
+
+	// A read of octocat/spoon-knife, whose anonymous ls-remote the proxy answers with its refs, of
+	// an owner the bundle does not hold, sends that ls-remote first, with no credential, and then
+	// carries acme's token, GH_CONFIG_DIR's, on every request of its own. In home, which names no
+	// repository for it, the read is R4's, and the ls-remote is the guard's read of its
+	// visibility, which this check guards whole and `legion gh` refuses through gh; in a clone of
+	// it (below), whose remote R4 never counts, it is the read that lifts the refusal
+	// (liftForPublicRead). Each read runs with a state directory of its own, since the guard keeps
+	// a public answer there and a later read would take it in place of the ls-remote. A write
+	// naming it sends nothing.
+	readsPublic := func(dir string, args []string) {
+		t.Helper()
+		what := "legion gh " + strings.Join(args, " ")
+		code, out := runIn(dir, append([]string{"XDG_STATE_HOME=" + t.TempDir()}, ghEnv...), os.Args[0], append([]string{"gh"}, args...)...)
+		if code == 0 || strings.Contains(out, "is not installed on") {
+			t.Errorf("%s = exit %d, %q; want it run, and the capture proxy's refusal", what, code, out)
+		}
+		sent := proxy.take()
+		if len(sent) < 2 {
+			t.Errorf("%s sent %+v, want the anonymous ls-remote of the repository and then the command's own requests", what, sent)
+			return
+		}
+		if r := sent[0]; r.host != "github.com" || r.path != "/octocat/spoon-knife.git/info/refs" || r.auth != "" {
+			t.Errorf("%s sent first %s%s with %q, want the anonymous ls-remote of github.com/octocat/spoon-knife.git with no credential", what, r.host, r.path, r.auth)
+		}
+		for _, r := range sent[1:] {
+			if r.host != "api.github.com" || r.auth != "token "+tokens["acme"] {
+				t.Errorf("%s sent %s%s with %q, want api.github.com with acme's %q", what, r.host, r.path, r.auth, "token "+tokens["acme"])
+			}
+		}
+	}
+	readsPublic(home, []string{"repo", "view", "octocat/spoon-knife", "--json", "nameWithOwner"})
+	readsPublic(home, []string{"api", "repos/octocat/spoon-knife/pulls/1", "--jq", ".state"})
+	check(home, nil, []string{"pr", "comment", "1", "-R", "octocat/spoon-knife", "--body", "x"}, "", `the role's GitHub App is not installed on "octocat"`)
 
 	// The caller's proxy is kept, since a deployment that reaches GitHub only through a proxy names
 	// it there, and its trust store is not. Through a forwarding proxy, the shape of such a
@@ -552,7 +601,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"repo", "view", "--json", "nameWithOwner"}, "sjawhar", ""},
 		{otherClone, nil, []string{"api", "repos/{owner}/{repo}"}, "sjawhar", ""},
 		{otherClone, nil, []string{"-R", "acme/widgets", "pr", "view", "1", "--json", "title"}, "acme", ""},
-		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "", `the role's GitHub App is not installed on "octocat"`},
+		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, anonymousRead, `the role's GitHub App is not installed on "octocat"`},
 		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (git@github.com:sjawhar/legion.git)`},
 		{setDefault, nil, []string{"pr", "list", "--json", "title"}, "", "remote.origin.gh-resolved sjawhar/legion"},
 		// Round 4's: remote spellings gh reads as github.com's (deep 2, quality A, final B1).
@@ -753,9 +802,8 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// Every other call naming octocat is refused with the OwnerNotServedError refusal, exit 2, and
 	// sends nothing, under the same check: a write, a GraphQL mutation or subscription, a query gh
 	// would read from a file or fill a placeholder in after `legion gh` read it — {branch}, in a
-	// checkout whose branch is named `mutation` — a read naming octocat beside sjawhar, whom the
-	// bundle serves, and a read in a clone of octocat's repository, whose remote names it (beside
-	// the rows above, `pr list` there).
+	// checkout whose branch is named `mutation` — and a read naming octocat beside sjawhar, whom the
+	// bundle serves.
 	queryFile := filepath.Join(home, "query.graphql")
 	if err := os.WriteFile(queryFile, []byte(`mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -772,10 +820,17 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{home, []string{"api", "graphql", "-f", "owner=octocat", "-F", "query=@" + queryFile}},
 		{onMutation, []string{"api", "graphql", "-f", "owner=octocat", "-F", "query={branch}{viewer{login}}"}},
 		{home, []string{"api", "graphql", "-f", "owner=octocat", "-f", "org=sjawhar", "-f", "query=query{viewer{login}}"}},
-		{outsideClone, []string{"api", "user"}},
 	} {
 		check(tc.dir, proven, tc.args, "", `the role's GitHub App is not installed on "octocat"`)
 	}
+	// A read in a clone of an octocat repository, whose remote names it, is no read R4 admits, so
+	// it runs only once the anonymous ls-remote of that repository lists its refs
+	// (liftForPublicRead): `pr list` and `api user` in the clone of octocat/hello, which the proxy
+	// serves no one, are refused after that one request (`pr list` among the rows above), and
+	// `pr list` in a clone of octocat/spoon-knife, which it serves to anyone, then carries acme's
+	// token.
+	check(outsideClone, proven, []string{"api", "user"}, anonymousRead, `the role's GitHub App is not installed on "octocat"`)
+	readsPublic(workspace([][]string{{"remote", "add", "origin", "https://github.com/octocat/spoon-knife"}}), []string{"pr", "list", "--json", "title"})
 
 	// repo set-default --view and -v print the default repository the marker names, and gh sends
 	// nothing for them, returning before it builds an HTTP client, so each exits 0 against the

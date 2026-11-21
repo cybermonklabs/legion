@@ -181,7 +181,7 @@ func TestVisibilityReadsGraphQLThroughGh(t *testing.T) {
 			bin, records := t.TempDir(), t.TempDir()
 			graphql, record := filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", tc.graphql(graphql))
-			writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+answersTheRefs)
 			var sources []VisibilitySource
 			visibility, err := New(Options{
 				Clock:        &visibilityTestClock{now: now},
@@ -194,7 +194,7 @@ func TestVisibilityReadsGraphQLThroughGh(t *testing.T) {
 			if got := countLines(t, graphql); got != 1 {
 				t.Errorf("gh's GraphQL read ran %d times, want once", got)
 			}
-			if queries := readCalls(t, graphql); len(queries) == 1 && queries[0]["argv"] != "" {
+			if queries := leakguardtest.ReadCalls(t, graphql); len(queries) == 1 && queries[0]["argv"] != "" {
 				if want := strings.Join(VisibilityGraphQLArgs(theRepo), " "); queries[0]["argv"] != want {
 					t.Errorf("gh's GraphQL read ran as\n%s\nwant\n%s", queries[0]["argv"], want)
 				}
@@ -208,7 +208,7 @@ func TestVisibilityReadsGraphQLThroughGh(t *testing.T) {
 			if tc.source == VisibilityFromLsRemote {
 				gitRuns = 1
 			}
-			if got := len(readCalls(t, record)); got != gitRuns {
+			if got := len(leakguardtest.ReadCalls(t, record)); got != gitRuns {
 				t.Errorf("git ran %d times, want %d", got, gitRuns)
 			}
 			if tc.want != "" {
@@ -256,7 +256,7 @@ func TestVisibilityKeepsGhsOutputPlain(t *testing.T) {
 	if err != nil || visibility != Public {
 		t.Fatalf("read %q, %v; want public", visibility, err)
 	}
-	for name, calls := range map[string][]map[string]string{"REST": readCalls(t, rest), "GraphQL": readCalls(t, graphql)} {
+	for name, calls := range map[string][]map[string]string{"REST": leakguardtest.ReadCalls(t, rest), "GraphQL": leakguardtest.ReadCalls(t, graphql)} {
 		if len(calls) != 1 {
 			t.Fatalf("gh's %s read ran %d times, want once", name, len(calls))
 		}
@@ -357,7 +357,7 @@ func TestVisibilityReadsASecondaryRateLimitWithLsRemote(t *testing.T) {
 			bin, records := t.TempDir(), t.TempDir()
 			reads, graphql, record := filepath.Join(records, "reads"), filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", ghStandIn(tc.rest(reads), graphQLAnswers(graphql, "PRIVATE")))
-			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+tc.git)
 			clock := &visibilityTestClock{now: now}
 			ctx := bound(t)
 			if tc.room {
@@ -379,10 +379,10 @@ func TestVisibilityReadsASecondaryRateLimitWithLsRemote(t *testing.T) {
 			if !slices.Equal(clock.waits, tc.waits) {
 				t.Errorf("the waits are %v, want %v", clock.waits, tc.waits)
 			}
-			if got := len(readCalls(t, graphql)); got != 0 {
+			if got := len(leakguardtest.ReadCalls(t, graphql)); got != 0 {
 				t.Errorf("gh's GraphQL read ran %d times, want none", got)
 			}
-			if got := len(readCalls(t, record)); got != tc.gitRuns {
+			if got := len(leakguardtest.ReadCalls(t, record)); got != tc.gitRuns {
 				t.Errorf("git ran %d times, want %d", got, tc.gitRuns)
 			}
 		})
@@ -414,7 +414,7 @@ func TestVisibilityWaitsForNoResetPastTheCallersBound(t *testing.T) {
 	if reads != 1 || len(clock.waits) != 0 {
 		t.Errorf("the REST read ran %d times and the waits are %v, want one read and no wait", reads, clock.waits)
 	}
-	if got := len(readCalls(t, graphql)); got != 1 {
+	if got := len(leakguardtest.ReadCalls(t, graphql)); got != 1 {
 		t.Errorf("gh's GraphQL read ran %d times, want once", got)
 	}
 }
@@ -583,7 +583,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 			bin, records := t.TempDir(), t.TempDir()
 			reads, graphql, record := filepath.Join(records, "reads"), filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", ghStandIn(spentRateLimit(reset, reads), tc.graphql(graphql)))
-			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+tc.git)
 			clock := &visibilityTestClock{now: now}
 			var sources []VisibilitySource
 			guard := New(Options{
@@ -607,7 +607,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 			if len(clock.waits) != 0 {
 				t.Errorf("the waits are %v, want none: the reset is past the wait bound", clock.waits)
 			}
-			queries := readCalls(t, graphql)
+			queries := leakguardtest.ReadCalls(t, graphql)
 			if len(queries) != 1 {
 				t.Fatalf("gh's GraphQL read ran %d times, want once", len(queries))
 			}
@@ -617,7 +617,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 			if queries[0]["read"] != theRepo || queries[0]["host"] != "github.com" {
 				t.Errorf("gh's GraphQL read ran with %s=%q and GH_HOST=%q, want %q and github.com", VisibilityReadVar, queries[0]["read"], queries[0]["host"], theRepo)
 			}
-			calls := readCalls(t, record)
+			calls := leakguardtest.ReadCalls(t, record)
 			if len(calls) != tc.gitRuns {
 				t.Fatalf("git ran %d times, want %d", len(calls), tc.gitRuns)
 			}
@@ -643,7 +643,7 @@ func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
 	bin, records := t.TempDir(), t.TempDir()
 	started, record := filepath.Join(records, "started"), filepath.Join(records, "git")
 	writeProgram(t, bin, "gh", ": > "+shQuote(started)+"\nsleep 30\n")
-	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+	writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+answersTheRefs)
 	deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	t.Cleanup(cancel)
 	ctx := &deadlineOnceStarted{Context: deadline, done: make(chan struct{})}
@@ -674,7 +674,7 @@ func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
 	if got := stopBound(t, err); got > 2 {
 		t.Errorf("gh was stopped by a bound of %d s, want the caller's deadline of 2 s", got)
 	}
-	if calls := readCalls(t, record); len(calls) != 0 {
+	if calls := leakguardtest.ReadCalls(t, record); len(calls) != 0 {
 		t.Errorf("git ran %d times, want none: the caller's bound is spent", len(calls))
 	}
 }
@@ -733,7 +733,7 @@ func TestVisibilityKeepsAnAnswerWithoutRESTAsItKeepsGhs(t *testing.T) {
 			bin, state, records := t.TempDir(), t.TempDir(), t.TempDir()
 			reads, graphql, record := filepath.Join(records, "reads"), filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", ghStandIn(spentRateLimit(reset, reads), tc.graphql(graphql)))
-			writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+answersTheRefs)
 			var sources []VisibilitySource
 			for range 2 {
 				visibility, err := New(Options{
@@ -751,10 +751,10 @@ func TestVisibilityKeepsAnAnswerWithoutRESTAsItKeepsGhs(t *testing.T) {
 			if got := countLines(t, reads); got != tc.reads {
 				t.Errorf("gh's REST read ran %d times, want %d", got, tc.reads)
 			}
-			if got := len(readCalls(t, graphql)); got != tc.reads {
+			if got := len(leakguardtest.ReadCalls(t, graphql)); got != tc.reads {
 				t.Errorf("gh's GraphQL read ran %d times, want %d", got, tc.reads)
 			}
-			if got := len(readCalls(t, record)); got != tc.gitRuns {
+			if got := len(leakguardtest.ReadCalls(t, record)); got != tc.gitRuns {
 				t.Errorf("git ran %d times, want %d", got, tc.gitRuns)
 			}
 		})

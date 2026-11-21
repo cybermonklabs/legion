@@ -739,8 +739,11 @@ start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Parked decision proof $project" '{key:$key,name:$name}')" >/dev/null
 dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
+# The pinned Oh My Pi, installed and held to .omp-pin.sha256 (lib/pinned-omp.sh) before anything
+# runs it: the plugin installs below, then the daemon's boot probes and panes and the controller.
 pin=$(<"$root/.omp-pin")
-mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$pin" >/dev/null ||
+  fail "the pinned Oh My Pi $pin could not be installed, or its install does not match .omp-pin.sha256 (the reason is above)"
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp "$pin")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion" --omp "$pin")
 cat >"$work/instructions.md" <<'EOF'

@@ -45,10 +45,11 @@ func (r *Refusal) Error() string {
 
 // SetupFailure is a write refused because a check could not be made to run: no shared check
 // resolved, the shared check exited 2 or some status it does not document, the rule engine failed,
-// or a destination's visibility could not be read, other than a read GitHub answered 404, which is
-// a *NotFound. It refuses the write exactly as a *Refusal does — a check that did not run has
-// cleared nothing — and says so in the shared check's own words, so that a person reading a log
-// can tell a broken pod from a write that names something private.
+// a destination's visibility could not be read, other than a read GitHub answered 404, which is a
+// *NotFound, or the refs of a push's destination could not be read. It refuses the write exactly
+// as a *Refusal does — a check that did not run has cleared nothing — and says so in the shared
+// check's own words, so that a person reading a log can tell a broken pod from a write that names
+// something private.
 type SetupFailure struct {
 	// What is the write, in the entry point's words, as a Refusal's is.
 	What string

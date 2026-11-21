@@ -49,15 +49,19 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // naming an owner the bundle holds no directory for — an owner the role's App is not installed
 // on — and one naming a repository a pair moved to an owner the bundle holds no directory for are
 // refused, exit 2, naming why, and the real gh never runs: no token is ever sent for a repository
-// it cannot reach, but by one exception, R4 of dispatch://INFRA-3399 (ghTargetOf): a call that
-// writes nothing, names only owners the bundle holds no directory for and names no repository a
-// configured rename moves, in a working directory whose remotes name no github.com repository for
-// it, keeps GH_CONFIG_DIR, as a command naming no owner does. Under a GH_TOKEN or GITHUB_TOKEN,
-// which gh sends in place of any directory's token,
-// every command is refused the same way but these: the guard's own visibility reads, which run
-// with that token (ghVisibilityRead), the shared check's visibility read
-// (sharedCheckVisibilityRead), the exact `gh api rate_limit` (ghRateLimitRead) and `gh auth
-// git-credential`.
+// it cannot reach, but by two exceptions. One is R4 of dispatch://INFRA-3399 (ghTargetOf): a call
+// that writes nothing, names only owners the bundle holds no directory for and names no
+// repository a configured rename moves, in a working directory whose remotes name no github.com
+// repository for it, keeps GH_CONFIG_DIR, as a command naming no owner does. The other is a read
+// of one repository of such an owner that R4 does not admit, one whose repository the working
+// directory's remotes name among them (ghTarget.read: a call that writes nothing, by the rule
+// ghWritesNothing holds, naming that one repository, or one of knives' audit GraphQL reads of
+// it): it keeps GH_CONFIG_DIR too where an unauthenticated `git ls-remote` of the repository's
+// https URL finds it public (liftForPublicRead). Under a GH_TOKEN or GITHUB_TOKEN, which gh sends
+// in place of any directory's token, every command is refused the same way but these: the guard's
+// own visibility reads, which run with that token (ghVisibilityRead), the shared check's
+// visibility read (sharedCheckVisibilityRead), the exact `gh api rate_limit` (ghRateLimitRead)
+// and `gh auth git-credential`.
 //
 // ghTargetOf reads each command from gh's own help, which gh prints the same way until its
 // binary, its configuration, its extensions or the variables it prints under change: runGh keeps
@@ -65,17 +69,19 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // a change (ghHelpKeep). The visibility reads named above and the rate-limit read are exact argv
 // and read no help at all.
 //
-// Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
-// refuses, one whose checks could not be made to run, and one whose destination GitHub answers
-// 404 for, are refused here, exit 2, with the guard's own message, and gh never runs. A call that
-// writes nothing, by the rule ghWritesNothing
-// holds and under the shared check that rule was proven against (ghReadsProvenCheck), is read by
-// that check alone and gets no read of a repository's visibility and no private-name pass. Three
-// calls pass unchecked: `legion gh auth git-credential`, which answers above before any of this,
-// the exact `gh api rate_limit` (ghRateLimitRead), and the guard's own visibility reads
-// (ghVisibilityRead). The shared check's visibility read this command answers itself
-// (sharedCheckVisibilityRead), before it reads anything else of the call. gh runs the rate-limit
-// read, the guard's own visibility reads and each call the shared check alone read with no pager.
+// Before gh is handed anything, and after the directory is chosen, the leak guard reads the call
+// (leakguard.GhCall): a call it refuses, one whose checks could not be made to run, and one whose
+// destination GitHub answers 404 for, are refused here, exit 2, with the guard's own message, and
+// gh never runs. A call that writes nothing, by the rule ghWritesNothing holds and under the
+// shared check that rule was proven against (ghReadsProvenCheck), is read by that check alone and
+// gets no private-name pass and no read of a repository's visibility but the one with no
+// credential that chose the directory of a repository of an owner the bundle holds none for
+// (liftForPublicRead). Three calls pass unchecked: `legion gh auth git-credential`, which answers
+// above before any of this, the exact `gh api rate_limit` (ghRateLimitRead), and the guard's own
+// visibility reads (ghVisibilityRead). The shared check's visibility read this command answers
+// itself (sharedCheckVisibilityRead), before it reads anything else of the call. gh runs the
+// rate-limit read, the guard's own visibility reads and each call the shared check alone read
+// with no pager.
 //
 // gh runs with an environment built from an allowlist (ghChildEnviron), never the caller's whole:
 // the proxy variables are kept, since a deployment that reaches GitHub through a proxy names it
@@ -115,9 +121,10 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // or without a caller's GH_TOKEN.
 //
 // Everything this command starts before gh — the help reads (readGhHelp), and the leak guard's
-// children, the shared check and the visibility reads, which the guard starts under the context
-// it is given (leakguard's Guard.run) — runs in a process group of its own, which none of the
-// terminal's signals reach. So this command stops them itself: on a SIGINT or a SIGTERM, which
+// children, the shared check and the visibility reads, the one with no credential that chooses a
+// public repository's directory (liftForPublicRead) among them, which the guard starts under the
+// context it is given (leakguard's Guard.run) — runs in a process group of its own, which none of
+// the terminal's signals reach. So this command stops them itself: on a SIGINT or a SIGTERM, which
 // cancel its context (main's signal.NotifyContext), and on a SIGHUP, which it catches until it
 // hands over to runGhChild's own forwarding (hangupCancels). Such a signal ends the command with
 // 128+<signal> (endedBySignal), and gh is never started, as for a signal that came before
@@ -190,10 +197,25 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			return 2
 		}
 	}
+	// The guard of the call, made before the command is read. The rate-limit read and the guard's
+	// own visibility reads never use it (their own cases below, and ghCallModeOf), but it is made
+	// for every call, so no mode meets a nil guard; New resolves one program on PATH and runs
+	// nothing. Where the call reads one repository of an owner the bundle holds no directory for
+	// (ghTarget.read) and R4 of dispatch://INFRA-3399 leaves it refused, that repository's
+	// visibility is read through it with no credential (liftForPublicRead) before its check clears
+	// the call below.
+	guard := leakguard.New(leakguard.Options{
+		OnVisibility: func(source leakguard.VisibilitySource) { visibilitySource = string(source) },
+		Curl:         leakguardCurl,
+	})
 	// What the call targets, and the gh directory it runs with, chosen here once for every call.
 	// The two exact reads go through no ghTargetOf, and so read no gh help: the resolver has
 	// nothing of their argv to read.
 	var target ghTarget
+	// public is whether the call's one repository was read public with no credential, which is
+	// what lifts ghTargetOf's refusal of its owner (liftForPublicRead); the guard is told so
+	// rather than reading that visibility again through a read this command refuses.
+	public := false
 	switch {
 	case rateLimitRead:
 		// It names no repository, and runs with GH_CONFIG_DIR.
@@ -232,6 +254,13 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
 		target, err = ghTargetOf(args, env, newGhHelpKeep(beforeGh, gh, env, helpEnv).read, readGitRemotes,
 			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
+		// The guard's own visibility reads keep their refusal, which liftForPublicRead would lift:
+		// they never reach this case, and their own case above makes the refusal of an owner the
+		// bundle holds no directory for from the read's repository.
+		if err != nil {
+			err = liftForPublicRead(beforeGh, guard, target, err)
+			public = err == nil
+		}
 		if status, ok := signalled(beforeGh); ok {
 			return status
 		}
@@ -248,7 +277,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	}
 	commandPath = target.command
 	if target.owner != "" && target.repo != "" {
-		repo = target.owner + "/" + target.repo
+		repo = target.repository()
 	}
 	// The guard, between the directory this command resolved and the gh it is about to run. The
 	// whole argv is what it reads, rather than the options a parser calls text: the shared check's
@@ -272,9 +301,13 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// handed to the guard as one (leakguard.GhRequest.WritesNothing), with the sha256 of the
 	// shared check its rule was proven against, which this binary holds (ghReadsProvenCheck).
 	// Under that check the guard runs the check and nothing more, and says so
-	// (leakguard.GhAnswer.CheckedOnly), and the log line says checked-only; under any other it
-	// runs whole. The checker a role is told (leakguard.CheckerVar) plays no part in it. Every
-	// other call is guarded whole, the visibility read and the private-name pass included.
+	// (leakguard.GhAnswer.CheckedOnly), and the log line says checked-only where no visibility was
+	// read for the call, and otherwise the source of the read that chose its directory
+	// (liftForPublicRead); under any other check it runs whole. The checker a role is told
+	// (leakguard.CheckerVar) plays no part in it. Every other call is guarded whole, the visibility
+	// read and the private-name pass included, but that a repository read public with no credential
+	// to choose its directory is handed to the guard as public (leakguard.GhRequest.Public), which
+	// reads no visibility of it again.
 	//
 	// A *leakguard.Refusal, a *leakguard.SetupFailure and a *leakguard.NotFound each refuse the
 	// call: a check that did not run has cleared nothing, and neither has a visibility read GitHub
@@ -297,16 +330,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// This read is the guard's own, which the switch above routed: checking it would call
 		// the guard again.
 	case ghReadCall, ghGuardedCall:
-		guard := leakguard.New(leakguard.Options{
-			OnVisibility: func(source leakguard.VisibilitySource) {
-				visibilitySource = string(source)
-			},
-			Curl: leakguardCurl,
-		})
 		answer, err := guard.GhCall(beforeGh, leakguard.GhRequest{
 			Args:          args,
 			Stdin:         os.Stdin,
 			Repo:          repo,
+			Public:        public,
 			Files:         target.files,
 			StdinSent:     target.stdinSent,
 			WritesNothing: mode == ghReadCall,
@@ -320,15 +348,17 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			return 2
 		}
 		buffered, checkedOnly = answer.Stdin, answer.CheckedOnly
-		if checkedOnly {
+		if checkedOnly && visibilitySource == "" {
 			visibilitySource = ghCheckedOnlyVisibility
 		}
 	}
 	dir := env["GH_CONFIG_DIR"]
 	// Every mode runs with the directory chosen once above: by ghTargetOf, through the one rule
-	// (ghConfigDirFor), refusing a command whose repositories route to two, and for the guard's
-	// visibility read by that rule for the repository its variable names. No mode picks a
-	// directory any other way.
+	// (ghConfigDirFor), refusing a command whose repositories route to two; GH_CONFIG_DIR for a
+	// read naming only owners the bundle holds none for, as for a command naming no owner, where R4
+	// of dispatch://INFRA-3399 admits it (selectors.dir) or where its one repository was read
+	// public with no credential (liftForPublicRead); and for the guard's visibility read by that
+	// rule for the repository its variable names. No mode picks a directory any other way.
 	if target.dir != "" {
 		dir = target.dir
 	}
@@ -395,6 +425,48 @@ func ghCallModeOf(rateLimitRead, visibilityRead, writesNothing bool) ghCallMode 
 		return ghReadCall
 	}
 	return ghGuardedCall
+}
+
+// liftForPublicRead lifts refused, the refusal ghTargetOf answered for target, where target is a
+// read of one repository of an owner the bundle holds no directory for (ghTarget.read: a call in
+// the read grammar, ghWritesNothing, naming that one repository, or one of knives' audit GraphQL
+// reads of it, knivesAuditRead) that GitHub serves to anyone: it answers nil, and the call runs
+// under GH_CONFIG_DIR, the issue owner's directory, as a command naming no owner does. For every
+// other command it answers refused, unchanged.
+//
+// ghTargetOf refuses no read that R4 of dispatch://INFRA-3399 admits (selectors.dir's fallback),
+// which runs under GH_CONFIG_DIR with no visibility read first, so the lift is reached only by a
+// read R4 leaves refused: one whose working directory's git remotes named a github.com repository
+// for it (selectors.readRemote), such as a read naming no repository in a clone of that one, and
+// one of knives' audit reads typed in a shape ghGraphQLQueryRead does not admit.
+//
+// What GitHub serves to anyone is read with no credential at all
+// (leakguard.Guard.VisibilityWithoutCredential): an unauthenticated `git ls-remote` of the
+// repository's https URL, with the credential helper emptied, no askpass, no terminal prompt and
+// no token in the URL, which reads public only where git exits 0 and lists a ref. A private or
+// missing repository, whose anonymous read GitHub answers 401, and every other outcome keep the
+// refusal, and no token is sent to learn it: the guard's own REST and GraphQL visibility reads of
+// such a repository stay refused (runGh's isVisibilityRead case, which lifts nothing), since they
+// would run with a token of the bundle's. The issue owner's token goes with the read itself alone,
+// once that answer is in.
+//
+// The refusal it lifts is ownerGHConfigDir's of the one owner the command names, a
+// *leakguard.OwnerNotServedError as ghTargetOf answered it itself and wrapped in nothing: a read's
+// selectors name its one repository and nothing else (ghTarget.read), so that refusal is of
+// target.owner. A bundle whose renames cannot be read, a pair that moved the repository to an
+// owner the bundle holds no directory for, whose refusal wraps that owner's (ghConfigDirFor), a
+// pair within such an owner among them, and every refusal of a command that is no such read — a
+// write, `repo clone`, which writes the working directory, a read typed outside the read grammar,
+// a command naming the owner alone or two of its repositories — stand before anything is asked,
+// so a write is refused with nothing sent. guard is the guard runGh then checks the call with.
+func liftForPublicRead(ctx context.Context, guard *leakguard.Guard, target ghTarget, refused error) error {
+	if _, ok := refused.(*leakguard.OwnerNotServedError); !target.read || !ok {
+		return refused
+	}
+	if _, err := guard.VisibilityWithoutCredential(ctx, target.repository()); err != nil {
+		return refused
+	}
+	return nil
 }
 
 const ghCallLogBytes = 1 << 20
@@ -727,21 +799,34 @@ func ghWrapperFile(path string) (bool, error) {
 // routed to (selectors.dir), and "" for a command naming no owner, whose token stays the one
 // GH_CONFIG_DIR already names; owner, the lowercased owner of the repository it acts on, "" where
 // the selectors named no owner or two; and repo, that repository's name keyed as gh reads a name
-// of it where every selector of the command named that one repository of that owner and "" where
-// they named more than one, where one named the owner alone, and where none named a repository
-// at all. command is the resolved command path with no arguments. files are the files the
-// command would send to GitHub as content (ghSentFiles), which the leak guard reads the text of,
-// and stdinSent whether it sends its standard input as content as well. writesNothing is whether
-// the call is in a read grammar (ghWritesNothing), so that under the shared check that rule was
-// proven against the guard runs that check alone for it (runGh's ghReadCall). Such a call sends
-// no file: no grammar names an option of ghSentFileOptions
+// of it where every selector of the command named that one repository of that owner, or where
+// the command is one of knives' audit GraphQL reads that R4 of dispatch://INFRA-3399 does not
+// admit, whose owner variable names the owner alone and whose name variable the repository
+// (knivesAuditRead), and "" where they named more than one, where one named the owner alone, and
+// where none named a repository at all. read is whether the call only reads that one repository,
+// owner/repo: a call that writes nothing and names it, or such a read of knives' of it, which the
+// read grammar does not hold. It decides nothing but whether a call naming an owner the bundle
+// holds no directory for, which R4 leaves refused, may run under GH_CONFIG_DIR
+// (liftForPublicRead). command is the resolved command path with no arguments. files are the
+// files the command would send to GitHub as content (ghSentFiles), which the leak guard reads the
+// text of, and stdinSent whether it sends its standard input as content as well. writesNothing is
+// whether the call is in a read grammar (ghWritesNothing), so that under the shared check that
+// rule was proven against the guard runs that check alone for it (runGh's ghReadCall). Such a call
+// sends no file: no grammar names an option of ghSentFileOptions
 // (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
 type ghTarget struct {
 	dir, owner, repo string
+	read             bool
 	command          string
 	files            []leakguard.GhFile
 	stdinSent        bool
 	writesNothing    bool
+}
+
+// repository is the target's repository as owner/repo, the name the call log records and the
+// guard reads the visibility of.
+func (target ghTarget) repository() string {
+	return target.owner + "/" + target.repo
 }
 
 // ghSentFileOptions are the options of gh 2.98.0, by long name, whose value names a file gh
@@ -859,14 +944,20 @@ func ghCallerToken(env map[string]string) string {
 // configured rename moves (dirFor answers one with the pair's own refusal, or routes it to the
 // `to` owner's directory) and whose working directory's remotes named no github.com repository
 // for it, runs with GH_CONFIG_DIR's directory, the one a command naming no owner runs with,
-// rather than being refused (R4 of dispatch://INFRA-3399);
-// every other call is routed and refused by the rule above. The target's writesNothing stays
-// ghWritesNothing's alone, which the guard's reading of the call rests on. The target's
-// repository is the one repository they all name, which is none where a selector names an owner
-// alone. A GraphQL query naming its repository otherwise, by a node id or in the query text,
-// names none gh could resolve. GH_HOST naming another host than github.com, where gh
-// would send no token of the bundle's, and a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of
-// any directory's token, are errors.
+// rather than being refused (R4 of dispatch://INFRA-3399); every other call is routed and
+// refused by the rule above. The target's writesNothing stays ghWritesNothing's alone, which the
+// guard's reading of the call rests on. The target's repository is the one repository they all
+// name, which is none where a selector names an owner alone, and the repository the name
+// variable of one of knives' audit GraphQL reads names (knivesAuditRead), which that read is
+// routed by where R4 does not admit it; one R4 admits is routed by its owner alone, as R4 routes
+// every call, and names no repository. Another GraphQL query naming its repository otherwise, by
+// a node id or in the query text, names none gh could resolve. GH_HOST naming another host than
+// github.com, where gh would send no token of the bundle's, and a GH_TOKEN or GITHUB_TOKEN, which
+// gh sends in place of any directory's token, are errors. The refusals of the selectors' routing
+// (selectors.dir), a routing dirFor refuses and selectors that route to two directories, come with
+// the target the command names, its dir "", so that runGh can lift the refusal of an owner the
+// bundle holds no directory for from a read of one public repository of it that R4 leaves
+// refused (liftForPublicRead); every other error comes with the zero target.
 func ghTargetOf(argv []string, env map[string]string, help func(path []string) (string, error), remotes func() ([]ghRemote, error), dirFor func(owner, name string) (string, error)) (ghTarget, error) {
 	if host := env["GH_HOST"]; host != "" && !strings.EqualFold(host, "github.com") {
 		return ghTarget{}, fmt.Errorf("GH_HOST is %q, another host than github.com, so it sends no token; unset GH_HOST", host)
@@ -941,10 +1032,29 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 		fallback = env["GH_CONFIG_DIR"]
 	}
 	dir, err := sel.dir(dirFor, fallback)
-	if err != nil {
-		return ghTarget{}, err
+	owner, repo, read := sel.onlyOwner(), sel.onlyRepository(), false
+	switch {
+	case writesNothing && repo != "":
+		read = true
+	case sel.api && slices.Equal(parsed.positionals, []string{"graphql"}) && len(sel.named) == 1:
+		// One of knives' audit reads: its owner variable names the owner alone, and its name
+		// variable the repository it reads, which the call is routed by instead, but where R4
+		// admits it: the fallback answered a call that, routed with none, is refused. Such a read
+		// stays routed by its owner alone and names no repository, as R4 runs it.
+		name := knivesAuditRead(parsed, owner)
+		if name == "" {
+			break
+		}
+		if err == nil {
+			if _, refused := sel.dir(dirFor, ""); refused != nil {
+				break
+			}
+		}
+		repo, read = name, true
+		sel.named[0].name = name
+		dir, err = sel.dir(dirFor, fallback)
 	}
-	return ghTarget{dir: dir, owner: sel.onlyOwner(), repo: sel.onlyRepository(), command: command, files: files, stdinSent: stdinSent, writesNothing: writesNothing}, nil
+	return ghTarget{dir: dir, owner: owner, repo: repo, read: read, command: command, files: files, stdinSent: stdinSent, writesNothing: writesNothing}, err
 }
 
 // cannotPlace is ghTargetOf's refusal of an argument it cannot place: what it is and why, and how

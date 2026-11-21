@@ -73,7 +73,7 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 			curl := filepath.Join(records, "curl")
 			writeProgram(t, bin, "gh", ghStandIn(ghAnswers(reads, 2, ownerNotServedLine("invented-org", owners)), graphQLAnswers(graphql, "PRIVATE")))
 			writeProgram(t, bin, "curl", curlStandIn(curl, filepath.Join(records, "curl-stdin"), curlAnswers("private")))
-			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+tc.git)
 			var sources []VisibilitySource
 			guard := New(Options{
 				Check:        leakguardtest.Write(t, t.TempDir(), passes),
@@ -96,13 +96,13 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 			if got := countLines(t, reads); got != 1 {
 				t.Errorf("gh's REST read ran %d times, want once", got)
 			}
-			if got := len(readCalls(t, graphql)); got != 0 {
+			if got := len(leakguardtest.ReadCalls(t, graphql)); got != 0 {
 				t.Errorf("gh's GraphQL read ran %d times, want none: the pod holds no token for the owner", got)
 			}
 			if got := countLines(t, curl); got != 0 {
 				t.Errorf("curl ran %d times, want never: the read with no credential is ls-remote's, which makes no API request", got)
 			}
-			calls := readCalls(t, record)
+			calls := leakguardtest.ReadCalls(t, record)
 			if len(calls) != 1 {
 				t.Fatalf("git ran %d times, want once", len(calls))
 			}
@@ -181,11 +181,11 @@ func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 			bin, records := t.TempDir(), t.TempDir()
 			reads, record := filepath.Join(records, "reads"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", ghAnswers(reads, tc.exit, tc.lines...))
-			writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+answersTheRefs)
 			visibility, err := New(Options{
 				Env: append(append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()), env...),
 			}).Visibility(bound(t), slug)
-			calls := readCalls(t, record)
+			calls := leakguardtest.ReadCalls(t, record)
 			if tc.public {
 				if err != nil || visibility != Public {
 					t.Fatalf("read %q, %v; want public from ls-remote", visibility, err)
@@ -218,7 +218,7 @@ func TestTheVisibilityOfAnOwnerLegionGhServesIsReadAsBefore(t *testing.T) {
 			reads, record := filepath.Join(records, "reads"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", "echo read >> "+shQuote(reads)+"\n"+
 				printsResponse("HTTP/2.0 200 OK", []string{"X-Ratelimit-Remaining: 4999"}, string(visibility))+"exit 0\n")
-			writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+answersTheRefs)
 			var sources []VisibilitySource
 			guard := New(Options{
 				Check:        leakguardtest.Write(t, t.TempDir(), passes),
@@ -244,7 +244,7 @@ func TestTheVisibilityOfAnOwnerLegionGhServesIsReadAsBefore(t *testing.T) {
 			if got := countLines(t, reads); got != 1 {
 				t.Errorf("gh's REST read ran %d times, want once", got)
 			}
-			if calls := readCalls(t, record); len(calls) != 0 {
+			if calls := leakguardtest.ReadCalls(t, record); len(calls) != 0 {
 				t.Errorf("git ran %d times, want never", len(calls))
 			}
 		})

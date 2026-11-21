@@ -326,6 +326,8 @@ jj_install: &jj_install
   - '.github/scripts/ci-tools.sh'
 omp_install: &omp_install
   - '.omp-pin'
+  - '.omp-pin.sha256'
+  - '.github/scripts/omp-digest.sh'
   - '.github/actions/install-omp/**'
   - *jj_install
 # why: .github/ci-notes/ci.md#daemon_go_tests-the-daemon-go-job-what-its-two-go-steps-read-together
@@ -671,6 +673,13 @@ check_gitleaks_version_test: &check_gitleaks_version_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-gitleaks-version.test.sh'
   - '.github/scripts/check-gitleaks-version.sh'
+omp_digest_test: &omp_digest_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/omp-digest.test.sh'
+  - '.github/scripts/omp-digest.sh'
 workflow_paths_test: &workflow_paths_test
   - *ci_router
   - *ci_filters_data
@@ -999,6 +1008,7 @@ test:
   - *check_zod_version_test
   - *check_gh_version_test
   - *check_gitleaks_version_test
+  - *omp_digest_test
   - *workflow_paths_test
   - *check_image_trigger_paths_test
   - *check_ci_images_test
@@ -2414,6 +2424,8 @@ worker_image:
   - 'packages/envoy/steprecord/**'
   - 'packages/envoy/testnatsimages/**'
   - '.omp-pin'
+  - '.omp-pin.sha256'
+  - '.github/scripts/omp-digest.sh'
   - '.bun-version'
   - '.dockerignore'
   - 'scripts/pi-plugin-prepack.sh'

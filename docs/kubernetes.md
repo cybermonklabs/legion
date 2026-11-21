@@ -21,7 +21,8 @@ Every Legion agent process under `runtime: kubernetes` — architect, planner, i
 It carries:
 
 - the pinned OMP fork build the daemon's default `omp_invocation` names
-  — resolved at build time with the same `mise x github:cybermonklabs/oh-my-pi@<version>` mechanism a tmux host uses, from the single pin source `.omp-pin`;
+  — fetched at build time with `mise install github:cybermonklabs/oh-my-pi@<version>`, the same tool spec a tmux host's `mise x` resolves, from the single pin source `.omp-pin`;
+  checked, before anything runs it, against the sha256 of `bin/omp` that `.omp-pin.sha256` records (`.github/scripts/omp-digest.sh`), so a commit that moves the pin moves that digest with it;
   installed at `/opt/omp/bin/omp` (`LEGION_OMP_PATH`);
 
 - `legion` (`packages/daemon`), compiled from the same commit at `go.work`'s Go version, static, at `/opt/legion/bin/legion` — the `legion` on `PATH` and the image's `ENTRYPOINT` — with the `agent-secrets` client beside it at `/opt/legion/bin/agent-secrets`.
@@ -78,6 +79,66 @@ It carries:
   The jj wrapper adds one check, and only before a `jj git push`:
   that the git jj would run is that wrapper, by `PATH` and by jj's own `git.executable-path`, refusing in the shared check's own setup-error words where it is not.
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
+  The rule file's pass reads a push this way:
+
+  - every file from its blob as text, whatever `.gitattributes` says of it, the pushed commit's own included, and no line of a file whose blob holds a zero byte in its first 8000 bytes, which is how git's own diff tells a binary file (`Guard.addedLines`, `internal/leakguard/commitfiles.go`).
+    The guard holds no more of a binary file than those bytes, passing over the rest that git writes;
+
+  - a commit's lines from its files, with no diff:
+    the lines a commit adds are the lines of each text file it changes that the file it is compared with does not hold.
+    A commit of one parent compares a file it modifies with its parent's file at that path, and a file it renames with the file it is renamed from, and compares a file it adds with none (`commitChanges`).
+    So a rename or a mode change that leaves a file as it is reads nothing, and no git command line grows with the number of files a commit moves.
+    A line a commit adds that its parent's file already holds elsewhere is not read: the destination holds that line already, or the guard reads it where the parent is pushed.
+    A merge is read the same way from its files, not from git's combined diff, which is wrong from 33 parents and drops a line only the merge adds from 64:
+    a file that differs from every parent's is compared with each parent's file at that path, and a merge's own paths are those no parent has (`mergeChanges`, `internal/leakguard/mergefiles.go`).
+    A ref at a tree or a blob, directly or through annotated tags, reaches no commit and is read the same way: a tree as a root commit's files are, each path and every line of each text file, and a blob as a file with no path, every line of it in a record labelled `blob <short>` (`Guard.treeRecords`, `Guard.blobRecords`).
+    A read of a commit that fails quotes git's own message without the user and token a URL in it carries, such as the URL of the promisor remote a partial clone's failed lazy fetch names (`gitSaid`, through `redact.Tail`).
+    The pod's roles share one memory limit, so the read holds one path's files at a time;
+
+  - every header of a commit and of an annotated tag, each read whole, its name with its value, as a record of its own (`objectHeaders`, `headerRecord`, `Guard.commitRecords`, `Guard.tagRecords`).
+    A header that is a name alone is read too, since git's own check of what a repository receives (`receive.fsckObjects`) takes a crafted commit or tag that holds one, or a header of any name.
+    A record is labelled by its header's name, `commit <short> <name>` or `tag <short> <name>`, and a tag's own name as `tag <short> name`, only where git itself writes a header of that name, and as `commit <short> header` or `tag <short> header` for any other, since such a name is the push's own text and a refusal prints its labels (`commitHeaders`, `tagHeaders`, from git 2.47.3's `commit.c` and `builtin/tag.c`).
+    A header git writes over more than one line is read with every line of it, as a message is.
+    A merge of a signed tag holds that whole tag object, its name, tagger and message among it, in its `mergetag` header, and publishes it whether or not the tag itself is pushed.
+    What a commit's other records hold already is not read again: its tree and parent lines, which hold object ids, and an author or committer line that is its identity record and a date.
+    A commit's and a tag's message is read as its object holds it, which is what the destination keeps and serves, and a commit's also as `git show` prints it where that differs, labelled `commit <short> message as git shows it`, since git decodes a message by its object's `encoding` header and cuts it at its first zero byte (`appendMessage`).
+    Where a message holds a zero byte, the guard also reads it decoded four ways, as UTF-16 and as UTF-32, each big-endian and little-endian, from its first byte with one leading byte-order mark left out, labelled `commit <short> message decoded as UTF-16, big-endian` and so on, `tag <short>` for a tag's, whatever the `encoding` header says or where there is none (`wideText`).
+    git commit refuses a zero byte in a message, so only a crafted object holds one, and an ASCII name in UTF-16 or UTF-32 holds a zero byte beside each letter, while every message without one is the one `git show` decodes through iconv.
+    So the decode is keyed on the zero byte and not on the encoding's name, which covers every name iconv takes for those encodings however it is spelled: glibc 2.41's `iconv_open` drops all but letters, digits and `_-.,:/` from a name, and honours a byte-order mark only under a name that gives no order.
+    Such a message is read once more with every zero byte taken out, labelled `commit <short> message with its zero bytes taken out`, since a reader that scans the bytes without regard to alignment, such as `strings -el`, finds UTF-16 or UTF-32 text at an offset none of the four decodes is aligned on, such as UTF-32 text two bytes in, and every name a rule reads is ASCII.
+    A header's record, a tag's own name among them, is read the same way where it holds a zero byte, labelled `commit <short> header decoded as UTF-16, big-endian` and so on (`appendDecoded`).
+    git's own check of what a repository receives refuses a zero byte in a header (`nulInHeader`), but a destination that does not run that check keeps a crafted one.
+    The commit objects the headers and the message are read from go through one `git cat-file --batch` for the whole push (`Guard.pushRecords`), and each tag object through a `git cat-file tag` of its own, fetching nothing (below), since one git runs under one environment and a commit's read can fetch what a partial clone lacks.
+    So a commit costs the guard at most three gits of its own, its `git show`, its `diff-tree` and the `cat-file --batch` its files are read through: 1,001 new commits, each adding one small file, pushed to an empty local bare with a passing stand-in for the shared check, took 47.0 s at the median of three runs in an issue pod on 2026-11-18, where one more git for each commit, a `git cat-file commit`, took 61.7 s.
+    git formats the last author and the last committer line of a commit that holds two, so an earlier one is read as a header, and so are a tag's second `object` and `type` lines, since git follows a tag by its first;
+
+  - a text file it reads above 32 MiB as a setup error that refuses the push and names the file and its size, whichever the shape (`Guard.blobBound`):
+    a commit's own file, a file it is compared with, or a tree's file or a blob that a ref is at.
+    The guard reads none of the files a commit's file is compared with where the commit's file is binary, and passes over the rest once the files read before them hold every line of it.
+    The bound is per file, not per push:
+    what one push holds in memory is no file above it, and every record of the push, each added line, path, identity, header and message, each annotated tag's headers and message, and each line of a blob a ref is at, until the rules have read them;
+
+  - and no commit that a branch or a tag of the destination already reaches, nor an annotated tag it already holds, nor a tree or a blob one of its tags is at, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/held.go`).
+    Each push with an update that is not a deletion, to a destination the guard scans, costs that one read, and a read that fails refuses the push as a setup error that names the remote and the URL.
+    The read runs outside the clone, in `/` and without the hook's `GIT_DIR`, so no configuration of the clone's leads it to another repository:
+    git hands the hook the URL the clone's configuration already led the push to, and under the clone's `url.<base>.pushInsteadOf` that URL can be one its `url.<base>.insteadOf` rewrites.
+    A URL that is a relative local path is read from the clone's directory, where git read it for the push.
+    It reads no git configuration but its own command line's either, since a `url.<base>.insteadOf` in the process's environment, the user's configuration or the machine's would lead it to another repository the same way:
+    of the process's environment it keeps no variable whose name starts `GIT_CONFIG`, so no `GIT_CONFIG_COUNT` block and no `GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null` take away the system file, the user's and every file either includes (`heldReadInherits`, `Guard.advertised`).
+    Its command line carries no git configuration but the guard's own pins (`gitPins`) and the pod's GitHub credential helper, reset and set to `legion git-credential` with `useHttpPath` on, as the pod's `GIT_CONFIG_COUNT` block begins (`workspace.GitHubCredentialPairs`, `heldReadCredential`).
+    A credential helper cannot rewrite a URL, so it leads the read nowhere else, and the read authenticates to GitHub as the pod's own git does.
+    A destination the guard cannot name that wants a credential set through git configuration is refused as a setup error, and so is a push that needs a transport setting made there, such as `core.sshCommand`, `http.proxy` or `http.sslCAInfo` in the user's file, the machine's or a `GIT_CONFIG_COUNT` block; `GIT_SSH_COMMAND`, the proxy variables and `GIT_SSL_CAINFO` still apply.
+    The read has a bound of its own, two minutes, since the hook's context has none (`Guard.heldReadBound`); seven reads of cybermonklabs/legion's 5,749 branches and tags from an issue pod took 0.63 s at the median on 2026-11-18.
+    A destination that stops answering refuses the push as a setup error that names the URL and the bound.
+    The URL such an error names carries no user, no token and no query (`redact.URLCredentials`), and nor does git's own message it quotes (`gitSaid`, through `redact.Tail`).
+    A push made to a URL rather than to a remote is named by that URL in every refusal and setup failure, written the same way (`PushName`).
+    A branch or a tag at a commit the clone does not have holds nothing, so where that commit is ahead of the clone's, the clone's commits it reaches are read, which fails closed.
+    A push whose destination holds nothing the clone has, an empty local bare repository among them, fails closed the same way:
+    it reads every commit the branch reaches, at one read of each, which is thousands for a fork's branch.
+    The four reads of what the clone has run with `GIT_NO_LAZY_FETCH=1`: the batch check of `ls-remote`'s shas (`Guard.advertised`), the check of the remote ref's commit (`Guard.holds`), `cat-file -t` of the object each update pushes, and `cat-file tag` of each tag in its chain (`Guard.tagRecords`).
+    So a partial clone fetches no object it lacks from its promisor remote, and such an object holds nothing there either.
+    No ref of the clone's own counts: git moves a remote's `refs/remotes/<remote>/` for a push to whatever URL the remote pushes to at that time, a local bare one that a role points it at for one run (`git remote set-url --push origin <bare>`) included, and a ref can be written by hand.
+
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
@@ -873,7 +934,7 @@ A reopen within about a minute of the close can race that closed run: `.github/w
 The files the image builds from are every context source `worker.Dockerfile` copies:
 the root manifest, lockfile, patches and each root workspace's `package.json` (the frozen install);
 the packages it copies whole — the Dockerfile (`packages/daemon/docker/**`), the two plugins and what they bundle (`packages/pi-envoy/**`, `packages/pi-legion/**`, `packages/pi-shared/**`, `packages/envoy-client/**`, `packages/contracts/**`), the skills (`skills/**`) and the prepack that stages them (`scripts/pi-plugin-prepack.sh`);
-the OMP pin (`.omp-pin`); the whole Go module the image compiles `legion` from (`packages/daemon/**`) and its build inputs;
+the OMP pin, its digest and the script that checks it (`.omp-pin`, `.omp-pin.sha256`, `.github/scripts/omp-digest.sh`); the whole Go module the image compiles `legion` from (`packages/daemon/**`) and its build inputs;
 the context's `.dockerignore`; and the workflows (`worker-image.yaml`, and `ci.yaml`, which calls it on a pull request).
 What a pod executes is part of the image's behaviour
 — the command a Sandbox pod runs, the launch probes `legion probe-image` runs in the image's final step and in the Go daemon's probe Sandbox, and every package they import
@@ -1346,8 +1407,9 @@ A pod that holds another session store than a pod created now would holds a move
 Under `postgres` the image probe's container is told `OMP_SESSION_SQL_DSN_FILE` too, so `legion probe-image`, which reads the providers directory as the shim does, never exports the URL into Oh My Pi's environment;
 under `cloudsql-iam` the probe's pod mounts no session key and is told no pointer at all (`sessionDSNPointer`, `manifest.go`).
 
-A resumed session also restores the model it last used, and the Oh My Pi `.omp-pin` names refuses, in `--mode rpc`, to resume one whose model the profile no longer has (`Could not restore model <provider>/<model>`, exit 1).
-So a change to the pods' model route (`runtime.kubernetes.pod`, `provider_keys`) that drops a model fails the launch of every agent resuming a session on it until the route offers that model again.
+A session resumed without `--model` restores the model it last used, and the Oh My Pi `.omp-pin` names refuses, in `--mode rpc`, to resume one whose model the profile no longer has (`Could not restore model <provider>/<model>`, exit 1).
+Every Legion launch names `--model @default` (`agentArgv`, `manifest.go`), so an agent resumes on the model its role names now, and no launch is refused for a session model the route dropped.
+What does fail every launch is a change to the pods' model route (`runtime.kubernetes.pod`, `provider_keys`) that drops the model a role names.
 Keep the route unchanged across the copy below in particular: there every session outlives the volume it was written on.
 
 ### What `cloudsql-iam` puts in a pod
@@ -4715,7 +4777,7 @@ Each row's check, and the fact a passing one reports:
 - `dispatch-envoy-tools`: the eleven Envoy tools (the ten `envoy_*` tools and `slack_post`) are registered and `dispatch read --issue <issue>` answers, which is why the row's summary reads "reaches Dispatch through the `dispatch` command and Envoy through the pi-envoy tools" — `11
   Envoy tools registered; dispatch read <issue> answered from <path>`.
 
-- `github`: `gh api graphql -f query='{ viewer { login } }'` answers the role's App login under the role's token file (REST `GET /user` is not a call an App installation token may make, so the row never reads it) — `gh viewer login: <login>`.
+- `github`: `gh api graphql -f query='{ viewer { login } }'` answers the role's App login under the role's token file (REST `GET /user` is not a call an App installation token may make, so the row never reads it), and runs from `/`, a directory that is no git repository, so a workspace whose remotes name two owners (a fork checkout) cannot turn the row into the `legion gh` wrapper's refusal — `gh viewer login: <login>`.
 
 The daemon renders a live row from its live sessions' reports.
 A live session is a claim that is ready, working or idle whose report came from its current process (the report's `incarnation` is the claim's locator's), so a claim relaunched, suspended or retired since its session reported keeps no row open until the new process reports.
@@ -5054,7 +5116,8 @@ The root holds one directory per owner account the role's App is installed on an
 The `gh` first on its PATH is `/opt/legion/bin/gh`, which runs `legion gh`:
 it runs the real gh with `GH_CONFIG_DIR` at the one directory every repository the command targets is routed to, read as gh reads it from the real gh's own help (see docs/deployment.md, "What a pane's gh, git and jj are"): the owner's, or the directory of the owner a configured rename moved a repository to where a pair names it, each repository routed on its own; and at the issue owner's when the command names no repository at all;
 a command it cannot read for certain, one whose repositories route to two directories (two owners' repositories, or a repository a pair moved beside another of the owner it moved from), one naming an owner the bundle holds no directory for, and one naming a repository a pair moved to an owner the bundle holds no directory for are refused with exit 2 and send nothing;
-a read `legion gh` reads for certain that names only owners the bundle holds no directory for, names no repository a configured rename moves, and has no `github.com` remote of the working directory read for it runs with `GH_CONFIG_DIR`'s token instead (docs/deployment.md, "What a pane's gh, git and jj are", says which calls are such reads).
+a read `legion gh` reads for certain that names only owners the bundle holds no directory for, names no repository a configured rename moves, and has no `github.com` remote of the working directory read for it runs with `GH_CONFIG_DIR`'s token instead (docs/deployment.md, "What a pane's gh, git and jj are", says which calls are such reads);
+and a read of one repository of such an owner that this rule does not run, a call in its read grammar that names the repository through a `github.com` remote of the working directory or one of knives' audit GraphQL reads of it in a form the rule does not admit, runs with that token too once an unauthenticated `git ls-remote` of that repository's https URL, which sends no credential at all, lists a ref of it.
 In a checkout whose one gh-resolved line is `remote.origin.gh-resolved base`, on an `origin` whose one fetch URL gh keeps as a `github.com` URL that is not ssh, a command of the groups gh resolves through that marker (`repo set-default` only with `--view` or `--unset`) counts origin's repository alone (docs/deployment.md, "What a pane's gh, git and jj are").
 `git` reads the same files through `!legion git-credential` (`workspace.GitHubCredentialHelper`) with `credential.useHttpPath` on, so the helper answers from the `hosts.yml` of the owner of the repository in the path git asks about — of the owner that repository moved to where a pair names it — and from nothing else, but for a repository of an owner the bundle holds no directory for.
 The helper reads such a repository from GitHub once (`GET /repos/<owner>/<name>` through `/usr/bin/curl`, within 10 s), with the token of the directory `GH_CONFIG_DIR` names where that is a directory of the bundle, and answers a fork with the token it would answer for the fork's `parent`, or else for its `source`, where the bundle holds that owner's directory, and every other repository of such an owner with nothing.

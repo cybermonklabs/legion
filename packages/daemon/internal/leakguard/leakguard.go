@@ -7,15 +7,15 @@
 //     is named skips it rather than being refused for its absence (Guard.sharedCheck).
 //   - This repository's own private-name rules, the embedded private-names.toml, run in process
 //     over the records the write is made of, and only when the destination repository is one
-//     GitHub reports public.
+//     GitHub reports public, or one the guard cannot name, such as a local path (scanThrough).
 //
 // A call site reaches the guard through one of four entry points — Push, GhCall, Text and Rules —
 // and reads one of three answers from a refused write: a *Refusal, which is about the text the
 // write carries; a *SetupFailure, which is the check missing, the check failing, the engine
-// failing, or a destination whose visibility cannot be read; and a *NotFound, which is a
-// destination GitHub answers 404 for. All three refuse the write; they are three types so that a
-// call site can say which one it met, the way the shared check itself keeps "LEAK CHECK: refusing"
-// apart from "LEAK CHECK SETUP ERROR".
+// failing, a destination whose visibility cannot be read, or a push whose destination's refs
+// cannot be; and a *NotFound, which is a destination GitHub answers 404 for. All three refuse the
+// write; they are three types so that a call site can say which one it met, the way the shared
+// check itself keeps "LEAK CHECK: refusing" apart from "LEAK CHECK SETUP ERROR".
 //
 // What the guard reports is the record and the class: never the text that matched, never the
 // component of a path that matched, and never anything the detection engine itself printed. The
@@ -33,9 +33,11 @@ package leakguard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -70,11 +72,13 @@ type Options struct {
 	// audit logging and leaves it nil when it has no audit record of its own.
 	OnVisibility func(VisibilitySource)
 	// Env is the environment the guard's children start from: the shared check, the visibility
-	// reads, and the git commands a push's records are read with. Nil means this process's own
-	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote),
-	// which keeps only the names lsRemoteInherits allows. The guard adds to it the names that make
-	// a credential prompt fail closed (promptsNothing) and RunByRealGhVar blanked, and each child's
-	// own names on top of those.
+	// reads, and the git commands a push's records and the refs of its destination are read with.
+	// Nil means this process's own (os.Environ()). Every child keeps all of it but the ones
+	// child.inherit names, each of which keeps only the names its own inherit allows. The guard
+	// adds to it the names that make a credential prompt fail closed (promptsNothing), of which
+	// the read with no credential (Guard.lsRemote) takes the terminal prompt's alone and no
+	// askpass, then RunByRealGhVar blanked for every child, and each child's own names on top of
+	// those.
 	Env []string
 	// Curl is the curl the guard's reads through curl run (Guard.CurlGet). Empty is the ordinary
 	// case, curlProgram: the system's own curl at a fixed path, never the first curl on the
@@ -93,6 +97,26 @@ type Guard struct {
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
 	// environment's PATH.
 	noAnswer string
+	// blobBound is the largest text file the read of a push's files takes, a merge's, a commit of
+	// one parent's or a tree's (Guard.addedLines), or a blob a ref or a tag is at
+	// (Guard.blobRecords): 32 MiB, which New sets and a test lowers. The read holds at most two
+	// such files at once, the commit's and one parent's, and, for a file compared with another, a
+	// set of the commit's distinct lines, which is under 100 MiB at the bound for lines of ordinary
+	// length and some hundreds of MiB for a file of nothing but short distinct lines: a small part
+	// of the 19 GiB an issue pod's roles share at the default issue reservation
+	// (docs/kubernetes.md). It is over eight times the largest text file this
+	// repository tracks, a test fixture of 3.7 MiB
+	// (packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json, measured 2026-11-17), so
+	// that a lock file or a fixture a commit changes is far below it, and under the 50 MiB above
+	// which GitHub warns of a file a push adds.
+	blobBound int64
+	// heldReadBound is how long the read of what a push's destination holds runs at most
+	// (Guard.advertised): two minutes, which New sets and a test lowers. The hook's own context
+	// has no deadline (cmd/legion's main), so without it a destination that stops answering would
+	// hold the push for as long as it did not answer. Two minutes is that read many times over:
+	// measured from an issue pod on 2026-11-18, seven reads of cybermonklabs/legion's 5,749
+	// branches and tags took 0.58 s to 0.67 s, 0.63 s the median.
+	heldReadBound time.Duration
 	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
 	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
@@ -102,7 +126,7 @@ type Guard struct {
 // guard that resolved one at start would keep running a copy the current rules have moved past, so
 // every call resolves it again.
 func New(opts Options) *Guard {
-	g := &Guard{opts: opts, curl: curlProgram}
+	g := &Guard{opts: opts, blobBound: 32 << 20, heldReadBound: 2 * time.Minute, curl: curlProgram}
 	if opts.Curl != "" {
 		g.curl = opts.Curl
 	}
@@ -126,11 +150,12 @@ func (g *Guard) base() []string {
 // `legion gh` sets and refuses under and the name the guard blanks (Guard.env) are written once.
 const RunByRealGhVar = "LEGION_GH_RUN_BY_REAL_GH"
 
-// env is the environment a child of this guard starts from: base, the names that make a
-// credential prompt fail closed, RunByRealGhVar blanked, and extra on top, which wins over all
-// three because exec takes the last value of a name. inherit, where it is not nil, keeps only the
-// names of base it answers true for (child.inherit). The base is the caller's rather than read
-// here, so that a child costs one copy of the process environment and not two (Guard.run).
+// env is the environment child c starts from: base, the names that make a credential prompt fail
+// closed, RunByRealGhVar blanked, and c's own names on top, which win over all three because exec
+// takes the last value of a name. c.inherit, where it is not nil, keeps only the names of base it
+// answers true for, and c.noAskpass takes of the prompt names the terminal prompt's alone. The
+// base is the caller's rather than read here, so that a child costs one copy of the process
+// environment and not two (Guard.run).
 //
 // RunByRealGhVar is blanked because the guard, and not the real gh, is what runs its children. A
 // real gh's own push reaches the guard with that variable set: gh's git inherits it, and git's
@@ -139,21 +164,26 @@ const RunByRealGhVar = "LEGION_GH_RUN_BY_REAL_GH"
 // answerVisibilityRead, which reads through a guard of its own). Under the variable every one of
 // them would be refused, and so would the push. Blanking it stays bounded: `legion gh` runs each
 // read with a real gh it gives the variable again, so a real gh that leads back to `legion gh` is
-// still refused one start later.
-func (g *Guard) env(base []string, inherit func(name string) bool, extra ...string) []string {
-	out := make([]string, 0, len(base)+5+len(extra))
-	if inherit == nil {
+// still refused one start later. It is blanked for every child, the read with no credential and
+// the read of a push's destination's refs among them, whose inherit would otherwise keep it.
+func (g *Guard) env(base []string, c child) []string {
+	out := make([]string, 0, len(base)+5+len(c.env))
+	if c.inherit == nil {
 		out = append(out, base...)
 	} else {
 		for _, entry := range base {
-			if name, _, _ := strings.Cut(entry, "="); inherit(name) {
+			if name, _, _ := strings.Cut(entry, "="); c.inherit(name) {
 				out = append(out, entry)
 			}
 		}
 	}
-	out = append(out, promptsNothing(g.noAnswer)...)
+	if c.noAskpass {
+		out = append(out, noTerminalPrompt)
+	} else {
+		out = append(out, promptsNothing(g.noAnswer)...)
+	}
 	out = append(out, RunByRealGhVar+"=")
-	return append(out, extra...)
+	return append(out, c.env...)
 }
 
 // Record is one piece of a write the rules read: Label is what the report calls it, and Text is
@@ -250,18 +280,13 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 // which runs this guard; the exemption that command makes for the check's own visibility read
 // requires the slug to be one ghrepo.Parse takes (its ghVisibilityRead), so a read for any other
 // slug would go back through `legion gh`, into the guard, into a read of the same slug, without
-// end. The guard therefore reads no visibility it could not have exempted. The refusal carries no
-// error of Parse's: that refusal repeats the slug as it was written, and a report carries a
-// masked name alone.
+// end. The guard therefore reads no visibility it could not have exempted (unservable).
 func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error) {
 	if slug == "" {
 		return true, nil
 	}
-	if _, err := ghrepo.Parse("", slug); err != nil {
-		return false, &SetupFailure{
-			What: what,
-			Why:  "the destination " + maskPath(slug) + " is no repository GitHub serves, so no visibility can be read for it",
-		}
+	if err := unservable(slug); err != nil {
+		return false, &SetupFailure{What: what, Why: "the destination " + err.Error()}
 	}
 	visibility, err := g.Visibility(ctx, slug)
 	switch {
@@ -275,6 +300,18 @@ func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error
 		}
 	}
 	return visibility == Public, nil
+}
+
+// unservable is the refusal of slug where it is no repository GitHub could serve, one
+// ghrepo.Parse refuses, and nil for every other slug: no visibility is read for such a slug
+// (Guard.scanThrough, Guard.VisibilityWithoutCredential). The refusal carries no error of
+// Parse's: that refusal repeats the slug as it was written, and a report carries a masked name
+// alone.
+func unservable(slug string) error {
+	if _, err := ghrepo.Parse("", slug); err != nil {
+		return fmt.Errorf("%s is no repository GitHub serves, so no visibility can be read for it", maskPath(slug))
+	}
+	return nil
 }
 
 // value is the value of key in env, as exec reads it: the last entry of that name wins.

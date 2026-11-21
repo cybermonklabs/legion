@@ -53,7 +53,8 @@ func (wallClock) Sleep(ctx context.Context, wait time.Duration) error {
 // read failed on its connection to GitHub (Guard.readWithoutGh); where curl meets a spent core
 // limit there, the GraphQL read through gh follows, as it follows gh's (readWithoutREST).
 // ls-remote is also the one read it makes when `legion gh` refuses the REST read because the
-// project's gh bundle holds no directory for the repository's owner (Guard.readUnservedOwner).
+// project's gh bundle holds no directory for the repository's owner (Guard.readUnservedOwner),
+// and the one read Guard.VisibilityWithoutCredential makes.
 type VisibilitySource string
 
 const (
@@ -99,6 +100,31 @@ func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error)
 // and its commits would reach a public target unscanned. For that read a false public is a leak.
 func (g *Guard) FreshVisibility(ctx context.Context, slug string) (Visibility, error) {
 	return g.visibility(ctx, slug, false)
+}
+
+// VisibilityWithoutCredential is slug's visibility as the read with no credential finds it
+// (Guard.lsRemote), and nothing else: Public where an anonymous `git ls-remote` of the
+// repository's https URL exits 0 and lists a ref, and an error for every other outcome, which
+// says nothing of the repository. It makes no REST or GraphQL read, sends no token, takes no kept
+// answer and keeps none, and reports VisibilityFromLsRemote for its answer. A slug that is no
+// repository GitHub could serve is refused before git runs, so the URL names one repository of
+// github.com and nothing else.
+//
+// `legion gh` reads with it the visibility of a repository of an owner its bundle holds no gh
+// directory for, for a read of it that R4 of dispatch://INFRA-3399 leaves refused (cmd/legion's
+// liftForPublicRead): it refuses the guard's own REST and GraphQL reads of such a repository,
+// which would run with that bundle's token, so this read is the one it makes, and a repository
+// GitHub hides behind authentication never reads public.
+func (g *Guard) VisibilityWithoutCredential(ctx context.Context, slug string) (Visibility, error) {
+	if err := unservable(slug); err != nil {
+		return "", err
+	}
+	visibility, err := g.lsRemote(ctx, githubOrigin, slug)
+	if err != nil {
+		return "", err
+	}
+	g.reportVisibility(VisibilityFromLsRemote)
+	return visibility, nil
 }
 
 // visibility is Visibility, trusting and keeping public answers where kept says so.
@@ -203,17 +229,18 @@ func (g *Guard) readWithoutREST(ctx context.Context, slug string, limited *rateL
 }
 
 // readUnservedOwner reads slug's visibility after `legion gh` refused the REST read because the
-// project's gh bundle holds no directory for slug's owner (unserved): `legion gh` refuses every
-// call naming that owner, so no read through gh can answer, GraphQL's no more than REST's. The
-// pod's git credential helper can hold a token for such a repository, the token of the served
-// repository a fork was made from (cmd/legion's forkUpstreamDir), but it answers git alone and
-// never this read. An unauthenticated REST read is no way round that either: GitHub allows 60 of
-// those an hour to an address, shared by everything that reads GitHub from it. The read is git's
-// ls-remote with no credential (Guard.lsRemote), which makes no API request and answers public
-// and nothing else: its exit 0 is the evidence that anyone can read the repository (an empty
-// repository lists no ref and exits 0 all the same). Every other outcome, the 401 GitHub answers
-// an anonymous read of a private repository and of a name no repository has with included,
-// refuses the call, naming the refusal of `legion gh` and what git said.
+// project's gh bundle holds no directory for slug's owner (unserved): `legion gh` refuses each of
+// the guard's own reads of that owner's repositories, so no read through gh can answer, GraphQL's
+// no more than REST's. The pod's git credential helper can hold a token for such a repository,
+// the token of the served repository a fork was made from (cmd/legion's forkUpstreamDir), but it
+// answers git alone and never this read. An unauthenticated REST read is no way round that
+// either: GitHub allows 60 of those an hour to an address, shared by everything that reads GitHub
+// from it. The read is git's ls-remote with no credential (Guard.lsRemote), which makes no API
+// request and answers public and nothing else: its exit 0 with a ref it lists is the evidence
+// that anyone can read the repository. Every other outcome, an exit 0 that lists no ref, as an
+// empty repository's does, and the 401 GitHub answers an anonymous read of a private repository
+// and of a name no repository has with included, refuses the call, naming the refusal of
+// `legion gh` and what git said.
 func (g *Guard) readUnservedOwner(ctx context.Context, slug string, unserved *unservedOwnerError) (Visibility, VisibilitySource, error) {
 	visibility, err := g.lsRemote(ctx, githubOrigin, slug)
 	if err != nil {
@@ -251,7 +278,12 @@ func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
 	if path == "" {
 		return "", false
 	}
-	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	// The directory is opened with O_NOFOLLOW and without O_DIRECTORY, and found to be a directory
+	// after: under the gVisor kernel of an issue pod (4.19.0-gvisor, measured 2026-11-17), an open
+	// with both follows a link to a directory, fstat then answering a directory, where O_NOFOLLOW
+	// alone refuses the link (ELOOP). Linux refuses the link either way. O_NONBLOCK keeps a FIFO at
+	// the path from blocking the open until a writer comes.
+	dir, err := os.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return "", false
 	}
@@ -641,10 +673,13 @@ func gitHubResponse(status int, headers map[string]string) *http.Response {
 const githubOrigin = "https://github.com"
 
 // lsRemote is what `git ls-remote <origin>/<slug>.git HEAD`, read with no credential, says of the
-// repository's visibility: public where git exits 0, listing the repository's HEAD (an empty
-// repository lists nothing and exits 0 all the same), and an error for anything else. origin is a
-// parameter so that a test can point the read at a server of its own; the guard's three callers
-// (readWithoutREST, readWithoutGh, readUnservedOwner) pass githubOrigin. That read goes through
+// repository's visibility: public where git exits 0 and lists a ref, the repository's HEAD, and an
+// error for anything else, an exit 0 that lists none among them: an empty repository's HEAD lists
+// nothing, and only a ref that git listed is a repository it read. origin is a parameter so that a
+// test can point the read at a server of its own; the guard's four callers, its read after a
+// spent rate limit (readWithoutREST), its read after gh failed on its connection (readWithoutGh),
+// its read after `legion gh` refused the REST read for an owner the project does not serve
+// (readUnservedOwner) and VisibilityWithoutCredential, pass githubOrigin. That read goes through
 // git's smart HTTP protocol, which GitHub does not count against the REST rate limit: pushes
 // refused for that limit have met `git ls-remote origin` answering at the same moments. It uses no
 // Go TLS either: git's HTTPS is libcurl's.
@@ -654,8 +689,9 @@ const githubOrigin = "https://github.com"
 // answers one of a public repository with a 401 while it limits unusual traffic (GitHub's
 // changelog of 2026-10-19, "Some Git over HTTPS may temporarily require authentication"); and git
 // prints the same `could not read Username` line for each, as it does for a server's ERR packet
-// that carries that line. So every exit but 0 refuses the call, and this read never answers
-// private or internal, which would skip the rule pass for a public repository.
+// that carries that line. So every exit but 0 refuses the call, and so does an exit 0 that lists
+// no ref, and this read never answers private or internal, which would skip the rule pass for a
+// public repository.
 //
 // Its public must be true too. For the guard's own read a wrong public only scans a private
 // repository's push, but for the shared check's fresh read of another remote (FreshVisibility) a
@@ -671,8 +707,8 @@ const githubOrigin = "https://github.com"
 //     netrc lookup on, and libcurl reads the .netrc under HOME and sends its credential to a
 //     server that asks for one: measured with git 2.47.3, a server a ~/.netrc named answered
 //     git's request 401, and git sent the request again carrying that netrc credential;
-//   - GIT_CONFIG_NOSYSTEM and GIT_CONFIG_GLOBAL=/dev/null take away the system file and the
-//     user's, the second also the one under XDG_CONFIG_HOME, which the read keeps;
+//   - it reads neither the system file nor the user's, the one under XDG_CONFIG_HOME, which the
+//     read keeps, among them (readsNoConfigFile);
 //   - it runs in /, a directory only root can write, so it finds no repository and no
 //     repository's configuration;
 //   - `-c credential.helper=` empties the helper list again on the command line, after anything
@@ -700,8 +736,11 @@ const githubOrigin = "https://github.com"
 //     wrapper's setting for no URL, for the host, for the repository's URL or for that URL with
 //     `//` appended exited 128; the generic reset cleared the first alone, and the `//` reset
 //     after it cleared all four;
-//   - the guard's prompt settings (promptsNothing) leave git's askpass and its terminal prompt
-//     nothing to answer with, and the URL holds no user and no token.
+//   - `-c core.askPass=` empties the askpass program a wrapper's own `-c` named, and git runs with
+//     no GIT_ASKPASS, SSH_ASKPASS or SSH_ASKPASS_REQUIRE (child.noAskpass, lsRemoteInherits), so
+//     it has no askpass at all to ask; of the guard's prompt settings it keeps
+//     GIT_TERMINAL_PROMPT=0 alone, which leaves its terminal prompt nothing to answer with; and
+//     the URL holds no user and no token.
 //
 // The resets name the settings measured to put a credential or a header on this read, one key at
 // a time. A setting they do not name can still make it refuse the call. A wrapper that rewrites
@@ -724,23 +763,42 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 	ctx, cancel := context.WithTimeout(ctx, lsRemoteBound)
 	defer cancel()
 	url := origin + "/" + slug + ".git"
-	status, printed, err := g.run(ctx, child{
-		argv: gitArgv("-c", "credential.helper=",
+	var stderr strings.Builder
+	status, listed, err := g.run(ctx, child{
+		argv: gitArgv("-c", "credential.helper=", "-c", "core.askPass=",
 			"-c", "http.extraHeader=", "-c", "http."+url+".extraHeader=", "-c", "http."+url+"//.extraHeader=",
 			"-c", "http.proactiveAuth=none", "-c", "http."+url+"//.proactiveAuth=none",
 			"ls-remote", url, "HEAD"),
-		dir:     "/",
-		inherit: lsRemoteInherits,
-		env:     []string{"HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"},
+		dir:       "/",
+		inherit:   lsRemoteInherits,
+		noAskpass: true,
+		env:       append([]string{"HOME=" + home, "LC_ALL=C"}, readsNoConfigFile...),
+		stderr:    &stderr,
 	})
+	if err == nil && status == 0 && listsARef(listed) {
+		return Public, nil
+	}
+	masked := maskPath(slug)
+	quoted := strings.ReplaceAll(stderr.String()+listed, slug, masked)
 	if err != nil {
-		return "", procgroup.Said(err, printed)
+		return "", procgroup.Said(err, gitSaid(quoted))
 	}
 	if status != 0 {
-		masked := maskPath(slug)
-		return "", fmt.Errorf("git ls-remote of %s exited %d: %s", masked, status, strings.ReplaceAll(strings.TrimSpace(printed), slug, masked))
+		return "", gitExited("git ls-remote of "+masked, status, quoted)
 	}
-	return Public, nil
+	return "", fmt.Errorf("git ls-remote of %s exited 0 and listed no ref", masked)
+}
+
+// listsARef is whether listed, what git ls-remote printed on its standard output, holds a ref: a
+// line `<object id>\t<ref name>`, the id as git prints a SHA-1 or a SHA-256 one (isObjectID).
+func listsARef(listed string) bool {
+	for line := range strings.Lines(listed) {
+		id, name, ok := strings.Cut(strings.TrimRight(line, "\r\n"), "\t")
+		if ok && name != "" && isObjectID(id) {
+			return true
+		}
+	}
+	return false
 }
 
 // lsRemoteBound is the longest the read with no credential runs (Guard.lsRemote): as long as the
@@ -753,13 +811,15 @@ var lsRemoteBound = rateLimitWaitBound
 // which transports git may use and which certificates it trusts, none of which can carry a
 // credential. It drops the names libcurl finds a netrc file by: HOME, which the read sets to an
 // empty directory of its own, NETRC, which names the file outright from curl 8.16, and
-// USERPROFILE, libcurl's second home on Windows. The proxy variables libcurl reads (HTTPS_PROXY
-// and the rest) stay, so a pod that reaches GitHub through a proxy reaches it the same way here.
+// USERPROFILE, libcurl's second home on Windows. It drops the askpass names, GIT_ASKPASS with the
+// rest of git's own and ssh's SSH_ASKPASS and SSH_ASKPASS_REQUIRE, which git reads too, so the
+// read runs with no askpass (child.noAskpass). The proxy variables libcurl reads (HTTPS_PROXY and
+// the rest) stay, so a pod that reaches GitHub through a proxy reaches it the same way here.
 func lsRemoteInherits(name string) bool {
 	switch name {
 	case "GIT_ALLOW_PROTOCOL", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH":
 		return true
-	case "HOME", "NETRC", "USERPROFILE":
+	case "HOME", "NETRC", "USERPROFILE", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE":
 		return false
 	}
 	return !strings.HasPrefix(name, "GIT_")

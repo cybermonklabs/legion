@@ -156,9 +156,20 @@ URL gh keeps as `github.com` and is not ssh, for a command of the 14 groups gh r
 that marker (`agent-task`, `api`, `browse`, `cache`, `discussion`, `issue`, `label`, `org`, `pr`,
 `release`, `repo`, `ruleset`, `run` and `workflow`, as gh's `pkg/cmd/root/root.go` builds them;
 `repo set-default` only with `--view` or `--unset`), because gh itself acts on `origin` there. A
-command naming no owner, in a directory whose remotes name none, runs at the issue owner's. A
-command whose last `--help` is true, and `gh --version` alone, only print. It fails closed: a
-command it cannot read for certain (an option the leaf's
+command naming no owner, in a directory whose remotes name none, runs at the issue owner's.
+So does a read of one repository of an owner the bundle holds no directory for that the rule for
+such reads below does not run: a call in the read grammar `ghWritesNothing` holds that names that
+one repository through a `github.com` remote of the working directory (`gh pr view 1` in a clone
+of a public repository of that owner), or one of the GraphQL reads knives' audit makes of a
+fork's upstream, routed by the repository its name variable names, in a form
+`ghGraphQLQueryRead` does not read for certain (`--raw-field=owner=…` joined, for one).
+It runs once an unauthenticated `git ls-remote` of the repository's https URL exits 0 and lists a
+ref of it: that read sends no credential at all, with `credential.helper` and `core.askPass`
+emptied, no `GIT_ASKPASS` or `SSH_ASKPASS`, `GIT_TERMINAL_PROMPT=0` and no token in the URL, so a
+repository GitHub hides behind authentication never reads public, and any other outcome refuses
+the call with its owner's refusal.
+A command whose last `--help` is true, and `gh --version` alone, only print.
+It fails closed: a command it cannot read for certain (an option the leaf's
 help does not list or names a repository with in a way it does not know, a subcommand gh does not
 know, a first word gh's own help does not list, anything before the command but `-R` and
 `--help`, an argument the leaf's usage has no place for or names in a way it does not know, a
@@ -169,8 +180,8 @@ option or a second repository naming one owner while gh acts on another's, a wor
 remotes name two but for the marked `origin` above, or a repository a configured rename moved
 beside another of the owner it moved from, which run under one directory's token would answer for
 the other's with less than GitHub holds and no error; a moved repository named by both of its
-names is one directory), one naming an owner the bundle holds no directory for but for the read
-below, one naming a
+names is one directory), one naming an owner the bundle holds no directory for but for the reads
+above and below, one naming a
 repository a configured rename moved to an owner the bundle holds no directory for, which names
 the pair, every command where `PATH`'s first `gh` is not
 Legion's wrapper (a script
@@ -239,7 +250,8 @@ and the bundle may hold no directory for that repository's owner.
 Without such a token, the leak guard's own REST read of a repository whose owner the bundle holds no directory for is refused with the line that names that owner,
 `legion gh: the role's GitHub App is not installed on "<owner>": <LEGION_GH_OWNERS_DIR> holds no gh directory for it`, exit 2,
 and the guard then reads that repository's visibility with an unauthenticated `git ls-remote`, which makes no API request:
-its exit 0 alone reads public, and any other outcome refuses the write as a setup error naming both reads.
+its exit 0 with a ref it lists reads public,
+and any other outcome, an empty repository's exit 0 that lists none among them, refuses the write as a setup error naming both reads.
 The guard makes no unauthenticated REST read of it, because GitHub allows 60 of those an hour to one address.
 The shared check's own visibility read of such a repository, which `legion gh` answers with the guard's read, reads it the same way, so the check counts a public one's advertised commits as published.
 The refusal of a repository a configured rename moved to an owner the bundle holds no directory for names the pair around that line, and stays a setup error.

@@ -78,8 +78,12 @@ export PUBLIC_LEAK_CHECK="$work/public-leak-check.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$PUBLIC_LEAK_CHECK"
 chmod +x "$PUBLIC_LEAK_CHECK"
 # A local path as the push's URL names no GitHub repository, so the guard reads the destination as
-# public (its fail-closed answer) and scans, without a gh call.
+# public (its fail-closed answer) and scans, without a gh call. The guard reads what that
+# destination holds with git ls-remote before it reads a commit, and refuses a push whose
+# destination it cannot read, so the path is an empty bare repository: it holds nothing, so every
+# commit a case pushes is read.
 remote_url="$work/remote.git"
+git init -q --bare "$remote_url"
 
 # The frozen script's fifth rule, the deployment's own term list (PRIVATE_NAME_TERMS, an Actions
 # secret), has no port: no rule file of a public repository can spell those terms, and this job

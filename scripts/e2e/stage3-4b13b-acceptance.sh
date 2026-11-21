@@ -702,10 +702,16 @@ SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://127.0.0.1:$port_nats" \
     bun run "$root/scripts/e2e/lib/envoy-bridge.ts"
 until_true 90 "the GitHub ingress bridge to report ready" grep -q 'BRIDGE READY' "$evidence/logs/bridge.log"
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
+# The pinned Oh My Pi of the checkout the run builds from (ACCEPT_ROOT's, when it is set), installed
+# and held to that checkout's .omp-pin.sha256 (lib/pinned-omp.sh) before anything runs it: the
+# plugin installs below, then the daemon's boot probes and panes. The helper is this script's own,
+# as the key command's reader is: an ACCEPT_ROOT from before it has none. An ACCEPT_ROOT from
+# before .omp-pin.sha256 records no digest to hold the install to, and the run fails here.
+pin=$(<"$root/.omp-pin")
+bash "$script_lib/pinned-omp.sh" "$root" "$pin" >/dev/null ||
+  fail "the pinned Oh My Pi $pin ($root/.omp-pin) could not be installed, or its install does not match $root/.omp-pin.sha256 (the reason is above)"
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion")
-pin=$(<"$root/.omp-pin")
-mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
 # The program every pane's Oh My Pi runs: the daemon starts from this environment, so
 # LEGION_OMP_PATH outranks the invocation when it is set (omp_program, lib/process-tree.sh).
 omp_exe=$(omp_program "$pin") || fail "the Oh My Pi the daemon would run for $pin is not one the kernel runs: $omp_exe"

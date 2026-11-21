@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -54,6 +55,12 @@ type capturedConnect struct {
 // command makes, so the first `GET /repos/<owner>/<name>` after each take is answered with a
 // visibility and every later one is refused as before — the command's own read of the same path
 // included, which is what keeps each case's exit status what it was.
+//
+// It also answers the anonymous `git ls-remote` of one repository, public (servePublic), as
+// GitHub answers a public repository's: its refs. That is the read with no credential `legion gh`
+// makes of a repository of an owner the bundle does not hold (liftForPublicRead), which reads
+// public only for a ref listed; the same read of any other repository gets the 401 every
+// unauthenticated git request gets, as GitHub answers a private repository's.
 type captureProxy struct {
 	url, caFile string
 	mu          sync.Mutex
@@ -65,6 +72,9 @@ type captureProxy struct {
 	// request and `graphql <operation>` for a GraphQL one (answer), so a command reaches the git
 	// it runs after them.
 	answers map[string]string
+	// public is the one repository, `<owner>/<name>`, whose anonymous ls-remote the proxy
+	// answers with its refs (servePublic); "" for none.
+	public string
 }
 
 var capturedRESTOwner = regexp.MustCompile(`^/repos/([^/]+)/`)
@@ -91,6 +101,14 @@ func (p *captureProxy) clearAnswers() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.answers = nil
+}
+
+// servePublic has the proxy answer the anonymous ls-remote of the one repository slug,
+// `<owner>/<name>`, with its refs, as GitHub answers a public repository's (captureProxy's public).
+func (p *captureProxy) servePublic(slug string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.public = slug
 }
 
 func startCaptureProxy(t *testing.T) *captureProxy {
@@ -217,6 +235,7 @@ func (p *captureProxy) serve(w http.ResponseWriter, r *http.Request) {
 		key = "graphql " + match[1]
 	}
 	answer, answered := p.answers[key]
+	public := p.public
 	p.mu.Unlock()
 	if guardsRead {
 		w.Header().Set("Content-Type", "application/json")
@@ -234,6 +253,18 @@ func (p *captureProxy) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case public != "" && r.Host == "github.com" && request.auth == "" && r.Method == http.MethodGet && r.URL.Path == "/"+public+".git/info/refs":
+		// The refs advertisement of a public repository: git's pkt-lines, each its length in four
+		// hex digits and then its payload, a flush after the service line and after the refs.
+		head := strings.Repeat("1", 40)
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+		for _, payload := range []string{"# service=git-upload-pack\n", "", head + " HEAD\x00agent=capture\n", head + " refs/heads/main\n", ""} {
+			if payload == "" {
+				_, _ = io.WriteString(w, "0000")
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "%04x%s", len(payload)+4, payload)
+		}
 	case r.Host == "github.com" && request.auth == "":
 		w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
 		w.WriteHeader(http.StatusUnauthorized)

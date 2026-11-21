@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 type visibilityTestClock struct {
@@ -51,8 +53,14 @@ func TestKeptVisibilityRejectsUntrustedEntries(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
+		// The link's target is a private directory of this user holding a public entry, so the
+		// link alone makes the entry untrusted. A t.TempDir after the first is made 0777 less the
+		// umask, and one that others can read would be refused for its mode whatever the link.
 		"symlinked directory": func(t *testing.T, path, dir string) {
 			target := t.TempDir()
+			if err := os.Chmod(target, 0o700); err != nil {
+				t.Fatal(err)
+			}
 			writeEntry(t, filepath.Join(target, filepath.Base(path)), Public)
 			if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 				t.Fatal(err)
@@ -85,13 +93,43 @@ func TestKeptVisibilityRejectsUntrustedEntries(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
+		// A FIFO where the guard's state directory or its entry should be is no state: the read
+		// refuses it at once, where an open that waits for a writer would hang every push.
+		"fifo in place of the directory": func(t *testing.T, _, dir string) {
+			if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Mkfifo(dir, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"fifo in place of the entry": func(t *testing.T, path, dir string) {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Mkfifo(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			state := t.TempDir()
 			guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+state)})
 			path := guard.visibilityCachePath(slug)
 			prepare(t, path, filepath.Dir(path))
-			if visibility, ok := guard.keptVisibility(slug); ok {
+			var visibility Visibility
+			var ok bool
+			read := make(chan struct{})
+			go func() {
+				defer close(read)
+				visibility, ok = guard.keptVisibility(slug)
+			}()
+			select {
+			case <-read:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the kept visibility read has not returned after 10 s: an open waits on what lies at the path")
+			}
+			if ok {
 				t.Errorf("kept visibility = %q, true; want cache miss", visibility)
 			}
 		})
@@ -169,7 +207,7 @@ func TestVisibilityReadsWithoutRESTWhenTheRetryIsStillLimited(t *testing.T) {
 			bin, records := t.TempDir(), t.TempDir()
 			graphql, record := filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", tc.graphql(graphql))
-			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+tc.git)
 			var reads int
 			visibility, err := New(Options{
 				Clock: clock,
@@ -203,10 +241,10 @@ func TestVisibilityReadsWithoutRESTWhenTheRetryIsStillLimited(t *testing.T) {
 			if want := []time.Duration{time.Minute}; !slices.Equal(clock.waits, want) {
 				t.Errorf("the waits are %v, want %v", clock.waits, want)
 			}
-			if got := len(readCalls(t, graphql)); got != 1 {
+			if got := len(leakguardtest.ReadCalls(t, graphql)); got != 1 {
 				t.Errorf("gh's GraphQL read ran %d times, want once", got)
 			}
-			if got := len(readCalls(t, record)); got != tc.gitRuns {
+			if got := len(leakguardtest.ReadCalls(t, record)); got != tc.gitRuns {
 				t.Errorf("git ran %d times, want %d", got, tc.gitRuns)
 			}
 		})
@@ -249,7 +287,7 @@ func TestVisibilityRefusesRateLimitBeyondTheWaitBound(t *testing.T) {
 			bin, records := t.TempDir(), t.TempDir()
 			graphql, record := filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", graphQLRateLimited(graphql))
-			writeProgram(t, bin, "git", recordsItsCall(record)+cannotConnect)
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+cannotConnect)
 			var reads int
 			_, err := New(Options{
 				Clock: clock,
@@ -271,10 +309,10 @@ func TestVisibilityRefusesRateLimitBeyondTheWaitBound(t *testing.T) {
 			if len(clock.waits) != 0 {
 				t.Errorf("the waits are %v, want none", clock.waits)
 			}
-			if got := len(readCalls(t, graphql)); got != 1 {
+			if got := len(leakguardtest.ReadCalls(t, graphql)); got != 1 {
 				t.Errorf("gh's GraphQL read ran %d times, want once", got)
 			}
-			if got := len(readCalls(t, record)); got != 1 {
+			if got := len(leakguardtest.ReadCalls(t, record)); got != 1 {
 				t.Errorf("git ran %d times, want the one ls-remote", got)
 			}
 		})

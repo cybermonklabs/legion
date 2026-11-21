@@ -656,7 +656,7 @@ It runs a real Oh My Pi that calls a real model, so it needs:
 
 - `bun`
 
-- `mise` (with the pinned OMP build it installs if missing)
+- `mise` (with the pinned OMP build it installs if missing, held to `.omp-pin.sha256` before anything runs it: [`lib/pinned-omp.sh`](#libpinned-ompsh))
 
 - the `secrets` CLI holding `GEMINI_API_KEY_TESTS` (agent tier: no YubiKey touch)
 
@@ -674,6 +674,7 @@ It runs a real Oh My Pi that calls a real model, so it needs:
     The panes run the operator's own Oh My Pi build, not `.omp-pin`:
     the operator's global mise pin for `github:sjawhar/oh-my-pi`, refused unless it carries the refresh-race fix (the build the operator's own sessions already run against that database);
     the plugin installs, the plugin gate's `omp plugin` calls and every pane run that one build, and the run is refused while `LEGION_OMP_PATH` is set, since the daemon would prefer that binary.
+    No digest is recorded for that build, so its install is not checked, and [`lib/pinned-omp.sh`](#libpinned-ompsh) says so on stderr.
     One box-login proof runs at a time on the box, Stage 2 or Stage 3:
     the script takes the lock ([`lib/box-login.sh`](#libbox-loginsh)) first, before it makes its work directory or starts anything.
     Its teardown gives each pane SIGTERM and up to 10 s before any SIGKILL, then removes the profile's `agent.db` link (the link alone) on every exit, so a kept workspace holds no live path to the operator's login.
@@ -702,6 +703,8 @@ What it stands up, all of it the run's own:
   `profile-stays-in-the-run` checks that last.
 
 - **OMP**: `omp_invocation: mise x <pin> -- omp`, the pin read from `.omp-pin` (under `box-login`, the operator's own build that [`lib/install-box-login-route.sh`](#libinstall-box-login-routesh) prints).
+  Before anything runs it, [`lib/pinned-omp.sh`](#libpinned-ompsh) installs it and holds `.omp-pin`'s install to `.omp-pin.sha256`;
+  the operator's `box-login` build has no recorded digest, so its install is not checked.
   At boot the daemon asks `mise where <pin>` for the configured tool's executable, then runs that absolute binary under `mise x <pin>` for every boot probe and pane.
   The script deliberately keeps the ordinary daemon `PATH`, where this devbox has `~/.dotfiles/shims/omp` first, and checks the boot log's resolved binary, the OMP child's `/proc/<pid>/exe`, and every command in the pane's first-child chain.
   That proves the wrapper cannot replace the configured build while mise still supplies the tool's activation.
@@ -828,6 +831,8 @@ The run needs:
     the profile's `agent.db` is a symlink to the operator's, no key file, gateway or `hawk-token` is involved, and nothing reads the credential ([`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)).
     The panes run the operator's own Oh My Pi build (its global mise pin, refused unless it carries the refresh-race fix) in place of `.omp-pin` for the plugin installs and every pane;
     the daemon runs without `LEGION_OMP_PATH` under every route (it would outrank `omp_invocation`), each daemon start must log that build's own `bin/omp` as its resolved binary, and a box-login run with `LEGION_OMP_PATH` set is refused.
+    No digest is recorded for that build, so its install is not checked, and [`lib/pinned-omp.sh`](#libpinned-ompsh) says so on stderr;
+    under `gateway` and `key-file` the helper holds `.omp-pin`'s install to `.omp-pin.sha256` before anything runs it.
     The script takes the one-at-a-time lock ([`lib/box-login.sh`](#libbox-loginsh)) first, before it makes its work or evidence directory or starts anything, and its teardown (the `EXIT` trap and `services-stopped`) gives every pane SIGTERM and up to 10 s before any SIGKILL, after the failure-path production audit, then removes the profile's `agent.db` link before transcripts are kept.
 
 `SMOKE_UPSTREAM_NATS` (required) names the production Envoy NATS the GitHub bridge subscribes on by its fully-qualified name on the operator's tailnet, the `nats://<host>.<tailnet>.ts.net:4222` URL the operator's `envoy.json` names as `envoy.natsUrls` (the hub's host changes when the hub moves), never a bare alias, which only a resolver's search domain completes ([the rig-alias learning](../../docs/solutions/testing/a-rig-container-alias-that-is-momentarily-unheld-resolves-through-the-tailnet-to-production.md));
@@ -3041,7 +3046,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 Task 4b.5's acceptance for `legion controller start`, on tmux.
 The Go daemon runs on a real Postgres with this checkout's two plugins in an isolated OMP profile, against a real Envoy listener and NATS, and the command runs in real tmux panes, as an operator would.
-The pinned Oh My Pi is launched through mise.
+The pinned Oh My Pi is launched through mise, its install held to `.omp-pin.sha256` before anything runs it ([`lib/pinned-omp.sh`](#libpinned-ompsh)).
 The run needs no model route: the controller's one model turn, the start message (LEGION_CONTROLLER_START_MESSAGE) that pi-legion's `/legion-controller-start`, the word the command puts on Oh My Pi's command line, sends once Oh My Pi's startup is over, fails against the profile's default, a static-key provider that listens nowhere, and no check reads its answer.
 The profile names the roles the task agents use and that default, which is all the boot gate's agent-model check resolves.
 Its `config.yml` also shuts Oh My Pi's first-run setup wizard ([`omp_setup_wizard_off`](#libomp-homesh)), which would otherwise hold both controller panes, so `controller-claims-the-role` would time out with the wizard's `Sign in to your providers` step on the screen.
@@ -3325,7 +3330,7 @@ LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> DISPAT
 | `LEGION_E2E_MODEL_GATEWAY_URL` | required under `gateway` | the model gateway's Anthropic endpoint; checked by [`lib/model-gateway-url.sh`](#libmodel-gateway-urlsh) |
 | `LEGION_E2E_ANTHROPIC_KEY_FILE` | required under `key-file` | a 0600 file holding a plaintext Anthropic key, read by the key command on every call; the key command is written under the run's scratch directory, which every exit removes |
 | `DISPATCH_USER_TURNS_ONLY` | unset, every check | `spec-edit`: `session-registers` and the two spec-edit checks alone, then PASS; `spec-edit-card`: `session-registers` and `a-persons-spec-edit-reaches-its-writer` alone, then PASS |
-| `DISPATCH_USER_TURNS_OMP` | the pinned build, `.omp-pin`'s mise tool spec (`github:cybermonklabs/oh-my-pi@<version>`) | another Oh My Pi, as a mise tool spec |
+| `DISPATCH_USER_TURNS_OMP` | the pinned build, `.omp-pin`'s mise tool spec (`github:cybermonklabs/oh-my-pi@<version>`), its install held to `.omp-pin.sha256` ([`lib/pinned-omp.sh`](#libpinned-ompsh)) | another Oh My Pi, as a mise tool spec; no digest is recorded for it, so its install is not checked |
 | `DISPATCH_USER_TURNS_EVIDENCE_DIR` | a fresh `/tmp/legion-e2e-user-turns-evidence.XXXXXXXX` | kept on every outcome and printed at exit: `logs/` (the listener, Dispatch and the SPA build), `checks/` (the page's screenshots, the session's pane at exit, `extension-command-args` and `message-starts.jsonl`) and `session.jsonl`, the session's transcript |
 
 Each check prints `== <name>`, what it observed, and `ok <name>`.
@@ -4903,7 +4908,8 @@ At the pin Oh My Pi acknowledges a prompt at its admission and waits on that rec
 The stand-in answers every recall 503.
 Read by a run made for this proof on 18.16.0-sami.20261105-032528, the pin then, which has no pause after a failed recall: a recall answered 200 is committed to the session and the next prompt starts its turn at once, while one answered 503 commits nothing and the next prompt recalls again, which is what lets a later step hold one again.
 The pinned build pauses automatic recall after a failed one, for `hindsight.recallCooldownMs` (60,000 ms by default, doubled for each further failure in a row up to 30 minutes, and kept in the process's memory: `hindsight/recall-wait.ts` and `hindsight/settings.ts` at the pinned tag), and `0` turns that pause off.
-So the overlay sets it to `0`: each prompt after a 503 recalls again, as on the pin that read was made on.
+So the overlay sets it to `0`: each prompt after a 503 recalls again, as on the pin that read was made on, and `newer-task`'s second held recall is asked.
+Measured on 2026-11-17 with two prompts in one session and the first recall answered 503, on the release `v18.18.6-sami.20261117-013345` the second prompt recalled again with the key at 0 and did not recall at its default, and on 18.16.0 it recalled again with or without the key, which that build ignores.
 No run of this proof has been made on the pinned build.
 
 | step | driven by | read back as |
@@ -5823,6 +5829,34 @@ both runs exit 0 and jj snapshots the rewritten `package.json`.
 Two stage proofs in one checkout, or a stage proof and the skill-scenario rig, can pack at the same time, and the lock takes them in turn;
 the two packages' packs never wait on each other.
 
+## lib/pinned-omp.sh
+
+Installs the Oh My Pi build a mise tool spec names when mise has none, holds the install to the digest the checkout records before anything runs it, and prints the install's `bin/omp`.
+Every devbox proof and operator script that installs Oh My Pi gets it here:
+[`lib/install-plugin-profile.sh`](#libinstall-plugin-profilesh), `stage2-tmux-supervision.sh`, `stage3-devbox-workflow.sh`, `stage3-4b13b-acceptance.sh`, `controller-start-tmux.sh`, `parked-decision-devbox.sh`, `claude-backend-tmux.sh`, `dispatch-user-turns.sh`, the docs site's operator-walkthrough recorder (`docs/site/media/walkthroughs/legion-operator/record-casts.sh`) and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`).
+In CI, `.github/actions/install-omp` makes the same check, and so does the worker image's tools stage.
+
+```sh
+omp=$(bash scripts/e2e/lib/pinned-omp.sh "$root" "$(<"$root/.omp-pin")")
+# → <mise data directory>/installs/github-cybermonklabs-oh-my-pi/<version>/bin/omp
+```
+
+When the pin is the text of `<root>/.omp-pin`, `<root>/.github/scripts/omp-digest.sh` checks the install directory (`mise where <pin>`) against `<root>/.omp-pin.sha256`:
+the bytes of `bin/omp`, and that the directory holds nothing else.
+The pin names a release tag of a fork, and a tag can be moved, so the bytes mise installed are not known to be the ones the pin was tested on until that check passes.
+A refusal fails the helper with `omp-digest.sh`'s own message on stderr, and the caller runs nothing;
+so does a root with no `.omp-pin`, or with no `.omp-pin.sha256` beside it.
+A check that passes prints nothing but the path.
+
+Any other pin is a build an operator names in place of `.omp-pin`:
+`install-plugin-profile.sh`'s `--omp`, the operator's own build under `LEGION_E2E_MODEL_ROUTE=box-login` ([`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)), or `DISPATCH_USER_TURNS_OMP`.
+No digest is recorded for it, so its install is not checked, and one stderr line says so, naming the pin.
+The skill-scenario rig's `SKILL_SCENARIOS_JUDGE_OMP` names a binary rather than a pin, and the rig says the same of it.
+
+The skill-scenario rig passes a label's own checkout as the root, so a label's pin is held to that checkout's digest file;
+it refuses a checkout from before `.omp-pin.sha256`, naming its revision, and one whose `.omp-pin` has moved since the label was built.
+`stage3-4b13b-acceptance.sh` passes `ACCEPT_ROOT` to its own copy of the helper, and an `ACCEPT_ROOT` from before `.omp-pin.sha256` fails the run.
+
 ## lib/install-plugin-profile.sh
 
 Installs one of this checkout's two plugins, `@sjawhar/pi-envoy` or `@sjawhar/pi-legion`, into a named OMP profile, packed the way the release packs it, so a stage proof runs the branch-built plugins and the user's own profiles are never touched.
@@ -5866,6 +5900,7 @@ Each item below names a flag, then what it means.
   optional: the Oh My Pi build steps 2 and 3 run (`github:cybermonklabs/oh-my-pi@<version>`), `.omp-pin`'s by default.
   Stage 2 and Stage 3 pass the build their daemon and panes run, so no other build opens the profile;
   under `LEGION_E2E_MODEL_ROUTE=box-login` that profile's `agent.db` is the operator's login database ([`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)).
+  A build other than `.omp-pin`'s has no recorded digest, so its install is not checked, and [`lib/pinned-omp.sh`](#libpinned-ompsh) says so on stderr.
   Refused when empty.
 
 The first four flags are required; each refusal names its flag and exits 2.
@@ -5885,6 +5920,7 @@ Then:
 Steps 2 and 3 run the Oh My Pi `--omp` names, else the one the daemon pins (`.omp-pin`), under `HOME=<home>`, from `<dir>`, as the daemon runs it:
 the build's own `bin/omp` by its absolute path (`mise where <pin>`) under `mise x <pin> --`, never an `omp` looked up on the caller's `PATH`.
 An operator's wrapper there (the devbox's `~/.dotfiles/shims/omp`) reads its own files from `HOME`, which is the run's, and its own setup could rewrite the profile, whose `agent.db` is the operator's login database under the box-login route.
+[`lib/pinned-omp.sh`](#libpinned-ompsh) installs that build and names its `bin/omp`, having held `.omp-pin`'s install to `.omp-pin.sha256` first, so an install it refuses stops the script before step 2.
 
 Each step cites its source by what it runs, never by line number: the lines move with every edit above them.
 

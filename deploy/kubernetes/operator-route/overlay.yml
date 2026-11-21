@@ -32,23 +32,26 @@ disabledProviders:
   - llama.cpp
   - lm-studio
   - openai
-# claude-opus-5-5 and claude-sonnet-5-5 are in enabledModels and both models files, and no role runs
-# on them yet: they are served on Anthropic's own API and through a LiteLLM gateway keyed to it,
-# and not yet shown on the ServiceAccount-token gateway models.yml routes through, which answers an
-# id it does not serve with 404. Move a role once that gateway serves its model (README.md beside
-# this file, "Changing a role's model").
+# The roles run the newest model of their family that the pinned Oh My Pi catalogues and the
+# ServiceAccount-token gateway models.yml routes through serves (README.md beside this file,
+# "Changing a role's model"). On 2026-11-15 that gateway answered claude-opus-5-5 and
+# claude-sonnet-5-5, so the opus and sonnet roles moved to them, and answered claude-fable-5-2,
+# which the pinned build catalogues, with 404, so the fable roles stay on claude-fable-5-1 until it
+# serves it. The older models stay in enabledModels and both models files, for a session resumed
+# without --model, which restores the model its file records; a Legion launch names
+# --model @default and restores none.
 modelRoles:
   default: anthropic/claude-fable-5-1:xhigh
   plan: anthropic/claude-fable-5-1:max
-  slow: anthropic/claude-opus-5:xhigh
-  smol: anthropic/claude-sonnet-5
-  task: anthropic/claude-sonnet-5
-  vision: anthropic/claude-sonnet-5
-  commit: anthropic/claude-sonnet-5
-  tiny: anthropic/claude-sonnet-5
-  advisor: anthropic/claude-sonnet-5:medium
-  review: anthropic/claude-opus-5:high
-  oracle: anthropic/claude-opus-5:high
+  slow: anthropic/claude-opus-5-5:xhigh
+  smol: anthropic/claude-sonnet-5-5
+  task: anthropic/claude-sonnet-5-5
+  vision: anthropic/claude-sonnet-5-5
+  commit: anthropic/claude-sonnet-5-5
+  tiny: anthropic/claude-sonnet-5-5
+  advisor: anthropic/claude-sonnet-5-5:medium
+  review: anthropic/claude-opus-5-5:high
+  oracle: anthropic/claude-opus-5-5:high
   deep: anthropic/claude-fable-5-1:xhigh
 retry:
   # A failed model call is retried on another model (Sami's decision of 2026-10-08 on

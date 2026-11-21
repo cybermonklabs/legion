@@ -378,7 +378,13 @@ RUN set -eu; \
     install -m 0755 "$t/mise/bin/mise" /usr/local/bin/mise; \
     mise --version; \
     rm -rf "$t"
+# The pinned Oh My Pi is installed, then .github/scripts/omp-digest.sh holds its bin/omp to the
+# digest .omp-pin.sha256 records and refuses an install directory that holds anything else, before
+# anything runs it: the pin names a fork's release tag, which can be moved, and the copy below puts
+# the whole directory on every role's PATH. The copy and the --version run follow the check.
 COPY .omp-pin /omp-pin
+COPY .omp-pin.sha256 /omp-pin.sha256
+COPY .github/scripts/omp-digest.sh /usr/local/bin/
 # github_token (optional BuildKit secret): mise's github backend reads MISE_GITHUB_TOKEN; a shared
 # builder IP without it can hit GitHub's unauthenticated API limit (403). CI passes secrets.GITHUB_TOKEN;
 # a build without the secret still runs, unauthenticated.
@@ -388,7 +394,8 @@ RUN --mount=type=secret,id=github_token \
       MISE_GITHUB_TOKEN="$(cat /run/secrets/github_token)"; export MISE_GITHUB_TOKEN; \
     fi; \
     pin="$(cat /omp-pin)"; \
-    mise x "$pin" -- omp --version; \
+    mise install "$pin"; \
+    omp-digest.sh "$(mise where "$pin")" /omp-pin.sha256; \
     cp -r "$(mise where "$pin")" /opt/omp; \
     mkdir -p /opt/tools; \
     install -m 0755 "$(mise x "$JJ_TOOL" -- sh -c 'command -v jj')" /opt/tools/jj; \

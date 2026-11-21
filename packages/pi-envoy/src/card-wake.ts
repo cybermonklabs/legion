@@ -122,21 +122,21 @@ import type {
  * So with mode "rpc", or in any mode while the start-turn mark holds, a card that finds the host
  * idle while the phase holds goes as a `followUp` with no `triggerTurn`: on an idle host that
  * appends it to the context, persists it and emits its `message_end`, starting no turn and
- * awaiting nothing longer than its pictures (`agent-session.ts` `sendCustomMessage`'s idle
- * append, 11939-11964 at the pinned tag). The card is its own witness that startup is over: the
- * host starts a held send only once the hold settles (`send-queue.ts` `dispatch`, 54-57, on the
- * hold `withHeld` settles in its `finally`, 40-50, at the pinned tag), so its `message_end` comes
- * after the hold, and the check
- * that `message_end` arms runs on the host's timer, a macrotask, while everything from the drain
- * to `initializeExtensions` returning runs in microtasks and a send that starts a turn marks the
- * host busy before it awaits anything. A host idle at that check has no tracked send pending: the
- * drain has returned, and the wake the check sends starts its turn outside it. The one exception
- * is another extension's startup send still loading its pictures on an idle host. The first check
- * that finds the host idle, the start-turn mark not holding, ends the phase.
+ * awaiting nothing longer than its pictures and, in a terminal, the extensions it binds after
+ * startup (`agent-session.ts` `#admitSubmission`, 4310; `sendCustomMessage`'s idle append,
+ * 11939-11964, at the pinned tag). The card is its own witness that startup is over: the host
+ * starts a held send only once the hold settles (`send-queue.ts` `dispatch`, 54-57, on the hold
+ * `withHeld` settles in its `finally`, 40-50, at the pinned tag), so its `message_end` comes
+ * after the hold, and the check that `message_end` arms runs on the host's timer, a macrotask,
+ * while every held send starts in the microtasks that follow the hold, and a send that starts a
+ * turn marks the host busy before it awaits anything. A host idle at that check has no held send
+ * still to start, and the wake the check sends starts its turn after every turn startup started.
+ * The one exception is another extension's startup send still loading its pictures on an idle
+ * host. The first check that finds the host idle, the start-turn mark not holding, ends the phase.
  *
  * A startup card is unseen from its send to its `message_end`. While one is younger than
- * `STARTUP_CARD_CAP_MS` the check waits for it, since it may still be inside the host's send and
- * so still hold the drain; one older than that is a send the host failed (a discarded hold rejects
+ * `STARTUP_CARD_CAP_MS` the check waits for it, since it may still be inside the host's send;
+ * one older than that is a send the host failed (a discarded hold rejects
  * it, and so does a send that throws) and waits the check no longer. A seen startup card is in the
  * context: a running turn reads it, so a busy check keeps it and the run's `agent_end` checks
  * again, and an idle check wakes for it whatever the run. It also wakes for one whatever the
@@ -150,10 +150,10 @@ import type {
  * controller is marked unsent at its `session_start`, and `/legion-controller-start`, which Oh My
  * Pi runs after its startup, sends the start and marks it sent; the daemon's controller in RPC
  * mode is marked sent right before it reports ready, which is when the daemon writes the start
- * prompt, read only once the drain has returned. That start must be the session's first turn,
+ * prompt, run only once startup has ended. That start must be the session's first turn,
  * and every startup card still gets a turn after it. Without the mark, a terminal's idle card
  * starts a turn that runs ahead of the start command, and an RPC card's wake fires once the host is
- * idle after the drain, which can be before the daemon's prompt arrives. So while the mark holds —
+ * idle after startup, which can be before the daemon's prompt arrives. So while the mark holds —
  * it names this session (the instance's own and the host's live one), and its start is unsent
  * and this module first read that unsent mark less than `STARTUP_TURN_CAP_MS` ago, or was sent
  * less than `STARTUP_TURN_CAP_MS` ago — the phase holds whatever `ctx.mode` is: an idle card in

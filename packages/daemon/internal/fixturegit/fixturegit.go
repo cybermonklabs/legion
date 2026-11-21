@@ -6,9 +6,10 @@
 // fixtureenv.Isolated's wherever the fixture has no reason for another, so no command reads the
 // repository, configuration or credential of whoever runs the tests; and a failure that names what
 // was run, where, and everything it printed. Runner holds the test and that environment, and its
-// four ways of running one command are the four a fixture has: Run for the usual one, Raw where
-// the output's own whitespace is part of what is read, Out where what is read must hold no stderr,
-// and Try where the caller keeps the failure for itself.
+// five ways of running one command are the five a fixture has: Run for the usual one, Fed where
+// the command reads its standard input, Raw where the output's own whitespace is part of what is
+// read, Out where what is read must hold no stderr, and Try where the caller keeps the failure for
+// itself.
 //
 // The repositories those fixtures are built out of have one argv apiece, which InitBare,
 // InitWorkTree and JJInit return whole, command name and all, so no fixture spells the flags of an
@@ -74,6 +75,19 @@ func (r Runner) With(extra ...string) Runner {
 func (r Runner) Run(dir string, argv ...string) string {
 	r.TB.Helper()
 	return strings.TrimSpace(r.Raw(dir, argv...))
+}
+
+// Fed is Run with input on the command's standard input, for a command that reads what it does
+// from there, such as `git update-index --index-info`; every other way hands a command none.
+func (r Runner) Fed(dir, input string, argv ...string) string {
+	r.TB.Helper()
+	command := r.command(dir, argv)
+	command.Stdin = strings.NewReader(input)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		r.TB.Fatalf("%s in %s: %v\n%s", strings.Join(argv, " "), dir, err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 // Raw is Run without the trim, for a caller that reads the output's own whitespace: an empty value

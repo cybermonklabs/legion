@@ -754,11 +754,11 @@ the plugin stage builds into the image's dist/ and legion/ with the .bun-version
 build is pinned to, the skills and the prepack that stages them); the Go workspace; packages/envoy, copied whole for its agent-secrets
 binary but for packages/envoy/infra, which the .dockerignore drops, so each of its
 top-level directories but infra is named; the scripts that write the image's
-third-party notices; the Oh My Pi pin; and the context's .dockerignore. Then a `!`
-pattern for each .dockerignore line that drops part of those packages, of
-packages/envoy or of skills/, which the step's some-with-excludes reads as an
-exclusion, so a pull request touching only files the build does not read builds no
-image.
+third-party notices; the Oh My Pi pin, its digest and the script that checks it; and
+the context's .dockerignore. Then a `!` pattern for each .dockerignore line that drops
+part of those packages, of packages/envoy or of skills/, which the step's
+some-with-excludes reads as an exclusion, so a pull request touching only files the
+build does not read builds no image.
 .github/scripts/check-image-trigger-paths.sh fails the build when this list misses a
 file the image build reads, including a new top-level directory of packages/envoy, or
 matches a file it does not read other than the two workflow files; it reads this

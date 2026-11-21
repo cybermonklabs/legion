@@ -92,6 +92,10 @@ on:
           check-gitleaks-version.test.sh and what it tests.
         type: string
         required: true
+      omp_digest_test:
+        description: "ci.yaml's needs.changes.outputs.omp_digest_test: omp-digest.test.sh and what it tests."
+        type: string
+        required: true
       workflow_paths_test:
         description: "ci.yaml's needs.changes.outputs.workflow_paths_test: workflow_paths.test.sh and what it tests."
         type: string
@@ -369,6 +373,10 @@ jobs:
       - name: Test the gitleaks version check
         if: inputs.changes-result != 'success' || inputs.check_gitleaks_version_test == 'true'
         run: .github/scripts/check-gitleaks-version.test.sh
+
+      - name: Test the Oh My Pi digest check
+        if: inputs.changes-result != 'success' || inputs.omp_digest_test == 'true'
+        run: .github/scripts/omp-digest.test.sh
 
       - name: Test the workflow path model the path checks import
         if: inputs.changes-result != 'success' || inputs.workflow_paths_test == 'true'

@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `legion gh` now runs a read of one public repository of an owner the role's gh bundle holds no
+  directory for in the two cases where its rule for such reads, which runs them with the token of
+  `GH_CONFIG_DIR`, still refuses one: a read of the repository a remote of the working directory
+  names, such as `gh pr list` in a clone of it, and one of knives' audit GraphQL reads typed with
+  its fields joined to their option (`--raw-field=owner=…`). Such a read runs with that token only
+  after an anonymous `git ls-remote` of the repository's https URL, made with no credential at
+  all, lists a ref of it, so for a public repository it is no longer refused as before. A
+  repository GitHub does not serve to everyone lists none, so its read stays refused after that
+  one request, and a write naming such an owner stays refused with nothing sent to GitHub.
