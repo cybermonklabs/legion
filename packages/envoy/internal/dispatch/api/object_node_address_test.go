@@ -418,7 +418,7 @@ func clearAndDeleteArtifact(t *testing.T, ctx context.Context, tx pgx.Tx, artifa
 // document's rows away: its clears, its reference rows and the artifact row.
 func deleteArtifactRows(ctx context.Context, tx pgx.Tx, artifact model.Artifact) error {
 	for _, clear := range artifactRemovalClears(artifact) {
-		if _, err := tx.Exec(ctx, clear.statement, clear.args...); err != nil {
+		if err := clear.run(ctx, tx); err != nil {
 			return fmt.Errorf("clear the %s of document %s: %w", clear.what, artifact.ID, err)
 		}
 	}

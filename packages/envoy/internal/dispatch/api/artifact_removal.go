@@ -153,7 +153,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, clear := range artifactRemovalClears(artifact) {
-		if _, err := tx.Exec(r.Context(), clear.statement, clear.args...); err != nil {
+		if err := clear.run(r.Context(), tx); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("clear the %s of the removed document: %w", clear.what, err))
 			return
 		}
@@ -498,6 +498,27 @@ type artifactClear struct {
 	what      string
 	statement string
 	args      []any
+	// table, where set, is the table the statement clears, which the boot step that retires it
+	// may have dropped (startup.SearchIndexRetirement): the clear runs only while it stands.
+	table string
+}
+
+// run runs the clear in tx, and does nothing where its table no longer stands. The removal reads
+// that after it has deleted the document's versions (artifactRemovalClears' order), which is the
+// hold the retiring step's first drop waits out, so a table it reads standing stands until the
+// removal ends.
+func (c artifactClear) run(ctx context.Context, tx pgx.Tx) error {
+	if c.table != "" {
+		var stands bool
+		if err := tx.QueryRow(ctx, `select to_regclass($1::text) is not null`, c.table).Scan(&stands); err != nil {
+			return fmt.Errorf("read whether %s stands: %w", c.table, err)
+		}
+		if !stands {
+			return nil
+		}
+	}
+	_, err := tx.Exec(ctx, c.statement, c.args...)
+	return err
 }
 
 // artifactRemovalClears is every row the artifact's own delete leaves behind that this route can
@@ -516,6 +537,11 @@ type artifactClear struct {
 // artifact_id: that id is the search fill's keyset cursor, a position in the fill and not a row of
 // the document, and the boot's fill reads that row every time, so deleting it when the cursor
 // named the removed document left no Dispatch process able to start (dispatch://INFRA-4018).
+//
+// document_search's rows are cleared only while that table stands (artifactClear.table): the boot
+// step that retires document search drops it, and a removal that named it once it was gone would
+// fail. While it stands, a build that still reads it, a rollback's among them, would go on finding
+// the removed document's text there.
 //
 // Five more keys to artifacts(id) carry no cascade - asks.artifact_id, asks.block_artifact_id,
 // comments.artifact_id, events.artifact_id and artifact_reviews.artifact_id - and no statement
@@ -539,7 +565,7 @@ func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 		{what: "stored updates", statement: `delete from doc_updates where artifact_id = $1`, args: id},
 		{what: "snapshots", statement: `delete from doc_snapshots where artifact_id = $1`, args: id},
 		{what: "checkpoints", statement: `delete from doc_checkpoints where artifact_id = $1`, args: id},
-		{what: "search rows", statement: `delete from document_search where artifact_id = $1`, args: id},
+		{what: "search rows", statement: `delete from document_search where artifact_id = $1`, args: id, table: "document_search"},
 		{what: "compaction owed", statement: `delete from doc_compaction_owed where artifact_id = $1`, args: id},
 		{what: "search terms owed", statement: `delete from search_term_queue where artifact_id = $1`, args: id},
 		{what: "inbox threads", statement: `delete from user_threads where artifact_id = $1`, args: id},

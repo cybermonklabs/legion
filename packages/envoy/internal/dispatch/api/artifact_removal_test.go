@@ -1012,3 +1012,73 @@ func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *
 		})
 	}
 }
+
+// A removal clears the removed document's row of document_search while that table stands, so a
+// build that still searches through it, a rollback's among them, finds the removed text no more;
+// and it leaves document_search_backfill's one row as it was, since that row is the boot fill's
+// cursor and no row of the document's (TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow).
+// Over a database where the boot step that retires document search (startup.SearchIndexRetirement)
+// has dropped both tables, the removal names neither and succeeds.
+func TestARemovalClearsTheOldSearchIndexWhileItStandsAndSucceedsOnceItIsGone(t *testing.T) {
+	ctx := context.Background()
+	t.Run("both tables stand", func(t *testing.T) {
+		handler, database := newTestHandlerWithStore(t)
+		issue := createInteractionIssue(t, handler, "TEST", "A document search holds", "# Spec\n\nA passage.\n")
+		document := emptyDocument(t, handler, issue.Key, "Searched notes")
+		searchRows := func() int {
+			t.Helper()
+			var rows int
+			if err := database.Pool.QueryRow(ctx, `select count(*) from document_search where artifact_id = $1::uuid`, document.ID).Scan(&rows); err != nil {
+				t.Fatalf("read the search rows of %s: %v", document.ID, err)
+			}
+			return rows
+		}
+		progress := func() string {
+			t.Helper()
+			var row string
+			if err := database.Pool.QueryRow(ctx,
+				`select count(*) over () || ' ' || artifact_id::text || ' ' || done::text from document_search_backfill`).Scan(&row); err != nil {
+				t.Fatalf("read the fill's progress row: %v", err)
+			}
+			return row
+		}
+		if rows := searchRows(); rows != 1 {
+			t.Fatalf("document_search holds %d rows of %s before the removal, want the one its version wrote", rows, document.ID)
+		}
+		before := progress()
+
+		removedDocument(t, handler, document.ID)
+
+		if rows := searchRows(); rows != 0 {
+			t.Errorf("document_search holds %d rows of the removed document %s, want none", rows, document.ID)
+		}
+		if after := progress(); after != before {
+			t.Errorf("the fill's progress row reads %q after the removal, want it as it was: %q", after, before)
+		}
+		assertNoRowNamesTheDocument(t, database, document.ID)
+	})
+	t.Run("the boot step dropped them", func(t *testing.T) {
+		handler, database := newTestHandlerWithStore(t)
+		issue := createInteractionIssue(t, handler, "TEST", "A document search no longer holds", "# Spec\n\nA passage.\n")
+		document := emptyDocument(t, handler, issue.Key, "Unsearched notes")
+		retireOldSearchIndex(t, database.Pool, true)
+		var standing bool
+		if err := database.Pool.QueryRow(ctx, `
+			select to_regclass('document_search') is not null or to_regclass('document_search_backfill') is not null`).Scan(&standing); err != nil {
+			t.Fatal(err)
+		}
+		if standing {
+			t.Fatal("the boot step left document_search or document_search_backfill standing")
+		}
+
+		removedDocument(t, handler, document.ID)
+
+		var held bool
+		if err := database.Pool.QueryRow(ctx, `select exists (select 1 from artifacts where id = $1::uuid)`, document.ID).Scan(&held); err != nil {
+			t.Fatal(err)
+		}
+		if held {
+			t.Errorf("the artifacts row of %s stands after its removal answered 204", document.ID)
+		}
+	})
+}

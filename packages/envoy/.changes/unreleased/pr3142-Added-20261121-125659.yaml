@@ -1,0 +1,5 @@
+kind: Added
+body: A retirement of the old search index and the old owner's embedding windows, held out of the boot until search moves off document_search; an artifact's removal and the erase now clear document_search only while it stands.
+time: 2026-11-21T12:56:59.496336369Z
+custom:
+    Issue: pr3142
