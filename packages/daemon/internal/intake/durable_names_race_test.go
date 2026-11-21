@@ -28,13 +28,16 @@ func openIntake(t *testing.T, js jetstream.JetStream, pool *pgxpool.Pool, spec C
 	return consumers
 }
 
-// Family 2, a native first create interrupted: the first boot of a project reserved its wake
-// consumer's create at the stream's end and was killed before the create reached the server. A
-// message published after that reservation is delivered by the consumer the next boot creates:
-// Step 0 retires the candidate and creates a fresh one by start sequence at the saved boundary,
-// never at the next message again. On main the next boot creates at the next message, and the
-// message is never delivered.
-func TestAFirstCreateLostBeforeItsPublishIsCreatedAgainAtItsBoundary(t *testing.T) {
+// Family 2, a native first create interrupted, a compatibility row: the first boot of a project
+// reserved its wake consumer's create and was killed before the create reached the server. The
+// next boot retires the candidate and creates the durable natively again, DeliverNew, at its own
+// moment: the messages published between the lost reservation and that create are not delivered,
+// which is what today's daemon does when it is killed before its first create and creates a moment
+// later. A first create keeps today's native policy because the daemon reads no stream and a
+// durable whose name never existed must not be handed the events since the cutover; a candidate
+// that landed before the kill is recovered from its own delivered sequence instead
+// (TestABootSettlesTheCreateAnotherDaemonLeftOpen).
+func TestAFirstCreateLostBeforeItReachesTheServerIsCreatedNativelyAgain(t *testing.T) {
 	pool := migratedPool(t)
 	cutover(t, pool, consumernames.CutoverDone)
 	js, stream, _ := freshJetStream(t)
@@ -42,13 +45,18 @@ func TestAFirstCreateLostBeforeItsPublishIsCreatedAgainAtItsBoundary(t *testing.
 	spec := freshSpec(t, logs, js)
 	wake := wakeConsumerName(spec.Project)
 
-	before := publishWakes(t, js, 2)
-	interruptedFirstCreate(t, pool, wake, before[len(before)-1]+1)
-	after := publishWakes(t, js, 2)
+	publishWakes(t, js, 2)
+	interruptedFirstCreate(t, pool, wake)
+	publishWakes(t, js, 2)
 
 	openIntake(t, js, pool, spec)
-	if got := fetchSeqs(t, stream, currentName(t, pool, wake)); !slices.Equal(got, after) {
-		t.Fatalf("the wake consumer delivered %v, want %v: the messages published after the interrupted reservation", got, after)
+	current := currentName(t, pool, wake)
+	if info := heldInfo(t, stream, current); info == nil || info.Config.DeliverPolicy != jetstream.DeliverNewPolicy {
+		t.Fatalf("the wake consumer made again is %+v, want a native DeliverNew create", info)
+	}
+	after := publishWakes(t, js, 1)
+	if got := fetchSeqs(t, stream, current); !slices.Equal(got, after) {
+		t.Fatalf("the wake consumer delivered %v, want only %v, published after its own create", got, after)
 	}
 }
 

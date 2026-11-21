@@ -40,13 +40,19 @@ func freshSpec(t testing.TB, logs *lockedBuffer, js jetstream.JetStream) Consume
 }
 
 // cutover writes the daemon database's sentinel with marker, as the operator's convert writes
-// "done" and its restore "rolled_back".
+// "done" and its restore "rolled_back": with the stream identity the operator recorded
+// (sentinelStreamID), which the daemon tags each last floor with, and a boundary, which the
+// daemon's native first creates must not take.
 func cutover(t testing.TB, pool *pgxpool.Pool, marker string) {
 	t.Helper()
-	if _, err := consumernames.NewPGStore(pool).WriteSentinel(context.Background(), consumernames.StoreState{Cutover: marker}, 0); err != nil {
+	state := consumernames.StoreState{Cutover: marker, StreamID: sentinelStreamID, Boundary: 1}
+	if _, err := consumernames.NewPGStore(pool).WriteSentinel(context.Background(), state, 0); err != nil {
 		t.Fatalf("write the sentinel %q: %v", marker, err)
 	}
 }
+
+// sentinelStreamID is the stream identity the operator's convert records in the rig's sentinel.
+const sentinelStreamID = "notifications-as-the-operator-recorded-it"
 
 // currentName is the physical name logical's record selects.
 func currentName(t testing.TB, pool *pgxpool.Pool, logical string) string {
@@ -59,11 +65,11 @@ func currentName(t testing.TB, pool *pgxpool.Pool, logical string) string {
 }
 
 // interruptedFirstCreate leaves logical as a daemon killed in its first create leaves it: the
-// create of a candidate reserved a minute ago at the stream's end, boundary, whose create never
-// reached the server.
-func interruptedFirstCreate(t testing.TB, pool *pgxpool.Pool, logical string, boundary uint64) {
+// native create of a candidate reserved a minute ago with no saved start (the daemon reads no
+// stream), whose create never reached the server.
+func interruptedFirstCreate(t testing.TB, pool *pgxpool.Pool, logical string) {
 	t.Helper()
-	putRecord(t, pool, logical, consumernames.Record{Start: boundary, Op: &consumernames.Op{
+	putRecord(t, pool, logical, consumernames.Record{Op: &consumernames.Op{
 		Kind: consumernames.OpCreate, Owner: "a daemon killed in its first create", Candidate: consumernames.FreshName(logical),
 		Native: consumernames.NativeNew, ReservedAt: time.Now().Add(-time.Minute),
 	}})

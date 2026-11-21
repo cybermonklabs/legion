@@ -104,11 +104,14 @@ func readRefused(err error) bool {
 // connection once the protocol has reserved it (consumernames.Config.Reserved), before the create
 // is sent; an info of a name opens that name's; and the consumer each durable delivers from is
 // bound on its current's connection, which Run consumes on. The connection of a name the record no
-// longer selects is closed once the open that settled the record ends. The daemon's own connection,
-// js, reads the stream's info alone, through a handle of its own each time (streamInfo).
+// longer selects is closed once the open that settled the record ends. Nothing here reads the
+// stream: a grant held to the daemon's projects holds no stream info, so a first create keeps its
+// native policy and saves the created consumer's own position (consumernames'
+// NativeFirstCreate), and a last floor is tagged with the stream identity the operator recorded
+// in the sentinel (streamID).
 type durableNames struct {
 	names   *consumernames.Names
-	js      jetstream.JetStream
+	store   *consumernames.PGStore
 	pool    Pool
 	logger  *slog.Logger
 	connect func(ctx context.Context, name string) (*nats.Conn, error)
@@ -127,17 +130,19 @@ func GenerationConnection(physical string) string {
 	return logical + "/" + strings.TrimPrefix(physical, logical+"~")
 }
 
-func newDurableNames(js jetstream.JetStream, pool Pool, spec ConsumerSpec) *durableNames {
-	d := &durableNames{js: js, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
+func newDurableNames(pool Pool, spec ConsumerSpec) *durableNames {
+	store := consumernames.NewPGStore(pool)
+	d := &durableNames{store: store, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
 	d.names = consumernames.New(consumernames.Config{
-		Store:         consumernames.NewPGStore(pool),
-		Server:        durableServer{d},
-		Prefix:        func(logical string) string { return logical },
-		Floor:         func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
-		StreamID:      d.streamID,
-		MissingRecord: d.missingRecord,
-		Owner:         fmt.Sprintf("legion daemon %s, pid %d", spec.Project, os.Getpid()),
-		Now:           spec.Now,
+		Store:             store,
+		Server:            durableServer{d},
+		Prefix:            func(logical string) string { return logical },
+		Floor:             func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
+		StreamID:          d.streamID,
+		MissingRecord:     d.missingRecord,
+		NativeFirstCreate: true,
+		Owner:             fmt.Sprintf("legion daemon %s, pid %d", spec.Project, os.Getpid()),
+		Now:               spec.Now,
 		Reserved: func(ctx context.Context, _ string, op consumernames.Op) error {
 			_, err := d.on(ctx, op.Candidate)
 			return err
@@ -291,27 +296,30 @@ func (d *durableNames) failed(logical string, sel consumernames.Selection, call 
 	return err
 }
 
-// first is the daemon's first-create rule: a new project's durable starts at the next message,
-// DeliverNew, as it always has, and the record saves the stream's end at the reservation as the
-// start a recovery creates at by start sequence, so a message published between the reservation
-// and the create is never skipped by a consumer created again in its place.
-func (d *durableNames) first(ctx context.Context) (consumernames.Start, error) {
-	info, err := d.streamInfo(ctx)
-	if err != nil {
-		return consumernames.Start{}, err
-	}
-	return consumernames.Start{Seq: info.State.LastSeq + 1, Native: consumernames.NativeNew}, nil
+// first is the daemon's first-create rule: a durable whose logical name never existed starts at
+// the next message, DeliverNew, as it always has, whatever boundary the sentinel holds, so a new
+// kind of durable is never handed the events since the cutover. It reads nothing:
+// NativeFirstCreate saves the created consumer's own delivered sequence + 1 as the record's start
+// for a recovery, and a create that never reached the server is made natively again, as today's
+// daemon makes it a moment later.
+func (d *durableNames) first(context.Context) (consumernames.Start, error) {
+	return consumernames.Start{Native: consumernames.NativeNew}, nil
 }
 
-// streamInfo is the notification stream's info, read through a handle of its own on js (one
-// STREAM.INFO request), never through the stream handle the consumers share, as DispatchTarget and
-// createConsumer read it: nats.go's Info writes a handle's cached info under no lock.
-func (d *durableNames) streamInfo(ctx context.Context) (*jetstream.StreamInfo, error) {
-	stream, err := d.js.Stream(ctx, notificationStream)
-	if err != nil {
-		return nil, fmt.Errorf("read %s info: %w", notificationStream, err)
+// errNoStreamID is a sentinel that records no stream identity: a store the operator's convert or
+// enroll did not write, on which a last floor could not be tagged (streamID).
+var errNoStreamID = errors.New("intake_consumers' sentinel records no stream identity (stream_id): the operator's convert or enroll writes it, with the identity of ENVOY_NOTIFICATIONS")
+
+// requireStreamID refuses a boot on fresh names whose sentinel says the cutover is done and records
+// no stream identity (errNoStreamID), with the ERROR line, before any consumer call. A sentinel the
+// protocol itself refuses (no store, no sentinel, no cutover) is left to its admission, which names
+// its own reason.
+func (d *durableNames) requireStreamID(ctx context.Context, logical string) error {
+	state, err := d.store.State(ctx)
+	if err != nil || state.Cutover != consumernames.CutoverDone || state.StreamID != "" {
+		return nil
 	}
-	return stream.CachedInfo(), nil
+	return d.failed(logical, consumernames.Selection{Logical: logical}, consumernames.OperationSelect, errNoStreamID)
 }
 
 // missingRecord refuses logical when the daemon keeps a checkpoint for it (consumer_positions,
@@ -331,14 +339,19 @@ func (d *durableNames) missingRecord(ctx context.Context, logical string) error 
 		errCheckpointWithoutRecord, logical, seq)
 }
 
-// streamID is the notification stream's identity, which a last floor carries and must match to
-// count (consumernames.StreamIdentity): the listener writes it when it creates the stream.
+// streamID is the identity of ENVOY_NOTIFICATIONS as the operator recorded it in the sentinel
+// (convert, enroll, and every operator command that makes the stream again), which each last floor
+// carries and must match to count: a held daemon may not read the stream's own. A sentinel that
+// records none refuses (errNoStreamID).
 func (d *durableNames) streamID(ctx context.Context) (string, error) {
-	info, err := d.streamInfo(ctx)
+	state, err := d.store.State(ctx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read the stream identity intake_consumers' sentinel records: %w", err)
 	}
-	return consumernames.StreamIdentity(info), nil
+	if state.StreamID == "" {
+		return "", errNoStreamID
+	}
+	return state.StreamID, nil
 }
 
 // create is the consumernames.CreateFunc of config's durable: a create of the physical name, on

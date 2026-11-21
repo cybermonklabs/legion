@@ -319,7 +319,10 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, repos: slices.Clone(spec.Repositories)}
 	consumers.marker.reconnects = js.Conn().Stats().Reconnects
 	if spec.Names == consumernames.ModeFresh {
-		consumers.names = newDurableNames(js, pool, spec)
+		consumers.names = newDurableNames(pool, spec)
+		if err := consumers.names.requireStreamID(ctx, dispatchConsumerName(spec.Project)); err != nil {
+			return nil, err
+		}
 	}
 	opened := false
 	defer func() {

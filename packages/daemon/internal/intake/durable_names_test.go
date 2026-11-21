@@ -294,16 +294,48 @@ func TestFreshNamesRefuseUntilTheCutoverIsDone(t *testing.T) {
 	}
 }
 
+// On fresh names the daemon tags each last floor with the stream identity the operator recorded
+// in the sentinel (convert and enroll write it), since a held daemon may not read the stream's info.
+// A sentinel that records none is a store neither wrote: the boot refuses it with the ERROR line,
+// naming stream_id, before any consumer call. The control is the rig's sentinel, which records
+// one, and opens.
+func TestFreshNamesRefuseASentinelWithNoStreamIdentity(t *testing.T) {
+	pool := migratedPool(t)
+	if _, err := consumernames.NewPGStore(pool).WriteSentinel(context.Background(), consumernames.StoreState{Cutover: consumernames.CutoverDone}, 0); err != nil {
+		t.Fatalf("write a sentinel with no stream identity: %v", err)
+	}
+	js, stream, _ := freshJetStream(t)
+	calls := watchConsumerCalls(t, js.Conn())
+	logs := &lockedBuffer{}
+	spec := freshSpec(t, logs, js)
+	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	if err == nil || !strings.Contains(err.Error(), "stream_id") {
+		t.Fatalf("OpenConsumers on a sentinel with no stream identity = %v, %v; want a refusal naming stream_id", consumers, err)
+	}
+	if touched := calls.touched(t); len(touched) != 0 {
+		t.Fatalf("the refused boot sent the server %v, want no consumer call", touched)
+	}
+	if names := consumerNames(t, stream); len(names) != 0 {
+		t.Fatalf("the stream holds %v after the refused boot, want no consumer", names)
+	}
+	oneErrorLine(t, logs, dispatchConsumerName(spec.Project), consumernames.OperationSelect)
+
+	control := migratedPool(t)
+	cutover(t, control, consumernames.CutoverDone)
+	openIntake(t, js, control, freshSpec(t, &lockedBuffer{}, js))
+}
+
 // A fresh daemon creates each durable under a fresh name of its logical one, carrying the logical
-// name in its metadata, at the native policy a new project has today (DeliverNew), with the record's
-// start the stream's end at the reservation and its last floor written; no fixed name is made.
+// name in its metadata, at the native policy a new project has today (DeliverNew) even under the
+// sentinel's boundary, with the record's start the created consumer's own delivered sequence + 1
+// and its last floor written, tagged with the sentinel's stream identity; no fixed name is made.
 // The next boot keeps each consumer and writes its floor again. The daemon's checkpoint stays keyed
 // by the logical name across the two boots, so a fact applied once is applied once (family 8).
 func TestAFreshDaemonCreatesEachDurableAtAFreshNameAndKeepsItAcrossBoots(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	cutover(t, pool, consumernames.CutoverDone)
-	js, stream, id := freshJetStream(t)
+	js, stream, _ := freshJetStream(t)
 	calls := watchConsumerCalls(t, js.Conn())
 	spec := freshSpec(t, &lockedBuffer{}, js)
 	before := publishWakes(t, js, 2)
@@ -323,11 +355,11 @@ func TestAFreshDaemonCreatesEachDurableAtAFreshNameAndKeepsItAcrossBoots(t *test
 		if info.Config.Metadata[consumernames.LogicalMetadataKey] != logical || info.Config.DeliverPolicy != jetstream.DeliverNewPolicy {
 			t.Fatalf("%s is %v with metadata %v, want DeliverNew and %s=%s", rec.Current, info.Config.DeliverPolicy, info.Config.Metadata, consumernames.LogicalMetadataKey, logical)
 		}
-		if rec.Start != before[1]+1 {
-			t.Fatalf("the record of %s saves start %d, want the stream's end at the reservation, %d", logical, rec.Start, before[1]+1)
+		if rec.Start != info.Delivered.Stream+1 || rec.Start != before[1]+1 {
+			t.Fatalf("the record of %s saves start %d, want the created consumer's own delivered sequence + 1, %d (the stream's end at its create, %d)", logical, rec.Start, info.Delivered.Stream+1, before[1]+1)
 		}
-		if lf := rec.LastFloor; lf == nil || lf.Name != rec.Current || lf.StreamID != id || lf.Floor != info.AckFloor.Stream {
-			t.Fatalf("the record of %s holds the last floor %+v, want %s's floor %d on stream %s", logical, rec.LastFloor, rec.Current, info.AckFloor.Stream, id)
+		if lf := rec.LastFloor; lf == nil || lf.Name != rec.Current || lf.StreamID != sentinelStreamID || lf.Floor != info.AckFloor.Stream {
+			t.Fatalf("the record of %s holds the last floor %+v, want %s's floor %d tagged %s", logical, rec.LastFloor, rec.Current, info.AckFloor.Stream, sentinelStreamID)
 		}
 		currents[logical] = rec.Current
 	}
@@ -556,13 +588,13 @@ func TestAMissingCurrentIsCreatedAgainAtTheStartItsRecordProves(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			cutover(t, pool, consumernames.CutoverDone)
-			js, stream, id := freshJetStream(t)
+			js, stream, _ := freshJetStream(t)
 			logs := &lockedBuffer{}
 			spec := freshSpec(t, logs, js)
 			wake := wakeConsumerName(spec.Project)
 			seqs := publishWakes(t, js, 5)
 			gone := consumernames.FreshName(wake)
-			putRecord(t, pool, wake, tc.record(gone, id))
+			putRecord(t, pool, wake, tc.record(gone, sentinelStreamID))
 
 			openIntake(t, js, pool, spec)
 			rec := selectionOf(t, pool, wake)
