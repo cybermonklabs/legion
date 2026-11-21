@@ -2175,13 +2175,15 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 }
 
 // cursorMoved names the server's refusal of a publish whose expected last sequence per subject did
-// not match as the ErrCursorMoved it is, and returns any other error as it is. A refusal that wraps
-// ErrUnacknowledged is returned as it is too: it refused a resend after a send that went unanswered
-// (sendStored), and that first send may have stored this write, so it is no proof the write stored
-// nothing.
+// not match as the ErrCursorMoved it is, and returns any other error as it is. The refusal is
+// either code JetStream answers a lost conditional write with (IsCASConflict): on a stream of more
+// than one copy a write that meets another listener's cursor write still being replicated is
+// answered 10164, not 10071, and has lost the cursor all the same. A refusal that wraps
+// ErrUnacknowledged is returned as it is too: it refused a resend after a send that went
+// unanswered (sendStored), and that first send may have stored this write, so it is no proof the
+// write stored nothing.
 func cursorMoved(err error) error {
-	var apiErr *nats.APIError
-	if errors.As(err, &apiErr) && apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence && !errors.Is(err, ErrUnacknowledged) {
+	if IsCASConflict(err) && !errors.Is(err, ErrUnacknowledged) {
 		return fmt.Errorf("%w: %w", ErrCursorMoved, err)
 	}
 	return err

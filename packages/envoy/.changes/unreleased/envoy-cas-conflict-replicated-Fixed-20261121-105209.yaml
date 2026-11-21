@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  A conditional write that loses a race on a bucket or stream of more than one copy
+  (`ENVOY_NATS_REPLICAS` above 1) is now read as the lost compare-and-swap it is. The leader of a
+  replicated stream answers a write that meets another write of the same key still being
+  replicated with JetStream error 10164, not 10071, and nats.go names a lost Update, Delete or
+  Purge with that code `nats.ErrKeyRevisionMismatch` but not `nats.ErrKeyExists`, which every such
+  caller asked. Before, on a replicated hub: a deregistration's conditional delete failed instead
+  of running once more; the gone-session reaper and the interest reaper failed the delete
+  instead of keeping the record; an interest write failed instead of planning again over the new
+  row; a role claim with no precondition failed instead of reading the claim again and writing
+  over it; a conditional claim failed instead of answering a revision mismatch; a release, a
+  hand-back's mark and a renewal failed instead of reading the claim again or dropping the
+  renewal; the role claim reaper retained a superseded claim with an error; a write route answered
+  a lost claim as a bus that did not answer, a 503; and a kept role drain that lost its cursor to
+  another listener read the loss as a failed write. Every conditional write now asks
+  `bus.IsCASConflict`, which matches both codes by error class rather than by the error's text.
+time: 2026-11-21T10:52:09Z
+custom:
+    Issue: envoy-cas-conflict-replicated

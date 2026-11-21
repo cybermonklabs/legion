@@ -244,10 +244,10 @@ type spentProofs struct {
 }
 
 // CheckAndSetDPoPProofUsed records a proof as spent and reports whether it already was, which the
-// bucket answers by itself: a create of a key that is there is nats.ErrKeyExists, and the key is
-// gone once the bucket's TTL has outlived the proof's window. Two listeners creating one key at
-// the same moment therefore see one success and one ErrKeyExists, as two Dispatch pods see one
-// insert and one conflict.
+// bucket answers by itself: a create of a key that is there is a lost compare-and-swap
+// (bus.IsCASConflict), and the key is gone once the bucket's TTL has outlived the proof's window.
+// Two listeners creating one key at the same moment therefore see one success and one conflict,
+// as two Dispatch pods see one insert and one conflict.
 //
 // The key is the proof's 'jti' and normalized target URI hashed together, for the reason
 // Dispatch's store keys on the same two: jkt, nonce and htm only ever widen the key, and this
@@ -266,7 +266,7 @@ func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _,
 	_, _, err := bus.Bounded(ctx, func() (uint64, error) {
 		return s.kv.Create(hex.EncodeToString(key[:]), nil)
 	})
-	if errors.Is(err, nats.ErrKeyExists) {
+	if bus.IsCASConflict(err) {
 		return true, nil
 	}
 	if err != nil {
