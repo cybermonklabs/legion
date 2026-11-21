@@ -239,10 +239,13 @@ for shape in outside no-path no-manifest; do
     "$(grep -qF "UNKNOWN: dotfiles .claude/settings.json: ${want}" "$out" && echo true || echo false)"
 done
 
-# A link whose target is gone is something there that cannot be read, never nothing there.
-for shape in package outside-record dotfiles-record; do
+# A link whose target is gone, or that never resolves, is something there that cannot be read, never
+# nothing there: not a record that is the dotfiles' own, and not a profiles directory with no
+# profile in it. ~/.omp, the profiles directory's parent, is read through ~/.omp/plugins.
+for shape in package outside-record outside-record-loop outside-record-to-dotfiles dotfiles-record profiles profiles-newline omp omp-not-utf8; do
   echo "case: --clients, a link that does not resolve (${shape})"
   box_case "box-dangling-${shape}"
+  assign=()
   case "$shape" in
     package)
       at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
@@ -253,15 +256,68 @@ for shape in package outside-record dotfiles-record; do
       mkdir -p "${case_root}/home/.claude/plugins" && ln -s gone.json "${case_root}/home/.claude/plugins/installed_plugins.json"
       want="UNKNOWN: dotfiles .claude/settings.json: ${case_root}/home/.claude/plugins/installed_plugins.json cannot be read as JSON: "
       ;;
+    outside-record-loop)
+      mkdir -p "${case_root}/home/.claude/plugins" && ln -s installed_plugins.json "${case_root}/home/.claude/plugins/installed_plugins.json"
+      check "the dotfiles hold no .claude/plugins, so the path of their record does not resolve either" \
+        "$(readlink -f "${case_root}/home/.dotfiles/.claude/plugins/installed_plugins.json" >/dev/null && echo false || echo true)"
+      want="UNKNOWN: dotfiles .claude/settings.json: ${case_root}/home/.claude/plugins/installed_plugins.json cannot be read as JSON: "
+      ;;
+    outside-record-to-dotfiles)
+      # A link to the path of the dotfiles' own record, where no record is: both paths resolve to
+      # one name, and no file is there.
+      mkdir -p "${case_root}/home/.claude/plugins" "${case_root}/home/.dotfiles/.claude/plugins" &&
+        ln -s ../../.dotfiles/.claude/plugins/installed_plugins.json "${case_root}/home/.claude/plugins/installed_plugins.json"
+      want="UNKNOWN: dotfiles .claude/settings.json: ${case_root}/home/.claude/plugins/installed_plugins.json cannot be read as JSON: "
+      ;;
     dotfiles-record)
       mkdir -p "${case_root}/home/.dotfiles/.claude/plugins" && ln -s gone.json "${case_root}/home/.dotfiles/.claude/plugins/installed_plugins.json"
       want="UNKNOWN: dotfiles .claude/settings.json: ${case_root}/home/.dotfiles/.claude/plugins/installed_plugins.json cannot be read as JSON: "
       ;;
+    profiles)
+      ln -s missing-profile-volume "${case_root}/home/.omp/profiles"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp/profiles is a link to missing-profile-volume, which does not exist"
+      ;;
+    profiles-newline)
+      # The gate prints the last line of what it could not read, so the target is one line.
+      ln -s "$(printf 'missing\nvolume')" "${case_root}/home/.omp/profiles"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp/profiles is a link to missing\\x0avolume, which does not exist"
+      ;;
+    omp)
+      rm "${case_root}/home/.omp/plugins" && rmdir "${case_root}/home/.omp" && ln -s gone "${case_root}/home/.omp"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp is a link to gone, which does not exist"
+      ;;
+    omp-not-utf8)
+      # A target name that is no UTF-8, read where Python writes UTF-8 strictly, as it does in a
+      # locale such as en_US.UTF-8.
+      rm "${case_root}/home/.omp/plugins" && rmdir "${case_root}/home/.omp" && ln -s "$(printf 'gone\377')" "${case_root}/home/.omp"
+      assign=(PYTHONIOENCODING=utf-8:strict)
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp is a link to gone\\udcff, which does not exist"
+      ;;
   esac
-  run_gate -- --clients "$commit"
+  run_gate "${assign[@]}" -- --clients "$commit"
   check "exits 3" "$(is "$status" 3)"
   check "refuses UNKNOWN naming the link" "$(grep -qF "$want" "$out" && echo true || echo false)"
   check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+done
+
+# A record outside the dotfiles that is theirs, through a link to their Claude Code configuration or
+# to the record itself, is the dotfiles' own: a link that resolves to a record hides nothing.
+for shape in configuration record; do
+  echo "case: --clients, a Claude Code record outside the dotfiles, a link to theirs (${shape})"
+  box_case "box-claude-alias-${shape}"
+  claude_install 4.0.0 4.0.0
+  if [ "$shape" = configuration ]; then
+    link="${case_root}/home/.claude" target=.dotfiles/.claude
+  else
+    link="${case_root}/home/.claude/plugins/installed_plugins.json" target=../../.dotfiles/.claude/plugins/installed_plugins.json
+  fi
+  mkdir -p "$(dirname "$link")" && ln -s "$target" "$link"
+  check "the link is the one the case needs" "$([ "$(readlink "$link")" = "$target" ] && echo true || echo false)"
+  run_gate -- --clients "$commit"
+  check "exits 0, the record being the dotfiles' own" "$(is "$status" 0)"
+  check "judges the copy the dotfiles' record names" \
+    "$(has_line "PASS: dotfiles .claude/plugins installed claude-envoy runs claude-envoy 4.0.0 from claude-envoy-v4.0.0 at ${identical_rev} (identical to ${commit})")"
+  check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
 done
 
 # Something the gate cannot tell is there or not is never read as not there: a directory it may

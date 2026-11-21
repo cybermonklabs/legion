@@ -121,9 +121,11 @@ PY
 # entry_state <path>: prints present when something is at <path>, a link whose target is gone
 # included; absent when nothing is and the directory that would hold it was searched; and unknown
 # and why otherwise, as for an ancestor the gate may not search or a link along the way whose target
-# is gone, so a surface the gate cannot see is never read as one that is not there.
+# is gone, so a surface the gate cannot see is never read as one that is not there. A name that is
+# no UTF-8, a link's target among them, is written with its bytes escaped, as Python writes an
+# error, never a write that fails and stops the gate with no verdict.
 entry_state() {
-  python3 - "$1" <<'PY'
+  PYTHONIOENCODING=:backslashreplace python3 - "$1" <<'PY'
 import os
 import stat
 import sys
@@ -159,7 +161,8 @@ PY
 }
 
 # plugin_trees <out>: the Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's, one
-# per NUL-terminated entry, into <out>; a profiles directory it cannot list fails, naming why.
+# per NUL-terminated entry, into <out>; a profiles directory it cannot list, a link there whose
+# target is gone among them, fails, naming why.
 plugin_trees() {
   python3 - "$HOME" >"$1" <<'PY'
 import os
@@ -171,6 +174,13 @@ print(os.path.join(omp, "plugins"), end="\0")
 try:
     entries = sorted(os.listdir(profiles))
 except FileNotFoundError:
+    # Nothing there is no profile, but a link there whose target is gone hides every profile it
+    # would hold. A link above it whose target is gone is above ~/.omp/plugins too, and entry_state
+    # reports it there; a link that loops fails the listing, as any other error does. The caller
+    # prints the last line of the failure, so a newline in the target is written as printable does.
+    if os.path.islink(profiles):
+        target = os.readlink(profiles).replace("\n", "\\x0a")
+        sys.exit(f"{profiles} is a link to {target}, which does not exist")
     entries = []
 except OSError as error:
     sys.exit(f"{profiles} cannot be listed: {error.strerror}")
@@ -268,7 +278,12 @@ dotfiles_claude_envoy() {
       own_record=present
       continue
     fi
-    [ "$(readlink -f "$record")" != "$(readlink -f "$root/.claude/plugins/installed_plugins.json" || true)" ] || continue
+    # A record is the dotfiles' own only when something is there and both paths resolve to it. A
+    # link that loops, or whose target is gone, is read below and fails naming why, even one that
+    # names the dotfiles' own path: two paths that resolve to one name where nothing is are no record.
+    if [ -e "$record" ] && [ "$(readlink -f "$record")" = "$(readlink -f "$root/.claude/plugins/installed_plugins.json" || true)" ]; then
+      continue
+    fi
     if ! installed_claude_envoy "$record" >"$work/claude.outside" 2>"$work/err"; then
       printf 'UNKNOWN: %s: %s\n' "$label" "$(last_line "$work/err")"
       unknown=$((unknown + 1))
