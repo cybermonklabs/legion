@@ -29,12 +29,15 @@ import (
 // bootstrapLoadedState), the fold of a cold read, a version read or a compaction (foldRead), the
 // replica's build from a base (renderedReplica.start), the copy a server write's decode-cap count
 // takes (structsAfter), a rebuild's decodes (its check of a resident room and of the stored
-// history, nearACap, rebuildSource, RebuildTx) and the read-back of each update a room's
-// persistence worker stores (StoreUpdateStored, AppendUpdatesWithCredit). The replica's build and
-// the read-back may not wait, so each takes its bytes only where they are free at once and
-// otherwise decodes beside the pool's holders (holdFreeLoad). What each leaves behind is its
-// owner's: a room's two copies are charged by the room budget, a fold's state goes back to its
-// caller, and a read-back's copy is dropped once it has decoded.
+// history, nearACap, rebuildSource, RebuildTx), the read-back of each update a room's
+// persistence worker stores (StoreUpdateStored, AppendUpdatesWithCredit) and the append gate's
+// fold of a history replaced under a room and its decode of the run onto the document that fold
+// makes (storedHistoryHolds). The replica's build, the read-back and the gate's decodes on the
+// persistence worker may not wait, so each takes its bytes only where they are free at once and
+// otherwise decodes beside the pool's holders (holdFreeLoad, withFreeLoadOnly). What each leaves
+// behind is its owner's: a room's two copies are charged by the room budget, a fold's state goes
+// back to its caller, a read-back's copy is dropped once it has decoded, and the gate's document
+// once the run has been judged against it.
 //
 // The second is a live write's fork, held for the fork's whole life rather than for a decode
 // alone: from the moment before the fork is built - cloned from the room's replica (warmFork,
@@ -121,9 +124,11 @@ const loadSlotsName = "load"
 // An apply's grant is held across the commit the apply makes (Service.weighPeerUpdate), whose
 // update observer hands the commit to the room's persistence worker through a queue of 256
 // updates and waits while that queue is full (ygo's persistence observer). The worker is the
-// queue's one reader, so its decode of each update it stores takes nothing that waits: it takes
-// its bytes where they are free at once and otherwise decodes beside the holders
-// (StoreUpdateStored, AppendUpdatesWithCredit, holdFreeLoad).
+// queue's one reader, so nothing it decodes as it stores takes anything that waits: its decode of
+// each update it stores and its gate's decodes of a history replaced under the room take their
+// bytes where they are free at once and otherwise decode beside the holders (StoreUpdateStored,
+// AppendUpdatesWithCredit, holdFreeLoad; storedHistoryHolds, under the context the worker marks
+// to take only free bytes, withFreeLoadOnly).
 //
 // No holder takes a second grant: a decode under a context carrying one covers itself on that one
 // (withLoadSlot), so a room load's fold, its copy's decode and the load hook's decode into the
@@ -213,13 +218,17 @@ func newLoadSlot() *loadSlot {
 // A wait ctx ends returns ctx's error and leaves the grant exactly as it was: a holder keeps what
 // it already held, since the copies it covers are built and a caller refused here abandons the
 // copy it was about to build, not the ones it holds.
+//
+// Under a ctx marked to take only free bytes (withFreeLoadOnly) neither a first take nor the
+// difference waits: bytes the pool does not have free at once are not taken, the grant is left
+// exactly as it was, and the copy it covers is built beside the pool's holders.
 func (g *loadSlot) take(ctx context.Context, bytes int64) error {
 	if g.held {
 		if bytes <= g.bytes {
 			return nil
 		}
 		more := bytes - g.bytes
-		if err := g.acquire(ctx, more); err != nil {
+		if took, err := g.acquire(ctx, more); !took {
 			return err
 		}
 		g.bytes = bytes
@@ -229,7 +238,7 @@ func (g *loadSlot) take(ctx context.Context, bytes int64) error {
 		return nil
 	}
 	started := time.Now()
-	if err := g.acquire(ctx, bytes); err != nil {
+	if took, err := g.acquire(ctx, bytes); !took {
 		return err
 	}
 	g.held, g.bytes, g.since = true, bytes, time.Now()
@@ -242,21 +251,26 @@ func (g *loadSlot) take(ctx context.Context, bytes int64) error {
 }
 
 // acquire takes bytes of the pool for g, waiting within ctx and telling a test's hook as the wait
-// begins, and counts them as held. It is the one place the pool's semaphore is waited on, so a
-// first take and the difference a later copy needs are admitted the same way and in the same
-// order as every other waiter (semaphore.Weighted).
-func (g *loadSlot) acquire(ctx context.Context, bytes int64) error {
+// begins, counts them as held, and reports whether it took them. It is the one place the pool's
+// semaphore is waited on, so a first take and the difference a later copy needs are admitted the
+// same way and in the same order as every other waiter (semaphore.Weighted). Under a ctx marked to
+// take only free bytes (withFreeLoadOnly) it never waits: where the bytes are not free at once it
+// takes nothing and reports false with no error.
+func (g *loadSlot) acquire(ctx context.Context, bytes int64) (bool, error) {
 	slots := g.slots.semaphore()
 	if !slots.TryAcquire(bytes) {
+		if freeLoadOnly(ctx) {
+			return false, nil
+		}
 		if g.slots.waiting != nil {
 			g.slots.waiting()
 		}
 		if err := slots.Acquire(ctx, bytes); err != nil {
-			return err
+			return false, err
 		}
 	}
 	g.slots.held.Add(bytes)
-	return nil
+	return true, nil
 }
 
 // release gives g's bytes back, exactly the weight it took, and logs the grant where it waited
@@ -311,6 +325,28 @@ func withLoadSlot(ctx context.Context) (context.Context, *loadSlot, func()) {
 	return slot.carriedBy(ctx), slot, slot.release
 }
 
+// freeLoadKey is the context key withFreeLoadOnly marks a context with, beside the grant a
+// context carries under loadSlotKey.
+type freeLoadKey struct{}
+
+// withFreeLoadOnly is ctx marked so that every grant taken under it takes only bytes of the pool
+// that are free at once, as holdFreeLoad does, and otherwise takes nothing and leaves its decode
+// to run beside the pool's holders: holdLoad's, the grant withLoadSlot makes, and the difference a
+// grant ctx carries takes for a heavier copy (loadSlot.take). It is for a holder that may not wait
+// for the pool and reaches decodes that take their grants from ctx: the room's persistence
+// worker's append marks its context with it once (StoreUpdateStored), so the decodes its gate
+// makes of a history replaced under the room (storedHistoryHolds) wait for nothing. Every other
+// caller of those decodes passes an unmarked context and waits for its bytes.
+func withFreeLoadOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, freeLoadKey{}, true)
+}
+
+// freeLoadOnly is whether withFreeLoadOnly marked ctx.
+func freeLoadOnly(ctx context.Context) bool {
+	marked, _ := ctx.Value(freeLoadKey{}).(bool)
+	return marked
+}
+
 // holdLoad covers a whole-document decode on the grant ctx carries, or on one of its own of
 // bytes - what the copy costs (copyWeight), or loadSlotBytes where the caller can name no state
 // - and returns what ends the hold: nothing for a grant ctx carries, whose owner releases it,
@@ -320,6 +356,11 @@ func withLoadSlot(ctx context.Context) (context.Context, *loadSlot, func()) {
 // decode made under it is covered by that weight rather than weighed again, which is what keeps
 // a holder from waiting inside its own grant, and bytes is then only what this decode would
 // have taken on its own.
+//
+// Under a ctx marked to take only free bytes (withFreeLoadOnly) the grant takes its bytes only
+// where they are free at once, and the decode otherwise runs beside the pool's holders with
+// nothing counting it, as under holdFreeLoad. The room's persistence worker's gate decodes that
+// way (storedHistoryHolds).
 func holdLoad(ctx context.Context, bytes int64) (func(), error) {
 	ctx, slot, done := withLoadSlot(ctx)
 	if err := slot.take(ctx, bytes); err != nil {
@@ -405,7 +446,9 @@ func holdServerLoad(ctx context.Context, bytes int64) func() {
 
 // holdFreeLoad covers a whole-document decode on bytes of the pool that are free at once, and
 // runs beside the pool's holders where they are not. It is what a decode that may not wait
-// takes, and two do:
+// takes where it has no context to take its grant from; one that takes its grant from a context
+// takes the same way under a context marked to take only free bytes (withFreeLoadOnly). Three
+// decodes may not wait:
 //
 //   - the replica's build from a base (renderedReplica.start), which runs under the replica's
 //     lock. A live write holds its grant for its fork's whole life and waits for that lock to
@@ -424,6 +467,17 @@ func holdServerLoad(ctx context.Context, bytes int64) func() {
 //     unslottedApplyBytes chaining as many structs as fit in each of as many rooms as the budget
 //     holds, is what cmd/dispatch's TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory weighs
 //     against the pod.
+//   - the same worker's gate, where the room's stored history was replaced under it: the fold of
+//     that history and the decode of the run onto the document it makes (storedHistoryHolds),
+//     which take their grants from the worker's context, marked to take only free bytes
+//     (StoreUpdateStored). The worker holds the document's lock and a connection of the
+//     room-appends pool there, and is still the queue's one reader, so a wait would hold the same
+//     apply and worker against each other. What it holds outside the pool is one fold of the
+//     room's stored history, with the run beside the document that fold leaves - one at a time
+//     for each room, whose worker makes one append at a time, and only on an append that finds
+//     the history a compaction or a rebuild replaced past the room's cursor: a cold read's fold,
+//     the same fold, held 320,762,656 bytes above the document it leaves for the heaviest history
+//     measured (dispatch://INFRA-179/artifact/infra179-simplify-measured-md).
 func holdFreeLoad(bytes int64) func() {
 	slot := newLoadSlot()
 	if !slot.tryTake(bytes) {

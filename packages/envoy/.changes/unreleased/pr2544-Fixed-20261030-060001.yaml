@@ -158,7 +158,10 @@ body: |-
     being packed, up to the 16,000 structs a frame can hold, and 40 bytes more for each client the
     browser's own sync step 1 names. No taker takes more than one slot, so the heaviest waits for
     its turn rather than being refused: a stored document always loads and no honest handoff is
-    turned away.
+    turned away. The decodes that must not wait take their bytes only where the pool has them free
+    at once, and otherwise run beside its holders: the second copy a room builds from a stored
+    state, and what a room's persistence worker decodes as it stores a browser's update, its check
+    of a history replaced under the room included.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone, 512 of them whatever their

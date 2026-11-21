@@ -315,7 +315,16 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 // update, which the browser resends. Whichever way the append ends, the update leaves its
 // instance's unstored updates once it has. One a writer made durable is stored; a dropped one is
 // not.
+//
+// It runs on the room's persistence worker, the one reader of the room's queue of updates to
+// store, on which a heavy apply holding its grant of the pod's load concurrency through its commit
+// waits while the queue is full (weighPeerUpdate). So nothing it decodes waits for that pool: ctx
+// is marked once, here, to take only bytes free at once (withFreeLoadOnly), and the decodes its
+// gate makes of a history replaced under the room take their grants under it
+// (storedHistoryHolds); its decodes of the update itself take only free bytes as well
+// (holdFreeLoad).
 func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room string, update []byte) (stored bool, err error) {
+	ctx = withFreeLoadOnly(ctx)
 	if a.service.roomFailed(room) {
 		// The failed room's update is dropped and its browser resends it to the room that
 		// replaces this one, but its class is taken all the same, so the work the record counts
