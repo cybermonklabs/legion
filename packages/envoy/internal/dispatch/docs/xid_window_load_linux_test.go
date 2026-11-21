@@ -361,8 +361,14 @@ func TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes(t *testing.T) {
 // yieldBehindASpinner starts a goroutine that spins until told to stop and yields to it until it
 // has started: the runtime may run the yielding goroutine first, as it does every 61st schedule,
 // when it reads the global run queue before its own, and then the next yield is the one that
-// waits. With one P, once the spinner runs it holds the P until the runtime preempts it, at least
-// 10 ms on, and only then runs the yielding goroutine again.
+// waits. With one P, once the spinner runs it holds the P until the runtime preempts it, 10 ms
+// into its time slice, and only then runs the yielding goroutine again. The spinner must start a
+// slice of its own. A goroutine just started is the next to run, and runs in the rest of the
+// slice of the goroutine that started it: that slice may already be most of the way to 10 ms old
+// on the clock (on a loaded machine, the thread waits on a run queue as it runs), and once the
+// spinner was preempted after 2.096 ms, a run that proved nothing. So a second goroutine, which
+// does nothing, takes the next place, and the spinner runs after it from the run queue, in a new
+// slice.
 func yieldBehindASpinner() {
 	var started, stop atomic.Bool
 	go func() {
@@ -370,6 +376,7 @@ func yieldBehindASpinner() {
 		for !stop.Load() {
 		}
 	}()
+	go func() {}()
 	for !started.Load() {
 		runtime.Gosched()
 	}
