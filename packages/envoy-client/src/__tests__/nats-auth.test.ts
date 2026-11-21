@@ -59,7 +59,9 @@ async function connectWith(url: string, env: NodeJS.ProcessEnv) {
  *  leaves the others to finish, so the afterAll finds each server as far as its own start got. */
 async function settleAll(steps: readonly Promise<void>[]): Promise<void> {
   const failures = (await Promise.allSettled(steps)).flatMap((step) =>
-    step.status === "rejected" ? [String(step.reason)] : []
+    step.status === "rejected"
+      ? [step.reason instanceof Error ? step.reason.message : String(step.reason)]
+      : []
   );
   if (failures.length > 0) throw new Error(failures.join("; "));
 }

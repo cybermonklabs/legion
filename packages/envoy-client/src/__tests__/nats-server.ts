@@ -65,6 +65,11 @@ async function docker(
   return { stdout: stdout.trim(), stderr: stderr.trim() };
 }
 
+/** What a failed step's error says, for the message that wraps it. */
+function reason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * Reserves the directory the servers of one test file keep their configuration files in, and
  * returns its path.
@@ -177,13 +182,13 @@ export function natsServerWithConfig(directory: string, configuration: string): 
         "-c",
         "/etc/nats/test.conf"
       ).catch((error: unknown) => {
-        throw new Error(`NATS container ${name}: its docker run failed: ${error}`);
+        throw new Error(`NATS container ${name}: its docker run failed: ${reason(error)}`);
       });
       // nats-server logs to stderr.
       for (let logs = 1; ; logs += 1) {
         const read = await docker(deadline, "the start's", "logs", name).catch((error: unknown) => {
           throw new Error(
-            `NATS container ${name} was not ready after ${logs} reads of its logs: ${error}`
+            `NATS container ${name} was not ready after ${logs} reads of its logs: ${reason(error)}`
           );
         });
         if (read.stderr.includes("Server is ready")) break;
@@ -191,7 +196,7 @@ export function natsServerWithConfig(directory: string, configuration: string): 
       }
       const port = (
         await docker(deadline, "the start's", "port", name, "4222/tcp").catch((error: unknown) => {
-          throw new Error(`NATS container ${name}: its docker port failed: ${error}`);
+          throw new Error(`NATS container ${name}: its docker port failed: ${reason(error)}`);
         })
       ).stdout.split("\n")[0];
       url = `nats://${port}`;
@@ -203,7 +208,7 @@ export function natsServerWithConfig(directory: string, configuration: string): 
         // `--rm` already removed, is no error: docker exits 0 for it.
         await docker(deadline, "the removal's", "rm", "-f", "-v", name);
       } catch (error) {
-        throw new Error(`NATS container ${name}: its docker rm failed: ${error}`);
+        throw new Error(`NATS container ${name}: its docker rm failed: ${reason(error)}`);
       } finally {
         rmSync(config, { force: true });
       }
