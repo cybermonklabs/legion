@@ -1,11 +1,14 @@
 package workspace
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -212,6 +215,100 @@ func TestTheSharedCloneMapsPacksInSmallWindows(t *testing.T) {
 		// git exits 1, printing nothing, for a key no configuration sets.
 		if output, code := gitConfigRead(t, fed.Feed, "--git-dir="+fed.Feed, "config", "--get", setting[0]); output != "" || code != 1 {
 			t.Errorf("the feed %s reads %s as %q (exit %d), want nothing and exit 1", fed.Feed, setting[0], output, code)
+		}
+	}
+}
+
+// The worker image's /etc/gitconfig holds packWindowConfig, for provisioning's git, whose runner
+// removes the role environment's pairs (execRunner.Run). A Dockerfile cannot read the Go list, so
+// worker.Dockerfile writes the four settings out twice: the `/usr/bin/git config --system <key>
+// <value>` writes of its final stage, and the `for setting in <key>=<value> …` list its last step
+// holds /etc/gitconfig to. Each copy is packWindowConfig, key and value, in the list's order, so a
+// value changed in one place and not in the others fails here, in CI. The pack-memory Job
+// (scripts/e2e/pack-memory-job.sh) is what measures the built image itself.
+func TestTheWorkerImageWritesPackWindowConfig(t *testing.T) {
+	requireImagePackWindows(t, filepath.Join("..", "..", "docker", "worker.Dockerfile"))
+}
+
+// imagePackWindowWrite is one `/usr/bin/git config --system <key> <value>` of a RUN instruction.
+// A key that begins with a hyphen is an option, as the smoke step's `--get` is, and no write.
+var imagePackWindowWrite = regexp.MustCompile(`/usr/bin/git config --system ([^-\s]\S*) (\S+)`)
+
+// imagePackWindowSmoke is the smoke step's `for setting in <key>=<value> …; do` list.
+var imagePackWindowSmoke = regexp.MustCompile(`for setting in ([^;]*); do`)
+
+// requireImagePackWindows fails t unless the final stage of the Dockerfile at path writes
+// packWindowConfig with `git config --system` and its smoke step's list holds the same, each copy
+// in the list's order, naming the key and both values of each setting that differs. A copy the
+// Dockerfile does not hold fails too.
+func requireImagePackWindows(t *testing.T, path string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The final stage's instructions, each joined across its continuation lines, as
+	// TestImageEnvIsWhatTheWorkerImageSets (runtime/sandbox) reads them.
+	var instructions []string
+	var current strings.Builder
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if current.Len() == 0 && (line == "" || strings.HasPrefix(line, "#")) {
+			continue
+		}
+		if continued, ok := strings.CutSuffix(line, "\\"); ok {
+			current.WriteString(continued + " ")
+			continue
+		}
+		current.WriteString(line)
+		instruction := current.String()
+		current.Reset()
+		if strings.HasPrefix(instruction, "FROM ") {
+			instructions = nil
+		}
+		instructions = append(instructions, instruction)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	var writes, smoke [][2]string
+	for _, instruction := range instructions {
+		if !strings.HasPrefix(instruction, "RUN ") {
+			continue
+		}
+		for _, match := range imagePackWindowWrite.FindAllStringSubmatch(instruction, -1) {
+			writes = append(writes, [2]string{match[1], match[2]})
+		}
+		for _, match := range imagePackWindowSmoke.FindAllStringSubmatch(instruction, -1) {
+			for _, setting := range strings.Fields(match[1]) {
+				key, value, _ := strings.Cut(setting, "=")
+				smoke = append(smoke, [2]string{key, value})
+			}
+		}
+	}
+	// settingAt is a copy's setting at i as key=value, or "none" past its end.
+	settingAt := func(settings [][2]string, i int) string {
+		if i >= len(settings) {
+			return "none"
+		}
+		return settings[i][0] + "=" + settings[i][1]
+	}
+	for _, place := range []struct {
+		name     string
+		settings [][2]string
+	}{
+		{"`git config --system` writes", writes},
+		{"smoke step's `for setting in` list", smoke},
+	} {
+		if len(place.settings) == 0 {
+			t.Errorf("%s: no %s found in the final stage", path, place.name)
+			continue
+		}
+		for i := range max(len(place.settings), len(packWindowConfig)) {
+			if have, want := settingAt(place.settings, i), settingAt(packWindowConfig, i); have != want {
+				t.Errorf("%s: setting %d of the %s is %s, and of packWindowConfig %s", path, i+1, place.name, have, want)
+			}
 		}
 	}
 }

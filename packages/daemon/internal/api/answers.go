@@ -48,7 +48,7 @@ const ServingFloor = 46
 //
 // 193 and the last two are constants rather than their numbers, because the entries that added
 // them name them (shapedAnswersContract, the shaped answers' entry; repositoriesLiveContract,
-// dispatch://INFRA-4401's; and cachesSourceContract, this change's own, dispatch://INFRA-4036's):
+// dispatch://INFRA-4401's; and cachesSourceContract, dispatch://INFRA-4036's):
 // a renumber of any of those entries moves its constant and this list with it, and moving one of
 // the two alone would describe a shape at a contract no entry declares.
 var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, cachesSourceContract}
@@ -255,9 +255,9 @@ type EnumeratedValue struct {
 // every `z.enum` diffed. The lists below that ever grew are `answeredBy`, which gained
 // `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56,
 // `waitingLine.kind`, which gained `waiting_on_issue` at 132, and `capabilities.*.source`,
-// which gains `caches` at this change's own contract (cachesSourceContract), so every other list
-// is recorded whole at its own field's arrival. (`suspendedBy` gained `released` at 48 and is no
-// row here: the operator claim answers carry it and no plugin parses them.)
+// which gained `caches` at dispatch://INFRA-4036's contract (cachesSourceContract), so every
+// other list is recorded whole at its own field's arrival. (`suspendedBy` gained `released` at
+// 48 and is no row here: the operator claim answers carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
 
 // enumeratedFields is every row the table holds: the state's own, the record's taken from them,

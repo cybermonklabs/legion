@@ -3003,7 +3003,17 @@ package api
 // this one as it was and add this contract's own, whose domain of `capabilities.*.source` names
 // `caches`. The room fields the repository cache's own `/healthz` gains beside this
 // (repocache.Health) are read by the daemon alone and by no plugin, so they are no part of this
-// number, and nothing else of this change is on a surface this contract names.
+// number. One other surface this contract names moves: the Sandbox worker container's environment
+// (manifest.go's `mainEnvironment`) gains four GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> pairs,
+// GIT_CONFIG_KEY_5 to GIT_CONFIG_KEY_8 with their values, which carry the four pack settings of
+// workspace's packWindowConfig after the five pairs before them (sandbox's gitConfigPairs), and
+// GIT_CONFIG_COUNT goes from 5 to 9. git reads them and no plugin does: no source under
+// packages/pi-legion, packages/pi-shared, packages/contracts or packages/claude-envoy reads a
+// GIT_CONFIG variable, so they move no plugin's reader and nothing is served down for them. The new
+// names are the runtime's own (runtimeOwned), so CheckPod refuses one in
+// `runtime.kubernetes.pod.env` and ValidateSpawnSpec refuses one in a spawn spec's `Env`: an
+// operator's pair that would replace one of the four settings is refused when the configuration
+// loads, rather than replacing that setting with no word.
 // The bump relaunches every registered claim onto the new plugin, as every bump does (the
 // stale-plugin lane, internal/daemon's refreshStalePlugins), and that relaunch reaches each claim
 // at its own time, so for the length of the wave some pods still run a plugin below 209: a

@@ -966,12 +966,15 @@ func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error
 // provisioning's git, whose runner removes the role's pairs (execRunner.Run); the shared clone's own
 // configuration (configurePackWindows), for the shared public leak check's git; and `-c` on the git
 // of Fetch, FeedGit and FeedGitWithin (feedGit), which reads no system file (isolatedGitConfig).
-// The Dockerfile cannot read this list: its build holds /etc/gitconfig to the Dockerfile's own copy
-// of the values. What holds the image to this list is the pack-memory measurement Job
-// (scripts/e2e/pack-memory-job.sh): its `c-pack-window-config system <key>` rows hold the image's
-// `git config --system` to the probe's copy of the four values, and its `c-git-rows role scope
-// <key>` rows hold the pairs rolegitconfig prints from this list to that same copy. A value changed
-// here is changed in the Dockerfile and in that probe too.
+// The Dockerfile cannot read this list, so it writes the four values out twice: its `git config
+// --system` writes, and the smoke list its build holds /etc/gitconfig to. What holds both copies to
+// this list in CI is TestTheWorkerImageWritesPackWindowConfig (sharedclone_test.go), which reads
+// them out of the Dockerfile and requires each, in order, to equal this list. The pack-memory
+// measurement Job (scripts/e2e/pack-memory-job.sh) measures the built image itself: its
+// `c-pack-window-config system <key>` rows hold the image's `git config --system` to the probe's
+// copy of the four values, and its `c-git-rows role scope <key>` rows hold the pairs rolegitconfig
+// prints from this list to that same copy. A value changed here is changed in the Dockerfile, which
+// that test requires, and in that probe too.
 var packWindowConfig = [][2]string{
 	{"core.packedGitWindowSize", "32m"},
 	{"core.packedGitLimit", "256m"},

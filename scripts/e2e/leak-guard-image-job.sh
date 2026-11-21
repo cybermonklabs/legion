@@ -86,7 +86,9 @@
 #   1  the Job ran and a check did not hold. Its log, printed above the verdict, says which.
 #   2  the harness could not run: a usage error, a missing input, no Kubernetes credential or a
 #      namespace that refuses a Job, a Job that started no pod, a log that could not be read, or a
-#      log with no `JOB-RESULT` line in it. Nothing is proved either way.
+#      log with no `JOB-RESULT` line in it. Nothing is proved either way. A run whose checks all
+#      held and whose Job's delete failed exits 2 as well: it left a Job behind, and the verdict
+#      printed above the exit line says what its checks found.
 #   3  the Job did not reach a verdict inside its deadline. Nothing is proved either way.
 #
 # This script is synchronous and its clean-up is a trap, so a role that runs it from its own bash
@@ -152,7 +154,8 @@ usage: scripts/e2e/leak-guard-image-job.sh --image <ref>@sha256:<64 hex>
   --dry-run       render the manifest, validate it with kubectl, create nothing, and exit.
 
 exit statuses: 0 every check held; 1 the Job ran and a check did not hold; 2 the harness could not
-run and nothing is proved; 3 the Job reached no verdict inside its deadline.
+run and nothing is proved, or a Job's delete failed; 3 the Job reached no verdict inside its
+deadline.
 USAGE
 }
 
@@ -258,12 +261,12 @@ cleanup() {
   if [ -n "$workload" ]; then
     echo "== cleanup: deleting Job $workload"
     setsid -w kubectl -n "$namespace" delete job "$workload" --cascade=foreground --ignore-not-found ||
-      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=1; }
+      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=2; }
     setsid -w kubectl -n "$namespace" get job "$workload" --ignore-not-found
   elif [ -n "$run_label" ]; then
     echo "== cleanup: no Job name was read; deleting by label leak-guard-run=$run_label"
     setsid -w kubectl -n "$namespace" delete job -l "leak-guard-run=$run_label" --cascade=foreground --ignore-not-found ||
-      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=1; }
+      { echo "cleanup: the Job's delete failed"; [ "$status" -ne 0 ] || status=2; }
     # An empty listing is no proof that none is left: a create the API server stored after this
     # listing leaves a Job this never saw. List it again once this script has ended, and delete it
     # with `kubectl -n <namespace> delete job -l leak-guard-run=<the printed value>

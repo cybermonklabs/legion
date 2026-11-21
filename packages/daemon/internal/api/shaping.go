@@ -975,9 +975,9 @@ const pauseContract = 178
 // than its number for that reason.
 const repositoriesLiveContract = 202
 
-// cachesSourceContract is the daemon contract this change lands under (version.go's 209,
-// dispatch://INFRA-4036), and the contract that added `caches` to a capability row's `source`:
-// the repository-cache-room row's, what the repository caches' last health reads said of their
+// cachesSourceContract is the daemon contract dispatch://INFRA-4036 landed under (version.go's
+// 209), and the contract that added `caches` to a capability row's `source`: the
+// repository-cache-room row's, what the repository caches' last health reads said of their
 // room (capabilities.SourceCaches). A plugin from 25, the contract that added `source`, up to it
 // reads the field with a `z.enum` of the two words before it, `configuration` and `boot`, which
 // refuses a word it does not name and with it the whole state body. The word is a value added to
@@ -988,11 +988,12 @@ const repositoriesLiveContract = 202
 // and the strip reads it from there.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the word arrived at stays where it is. It moves only with this
-// change's own number, which is why the last entry of answers.go's SupportedContracts names it
-// rather than its number: TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that
-// list to version.go's entry headers, so a renumber that moves this change's entry and leaves
-// this constant behind names a contract no entry declares and fails there.
+// that constant, and the contract the word arrived at stays where it is. It moves only with
+// dispatch://INFRA-4036's own number, which is why the last entry of answers.go's
+// SupportedContracts names it rather than its number:
+// TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that list to version.go's
+// entry headers, so a renumber that moves dispatch://INFRA-4036's entry and leaves this
+// constant behind names a contract no entry declares and fails there.
 const cachesSourceContract = 209
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the

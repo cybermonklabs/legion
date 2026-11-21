@@ -156,9 +156,9 @@ func TestReportCapabilitiesCarriesTheProbesCapacityWaits(t *testing.T) {
 // space, repository-cache-room is not among the open names, and the state's row, which the state
 // route renders from the caches it read (deploymentWith), is present, counting the caches read, its
 // source the caches. Once a cache's last read carries its repack's failure, the name is open and
-// the gap is logged once, naming the cache's repository, its claim, the failed step with its time
-// and where room comes from, however many ticks read it; once the read no longer carries it, the
-// name is gone.
+// the gap is logged once, on one line naming the cache's repository and its claim with the row's
+// config line and its source, however many ticks read it; once the read no longer carries it, the
+// name is gone. The row's own words are TestTheRepositoryCacheRoomRow's (capabilities).
 func TestTheCapabilityReportReadsTheCachesHealth(t *testing.T) {
 	cfg := config.Config{
 		Runtime:      config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{Resources: config.DefaultResources()}},
@@ -186,7 +186,7 @@ func TestTheCapabilityReportReadsTheCachesHealth(t *testing.T) {
 		t.Fatalf("reportCapabilities with no cache out of room = %v, want no %s", got, capabilities.RepositoryCacheRoom)
 	}
 	row := states(s.deploymentWith(statuses).Report())[capabilities.RepositoryCacheRoom]
-	if row.Status != capabilities.StatusPresent || row.Source != capabilities.SourceCaches || row.Detail != "no repository cache reports a failure for lack of space (2 caches read)" {
+	if row.Status != capabilities.StatusPresent || row.Source != capabilities.SourceCaches || !strings.Contains(row.Detail, "(2 caches read)") {
 		t.Fatalf("the state's row with no cache out of room = %s from %q (%s), want present from the caches, counting the two read", row.Status, row.Source, row.Detail)
 	}
 
@@ -199,13 +199,19 @@ func TestTheCapabilityReportReadsTheCachesHealth(t *testing.T) {
 	if count := strings.Count(logged.String(), opened); count != 1 {
 		t.Fatalf("the open row was logged %d times over two ticks, want once:\n%s", count, logged.String())
 	}
+	var line string
+	for logLine := range strings.Lines(logged.String()) {
+		if strings.Contains(logLine, opened) {
+			line = logLine
+		}
+	}
 	for _, want := range []string{
-		opened + "1 of 2 repository caches ran out of room: acme/widgets on a 20.0 GiB volume (claim " + claimName + ") with 0.1 GiB available, its clone 19.4 GiB; " +
-			"its repack failed for lack of space at 2026-11-19T02:15:33Z. Room comes from growing the cache's claim in place and raising runtime.kubernetes.repository_cache.volume",
+		"acme/widgets",
+		claimName,
 		`configLine="capabilities.decided.repository-cache-room: \"<reason>\""`,
 		`source=caches`,
 	} {
-		if !strings.Contains(logged.String(), want) {
+		if !strings.Contains(line, want) {
 			t.Errorf("the open row's warning lacks %s:\n%s", want, logged.String())
 		}
 	}
