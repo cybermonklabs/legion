@@ -85,6 +85,7 @@
     "pod_update_rounds_per_minute": null,
     "review_round_cap": 3,
     "controller": "operator",
+    "consumer_names": "fixed",
     "capabilities": {
       "decided": {}
     },

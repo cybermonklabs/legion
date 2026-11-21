@@ -7,6 +7,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/sjawhar/envoy/consumernames"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -111,7 +113,11 @@ type Settings struct {
 	PodUpdateRoundsPerMinute *int                    `json:"pod_update_rounds_per_minute"`
 	ReviewRoundCap           int                     `json:"review_round_cap"`
 	Controller               config.ControllerLaunch `json:"controller"`
-	Capabilities             CapabilitiesSettings    `json:"capabilities"`
+	// ConsumerNames is `consumer_names`, how the daemon names its durable consumers: `fixed`, the
+	// default, or `fresh` (config.Config.ConsumerNames). `legion state` prints it above the
+	// consumers' lag, since the names those lines carry are logical ones on `fresh`.
+	ConsumerNames consumernames.Mode   `json:"consumer_names"`
+	Capabilities  CapabilitiesSettings `json:"capabilities"`
 	// WorkerBackends is `worker_backends`, the roles that run on a backend other than Oh My Pi by
 	// role, `{}` while the file names none.
 	WorkerBackends map[string]string `json:"worker_backends"`
@@ -563,6 +569,7 @@ func SettingsOf(cfg config.Config) Settings {
 		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
 		ReviewRoundCap:                          cfg.ReviewRoundCap,
 		Controller:                              cfg.ControllerLaunch,
+		ConsumerNames:                           cfg.ConsumerNames,
 		Capabilities:                            CapabilitiesSettings{Decided: make(map[string]string, len(cfg.Capabilities.Decided))},
 		WorkerBackends:                          make(map[string]string, len(cfg.WorkerBackends)),
 		RoleConfigFiles:                         make(map[string][]string, len(cfg.RoleConfigFiles)),

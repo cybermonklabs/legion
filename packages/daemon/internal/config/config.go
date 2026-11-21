@@ -261,12 +261,12 @@ type Config struct {
 	// (leakguard.Manifest). The zero Setting is a deployment that runs no shared leak check of its
 	// own (resolveLeakCheck).
 	LeakCheck leakguard.Setting
-	// ConsumerNames is how the daemon names its durable consumers, ENVOY_CONSUMER_NAMES in its
-	// environment (consumernames.ModeEnvVar), read once, at the load `legion start` makes: unset or
-	// "fixed" is the fixed names legion-go-<project>-<kind> the daemon has always used, and "fresh"
+	// ConsumerNames is `consumer_names`: how the daemon names its durable consumers. Absent or
+	// `fixed` is the fixed names legion-go-<project>-<kind> the daemon has always used, and `fresh`
 	// a fresh physical name at each creation behind the selection record of intake_consumers
-	// (intake.ConsumerSpec.Names). Any other value refuses the load, naming it. It is no
-	// legion.yaml key: the mode is the deployment's, set beside every other creator's.
+	// (intake.ConsumerSpec.Names). Any other value refuses the load, naming it. The listener and
+	// Dispatch read the same choice from ENVOY_CONSUMER_NAMES; the daemon reads its settings from
+	// this file alone, and never that variable.
 	ConsumerNames consumernames.Mode
 	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
 	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and
@@ -430,6 +430,7 @@ type fileConfig struct {
 	PodUpdateRoundsPerMinute *int
 	ReviewRoundCap           *int
 	Controller               *string
+	ConsumerNames            *string
 	Capabilities             *Capabilities
 	Durations                map[string]int
 	Counts                   map[string]int
@@ -1128,11 +1129,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if err := resolveLeakCheck(file, env, &cfg); err != nil {
 		return Config{}, err
 	}
-	mode, err := consumernames.ParseMode(env(consumernames.ModeEnvVar))
-	if err != nil {
+	if err := resolveConsumerNames(file, &cfg); err != nil {
 		return Config{}, err
 	}
-	cfg.ConsumerNames = mode
 	if err := checkCommitIssueTrailerRenames(&cfg); err != nil {
 		return Config{}, err
 	}
@@ -1181,6 +1180,20 @@ func resolveControllerLaunch(file fileConfig, cfg *Config) error {
 		return errors.New("runtime.kubernetes.resources.controller sizes the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key")
 	}
 	return nil
+}
+
+// resolveConsumerNames settles `consumer_names`: `fixed` when the file names none.
+func resolveConsumerNames(file fileConfig, cfg *Config) error {
+	cfg.ConsumerNames = consumernames.ModeFixed
+	if file.ConsumerNames == nil {
+		return nil
+	}
+	switch mode := consumernames.Mode(*file.ConsumerNames); mode {
+	case consumernames.ModeFixed, consumernames.ModeFresh:
+		cfg.ConsumerNames = mode
+		return nil
+	}
+	return fmt.Errorf("consumer_names must be 'fixed' or 'fresh' (got %q)", *file.ConsumerNames)
 }
 
 // checkProviderKeyFiles refuses a `provider_keys` entry naming a file (`file:/abs/path`) under

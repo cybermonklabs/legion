@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/consumernames"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 )
@@ -92,6 +94,7 @@ var settingsEmitted = map[string]string{
 	"Config.PodUpdateRoundsPerMinute":                "pod_update_rounds_per_minute",
 	"Config.ReviewRoundCap":                          "review_round_cap",
 	"Config.ControllerLaunch":                        "controller",
+	"Config.ConsumerNames":                           "consumer_names",
 	"Config.Capabilities":                            "capabilities",
 	"Config.WorkerBackends":                          "worker_backends",
 	"Config.RoleConfigFiles":                         "role_config_files",
@@ -349,7 +352,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"pod_update_grace_minutes", "stalled_tree_notice_hours", "worker_silence_minutes",
 		"worker_background_hours",
 		"pod_update_max_open_rounds", "pod_update_rounds_per_minute", "review_round_cap",
-		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
+		"controller", "consumer_names", "capabilities", "worker_backends", "role_config_files", "repository_renames",
 		"hooks",
 	}
 	top := keysOf(t, encoded)
@@ -459,6 +462,9 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	}
 	if settings.LingerHours != 1.5 || settings.WorkerStopTimeoutSeconds != 30 || settings.Controller != config.ControllerLaunchDaemon {
 		t.Errorf("linger_hours %v, worker_stop_timeout_seconds %d, controller %q; want 1.5, 30, daemon", settings.LingerHours, settings.WorkerStopTimeoutSeconds, settings.Controller)
+	}
+	if settings.ConsumerNames != consumernames.ModeFresh {
+		t.Errorf("consumer_names = %q, want the file's fresh", settings.ConsumerNames)
 	}
 	controller := settings.Runtime.Kubernetes.Resources.Controller
 	if controller.CPU != "2" || controller.CPURequest != "1" || controller.MemoryRequest != "4Gi" || controller.EphemeralStorage != "10Gi" {

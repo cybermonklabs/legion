@@ -7,8 +7,13 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/consumernames"
@@ -36,6 +41,10 @@ import (
 // Each failed name step is one ERROR line, nameNotSettledLine, naming the logical name, the
 // physical name the step was on ("" when none was read), the step and the error. There is no
 // metric for it.
+//
+// On fixed names the daemon reads one thing of all this: the sentinel's cutover marker, at each
+// boot, and it refuses to start once the marker is "done" (refuseConvertedStore), since the fixed
+// names it would create are the ones the cutover converted away.
 
 // nameNotSettledLine is the message of the ERROR line a failed name step writes (durableNames.failed).
 const nameNotSettledLine = "intake: a durable consumer's physical name could not be settled"
@@ -48,50 +57,186 @@ const operationUpdate consumernames.Operation = "update"
 // selection record is missing (missingRecord).
 var errCheckpointWithoutRecord = errors.New("intake: a durable consumer has a checkpoint and no selection record")
 
+// refuseConvertedStore refuses a boot on fixed names whose database the operator's convert has
+// marked converted (the sentinel's cutover "done"): its durables are fresh names now, and creating
+// the fixed ones again would run the race the cutover removed. What says there is no marker is
+// today's code, which opens the fixed names: no table, no sentinel, a read the database refuses
+// (insufficient_privilege: a login that may not read the table is a deployment that never ran the
+// cutover on it), a sentinel before any cutover, and one a rollback wrote ("rolled_back", which
+// restored the fixed names). A read that says nothing either way, no connection or a timeout, is
+// made again, from a quarter second doubling to five, until it answers or ctx ends, and then the
+// boot ends on its error: the fixed names never run on a marker the boot did not read.
+func refuseConvertedStore(ctx context.Context, pool Pool) error {
+	store := consumernames.NewPGStore(pool)
+	wait := markerReadWait
+	for {
+		state, err := store.State(ctx)
+		switch {
+		case err == nil && state.Cutover == consumernames.CutoverDone:
+			return errors.New("intake_consumers says this database's durable consumers were converted to fresh names (cutover done), and legion.yaml's consumer_names is fixed: set consumer_names: fresh, since a converted store must not run the fixed names")
+		case err == nil, errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel), readRefused(err):
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("read the cutover marker of intake_consumers, which the fixed names never start without: %w", err)
+		case <-time.After(wait):
+		}
+		wait = min(2*wait, markerReadWaitMost)
+	}
+}
+
+// The waits between the boot's reads of the cutover marker (refuseConvertedStore).
+const (
+	markerReadWait     = 250 * time.Millisecond
+	markerReadWaitMost = 5 * time.Second
+)
+
+// readRefused reports whether err is a read the database refused for want of a privilege.
+func readRefused(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "42501"
+}
+
 // durableNames is the daemon's side of the protocol for its three durables on fresh names.
+//
+// Every call on a physical name, <logical>~<generation>, goes on a NATS connection of its own,
+// named <logical>/<generation> (GenerationConnection), which the auth service may grant exactly
+// that consumer's create, info, pull and acknowledgements: a grant held to the daemon's projects
+// names only the fixed names, and a fresh name is no fixed one. A create opens its candidate's
+// connection once the protocol has reserved it (consumernames.Config.Reserved), before the create
+// is sent; an info of a name opens that name's; and the consumer each durable delivers from is
+// bound on its current's connection, which Run consumes on. The connection of a name the record no
+// longer selects is closed once the open that settled the record ends. The daemon's own connection
+// reads the stream alone.
 type durableNames struct {
-	names  *consumernames.Names
-	stream jetstream.Stream
-	pool   Pool
-	logger *slog.Logger
+	names   *consumernames.Names
+	stream  jetstream.Stream
+	pool    Pool
+	logger  *slog.Logger
+	connect func(ctx context.Context, name string) (*nats.Conn, error)
+
+	mu sync.Mutex
+	// generations are the open connections, by the physical name each is named for.
+	generations map[string]*generation
+}
+
+// generation is the connection of one physical name, and JetStream on it.
+type generation struct {
+	conn *nats.Conn
+	js   jetstream.JetStream
+}
+
+// GenerationConnection is the name of the NATS connection the daemon makes every call on physical,
+// <logical>~<generation>, on: <logical>/<generation>. The auth service reads the generation, and
+// the logical name's project and kind, back from it.
+func GenerationConnection(physical string) string {
+	logical := consumernames.LogicalOf(physical)
+	return logical + "/" + strings.TrimPrefix(physical, logical+"~")
 }
 
 func newDurableNames(stream jetstream.Stream, pool Pool, spec ConsumerSpec) *durableNames {
-	d := &durableNames{stream: stream, pool: pool, logger: spec.Logger}
+	d := &durableNames{stream: stream, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]*generation{}}
 	d.names = consumernames.New(consumernames.Config{
 		Store:         consumernames.NewPGStore(pool),
-		Server:        durableServer{stream: stream},
+		Server:        durableServer{d},
 		Prefix:        func(logical string) string { return logical },
 		Floor:         func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID:      d.streamID,
 		MissingRecord: d.missingRecord,
 		Owner:         fmt.Sprintf("legion daemon %s, pid %d", spec.Project, os.Getpid()),
 		Now:           spec.Now,
+		Reserved: func(ctx context.Context, _ string, op consumernames.Op) error {
+			_, err := d.on(ctx, op.Candidate)
+			return err
+		},
 	})
 	return d
 }
 
+// on is JetStream on physical's connection, opened now if it is not open. The dial runs outside
+// the lock, so a reader of another name never waits on it; of two dials of one name at once, the
+// later closes its own and takes the first's.
+func (d *durableNames) on(ctx context.Context, physical string) (jetstream.JetStream, error) {
+	d.mu.Lock()
+	open, ok := d.generations[physical]
+	d.mu.Unlock()
+	if ok {
+		return open.js, nil
+	}
+	if consumernames.LogicalOf(physical) == physical {
+		return nil, fmt.Errorf("consumer %s is no fresh name, which no generation's connection is granted", physical)
+	}
+	name := GenerationConnection(physical)
+	conn, err := d.connect(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("connect %s: %w", name, err)
+	}
+	js, err := jetstream.New(conn)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("open JetStream on %s: %w", name, err)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if open, ok := d.generations[physical]; ok {
+		conn.Close()
+		return open.js, nil
+	}
+	d.generations[physical] = &generation{conn: conn, js: js}
+	return js, nil
+}
+
+// keep closes the connection of every name of logical but current's.
+func (d *durableNames) keep(logical, current string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for physical, open := range d.generations {
+		if physical != current && consumernames.LogicalOf(physical) == logical {
+			open.conn.Close()
+			delete(d.generations, physical)
+		}
+	}
+}
+
+// close closes every generation's connection.
+func (d *durableNames) close() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for physical, open := range d.generations {
+		open.conn.Close()
+		delete(d.generations, physical)
+	}
+}
+
 // open settles config's durable, whose Durable is its logical name, and returns the consumer the
-// record selects, with this boot's configuration (config's filters and acknowledgement window): it
-// creates one when the record selects none, or the one selected is gone (consumernames.Names.Ensure),
-// and updates the one selected otherwise, keeping the start it was created with, as openConsumer
-// does for a fixed name. It then writes the consumer's floor as the record's last floor.
+// record selects, with this boot's configuration (config's filters and acknowledgement window),
+// bound on that consumer's own connection: it creates one when the record selects none, or the one
+// selected is gone (consumernames.Names.Ensure), and updates the one selected otherwise, keeping
+// the start it was created with, as openConsumer does for a fixed name. It then writes the
+// consumer's floor as the record's last floor, and closes the connections of the logical name's
+// other generations.
 func (d *durableNames) open(ctx context.Context, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	logical := config.Durable
 	sel, _, err := d.names.Ensure(ctx, logical, consumernames.CreateRequest{Create: d.create(config), First: d.first})
+	defer func() { d.keep(logical, sel.Record.Current) }()
 	if err != nil {
 		return nil, d.failed(logical, sel, consumernames.OperationCreate, err)
 	}
 	current := sel.Record.Current
 	info := sel.Info
 	if info == nil {
-		if info, err = (durableServer{stream: d.stream}).Info(ctx, current); err != nil {
+		if info, err = (durableServer{d}).Info(ctx, current); err != nil {
 			return nil, d.failed(logical, sel, consumernames.OperationSelect, err)
 		}
 	}
+	js, err := d.on(ctx, current)
+	if err != nil {
+		return nil, d.failed(logical, sel, operationUpdate, err)
+	}
 	selected := physicalConfig(config, current)
 	selected.DeliverPolicy, selected.OptStartSeq, selected.OptStartTime = info.Config.DeliverPolicy, info.Config.OptStartSeq, info.Config.OptStartTime
-	consumer, err := d.stream.UpdateConsumer(ctx, selected)
+	consumer, err := js.UpdateConsumer(ctx, notificationStream, selected)
 	if err != nil {
 		return nil, d.failed(logical, sel, operationUpdate, fmt.Errorf("update %s: %w", current, err))
 	}
@@ -113,8 +258,10 @@ func (d *durableNames) recordLastFloor(ctx context.Context, logical, current str
 	return d.names.RecordLastFloor(ctx, logical, current, info.AckFloor.Stream, id)
 }
 
-// info is the info of the consumer logical's record selects, read fresh, for a reader: the boot's
-// reconcile (Consumers.DispatchPosition) and the state route (Consumers.Lag). It creates nothing.
+// info is the info of the consumer logical's record selects, read fresh on its own connection, for
+// a reader: the boot's reconcile (Consumers.DispatchPosition) and the state route (Consumers.Lag).
+// It creates nothing, and closes no connection: a repositories change may be settling the same
+// logical name beside it (open), whose candidate's connection it must not close.
 func (d *durableNames) info(ctx context.Context, logical string) (*jetstream.ConsumerInfo, error) {
 	sel, err := d.names.Select(ctx, logical, nil)
 	switch {
@@ -189,12 +336,16 @@ func (d *durableNames) streamID(ctx context.Context) (string, error) {
 	return consumernames.StreamIdentity(info), nil
 }
 
-// create is the consumernames.CreateFunc of config's durable: a create of the physical name with
-// config's filters and window, the logical name in its metadata, at start: its native policy for a
-// new project's first create, else by start sequence. A refusal at the stream's max_consumers is
-// consumernames.ErrConsumerLimit.
+// create is the consumernames.CreateFunc of config's durable: a create of the physical name, on
+// that name's own connection, with config's filters and window, the logical name in its metadata,
+// at start: its native policy for a new project's first create, else by start sequence. A refusal
+// at the stream's max_consumers is consumernames.ErrConsumerLimit.
 func (d *durableNames) create(config jetstream.ConsumerConfig) consumernames.CreateFunc {
 	return func(ctx context.Context, name string, start consumernames.Start) (*jetstream.ConsumerInfo, error) {
+		js, err := d.on(ctx, name)
+		if err != nil {
+			return nil, err
+		}
 		physical := physicalConfig(config, name)
 		switch start.Native {
 		case consumernames.NativeNew:
@@ -204,7 +355,7 @@ func (d *durableNames) create(config jetstream.ConsumerConfig) consumernames.Cre
 		default:
 			physical.DeliverPolicy, physical.OptStartSeq = jetstream.DeliverByStartSequencePolicy, start.Seq
 		}
-		consumer, err := d.stream.CreateConsumer(ctx, physical)
+		consumer, err := js.CreateConsumer(ctx, notificationStream, physical)
 		if err != nil {
 			var api *jetstream.APIError
 			if errors.As(err, &api) && api.ErrorCode == jetstream.JSErrCodeMaximumConsumersLimit {
@@ -229,13 +380,18 @@ func physicalConfig(config jetstream.ConsumerConfig, name string) jetstream.Cons
 	return config
 }
 
-// durableServer is the daemon's consumers as its own NATS grant reaches them: info, and no delete.
-type durableServer struct{ stream jetstream.Stream }
+// durableServer is the daemon's consumers as its own NATS grant reaches them, each on its own
+// connection (durableNames.on): info, and no delete.
+type durableServer struct{ d *durableNames }
 
-// Info reads consumer name through a handle of its own (stream.Consumer), as the readers of a
-// fixed name do.
+// Info reads consumer name on name's own connection, through a handle of its own, as the readers
+// of a fixed name do.
 func (s durableServer) Info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
-	consumer, err := s.stream.Consumer(ctx, name)
+	js, err := s.d.on(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	consumer, err := js.Consumer(ctx, notificationStream, name)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
 		return nil, fmt.Errorf("%w: %s", consumernames.ErrNotFound, name)
 	}

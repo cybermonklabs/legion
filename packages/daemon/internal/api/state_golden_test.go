@@ -114,6 +114,7 @@ pod_update_max_open_rounds: 6
 pod_update_rounds_per_minute: 2
 review_round_cap: 4
 controller: daemon
+consumer_names: fresh
 worker_backends: {tester: omp}
 repository_renames:
   - {from: acme/widgets-legacy, to: acme/widgets}

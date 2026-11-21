@@ -39,7 +39,7 @@ func TestAFirstCreateLostBeforeItsPublishIsCreatedAgainAtItsBoundary(t *testing.
 	cutover(t, pool, consumernames.CutoverDone)
 	js, stream, _ := freshJetStream(t)
 	logs := &lockedBuffer{}
-	spec := freshSpec(logs)
+	spec := freshSpec(t, logs, js)
 	wake := wakeConsumerName(spec.Project)
 
 	before := publishWakes(t, js, 2)
@@ -60,7 +60,7 @@ func TestAMissingCurrentStartsAtItsOwnFloorOfZero(t *testing.T) {
 	pool := migratedPool(t)
 	cutover(t, pool, consumernames.CutoverDone)
 	js, stream, _ := freshJetStream(t)
-	spec := freshSpec(&lockedBuffer{})
+	spec := freshSpec(t, &lockedBuffer{}, js)
 	wake := wakeConsumerName(spec.Project)
 
 	openIntake(t, js, pool, spec)
@@ -84,7 +84,7 @@ func TestAMissingCurrentWithNoSafeStartIsRefused(t *testing.T) {
 	cutover(t, pool, consumernames.CutoverDone)
 	js, stream, _ := freshJetStream(t)
 	logs := &lockedBuffer{}
-	spec := freshSpec(logs)
+	spec := freshSpec(t, logs, js)
 	wake := wakeConsumerName(spec.Project)
 	selectedAndLost(t, pool, wake)
 	calls := watchConsumerCalls(t, js.Conn())
@@ -116,7 +116,7 @@ func TestACheckpointWithNoSelectionRecordIsRefused(t *testing.T) {
 	cutover(t, pool, consumernames.CutoverDone)
 	js, stream, _ := freshJetStream(t)
 	logs := &lockedBuffer{}
-	spec := freshSpec(logs)
+	spec := freshSpec(t, logs, js)
 	dispatch := dispatchConsumerName(spec.Project)
 	if _, err := pool.Exec(context.Background(), `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, 7, $2)`,
 		dispatch, time.Now().Add(-time.Hour)); err != nil {

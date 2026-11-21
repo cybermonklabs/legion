@@ -1095,6 +1095,7 @@
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,
     "controller": "daemon",
+    "consumer_names": "fresh",
     "capabilities": {
       "decided": {
         "pool-capacity": "the pool is sized by hand for the admission cap"

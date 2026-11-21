@@ -2,6 +2,7 @@ package intake
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -26,8 +27,9 @@ import (
 // durable_names_race_test.go and, on the hooked server, durable_names_forced_order_test.go.
 
 // On fixed names, the default and "fixed" alike, OpenConsumers is main's: it creates the three
-// fixed names, updates them at the next boot, and neither reads nor writes intake_consumers, which
-// it needs no more than main does: with the table gone it opens the same.
+// fixed names, updates them at the next boot, and writes nothing to intake_consumers, whose
+// sentinel is all it reads (TestFixedNamesRefuseADatabaseTheCutoverConverted): with the table gone
+// it opens the same.
 func TestFixedNamesAreTodaysNamesAndReadNoSelectionRecord(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -72,6 +74,160 @@ func TestFixedNamesAreTodaysNamesAndReadNoSelectionRecord(t *testing.T) {
 	}
 }
 
+// On fresh names each durable's consumer is reached on a NATS connection of its own, named for its
+// generation, <logical>/<generation> (GenerationConnection), which a grant held to the daemon's
+// projects admits that one consumer on: the boot opens one for each current, a consumer made again
+// gets its own and the gone one's is closed, and Close closes them all. The control is the fixed
+// names, which open no connection beside the daemon's own.
+func TestEachFreshNameIsReachedOnAConnectionOfItsOwn(t *testing.T) {
+	connections := func(t *testing.T, project string) []string {
+		t.Helper()
+		var names []string
+		for _, connection := range testnats.Connections(t) {
+			if strings.HasPrefix(connection.Name, "legion-go-"+project+"-") {
+				names = append(names, connection.Name)
+			}
+		}
+		slices.Sort(names)
+		return names
+	}
+	t.Run("control: fixed names", func(t *testing.T) {
+		pool := migratedPool(t)
+		js, _ := testJetStream(t)
+		spec := consumerSpec(&lockedBuffer{})
+		openIntake(t, js, pool, spec)
+		if names := connections(t, spec.Project); len(names) != 0 {
+			t.Fatalf("fixed names opened the connections %v, want none beside the daemon's own", names)
+		}
+	})
+	t.Run("fresh names", func(t *testing.T) {
+		pool := migratedPool(t)
+		cutover(t, pool, consumernames.CutoverDone)
+		js, stream, _ := freshJetStream(t)
+		spec := freshSpec(t, &lockedBuffer{}, js)
+		want := func() []string {
+			var names []string
+			for _, logical := range fixedNames(spec.Project) {
+				names = append(names, GenerationConnection(currentName(t, pool, logical)))
+			}
+			slices.Sort(names)
+			return names
+		}
+		awaitConnections := func(what string, want []string) {
+			t.Helper()
+			testwait.Eventually(t, what, func() bool { return slices.Equal(connections(t, spec.Project), want) })
+		}
+		first := openIntake(t, js, pool, spec)
+		awaitConnections("one connection for each current, named for its generation", want())
+		wake := wakeConsumerName(spec.Project)
+		gone := currentName(t, pool, wake)
+		if GenerationConnection(gone) != wake+"/"+strings.TrimPrefix(gone, wake+"~") {
+			t.Fatalf("GenerationConnection(%s) = %s, want the logical name, '/' and the generation", gone, GenerationConnection(gone))
+		}
+		first.Close()
+		awaitConnections("no connection once the consumers are closed", nil)
+
+		if err := stream.DeleteConsumer(context.Background(), gone); err != nil {
+			t.Fatalf("delete %s outside the daemon: %v", gone, err)
+		}
+		second := openIntake(t, js, pool, spec)
+		if again := currentName(t, pool, wake); again == gone {
+			t.Fatalf("the boot after %s went selected it again", gone)
+		}
+		awaitConnections("the gone consumer's connection closed and its successor's open", want())
+		second.Close()
+		awaitConnections("no connection once the consumers are closed", nil)
+	})
+}
+
+// On fixed names the daemon reads its database's cutover marker at the boot and refuses to start
+// once the operator's convert has written "done", naming consumer_names: the fixed names it would
+// create are the ones the cutover converted away, so creating them again would run today's race on
+// a converted store. With no marker, before any cutover, and after a rollback, which restores the
+// fixed names, it opens them as main does.
+func TestFixedNamesRefuseADatabaseTheCutoverConverted(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		marker  string
+		write   bool
+		refused bool
+	}{
+		{name: "the cutover done", marker: consumernames.CutoverDone, write: true, refused: true},
+		{name: "control: no sentinel"},
+		{name: "control: a sentinel before the cutover", write: true},
+		{name: "control: after a rollback", marker: consumernames.CutoverRolledBack, write: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			if tc.write {
+				cutover(t, pool, tc.marker)
+			}
+			js, stream := testJetStream(t)
+			calls := watchConsumerCalls(t, js.Conn())
+			spec := consumerSpec(&lockedBuffer{})
+			spec.Names = consumernames.ModeFixed
+
+			consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("OpenConsumers = %v, want the fixed names opened", err)
+				}
+				if created := calls.created(t); !slices.Equal(created, fixedNames(spec.Project)) {
+					t.Fatalf("the boot created %v, want the fixed names", created)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "consumer_names") || !strings.Contains(err.Error(), "fresh") {
+				t.Fatalf("OpenConsumers = %v, %v; want a refusal naming consumer_names and fresh", consumers, err)
+			}
+			if touched := calls.touched(t); len(touched) != 0 {
+				t.Fatalf("the refused boot sent the server %v, want no consumer call", touched)
+			}
+			if names := consumerNames(t, stream); len(names) != 0 {
+				t.Fatalf("the stream holds %v after the refused boot, want no consumer", names)
+			}
+		})
+	}
+}
+
+// The boot logs how the daemon names its durable consumers, once, before it opens them: the
+// default as fixed, and fresh as fresh.
+func TestTheBootLogsItsConsumerNamingMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode consumernames.Mode
+		want string
+	}{
+		{name: "the default", want: "fixed"},
+		{name: "fresh", mode: consumernames.ModeFresh, want: "fresh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			cutover(t, pool, consumernames.CutoverDone)
+			if tc.mode == "" {
+				if _, err := pool.Exec(context.Background(), `delete from intake_consumers`); err != nil {
+					t.Fatalf("clear the sentinel for the fixed names: %v", err)
+				}
+			}
+			js, _, _ := freshJetStream(t)
+			logs := &lockedBuffer{}
+			spec := freshSpec(t, logs, js)
+			spec.Names = tc.mode
+			openIntake(t, js, pool, spec)
+			var lines []map[string]any
+			for line := range strings.SplitSeq(logs.String(), "\n") {
+				var fields map[string]any
+				if json.Unmarshal([]byte(line), &fields) == nil && fields["msg"] == "intake: the durable consumers' naming" {
+					lines = append(lines, fields)
+				}
+			}
+			if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["consumer_names"] != tc.want {
+				t.Fatalf("the boot's naming lines = %v, want one INFO line with consumer_names %s; logs:\n%s", lines, tc.want, logs)
+			}
+		})
+	}
+}
+
 // On fresh names the daemon refuses every consumer call until the operator's convert has written
 // the cutover marker "done" into its database: with the table missing, the sentinel missing, the
 // cutover not run and after a rollback, the boot stops with the ERROR line, before any consumer is
@@ -102,7 +258,7 @@ func TestFreshNamesRefuseUntilTheCutoverIsDone(t *testing.T) {
 			js, stream, _ := freshJetStream(t)
 			calls := watchConsumerCalls(t, js.Conn())
 			logs := &lockedBuffer{}
-			spec := freshSpec(logs)
+			spec := freshSpec(t, logs, js)
 
 			consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 			if !errors.Is(err, tc.want) {
@@ -136,7 +292,7 @@ func TestAFreshDaemonCreatesEachDurableAtAFreshNameAndKeepsItAcrossBoots(t *test
 	cutover(t, pool, consumernames.CutoverDone)
 	js, stream, id := freshJetStream(t)
 	calls := watchConsumerCalls(t, js.Conn())
-	spec := freshSpec(&lockedBuffer{})
+	spec := freshSpec(t, &lockedBuffer{}, js)
 	before := publishWakes(t, js, 2)
 
 	stop := startConsume(t, js, spec, pool, factMarks())
@@ -213,7 +369,7 @@ func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 		cutover(t, pool, consumernames.CutoverDone)
 		js, stream, _ := freshJetStream(t)
 		calls := watchConsumerCalls(t, js.Conn())
-		spec := freshSpec(&lockedBuffer{})
+		spec := freshSpec(t, &lockedBuffer{}, js)
 		github := githubConsumerName(spec.Project)
 
 		openIntake(t, js, pool, spec)
@@ -239,7 +395,7 @@ func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 		cutover(t, pool, consumernames.CutoverDone)
 		js, stream, _ := freshJetStream(t)
 		calls := watchConsumerCalls(t, js.Conn())
-		spec := freshSpec(&lockedBuffer{})
+		spec := freshSpec(t, &lockedBuffer{}, js)
 
 		var boots sync.WaitGroup
 		errs := make([]error, 2)
@@ -283,7 +439,7 @@ func TestEveryReaderFindsTheCurrentName(t *testing.T) {
 		}
 	}
 	cutover(t, pool, consumernames.CutoverDone)
-	spec := freshSpec(&lockedBuffer{})
+	spec := freshSpec(t, &lockedBuffer{}, js)
 	consumers := openIntake(t, js, pool, spec)
 	github := githubConsumerName(spec.Project)
 	ctx := context.Background()
@@ -357,7 +513,7 @@ func TestAMissingCurrentIsCreatedAgainAtTheStartItsRecordProves(t *testing.T) {
 			cutover(t, pool, consumernames.CutoverDone)
 			js, stream, id := freshJetStream(t)
 			logs := &lockedBuffer{}
-			spec := freshSpec(logs)
+			spec := freshSpec(t, logs, js)
 			wake := wakeConsumerName(spec.Project)
 			seqs := publishWakes(t, js, 5)
 			gone := consumernames.FreshName(wake)
@@ -401,7 +557,7 @@ func TestABootSettlesTheCreateAnotherDaemonLeftOpen(t *testing.T) {
 			pool := migratedPool(t)
 			cutover(t, pool, consumernames.CutoverDone)
 			js, stream, _ := freshJetStream(t)
-			spec := freshSpec(&lockedBuffer{})
+			spec := freshSpec(t, &lockedBuffer{}, js)
 			wake := wakeConsumerName(spec.Project)
 			seqs := publishWakes(t, js, 3)
 			candidate := consumernames.FreshName(wake)
@@ -466,7 +622,7 @@ func TestARetiredDaemonNameIsListedByStatusAndDeletedByCleanup(t *testing.T) {
 	pool := migratedPool(t)
 	cutover(t, pool, consumernames.CutoverDone)
 	js, stream, _ := freshJetStream(t)
-	spec := freshSpec(&lockedBuffer{})
+	spec := freshSpec(t, &lockedBuffer{}, js)
 	wake := wakeConsumerName(spec.Project)
 	unanswered := consumernames.FreshName(wake)
 	putRecord(t, pool, wake, consumernames.Record{Start: 1, Op: &consumernames.Op{
@@ -525,7 +681,7 @@ func TestFreshNamesRefuseAServerThatSkipsAFilterAsFixedNamesDo(t *testing.T) {
 		t.Fatalf("create the stream on nats:2.10: %v", err)
 	}
 	logs := &lockedBuffer{}
-	consumers, err := OpenConsumers(context.Background(), refused, pool, freshSpec(logs))
+	consumers, err := OpenConsumers(context.Background(), refused, pool, freshSpec(t, logs, refused))
 	if err == nil || !strings.Contains(err.Error(), "2.10.29") || !strings.Contains(err.Error(), natsversion.FixedReleases) {
 		t.Fatalf("OpenConsumers on nats:2.10 on fresh names = %v, %v; want the refusal naming 2.10.29 and %q", consumers, err, natsversion.FixedReleases)
 	}

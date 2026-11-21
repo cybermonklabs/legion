@@ -3,10 +3,13 @@ package intake
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/consumernames"
 )
@@ -18,11 +21,21 @@ import (
 // interruptions write nothing, and the current name is the fixed one. A race regression is then the
 // same scenario on main's code, and it fails there.
 
-// freshSpec is spec on fresh names, logging JSON to logs as `legion start`'s daemon does.
-func freshSpec(logs *lockedBuffer) ConsumerSpec {
+// freshSpec is spec on fresh names, logging JSON to logs as `legion start`'s daemon does, whose
+// generations' connections dial js's servers under the names intake gives them and are closed when
+// t ends, if the consumers have not closed them first.
+func freshSpec(t testing.TB, logs *lockedBuffer, js jetstream.JetStream) ConsumerSpec {
 	spec := consumerSpec(logs)
 	spec.Logger = slog.New(slog.NewJSONHandler(logs, nil))
 	spec.Names = consumernames.ModeFresh
+	servers := strings.Join(js.Conn().Servers(), ",")
+	spec.Connect = func(_ context.Context, name string) (*nats.Conn, error) {
+		conn, err := nats.Connect(servers, nats.Name(name), nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond))
+		if err == nil {
+			t.Cleanup(conn.Close)
+		}
+		return conn, err
+	}
 	return spec
 }
 

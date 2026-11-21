@@ -930,6 +930,11 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		ReviewPermission: w.reviewerCanWrite, ReviewBody: w.reviewBody,
 		RepositoryMapping: w.mappingChange, PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 		Names: cfg.ConsumerNames,
+		// Each generation of a fresh consumer name gets a connection of its own, opened as this
+		// one is, under the name intake gives it (intake.GenerationConnection).
+		Connect: func(_ context.Context, name string) (*nats.Conn, error) {
+			return natsauth.Connect(cfg.NatsURLs, nc.seed, name, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
+		},
 	})
 	if err != nil {
 		conn.Close()
@@ -2309,14 +2314,17 @@ func (w *workflowRuntime) releaseReadied(ctx context.Context) {
 	}
 }
 
-// closeNATS closes the workflow's Envoy NATS connection and nothing else, so run can close it at
-// the stop's budget without waiting for the rest of stop. It is safe on a nil runtime, as stop is,
-// and safe to call more than once and from any goroutine: nats.Conn.Close is idempotent, and the
-// connection is read through an atomic pointer.
+// closeNATS closes the workflow's Envoy NATS connection, and the connections its consumers opened
+// of their own (intake.Consumers.Close, each fresh consumer name's), and nothing else, so run can
+// close them at the stop's budget without waiting for the rest of stop. It is safe on a nil
+// runtime, as stop is, and safe to call more than once and from any goroutine: nats.Conn.Close and
+// Consumers.Close are idempotent, the connection is read through an atomic pointer, and consumers
+// is written only by the boot, before any goroutine that calls this starts.
 func (w *workflowRuntime) closeNATS() {
 	if w == nil {
 		return
 	}
+	w.consumers.Close()
 	if conn := w.conn.Load(); conn != nil {
 		conn.Close()
 	}

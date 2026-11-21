@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/listenfd"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
@@ -620,6 +621,7 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	for _, line := range webhookAppLines(state.Repositories.WithoutWebhookApp) {
 		fmt.Fprintln(stdout, line)
 	}
+	fmt.Fprintln(stdout, consumerNamesLine(state.Settings))
 	for _, line := range consumerLines(state.Consumers, state.Daemon.StartedAt, time.Now()) {
 		fmt.Fprintln(stdout, line)
 	}
@@ -1411,6 +1413,18 @@ func webhookAppLines(gaps []api.WebhookAppGapView) []string {
 		lines[i] = "webhook App missing on " + gap.Repo + ": " + gap.Reason
 	}
 	return lines
+}
+
+// consumerNamesLine is the line an operator reads for how the daemon names its durable consumers
+// (settings.consumer_names): on `fresh` the consumer lines after it carry each durable's logical
+// name, and the stream holds a fresh name of it. A daemon from before the setting serves none and
+// names them as `fixed` does.
+func consumerNamesLine(settings api.Settings) string {
+	mode := settings.ConsumerNames
+	if mode == "" {
+		mode = consumernames.ModeFixed
+	}
+	return "durable consumer names: " + string(mode)
 }
 
 // consumerLines are the lines an operator reads for the daemon's durable consumers

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/consumernames"
 
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The rig of the daemon's fresh-name rows (durable_names_test.go and, under the odatrace tag,
@@ -31,11 +32,32 @@ const nameNotSettled = "intake: a durable consumer's physical name could not be 
 
 // identifiedStream creates ENVOY_NOTIFICATIONS on js as the listener does, carrying its stream
 // identity (consumernames.StreamIdentityMetadataKey), which a last floor must name to count.
-func identifiedStream(t testing.TB, js jetstream.JetStream) (jetstream.Stream, string) {
+func identifiedStream(t *testing.T, js jetstream.JetStream) (jetstream.Stream, string) {
+	t.Helper()
+	return identifiedStreamOf(t, js, 1)
+}
+
+// identifiedStreamOf is identifiedStream keeping replicas copies, on a cluster.
+func identifiedStreamOf(t *testing.T, js jetstream.JetStream, replicas int) (jetstream.Stream, string) {
 	t.Helper()
 	id := consumernames.FreshName("stream")
-	return testnats.CreateStream(t, js, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"},
-		Metadata: map[string]string{consumernames.StreamIdentityMetadataKey: id}}), id
+	stream := testnats.CreateStream(t, js, jetstream.StreamConfig{Name: notificationStream, Subjects: []string{"notifications.>"},
+		Replicas: max(replicas, 1), Metadata: map[string]string{consumernames.StreamIdentityMetadataKey: id}})
+	if replicas > 1 {
+		testwait.Eventually(t, notificationStream+"'s leader and every copy current", func() bool {
+			info, err := stream.Info(context.Background())
+			if err != nil || info.Cluster == nil || info.Cluster.Leader == "" || len(info.Cluster.Replicas) != replicas-1 {
+				return false
+			}
+			for _, replica := range info.Cluster.Replicas {
+				if !replica.Current {
+					return false
+				}
+			}
+			return true
+		})
+	}
+	return stream, id
 }
 
 // freshJetStream is the package's server and its notification stream, with its identity.

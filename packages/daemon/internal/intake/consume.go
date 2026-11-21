@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
@@ -210,12 +211,19 @@ type ConsumerSpec struct {
 	// retried after NakDelay rather than applied without it. No preparer (a test) applies the fact
 	// as decoded, with no view, which queues nothing.
 	PrepareArtifact func(ctx context.Context, artifact DispatchArtifact) (DispatchArtifact, error)
-	// Names is how the three durables are named (config.Config.ConsumerNames, which the daemon
-	// reads from ENVOY_CONSUMER_NAMES once at its start): "" and consumernames.ModeFixed are the
-	// fixed names legion-go-<project>-<kind> this package has always used, opened exactly as before
-	// (openConsumer), and consumernames.ModeFresh a fresh physical name at each creation behind the
-	// selection record of intake_consumers (durable_names.go). Any other value is refused.
+	// Names is how the three durables are named (config.Config.ConsumerNames, legion.yaml's
+	// `consumer_names`): "" and consumernames.ModeFixed are the fixed names
+	// legion-go-<project>-<kind> this package has always used, opened exactly as before
+	// (openConsumer) once the database's cutover marker is not "done" (refuseConvertedStore), and
+	// consumernames.ModeFresh a fresh physical name at each creation behind the selection record of
+	// intake_consumers (durable_names.go). Any other value is refused.
 	Names consumernames.Mode
+	// Connect opens a NATS connection named name, as the daemon's own connection is opened (its
+	// URLs, its user and its reconnect policy). On fresh names every call on a physical consumer
+	// name goes on a connection of that name's own, named GenerationConnection(physical), which the
+	// auth service may grant exactly that consumer (durable_names.go); fresh names refuse a spec
+	// with none. Fixed names never call it.
+	Connect func(ctx context.Context, name string) (*nats.Conn, error)
 }
 
 // RetryLater is an error ConsumerSpec.ReviewPermission returns when its read must not be made again
@@ -293,6 +301,12 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	if err != nil {
 		return nil, err
 	}
+	spec.Logger.Info("intake: the durable consumers' naming", "consumer_names", string(spec.Names))
+	if spec.Names == consumernames.ModeFixed {
+		if err := refuseConvertedStore(ctx, pool); err != nil {
+			return nil, err
+		}
+	}
 	stream, err := js.Stream(ctx, notificationStream)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", notificationStream, err)
@@ -301,6 +315,12 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	if spec.Names == consumernames.ModeFresh {
 		consumers.names = newDurableNames(stream, pool, spec)
 	}
+	opened := false
+	defer func() {
+		if !opened {
+			consumers.Close()
+		}
+	}()
 
 	consumers.dispatch, err = consumers.open(ctx, jetstream.ConsumerConfig{
 		Durable:        dispatchConsumerName(spec.Project),
@@ -324,11 +344,21 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	if err != nil {
 		return nil, fmt.Errorf("open the listener wake durable consumer: %w", err)
 	}
-	opened := spec.Now()
-	consumers.progress.dispatch = &consumerProgress{name: dispatchConsumerName(spec.Project), opened: opened}
-	consumers.progress.github = &consumerProgress{name: githubConsumerName(spec.Project), opened: opened}
-	consumers.progress.wake = &consumerProgress{name: wakeConsumerName(spec.Project), opened: opened}
+	now := spec.Now()
+	consumers.progress.dispatch = &consumerProgress{name: dispatchConsumerName(spec.Project), opened: now}
+	consumers.progress.github = &consumerProgress{name: githubConsumerName(spec.Project), opened: now}
+	consumers.progress.wake = &consumerProgress{name: wakeConsumerName(spec.Project), opened: now}
+	opened = true
 	return consumers, nil
+}
+
+// Close closes the connections Consumers opened of its own: on fresh names, each generation's
+// (ConsumerSpec.Connect). The daemon's own connection, the one OpenConsumers was handed, is the
+// caller's. It may be called more than once, and from any goroutine.
+func (c *Consumers) Close() {
+	if c != nil && c.names != nil {
+		c.names.close()
+	}
 }
 
 // open opens config's durable, whose Durable is its fixed name: as main always has on fixed names
@@ -1294,9 +1324,14 @@ func normalizedSpec(spec ConsumerSpec) (ConsumerSpec, error) {
 		spec.Now = time.Now
 	}
 	switch spec.Names {
-	case "", consumernames.ModeFixed, consumernames.ModeFresh:
+	case "":
+		spec.Names = consumernames.ModeFixed
+	case consumernames.ModeFixed, consumernames.ModeFresh:
 	default:
 		return ConsumerSpec{}, fmt.Errorf("intake consumer naming mode %q is neither %q nor %q", spec.Names, consumernames.ModeFixed, consumernames.ModeFresh)
+	}
+	if spec.Names == consumernames.ModeFresh && spec.Connect == nil {
+		return ConsumerSpec{}, errors.New("intake consumers on fresh names need Connect: each generation's calls go on a connection of its own")
 	}
 	return spec, nil
 }

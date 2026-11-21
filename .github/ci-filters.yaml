@@ -285,6 +285,7 @@ legion_command: &legion_command
   # why: .github/ci-notes/ci.md#legion_command-the-one-public-door-onto-the-generated-envoy-session
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/consumernames/*'
   - 'packages/envoy/steprecord/*'
 listener_command: &listener_command
   - 'packages/envoy/cmd/listener/*'
@@ -1382,6 +1383,7 @@ pi_legion:
   - 'packages/envoy/sessiontiming/*'
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
+  - 'packages/envoy/consumernames/*'
   - 'packages/envoy/steprecord/*'
   - *go_workspace
   - 'AGENTS.md'

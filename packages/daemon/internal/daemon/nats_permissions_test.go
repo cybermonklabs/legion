@@ -239,6 +239,45 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				}
 				t.Logf("two boots on fresh names created %v and made %s again as %s under the daemon grant, with no refusal", currents, gone, currents[1])
 			})
+
+			t.Run("on fresh names without the consumer-create permission, the daemon and server report the generation's create", func(t *testing.T) {
+				const removed = "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.>"
+				grant := natsgrant.Daemon()
+				held := len(grant.Publish)
+				grant.Publish = slices.DeleteFunc(grant.Publish, func(subject string) bool { return subject == removed })
+				if len(grant.Publish) != held-1 {
+					t.Fatalf("the daemon grant does not contain %s: %v", removed, grant.Publish)
+				}
+				daemonSeed, admin, js, server, uri := startDaemonGrantServer(t, image.Ref, grant)
+				defer admin.Close()
+				createDaemonNotificationStream(t, js)
+				cfg := daemonGrantConfig(uri)
+				cfg.ConsumerNames = consumernames.ModeFresh
+				logs := &syncBuffer{}
+				w := grantWorkflow(t, logs)
+				if _, err := consumernames.NewPGStore(w.pool).WriteSentinel(t.Context(), consumernames.StoreState{Cutover: consumernames.CutoverDone}, 0); err != nil {
+					t.Fatalf("write the sentinel as the operator's convert does: %v", err)
+				}
+				attempt, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				if err := w.connect(attempt, cfg, natsConnection{seed: daemonSeed}); err == nil {
+					w.closeNATS()
+					t.Fatal("the daemon connected on fresh names without the consumer-create permission")
+				}
+				denied := "$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS." + dispatchGrantConsumer + "~"
+				var daemonLine, serverLine string
+				testwait.Eventually(t, "the daemon log naming the refused create of a fresh name", func() bool {
+					daemonLine = matchingLogLine(logs.String(), "NATS refused the daemon a permission", denied)
+					return daemonLine != ""
+				})
+				testwait.Eventually(t, "the server log naming the refused create of a fresh name", func() bool {
+					serverLog, err := readDaemonGrantServerLogs(server)
+					serverLine = matchingLogLine(serverLog, "Publish Violation", denied)
+					return err == nil && serverLine != ""
+				})
+				t.Logf("observed daemon refusal: %s", daemonLine)
+				t.Logf("observed server refusal: %s", serverLine)
+			})
 		})
 	}
 }

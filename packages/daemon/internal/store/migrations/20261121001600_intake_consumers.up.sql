@@ -1,6 +1,6 @@
 -- 20261121001600_intake_consumers.up.sql -- the selection records of the daemon's durable
--- consumers, which a daemon whose ENVOY_CONSUMER_NAMES is "fresh" reads and writes, and a daemon on
--- the fixed names (the default) never touches.
+-- consumers, which a daemon whose legion.yaml says `consumer_names: fresh` reads and writes, and
+-- whose cutover marker a daemon on the fixed names (the default) reads at its boot and nothing else.
 --
 -- One row per logical name, legion-go-<project>-dispatch, -github and -wake, never deleted: record
 -- is the record github.com/sjawhar/envoy/consumernames keeps for it (consumernames.Record as JSON:
