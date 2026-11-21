@@ -10,7 +10,7 @@ In the text moved here, "this workflow" refers to `.github/workflows/release.yam
 
 ## Why the workflow level permissions block is empty, and the four stages a release waits for
 
-Every job declares its own permissions (legion_build, legion_names, pi_envoy_build,
+Every job declares its own permissions (ref, legion_build, legion_names, pi_envoy_build,
 pi_envoy_names, pi_legion_build, pi_legion_names, claude_envoy_build, claude_envoy_names,
 publish, worker_image, worker_image_attest, worker_image_release); nothing runs under this
 workflow-level default, so it stays empty rather than becoming an unreviewed grant to a job
@@ -31,7 +31,8 @@ pinned actions its steps use (actions/checkout, actions/setup-node, actions/down
 of the steps that push. release-push.sh handed checks what each build job handed over before
 anything acts on it.
 
-So a release waits for a runner four times: for the four build jobs together; for their names
+So a release waits for a runner five times: for the ref job, which decides whether the run is on
+main; for the four build jobs together; for their names
 jobs; for publish beside worker_image's build; and for worker_image_attest's attestation beside
 worker_image_release. Each stage holds what the one before it may not: publish cannot run in a
 job that built what it publishes, a names job holds the term list no build job may, the image
@@ -127,21 +128,24 @@ actions", Operators), and `startsWith`, `endsWith` and `contains` do too, so
 GitHub keeps such a branch beside `main` as a branch of its own, no ruleset of this repository
 covers it, and a workflow_dispatch runs on it: measured on a scratch repository on 2026-11-21,
 where a job behind that `if:` ran in a push run and in a dispatched run on `Main` while `main`
-stood at another commit. The other places that read the ref compare it exactly, measured the same
-day: `on.push.branches: [main]` starts no run on a push to `Main`, so only a dispatch reaches
-these jobs; two branches whose names differ only in case get two concurrency groups from a group
-keyed on `github.ref`, and two Actions cache scopes; and `gh attestation verify` refused an
-archive attested on main when asked for `refs/heads/Main`, so a deployment's check, which asks
-for `refs/heads/main`, refuses an attestation made on `Main`. The npm publishes and the GitHub
+stood at another commit. GitHub itself compares the ref exactly elsewhere, measured the same day:
+`on.push.branches: [main]` starts no run on a push to `Main`, so only a dispatch reaches these
+jobs; two branches whose names differ only in case get two concurrency groups from a group keyed
+on `github.ref`, and two Actions cache scopes; and `gh attestation verify` refused an archive
+attested on main when asked for `refs/heads/Main`, so a deployment's check, which asks for
+`refs/heads/main`, refuses an attestation made on `Main`. The npm publishes and the GitHub
 releases and tags check nothing of the kind; the listener's `latest` step alone also checks that
-its commit is on main.
+its commit is on main. The `github.ref` comparisons that stay, in cache conditions
+(setup-bun's `no-cache`, worker-image.yaml's `cache-to`, the `restore-keys` lines) and in
+worker_image_attest's `skip_attest`, still take `Main` for main, and on `Main` they write only
+`Main`'s own cache scope or skip an attestation.
 
 `github.ref_protected` would answer only while the rulesets protect `main` and no branch named
 `Main`, which a settings change outside this tree can alter. The `ref` job holds no permission
 and checks nothing out, so it runs no code of this repository, and its `timeout-minutes` of 5
-bounds a lost runner only. release-envoy-infra.yaml and docs-pages.yaml carry copies of it; in
-release-envoy-listener.yaml the test is the first step of `targets`, the job that runs first there
-and holds contents: read alone, so it runs before that job checks anything out.
+bounds a lost runner only. It is a job of its own in each workflow, never a step of a job that
+runs code of the checkout: a job's outputs are read when the job ends, after every step of it.
+release-envoy-listener.yaml, release-envoy-infra.yaml and docs-pages.yaml carry copies of it.
 
 ## What legion_build releases and why it holds no credential
 
@@ -480,7 +484,8 @@ when publish's pair_ok says both plugins it links are on npm. That condition is 
 `skip_attest` input rather than this job's `if:`, because check-image-trigger-paths.sh reads
 the `if:` of a job calling worker-image.yaml as an image gate and refuses one that tests another
 job's outputs or the ref. Off main (a workflow_dispatch from a branch) publish skips and the
-image is attested, as a branch dispatch's image always was.
+image is attested, as a branch dispatch's image always was; on a branch named `Main` or `MAIN`,
+which that `github.ref` comparison takes for main, publish skips and the image is not attested.
 
 ## Why the attest call is handed the image repository
 

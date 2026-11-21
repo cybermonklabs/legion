@@ -26,7 +26,7 @@ on:
       - ".github/workflows/release-envoy-infra.yaml"
   workflow_dispatch:
 
-# Every job declares its own permissions (build, publish below); nothing runs under this
+# Every job declares its own permissions (ref, build, publish below); nothing runs under this
 # workflow-level default.
 permissions: {}
 
