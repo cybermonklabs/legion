@@ -444,13 +444,26 @@ async function preloadAfterRefresher(home: string, state: string, signal: string
   return preload
 }
 
+/** One wait the hook armed (`armedWait` in hooks/session-hook.ts): a look at the refresher's
+ *  outcome, the Dispatch read, or the read left in flight after printing; when it armed it, for how
+ *  long, and the time it armed it against. */
+interface ArmedWait {
+  readonly kind: "refresher" | "read" | "settle"
+  readonly at: number
+  readonly ms: number
+  readonly limit: number
+}
+
 /** What the hook measured of itself, written to `ENVOY_ANSWERS_TIMING_FILE`, in ms after its
  *  process started: when its code began, when it printed (null: it failed before), and when it
- *  exited; and the refresher it started (null: it started none). */
+ *  exited; the print deadline it applied and each wait it armed; and the refresher it started
+ *  (null: it started none). */
 interface HookTiming {
   readonly began: number
   readonly printed: number | null
   readonly ended: number
+  readonly deadline: number
+  readonly waits: readonly ArmedWait[]
   readonly refresher: StartedProcess | null
 }
 
@@ -517,25 +530,30 @@ function notFinishedReason(run: HookRun): string {
   return `a "!" command in envoy.json had not finished ${Math.round(printDeadline(run))} ms after the hook started`
 }
 
-/** How far past its deadline the hook may print, for what the design does not bound: the time the
- *  host does not run it. Unloaded, the hook prints within 15 ms of its deadline; on a 2-core pod
- *  with four busy loops it printed up to 650 ms past it, a stall with no wait of its own (a read
- *  Dispatch had answered). A hook waiting on what the design says it must not (a token command of
- *  seconds, a gate never opened, Dispatch's 10 s read timeout) overruns by more than this; the
- *  exact budgets it waited are checked from what it printed (`notFinishedReason`,
- *  `expectReadBudget`), which no scheduling changes. */
-const DEADLINE_SLACK_MS = 1_000
-
-/** Holds the hook to the wait the design bounds, measured by the hook itself from its process's
- *  start, so bun's start-up (which no code of the hook's controls) never decides the check: it
- *  prints by its deadline and exits `ANSWERS_SETTLE_MS` (50 ms) after, give or take
- *  `DEADLINE_SLACK_MS`. No wall time from the spawn is held: on a loaded host the start-up alone
- *  can take seconds. */
+/** Holds the hook to the deadline the design gives it, by what the hook recorded of what it did,
+ *  never by how long it took: the deadline it applied is the design's (`printDeadline`); it
+ *  printed; it armed each look at the refresher's outcome before that deadline and for no longer
+ *  than what was left of it, so it gave up at its first look past the deadline; it gave the
+ *  Dispatch read what was left, or the least wait (150 ms, `ANSWERS_LEAST_WAIT_MS`); and after
+ *  printing it gave a read still in flight at most until 50 ms past the deadline
+ *  (`ANSWERS_SETTLE_MS`), once. The time the host leaves the hook unscheduled, bun's start-up
+ *  included, is in none of these, so it never decides the check, and a hook that waits past its
+ *  deadline arms a wait that does. A wait the hook would make without arming it through
+ *  `armedWait` is not seen here; a token command or a gate it waited on shows as another outcome
+ *  or a row that hangs, and the exact budgets it named are checked from what it printed
+ *  (`notFinishedReason`, `expectReadBudget`). */
 function expectWithinDeadline(run: HookRun): void {
-  const deadline = printDeadline(run)
-  expect(run.timing.printed).not.toBeNull()
-  expect(run.timing.printed as number).toBeLessThanOrEqual(deadline + DEADLINE_SLACK_MS)
-  expect(run.timing.ended).toBeLessThanOrEqual(deadline + 50 + DEADLINE_SLACK_MS)
+  const { deadline, printed, waits } = run.timing
+  expect(deadline).toBe(printDeadline(run))
+  expect(printed).not.toBeNull()
+  for (const wait of waits) {
+    const limit = wait.kind === "settle" ? deadline + 50 : deadline
+    const least = wait.kind === "read" ? 150 : 0
+    expect({ kind: wait.kind, limit: wait.limit }).toEqual({ kind: wait.kind, limit })
+    expect(wait.ms).toBeLessThanOrEqual(Math.max(least, Math.round(wait.limit - wait.at)))
+    if (wait.kind === "refresher") expect(wait.at).toBeLessThan(wait.limit)
+  }
+  expect(waits.filter((wait) => wait.kind === "settle")).toHaveLength(1)
 }
 
 /** Holds a read that did not answer to the budget the design gives it, `waitedMs` as the hook's

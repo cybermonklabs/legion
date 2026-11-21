@@ -185,24 +185,51 @@ const RefreshOutcome = z.object({
 })
 /** Tests only: the file the answers hook writes its own timing to, `{ began, printed, ended }` in
  *  ms after its process started (when its code began, when it printed or found nothing to print,
- *  and when it exits), so a test can hold the hook to its deadline rather than to bun's start-up,
- *  and `refresher`, the refresher it started (null when it started none), so a test waits on that
- *  process's end rather than on a scan of every process on the machine. The hook writes the file
- *  whole (`writeAtomically`) as soon as it started a refresher, naming it, so a test that ended
- *  the hook before it exited still knows that refresher, and again as it exits.
- *  Unset, as Claude Code runs it, the hook writes nothing. */
+ *  and when it exits), `deadline`, the print deadline it applied, and `waits`, each wait it armed
+ *  on the way (`armedWait`), so a test holds the hook to its deadline by what the hook did rather
+ *  than by the time bun's start-up or the host's scheduling took; and `refresher`, the refresher it
+ *  started (null when it started none), so a test waits on that process's end rather than on a
+ *  scan of every process on the machine. The hook writes the file whole (`writeAtomically`) as
+ *  soon as it started a refresher, naming it, so a test that ended the hook before it exited
+ *  still knows that refresher, and again as it exits.
+ *  Unset, as Claude Code runs it, the hook writes nothing and records nothing. */
 const ANSWERS_TIMING_FILE = "ENVOY_ANSWERS_TIMING_FILE"
 /** The refresher this hook process started, for `ANSWERS_TIMING_FILE`: its pid, and when it
  *  started (`processStarted`), which a later process given the same pid does not share; null when
  *  it started none. */
 let startedRefresher: { readonly pid: number; readonly started: string | null } | null = null
+/** Each wait the answers hook armed, for `ANSWERS_TIMING_FILE`: a look at the refresher's outcome,
+ *  the Dispatch read, or the read left in flight after printing; when it armed it (ms after the
+ *  process started), for how long, and the time it was armed against (`limit`). */
+const armedWaits: {
+  readonly kind: "refresher" | "read" | "settle"
+  readonly at: number
+  readonly ms: number
+  readonly limit: number
+}[] = []
 
-/** Writes `timing` and `startedRefresher` to `ANSWERS_TIMING_FILE` when that is set. */
+/** How long a wait of `kind` armed at `at` (a `performance.now()` reading, now by default) lasts:
+ *  until `limit`, another such reading, in whole ms because the failure line names the wait, at
+ *  most `capMs` and at least `leastMs`. Recorded for `ANSWERS_TIMING_FILE`. */
+function armedWait(
+  kind: "refresher" | "read" | "settle",
+  limit: number,
+  { capMs = Number.POSITIVE_INFINITY, leastMs = 0, at = performance.now() } = {},
+): number {
+  const ms = Math.max(leastMs, Math.min(capMs, Math.max(0, Math.round(limit - at))))
+  if (process.env[ANSWERS_TIMING_FILE] !== undefined) armedWaits.push({ kind, at, ms, limit })
+  return ms
+}
+
+/** Writes `timing`, `armedWaits` and `startedRefresher` to `ANSWERS_TIMING_FILE` when that is set. */
 function writeAnswersTiming(timing: Record<string, number | null>): void {
   const timingFile = process.env[ANSWERS_TIMING_FILE]
   if (timingFile === undefined) return
   try {
-    writeAtomically(timingFile, JSON.stringify({ ...timing, refresher: startedRefresher }))
+    writeAtomically(
+      timingFile,
+      JSON.stringify({ ...timing, waits: armedWaits, refresher: startedRefresher }),
+    )
   } catch {
     // The tests' seam only: a path it cannot write never changes what the hook printed or its exit.
   }
@@ -395,12 +422,6 @@ function dispatchFirst(raw: unknown): void {
   )
 }
 
-/** The ms left until `at`, a `performance.now()` reading, in whole ms because the failure line
- *  names the wait. */
-function remainingUntil(at: number): number {
-  return Math.max(0, Math.round(at - performance.now()))
-}
-
 /** Whether a refresher holds `lock`: it exists, is younger than `REFRESH_LOCK_STALE_MS`, and the
  *  pid in it is alive or not yet written. A lock its refresher died holding is stale at once. */
 function refreshLockHeld(lock: string): boolean {
@@ -504,13 +525,14 @@ async function refreshedAnswers(
         reason: `the refresher read ${read}, not the Dispatch envoy.json names now`,
       }
     }
-    const left = remainingUntil(by)
-    if (left === 0) {
+    // One reading of the clock both decides that the deadline has come and arms the next look.
+    const now = performance.now()
+    if (Math.round(by - now) <= 0) {
       return {
         reason: `a "!" command in envoy.json had not finished ${Math.round(by)} ms after the hook started`,
       }
     }
-    await Bun.sleep(Math.min(REFRESH_POLL_MS, left))
+    await Bun.sleep(armedWait("refresher", by, { capMs: REFRESH_POLL_MS, at: now }))
   }
 }
 
@@ -550,7 +572,7 @@ async function answersMessage(
     env: process.env,
     // The read itself always gets the least wait, so a start-up and a resolution that spent the
     // budget on a loaded host never cost a list Dispatch answers at once.
-    deadlineMs: Math.max(ANSWERS_LEAST_WAIT_MS, remainingUntil(by)),
+    deadlineMs: armedWait("read", by, { leastMs: ANSWERS_LEAST_WAIT_MS }),
   })
 }
 
@@ -590,12 +612,12 @@ async function answers(text: string): Promise<never> {
     printed = performance.now()
     await Promise.race([
       sessionAnswersSettled(input.session_id),
-      Bun.sleep(remainingUntil(by + ANSWERS_SETTLE_MS)),
+      Bun.sleep(armedWait("settle", by + ANSWERS_SETTLE_MS)),
     ])
   } catch (error) {
     process.stderr.write(`envoy: people's answers were not added — ${messageFor(error)}\n`)
   }
-  writeAnswersTiming({ began, printed, ended: performance.now() })
+  writeAnswersTiming({ began, printed, ended: performance.now(), deadline: by })
   // Exits rather than returns: a read still running would hold the process open.
   process.exit(0)
 }
