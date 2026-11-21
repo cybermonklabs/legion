@@ -26,9 +26,11 @@
 // its own read at 1.51 to 1.92 times with the box out of the way (two CPUs of their own,
 // 2026-11-20) and passed, where its rows stand 4.6 times apart.
 //
-// No test bounds the Go side of the relation read any more: the scan of its three columns into
-// each row and the one merge of the row's own ids with the ids it inherits (advancesScan), which
-// the timed row covered inside its noise.
+// The Go side of the relation read, the scan of its three columns into each row and the merge of
+// each row's own ids with the ids it inherits (advancesScan), is held in the objects the page's
+// scan allocates beyond the same scan without the relation (speedScanAllocsPerID). The timed row
+// covered it inside its noise; a change there that costs CPU and allocates nothing more is held
+// by no test now.
 //
 // The priorities read is still held to times. They are one box: this pod's Postgres, which
 // carries every other suite running beside it. The time of record is the server's own — the
@@ -84,9 +86,9 @@ const speedCustomPlans = 5
 const speedWarmups = speedCustomPlans
 
 // The bounds the two tests hold their readings to, from the issue's own checks: the relation
-// read at no more than twice the same page without it, in rows and in buffer accesses; the whole
-// priorities body under two seconds and under five times the paged listing; the summary under
-// 300 ms.
+// read at no more than twice the same page without it, in rows and in buffer accesses (its scan's
+// allocations are held closer, speedScanAllocsPerID); the whole priorities body under two seconds
+// and under five times the paged listing; the summary under 300 ms.
 const (
 	speedAdvancesRatio    = 2.0
 	speedPrioritiesBound  = 2 * time.Second
@@ -94,6 +96,17 @@ const (
 	speedPrioritySummary  = 300 * time.Millisecond
 	speedPriorityFullName = "the whole priorities body"
 )
+
+// speedGenericBuffersRatio is the most buffer accesses the page with the relation may make under
+// the generic plan, against the reference the other bounds use: the page without the relation
+// under the plan made for its arguments. The issue's 2.00x cannot hold that plan: it reads each
+// step of every walk through a probe of issues_pkey, the repository walk's as much as the
+// relation's, so correct code accesses 2.94 times the reference (8662 against 2946). The bound
+// stands between correct code and the cheapest listing the row exists to fail, as measured on
+// PostgreSQL 18.6 (2026-11-20 and 21): a listing that walks each row's chain on its own accesses
+// 3.62 times the reference, one that reads each chain row's tuples through the log's index 3.77,
+// one that walks from every issue the filters match 12.90.
+const speedGenericBuffersRatio = 3.25
 
 // speedTiming is one operation's readings: every run, in the order they were taken, so a number
 // in the report can be read against the spread it came from.
@@ -141,17 +154,39 @@ func (w speedWork) String() string {
 }
 
 // speedReadings is every reading the two tests report, taken over the one corpus: the page with
-// the relation read under each of its two plans and the page without it under its own, and the
-// three timings with what the plan counts said of the runs they timed (assertSpeedPlansSettled).
+// the relation read under each of its two plans and the page without it under its own, the Go
+// side of reading each (speedScanAllocs), and the three timings with what the plan counts said of
+// the runs they timed (assertSpeedPlansSettled).
 type speedReadings struct {
 	advancesCustom  speedWork
 	advancesGeneric speedWork
 	advancesUnread  speedWork
+	scanRead        speedScan
+	scanUnread      speedScan
 	pagedIssues     speedTiming
 	prioritiesFull  speedTiming
 	prioritiesLite  speedTiming
 	unsettledRuns   []string
 }
+
+// speedScanRuns is how many scans of the page testing.AllocsPerRun averages, after the one it does
+// not count. A scan's allocations are the same on every run (4563 with the relation and 3532
+// without it on each of three readings of five scans, 2026-11-21), so a few runs make the
+// average exact.
+const speedScanRuns = 5
+
+// The most objects the relation read's Go side may allocate, beyond the scan of the same page
+// without it (speedScanAllocs): one for each id the page's rows answer, the string the scan
+// decodes it into, and three for each row, the slices of its own ids, of the ids it inherits and
+// of the entries resolve answers (advancesScan). Correct code allocates 1031 objects beyond 3532
+// for 753 ids over 250 rows, under the bound of 1503 (2026-11-21). A resolve that dedupes each
+// inherited id against a set it builds again from the entries merged so far allocates 2628
+// beyond, and fails; against twice the page without the relation, the issue's own form of the
+// bound, it passes, at 1.74 times.
+const (
+	speedScanAllocsPerID  = 1
+	speedScanAllocsPerRow = 3
+)
 
 // measuredSpeedReadings is what the first of the two tests to run left behind. It is written and
 // read by tests of one package, which the testing package runs one after another; neither calls
@@ -181,13 +216,13 @@ func speedCorpusReadings(t *testing.T) speedReadings {
 // The statement is counted under both plans the server runs it with (speedCustomPlans), each
 // against one reference: the page without the relation under the plan made for its arguments,
 // the fewest rows and buffer accesses it takes. Under the plan made for the page's arguments the
-// relation read is held in rows and in buffer accesses. Under the generic plan it is held in rows
-// alone. That plan reads each step of every walk through an index probe, the repository walk's as
-// much as the relation's, so it accesses about three times the reference's buffers on correct
-// code (8662 against 2946, 2026-11-20); and against the page without the relation under its own
-// generic plan (5344) the listing that walks each row's chain on its own accesses 1.99 times, under
-// the bound, where correct code accesses 1.62. The rows of the generic plan separate the two: 1.25
-// times the reference on correct code and 4.40 on that listing.
+// relation read is held to twice the reference in rows and in buffer accesses. Under the generic
+// plan it is held to twice the reference in rows, and in buffer accesses to
+// speedGenericBuffersRatio, which says why that plan's buffer accesses cannot be held to twice.
+// Against the page without the relation under its own generic plan (5344) no bound separates:
+// the listing that walks each row's chain on its own accesses 1.99 times it, correct code 1.62.
+// The Go side of the read, the scan of the three columns and the merge of each row's ids, is held
+// in allocations (speedScanAllocs).
 //
 // The page is the heaviest the corpus holds: the chain as deep as the parent-depth cap, the
 // issue that states every priority the store holds, and the issues below both.
@@ -201,15 +236,23 @@ func TestAdvancesListingSpeed(t *testing.T) {
 	genericRows, genericBuffers := generic.rows/reference.rows, generic.buffers/reference.buffers
 	t.Logf("under the plan made for its arguments the relation read costs %.2fx the rows and %.2fx the buffer accesses of the same page without it, at most %.2fx each",
 		rows, buffers, speedAdvancesRatio)
-	t.Logf("under the generic plan it costs %.2fx the rows, at most %.2fx, and %.2fx the buffer accesses, which no bound holds",
-		genericRows, speedAdvancesRatio, genericBuffers)
+	t.Logf("under the generic plan it costs %.2fx the rows, at most %.2fx, and %.2fx the buffer accesses, at most %.2fx",
+		genericRows, speedAdvancesRatio, genericBuffers, speedGenericBuffersRatio)
 	if rows > speedAdvancesRatio || buffers > speedAdvancesRatio {
 		t.Errorf("%s reads its advances relations in %.0f rows and %.0f buffer accesses against %.0f rows and %.0f buffer accesses without them (%.2fx and %.2fx), want each at most %.2fx",
 			custom.name, custom.rows, custom.buffers, reference.rows, reference.buffers, rows, buffers, speedAdvancesRatio)
 	}
-	if genericRows > speedAdvancesRatio {
-		t.Errorf("%s reads its advances relations in %.0f rows against %.0f rows without them (%.2fx), want at most %.2fx",
-			generic.name, generic.rows, reference.rows, genericRows, speedAdvancesRatio)
+	if genericRows > speedAdvancesRatio || genericBuffers > speedGenericBuffersRatio {
+		t.Errorf("%s reads its advances relations in %.0f rows and %.0f buffer accesses against %.0f rows and %.0f buffer accesses without them (%.2fx and %.2fx), want at most %.2fx the rows and %.2fx the buffer accesses",
+			generic.name, generic.rows, generic.buffers, reference.rows, reference.buffers, genericRows, genericBuffers, speedAdvancesRatio, speedGenericBuffersRatio)
+	}
+	read, unread := readings.scanRead, readings.scanUnread
+	extra, allowed := read.allocs-unread.allocs, float64(speedScanAllocsPerID*read.ids+speedScanAllocsPerRow*speedCorpusPage)
+	t.Logf("its Go side allocates %.0f objects for the page against %.0f without the relation (%.2fx): %.0f more for %d ids over %d rows, at most %.0f",
+		read.allocs, unread.allocs, read.allocs/unread.allocs, extra, read.ids, speedCorpusPage, allowed)
+	if extra > allowed {
+		t.Errorf("scanning a page of %d issues with its advances relations allocates %.0f objects against %.0f without them, %.0f more for %d ids, want at most %d an id and %d a row more, %.0f",
+			speedCorpusPage, read.allocs, unread.allocs, extra, read.ids, speedScanAllocsPerID, speedScanAllocsPerRow, allowed)
 	}
 }
 
@@ -269,6 +312,8 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 		pagedIssues:     speedTiming{name: "the paged listing of every open issue"},
 		prioritiesFull:  speedTiming{name: speedPriorityFullName},
 		prioritiesLite:  speedTiming{name: "the priorities summary"},
+		scanRead:        speedScanAllocs(t, corpus, withRelation, arguments),
+		scanUnread:      speedScanAllocs(t, corpus, withoutRelation, arguments),
 	}
 	for _, read := range []speedWork{readings.advancesCustom, readings.advancesGeneric} {
 		if read.walks != readings.advancesUnread.walks+1 {
@@ -386,6 +431,46 @@ func countSpeedPage(t *testing.T, corpus speedCorpusShape, name, query string, a
 			name, first.answered, first.rows, first.buffers, first.nodes, speedCorpusPage)
 	}
 	return first
+}
+
+// speedScan is the Go side of one page's read by one statement text: the objects one read
+// allocates, and the `advances` ids the page's rows answer.
+type speedScan struct {
+	allocs float64
+	ids    int
+}
+
+// speedScanAllocs reads the Go side of one page's read (speedScan), in the objects one read
+// allocates (testing.AllocsPerRun over speedScanRuns reads): scanIssuePage's scan of every column
+// into each row and its resolution of each row, among them the scan of the three `advances`
+// columns and the merge of each row's own ids with the ids it inherits (advancesScan). The
+// statement's round trip is in it as well, the same for both texts but for the rows they answer.
+// An allocation count does not move with the box's load. A Go-side change that costs CPU and
+// allocates nothing more is not in it.
+func speedScanAllocs(t *testing.T, corpus speedCorpusShape, query string, arguments []any) speedScan {
+	t.Helper()
+	ctx := context.Background()
+	issues, _, err := corpus.server.scanIssuePage(ctx, query, arguments)
+	if err != nil {
+		t.Fatalf("scan a page of the listing: %v", err)
+	}
+	scan := speedScan{}
+	for _, issue := range issues {
+		scan.ids += len(issue.Advances)
+	}
+	var failed error
+	scan.allocs = testing.AllocsPerRun(speedScanRuns, func() {
+		if _, _, err := corpus.server.scanIssuePage(ctx, query, arguments); err != nil {
+			failed = err
+		}
+	})
+	if failed != nil {
+		t.Fatalf("scan a page of the listing: %v", failed)
+	}
+	if scan.allocs < speedCorpusPage {
+		t.Fatalf("scanning a page of %d issues allocated %.0f objects: fewer than one a row, so the scan was not counted", speedCorpusPage, scan.allocs)
+	}
+	return scan
 }
 
 // speedLiterals writes the page's arguments (speedPageArguments) as the literals an EXECUTE names,
