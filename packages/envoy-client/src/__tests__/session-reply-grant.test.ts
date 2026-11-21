@@ -45,6 +45,29 @@ async function waitFor(holds: () => boolean, deadline: number, what: string): Pr
   }
 }
 
+/** What `step` settles to, unless `deadline` (a `performance.now()` reading) passes first: then
+ *  it fails naming `what`, as {@link waitFor} does. The row's waits on an answer from the server
+ *  (a flush) go through this, so a server that never answers fails the row by name. */
+async function answered<T>(step: Promise<T>, deadline: number, what: string): Promise<T> {
+  const passed = Promise.withResolvers<never>();
+  const timer = setTimeout(
+    () =>
+      passed.reject(
+        new Error(`timed out waiting for ${what}, ${ROW_MS / 1000 - 5} s into the row`)
+      ),
+    Math.max(0, deadline - performance.now())
+  );
+  try {
+    return await Promise.race([step, passed.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** How long the teardown gives the row's connections to close, side by side; a close past it is
+ *  left behind, and the container's removal ends the connection. */
+const CLOSE_MS = 5_000;
+
 // The shared consumer delivery is the one place both plugins answer the listener's relay frames
 // and connection probe (pi-envoy's and claude-envoy's `publish` is `connection.publish(reply, …)`).
 // Here it runs on a real nats.js connection authenticated as a session user whose grant is a
@@ -73,14 +96,18 @@ authorization {
 `
   );
   const open: NatsConnection[] = [];
-  /** The teardown's bound: the connections' closes, in the 60 s this hook had before, and then
-   *  the container's removal. */
-  const STOP_HOOK_MS = 60_000 + NATS_STOP_HOOK_MS;
+  /** The teardown's bound: the connections' closes and then the container's removal. */
+  const STOP_HOOK_MS = CLOSE_MS + NATS_STOP_HOOK_MS;
 
   beforeAll(() => server.start(natsHookDeadline(NATS_START_HOOK_MS)), NATS_START_HOOK_MS);
   afterAll(async () => {
     const deadline = natsHookDeadline(STOP_HOOK_MS);
-    for (const connection of open) await connection.close();
+    const closesBy = performance.now() + CLOSE_MS;
+    await Promise.all(
+      open.map((connection) =>
+        answered(connection.close(), closesBy, "a connection's close").catch(() => {})
+      )
+    );
     await server.stop(deadline);
   }, STOP_HOOK_MS);
 
@@ -120,7 +147,7 @@ authorization {
       requester.subscribe("_INBOX.>", {
         callback: (_error, message) => heard.push([message.subject, message.string()]),
       });
-      await requester.flush();
+      await answered(requester.flush(), deadline, "the server's answer to the requester's flush");
 
       const delivery = createConsumerDelivery({
         sessionID: SESSION,
@@ -136,7 +163,7 @@ authorization {
       session.subscribe(delivery.subject, {
         callback: (_error, message: Msg) => delivery.receive(message),
       });
-      await session.flush();
+      await answered(session.flush(), deadline, "the server's answer to the session's flush");
 
       const frame = (seq: number, reply: string) => {
         const h = headers();
@@ -179,8 +206,8 @@ authorization {
       frame(2, counterFrame);
       probe(plainProbe);
       await waitFor(() => refusals.length === 3, deadline, "the server's three refusals");
-      await session.flush();
-      await requester.flush();
+      await answered(session.flush(), deadline, "the server's answer to the session's flush");
+      await answered(requester.flush(), deadline, "the server's answer to the requester's flush");
       expect(refusals).toEqual([
         "PERMISSIONS_VIOLATION",
         "PERMISSIONS_VIOLATION",

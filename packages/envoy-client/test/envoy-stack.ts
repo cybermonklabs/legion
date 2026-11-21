@@ -213,6 +213,7 @@ const ENVOY_READY: ReadyBudget = { timeoutMs: READY_TIMEOUT_MS, tailLines: TAIL_
  * bounds each check too: `ready` is handed a signal that aborts when the budget passes, for a
  * check that waits on a server's answer, and a check still pending then counts as not ready, so a
  * server that takes a check and never answers it fails the wait by name rather than holding it.
+ * A budget of 0 or less, a caller's deadline spent before the wait began, gets one check.
  */
 export async function awaitReady(
   what: string,
@@ -221,7 +222,8 @@ export async function awaitReady(
   budget: ReadyBudget,
   ready: (signal: AbortSignal) => Promise<boolean>
 ): Promise<void> {
-  const spent = AbortSignal.timeout(Math.max(0, budget.timeoutMs));
+  const timeoutMs = Math.max(0, budget.timeoutMs);
+  const spent = AbortSignal.timeout(timeoutMs);
   const passed = Promise.withResolvers<false>();
   spent.addEventListener("abort", () => passed.resolve(false), { once: true });
   for (;;) {
@@ -232,9 +234,11 @@ export async function awaitReady(
     }
     if (await Promise.race([ready(spent).catch(() => false), passed.promise])) return;
     if (spent.aborted) {
-      throw new Error(
-        `${what} was not ready within ${budget.timeoutMs} ms: ${tail(log, budget.tailLines)}`
-      );
+      const why =
+        timeoutMs > 0
+          ? `within ${timeoutMs} ms`
+          : `by its deadline, which had passed ${-budget.timeoutMs} ms before its wait began`;
+      throw new Error(`${what} was not ready ${why}: ${tail(log, budget.tailLines)}`);
     }
     await Bun.sleep(100);
   }
