@@ -36,17 +36,20 @@ type roleForReader struct {
 // and the test that holds each one's behaviour. A reader is a call, or the function passed as a
 // value to a caller that calls it (internal/daemon's wiring of api.Options.RoleFor). Four of them
 // have a guard of their own for admitted, the phase RoleFor answers the architect for:
-// noticeFor writes the notice of the move out of admitted with no role (R2),
-// Engine.leftItsPhase records no worker's completion while the issue stands at admitted, the
-// completion route's entryFence answers a completion at admitted as one of a phase its role does
-// not work, and the stalled-tree notice's reason tells an issue at admitted as standing in a phase
-// no role works, the words it wrote before RoleFor named the architect there. Every other site
-// reaches its answer through a guard that starts, resumes or reports no architect as a phase
-// worker, or names the role an admitted root's entry numbers are of, or answers the issue's own
-// phase for the architect's completion there, as its reader took the issue's phase while RoleFor
-// named no role (phase.Of), or never reads admitted at all because a check before it refuses that
-// phase, which is what each named test holds it to. The owner walk reads no role: where it starts
-// is its caller's to say (record.NoticeStartsAtParent, for a notice).
+// noticeFor writes the notice of the move out of admitted with no role (R2; its read for a
+// conflicting head's move back is of the rows TableFor adds from testing on, none out of
+// admitted), Engine.leftItsPhase records no worker's completion while the issue stands at
+// admitted, the completion route's entryFence answers a completion at admitted as one of a phase
+// its role does not work, and the stalled-tree notice's reason tells an issue at admitted as
+// standing in a phase no role works, the words it wrote before RoleFor named the architect there.
+// Every other site reaches its answer through a guard that starts, resumes, stops
+// (Engine.StopForWait, for a wait under a rule whose wait stops the phase) or reports no
+// architect as a phase worker, or names the role an admitted root's entry numbers are of, or
+// answers the issue's own phase for the architect's completion there, as its reader took the
+// issue's phase while RoleFor named no role (phase.Of), or never reads admitted at all because a
+// check before it refuses that phase, which is what each named test holds it to. The owner walk
+// reads no role: where it starts is its caller's to say (record.NoticeStartsAtParent, for a
+// notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -60,6 +63,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/projection/project.go", fn: "Project"}:                       {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}:       {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:         {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
+	{file: "internal/workflow/effects.go", fn: "Engine.StopForWait"}:              {calls: 1, test: "TestAWaitThatStopsThePhaseStopsNoArchitectAtAdmitted"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                      {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                         {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},
 	{file: "internal/workflow/effects.go", fn: "backwardMoveReason"}:              {calls: 1, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
@@ -69,7 +73,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                  {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
-	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                        {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
+	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                        {calls: 4, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"}, // the fourth, a conflicting head's move back, is of TableFor's rows from testing on, never of admitted
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:               {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}:       {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge"},

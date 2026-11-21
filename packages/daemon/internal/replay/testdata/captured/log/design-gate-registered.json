@@ -1,0 +1,19 @@
+[
+  {
+    "timestamp": "2026-11-21T07:59:33.665670117Z",
+    "jsonPayload": {
+      "artifact": "a52b7798-f7e8-4fe9-a271-448cc871c5fb",
+      "changes_requested": false,
+      "gated_steps": [
+        "spec"
+      ],
+      "issue": "ACME-7",
+      "level": "INFO",
+      "msg": "workflow: design gate registered",
+      "open": false,
+      "step": "spec",
+      "time": "2026-11-21T07:59:33.665464267Z",
+      "version": 78
+    }
+  }
+]

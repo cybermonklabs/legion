@@ -1625,7 +1625,19 @@ type Pool interface {
 // Dispatch, Envoy, the API and supervision passes here, so the rule is given to facts here once;
 // the boot's Dispatch listing, which admission applies outside ApplyFact, takes it in admission's
 // Reconcile.
+//
+// It applies on the daemon's own record store (record.NewStore), whose processed_events rows
+// take Postgres's clock; ApplyFactWith is the same path on a store the caller hands in.
 func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
+	return ApplyFactWith(ctx, pool, record.NewStore(), source, eventID, fact, handlers...)
+}
+
+// ApplyFactWith is ApplyFact on store: the record store that marks the fact applied
+// (MarkProcessed), forgets a refused report or an unspent fact (ForgetProcessed) and settles an
+// observed issue (settleObserved). A replay of a recorded window hands in the store built on its
+// simulated clock (record.NewStoreWithClock), the one its handlers write through, so a fact's
+// processed_at is the window's time and not the moment the replay ran.
+func ApplyFactWith(ctx context.Context, pool Pool, store *record.Postgres, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
 	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -1641,7 +1653,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		return Result{}, fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
 	}
 
-	fresh, err := record.NewStore().MarkProcessed(ctx, tx, source, eventID)
+	fresh, err := store.MarkProcessed(ctx, tx, source, eventID)
 	if err != nil {
 		return Result{}, err
 	}
@@ -1658,7 +1670,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		return Result{Duplicate: true}, nil
 	}
 
-	fact, apply, err := settleObserved(ctx, tx, fact)
+	fact, apply, err := settleObserved(ctx, tx, store, fact)
 	if err != nil {
 		return Result{}, err
 	}
@@ -1689,7 +1701,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 	// on its next delivery, which those refusals exist to stop (dispatch://INFRA-714/spec R12).
 	_, report := fact.(CheckReport)
 	if (report && result.Refusal != nil) || result.Unspent {
-		if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
+		if err := store.ForgetProcessed(ctx, tx, source, eventID); err != nil {
 			return Result{}, err
 		}
 	}
@@ -1749,12 +1761,12 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 // applied issue event writes first, holds a later sequence) applies nothing while the issue is
 // unrecorded: Dispatch has said something since, which the view does not show — a person's
 // withdrawal after the release's write, say — and that later event, applied, recorded no issue.
-func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, error) {
+// It reads the record and the mirror through store, ApplyFactWith's.
+func settleObserved(ctx context.Context, tx pgx.Tx, store *record.Postgres, fact Fact) (Fact, bool, error) {
 	issue, ok := fact.(DispatchIssue)
 	if !ok || !issue.Observed {
 		return fact, true, nil
 	}
-	store := record.NewStore()
 	recorded, err := store.Issue(ctx, tx, issue.Key)
 	if err != nil {
 		return nil, false, fmt.Errorf("read the record of %s before applying Dispatch's view of it: %w", issue.Key, err)

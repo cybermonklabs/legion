@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-11-21T03:19:56.094538349Z",
+    "jsonPayload": {
+      "head": "c3b2e84ddc994f14b179f99243a9490806e2df1b",
+      "issue": "ACME-14",
+      "level": "INFO",
+      "msg": "workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once",
+      "pullRequest": 4547,
+      "time": "2026-11-21T03:19:56.094165169Z"
+    }
+  }
+]

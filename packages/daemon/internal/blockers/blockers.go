@@ -305,14 +305,19 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 // phase waits for (record.LineFacts.ChildWaits, in that judgement's order), each named once. The
 // second is the same judgement the line holds an unstarted parent by: a started parent waits for
 // its children exactly as one that never started does, and only the slot it holds differs.
+// Each counts under the slot rule the facts carry (record.LineFacts.Rule) only where that rule's
+// wait gives the slot back (record.SlotRule.LinkWaitGivesBack, ChildrenWaitGivesBack): a rule
+// whose wait keeps the slot has its started issue hold its row through the wait, so no release
+// frees it, no mark is written and the line places it in no record.LineWaitingOnIssue entry.
+// Under the daemon's own rule both waits give it back.
 //
-// An issue whose phase keeps no slot (record.KeepsSlot: past its review, done, or out of the
-// workflow) waits on nothing here, whatever its links say. The wait this answers is the one a
-// started issue gives its row back for, and such an issue holds no row to give back, so the
-// rule that states the wait term states the phase term too: the release for a wait (admit's
-// releaseSlotsForWaits) frees no row of it and marks it with no release, the line places it in
-// no entry of record.LineWaitingOnIssue, and none of that rests on the order the admission pass
-// runs its releases in.
+// An issue whose phase keeps no slot (record.LineFacts.KeepsSlot: past its review, done, or out
+// of the workflow, under the facts' rule) waits on nothing here, whatever its links say. The wait
+// this answers is the one a started issue gives its row back for, and such an issue holds no row
+// to give back, so the rule that states the wait term states the phase term too: the release for
+// a wait (admit's releaseSlotsForWaits) frees no row of it and marks it with no release, the line
+// places it in no entry of record.LineWaitingOnIssue, and none of that rests on the order the
+// admission pass runs its releases in.
 //
 // Three started issues wait on neither, though a rule names them. A root waiting on a person
 // (awaiting_person, answered or not) is waiting on that person and nothing else, and the slot it
@@ -329,7 +334,7 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 // spite of its links, and this one is about what a started issue holds a slot for, so an issue
 // carrying a run gives its row back like any other.
 func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []string {
-	if !record.KeepsSlot(issue) {
+	if !facts.KeepsSlot(issue) {
 		return nil
 	}
 	if issue.AwaitingPerson() {
@@ -341,7 +346,14 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []
 	if record.QueuedRoot(issue, facts.Gates[issue.Tree]) {
 		return nil
 	}
-	waits := Unfinished(rows, issue.Key)
+	rule := facts.Rule.OrMain()
+	var waits []string
+	if rule.LinkWaitGivesBack {
+		waits = Unfinished(rows, issue.Key)
+	}
+	if !rule.ChildrenWaitGivesBack {
+		return waits
+	}
 	for _, child := range facts.ChildWaits[issue.Key].Open {
 		if !slices.Contains(waits, child.Key) {
 			waits = append(waits, child.Key)

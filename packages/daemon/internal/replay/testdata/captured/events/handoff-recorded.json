@@ -1,0 +1,27 @@
+[
+  {
+    "id": 890146,
+    "issue_key": "ACME-25",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 70,
+    "type": "handoff.recorded",
+    "actor": {
+      "kind": "session",
+      "id": "c8a5d8a2-261d-4d0e-9511-74e57527faa9",
+      "origin": {
+        "host": "omp",
+        "machine": "legion-acme-daemon",
+        "cwd": "/legion/workspaces/cybermonklabs/legion/acme-25",
+        "session_title": "Legion planner · ACME-25"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-21T01:35:18.01727Z",
+    "payload": {
+      "phase": "plan",
+      "version": 1,
+      "handoff_id": "e4c8e189-fb0c-4627-8f7c-792217db3dcc"
+    }
+  }
+]

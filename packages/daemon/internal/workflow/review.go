@@ -225,6 +225,12 @@ const conflictConfirmWait = time.Minute
 // mark is a second column rather than a reading of Mergeability because every read rewrites that
 // one from GitHub's answer: the UNKNOWN of a read on the ladder that follows would lose the
 // conflict, and the next round at the conflicting head would count.
+//
+// A confirmed conflict that needs the merge (classify.ConflictNeedsMerge) is merged forward under
+// the daemon's own slot rule, the issue keeping its phase (mergeForward). Under a rule whose
+// conflicting head moves back (record.SlotRule.Conflict, Config.SlotRule) the issue moves back to
+// implementing by that rule's trigger instead, as the releases that ran such a rule did
+// (conflictMovesBack).
 func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMergeability) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil {
@@ -303,6 +309,15 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	if decide {
 		green := classify.GreenContexts(*pr)
 		if why := classify.ConflictNeedsMerge(*issue, fact.Rules, green); why != "" {
+			// A slot rule whose conflicting head moves back (record.SlotRule.Conflict) moves the
+			// issue to implementing by its trigger in place of the merge forward; the daemon's
+			// own keeps the phase and asks the merge (conflictMovesBack). An issue moved back
+			// stands in no review round any more, so none is asked again below: the record in
+			// hand still says the phase it left.
+			moved, err := e.conflictMovesBack(ctx, tx, *issue, pr, why)
+			if err != nil || moved {
+				return intake.Result{}, err
+			}
 			if err := e.mergeForward(ctx, tx, *issue, pr, why); err != nil {
 				return intake.Result{}, err
 			}

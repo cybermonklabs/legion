@@ -457,6 +457,12 @@ type Notice struct {
 	// it, but a notice whose walk ends at a tree root whose architect claim failed, retired or is
 	// gone ends undelivered. The controller holds `fresh_session` and reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
+	// Slots is the project's slots reading at the tick (SlotsReading): what the slots in use are
+	// spent on, the started work that waits without a slot and the holders that rank below the
+	// first issue that waits for one, with the sentence `legion state` prints for it. Only a tick
+	// controller notice carries it, as Silent is carried: the tick is the turn that posts the
+	// day's report, and the reading is read there from the same function the state reads it from.
+	Slots *SlotsReading `json:"slots,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
 	// Dispatch actor as `<kind>:<id>`, a person `user:<login>`. Empty where no person decided:

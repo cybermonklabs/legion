@@ -2416,7 +2416,8 @@ type RoleRun struct {
 // deleted.
 //
 // Age is now(), the start of the reading transaction, less created_at, both in the store's own
-// clock. A row a transaction that began later wrote reads a negative age, which is inside any
+// clock, which a store built with a clock (NewStoreWithClock) reads in place of now() for both.
+// A row a transaction that began later wrote reads a negative age, which is inside any
 // bound. It is read from created_at because a row the outbox runs again in place keeps it, where
 // next_at moves with every backoff. It is read in the store's clock because created_at is the
 // database's now() at the start of the transaction that wrote the row, and subtracting it from

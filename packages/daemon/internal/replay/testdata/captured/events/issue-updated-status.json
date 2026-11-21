@@ -1,0 +1,66 @@
+[
+  {
+    "id": 411144,
+    "issue_key": "ACME-25",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 2,
+    "type": "issue.updated",
+    "actor": {
+      "kind": "session",
+      "id": "legion-daemon:ACME"
+    },
+    "notify": false,
+    "created_at": "2026-11-12T02:48:18.305772Z",
+    "payload": {
+      "key": "ACME-25",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzk",
+      "repo": "cybermonklabs/legion",
+      "claim": null,
+      "route": null,
+      "title": "Captured workflow issue",
+      "labels": [
+        "legion"
+      ],
+      "number": 25,
+      "parent": null,
+      "status": "todo",
+      "changed": [
+        "status"
+      ],
+      "project": "ACME",
+      "assignee": "person@example.invalid",
+      "last_seq": 2,
+      "priority": 2,
+      "ancestors": [],
+      "closed_at": null,
+      "blocked_by": [],
+      "components": {
+        "ids": [],
+        "mode": "inherit",
+        "reason": null,
+        "unknown": [],
+        "inherited_from": null
+      },
+      "created_at": "2026-11-12T02:33:45.794899Z",
+      "created_by": {
+        "id": "3e65c2b4-30dd-495f-be87-749a6829a93a",
+        "kind": "session",
+        "origin": {
+          "cwd": "/legion",
+          "host": "omp",
+          "machine": "legion-acme-daemon",
+          "session_title": "Legion controller · ACME"
+        }
+      },
+      "updated_at": "2026-11-12T02:48:18.31024Z",
+      "resolved_repo": "cybermonklabs/legion",
+      "thread_logins": [],
+      "external_links": [],
+      "plan_artifact_id": "",
+      "primary_artifact_id": "1dcfb072-140d-4494-bd05-732b86c0a8ed",
+      "decisions_artifact_id": "",
+      "verification_artifact_id": ""
+    }
+  }
+]

@@ -1,0 +1,264 @@
+{
+  "rules": {
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T16:00:00Z",
+      "unplaced": 0,
+      "done": 3,
+      "workLeft": 0,
+      "waitOnlyForSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "startedWithoutSlot": {
+        "average": 0.30952380952380953,
+        "max": 1,
+        "hours": 2.1666666666666665
+      },
+      "pastReviewHolding": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.35714285714285715,
+        "max": 2,
+        "hours": 2.5
+      },
+      "priorityTaken": 0,
+      "loops": {
+        "review_changes": {
+          "rounds": 1,
+          "hours": 0.3333333333333333
+        },
+        "send_back": {
+          "rounds": 1,
+          "hours": 0.5
+        },
+        "test_failed": {
+          "rounds": 1,
+          "hours": 0.16666666666666666
+        }
+      },
+      "waits": {
+        "child_done": {
+          "count": 1,
+          "hours": 2.1666666666666665
+        }
+      },
+      "slotHoursInTurn": 3.8333333333333335,
+      "slotHoursNoTurn": 0,
+      "inFlight": {
+        "average": 1.2142857142857142,
+        "max": 2,
+        "hours": 8.5
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 5
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:00:00Z",
+        "ACME-2": "2001-03-05T09:20:00Z",
+        "ACME-3": "2001-03-05T11:40:00Z"
+      },
+      "doneAt": {
+        "ACME-1": "2001-03-05T13:40:00Z",
+        "ACME-2": "2001-03-05T11:30:00Z",
+        "ACME-3": "2001-03-05T13:20:00Z"
+      },
+      "assumptions": [
+        1,
+        2,
+        3,
+        4,
+        7,
+        9,
+        10,
+        11,
+        13,
+        17
+      ],
+      "scenario": "none"
+    }
+  },
+  "moves": {
+    "ACME-2": [
+      {
+        "from": "admitted",
+        "to": "planning",
+        "trigger": "gate_opened"
+      },
+      {
+        "from": "planning",
+        "to": "implementing",
+        "trigger": "planner_completed"
+      },
+      {
+        "from": "implementing",
+        "to": "testing",
+        "trigger": "implementation_ready"
+      },
+      {
+        "from": "testing",
+        "to": "implementing",
+        "trigger": "tester_failed"
+      },
+      {
+        "from": "implementing",
+        "to": "testing",
+        "trigger": "implementation_ready"
+      },
+      {
+        "from": "testing",
+        "to": "reviewing",
+        "trigger": "tester_passed"
+      },
+      {
+        "from": "reviewing",
+        "to": "accepting",
+        "trigger": "review_approved"
+      },
+      {
+        "from": "accepting",
+        "to": "implementing",
+        "trigger": "backward"
+      },
+      {
+        "from": "implementing",
+        "to": "testing",
+        "trigger": "implementation_ready"
+      },
+      {
+        "from": "testing",
+        "to": "reviewing",
+        "trigger": "tester_passed"
+      },
+      {
+        "from": "reviewing",
+        "to": "accepting",
+        "trigger": "review_approved"
+      },
+      {
+        "from": "accepting",
+        "to": "retro",
+        "trigger": "sign_off"
+      },
+      {
+        "from": "retro",
+        "to": "merging",
+        "trigger": "retro_completed"
+      },
+      {
+        "from": "merging",
+        "to": "done",
+        "trigger": "pull_request_merged"
+      }
+    ],
+    "ACME-1": [
+      {
+        "from": "admitted",
+        "to": "planning",
+        "trigger": "gate_opened"
+      },
+      {
+        "from": "planning",
+        "to": "implementing",
+        "trigger": "planner_completed"
+      },
+      {
+        "from": "implementing",
+        "to": "testing",
+        "trigger": "implementation_ready"
+      },
+      {
+        "from": "testing",
+        "to": "reviewing",
+        "trigger": "tester_passed"
+      },
+      {
+        "from": "reviewing",
+        "to": "accepting",
+        "trigger": "review_approved"
+      },
+      {
+        "from": "accepting",
+        "to": "retro",
+        "trigger": "sign_off"
+      },
+      {
+        "from": "retro",
+        "to": "merging",
+        "trigger": "retro_completed"
+      },
+      {
+        "from": "merging",
+        "to": "done",
+        "trigger": "pull_request_merged"
+      }
+    ],
+    "ACME-3": [
+      {
+        "from": "admitted",
+        "to": "planning",
+        "trigger": "gate_opened"
+      },
+      {
+        "from": "planning",
+        "to": "implementing",
+        "trigger": "planner_completed"
+      },
+      {
+        "from": "implementing",
+        "to": "testing",
+        "trigger": "implementation_ready"
+      },
+      {
+        "from": "testing",
+        "to": "reviewing",
+        "trigger": "tester_passed"
+      },
+      {
+        "from": "reviewing",
+        "to": "implementing",
+        "trigger": "review_rejected"
+      },
+      {
+        "from": "implementing",
+        "to": "testing",
+        "trigger": "implementation_ready"
+      },
+      {
+        "from": "testing",
+        "to": "reviewing",
+        "trigger": "tester_passed"
+      },
+      {
+        "from": "reviewing",
+        "to": "accepting",
+        "trigger": "review_approved"
+      },
+      {
+        "from": "accepting",
+        "to": "retro",
+        "trigger": "sign_off"
+      },
+      {
+        "from": "retro",
+        "to": "merging",
+        "trigger": "retro_completed"
+      },
+      {
+        "from": "merging",
+        "to": "done",
+        "trigger": "pull_request_merged"
+      }
+    ]
+  }
+}

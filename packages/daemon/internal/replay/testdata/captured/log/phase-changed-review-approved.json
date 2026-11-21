@@ -1,0 +1,16 @@
+[
+  {
+    "timestamp": "2026-11-21T04:55:47.676362087Z",
+    "jsonPayload": {
+      "from": "reviewing",
+      "issue": "ACME-3",
+      "level": "INFO",
+      "msg": "workflow: phase changed",
+      "status": "needs_review",
+      "time": "2026-11-21T04:55:47.676168178Z",
+      "to": "accepting",
+      "tree": "ACME-3",
+      "trigger": "review_approved"
+    }
+  }
+]

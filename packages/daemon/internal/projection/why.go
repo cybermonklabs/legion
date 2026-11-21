@@ -27,8 +27,9 @@ import (
 // project's own records; running are the roots whose trees run (record.RunningRoots), which is
 // what says the work of an issue past its review is going on; stranded are the claims the
 // daemon judges nothing will wake, handed to Project because this package may not read
-// internal/workflow; rows is the Dispatch mirror this pass judged the links from and
-// childWaits the children-first judgement it made (record.ChildWaitsOf).
+// internal/workflow; rows is the Dispatch mirror this pass judged the links from and facts the
+// line facts it judged under, which carry the children-first judgement it made
+// (record.ChildWaitsOf) and the slot rule the state is read under (record.LineFacts.Rule).
 //
 // The four states are read in one order, so no issue carries two answers: claim_stopped, then
 // waiting, then blocked, then unlisted. claim_stopped is first because its fact is about the
@@ -62,8 +63,9 @@ import (
 // membership, and what a member of the line a link holds waits on where the links half names
 // nothing for it, the one fallback in this file (the waiting arm below).
 func whyStates(state *api.State, own []record.Issue, running map[string]struct{}, stranded []supervise.Claim,
-	rows map[string]blockers.Row, childWaits map[string]record.ChildWait,
+	rows map[string]blockers.Row, facts record.LineFacts,
 ) {
+	childWaits := facts.ChildWaits
 	// The stranded claim each issue's answer names. The set reports two kinds of claim and no
 	// others (workflow.Stranded) — the worker of the issue's phase, and the tree's architect —
 	// so where one issue has both, the worker is the one named: its stop is the one that holds
@@ -183,7 +185,7 @@ func whyStates(state *api.State, own []record.Issue, running map[string]struct{}
 			if _, placed := active[issue.Key]; placed {
 				continue
 			}
-			if atWorkPastReview(issue, running) {
+			if atWorkPastReview(issue, running, facts) {
 				continue
 			}
 			reason, _ := heldWordReason(api.WhyUnlisted, causes[issue.Key])
@@ -274,6 +276,10 @@ func linkReason(waitsOn []string) string {
 // (record.PhaseKeepsSlot), so `admission.active` does not name it and it reaches the last arm of
 // whyStates standing in none of the three lists that place an issue: the held list names it
 // instead, under the ladder's at_work where no earlier word is true of it (record.HeldAtWork).
+// "Past its review" is read here as "holds no slot because its phase keeps none", of the rule the
+// state is read under (record.LineFacts.PastReview over facts): under the daemon's own those are
+// the three phases above, and under a rule that keeps a slot in one of them an issue standing
+// there without its slot is no issue at work this arm leaves alone, and is served `unlisted`.
 //
 // It is served no answer, which is the answer of every issue that is working now: holding a slot
 // and being at work were one thing until that change separated them, and the slot holder at work
@@ -310,14 +316,14 @@ func linkReason(waitsOn []string) string {
 // would tell a reader the work had stopped.
 //
 // A held issue answers false here whatever phase its hold came from, which is the first term of
-// the pair below and not a reading of the raw phase: record.PastReview reads the phase a hold
+// the pair below and not a reading of the raw phase: the rule's complement reads the phase a hold
 // came from (record.StandsAt), so an issue held from its retro stands past its review in every
 // rule the slot is judged by, and the term beside it is what puts the record's own `held` back
 // for this one question. A hold is what stops the work: no worker of a held issue runs, so it is
 // served `unlisted` with its held word's sentence — never at_work's, which the ladder refuses a
 // held issue (record.HeldReasonOf) — and the hold is what a reader of it asks about.
-func atWorkPastReview(issue record.Issue, running map[string]struct{}) bool {
-	if issue.Phase == phase.Held || !record.PastReview(issue) {
+func atWorkPastReview(issue record.Issue, running map[string]struct{}, facts record.LineFacts) bool {
+	if issue.Phase == phase.Held || !facts.PastReview(issue) {
 		return false
 	}
 	_, runs := running[issue.Tree]

@@ -1,0 +1,71 @@
+[
+  {
+    "id": 877110,
+    "issue_key": "ACME-25",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 23,
+    "type": "ask.opened",
+    "actor": {
+      "kind": "session",
+      "id": "f612746a-5eb6-4863-905a-1fe5650c0de1",
+      "origin": {
+        "host": "omp",
+        "machine": "legion-acme-daemon",
+        "cwd": "/legion/workspaces/cybermonklabs/legion/acme-25",
+        "session_title": "Legion architect · ACME-25"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-20T20:47:49.424239Z",
+    "payload": {
+      "anchor": null,
+      "answer": null,
+      "artifact_id": null,
+      "asked_of": null,
+      "asked_of_at": null,
+      "asked_of_by": null,
+      "author": {
+        "id": "f612746a-5eb6-4863-905a-1fe5650c0de1",
+        "kind": "session",
+        "origin": {
+          "cwd": "/legion/workspaces/cybermonklabs/legion/acme-25",
+          "host": "omp",
+          "machine": "legion-acme-daemon",
+          "session_title": "Legion architect · ACME-25"
+        }
+      },
+      "block_id": "b4ed5275-0bff-42db-b1d4-79eb096c627b",
+      "created_at": "2026-11-20T20:47:49.424239Z",
+      "edited_at": null,
+      "id": "64ffbfe0-c4da-4f4f-9abb-5fbe1c415b93",
+      "issue_key": "ACME-25",
+      "kind": "question",
+      "multiple": false,
+      "opened_event_id": 877110,
+      "options": [
+        {
+          "description": "Captured option 1 description",
+          "id": "b2",
+          "label": "Captured option 1"
+        },
+        {
+          "id": "b3",
+          "label": "Captured option 2"
+        }
+      ],
+      "question": "Captured question",
+      "referenced_by_count": 0,
+      "references_changed": [
+        {
+          "id": "ACME-35",
+          "kind": "issue"
+        }
+      ],
+      "revision": 1,
+      "state": "open",
+      "thread_logins": [],
+      "urgency": "med"
+    }
+  }
+]

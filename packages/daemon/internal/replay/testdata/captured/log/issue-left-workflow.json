@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-11-21T04:17:17.416992528Z",
+    "jsonPayload": {
+      "issue": "ACME-10",
+      "level": "INFO",
+      "msg": "workflow: issue left the workflow",
+      "status": "backlog",
+      "time": "2026-11-21T04:17:17.416684718Z",
+      "tree": "ACME-11"
+    }
+  }
+]

@@ -446,6 +446,49 @@ type LineFacts struct {
 	// LineWaitingOnIssue until the wait ends. Only the caller can fill it, for the reason Held
 	// gives, and it is read again on every pass as ChildWaits is (blockers.startedWaits).
 	Waits map[string][]string
+	// Rule is the slot rule the line and every judgement over these facts read (SlotRule): the
+	// admission pass's own rule for the facts it judges, and the daemon's for the facts the state
+	// projection reads, each set where the facts are read (ReadLineFactsUnder). The zero value is
+	// the daemon's own rule (SlotRule.OrMain). The facts answer the rule's three questions of an
+	// issue themselves (KeepsSlot, NeedsSlot, PastReview), so a reader asks them of the facts in
+	// hand and reads the merger's ready mark beside the rule without knowing of it.
+	Rule SlotRule
+	// Ready is the issues standing in merging whose merger has completed merging, the head it
+	// stands on recorded on its phases row (PhaseRow.HandoffCommit) while the issue waits in
+	// merging for the merge itself: the merger's ready mark, at which a rule that keeps a slot in
+	// merging and gives it back there (SlotRule.ReleaseAtReady) takes the slot back. It is read
+	// only for such a rule (ReadLineFactsUnder) and is empty under every other, the daemon's own
+	// among them, so a pass under those reads nothing for it.
+	Ready map[string]struct{}
+}
+
+// KeepsSlot is the phase half of the facts' rule (SlotRule.KeepsSlot), with the merger's ready
+// mark read beside it: an issue the rule gives its slot back at that mark (Ready) keeps none.
+// It is what the grant (admit's slotFor), the wait judgement (blockers.waitsOf) and the held
+// ladder (HeldReasonOf) ask, so the three read one rule.
+func (f LineFacts) KeepsSlot(issue Issue) bool {
+	if _, ready := f.Ready[issue.Key]; ready {
+		return false
+	}
+	return f.Rule.KeepsSlot(issue)
+}
+
+// NeedsSlot is NeedsSlot under the facts' rule: issue's tree is live, its root does not linger,
+// and it keeps a slot where it stands (KeepsSlot). The release (admit's releaseSlots) and the
+// line (Waiting) both ask it, so no pass offers a slot to an issue the release would free.
+func (f LineFacts) NeedsSlot(issue, root Issue, live bool) bool {
+	return live && !root.Lingers() && f.KeepsSlot(issue)
+}
+
+// PastReview is the complement of KeepsSlot for an issue the workflow has not finished
+// (SlotRule.PastReview): it stands in a phase the facts' rule keeps no slot in, or the rule took
+// its slot back at the merger's ready mark (Ready). The repair of a worker with no task (admit's
+// readSlotHolders) and the state's answer of `why` (projection's atWorkPastReview) ask it.
+func (f LineFacts) PastReview(issue Issue) bool {
+	if _, ready := f.Ready[issue.Key]; ready {
+		return true
+	}
+	return f.Rule.PastReview(issue)
 }
 
 // ChildWait is why one parent's own first phase waits: the open Dispatch children under it, in
@@ -647,6 +690,45 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	return LineFacts{Lifecycles: lifecycles, Gates: gates, Parents: parents, Roots: roots, Owed: owed, OwedRows: rows}, nil
 }
 
+// ReadLineFactsUnder is ReadLineFacts for a reader that judges under rule: the facts with the
+// rule set on them (LineFacts.Rule, rule.OrMain()), so every judgement made over them — the
+// release, the line, the waits, the held words — reads the one rule its reader was given rather
+// than one of its own choosing. It is how each reader of the slot rule that reads its own facts
+// sets the rule: the admission pass with its own (admit's Admission.UseSlotRule), and the state
+// projection with the one it was handed (projection.Inputs.SlotRule), which for the daemon is
+// its own.
+//
+// Under a rule that keeps a slot in merging and gives it back at the merger's ready mark
+// (SlotRule.ReleaseAtReady) it also reads that mark (LineFacts.Ready): the merger's phases row
+// of each issue standing in merging, one read for each, which only a replay under such a rule
+// pays. Every other rule, the daemon's own among them, reads nothing beyond ReadLineFacts.
+func ReadLineFactsUnder(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep,
+	rule SlotRule,
+) (LineFacts, error) {
+	facts, err := ReadLineFacts(ctx, tx, store, project, issues, steps)
+	if err != nil {
+		return LineFacts{}, err
+	}
+	facts.Rule = rule.OrMain()
+	if !facts.Rule.ReleaseAtReady || !facts.Rule.PhaseKeepsSlot(phase.Merging) {
+		return facts, nil
+	}
+	facts.Ready = make(map[string]struct{})
+	for _, issue := range issues {
+		if StandsAt(issue) != phase.Merging {
+			continue
+		}
+		rows, err := store.Phases(ctx, tx, issue.Key)
+		if err != nil {
+			return LineFacts{}, err
+		}
+		if PhaseRowOf(rows, claim.RoleMerger).HandoffCommit != "" {
+			facts.Ready[issue.Key] = struct{}{}
+		}
+	}
+	return facts, nil
+}
+
 // GateOpen is whether a person's approval stands on the gate's current document version: the one
 // statement of it, which classify.DesignGateOpen and Store.PutGate's own write both call.
 // internal/classify reads this package, so the rule lives here, where every reader can reach it.
@@ -776,27 +858,26 @@ func AtWork(issue Issue, gate TreeGate) bool {
 	}
 }
 
-// PhaseKeepsSlot is the one list of the phases that hold one of the cap's slots: admitted, where
-// a root's architect writes its design and a started child waits to be entered again;
-// awaiting_person; the four phases a worker works up to the review — planning, implementing,
-// testing and reviewing; and held, which is reached here only where the record names no earlier
-// phase for the hold (StandsAt). Every other phase holds none: accepting, retro and merging each
-// stand past the issue's review, and done has finished.
+// PhaseKeepsSlot is the daemon's own list of the phases that hold one of the cap's slots
+// (MainRule.KeepsSlotIn, read through SlotRule.PhaseKeepsSlot): admitted, where a root's
+// architect writes its design and a started child waits to be entered again; awaiting_person;
+// the four phases a worker works up to the review — planning, implementing, testing and
+// reviewing; and held, which is reached here only where the record names no earlier phase for
+// the hold (StandsAt). Every other phase holds none: accepting, retro and merging each stand
+// past the issue's review, and done has finished.
 //
-// It is written as one list so that a later change adds or removes one entry and every reader of
-// the rule moves with it. Two read it, and a phase in one and not the other would be a deadlock:
-// the cap's own half (KeepsSlot) and the mark a start of a phase worker carries for the slot it
-// waits for (workflow.StartOrOwe), whose row the outbox holds unclaimable while the issue holds
-// no slot. PastReview is the complement of the three phases this refuses, for the repair that
-// must reach an issue holding no row.
+// It is written as one list, in the rule value, so that a later change adds or removes one
+// entry and every reader of the rule moves with it. Two read it, and a phase in one and not the
+// other would be a deadlock: the cap's own half (KeepsSlot) and the mark a start of a phase
+// worker carries for the slot it waits for (workflow.StartOrOwe), whose row the outbox holds
+// unclaimable while the issue holds no slot. SlotRule.PastReview is the complement of the
+// phases a rule refuses, for the repair that must reach an issue holding no row.
+//
+// The readers inside the admission pass, the engine and the projection read the rule they were
+// given (SlotRule.PhaseKeepsSlot and the readers beside it): this function, like the three
+// beside it, is the daemon's own rule under the name its callers outside them have always used.
 func PhaseKeepsSlot(at phase.Phase) bool {
-	switch at {
-	case phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
-		phase.Reviewing, phase.Held:
-		return true
-	default:
-		return false
-	}
+	return MainRule.PhaseKeepsSlot(at)
 }
 
 // KeepsSlot is the phase half of the admission rule: an issue holds one of the cap's slots from
@@ -828,31 +909,36 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 // release (NeedsSlot, which admit's releaseSlots asks of every issue holding a row) and the
 // grant (admit's slotFor, which asks it of every candidate of the waiting line that holds no
 // row). Written apart, one pass could grant a row the next pass takes away, and the issue would
-// queue again for the slot it had just been given.
+// queue again for the slot it had just been given. Inside the pass both ask it of the pass's own
+// rule through its facts (LineFacts.KeepsSlot), so one rule answers both there too.
 //
 // Whether the issue is in the workflow at all is InWorkflow's one statement, which this reads
 // rather than writing a second copy of: the linger InWorkflow leaves out is read by no part of
 // the slot rule either, and NeedsSlot asks the tree's own terms beside this.
+//
+// It is the daemon's own rule's half (MainRule.KeepsSlot), as PhaseKeepsSlot says.
 func KeepsSlot(issue Issue) bool {
-	return InWorkflow(issue) && PhaseKeepsSlot(StandsAt(issue))
+	return MainRule.KeepsSlot(issue)
 }
 
 // PastReview says whether issue's work stands past its own review: in accepting, in its retro
-// or in its merge, or held from one of them (StandsIn, as Accepted is written). Those are
-// exactly the three phases that hold none of the cap's slots (PhaseKeepsSlot), so this is that
-// list read the other way round.
+// or in its merge, or held from one of them (StandsIn, as Accepted is written). It is the
+// workflow's "past the review", which no slot rule changes: the readers that ask it mean that
+// the merge is the issue's next step, whatever slot it holds — classify.ConflictNeedsMerge,
+// which asks the merge forward at once for such an issue because GitHub merges no head that
+// conflicts with its base, and the workflow's merge forward, whose landing under such an issue
+// asks the reviewer to read the head it stands on.
 //
-// It exists so that the list lives in this package alone. The repair of a worker with no task
-// (admit's resumeSlottedWorkers) must reach an issue standing past its review, because such an
-// issue holds no row and the repair's own domain is the slot holders. Written there as a list of
-// its own, a phase added to or taken out of PhaseKeepsSlot would move the cap and leave the
-// repair behind, and the worker of that phase would be repaired by nothing. Read from here, the
-// two move together.
+// Under the daemon's own rule those three phases are exactly the ones that hold none of the
+// cap's slots, but the two questions are apart: the readers that ask "holds no slot because its
+// phase keeps none" — the repair of a worker with no task (admit's readSlotHolders) and the
+// state's answer of `why` (projection's atWorkPastReview) — ask it of the rule they were given
+// (SlotRule.PastReview, through LineFacts.PastReview), which under MainRule names the same three
+// phases and under another rule names the phases it keeps no slot in.
 //
 // It is not Accepted, and the two must not be merged: Accepted names the two phases whose
 // reviewed head the daemon has accepted, which is the rule the acceptance order is written over
-// (its doc names them there and nowhere else), while this one is the slot rule's complement and
-// counts accepting with them.
+// (its doc names them there and nowhere else), while this one counts accepting with them.
 func PastReview(issue Issue) bool {
 	return StandsIn(issue, phase.Accepting, phase.Retro, phase.Merging)
 }
@@ -873,9 +959,10 @@ func PastReview(issue Issue) bool {
 // otherwise count a parked root's slot against the cap for good.
 //
 // It is the one statement of the release of an issue that needs no slot at all, and the two
-// readers that must never disagree both call it: admission releases the slot of every issue it
-// answers false for (admit's releaseSlots), and the waiting line offers a returning issue a slot
-// only where it answers true (Waiting). The other release, of a started issue that goes on
+// readers that must never disagree both ask it, of the rule the pass's facts carry
+// (LineFacts.NeedsSlot): admission releases the slot of every issue it answers false for
+// (admit's releaseSlots), and the waiting line offers a returning issue a slot only where it
+// answers true (Waiting). The other release, of a started issue that goes on
 // working and waits on another issue, is not stated here: it is admit's releaseSlotsForWaits,
 // judged by blockers.waitsOf. This answers true of such an issue all the same, so the issue
 // keeps its place in the line while it holds no slot. root is the record of
@@ -883,8 +970,10 @@ func PastReview(issue Issue) bool {
 // by no part of this: a gate open or closed changes neither whether the tree runs nor whether
 // the issue's phase keeps a row (KeepsSlot). The slot is accounting only: taking one away
 // suspends no claim, moves no phase and writes no Dispatch status.
+//
+// It is the daemon's own rule's statement (MainRule.NeedsSlot), as PhaseKeepsSlot says.
 func NeedsSlot(issue, root Issue, live bool) bool {
-	return live && !root.Lingers() && KeepsSlot(issue)
+	return MainRule.NeedsSlot(issue, root, live)
 }
 
 // CanWaitOnPerson says whether root may enter awaiting_person now: it is a root of a tree in the
@@ -967,6 +1056,14 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // open design gate. Each takes its tree root's place in the board's order, so a started tree's
 // children go before the roots ranked below their root, and a root ranked above a tree is not
 // kept out by a tree that keeps filing children.
+//
+// Those two orders are the daemon's own rule's (LineReturnedOldestFirst). The facts carry the
+// rule the line is built under (LineFacts.Rule), and two other orders are a rule's to choose: a
+// rule may place the returned part by the board's rank as the starting part is placed
+// (LineReturnedByRank), or put first in the starting part each issue that an issue the daemon
+// has started waits on (LineBlockersFirst). Which issues are in the line is the same under each
+// of them, save where the rule's phases decide whether an issue needs a slot
+// (LineFacts.NeedsSlot).
 //
 // An unanswered awaiting root waits on the person rather than a slot, whatever Dispatch status it
 // currently shows, so it is not in the line until it is Answered. A root without the label waits
@@ -1091,14 +1188,15 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			hold(issue)
 			continue
 		}
-		// The issue must need a slot where it stands (NeedsSlot), the same question the release
-		// of one asks, so that no issue the release would free is offered one here: an issue
-		// that owes a start its phase has moved past — a run that ended before its slot came,
-		// whose row the repair pass finishes (admit's finishFencedStarts) — waits for nothing
-		// and must not take a slot from an issue that does.
+		// The issue must need a slot where it stands (NeedsSlot, under the facts' own rule:
+		// LineFacts.NeedsSlot), the same question the release of one asks, so that no issue the
+		// release would free is offered one here: an issue that owes a start its phase has moved
+		// past — a run that ended before its slot came, whose row the repair pass finishes
+		// (admit's finishFencedStarts) — waits for nothing and must not take a slot from an issue
+		// that does.
 		root, recorded := byKey[issue.Tree]
 		_, running := live[issue.Tree]
-		if !recorded || !NeedsSlot(issue, root, running) {
+		if !recorded || !facts.NeedsSlot(issue, root, running) {
 			hold(issue)
 			continue
 		}
@@ -1252,8 +1350,26 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		}
 		starting = append(starting, entry)
 	}
+	// Each part is ordered as the facts' rule orders the line (SlotRule.Order). byRank is the
+	// board's order, which the starting part is read in under every rule: a root of its own tree
+	// compares by its own rank, which is its tree root's, and a child takes its tree root's place
+	// in the board's order and then its own. It is a strict order of distinct issues (RankLess
+	// breaks a tie of ranks by key), so a part sorted by it alone needs no tie of its own.
+	order := facts.Rule.OrMain().Order
+	byRank := func(left, right Issue) bool {
+		if left.Tree != right.Tree {
+			return RankLess(byKey[left.Tree], byKey[right.Tree])
+		}
+		return RankLess(left, right)
+	}
 	sort.Slice(returned, func(i, j int) bool {
 		left, right := returned[i], returned[j]
+		// A rule that places work that came back by the board's rank (LineReturnedByRank)
+		// orders the returned part as the starting part is ordered, and the moment the work came
+		// back still stands on the entry (LineEntry.Since) as what put it in this part.
+		if order == LineReturnedByRank {
+			return byRank(left.entry.Issue, right.entry.Issue)
+		}
 		if !left.at.Equal(right.at) {
 			return left.at.Before(right.at)
 		}
@@ -1262,14 +1378,28 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		}
 		return left.entry.Issue.Key < right.entry.Issue.Key
 	})
+	// A rule that puts first what started work waits on (LineBlockersFirst) places each issue of
+	// the starting part that an issue the daemon has started waits on (LineFacts.Waits) ahead of
+	// the rest of that part, each half in the board's order: the slot such a waiter gave back
+	// goes to the work that ends its wait. Under every other rule the set is empty and the part
+	// is the board's order alone.
+	var waitedOn map[string]struct{}
+	if order == LineBlockersFirst {
+		waitedOn = make(map[string]struct{})
+		for _, keys := range facts.Waits {
+			for _, key := range keys {
+				waitedOn[key] = struct{}{}
+			}
+		}
+	}
 	sort.Slice(starting, func(i, j int) bool {
 		left, right := starting[i].Issue, starting[j].Issue
-		// A root of its own tree compares by its own rank, which is its tree root's; a child
-		// takes its tree root's place in the board's order and then its own.
-		if left.Tree != right.Tree {
-			return RankLess(byKey[left.Tree], byKey[right.Tree])
+		_, leftFirst := waitedOn[left.Key]
+		_, rightFirst := waitedOn[right.Key]
+		if leftFirst != rightFirst {
+			return leftFirst
 		}
-		return RankLess(left, right)
+		return byRank(left, right)
 	})
 
 	// Each entry's part is the slice it ended in, set here rather than where the entry was

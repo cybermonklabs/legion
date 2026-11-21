@@ -1,0 +1,67 @@
+[
+  {
+    "id": 502249,
+    "issue_key": "ACME-43",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 99,
+    "type": "issue.closed",
+    "actor": {
+      "kind": "session",
+      "id": "legion-daemon:ACME"
+    },
+    "notify": false,
+    "created_at": "2026-11-13T21:26:48.67625Z",
+    "payload": {
+      "key": "ACME-43",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzr",
+      "repo": "acme/widgets",
+      "claim": null,
+      "route": null,
+      "title": "Captured workflow issue",
+      "labels": [],
+      "number": 43,
+      "parent": "ACME-44",
+      "status": "done",
+      "changed": [
+        "status",
+        "closed_at"
+      ],
+      "project": "ACME",
+      "assignee": "person@example.invalid",
+      "last_seq": 99,
+      "priority": null,
+      "ancestors": [
+        "ACME-44"
+      ],
+      "closed_at": "2026-11-13T21:26:48.67625Z",
+      "blocked_by": [],
+      "components": {
+        "ids": [],
+        "mode": "none",
+        "reason": "Captured components reason",
+        "unknown": [],
+        "inherited_from": null
+      },
+      "created_at": "2026-11-11T22:53:00.892942Z",
+      "created_by": {
+        "id": "061fd4f0-043c-4ef2-828c-7fee7477d8ac",
+        "kind": "session",
+        "origin": {
+          "cwd": "/legion/scratch/tmp",
+          "host": "omp",
+          "machine": "legion-acme-daemon",
+          "session_title": "Legion architect · ACME-44"
+        }
+      },
+      "updated_at": "2026-11-13T21:26:48.681787Z",
+      "resolved_repo": "acme/widgets",
+      "thread_logins": [],
+      "external_links": [],
+      "plan_artifact_id": "cea8632d-e3a3-4d91-9a35-928596a397f2",
+      "primary_artifact_id": "0e716ce3-ae38-4afa-91db-bc9ecfd43c1c",
+      "decisions_artifact_id": "",
+      "verification_artifact_id": "7aab4aa1-d08b-4f4c-b2b6-d345c365e104"
+    }
+  }
+]

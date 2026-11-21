@@ -14,6 +14,29 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// conflictMovesBack is the act on a confirmed conflict that needs the merge, why, under a slot
+// rule whose conflicting head moves back (record.SlotRule.Conflict, conflictTrigger): the issue
+// moves back to implementing by that rule's trigger, through the rule's own row of the move
+// (TableFor), so the implementer is started on the conflict at the head and the architect is
+// told, as the releases that ran such a rule did. It says whether it moved the issue. It moves
+// nothing under the daemon's own rule, whose conflicting head keeps its phase while the base is
+// merged forward (mergeForward), nor for an issue standing where the rule's table has no such
+// row — in implementing already, or held — which is merged forward as under the daemon's own.
+func (e *Engine) conflictMovesBack(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest,
+	why record.ConflictWhy,
+) (bool, error) {
+	trigger, moves := conflictTrigger(e.cfg.SlotRule)
+	if !moves {
+		return false, nil
+	}
+	snapshot := Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}
+	if _, found := e.row(issue.Phase, trigger, phase.Implementing, snapshot); !found {
+		return false, nil
+	}
+	reason := fmt.Sprintf("head %s of pull request #%d conflicts with its base %s (%s)", pr.HeadSHA, pr.Number, pr.Base, why)
+	return true, e.transition(ctx, tx, issue, trigger, phase.Implementing, record.PhaseRow{}, pr, reason)
+}
+
 // mergeForward is the daemon's act on a confirmed conflict that R0 found a reason to act on, why
 // (dispatch://INFRA-4374 R0, R1; classify.ConflictNeedsMerge): the issue keeps the phase it stands
 // in (record.StandsAt), no phase entry starts and no supervise row is written, so an issue past

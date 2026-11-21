@@ -633,6 +633,13 @@ type Admission struct {
 	// (record.HeldAtWork says which issues read it). Never null; empty when every issue of the
 	// workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
+	// Slots is what the slots in use are spent on (SlotsReading): the holders counted by what
+	// each is doing (record.HolderState), the two readings of started work that waits without a
+	// slot, the holders that rank below the first issue that waits for one, and the sentence
+	// `legion state` prints for it as the first line after its admission count. The controller's
+	// tick notice carries the same reading (record.Notice.Slots). Absent where the daemon read
+	// none.
+	Slots *SlotsReading `json:"slots,omitempty"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below shaping.go's treeContract): that
 	// reader knows no `trees` and refuses the key as surely when it is empty as when it names a
@@ -655,6 +662,11 @@ type BlockedIssue = record.BlockedIssue
 // record.BlockedIssue: the state's `admission.held` and the controller tick's notice are the
 // same list read two ways, and the row is declared once, under both.
 type HeldIssue = record.HeldIssue
+
+// SlotsReading is the state's reading of the slots in use. It is record.SlotsReading, as
+// BlockedIssue is record.BlockedIssue: the state's `admission.slots` and a tick controller
+// notice's `slots` are one reading read two ways, and it is declared once, under both.
+type SlotsReading = record.SlotsReading
 
 // MarshalJSON keeps `active`, `waiting`, `trees`, `blocked` and `held` arrays on the wire, empty
 // rather than `null` — except on an admission whose trees are hidden, which carries no `trees`
@@ -709,6 +721,14 @@ type Issue struct {
 	// find the members of a tree that lingers. Absent on an issue the workflow does not record
 	// (an operator's claim, Unrecorded), which stands in no tree.
 	Tree string `json:"tree,omitempty"`
+	// Rank is the issue's Dispatch board rank (record.Issue.Rank) and RootRank its tree root's,
+	// the two keys the line orders its starting part by and a holder is placed against the first
+	// issue that waits for a slot by (record.RankLess over the root's record and then the
+	// issue's), so a reader can check `admission.slots`' count of holders below that issue from
+	// the body alone. Absent where the record holds no rank, and on an issue the workflow does
+	// not record.
+	Rank     string `json:"rank,omitempty"`
+	RootRank string `json:"rootRank,omitempty"`
 	// Repo is the repository (owner/name) the issue targets and DefaultBranch that repository's
 	// default branch, both taken when the daemon first recorded the issue and kept after, except
 	// that the daemon's one-time rename pass writes a `repository_renames` pair's `to` over Repo.
@@ -1402,10 +1422,14 @@ func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]rec
 	return views
 }
 
-// SlotView is the admission slot the issue occupies and when it took it.
+// SlotView is the admission slot the issue occupies and when it took it, and what the issue is
+// doing with it: its holder state (record.HolderState, the word `admission.slots` counts it
+// under) and when it entered that state, absent where the record holds no such time.
 type SlotView struct {
-	Index      int       `json:"index"`
-	AdmittedAt time.Time `json:"admittedAt"`
+	Index      int        `json:"index"`
+	AdmittedAt time.Time  `json:"admittedAt"`
+	State      string     `json:"state,omitempty"`
+	Since      *time.Time `json:"since,omitempty"`
 }
 
 // WaitingLineField is the name `waitingLine` carries on the wire, read from here by a test that

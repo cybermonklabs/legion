@@ -144,8 +144,37 @@ func (l Lifecycle) OpenUnderWorkflow() bool {
 
 // Open starts a fresh authorized lifetime or returns its current open epoch. It is called in the
 // admission fact transaction or before an explicit operator root is created; a cleanup reservation
-// is a named wait, never an implicit zero authority.
+// is a named wait, never an implicit zero authority. A lifetime it starts — the tree's first, or
+// its next epoch once its cleanup has confirmed — is stamped with Postgres's now(), the moment of
+// the transaction, which it reads on those two paths alone; OpenAt stamps a caller's time instead.
 func Open(ctx context.Context, tx pgx.Tx, project, tree string, authority Authority) (Lifecycle, error) {
+	return open(ctx, tx, project, tree, authority, func() (time.Time, error) {
+		var now time.Time
+		if err := tx.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
+			return time.Time{}, fmt.Errorf("read the database's clock to open tree lifecycle %s: %w", tree, err)
+		}
+		return now, nil
+	})
+}
+
+// OpenAt is Open with the tree's lifecycle stamped at at rather than at Postgres's now(): the
+// updated_at of the row it creates, and of the row whose next epoch it opens. A zero at is the
+// database's own now(), which is what Open stamps. A store on a clock of its own
+// (record.NewStoreWithClock, store.Store.UseClock) opens a tree through it with that clock's
+// time, so a replay of a recorded window that promotes a queued root stamps the tree's lifetime
+// with the window's time and not with the moment the replay ran.
+func OpenAt(ctx context.Context, tx pgx.Tx, project, tree string, authority Authority, at time.Time) (Lifecycle, error) {
+	if at.IsZero() {
+		return Open(ctx, tx, project, tree, authority)
+	}
+	return open(ctx, tx, project, tree, authority, func() (time.Time, error) { return at, nil })
+}
+
+// open is Open and OpenAt, one rule of a tree's opening whichever clock stamps it. stamp is the
+// time a lifetime it starts is stamped with, asked only on the two paths that write one, so a call
+// that answers the open epoch or a named wait reads no clock: the admission pass opens a queued
+// root's tree on every pass that reaches it while its cleanup is reserved.
+func open(ctx context.Context, tx pgx.Tx, project, tree string, authority Authority, stamp func() (time.Time, error)) (Lifecycle, error) {
 	if authority != AuthorityWorkflow && authority != AuthorityOperator {
 		return Lifecycle{}, fmt.Errorf("open tree lifecycle %s: invalid authority %q", tree, authority)
 	}
@@ -154,7 +183,12 @@ func Open(ctx context.Context, tx pgx.Tx, project, tree string, authority Author
 	}
 	lifecycle, err := read(ctx, tx, project, tree)
 	if errors.Is(err, pgx.ErrNoRows) {
-		_, err := tx.Exec(ctx, `insert into tree_lifecycles (project, tree, epoch, authority) values ($1, $2, 1, $3)`, project, tree, string(authority))
+		at, err := stamp()
+		if err != nil {
+			return Lifecycle{}, err
+		}
+		_, err = tx.Exec(ctx, `insert into tree_lifecycles (project, tree, epoch, authority, updated_at) values ($1, $2, 1, $3, $4)`,
+			project, tree, string(authority), at)
 		if err != nil {
 			return Lifecycle{}, fmt.Errorf("create tree lifecycle %s: %w", tree, err)
 		}
@@ -170,10 +204,14 @@ func Open(ctx context.Context, tx pgx.Tx, project, tree string, authority Author
 		if lifecycle.Epoch == math.MaxInt64 {
 			return Lifecycle{}, fmt.Errorf("open tree lifecycle %s: epoch overflows", tree)
 		}
+		at, err := stamp()
+		if err != nil {
+			return Lifecycle{}, err
+		}
 		lifecycle.Epoch++
 		lifecycle.Authority, lifecycle.CleanupStarted, lifecycle.CleanupConfirmedAt = authority, false, time.Time{}
 		_, err = tx.Exec(ctx, `update tree_lifecycles set epoch = $3, authority = $4, cleanup_started = false,
-			cleanup_confirmed_at = null, updated_at = now() where project = $1 and tree = $2`, project, tree, int64(lifecycle.Epoch), string(authority))
+			cleanup_confirmed_at = null, updated_at = $5 where project = $1 and tree = $2`, project, tree, int64(lifecycle.Epoch), string(authority), at)
 		if err != nil {
 			return Lifecycle{}, fmt.Errorf("open next tree lifecycle %s: %w", tree, err)
 		}

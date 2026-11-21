@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // ChildrenFirstCandidates is every issue of issues whose own first phase has not started yet and
@@ -24,28 +23,13 @@ import (
 // offer a slot to, so a root there waits for nothing and is told nothing; from the opening the
 // root and every released member of its tree are issues whose first phase the line does offer a
 // slot to, and each of them waits for whatever Dispatch still shows hanging under it.
+//
+// It is the daemon's own rule's reading (MainRule, SlotRule.ChildrenFirstCandidates), kept under
+// this name for the callers outside the admission pass: the pass's own judgement reads the rule
+// its facts carry (ChildWaitsOf, LineFacts.Rule), which under a rule whose wait stops the phase
+// reads a started parent's children too.
 func ChildrenFirstCandidates(issues []Issue, gates map[string]TreeGate) []string {
-	byKey := make(map[string]Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
-	keys := make([]string, 0, len(issues))
-	for _, issue := range issues {
-		// The root must be among the records and must not linger. A root whose tree has left the
-		// workflow is no part of a live read at all — its phase is done and its status is not
-		// todo (Store.LiveIssues) — so an unrecorded root is a tree that has gone, and reading
-		// the zero record's linger would answer false for exactly the case this test is for.
-		root, recorded := byKey[issue.Tree]
-		if issue.Phase != phase.Admitted || !InWorkflow(issue) || !recorded || root.Lingers() {
-			continue
-		}
-		if !gates[issue.Tree].Open() {
-			continue
-		}
-		keys = append(keys, issue.Key)
-	}
-	slices.Sort(keys)
-	return keys
+	return MainRule.ChildrenFirstCandidates(issues, gates)
 }
 
 // ChildOpen says whether one Dispatch child of a parent still holds that parent's own first
@@ -188,14 +172,15 @@ func cycleAncestor(child DispatchIssueRow, parent Issue, byKey map[string]Issue)
 }
 
 // ChildWaitsOf reads the Dispatch children of every issue whose first phase has not started
-// (ChildrenFirstCandidates) and judges them (ChildWaits). It is one query whatever the number of
-// parents, because every judgement the daemon makes about children-first runs inside a
-// transaction that performs no I/O of its own and under the one fact lock every fact takes
-// (intake.ApplyFact): a read per parent would cost a round trip per unstarted issue on every fact
-// of every consumer. facts are the pass's own, which carry the gates each candidate is read
-// against and the records above the pass that its cycle walk crosses.
+// (ChildrenFirstCandidates, under the rule facts carry: LineFacts.Rule, whose wait that stops the
+// phase reads a started parent's children too) and judges them (ChildWaits). It is one query
+// whatever the number of parents, because every judgement the daemon makes about children-first
+// runs inside a transaction that performs no I/O of its own and under the one fact lock every
+// fact takes (intake.ApplyFact): a read per parent would cost a round trip per unstarted issue
+// on every fact of every consumer. facts are the pass's own, which carry the rule, the gates
+// each candidate is read against and the records above the pass that its cycle walk crosses.
 func ChildWaitsOf(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, facts LineFacts) (map[string]ChildWait, error) {
-	children, err := store.DispatchChildren(ctx, tx, project, ChildrenFirstCandidates(issues, facts.Gates))
+	children, err := store.DispatchChildren(ctx, tx, project, facts.Rule.ChildrenFirstCandidates(issues, facts.Gates))
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2026-11-21T05:08:53.047267599Z",
+    "jsonPayload": {
+      "claim": "legion-acme-acme-37-tester",
+      "generation": 3,
+      "incarnation": "645550fd-95e1-406d-a855-cd3d6a7eb638/3",
+      "level": "INFO",
+      "msg": "supervise: launched",
+      "resumed": true,
+      "time": "2026-11-21T05:08:53.046995199Z"
+    }
+  }
+]

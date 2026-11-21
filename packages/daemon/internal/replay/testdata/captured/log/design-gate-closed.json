@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2026-11-21T03:22:07.596379536Z",
+    "jsonPayload": {
+      "artifact": "a52b7798-f7e8-4fe9-a271-448cc871c5fb",
+      "event": "version",
+      "issue": "ACME-7",
+      "level": "INFO",
+      "msg": "workflow: design gate closed",
+      "time": "2026-11-21T03:22:07.596160896Z",
+      "version": 74
+    }
+  }
+]

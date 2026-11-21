@@ -66,6 +66,14 @@ type Inputs struct {
 	// Now is the instant the held rows are read at (record.Store.HeldRows) and their waits are
 	// measured from.
 	Now time.Time
+	// SlotRule is the slot rule the state is read under (record.SlotRule): the daemon's own, and
+	// a replay's under the rule it replays, so the line, the held words and the answer of `why`
+	// name each issue by the rule that placed it. The zero value is the daemon's own rule
+	// (record.SlotRule.OrMain).
+	SlotRule record.SlotRule
+	// Cap is the project's admission cap, which the slots reading names beside the slots in use
+	// (record.SlotsReadingOf, api.Admission.Slots).
+	Cap int
 }
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
@@ -387,7 +395,10 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			own = append(own, issue)
 		}
 	}
-	facts, err := record.ReadLineFacts(ctx, in.Tx, in.Store, in.Project, own, in.Steps)
+	// The facts are read under the rule the state is read under (Inputs.SlotRule, the daemon's own
+	// unless a replay names another), so the line, the held words and the answer of `why` below
+	// place each issue by the rule that placed it in the pass (record.ReadLineFactsUnder).
+	facts, err := record.ReadLineFactsUnder(ctx, in.Tx, in.Store, in.Project, own, in.Steps, in.SlotRule)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -497,7 +508,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are the same roots record.LiveRoots is read from above — live is wider than running,
 	// and a parked root's tree is neither.
-	whyStates(&projected, own, record.RunningRoots(own, facts), in.Stranded, rows, facts.ChildWaits)
+	whyStates(&projected, own, record.RunningRoots(own, facts), in.Stranded, rows, facts)
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the

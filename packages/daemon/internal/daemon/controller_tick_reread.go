@@ -89,8 +89,9 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, error) {
 	// rows of every issue a blocker can hold come before the line, which leaves such an issue out
 	// and cannot judge that itself (record.LineFacts.Held); the issues the line names are read
 	// after it, since only the line says which they are. This read wants those keys alone and
-	// drops the held rows, so the clock it hands over decides nothing here.
-	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, w.records, w.dispatchProject, issues, slots, facts, nil, time.Now())
+	// drops the held rows, so the clock it hands over decides nothing here; it is the runtime's
+	// own (clockNow), the one every other judgement of this runtime reads.
+	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, w.records, w.dispatchProject, issues, slots, facts, nil, w.clockNow())
 	if err != nil {
 		return nil, err
 	}

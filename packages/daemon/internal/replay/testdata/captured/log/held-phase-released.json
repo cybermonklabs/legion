@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-11-20T00:10:02.000115273Z",
+    "jsonPayload": {
+      "issue": "ACME-9",
+      "level": "INFO",
+      "msg": "workflow: a held phase is released",
+      "phase": "merging",
+      "reason": "the operator retried this phase's worker",
+      "time": "2026-11-20T00:10:01.999737953Z"
+    }
+  }
+]

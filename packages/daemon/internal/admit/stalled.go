@@ -266,7 +266,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 			return err
 		}
 	}
-	canMove := a.lineCanMove(issues, holds, working, rows)
+	canMove := a.lineCanMove(issues, facts, slots, holds, working, rows)
 	var stopped []record.Issue
 	named := 0
 	for _, root := range stalled {
@@ -710,7 +710,8 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //     (record.LineEntry.Holds);
 //  3. the free-slot term: some entry of the line waits on no other issue (blockers.LineWaitsOn,
 //     the rule the promotion itself reads per kind) and the promotion starts it under the cap
-//     (capLets, the cap's half the promotion reads too): it takes a row the
+//     (capLets, the cap's half the promotion reads too, under the pass's own rule — facts — and
+//     with the slots its holders lend, covers): it takes a row the
 //     project holds fewer than the cap of, or it takes none at all, as a queued root past its
 //     review takes none and opens its tree whatever the cap says. The promotion this same pass
 //     runs after the measure starts that entry's work. A slot comes free without a worker
@@ -731,8 +732,8 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 //
 // It is answered once per pass, by the caller, and never per tree: the question is the
 // project's and its answer is the same for every tree of the pass.
-func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working map[string]struct{},
-	rows map[string]blockers.Row,
+func (a *Admission) lineCanMove(issues []record.Issue, facts record.LineFacts, slots []record.Slot, holds lineHolds,
+	working map[string]struct{}, rows map[string]blockers.Row,
 ) bool {
 	if len(working) > 0 {
 		return true
@@ -750,8 +751,12 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 		// the slot back, so the project's line can move.
 		return true
 	}
+	// The slots the holders lend under a rule whose start may take a cover are read as the
+	// promotion reads them (covers), over this project's own rows; nothing is lent under every
+	// other rule.
+	lending := coversOf(ownSlots(issues, slots), rows, facts)
 	for _, entry := range holds.line {
-		if len(blockers.LineWaitsOn(rows, entry)) == 0 && capLets(entry, held, a.cap) {
+		if len(blockers.LineWaitsOn(rows, entry)) == 0 && a.capLets(entry, held, facts, lending) {
 			// An entry the promotion of this very pass starts: the line moves.
 			return true
 		}

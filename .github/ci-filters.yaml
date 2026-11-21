@@ -505,6 +505,7 @@ plugin_pack:
   - '!packages/daemon/internal/record/**/*_test.go'
   - '!packages/daemon/internal/redact/**/*_test.go'
   - '!packages/daemon/internal/registry/**/*_test.go'
+  - '!packages/daemon/internal/replay/**/*_test.go'
   - '!packages/daemon/internal/repocache/**/*_test.go'
   - '!packages/daemon/internal/rolefile/**/*_test.go'
   - '!packages/daemon/internal/runtime/**/*_test.go'

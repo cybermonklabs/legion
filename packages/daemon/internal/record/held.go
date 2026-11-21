@@ -49,7 +49,8 @@ const (
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
 	// HeldAtWork is the ladder's `!KeepsSlot(issue)` for an issue not standing in held: an issue
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
-	// no other issue holds. KeepsSlot is InWorkflow and a phase up to the review
+	// no other issue holds. KeepsSlot is asked of the rule the ladder's facts carry
+	// (LineFacts.KeepsSlot): under the daemon's own it is InWorkflow and a phase up to the review
 	// (PhaseKeepsSlot, over StandsAt), and HeldList keeps only InWorkflow candidates, so the
 	// issues that read this word are the ones past their review — in accepting, retro or merging
 	// — whose sign-off, retro and merge run on no slot at all. An issue held from one of those
@@ -244,8 +245,9 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// review keeps no slot (KeepsSlot reads StandsAt), which makes this word reachable for a held
 	// issue, and its sentence — that the issue's workers run as they did — is false for an issue
 	// whose hold stopped its work. Such an issue falls to unclassified instead. The stalled-tree
-	// measure is unmoved: neither word silences a tree (admit's silencedTree).
-	if !KeepsSlot(issue) && issue.Phase != phase.Held {
+	// measure is unmoved: neither word silences a tree (admit's silencedTree). The phases are the
+	// rule's the facts carry (LineFacts.KeepsSlot), the rule the line itself was built under.
+	if !facts.Facts.KeepsSlot(issue) && issue.Phase != phase.Held {
 		return HeldAtWork, nil
 	}
 	return HeldUnclassified, nil

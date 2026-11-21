@@ -1,0 +1,13 @@
+[
+  {
+    "timestamp": "2026-11-21T05:09:23.249232332Z",
+    "jsonPayload": {
+      "claim": "legion-acme-acme-39-architect",
+      "delivery": "outbox:424751",
+      "generation": 192,
+      "level": "INFO",
+      "msg": "supervise: a turn started",
+      "time": "2026-11-21T05:09:23.248994112Z"
+    }
+  }
+]

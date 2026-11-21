@@ -715,13 +715,13 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).
 	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
-	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
-	// whether to start a child and admission whether to admit a root inside this same
-	// transaction, from the mirror's rows, so the row an event carries must already be written
-	// when they look. Neither could write it itself: the engine returns early on an event whose
-	// sequence or status it has already seen (Engine.dispatchIssue), which is exactly the
+	// The mirror runs before both deciders, and that order is load-bearing (admit.Handlers). The
+	// engine decides whether to start a child and admission whether to admit a root inside this
+	// same transaction, from the mirror's rows, so the row an event carries must already be
+	// written when they look. Neither could write it itself: the engine returns early on an event
+	// whose sequence or status it has already seen (Engine.dispatchIssue), which is exactly the
 	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
-	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
+	w.handlers, w.reviewAppLogin = admit.Handlers(w.records, cfg.Project, w.engine, w.admission), reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
 	_, left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log)
 	if err != nil {

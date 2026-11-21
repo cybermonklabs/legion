@@ -1,0 +1,73 @@
+[
+  {
+    "id": 701064,
+    "issue_key": "ACME-25",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 11,
+    "type": "issue.updated",
+    "actor": {
+      "kind": "session",
+      "id": "e19a8cca-b02c-4c79-acee-17834b59b140",
+      "origin": {
+        "host": "omp",
+        "machine": "legion-acme-daemon",
+        "cwd": "/legion/scratch/tmp/rerank",
+        "session_title": "Legion controller · ACME"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-18T00:12:10.182106Z",
+    "payload": {
+      "key": "ACME-25",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzfzzU",
+      "repo": "cybermonklabs/legion",
+      "claim": null,
+      "route": null,
+      "title": "Captured workflow issue",
+      "labels": [
+        "legion"
+      ],
+      "number": 25,
+      "parent": null,
+      "status": "todo",
+      "changed": [
+        "rank"
+      ],
+      "project": "ACME",
+      "advances": [],
+      "assignee": "person@example.invalid",
+      "last_seq": 11,
+      "priority": 2,
+      "ancestors": [],
+      "closed_at": null,
+      "blocked_by": [],
+      "components": {
+        "ids": [],
+        "mode": "inherit",
+        "reason": null,
+        "unknown": [],
+        "inherited_from": null
+      },
+      "created_at": "2026-11-12T02:33:45.794899Z",
+      "created_by": {
+        "id": "3e65c2b4-30dd-495f-be87-749a6829a93a",
+        "kind": "session",
+        "origin": {
+          "cwd": "/legion",
+          "host": "omp",
+          "machine": "legion-acme-daemon",
+          "session_title": "Legion controller · ACME"
+        }
+      },
+      "updated_at": "2026-11-18T00:12:10.192891Z",
+      "resolved_repo": "cybermonklabs/legion",
+      "external_links": [],
+      "plan_artifact_id": "",
+      "advances_revision": 0,
+      "primary_artifact_id": "1dcfb072-140d-4494-bd05-732b86c0a8ed",
+      "decisions_artifact_id": "",
+      "verification_artifact_id": ""
+    }
+  }
+]

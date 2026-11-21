@@ -1,0 +1,97 @@
+[
+  {
+    "id": 891022,
+    "issue_key": "ACME-51",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 3,
+    "type": "issue.updated",
+    "actor": {
+      "kind": "session",
+      "id": "82a7b4ac-d20f-46fe-b38b-d918b160098c",
+      "origin": {
+        "host": "omp",
+        "machine": "legion-acme-daemon",
+        "cwd": "/legion/workspaces/cybermonklabs/legion/acme-52",
+        "session_title": "Legion architect · ACME-52"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-21T01:54:00.399322Z",
+    "payload": {
+      "key": "ACME-51",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzZ",
+      "repo": "acme/widgets",
+      "claim": null,
+      "route": null,
+      "title": "Captured workflow issue",
+      "labels": [],
+      "number": 51,
+      "parent": "ACME-52",
+      "status": "triage",
+      "changed": [
+        "components",
+        "blocked_by"
+      ],
+      "project": "ACME",
+      "advances": [
+        {
+          "id": "captured-priority",
+          "inherited": true
+        }
+      ],
+      "assignee": "person@example.invalid",
+      "last_seq": 3,
+      "priority": null,
+      "ancestors": [
+        "ACME-52"
+      ],
+      "closed_at": null,
+      "blocked_by": [
+        "ACME-54",
+        "ACME-53",
+        "ACME-55"
+      ],
+      "components": {
+        "ids": [],
+        "mode": "none",
+        "reason": "Captured components reason",
+        "unknown": [],
+        "inherited_from": null
+      },
+      "created_at": "2026-11-21T01:51:40.645213Z",
+      "created_by": {
+        "id": "82a7b4ac-d20f-46fe-b38b-d918b160098c",
+        "kind": "session",
+        "origin": {
+          "cwd": "/legion/scratch/tmp/moves-v2",
+          "host": "omp",
+          "machine": "legion-acme-daemon",
+          "session_title": "Legion architect · ACME-52"
+        }
+      },
+      "updated_at": "2026-11-21T01:54:00.412306Z",
+      "resolved_repo": "acme/widgets",
+      "external_links": [],
+      "plan_artifact_id": "",
+      "advances_revision": 0,
+      "references_changed": [
+        {
+          "id": "ACME-54",
+          "kind": "issue"
+        },
+        {
+          "id": "ACME-53",
+          "kind": "issue"
+        },
+        {
+          "id": "ACME-55",
+          "kind": "issue"
+        }
+      ],
+      "primary_artifact_id": "5b94c8b7-6d6e-4397-aaf3-e2cd5e796329",
+      "decisions_artifact_id": "",
+      "verification_artifact_id": "7b2a8f7b-ba33-48cb-9612-81cd0e46dd7e"
+    }
+  }
+]

@@ -1,0 +1,93 @@
+[
+  {
+    "id": 868069,
+    "issue_key": "ACME-56",
+    "artifact_id": null,
+    "project": "ACME",
+    "seq": 3,
+    "type": "issue.updated",
+    "actor": {
+      "kind": "session",
+      "id": "ae866d8a-8702-4a73-8fdf-e63db56ed57a",
+      "origin": {
+        "host": "omp",
+        "machine": "captured-machine",
+        "cwd": "/work",
+        "session_title": "Captured session"
+      }
+    },
+    "notify": false,
+    "created_at": "2026-11-20T17:44:47.764822Z",
+    "payload": {
+      "key": "ACME-56",
+      "rank": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzj",
+      "repo": null,
+      "claim": {
+        "at": "2026-11-20T17:44:47.232289Z",
+        "actor": {
+          "id": "ae866d8a-8702-4a73-8fdf-e63db56ed57a",
+          "kind": "session",
+          "origin": {
+            "cwd": "/work",
+            "host": "omp",
+            "machine": "captured-machine",
+            "session_title": "Captured session"
+          }
+        }
+      },
+      "route": null,
+      "title": "Captured workflow issue",
+      "labels": [],
+      "number": 56,
+      "parent": "ACME-57",
+      "status": "in_progress",
+      "changed": [
+        "status",
+        "parent",
+        "external_links"
+      ],
+      "project": "ACME",
+      "advances": [],
+      "assignee": "person@example.invalid",
+      "last_seq": 3,
+      "priority": null,
+      "ancestors": [
+        "ACME-57"
+      ],
+      "closed_at": null,
+      "blocked_by": [],
+      "components": {
+        "ids": [],
+        "mode": "inherit",
+        "reason": null,
+        "unknown": [],
+        "inherited_from": null
+      },
+      "created_at": "2026-11-20T17:44:18.983128Z",
+      "created_by": {
+        "id": "ae866d8a-8702-4a73-8fdf-e63db56ed57a",
+        "kind": "session",
+        "origin": {
+          "cwd": "/work",
+          "host": "omp",
+          "machine": "captured-machine",
+          "session_title": "Captured session"
+        }
+      },
+      "updated_at": "2026-11-20T17:44:47.86462Z",
+      "resolved_repo": "cybermonklabs/legion",
+      "thread_logins": [],
+      "external_links": [
+        {
+          "url": "https://github.com/acme/widgets/pull/5111",
+          "kind": "url"
+        }
+      ],
+      "plan_artifact_id": "",
+      "advances_revision": 0,
+      "primary_artifact_id": "b2ac9d2b-4716-4715-8c53-48b9885ae4b0",
+      "decisions_artifact_id": "",
+      "verification_artifact_id": ""
+    }
+  }
+]

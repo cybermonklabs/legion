@@ -1,0 +1,69 @@
+{
+  "rules": {
+    "main": {
+      "source": "replay",
+      "rule": "main",
+      "branch": "main",
+      "seed": 1,
+      "slowdown": 1,
+      "from": "2001-03-05T09:00:00Z",
+      "to": "2001-03-05T15:00:00Z",
+      "unplaced": 0,
+      "done": 1,
+      "workLeft": 0,
+      "waitOnlyForSlot": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "startedWithoutSlot": {
+        "average": 0.3333333333333333,
+        "max": 1,
+        "hours": 2
+      },
+      "pastReviewHolding": {
+        "average": 0,
+        "max": 0,
+        "hours": 0
+      },
+      "pastReviewNotHolding": {
+        "average": 0.16666666666666666,
+        "max": 1,
+        "hours": 1
+      },
+      "priorityTaken": 0,
+      "loops": {},
+      "waits": {
+        "blocker_done": {
+          "count": 1,
+          "hours": 2
+        }
+      },
+      "slotHoursInTurn": 2.4166666666666665,
+      "slotHoursNoTurn": 0,
+      "inFlight": {
+        "average": 0.9027777777777778,
+        "max": 1,
+        "hours": 5.416666666666667
+      },
+      "slotsGivenByDay": {
+        "2001-03-05": 2
+      },
+      "medianSlotWaitMinutes": 0,
+      "firstSlot": {
+        "ACME-1": "2001-03-05T09:05:00Z"
+      },
+      "doneAt": {
+        "ACME-1": "2001-03-05T14:30:00Z"
+      },
+      "assumptions": [
+        1,
+        2,
+        4,
+        9,
+        10
+      ],
+      "scenario": "none"
+    }
+  }
+}

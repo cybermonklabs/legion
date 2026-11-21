@@ -1,0 +1,14 @@
+[
+  {
+    "timestamp": "2026-11-21T05:08:03.917843442Z",
+    "jsonPayload": {
+      "blockers": [
+        "ACME-5"
+      ],
+      "issue": "ACME-6",
+      "level": "INFO",
+      "msg": "admission waits for what this issue waits on",
+      "time": "2026-11-21T05:08:03.917770662Z"
+    }
+  }
+]

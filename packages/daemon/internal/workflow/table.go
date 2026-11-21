@@ -1,6 +1,11 @@
 package workflow
 
-import "github.com/sjawhar/legion/daemon/internal/phase"
+import (
+	"slices"
+
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
 
 // TriggerKind names the observation that can advance a workflow phase.
 type TriggerKind string
@@ -17,6 +22,15 @@ const (
 	TriggerPullRequestMerged   TriggerKind = "pull_request_merged"
 	TriggerSignOff             TriggerKind = "sign_off"
 	TriggerBackward            TriggerKind = "backward"
+	// TriggerConflict is the move back to implementing of a head that conflicts with its base,
+	// under a slot rule whose conflicting head moves back (record.ConflictMovesBack, TableFor).
+	// The daemon's own rule keeps the phase and merges the base forward, so its table carries no
+	// row of it.
+	TriggerConflict TriggerKind = "conflict"
+	// TriggerChecksRed is the move back to implementing by red checks, under a slot rule whose
+	// conflicting head moves back that way (record.ConflictChecksRed, TableFor). The daemon's own
+	// rule carries no row of it.
+	TriggerChecksRed TriggerKind = "checks_red"
 )
 
 // EffectKind identifies the durable outbox consequences selected by a row. EffectSuspend is the
@@ -70,6 +84,65 @@ var Table = append([]Row{
 	// GitHub's merge of the pull request as the phase's own terminating fact.
 	{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
 }, backwardRows()...)
+
+// TableFor is the transition table an engine under rule runs: Table, the daemon's own, and for a
+// rule whose conflicting head moves back (record.SlotRule.Conflict), the rows of that move. A
+// replay of a recorded window reads the table of the rule it replays through here, so the rows a
+// past release ran are the rule's and never a second table beside the daemon's.
+//
+// The answer is one of three tables built once for the process and shared by every engine that
+// runs them, so a caller reads it and never writes it.
+func TableFor(rule record.SlotRule) []Row {
+	trigger, moves := conflictTrigger(rule)
+	switch {
+	case !moves:
+		return Table
+	case trigger == TriggerChecksRed:
+		return checksRedTable
+	default:
+		return conflictTable
+	}
+}
+
+// conflictTrigger is the trigger a head that conflicts with its base moves its issue back to
+// implementing by under rule (record.SlotRule.Conflict): TriggerConflict under
+// record.ConflictMovesBack, TriggerChecksRed under record.ConflictChecksRed, and false under the
+// daemon's own, whose conflicting head keeps its phase while the implementer merges the base
+// forward (record.ConflictMergeForward). The engine's mergeability moves the issue by it
+// (conflictMovesBack), and the rule's table carries a row of it from each phase that can stand on
+// a conflicting head (TableFor).
+func conflictTrigger(rule record.SlotRule) (TriggerKind, bool) {
+	switch rule.OrMain().Conflict {
+	case record.ConflictMovesBack:
+		return TriggerConflict, true
+	case record.ConflictChecksRed:
+		return TriggerChecksRed, true
+	}
+	return "", false
+}
+
+// conflictTable and checksRedTable are Table with the moves back of a conflicting head added
+// (movesBackRows), by TriggerConflict and by TriggerChecksRed: the tables of the two rules whose
+// conflicting head moves back (TableFor). Table is clipped first, so the rows are added to a copy
+// and Table itself stays the daemon's own.
+var (
+	conflictTable  = append(slices.Clip(Table), movesBackRows(TriggerConflict)...)
+	checksRedTable = append(slices.Clip(Table), movesBackRows(TriggerChecksRed)...)
+)
+
+// movesBackRows is the move back to implementing by trigger from each phase after it that stands
+// on a head of a pull request — testing, reviewing, accepting, retro and merging — as a release
+// whose conflicting head moved back ran it. Each starts the implementer and tells the architect,
+// as every move back does (backwardRows).
+func movesBackRows(trigger TriggerKind) []Row {
+	froms := []phase.Phase{phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
+	rows := make([]Row, 0, len(froms))
+	for _, from := range froms {
+		rows = append(rows, Row{From: from, Trigger: trigger, Guard: allow, To: phase.Implementing,
+			Effects: []EffectKind{EffectStart, EffectNotice}})
+	}
+	return rows
+}
 
 // backwardRows is the edge from every phase back to each phase before it. Like every other row,
 // each writes the status of the phase it enters, so a move back into planning writes in_progress,
