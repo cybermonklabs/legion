@@ -615,7 +615,7 @@ func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
 		start = startRemover(&pidGuard{})
 	}
 	f := newTrimFixture(t, 0)
-	f.cover = coverUnder(t, namespaceScratch(t))
+	f.cover = coverUnder(t, namespaceScratch(t, ""))
 	f.proc, f.self = "/proc", os.Getpid()
 	root := f.roots[3] // bun's install cache, whose entries are its immediate children
 	for n := range ownHoldEntries {
@@ -700,7 +700,7 @@ func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
 	guard := &pidGuard{}
-	remover, err := startContainedRemover(guard, coverUnder(t, namespaceScratch(t)), nil)
+	remover, err := startContainedRemover(guard, coverUnder(t, namespaceScratch(t, "")), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -746,7 +746,7 @@ func TestTheMemoryGuardSparesTheSweepsRunningDeleter(t *testing.T) {
 	requireRoleNamespaces(t)
 	useContainedDeleter(t)
 	guard := &pidGuard{}
-	remover, err := startContainedRemover(guard, coverUnder(t, namespaceScratch(t)), nil)
+	remover, err := startContainedRemover(guard, coverUnder(t, namespaceScratch(t, "")), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +786,7 @@ func TestTheDeleterAnswersARemovalItCannotMakeAsARefusal(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = handle.Close() })
 	listed := &sweepDir{root: ReclaimableRoot{Path: dir}, handle: handle}
-	remover, err := startContainedRemover(&pidGuard{}, coverUnder(t, namespaceScratch(t)), []*sweepDir{listed})
+	remover, err := startContainedRemover(&pidGuard{}, coverUnder(t, namespaceScratch(t, "")), []*sweepDir{listed})
 	if err != nil {
 		t.Fatal(err)
 	}
