@@ -42,10 +42,12 @@ func init() {
 
 // stagePlan is what the stage builds and runs. Mount is the directory it covers with a memory
 // filesystem of its own, so the layout it builds — and the role's own mounts over it — stay out
-// of the machine's filesystem and out of the test process's view.
+// of the machine's filesystem and out of the test process's view. Shadowed is an empty directory
+// the test made under the machine's /tmp, which the stage mounts over in its own namespace before
+// its own /tmp hides that mount (standInForHidden).
 type stagePlan struct {
-	Self     string
 	Mount    string
+	Shadowed string
 	Role     string
 	Sibling  string
 	Owner    string
@@ -106,7 +108,15 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := stagePlan{Self: self, Mount: stageMountPoint(t), Role: "a", Sibling: "b", Owner: "acme", Detached: "987654"}
+	// A directory under the machine's /tmp that the stage alone mounts over: the stage's own /tmp
+	// then hides that mount as it hides any mount the machine's /tmp carries, so the row needs on
+	// every machine what a machine whose /tmp carries one needs (standInForHidden).
+	shadowed, err := os.MkdirTemp("/tmp", "legion-stage-shadowed-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(shadowed) })
+	plan := stagePlan{Mount: stageMountPoint(t), Shadowed: shadowed, Role: "a", Sibling: "b", Owner: "acme", Detached: "987654"}
 	encoded, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -156,6 +166,7 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		{"stage container-home", "absent", "what the role wrote under its home is invisible to the container"},
 		{"stage container-tmp", "absent", "what the role wrote in /tmp is invisible to the container"},
 		{"stage container-shm", "absent", "what the role wrote in /dev/shm is invisible to the container"},
+		{"stage shadowed", "stood-in", "the mount the stage's own /tmp hides has a stand-in at its path, as no container's /tmp hides a mount: role-init carries every mount listed under /tmp, from its path"},
 		{"stage detached", "gone", "a detached process of the role that ignores SIGTERM is gone once the role's init exits"},
 		{"stage status", "0", "role-init reports the shim's own wait status"},
 		// The role's relaunch: a second generation of the same role, over the same role-homes
@@ -256,6 +267,16 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	}
 }
 
+// stageSelf is the test binary as a helper that covers stageMountPoint runs it again, as role-init
+// and as the agent role-init starts: the kernel's link to the running executable, which reaches
+// the file whatever mount now covers the path it was started from. `go test` builds the binary
+// under GOTMPDIR, else TMPDIR, else /tmp, so that path can lie under the very directory a helper
+// covers — /mnt, on a machine that keeps its scratch there — or under the /tmp the stage and
+// role-init cover, and a process started by that path would find nothing there. A process started
+// by this name runs the binary of the process that starts it, and each that starts one here runs
+// this binary: the helper, and role-init, which starts the agent through the role's own /proc.
+const stageSelf = "/proc/self/exe"
+
 // stageMountPoint is a directory the stage can cover with a memory filesystem of its own. It is
 // the one piece of the machine the test needs: the layout must sit outside /tmp and outside the
 // home a role's overlay covers, and must be a path the role's own mounts never hide.
@@ -313,20 +334,36 @@ func runStage(plan stagePlan) error {
 	if err := mountTmpfs(plan.Mount, "size=96m"); err != nil {
 		return err
 	}
-	// The test binary runs from wherever `go test` built it, under /tmp when TMPDIR is unset, as
-	// on GitHub's runners; the stage covers /tmp next, so every process it starts runs a copy of
-	// it kept on the stage's own filesystem.
-	self := filepath.Join(plan.Mount, "launcher.test")
-	if err := copyExecutable(plan.Self, self); err != nil {
+	// A mount the machine's /tmp carries, as a machine's /tmp may (a container runtime's leftover,
+	// say), made on the test's directory in this namespace alone, so the machine never sees it.
+	// Its path is read before the stage's /tmp hides it.
+	shadowed, err := filepath.EvalSymlinks(plan.Shadowed)
+	if err != nil {
 		return err
 	}
-	plan.Self = self
+	if err := mountTmpfs(shadowed, "size=1m"); err != nil {
+		return err
+	}
 	// The stage's own /tmp and /dev/shm, so what the role plants if its privacy broke lands here
-	// and never on the machine, and the stage can see that it did not.
+	// and never on the machine, and the stage can see that it did not. Each hides every mount the
+	// machine's carries, and the stage's container carries a stand-in of each instead.
+	stoodIn := map[string]bool{}
 	for _, dir := range []string{"/tmp", "/dev/shm"} {
 		if err := mountTmpfs(dir, "size=16m"); err != nil {
 			return err
 		}
+		hidden, err := standInForHidden(dir)
+		if err != nil {
+			return err
+		}
+		for _, path := range hidden {
+			stoodIn[path] = true
+		}
+	}
+	if stoodIn[shadowed] {
+		fmt.Println("stage shadowed=stood-in")
+	} else {
+		fmt.Printf("stage shadowed=not listed under /tmp once hidden: %s\n", shadowed)
 	}
 	rolesDir := filepath.Join(plan.Mount, "roles")
 	fixedRoot := filepath.Join(plan.Mount, "fixed")
@@ -454,7 +491,7 @@ func runStage(plan stagePlan) error {
 		mqueue = "present"
 	}
 	fmt.Printf("stage mqueue=%s\n", mqueue)
-	roleInitLaunch = roleInitHelperLaunch(plan.Self)
+	roleInitLaunch = roleInitHelperLaunch(stageSelf)
 	layout := agentPlan{
 		Home: home, HomeMounts: homeMounts, RolesDir: rolesDir, FixedRoot: fixedRoot, Role: plan.Role,
 		Sibling: plan.Sibling, Owner: plan.Owner, OutsidePID: outside.Process.Pid, Detached: plan.Detached,
@@ -550,7 +587,7 @@ func runStage(plan stagePlan) error {
 	return nil
 }
 
-// copyExecutable copies the executable at source to target, which the stage then runs in its
+// copyExecutable copies the executable at source to target, which the caller then runs in its
 // place.
 func copyExecutable(source, target string) error {
 	body, err := os.ReadFile(source)
@@ -558,6 +595,32 @@ func copyExecutable(source, target string) error {
 		return err
 	}
 	return os.WriteFile(target, body, 0o755)
+}
+
+// standInForHidden gives every mount still listed strictly under dir, which the stage's own
+// memory filesystem at dir now hides, a memory filesystem of the stage's own at that path, each
+// path's parent first, and answers those paths. The stage's container must be one an issue pod's
+// can be, and no pod's container lists a mount under its /tmp that it cannot reach: no mount may be
+// at or above /tmp there (CheckPod), so nothing hides one. role-init carries every mount listed
+// under /tmp from its path, and one it cannot find there stops the role (carryOver). A machine's
+// /tmp may carry mounts — a container runtime's leftover, or the test's own (stagePlan.Shadowed) —
+// so the stage's container carries an empty volume at each such path, as an operator's volume
+// under /tmp is carried, and nothing of the machine's reaches the role.
+func standInForHidden(dir string) ([]string, error) {
+	_, hidden, err := mountsUnder(dir)
+	if err != nil {
+		return nil, err
+	}
+	slices.Sort(hidden)
+	for _, path := range hidden {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return nil, err
+		}
+		if err := mountTmpfs(path, "size=1m"); err != nil {
+			return nil, err
+		}
+	}
+	return hidden, nil
 }
 
 // runGeneration runs one generation of the role over the stage's layout and reports the wait
@@ -575,7 +638,7 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 			HomeMounts: layout.HomeMounts, FixedRoot: layout.FixedRoot,
 		},
 		Role: plan.Role, Generation: generation,
-		Argv: []string{plan.Self, "-test.run=^TestRoleInitAgentHelper$"},
+		Argv: []string{stageSelf, "-test.run=^TestRoleInitAgentHelper$"},
 	}, append(os.Environ(), roleInitAgentEnv+"="+string(agent)), os.Stdout, os.Stderr)
 	if err != nil {
 		return err
@@ -1040,10 +1103,7 @@ const roleCheckEnv = "LEGION_ROLE_INIT_TEST_CHECK"
 // role its own /tmp.
 func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 	if dir := os.Getenv(roleCheckEnv); dir != "" {
-		self, err := os.Executable()
-		if err == nil {
-			err = privateMounts()
-		}
+		err := privateMounts()
 		if err == nil {
 			err = mountTmpfs(dir, "size=16m")
 		}
@@ -1051,7 +1111,7 @@ func TestTheRoleNamespaceCheckRunsARoleGeneration(t *testing.T) {
 			fmt.Println("check error:", err)
 			os.Exit(1)
 		}
-		roleInitLaunch = roleInitHelperLaunch(self)
+		roleInitLaunch = roleInitHelperLaunch(stageSelf)
 		answer := func(err error) string {
 			if err == nil {
 				return "passed"
@@ -1578,17 +1638,13 @@ func roleDrainReport(t *testing.T, plan roleDrainPlan) (map[string]string, strin
 // descendant removes on SIGTERM is still in the role's own /tmp once the role's namespace is
 // gone, and how long role-init took from its report of that status to its own exit.
 func runRoleDrain(plan roleDrainPlan) error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
 	if err := privateMounts(); err != nil {
 		return err
 	}
 	if err := mountTmpfs(plan.Dir, "size=16m"); err != nil {
 		return err
 	}
-	roleInitLaunch = roleInitHelperLaunch(self)
+	roleInitLaunch = roleInitHelperLaunch(stageSelf)
 	const role = "drain"
 	caught := "rm -f /tmp/" + roleDrainFile + "; while :; do /bin/sleep 600 & wait; done"
 	if plan.Leaves {
