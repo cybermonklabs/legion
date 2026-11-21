@@ -261,8 +261,9 @@ input:
   Tailscale's rule, `replicas` below 2, and no listener in either place; a listener in both places
   (`listener` and `tailnet.listener`); of the listener, each refusal naming the path it is declared
   at: no `machineId` without `tailnet`, a `machineId` the shared machine-id rule refuses, an empty
-  `nkey`, a `seedSecretName` that is not a DNS subdomain, a `seedSecretKey` outside
-  `[-._a-zA-Z0-9]+`, no `clientNamespaces` without `tailnet` and an entry that is not a DNS label
+  `nkey`, a `seedSecretName` that is not a DNS subdomain, a `seedSecretKey` that is no Secret's
+  key (letters, digits, `-`, `_` and `.`, at most 253 characters, and neither `.` nor `..` nor
+  one that begins with `..`), no `clientNamespaces` without `tailnet` and an entry that is not a DNS label
   or repeats an earlier one, an `allowedHosts` entry refused as `gcp:NatsHub`'s
   `listener.allowedHosts` entries are, a `senderMessagesPerMinute` outside 1 to 60000, a
   `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, and a `cpu` or `memory` at
@@ -1536,8 +1537,8 @@ tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or bes
 an `iapAudience` of another form than a backend service's, a `signInOutside` without the sign-in inputs, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
-`appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
-`[-._a-zA-Z0-9]+`, and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
+`appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` that is no
+Secret's key (as `seedSecretKey`'s rule above), and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
 of the Azure embedder's group, any `azureEmbed` input without `azureEmbedEndpoint`, an endpoint
 without `azureEmbedTokensPerMinute` or with one below 1, both credential forms or neither,
 `azureTenantId` or `azureClientId` without the other, an `azureFederationAudience` without them or
