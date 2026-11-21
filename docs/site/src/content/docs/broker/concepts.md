@@ -355,11 +355,12 @@ grants end at their next use ([Operating the broker](/legion/broker/operate/)). 
 person any secret's approver, even of a secret they own, of a secret a Google group they are in
 owns, or of a shared one whose approver is `anyone`: the broker's approval page signs in only the
 deployment's domain, their **Inbox** lists them no secret request and their **Live grants** no
-grant as its approver, and their revoke or dismissal of one is refused `403 NOT_APPROVER`. Their
-own machine logins and the grants of their own sessions stay theirs. While Dispatch cannot say
-what kind of member a person is, those lists leave such rows out and such a revoke or dismissal
-is refused `503 MEMBER_KIND_UNCHECKABLE`; a revoke of a grant of their own session asks nothing.
-The broker's rate
+grant as its approver, and their revoke or dismissal of one, and their deny of a service's machine
+login an older broker opened, is refused `403 NOT_APPROVER`. Their own machine logins and the
+grants of their own sessions stay theirs. While Dispatch cannot say what kind of member a person
+is, those lists leave such rows out, and such a dismissal or deny is refused
+`503 MEMBER_KIND_UNCHECKABLE`; such a revoke goes ahead, since a revoke only takes access away,
+and a revoke of a grant of one's own session asks nothing. The broker's rate
 limiter caps how often anyone can start a machine login, per source address and per named person,
 and how often anyone can try a token login: per source address before the token is verified, and
 per account once it is. A token login the broker could not complete (a 5xx, such as while its

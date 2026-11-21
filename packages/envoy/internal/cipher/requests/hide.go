@@ -171,9 +171,9 @@ func (m *Machine) hideUnseenRow(ctx context.Context, row, login string, facts ro
 // (namedOnGrant) — is answered nil and asks Dispatch nothing, as the session that holds a row is
 // answered nil by the session rule: the grant row names them, so they already know it exists, and
 // a revoke only takes access away, so neither a Dispatch outage nor their leaving the grant's
-// project keeps them from ending it by this rule. The operator's revoke asks Dispatch nothing at
-// all; an approver's then asks whether Dispatch calls them a restricted member, who is no approver
-// of a secret (revokeApproves). A person's pod that BROKER_POD_OPERATORS no longer maps acts
+// project keeps them from ending it. The operator's revoke asks Dispatch nothing at all; an
+// approver's then asks whether Dispatch calls them a restricted member, who is no approver of a
+// secret, and goes ahead while Dispatch cannot say (revokeApproves). A person's pod that BROKER_POD_OPERATORS no longer maps acts
 // for no person (unmappedPersonPod), and names its exchange entry's project, not its operator's,
 // so its operator column names whom it once acted for, not a person the grant names: operatorOf
 // gives none for it. Anyone else is asked the rule (hideUnseenRow): pgx.ErrNoRows for an id no

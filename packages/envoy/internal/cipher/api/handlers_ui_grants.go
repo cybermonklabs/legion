@@ -100,8 +100,9 @@ func (s *server) revokeByApprover(w http.ResponseWriter, r *http.Request, caller
 // them nowhere is 403 NOT_APPROVER, and one that moved to another box each time the revoke read it
 // is 409 GRANT_MOVING; each revokes nothing. A person Dispatch calls a restricted member is no
 // approver of a secret, and ends a grant only as the person its enrollment acts for: one the grant
-// admits only as an approver is 403 NOT_APPROVER, and 503 MEMBER_KIND_UNCHECKABLE while Dispatch
-// cannot say what kind of member they are, revoking nothing. When the operator
+// admits only as an approver is 403 NOT_APPROVER, revoking nothing. While Dispatch cannot say what
+// kind of member the person is, the revoke goes ahead, since a revoke only takes access away. When
+// the operator
 // revokes a grant the session got without asking, its secrets are withheld from that session, even
 // when the grant had already ended: its other grants that got them without asking end too, and its
 // later requests for them ask their owner.
@@ -132,10 +133,6 @@ func writeRevokeRefusal(w http.ResponseWriter, err error) {
 		// revoke decided nothing; it succeeds once the grant stays on one session.
 		slog.Warn("broker: revoke grant: the grant kept moving", "error", err)
 		writeError(w, http.StatusConflict, "GRANT_MOVING", grantMoving)
-	case writeMemberKindUncheckable(w, "the revoke", err):
-		// The grant admits the person only as its approver, and the broker could not learn
-		// whether Dispatch calls them a restricted member, who is no approver of a secret: nothing
-		// was revoked, and the same revoke runs once Dispatch answers.
 	default:
 		writeInternal(w, "revoke grant", err)
 	}

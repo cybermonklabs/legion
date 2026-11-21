@@ -220,6 +220,11 @@ func (s *server) decideMachineLogin(w http.ResponseWriter, r *http.Request, reco
 	case errors.Is(err, machine.ErrServiceLogsInWithToken):
 		writeError(w, http.StatusBadRequest, "SERVICE_LOGS_IN_WITH_TOKEN", err.Error())
 		return
+	case writeMemberKindUncheckable(w, "the machine login's denial", err):
+		// A deny of a service's login, which no person Dispatch calls a restricted member makes,
+		// and the broker could not learn what kind of member the denying person is: nothing was
+		// decided, and the same deny runs once Dispatch answers.
+		return
 	case err != nil:
 		writeInternal(w, "decide machine login", err)
 		return

@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 )
@@ -200,8 +201,10 @@ func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now tim
 // the record's rule admits (record.ErrNotApprover), checked next against the request object its
 // record embeds, re-verified as of the record's creation: a person's machine login is decided by
 // that person alone, and a service's login, which a broker before TokenLogin opened, is approved by
-// no one (a service logs in with its token now), though it may still be denied. So another login is
-// refused the same way whatever the record's state. A record that already carries a decision is
+// no one (a service logs in with its token now), though it may still be denied, by anyone signed in
+// but a person Dispatch calls a restricted member, who is no approver of a secret (serviceDenier).
+// So another login is refused the same way whatever the record's state. A record that already
+// carries a decision is
 // ErrAlreadyDecided, and one that expired undecided — recorded expired by the sweeper, or past its
 // expires_at before the sweeper got to it — is ErrLoginExpired, both checked under the record's
 // row lock before anything is minted, so a second decision, one racing the first and one after
@@ -212,6 +215,10 @@ func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now tim
 // already holds a live credential under another record is ErrKeyHoldsLiveCredential, and the
 // record stays pending.
 func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bool, login, code string) (state, credentialID string, err error) {
+	var denier serviceDenier
+	if !approve {
+		denier = s.readServiceDenier(ctx, recordID, login)
+	}
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
 		return "", "", err
@@ -262,6 +269,14 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 	login, err = body.ApproverLogin(record.KindLauncherCredential, obj.Service(), login, nil)
 	if err != nil {
 		return "", "", err
+	}
+	if !approve && obj.Service() != "" {
+		switch {
+		case denier.err != nil:
+			return "", "", denier.err
+		case denier.restricted:
+			return "", "", errRestrictedDenier
+		}
 	}
 	var decided string
 	if err := tx.QueryRow(ctx, `select coalesce((select event from credential_request_events where record_id=$1 and event = any($2)), '')`, recordID, record.TerminalEventNames()).
@@ -321,6 +336,57 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 		return "issued", *credID, nil
 	}
 	return "denied", "", nil
+}
+
+// errRestrictedDenier is ApplyDecision's refusal of a deny of a service's login by a person
+// Dispatch calls a restricted member: record.ErrNotApprover, which the API answers 403
+// NOT_APPROVER with these words.
+var errRestrictedDenier = fmt.Errorf("%w: a person Dispatch calls a restricted member is no approver of a secret, and denies no service's machine login", record.ErrNotApprover)
+
+// serviceDenier is what a deny reads of its deciding person before ApplyDecision's transaction,
+// for a service's login (readServiceDenier): whether Dispatch calls the person a restricted member,
+// or why that could not be read. Its zero value asks nothing of the transaction.
+type serviceDenier struct {
+	restricted bool
+	err        error
+}
+
+// readServiceDenier reads, on the pool and before ApplyDecision's transaction, since it may ask
+// Dispatch, whether a deny of record recordID by login is a restricted member's deny of a service's
+// login, the one deny such a person may not make: a person who sees only the projects that name
+// them is no approver of a secret (requests' restricted_approver.go), and a service's login is
+// every signed-in person's to deny for no other reason. It asks Dispatch (projectaccess.Restricted,
+// through the enroll service's client) only for a record that is a service's login, so a person's
+// deny of their own machine login asks nothing; a broker with no client of Dispatch asks nothing
+// either. A failure to ask is the *projectaccess.MemberKindUncheckable it carries, and a failure to
+// read the record is that read's error; the transaction answers either for a service's login alone,
+// after the code and the record's own rule: a check that cannot decide refuses. A record it finds
+// no row for, or cannot parse or verify, asks nothing: the transaction reads it again and refuses
+// it.
+func (s *Service) readServiceDenier(ctx context.Context, recordID, login string) serviceDenier {
+	if s.Enroll == nil || s.Enroll.Projects == nil {
+		return serviceDenier{}
+	}
+	var canonical string
+	var createdAt time.Time
+	err := s.Store.Pool.QueryRow(ctx, `select body, created_at from credential_requests where id=$1 and kind='launcher_credential'`, recordID).
+		Scan(&canonical, &createdAt)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return serviceDenier{}
+	case err != nil:
+		return serviceDenier{err: err}
+	}
+	body, err := record.ParseBody(canonical)
+	if err != nil {
+		return serviceDenier{}
+	}
+	obj, err := record.VerifyRequestObject(body.Request, s.Audience, s.Skew, createdAt)
+	if err != nil || obj.Service() == "" {
+		return serviceDenier{}
+	}
+	restricted, err := projectaccess.Restricted(ctx, s.Enroll.Projects, record.CanonicalLogin(login))
+	return serviceDenier{restricted: restricted, err: err}
 }
 
 // decideDevice records a decision on the device login whose user code is code, in tx: an

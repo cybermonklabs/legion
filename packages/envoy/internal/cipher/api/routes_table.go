@@ -387,6 +387,10 @@ func routes() []apiRoute {
 		{http.MethodPost, "/v1/credential-requests/{record}/approve", accountAuth(relaysDecisions, (*server).approveRecord)},
 		// Deny a pending machine login as the named person, who must type its code, on the
 		// caller's word and behind the same authentication and the same power as approve. A
+		// service's login a broker from before token logins opened is denied by anyone signed in
+		// but a person Dispatch calls a restricted member, who is no approver of a secret: 403
+		// NOT_APPROVER, and 503 MEMBER_KIND_UNCHECKABLE while Dispatch cannot say what kind of
+		// member the person is, denying nothing. A
 		// secret request is refused the same way, writing nothing: 404 NOT_FOUND to a person its
 		// private project hides it from, as for an id no record has, 503 PROJECT_ACCESS_UNAVAILABLE
 		// while Dispatch cannot answer for it, and otherwise 403 JUDGE_DECIDES or 403
@@ -452,9 +456,9 @@ func routes() []apiRoute {
 		// moved to another box each time the revoke read it, three times in a row, is 409
 		// GRANT_MOVING. A person Dispatch calls a restricted member ends a grant only as the person
 		// its enrollment acts for, and one the grant admits only as an approver is 403
-		// NOT_APPROVER, or 503 MEMBER_KIND_UNCHECKABLE while Dispatch cannot say what kind of member
-		// they are. Each of these revokes nothing. The revoking person is the login the request
-		// names, which the broker still takes on the caller's word: a revoke only takes power away.
+		// NOT_APPROVER. Each of these revokes nothing. While Dispatch cannot say what kind of member
+		// the person is, the revoke goes ahead. The revoking person is the login the request names,
+		// which the broker still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/grants/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeByApprover)},
 		// List the sign-ins the named person made on their machines with `agent-secrets login`,
 		// by machine: one row per box key they signed in with and have not revoked, each naming

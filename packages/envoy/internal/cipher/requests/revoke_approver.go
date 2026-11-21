@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -28,10 +29,11 @@ import (
 // secret (restricted_approver.go), and ends a grant only as its operator: a login the grant admits
 // only as an approver, by its own login, record.AnyoneApprover or a group, is asked its member kind
 // after the rule and before the transaction (revokeApproves), and refused ErrNotApprover when
-// Dispatch calls it a restricted member, and the *projectaccess.MemberKindUncheckable that read
-// returns when Dispatch could not be asked, with nothing written; the operator's revoke asks
-// nothing. actor is what every row it writes records as having done it,
-// which the caller proved: "human:<login>" for a revoke Dispatch relays from its signed-in person,
+// Dispatch calls it a restricted member. While Dispatch cannot say, the revoke goes ahead: a revoke
+// only takes access away, and one held up by an outage would hold up whoever is ending a grant to
+// stop a leak (RevokeUncheckedMessage). The operator's revoke asks nothing. actor is what every
+// row it writes records as having done it, which the caller proved: "human:<login>" for a revoke
+// Dispatch relays from its signed-in person,
 // "launcher:<credential id>" for one the operator's own machine login makes. When the operator
 // revokes, every name the grant's request got automatically is withheld from the grant's session
 // from then on, and every other live grant of the session that got one of those names
@@ -66,10 +68,7 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 		if err != nil {
 			return err
 		}
-		approves, err := m.revokeApproves(ctx, login, judged)
-		if err != nil {
-			return err
-		}
+		approves := m.revokeApproves(ctx, login, judged)
 		if m.testRevokeHook != nil {
 			m.testRevokeHook()
 		}
@@ -398,19 +397,37 @@ func mayRevoke(login string, approver, operator *string, groups record.Groups, a
 // refused whatever it is, so a group read that comes to admit login between this read and the
 // transaction's admits nothing unasked. A machine with no client of Dispatch asks nothing, and
 // every approver stands as before.
-func (m *Machine) revokeApproves(ctx context.Context, login string, judged grantJudged) (bool, error) {
+//
+// It fails open, unlike every other read of a person's member kind: while Dispatch cannot say what
+// kind of member login is, it answers true and logs it (RevokeUncheckedMessage). A revoke only
+// takes access away and releases nothing, and a revoke refused through an outage would delay the
+// person ending a grant that leaks; what it costs is that a restricted member could end a grant
+// while Dispatch cannot be asked.
+func (m *Machine) revokeApproves(ctx context.Context, login string, judged grantJudged) bool {
 	if m.Projects == nil {
-		return true, nil
+		return true
 	}
 	var approver *string
 	if judged.approver != "" {
 		approver = &judged.approver
 	}
 	if allowed, asOperator := mayRevoke(login, approver, judged.operator, m.Groups, true); !allowed || asOperator {
-		return false, nil
+		return false
 	}
-	return m.approvesSecrets(ctx, login)
+	approves, err := m.approvesSecrets(ctx, login)
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Warn(RevokeUncheckedMessage, "person", record.CanonicalLogin(login), "error", err)
+		}
+		return true
+	}
+	return approves
 }
+
+// RevokeUncheckedMessage is logged, at WARN, for each revoke that goes ahead as an approver's
+// although Dispatch could not say whether the revoking person is a restricted member
+// (revokeApproves), followed by person=<the canonical login> and error=<why it could not ask>.
+const RevokeUncheckedMessage = "broker: a revoke as the grant's approver goes ahead though Dispatch could not say whether the person is a restricted member; a revoke only takes access away"
 
 // namedOnGrant answers whether login is a person a grant names, and whether as the operator of
 // the enrollment that holds it, which is read first: that operator, or the grant's approver, each

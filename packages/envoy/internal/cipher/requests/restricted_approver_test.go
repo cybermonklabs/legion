@@ -6,9 +6,9 @@
 // approver and let them end or dismiss none, whichever arm would make them its approver: a Google
 // group that owns the secret and lists them, the secret's own owner, or anyone, for a shared
 // secret. What is theirs as a person stays theirs: their own machine login, and the grants of
-// their own sessions. While Dispatch cannot say what kind of member a person is, the approver arms
-// are closed to them: the lists leave those rows off and the revoke and the dismissal are refused,
-// while a revoke as the session's operator asks nothing.
+// their own sessions. While Dispatch cannot say what kind of member a person is, the lists leave
+// the approver rows off and the dismissal is refused, while the revoke goes ahead, since a revoke
+// only takes access away; a revoke as the session's operator asks nothing.
 package requests
 
 import (
@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // guestMember is a person an access list admitted from outside the sign-in domain, whom Dispatch
@@ -326,14 +327,17 @@ func TestARestrictedMemberKeepsWhatIsTheirOwn(t *testing.T) {
 }
 
 // TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover: while Dispatch cannot say what kind of
-// member a person is, the approver arms are closed to them, failing closed as every other read of
-// a person's member kind does (projectaccess.Restricted): a full member of the group that owns a
-// secret finds neither of its requests on their pending list nor its grant on their grant list,
-// and their dismissal and their revoke are refused *projectaccess.MemberKindUncheckable naming
-// them, with no dismissal written and the grant live. In the same outage their own machine login
-// stays on their list, their revoke of their own session's grant ends it, since a revoke as the
-// operator asks Dispatch nothing, and a person outside the group is refused ErrNotApprover, as
-// before, having asked nothing either. Once Dispatch answers, every one of those is theirs again.
+// member a person is, the lists and the dismissal close the approver arms to them, failing closed
+// as every other read of a person's member kind does (projectaccess.Restricted): a full member of
+// the group that owns a secret finds neither of its requests on their pending list nor its grant
+// on their grant list, and their dismissal is refused *projectaccess.MemberKindUncheckable naming
+// them, with no dismissal written. In the same outage their own machine login stays on their
+// list, their revoke of their own session's grant ends it, since a revoke as the operator asks
+// Dispatch nothing, and a person outside the group is refused ErrNotApprover, as before, having
+// asked nothing either. The revoke alone fails open (revokeApproves): their revoke of the group's
+// grant ends it, with one RevokeUncheckedMessage line naming them, since a revoke only takes access
+// away. Once Dispatch answers, the lists hold the group's requests again and the dismissal is
+// written.
 func TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover(t *testing.T) {
 	rows := groupApproverRows(t)
 	m := rows.m
@@ -348,14 +352,7 @@ func TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover(t *testing.T) {
 	rows.dispatch.SetDown(true)
 	rows.asks()
 	before := rows.dispatch.Calls()
-	uncheckable := func(t *testing.T, what string, err error) {
-		t.Helper()
-		var refused *projectaccess.MemberKindUncheckable
-		if !errors.As(err, &refused) || refused.Person != secondMember {
-			t.Fatalf("%s by %s while Dispatch is down = %v; want MemberKindUncheckable naming them", what, secondMember, err)
-		}
-	}
-	t.Run("while Dispatch cannot say, the approver arms are closed", func(t *testing.T) {
+	t.Run("while Dispatch cannot say, the lists and the dismissal are closed", func(t *testing.T) {
 		got := listedStates(t, m, secondMember, bothStates)
 		for _, row := range []string{listing(rows.pending, "pending"), listing(rows.expired, "expired")} {
 			if slices.Contains(got, row) {
@@ -369,12 +366,13 @@ func TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover(t *testing.T) {
 			t.Errorf("GrantsForApprover(%s) while Dispatch is down holds the group's grant %s", secondMember, rows.grant)
 		}
 		_, err := m.Dismiss(ctx, rows.expired, secondMember)
-		uncheckable(t, "Dismiss", err)
+		var refused *projectaccess.MemberKindUncheckable
+		if !errors.As(err, &refused) || refused.Person != secondMember {
+			t.Fatalf("Dismiss by %s while Dispatch is down = %v; want MemberKindUncheckable naming them", secondMember, err)
+		}
 		if n := dismissals(t, m, rows.expired); n != 0 {
 			t.Fatalf("the refused dismissal wrote %d dismissals", n)
 		}
-		uncheckable(t, "RevokeByApprover", m.RevokeByApprover(ctx, rows.grant, secondMember, record.HumanActor(secondMember)))
-		requireGrantLive(t, m, rows.grant)
 		if rows.dispatch.Calls() == before {
 			t.Fatal("the down Dispatch was never asked: the rows above are blind")
 		}
@@ -392,25 +390,36 @@ func TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover(t *testing.T) {
 		}
 		requireRevokedBy(t, m, *own.GrantID, secondMember)
 	})
+	t.Run("while Dispatch cannot say, a member's revoke of the group's grant goes ahead", func(t *testing.T) {
+		capture := &logtest.Recorder{}
+		logtest.SetDefault(t, capture)
+		asked := rows.dispatch.Calls()
+		// A fresh client, so the read is a call of its own and not the failure the reads above
+		// kept (projectaccess's failureTTL): the revoke is seen to ask.
+		rows.asks()
+		if err := m.RevokeByApprover(ctx, rows.grant, secondMember, record.HumanActor(secondMember)); err != nil {
+			t.Fatalf("RevokeByApprover of the group's grant by %s while Dispatch is down = %v; want it ended", secondMember, err)
+		}
+		requireRevokedBy(t, m, rows.grant, secondMember)
+		if rows.dispatch.Calls() == asked {
+			t.Fatal("the revoke asked the down Dispatch nothing: it never met the outage")
+		}
+		if lines := linesOf(capture, RevokeUncheckedMessage); len(lines) != 1 || lines[0]["person"] != secondMember || lines[0]["level"] != "WARN" {
+			t.Fatalf("the log holds %v of %q; want one WARN line naming %s", lines, RevokeUncheckedMessage, secondMember)
+		}
+	})
 
 	rows.dispatch.SetDown(false)
 	rows.asks()
-	t.Run("once Dispatch answers, they are the group's approver again", func(t *testing.T) {
+	t.Run("once Dispatch answers, the lists and the dismissal are theirs again", func(t *testing.T) {
 		got := listedStates(t, m, secondMember, bothStates)
 		for _, row := range []string{listing(rows.pending, "pending"), listing(rows.expired, "expired")} {
 			if !slices.Contains(got, row) {
 				t.Errorf("PendingForApprover(%s) once Dispatch answers = %v; want %s", secondMember, got, row)
 			}
 		}
-		if !listsGrant(t, m, secondMember, rows.grant) {
-			t.Errorf("GrantsForApprover(%s) once Dispatch answers does not hold the group's grant %s", secondMember, rows.grant)
-		}
 		if d, err := m.Dismiss(ctx, rows.expired, secondMember); err != nil || !d.Wrote {
 			t.Fatalf("Dismiss by %s once Dispatch answers = %+v, %v; want it written", secondMember, d, err)
 		}
-		if err := m.RevokeByApprover(ctx, rows.grant, secondMember, record.HumanActor(secondMember)); err != nil {
-			t.Fatalf("RevokeByApprover by %s once Dispatch answers = %v; want it ended", secondMember, err)
-		}
-		requireRevokedBy(t, m, rows.grant, secondMember)
 	})
 }

@@ -7,7 +7,9 @@
 // them its approver: the record's or the grant's own login (a secret they own, or a grant the
 // model judge approved in their stead), record.AnyoneApprover (a shared secret), or a Google group
 // the group reader lists them in. Those routes are the pending list (PendingForApprover), the
-// grant list (GrantsForApprover), the revoke (RevokeByApprover) and the dismissal (Dismiss). What
+// grant list (GrantsForApprover), the revoke (RevokeByApprover) and the dismissal (Dismiss); the
+// machine package holds a service's legacy machine login to the same rule
+// (machine.Service.ApplyDecision: anyone signed in denies one, but no restricted member). What
 // is theirs as a person stays theirs, and asks Dispatch nothing here: their own machine logins,
 // which a person decides alone, and the grants of their own sessions, which they end as the
 // session's operator.
@@ -15,11 +17,12 @@
 // The member kind is asked through m.Projects (projectaccess.Restricted) on no transaction, and
 // only where an approver arm would admit the person, so a route that admits or refuses them on
 // other grounds asks nothing. A failure to ask fails closed, as every other read of a person's
-// member kind does: the revoke and the dismissal return the *projectaccess.MemberKindUncheckable,
-// which the API answers 503 MEMBER_KIND_UNCHECKABLE, and the two lists leave the approver rows of
-// that read off and log it (approverKindUnreadMessage), as they leave off a row whose project
-// Dispatch could not be asked about. A machine with no client of Dispatch asks nothing, and every
-// approver stands as before.
+// member kind does, everywhere but the revoke: the dismissal returns the
+// *projectaccess.MemberKindUncheckable, which the API answers 503 MEMBER_KIND_UNCHECKABLE, and
+// the two lists leave the approver rows of that read off and log it (approverKindUnreadMessage),
+// as they leave off a row whose project Dispatch could not be asked about. The revoke goes ahead
+// and logs it (revokeApproves): a revoke only takes access away. A machine with no client of
+// Dispatch asks nothing, and every approver stands as before.
 package requests
 
 import (
