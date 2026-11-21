@@ -1937,7 +1937,8 @@ test("an option's press keeps the focus, and only a waiting question's are in th
 });
 
 // R9, and a reference's host: an option's words are the ask's stored text, drawn by the renderer,
-// so a reference in them reads as its target. In an option the reader presses the press is the
+// so a reference in them reads as its target: an issue as its status mark and its key, its title
+// in its accessible name (INFRA-4009 R1 and R3). In an option the reader presses the press is the
 // option's, so the reference sits in a `control` host and draws no link inside the button. In
 // an option nobody presses it is a link, out of the tab order as every control inside a row is,
 // and in it at the default order in a view whose rows take tab stops (`tabStops`).
@@ -1971,13 +1972,20 @@ test("a reference in an option draws no link inside its press, and elsewhere a l
       </QueryClientProvider>
     );
   };
+  const name = "CORE-7, In progress, Draw the header";
   const pressable = drawOptions(writer, false);
   try {
     const option = pressable.container.querySelector(`[data-pick-option="${label}"]`);
     if (option === null) throw new Error("the open question draws no option to press");
-    await waitFor(() => expect(option.textContent).toContain("CORE-7 Draw the header"));
+    const reference = await waitFor(() => {
+      const found = option.querySelector('[data-dispatch-ref="dispatch://CORE-7"]');
+      expect(found?.getAttribute("aria-label")).toBe(name);
+      return found;
+    });
+    expect(reference?.querySelector('svg[data-status-glyph="◐"]')).not.toBeNull();
+    expect(reference?.textContent).toBe(" CORE-7");
+    expect(option.textContent).not.toContain("Draw the header");
     expect(option.querySelector("a"), "a reference inside the option's press is a link").toBeNull();
-    expect(option.querySelector('[data-dispatch-ref="dispatch://CORE-7"]')).not.toBeNull();
   } finally {
     pressable.unmount();
   }
@@ -1986,7 +1994,8 @@ test("a reference in an option draws no link inside its press, and elsewhere a l
     try {
       const link = await waitFor(() => {
         const found = view.container.querySelector('[data-node-option] a[href="/issues/CORE-7"]');
-        expect(found?.textContent).toBe("CORE-7 Draw the header");
+        expect(found?.getAttribute("aria-label")).toBe(name);
+        expect(found?.textContent).toBe(" CORE-7");
         return found;
       });
       await waitFor(() =>

@@ -1388,7 +1388,8 @@ function refreshedNames(event: DispatchEvent, held: readonly string[][]): string
 const NAMING_ISSUE = [[`dispatch://${KEY}/comment/comment-1`, "dispatch://ACME-2"], [TASK_REF]];
 
 /** A names read whose key names the issue by its own address alone, as a child's page names its
- *  parent. The read answers that address with the issue's title and nothing else. */
+ *  parent. The read answers that address with the issue's title and its status and nothing
+ *  else. */
 const NAMING_KEY = [[`dispatch://${KEY}`]];
 
 /** Names reads whose key names no address of the issue: another issue's, and a document of the
@@ -1401,17 +1402,18 @@ const NAMING_ELSEWHERE = [
 // A names read is keyed by the addresses it names, so only words that change under an address
 // already named need a rule - a comment's edit, an ask's edit and a document's new version - and
 // so do a document's rename and its removal, which rename or empty every address to it, and an
-// issue's write that changes its title, which renames the issue's own address. The feed is the
-// workspace's, so each refreshes only the names reads whose key names an address it can change of
-// the issue the event is on: an event on an issue no read names changes no name that read holds,
-// and only a title change changes the name of the issue's own address, which the names read
-// answers with the issue's title and nothing else. A child's page names its parent by that
-// address, and the parent's documents take new versions often: none of those, nor any other
-// change under the parent, reads the child's names again, where the parent's new title, and an
-// older server's update that names none of its changes, does. A new comment is a new address,
-// which the tree reads under a key of its own, a person's edit of a document is the notice after
-// the versions that already refreshed them, and an issue's write that leaves its title alone and
-// a follower joining an ask rename nothing.
+// issue's write that changes its title or its status, which renames the issue's own address. The
+// feed is the workspace's, so each refreshes only the names reads whose key names an address it
+// can change of the issue the event is on: an event on an issue no read names changes no name
+// that read holds, and only a change of the title or the status changes what the read answers
+// for the issue's own address, its title and its status beside it (INFRA-4009 R8). A child's
+// page names its parent by that address, and the parent's documents take new versions often:
+// none of those, nor any other change under the parent, reads the child's names again, where the
+// parent's new title, its new status, its close and its reopen, and an older server's update that
+// names none of its changes, do. A new comment is a new address, which the tree reads under a key
+// of its own, a person's edit of a document is the notice after the versions that already
+// refreshed them, and an issue's write that leaves its title and its status alone and a follower
+// joining an ask rename nothing.
 test("an edit on an issue refreshes the names reads whose key names the issue and no other, a new comment none", () => {
   const editsWords = [
     feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
@@ -1426,20 +1428,22 @@ test("an edit on an issue refreshes the names reads whose key names the issue an
       event.type
     ).toEqual(NAMING_ISSUE);
   }
-  for (const payload of [{ changed: ["title"] }, {}]) {
+  const renamesIssue = [
+    ...[{ changed: ["title"] }, { changed: ["status"] }, { changed: ["closed_at"] }, {}].map(
+      (payload) => feedEvent("issue.updated", payload)
+    ),
+    feedEvent("issue.closed", { changed: ["status", "closed_at"] }),
+  ];
+  for (const event of renamesIssue) {
     expect(
-      refreshedNames(feedEvent("issue.updated", payload), [
-        ...NAMING_KEY,
-        ...NAMING_ISSUE,
-        ...NAMING_ELSEWHERE,
-      ]),
-      JSON.stringify(payload)
+      refreshedNames(event, [...NAMING_KEY, ...NAMING_ISSUE, ...NAMING_ELSEWHERE]),
+      `${event.type} ${JSON.stringify(event.payload)}`
     ).toEqual(NAMING_KEY);
   }
   const editsNoWords = [
     feedEvent("comment.created", { anchor: null, ask_id: null, id: "comment-2" }),
     feedEvent("artifact.human_edited", { artifact_id: plan.id, from_version: 1, to_version: 2 }),
-    feedEvent("issue.updated", { changed: ["status"] }),
+    feedEvent("issue.updated", { changed: ["priority"] }),
     feedEvent("ask.follower_added", { ask_id: "ask-1", session_id: "s1" }),
   ];
   for (const event of editsNoWords) {
