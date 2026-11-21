@@ -3,7 +3,11 @@ import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { agentStreamControlSubject } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import {
+  type DispatchClient,
+  DispatchWriteUnsettledError,
+} from "@legion/envoy-client/dispatch-http"
+import { messageFor } from "@legion/envoy-client/errors"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { sessionAdmission } from "../src/channel-connection"
 import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel-topics"
@@ -26,7 +30,7 @@ import {
 } from "../src/codex/codex-session-record"
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
 import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user-turn-state"
-import { FakeNats, waitFor } from "./channel-session-harness"
+import { FakeNats, settled, waitFor } from "./channel-session-harness"
 
 const directory = temporaryDirectory("codex-session")
 
@@ -477,12 +481,18 @@ function frame(mode: "steer" | "btw", body: string): RenderInboundResult {
 }
 
 describe("the Codex router of a person's messages", () => {
-  async function harness(body: string) {
+  /** A router over fakes; `replyFails` is what a reply fails with after it was recorded as
+   *  posted, and undefined is a reply taken. */
+  async function harness(
+    body: string,
+    replyFails?: (result: { readonly body?: string; readonly error?: string }) => unknown,
+  ) {
     const stateFile = userTurnStateFile(directory, `router-${Math.random()}`)
     const delivered: CodexInboxItem[] = []
     const replies: { body?: string; error?: string }[] = []
     const expected: string[] = []
     const asked: string[] = []
+    const warnings: string[] = []
     const router = createCodexUserTurnRouter({
       ask: async (question) => {
         asked.push(question)
@@ -502,12 +512,14 @@ describe("the Codex router of a person's messages", () => {
       expect: (text, id) => expected.push(`${id}:${text}`),
       reply: async (_delivery, result) => {
         replies.push(result)
+        const failure = replyFails?.(result)
+        if (failure !== undefined) throw failure
       },
       sessionId: () => "s1",
       state: userTurnState(stateFile, await readUserTurnState(stateFile)),
-      warn: () => undefined,
+      warn: (text) => warnings.push(text),
     })
-    return { asked, delivered, expected, replies, router }
+    return { asked, delivered, expected, replies, router, warnings }
   }
 
   test("a Send puts the body Dispatch stored into the session as the person's message", async () => {
@@ -530,6 +542,67 @@ describe("the Codex router of a person's messages", () => {
     expect(asked).toEqual(["which file?"])
     expect(replies).toEqual([{ body: "answer to which file?" }])
     expect(delivered).toEqual([])
+  })
+
+  // A BTW's reply Dispatch is still running when its deadline ends settles the attempt when it
+  // lands, so no error is posted over it and the warning names its key, saying the reply is
+  // running only where Dispatch said so: after an attempt cut off for silence alone it may still
+  // be. Any other failure of the reply is still answered with its error.
+  test.each([
+    {
+      reply: "is still running on Dispatch",
+      error: new DispatchWriteUnsettledError(
+        new DOMException("The operation timed out.", "TimeoutError"),
+        21,
+        "reply-key-1",
+        "POST http://dispatch.test/api/v1/messages/m/reply is still running on Dispatch, and its deadline ended the wait for its outcome",
+        true,
+        true,
+        true,
+      ),
+      warning:
+        "a BTW's reply to message 33333333-3333-4333-8333-333333333333 is still running on Dispatch under key reply-key-1; nothing more is posted",
+    },
+    {
+      reply: "may still be running on Dispatch",
+      error: new DispatchWriteUnsettledError(
+        new DOMException("The operation timed out.", "TimeoutError"),
+        3,
+        "reply-key-1",
+        "POST http://dispatch.test/api/v1/messages/m/reply may still be running on Dispatch, and its deadline ended the wait for its outcome",
+        false,
+        true,
+        false,
+      ),
+      warning:
+        "a BTW's reply to message 33333333-3333-4333-8333-333333333333 may still be running on Dispatch under key reply-key-1; nothing more is posted",
+    },
+    {
+      reply: "had no definitive answer",
+      error: new DispatchWriteUnsettledError(
+        new DOMException("The operation timed out.", "TimeoutError"),
+        5,
+        "reply-key-1",
+        "POST http://dispatch.test/api/v1/messages/m/reply had no definitive answer when its deadline ended it",
+        true,
+      ),
+      warning: undefined,
+    },
+  ])("a BTW whose reply $reply posts an error over it only where it is not still running", async (row) => {
+    const { replies, router, warnings } = await harness("unused", (result) =>
+      result.body === undefined ? undefined : row.error,
+    )
+    expect(await router.route(frame("btw", "which file?"))).toBe(true)
+    await waitFor(
+      async () => replies.length + warnings.length === 2,
+      "the BTW's reply and what followed it",
+    )
+    await settled()
+    expect(replies).toEqual([
+      { body: "answer to which file?" },
+      ...(row.warning === undefined ? [{ error: messageFor(row.error) }] : []),
+    ])
+    expect(warnings).toEqual(row.warning === undefined ? [] : [row.warning])
   })
 
   test("a / message is answered that it was not run", async () => {

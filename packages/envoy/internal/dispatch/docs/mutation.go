@@ -211,7 +211,7 @@ func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, ac
 		// The 503 this becomes is the only other trace of a room that stays failed, so the
 		// refusal names the room and the cause here too (see awaitRoomRecovery).
 		slog.Warn("dispatch: refuse a joined write on a failed document room",
-			"room", op.write.artifactID, "error", err)
+			"room", op.write.artifactID, "error", LoggedError(err))
 		return err
 	}
 	// The rendering is the document as the transaction now sees it, so a version it writes later
@@ -280,19 +280,31 @@ func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, ac
 // attributes, and both trees render through pmdoc.RenderWithBlockOffsets - so either is the very
 // string the render would make. A fork no rendering is known for is rendered here.
 func (s *Service) applyLive(ctx context.Context, artifactID string, actor model.Actor, mutate func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error) error {
-	return s.applyLiveWritten(ctx, artifactID, actor, nil, mutate)
+	return s.applyLiveWritten(ctx, artifactID, actor, nil, nil, mutate)
 }
 
+// storedTextRefusal answers the refusal of the text a write stores (pmdoc.RefuseMisreadStored) in
+// its caller's words: an edit batch names the operation whose write lies in the refused block
+// (editBatch.storedRefusal).
+type storedTextRefusal func(pmdoc.StoredVerdict) error
+
 // applyLiveWritten is applyLive for a write that renders the tree it is about to write before it
-// writes it, an upload being the one such write (ReplaceText): written is that tree with the
-// rendering the write made of it, which this operation takes for the fork it leaves rather than
-// rendering the same text over again, and only where the fork reads back as that very tree,
-// block ids and marks included (writtenRendering). A warm operation hands the room's update
-// observer the rendering it leaves with the layout of the same render (publishedRendering), so
-// such a write records its rendering's layout too (renderTreeWithLayout). A write that put
-// another tree in the fork - an upload that marked its replacement with the anchors it carried
-// over - renders the fork here, as every other write does. written is nil for applyLive itself.
-func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor model.Actor, written *renderedTree, mutate func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error) error {
+// writes it - an upload (ReplaceText) and an edit batch (ApplyOps), whose read-back is cut from
+// that rendering: written is that tree with the rendering the write made of it, which this
+// operation takes for the fork it leaves rather than rendering the same text over again, and only
+// where the fork reads back as that very tree, block ids and marks included (writtenRendering). A
+// warm operation hands the room's update observer the rendering it leaves with the layout of the
+// same render (publishedRendering), so such a write records its rendering's layout too
+// (renderTreeWithLayout). A write that put another tree in the fork - an upload that marked its
+// replacement with the anchors it carried over - renders the fork here, as every other write
+// does. written is nil for applyLive itself.
+//
+// refuse, where set, has the text the operation stores judged as an upload of that text is
+// judged (pmdoc.RefuseMisreadStored), and answers its refusal. An edit batch sets it: a replace's
+// own checks read back the blocks it changed for their shape alone, and an insert's compare fresh
+// renderings of the trees on either side of it (pmdoc.NewMisread), so none of them reads the text
+// the batch stores. An upload judged its rendering as it parsed it, and passes nil.
+func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor model.Actor, written *renderedTree, refuse storedTextRefusal, mutate func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error) error {
 	op, err := s.openLiveOperation(ctx, artifactID)
 	if err != nil {
 		return err
@@ -398,6 +410,24 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 		return weighedFrom != nil && tree.Node().EqualOutsideServerState(weighedFrom)
 	}}); err != nil {
 		return err
+	}
+	// The text the write stores, judged as an upload of it would be: markdown exactly as the
+	// version and the room will hold it, against the tree the fork holds, excusing only a block
+	// that read back otherwise the same way in beforeMarkdown, the text the fork was stored as
+	// before the write (weighedFrom is nil where that tree was outside the schema, and then no text
+	// of it excuses anything). A write that leaves the text as it was stores nothing to judge.
+	if refuse != nil && !unchanged {
+		verdict, err := pmdoc.RefuseMisreadStored(weighedFrom, judgedText(beforeMarkdown), tree.Node(), judgedText(markdown))
+		if err != nil {
+			return err
+		}
+		for _, excused := range verdict.Excused {
+			slog.Warn("dispatch: a write stores a block that reads back otherwise, as the text it replaces already did",
+				"room", artifactID, "block", excused.Block, "difference", excused.Kind)
+		}
+		if verdict.Refusal != nil {
+			return refuse(verdict)
+		}
 	}
 	// An agent's or API write is refused when a block pointer it introduces names a block of a
 	// type its attribute does not allow, or a check block it introduces breaks a rule of a check
@@ -718,7 +748,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// its layout, which a warm operation hands the room's update observer with it
 	// (replicaRendering), so taking it costs the observer no render either.
 	var written renderedTree
-	err = s.applyLiveWritten(ctx, artifactID, actor, &written, func(doc *crdt.Doc, start pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+	err = s.applyLiveWritten(ctx, artifactID, actor, &written, nil, func(doc *crdt.Doc, start pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.GetXmlFragment(fragmentName)
 		valid, err := startTree(start, doc)
 		current := valid.Node()
@@ -1710,6 +1740,12 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 		err       error
 		outcome   EditOutcome
 		snapshots []tableAnchorSnapshot
+		// The batch, the tree it wrote and that tree's rendering, which the write stores rather
+		// than rendering the fork again, and whose text is judged as an upload's would be, its
+		// refusal named by the operation that wrote the refused block (editBatch.storedRefusal).
+		batch   editBatch
+		valid   pmdoc.ValidDocument
+		written renderedTree
 	)
 	if hasTableAnchorMutation(ops) {
 		snapshots, err = s.prevalidateLiveOperations(ctx, artifactID, ops)
@@ -1720,7 +1756,8 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 	if err := checkTableAnchorRows(ctx, tx, artifactID, snapshots); err != nil {
 		return EditOutcome{}, err
 	}
-	err = s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+	refuseStored := func(verdict pmdoc.StoredVerdict) error { return batch.storedRefusal(ops, valid, verdict) }
+	err = s.applyLiveWritten(ctx, artifactID, actor, &written, refuseStored, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.GetXmlFragment(fragmentName)
 		// Read before the Yjs transaction opens: the state vector takes the document lock.
 		since := authoredClock(ctx, artifactID, doc)
@@ -1750,8 +1787,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 			// identified; a browser-authored block the closer has not yet stamped gets its id
 			// here, and the same ids persist through the update below.
 			stamped := stampAskBlockIDs(tree)
-			batch, err := applyBatch(start, ops, nil, before)
-			if err != nil {
+			if batch, err = applyBatch(start, ops, nil, before); err != nil {
 				mutationErr = err
 				return
 			}
@@ -1759,12 +1795,11 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 				mutationErr = err
 				return
 			}
-			var written pmdoc.ValidDocument
-			if outcome, written, mutationErr = s.finishBatch(ctx, artifactID, tree, batch, len(ops)); mutationErr != nil {
+			if outcome, valid, written, mutationErr = s.finishBatch(ctx, artifactID, tree, batch, len(ops)); mutationErr != nil {
 				return
 			}
 			mutationErr = recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
-				if err := pmdoc.UpdateDocument(transaction, fragment, written); err != nil {
+				if err := pmdoc.UpdateDocument(transaction, fragment, valid); err != nil {
 					return err
 				}
 				s.registerStampedAskBlocks(ctx, artifactID, stamped)
@@ -1792,33 +1827,52 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 }
 
 // finishBatch is the tail both edit routes run once their batch has applied (ApplyOps,
-// applyOpsUnconditional): the block ids the result still lacks, the two ask rules it is held to,
-// and the outcome the route answers with, read back where the batch changed the document. tree is
-// the document the batch started from, the one this edit stamped the missing ask block ids on, and
-// the document returned is the one the route stores.
-func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdoc.Node, batch editBatch, ops int) (EditOutcome, pmdoc.ValidDocument, error) {
+// applyOpsUnconditional): the block ids the result still lacks, the spreads its changed lists and
+// the alignments its changed tables' cells read back with, the two ask rules it is held to, and the
+// outcome the route answers with, read back where the batch changed the document. tree is the
+// document the batch started from, the one this edit stamped the missing ask block ids on, and the
+// document returned is the one the route stores, with its rendering where the batch changed the
+// document: the one render of the document the edit pays for, which the read-back is cut from and
+// the write stores (applyLiveWritten's written), with the layout a warm write hands the room's
+// update observer beside it.
+func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdoc.Node, batch editBatch, ops int) (EditOutcome, pmdoc.ValidDocument, renderedTree, error) {
 	next := batch.tree
 	pmdoc.EnsureBlockIDs(next)
+	// The lists, list items and table cells in the blocks the batch changed take the spread or the
+	// alignment their markdown reads back with, before anything below reads the tree: the renderer
+	// writes a list loose or tight from what its items hold, and a table's delimiter row from its
+	// header cells, so an attribute the batch left would be stored in a text that reads back with
+	// another, which the check of that text refuses (pmdoc.RefuseMisreadStored), and the room would
+	// hold another tree than the text it stores. The ids come first, since a block keeps an
+	// attribute that is not the batch's by the id before holds it under (pmdoc.SettleDerived).
+	next = pmdoc.SettleDerived(batch.beforeTree, next)
+	batch.tree = next
 	if err := validateEditedAskBlocks(tree, next); err != nil {
-		return EditOutcome{}, pmdoc.ValidDocument{}, &ErrInvalidAskBlock{Reason: err}
+		return EditOutcome{}, pmdoc.ValidDocument{}, renderedTree{}, &ErrInvalidAskBlock{Reason: err}
 	}
 	if dropped := droppedAskBlocks(batch.beforeTree, next); len(dropped) > 0 {
 		if err := s.refuseBatchDroppedAskBlocks(ctx, artifactID, dropped); err != nil {
-			return EditOutcome{}, pmdoc.ValidDocument{}, &ErrInvalidAskBlock{Reason: err}
+			return EditOutcome{}, pmdoc.ValidDocument{}, renderedTree{}, &ErrInvalidAskBlock{Reason: err}
 		}
 	}
 	outcome, written, err := batch.outcome(ops)
 	if err != nil {
-		return EditOutcome{}, pmdoc.ValidDocument{}, err
+		return EditOutcome{}, pmdoc.ValidDocument{}, renderedTree{}, err
 	}
 	// A batch that left the document as it was wrote nothing to read back, so it pays for no
-	// render of the document.
-	if outcome.Changed {
-		if outcome.Written, err = batch.readBack(written); err != nil {
-			return EditOutcome{}, pmdoc.ValidDocument{}, err
-		}
+	// render of the document here; a write it still makes renders the fork it leaves.
+	if !outcome.Changed {
+		return outcome, written, renderedTree{}, nil
 	}
-	return outcome, written, nil
+	// The render reads the document the batch wrote, so a tree only the renderer refuses is the
+	// document's own refusal (ErrDocOutsideSchema), which the route answers 409 DOC_SCHEMA, as
+	// every other render of a document names it.
+	markdown, offsets, layout, err := documentRenderingValidWithLayout(written)
+	if err != nil {
+		return EditOutcome{}, pmdoc.ValidDocument{}, renderedTree{}, err
+	}
+	outcome.Written = batch.readBack(written.Node(), markdown, offsets)
+	return outcome, written, renderedTree{tree: written.Node(), markdown: markdown, offsets: offsets, layout: layout}, nil
 }
 
 // applyOpsUnconditional preserves the precondition-free edit path's existing
@@ -1835,8 +1889,15 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 		}
 		return EditOutcome{Token: token}, nil
 	}
-	var outcome EditOutcome
-	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+	var (
+		outcome EditOutcome
+		// The batch, the tree it wrote and that tree's rendering, as ApplyOps holds them.
+		batch   editBatch
+		valid   pmdoc.ValidDocument
+		written renderedTree
+	)
+	refuseStored := func(verdict pmdoc.StoredVerdict) error { return batch.storedRefusal(ops, valid, verdict) }
+	err := s.applyLiveWritten(ctx, artifactID, actor, &written, refuseStored, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.GetXmlFragment(fragmentName)
 		since := authoredClock(ctx, artifactID, doc)
 		start, err := editTree(current, func() (*pmdoc.Node, error) { return treeOf(doc) })
@@ -1845,18 +1906,16 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 		}
 		tree := start.node
 		stamped := stampAskBlockIDs(tree)
-		batch, err := s.applyOperations(ctx, artifactID, start, ops)
-		if err != nil {
+		if batch, err = s.applyOperations(ctx, artifactID, start, ops); err != nil {
 			return err
 		}
-		var written pmdoc.ValidDocument
-		if outcome, written, err = s.finishBatch(ctx, artifactID, tree, batch, len(ops)); err != nil {
+		if outcome, valid, written, err = s.finishBatch(ctx, artifactID, tree, batch, len(ops)); err != nil {
 			return err
 		}
 		return recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
 			var updateErr error
 			transact(func(transaction *crdt.Transaction) {
-				if updateErr = pmdoc.UpdateDocument(transaction, fragment, written); updateErr != nil {
+				if updateErr = pmdoc.UpdateDocument(transaction, fragment, valid); updateErr != nil {
 					return
 				}
 				s.registerStampedAskBlocks(ctx, artifactID, stamped)

@@ -654,17 +654,39 @@ as a stream read 64 KiB at a time, with its `Content-Length`, and each read rest
 an upload on a slow line is never cut off while it is still going out; a smaller body leaves in
 one write. Once an attempt was cut off for silence or answered `409 KEY_IN_FLIGHT`, Dispatch may
 still be running the write, and its keyed layer finishes that run whatever the client does, so the
-write keeps asking every 3 s at most (`inFlightPauseMs`; a longer `Retry-After` is still waited),
-with no attempt started more than 55 s after the first (`inFlightWithinMs`), until the run's stored
-answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
-its answer. An upload (a body of a megabyte or more) keeps the five-attempt schedule, since each
-repeat sends its whole body again. No attempt of any write starts more than 55 s after the client
-was made, since its 60 s deadline counts from there. The numbers come from the 3,612 `dispatch`
-write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
-(p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
-Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
-that. How a write ends is one transition table (`write-outcome.ts`, `writeStep`), and the write
-loop (`#write`) decides nothing else. A write is in one of two states: nothing sent, or may have
+write keeps asking under its key until the run's stored answer comes back: every 3 s at most
+(`inFlightPauseMs`; a longer `Retry-After` is still waited) until 55 s after the client was made
+(`inFlightWithinMs`), then every 10 s (`runPauseMs`), until Dispatch's run limit and one lease
+(`IDEMPOTENCY_RUN_LIMIT_MS` and `IDEMPOTENCY_LEASE_MS` in `@legion/contracts`, 11 minutes,
+`runWithinMs`) after the attempt that could have started the run: the latest one Dispatch had not
+answered `409 KEY_IN_FLIGHT` when the write began to wait, or the first where it answered every one
+so. Dispatch renews a run's lease until that limit and no further, so past it no run holds the key.
+The window is read once, so a Dispatch that never answers holds the write one window and no more.
+A write that takes Dispatch ten minutes, or two silent attempts in a row, still ends in its answer.
+The client's default deadline (`DISPATCH_TOOL_DEADLINE_MS`, 60 s) does not end such a write; a
+deadline or a `signal` its maker named still does. A write a named deadline (`deadlineMs`) ends
+there is no failure: it is `DispatchWriteUnsettledError` with `running` set, whose message says
+the write is still running on Dispatch where Dispatch answered `409 KEY_IN_FLIGHT` (`toldRunning`),
+or that it may still be running where only an attempt cut off for silence put it in the wait, and
+that the same request under its key, which it names, returns the write's outcome once Dispatch's
+run ends. Every caller inside an agent's process that
+writes names a deadline of its own, since an agent's turn, the listener's delivery path or a queue
+of the session's writes waits on it: the delivery replies (`postDeliveryReply`) and AskGate's
+decision records name `DISPATCH_IN_PROCESS_DEADLINE_MS` (60 s), and the accept of a person's turn
+a shorter one of its own. The client
+tells its maker once, with the key, the longest wait and whether Dispatch said it is running the
+write (`onRunWait`), and the `dispatch` command, which names no deadline and waits for the run,
+prints that on stderr, so the agent that ran it does not stop it as hung. An upload (a body of a
+megabyte or more) keeps the
+five-attempt schedule, since each repeat sends its whole body again. No attempt of a write
+Dispatch has not said it may be running starts more than 55 s after the client was made, since its
+60 s deadline counts from there. The numbers come from the 3,612 `dispatch` write commands that
+succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole (p50 1.8 s, p95
+19.6 s, p99 45.5 s). So a Dispatch that refuses connections or fails every attempt at once holds a
+`dispatch` command, and the session waiting on it, no longer than the 60 s deadline, and one that
+takes requests and never answers them holds it about 11 minutes. How a write ends is one
+transition table (`write-outcome.ts`, `writeStep`), and the write loop (`#write`) decides nothing
+else. A write is in one of two states: nothing sent, or may have
 landed. An attempt may have landed when it got a 5xx or `409 KEY_IN_FLIGHT`, was cut off for
 silence (an upload's included), failed in transport after it went out (a reset after Dispatch
 read it), its answer's body broke off or was ended by the deadline or the caller's stop, or it was

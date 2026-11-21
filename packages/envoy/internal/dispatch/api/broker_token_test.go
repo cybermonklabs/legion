@@ -637,8 +637,10 @@ func withPerson(request *http.Request, login string) *http.Request {
 }
 
 // TestABrokerTokenRefusesABodyActorNamingAnotherSession: the one thing a body actor may not do is
-// name a writer that is not the credential's, and the refusal names the session the token carries
-// so the caller can see what it should have sent.
+// name a writer that is not the credential's, and the refusal points the caller at whoami, which
+// names the session the token carries, so the caller can see what it should have sent. The
+// refusal does not name that session itself: it is an error writeHandlerError reads, and an
+// error carrying an actor's ID can reach that function's log lines.
 func TestABrokerTokenRefusesABodyActorNamingAnotherSession(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -658,8 +660,12 @@ func TestABrokerTokenRefusesABodyActorNamingAnotherSession(t *testing.T) {
 				t.Fatalf("status=%d body=%s, want 403", response.Code, response.Body.String())
 			}
 			refusal := decodeBody[refusalAnswer](t, response)
-			if refusal.Code != "ACTOR_SESSION_MISMATCH" || !strings.Contains(refusal.Error, brokerTestSession) {
-				t.Fatalf("refusal = %+v, want ACTOR_SESSION_MISMATCH naming %s", refusal, brokerTestSession)
+			if refusal.Code != "ACTOR_SESSION_MISMATCH" || !strings.Contains(refusal.Error, "/api/v1/whoami") || strings.Contains(refusal.Error, brokerTestSession) {
+				t.Fatalf("refusal = %+v, want ACTOR_SESSION_MISMATCH pointing at whoami and not naming %s", refusal, brokerTestSession)
+			}
+			who := decodeBody[whoamiAnswer](t, rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)))
+			if who.Session == nil || *who.Session != brokerTestSession {
+				t.Fatalf("whoami session = %v, want %s, the session the refusal sends the caller to read", who.Session, brokerTestSession)
 			}
 		})
 	}

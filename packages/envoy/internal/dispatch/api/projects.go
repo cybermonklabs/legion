@@ -119,23 +119,27 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	// scope (server.go), and this route is scopeDeployment (routes_table.go) — the deployment's
 	// own token creates projects, and that token holds no scope at all. Such a caller acts for
 	// nobody, so it must name the person itself, which is the refusal below. Whichever step
-	// answers, the login is held to somebody who has signed in (allowedLogin), as PUT
+	// answers, the login is held to somebody who has signed in, as PUT
 	// /api/v1/projects/{key}/default-assignee holds one: a typo never becomes a stored default,
 	// and neither does the owner a broker-issued token names, which the broker decides rather
-	// than the people table.
-	projectDefault := strings.TrimSpace(input.DefaultAssignee)
-	if projectDefault == "" {
-		if login, acts := actorPerson(actor); acts {
-			projectDefault = login
-		}
-	}
-	if projectDefault == "" {
+	// than the people table. A login the call names is quoted back in its refusal
+	// (allowedLogin); the person the credential acts for is not (allowedActingPerson), since that
+	// is the request's own identity rather than anything the caller typed.
+	named := strings.TrimSpace(input.DefaultAssignee)
+	person, acts := actorPerson(actor)
+	var projectDefault string
+	var err error
+	switch {
+	case named != "":
+		projectDefault, err = s.allowedLogin(r.Context(), named)
+	case acts && person != "":
+		projectDefault, err = s.allowedActingPerson(r.Context(), person)
+	default:
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest,
 			"default_assignee is required: this credential acts for no person, so the call must name "+
 				"the person a project's unowned work lands on")
 		return
 	}
-	projectDefault, err := s.allowedLogin(r.Context(), projectDefault)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

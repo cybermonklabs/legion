@@ -2,10 +2,18 @@ import { describe, expect, jest, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   IDEMPOTENCY_KEY_COMMITTED,
+  IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
-import { DispatchServiceError, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http";
+import { bearerCredential } from "@legion/envoy-client/bearer";
+import {
+  DISPATCH_IN_PROCESS_DEADLINE_MS,
+  DispatchClient,
+  DispatchServiceError,
+  DispatchWriteLandedError,
+  DispatchWriteUnsettledError,
+} from "@legion/envoy-client/dispatch-http";
 import { fakeRecordClient, recordNotFound } from "@legion/envoy-client/test/fake-dispatch";
 import pkg from "../../package.json";
 import type { GateEntry } from "./askgate-core";
@@ -16,6 +24,7 @@ import {
   type RecordClient,
   type RecordDeps,
   type RecordedDecision,
+  type RecordStillRunning,
 } from "./decision-record";
 
 /** The clock every record below is stamped by. */
@@ -558,6 +567,135 @@ describe("the AskGate decision record", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  // A record's write holds the session's later records, which queue behind it, so its client ends
+  // it at its own minute even where Dispatch says it is still running it, rather than at the end
+  // of the ten minutes and more Dispatch's run can take. The record answers that its append is
+  // still running, naming its key, Dispatch's run goes on without it, and the session's next
+  // record is sent at that minute.
+  test("an append Dispatch is still running when its minute ends answers that, naming its key, and frees the queue", async () => {
+    jest.useFakeTimers();
+    try {
+      const started = performance.now();
+      const firstKey = appendKey("t1");
+      const appends: Array<{ readonly key: string; readonly at: number }> = [];
+      // The document read answers the session's document; every other request is an append.
+      const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+        if (init?.method !== "POST") return Response.json({ id: "doc-1" });
+        const key = new Headers(init.headers).get("Idempotency-Key") ?? "";
+        appends.push({ key, at: performance.now() - started });
+        const headers = { "Idempotency-Key": key, "Retry-After": "1" };
+        return key === firstKey
+          ? Response.json(
+              {
+                code: IDEMPOTENCY_KEY_IN_FLIGHT,
+                error: "an earlier request with this key is still running",
+              },
+              { status: 409, headers }
+            )
+          : Response.json({ applied: 1 }, { headers });
+      }) as typeof fetch;
+      const asked: Array<{ readonly signal: AbortSignal; readonly deadlineMs: number }> = [];
+      const recorder = createDecisionRecorder({
+        env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+        now: () => NOW,
+        dispatchClient: (_directory, signal, deadlineMs) => {
+          asked.push({ signal, deadlineMs });
+          return {
+            client: new DispatchClient(
+              "http://dispatch.test",
+              bearerCredential("secret"),
+              fetchImpl,
+              {
+                signal,
+                deadlineMs,
+              }
+            ),
+          };
+        },
+      });
+      const answers: Array<string | RecordStillRunning | undefined> = [];
+      let settled = 0;
+      for (const id of ["t1", "t2"]) {
+        void recorder
+          .record({ entry: REFUSAL, sessionId: SESSION, directory: "/work", id })
+          .then((answer) => {
+            answers.push(answer);
+            settled += 1;
+          });
+      }
+      // The fake timers move a second at a time while the records wait, and each request and its
+      // answer take no time; the loop stops past the longest run window, should a record wait it.
+      while (settled < 2 && performance.now() - started < 700_000) {
+        for (let i = 0; i < 100; i++) await Promise.resolve();
+        if (settled < 2) jest.advanceTimersByTime(1_000);
+      }
+
+      expect(asked.map(({ deadlineMs }) => deadlineMs)).toEqual([
+        DISPATCH_IN_PROCESS_DEADLINE_MS,
+        DISPATCH_IN_PROCESS_DEADLINE_MS,
+      ]);
+      // Asked at 0, 1 and 3 s, then every 3 s to 57 s; the 10 s pause after it ends at 60 s.
+      const first = appends.filter(({ key }) => key === firstKey);
+      expect(first).toHaveLength(21);
+      expect(answers[0]).toEqual({
+        recordError:
+          "POST http://dispatch.test/api/v1/artifacts/doc-1/edits is still running on Dispatch, " +
+          "and its deadline ended the wait for its outcome (the last of 21 attempts): Dispatch " +
+          "finishes the write whatever this side does, and the same request sent again under " +
+          `Idempotency-Key ${firstKey} returns its outcome once Dispatch's run ends.`,
+        write: "append",
+        key: firstKey,
+        told: true,
+      });
+      // Nothing here cut the record or sent it again under another key, and the session's next
+      // record went out at the minute.
+      expect(asked[0]?.signal.aborted).toBe(false);
+      expect(appends.slice(first.length)).toEqual([
+        { key: appendKey("t2"), at: DISPATCH_IN_PROCESS_DEADLINE_MS },
+      ]);
+      expect(answers[1]).toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // A create Dispatch may still be running when the minute ends (its attempts went silent, so it
+  // never said it holds the write) leaves this record unwritten: its append never went out. The
+  // answer says so, naming the create's key, and the session's next record asks for the create
+  // again under that same key before it appends its own record.
+  test("a create that may still be running at its minute answers that, and the next record asks for it again under its key", async () => {
+    let creates = 0;
+    const dispatch = fakeRecord({
+      projectArtifact: async (_project, _input, key) => {
+        creates += 1;
+        if (creates > 1) return { artifact: { id: "doc-1" } };
+        throw new DispatchWriteUnsettledError(
+          new DOMException("The operation timed out.", "TimeoutError"),
+          3,
+          key ?? "",
+          "POST http://dispatch.test/api/v1/projects/INFRA/artifacts may still be running on Dispatch, and its deadline ended the wait for its outcome",
+          false,
+          true,
+          false
+        );
+      },
+      docEdit: async () => ({ applied: 1 }),
+    });
+    const g = harness({ client: dispatch.client });
+
+    expect(await g.write(REFUSAL, SESSION, "t1")).toEqual({
+      recordError: expect.stringContaining("may still be running on Dispatch"),
+      write: "create",
+      key: CREATE_KEY,
+      told: false,
+    });
+    expect(dispatch.edits).toEqual([]);
+
+    expect(await g.write(REFUSAL, SESSION, "t2")).toBeUndefined();
+    expect(dispatch.uploads.map(({ key }) => key)).toEqual([CREATE_KEY, CREATE_KEY]);
+    expect(dispatch.edits.map(({ key }) => key)).toEqual([appendKey("t2")]);
   });
 
   // #2161, reviewer round 15: the core's shutdown and the host's each cut the records in flight,

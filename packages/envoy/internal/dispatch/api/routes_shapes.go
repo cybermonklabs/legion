@@ -1,10 +1,13 @@
 // routes_shapes.go is the side map that gives every row of the route table its Go types: what it
 // takes, what it answers, and with which status. The table itself carries paths, auth and prose
 // and no shapes (routeRow), so a document emitted from the table alone would describe no body;
-// this file is the data that document is reflected out of (INFRA-1406). Nothing here changes
-// behaviour: no handler reads a type declared below, and the query structs are declarations
-// alone - `r.URL.Query().Get` and `.Has` differ on an absent key, so moving forty handlers'
-// reads onto a struct would be a behaviour change, and is not this file's business.
+// this file is the data that document is reflected out of. No handler decodes a
+// request into a type declared below, and the query structs are declarations rather than what a
+// handler reads its values from - `r.URL.Query().Get` and `.Has` differ on an absent key, so
+// moving forty handlers' reads onto a struct would be a behaviour change, and is not this file's
+// business. Their tags do decide one answer: routeHandler reads each row's Params when it mounts
+// the row, and a query naming twice a key that is not one of its list fields is refused 400
+// INVALID_QUERY (refuseRepeatedQueryKeys, server.go).
 package api
 
 import (
@@ -84,12 +87,14 @@ type routeShape struct {
 //
 // One struct per route, or per set of routes reading the same keys, each field carrying the key
 // it is read from. They are declarations: the handlers keep their own reads. Two keys of the API
-// are named by no struct here. `session` is read by actingPerson (server.go) on every route that
-// resolves a person, so it belongs to the whole API rather than to any one operation and the
-// emitter adds it everywhere; the delivery facet of the same name is left out with it. `cursor`
-// on GET /api/v1/issues is read only to refuse it (400 INVALID_QUERY, issue_page.go), and naming
-// it would offer a client a parameter that cannot work. No struct here is ever a request body,
-// and the emitter reads only each field's `query` and `enum` tags and the Go type it carries.
+// are named by no struct here, outside the delivery reads. `session` is read by actingPerson
+// (server.go) on every route that resolves a person, so it belongs to the whole API rather than to
+// any one operation and the emitter adds it everywhere as one value; the delivery timeline and
+// measures alone declare it, as the facet of that name they take a list of (deliveryWindowQuery),
+// and there that declaration stands in for it. `cursor` on GET /api/v1/issues is read only to
+// refuse it (400 INVALID_QUERY, issue_page.go), and naming it would offer a client a parameter
+// that cannot work. No struct here is ever a request body, and the emitter reads only each field's
+// `query` and `enum` tags and the Go type it carries.
 
 // projectArtifactsQuery is GET /api/v1/projects/{key}/artifacts's query.
 type projectArtifactsQuery struct {
@@ -126,9 +131,9 @@ type projectPlansQuery struct {
 }
 
 // deliveryWindowQuery is the query GET /api/v1/delivery/timeline and GET /api/v1/delivery/measures
-// share: the window, the search and the repeatable facets. The `session` facet is read by the
-// same code (deliveryFacets) and named here by no field, since `session` is the whole API's
-// parameter.
+// share: the window, the search and the repeatable facets (deliveryFacets). `session` is one of
+// those facets on these two routes, and this declaration of it as a list stands in for the whole
+// API's one-value parameter of that name (openapi.go, parameters).
 type deliveryWindowQuery struct {
 	// From is the window's start, RFC3339; absent it is seven days before To.
 	From string `query:"from"`
@@ -141,6 +146,8 @@ type deliveryWindowQuery struct {
 	// ParentAgent selects pull requests whose first session belongs to these parents;
 	// __no_session__ selects those whose commits name no session.
 	ParentAgent []string `query:"parent_agent"`
+	// Session selects pull requests whose commits name any of these sessions.
+	Session []string `query:"session"`
 	// Issue selects pull requests of these issues; __no_issue__ selects those naming none.
 	Issue []string `query:"issue"`
 	// Priority selects P0-P3; __no_priority__ selects an issue with none.

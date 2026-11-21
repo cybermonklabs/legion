@@ -33,9 +33,10 @@ const OpenAPIDocumentPath = "packages/contracts/schemas/dispatch-openapi.json"
 // its TypeScript export carries.
 const openAPISchemaPrefix = "#/components/schemas/"
 
-// openAPISessionParameter is the one query parameter every operation carries. It is read by
+// openAPISessionParameter is the one query parameter every operation carries, but the two delivery
+// reads, whose own `session` is a facet they take a list of (deliveryWindowQuery). It is read by
 // actingPerson (server.go) on every route that resolves a person rather than by any one handler,
-// so it belongs to the whole API and routeShapes names it on no row.
+// so it belongs to the whole API and routeShapes names it on no other row.
 const openAPISessionParameter = "the session the caller's credential acts for, where that " +
 	"credential proved none; a credential that proved a session is refused a parameter naming " +
 	"another (403 ACTOR_SESSION_MISMATCH)"
@@ -691,7 +692,8 @@ func openAPICamel(segment string) string {
 
 // parameters are the row's path parameters, in the pattern's own order, then the keys the shape's
 // query struct declares, in the struct's own order, then the `session` parameter every operation
-// carries.
+// carries. An operation names a parameter once, so a shape that declares `session` itself - the
+// delivery window's facet - carries that declaration in its place.
 func (e *openAPIEmitter) parameters(
 	route apiRoute,
 	shape routeShape,
@@ -712,6 +714,9 @@ func (e *openAPIEmitter) parameters(
 			return nil, err
 		}
 		parameters = append(parameters, query...)
+		if slices.Contains(queryKeysOf(shape.Params), "session") {
+			return parameters, nil
+		}
 	}
 	session := openapi31.Parameter{
 		Name:   "session",

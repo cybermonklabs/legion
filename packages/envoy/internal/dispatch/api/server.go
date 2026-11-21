@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -557,7 +558,7 @@ type server struct {
 	detached backgroundWork
 	// requestKeyLease, requestKeyRenewal and requestKeyRunLimit replace a keyed request's lease
 	// (IdempotencyLease, a minute), how often a running handler renews it (keyedLeaseRenewal) and
-	// how long a handler runs (keyedHandlerLimit); zero, which every server the deployment builds
+	// how long a handler runs (IdempotencyRunLimit); zero, which every server the deployment builds
 	// leaves them, keeps those. Only a test sets them, so a handler that outlives its lease or its
 	// limit is the test's choice rather than minutes of wall clock.
 	requestKeyLease, requestKeyRenewal, requestKeyRunLimit time.Duration
@@ -710,9 +711,9 @@ type Background struct {
 // its client, then for every live socket and the subscriptions it ran, serving none that opens from
 // then on (liveSocketSet.wait), then for the hub's goroutines, the relay's and the test hooks'
 // listener. The detached work comes first because it is the only work lifetime does not stop: a
-// keyed handler is bounded by keyedHandlerLimit, a delivery by the listener client's receipt
-// timeout per recipient, and each reads and writes through the database pool this wait is holding
-// open for it.
+// keyed handler is bounded by contracts.IdempotencyRunLimit, a delivery by the listener client's
+// receipt timeout per recipient, and each reads and writes through the database pool this wait is
+// holding open for it.
 func (s *server) waitBackground() {
 	s.detached.wait()
 	s.liveSockets.wait()
@@ -896,6 +897,12 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
 	handler = s.resolveIDPrefixes(route, handler)
 	handler = s.refuseUnstorableParameters(route.Pattern, handler)
+	// One layer for the whole table rather than a call in each handler. A row a child adds is held
+	// once it declares its parameters, which every row must (shapelessRoutes). It stands outside
+	// every layer that reads the query, and outside the handler, so it runs before any read of the
+	// query by construction. And it refuses a repeated key no route declares as it refuses a
+	// declared one-value key, so no handler answers a repeat for its first value.
+	handler = s.refuseRepeatedQueryKeys(route, handler)
 	if len(route.OAuthScopes) > 0 {
 		// Ahead of the keyed layer and the project and session checks, so the row's own
 		// scopes are the first thing a request is held to once the read-only gate outside it
@@ -943,6 +950,43 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// wire. The two websockets register mounts beside the table carry no compressed answer: the
 	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
 	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+}
+
+// refuseRepeatedQueryKeys serves handler only when the request's query names no key more than
+// once other than the keys route's shape declares as lists, its Params' slice fields. Any other
+// key named twice - one the shape declares for one value, or one it does not declare at all - is
+// 400 INVALID_QUERY naming it (repeatedQueryKey), the first such key in name order, so the key a
+// refusal names does not depend on the order a map is walked in. The list keys are read once, when
+// the row is mounted; a row whose shape declares no Params declares no list.
+func (s *server) refuseRepeatedQueryKeys(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
+	var lists []string
+	if params := routeShapes[route.Method+" "+route.Pattern].Params; params != nil {
+		oneValue := oneValueQueryKeys(params)
+		for _, key := range queryKeysOf(params) {
+			if !slices.Contains(oneValue, key) {
+				lists = append(lists, key)
+			}
+		}
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery == "" {
+			handler(w, r)
+			return
+		}
+		query := r.URL.Query()
+		keys := make([]string, 0, len(query))
+		for key := range query {
+			if !slices.Contains(lists, key) {
+				keys = append(keys, key)
+			}
+		}
+		slices.Sort(keys)
+		if err := repeatedQueryKey(query, keys); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		handler(w, r)
+	}
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1291,9 +1335,11 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 // to one session — decides it instead, so such a caller need not name itself at all. A body
 // actor is then only an agreement: one that names the same session is taken, for its Origin,
 // which nothing else carries; one that names any other writer is 403 ACTOR_SESSION_MISMATCH,
-// naming the session the credential proved, rather than silently recording the write as a
-// session the caller merely asked for. Every credential that proves no session — a cookie, a
-// personal token, a Kubernetes service-account token — keeps the rule above exactly.
+// rather than silently recording the write as a session the caller merely asked for. The refusal
+// points the caller at whoami for the session the credential proved rather than naming it: it is
+// an error that writeHandlerError reads, and an error that carries an actor's ID can reach that
+// function's log lines, which name no writer. Every credential that proves no session — a
+// cookie, a personal token, a Kubernetes service-account token — keeps the rule above exactly.
 func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *model.Actor) (model.Actor, error) {
 	if authenticated.Kind == "session" && authenticated.ID != "" {
 		// A body that names no writer at all leaves the session to the credential; one that names
@@ -1301,7 +1347,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		named := supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
 		if named && (supplied.Kind != "session" || strings.TrimSpace(supplied.ID) != authenticated.ID) {
 			return model.Actor{}, errorf(http.StatusForbidden, "ACTOR_SESSION_MISMATCH",
-				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
+				"this request's credential acts for a session of its own, and its actor names another writer; GET /api/v1/whoami names the credential's session")
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
 		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark

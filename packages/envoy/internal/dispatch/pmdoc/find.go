@@ -1574,5 +1574,5 @@ func StripAnchorMarks(node *Node) *Node {
 	if node == nil {
 		return nil
 	}
-	return cloneNode(writtenTree(node, false))
+	return cloneNode(writtenTree(node, false, false))
 }

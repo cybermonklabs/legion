@@ -7,17 +7,21 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// A delete op renders the document it leaves and stores that rendering with no read-back, so a
-// rendering markdown reads as fewer blocks than it was given stores a document holding less than
-// the delete left. The blocks of a typed block in a tight list item are written on consecutive
-// lines, which merges pairs: a paragraph after a quote the quote's lazy line takes, a list that
-// interrupts no paragraph read as its text, an empty item's marker read as a setext underline, a
-// quote after a quote the one marker opens, and a table after a list read as the paragraph the
-// list ends in. One blank line keeps each apart (itemBlocks), and the item then reads back
-// spread. The item's own blocks are written the same way, so the last pair merges there too.
+// A delete op renders the document it leaves and stores that rendering, so a rendering markdown
+// reads as fewer blocks than it was given stores a document holding less than the delete left.
+// The blocks of a typed block in a tight list item are written on consecutive lines, which merges
+// pairs: a paragraph after a quote the quote's lazy line takes, a list that interrupts no
+// paragraph read as its text, an empty item's marker read as a setext underline, a quote after a
+// quote the one marker opens, and a table after a list read as the paragraph the list ends in.
+// One blank line keeps each apart (itemBlocks), and the item then reads back spread. The item's
+// own blocks are written the same way, so the last pair merges there too. The edit's tree takes
+// the spread its markdown reads back with (pmdoc.SettleDerived), so the item is stored spread and
+// written so, with a blank line after its first paragraph as well, and the room's tree and the
+// text it stores agree.
 //
 // Each row deletes the fenced code block between the pair and reads the version the settlement
-// stored, so what is checked is the bytes a person's next read gives back.
+// stored, so what is checked is the bytes a person's next read gives back, and that they read
+// back as the tree the room holds.
 func TestDeletingABlockOfATypedBlockInATightItemKeepsTheBlocksApart(t *testing.T) {
 	const callout = ":::callout{#c1 kind=\"note\" title=\"T\"}"
 	const table = "  | h | i |\n  | --- | --- |\n  | c | d |\n"
@@ -30,37 +34,37 @@ func TestDeletingABlockOfATypedBlockInATightItemKeepsTheBlocksApart(t *testing.T
 		{
 			name:     "a paragraph after a quote",
 			markdown: "- a\n  " + callout + "\n  > q\n  ```\n  x\n  ```\n  r\n  :::\n- b\n",
-			stored:   "- a\n  " + callout + "\n  > q\n\n  r\n  :::\n- b\n",
+			stored:   "- a\n\n  " + callout + "\n  > q\n\n  r\n  :::\n- b\n",
 			blocks:   2,
 		},
 		{
 			name:     "an ordered list that interrupts no paragraph",
 			markdown: "- a\n  " + callout + "\n  q\n  ```\n  x\n  ```\n  2. r\n  :::\n- b\n",
-			stored:   "- a\n  " + callout + "\n  q\n\n  2. r\n  :::\n- b\n",
+			stored:   "- a\n\n  " + callout + "\n  q\n\n  2. r\n  :::\n- b\n",
 			blocks:   2,
 		},
 		{
 			name:     "a list whose first item is empty",
 			markdown: "- a\n  " + callout + "\n  q\n  ```\n  x\n  ```\n  -\n  :::\n- b\n",
-			stored:   "- a\n  " + callout + "\n  q\n\n  - \n  :::\n- b\n",
+			stored:   "- a\n\n  " + callout + "\n  q\n\n  - \n  :::\n- b\n",
 			blocks:   2,
 		},
 		{
 			name:     "a quote after a quote",
 			markdown: "- a\n  " + callout + "\n  > q\n  ```\n  x\n  ```\n  > r\n  :::\n- b\n",
-			stored:   "- a\n  " + callout + "\n  > q\n\n  > r\n  :::\n- b\n",
+			stored:   "- a\n\n  " + callout + "\n  > q\n\n  > r\n  :::\n- b\n",
 			blocks:   2,
 		},
 		{
 			name:     "a table after a list",
 			markdown: "- a\n  " + callout + "\n  - q\n  ```\n  x\n  ```\n" + table + "  :::\n- b\n",
-			stored:   "- a\n  " + callout + "\n  - q\n\n" + table + "  :::\n- b\n",
+			stored:   "- a\n\n  " + callout + "\n  - q\n\n" + table + "  :::\n- b\n",
 			blocks:   2,
 		},
 		{
 			name:     "a table after a list among the item's own blocks",
 			markdown: "- a\n  - q\n  ```\n  x\n  ```\n" + table + "- b\n",
-			stored:   "- a\n  - q\n\n" + table + "- b\n",
+			stored:   "- a\n\n  - q\n\n" + table + "- b\n",
 			blocks:   3,
 			inItem:   true,
 		},
@@ -77,7 +81,8 @@ func TestDeletingABlockOfATypedBlockInATightItemKeepsTheBlocksApart(t *testing.T
 			}
 			settleCurrentGeneration(t, service, artifactID)
 
-			if markdown := latestVersionMarkdown(t, service, artifactID); markdown != test.stored {
+			markdown := latestVersionMarkdown(t, service, artifactID)
+			if markdown != test.stored {
 				t.Fatalf("the stored version is %q, want %q", markdown, test.stored)
 			}
 			// The blocks the delete left are the blocks the stored version reads back as.
@@ -88,6 +93,12 @@ func TestDeletingABlockOfATypedBlockInATightItemKeepsTheBlocksApart(t *testing.T
 			}
 			if held := len(holder.Children); held != test.blocks {
 				t.Fatalf("the delete's holder reads back holding %d blocks, want %d", held, test.blocks)
+			}
+			// The stored version reads back as the tree the room holds, the item's spread
+			// included, judged as the text an edit stores is (pmdoc.RefuseMisreadStored), with no
+			// earlier text whose misreads would excuse one.
+			if verdict, err := pmdoc.RefuseMisreadStored(nil, "", back, markdown); err != nil || verdict.Refusal != nil {
+				t.Fatalf("the stored version %q reads back otherwise than the room's tree: %v, %v", markdown, verdict.Refusal, err)
 			}
 		})
 	}

@@ -65,7 +65,7 @@ func heldVersionBlocks(
 	}
 	held, heldBlocks, err := closedVersionBlocks(stored, live, liveBlocks, indexRows)
 	if err != nil {
-		slog.Warn(warning, "artifact", artifactID, "error", err)
+		slog.Warn(warning, "artifact", artifactID, "error", LoggedError(err))
 		return stored, nil, nil
 	}
 	return held, heldBlocks, nil

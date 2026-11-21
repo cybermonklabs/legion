@@ -641,13 +641,15 @@ func (s *Service) readApprovedVersion(ctx context.Context, tx pgx.Tx, artifactID
 // and the refusal is logged. Any other error is the write's.
 func skipUnreadableVersion(artifactID string, number int, err error) error {
 	if errors.Is(err, pmdoc.ErrUnknownElement) {
-		return newerContent(fmt.Errorf("version %d: %w", number, err))
+		newer := newerContent(fmt.Errorf("version %d: %w", number, err))
+		newer.Version = number
+		return newer
 	}
 	if !errors.Is(err, pmdoc.ErrSchema) {
 		return err
 	}
 	slog.Warn("dispatch: skip carrying an approval over a document version outside the Proof schema",
-		"room", artifactID, "version", number, "error", err)
+		"room", artifactID, "version", number, "error", LoggedError(err))
 	return nil
 }
 

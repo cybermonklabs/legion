@@ -3953,7 +3953,7 @@ func TestReplacementBrokePassesAPanicOnAsAnError(t *testing.T) {
 	}
 }
 
-// applyAlone applies op to tree as a write of its own, on a budget of its own.
+// applyAlone applies op to tree as a write of its own, on a budget and with read-backs of its own.
 func applyAlone(tree *pmdoc.Node, op model.EditOp) (*pmdoc.Node, error) {
-	return applyOperation(newBatchTree(tree), op, pmdoc.NewWriteBudget())
+	return applyOperation(newBatchTree(tree), op, pmdoc.NewWriteBudget(), blockReadBacks{})
 }

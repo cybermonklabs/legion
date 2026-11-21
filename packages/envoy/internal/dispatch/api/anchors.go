@@ -154,6 +154,6 @@ func (s *server) anchorBlock(ctx context.Context, anchor *model.Anchor) (model.A
 		code = codeInternal
 	}
 	slog.Warn("dispatch: answer a comment or ask read without its anchor's block position",
-		"artifact", anchor.ArtifactID, "block", *anchor.BlockID, "anchor_block_error", code, "error", err)
+		"artifact", anchor.ArtifactID, "block", *anchor.BlockID, "anchor_block_error", code, "error", docs.LoggedError(err))
 	return model.AnchorPosition{AnchorBlockError: code}, nil
 }

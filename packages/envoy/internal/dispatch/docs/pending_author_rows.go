@@ -43,7 +43,9 @@ func pendingAuthorsAt(authors map[string]model.Actor, version persistence.Versio
 // version, or a transaction's upsertPendingAuthors. An author keeps one row per update that
 // recorded it, so an upload that holds one of those updates and not another deletes only the
 // first. authors must name each author at most once per update: one statement cannot write one
-// row twice, so a repeated author and version is refused, naming it, before anything is written.
+// row twice, so a repeated author and version is refused, naming its kind and the update, before
+// anything is written; it names no ID, since an author can be a person and a caller logs the
+// error.
 // A row written again keeps its Proven mark only when both writes carried it (mergeAuthor), so
 // a claimed write is not lifted to proven by the row a proven one rewrites.
 func pendingAuthorsStatement(room string, authors []pendingAuthor) (writeStatement, error) {
@@ -59,7 +61,7 @@ func pendingAuthorsStatement(room string, authors []pendingAuthor) (writeStateme
 	for _, author := range authors {
 		pair := row{key: actorKey(author.actor), version: author.writtenThrough}
 		if _, repeated := seen[pair]; repeated {
-			return writeStatement{}, fmt.Errorf("record the document's pending authors: %s/%s at update %d is named twice", author.actor.Kind, author.actor.ID, author.writtenThrough)
+			return writeStatement{}, fmt.Errorf("record the document's pending authors: a %s author at update %d is named twice", author.actor.Kind, author.writtenThrough)
 		}
 		seen[pair] = struct{}{}
 		raw, err := json.Marshal(author.actor)

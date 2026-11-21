@@ -91,7 +91,7 @@ func (r *settlementReconciliation) withholdAnswers(artifactID string, tree *pmdo
 		returned = r.returnAnswersWithRoom(tree, before, answered)
 	}
 	slog.Warn("dispatch: settlement withholds restored answers from their blocks", "room", artifactID,
-		"withheld", len(answered)-len(returned), "answers", len(answered), "reason", err)
+		"withheld", len(answered)-len(returned), "answers", len(answered), "reason", LoggedError(err))
 	droppedRepairs, droppedEvents := map[int]bool{}, map[int]bool{}
 	for _, index := range answered {
 		rewrite := r.rewrites[index]

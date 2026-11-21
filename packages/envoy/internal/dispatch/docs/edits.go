@@ -562,6 +562,12 @@ func checkEditPrecondition(tree *pmdoc.Node, precondition model.EditPrecondition
 	return "", &ErrPreconditionFailed{CurrentDocument: currentDocument, Mismatches: mismatches}
 }
 
+// requirePreconditionCoverage refuses a block precondition that does not name every block the
+// batch's operations resolve to (operationPreconditionBlocks), each resolved over the tree the
+// operation before it left. It runs the batch again to reach those trees, and judges nothing in
+// that run (runBatch's nil backs): the caller has applied the same batch to the same tree already,
+// so every read-back this run would make was made, and passed, there, and a block a mebibyte long
+// that the batch's replaces land in is read back by that run alone.
 func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, precondition model.EditPrecondition, before string) error {
 	if precondition.Document != "" {
 		return nil
@@ -571,7 +577,7 @@ func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, preconditi
 		covered[block.ID] = struct{}{}
 	}
 	required := make(map[string]struct{})
-	_, err := applyBatch(tree, ops, func(current *batchTree, op model.EditOp) error {
+	_, err := runBatch(tree, ops, func(current *batchTree, op model.EditOp) error {
 		ids, err := operationPreconditionBlocks(current, op)
 		if err != nil {
 			return err
@@ -580,7 +586,7 @@ func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, preconditi
 			required[id] = struct{}{}
 		}
 		return nil
-	}, before)
+	}, before, nil)
 	if err != nil {
 		return err
 	}
@@ -806,6 +812,67 @@ func (b editBatch) outcome(applied int) (EditOutcome, pmdoc.ValidDocument, error
 	}, valid, nil
 }
 
+// storedRefusal answers the refusal of the text the batch would store (pmdoc.RefuseMisreadStored)
+// as an invalid operation, carrying the refusal an upload of that text gets, on the operation whose
+// write lies in the block the refusal names: in written, the tree the batch wrote, the first
+// operation in batch order whose own text went into that block or a block inside it
+// (operationWrite), and a one-operation batch's operation whatever block it names. Where no
+// operation's text went there - the refusal names no block, or the operations that reached it
+// only took text out or moved it - no operation is named, and the refusal is the batch's, on ops.
+func (b editBatch) storedRefusal(ops []model.EditOp, written pmdoc.ValidDocument, verdict pmdoc.StoredVerdict) error {
+	index := b.operationWriting(written, verdict.Block)
+	if index < 0 {
+		return &ErrInvalidOp{Field: "ops", Reason: verdict.Refusal.Error()}
+	}
+	return stampOperation(index, &ErrInvalidOp{Field: writtenField(ops[index]), Reason: verdict.Refusal.Error()})
+}
+
+// operationWriting is the index of the first operation whose own text went into the block of
+// written carrying blockID or into a block inside it, 0 for a one-operation batch, and -1 where no
+// operation's did. A batch of more operations knows which blocks each one wrote text into
+// (editBatch.written); one operation's are not read, since every write of its batch is its own.
+func (b editBatch) operationWriting(written pmdoc.ValidDocument, blockID string) int {
+	if b.operations == 1 {
+		return 0
+	}
+	if blockID == "" {
+		return -1
+	}
+	ids, err := written.BlockDescendantIDs(blockID)
+	if err != nil {
+		return -1
+	}
+	inside := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		inside[id] = struct{}{}
+	}
+	for index, write := range b.written {
+		for _, id := range write.ids {
+			if _, held := inside[id]; held {
+				return index
+			}
+		}
+	}
+	return -1
+}
+
+// writtenField is the field holding what op writes into the document, which a refusal of the text
+// the batch stores names (storedRefusal): a replace's with, an insert's markdown, a retype's type,
+// a delete's find or block, and the block every other operation moves or cuts.
+func writtenField(op model.EditOp) string {
+	switch {
+	case op.Op == "replace":
+		return "with"
+	case op.Op == "insert":
+		return "markdown"
+	case op.Op == "retype":
+		return "type"
+	case op.Op == "delete" && op.Block == "":
+		return "find"
+	}
+	return "block"
+}
+
 // editReadBackBound is how many bytes of UTF-8 an edit's read-back may hold. The bound is the
 // server's, so every caller of the edits route reads a bounded field, rather than each command
 // bounding what it prints for itself.
@@ -817,31 +884,25 @@ const editReadBackBound = 2000
 // line for each block the batch removed or emptied. A batch that left the document as it was
 // reads back as nothing.
 //
-// written is the validated tree the batch's verdict was taken from (editBatch.outcome), which the
-// caller hands to pmdoc.UpdateDocument: it is rendered once here, for the markdown and for each
-// block's byte range in that markdown together (pmdoc.ValidDocument.RenderWithBlockOffsets). The
-// tree before the batch is read as a tree and never rendered, so a batch pays for one render.
+// written is the tree the batch wrote, rendered once by the caller (finishBatch) into the text the
+// write stores, and the read-back cuts each block's markdown out of that text by the byte ranges
+// the same render recorded (offsets). The tree before the batch is read as a tree and never
+// rendered, so a batch pays for one render, which the write it makes takes as its own rendering
+// rather than rendering the same tree again (applyLiveWritten).
 //
 // The blocks are the document's own, its root's children: a change inside a list or a table reads
 // back as the list or the table the edit left, which is the markdown a caller would read the
 // document for. Every block of both trees carries an id by then - the edit stamps the tree it
 // starts from (stampAskBlockIDs) and the caller stamps the tree it wrote (pmdoc.EnsureBlockIDs) -
 // so the two sides are matched by id.
-func (b editBatch) readBack(written pmdoc.ValidDocument) (string, error) {
-	// The render reads the document the batch wrote, so a tree only the renderer refuses is the
-	// document's own refusal (ErrDocOutsideSchema), which the route answers 409 DOC_SCHEMA, as
-	// every other render of a document names it (documentMarkdownValidWithOffsets).
-	markdown, offsets, err := written.RenderWithBlockOffsets()
-	if err != nil {
-		return "", documentSchemaError(err)
-	}
+func (b editBatch) readBack(written *pmdoc.Node, markdown string, offsets []pmdoc.BlockOffset) string {
 	spans := make(map[string]pmdoc.BlockOffset, len(offsets))
 	for _, offset := range offsets {
 		if _, held := spans[offset.ID]; !held {
 			spans[offset.ID] = offset
 		}
 	}
-	before, after := documentBlockNodes(b.beforeTree), documentBlockNodes(written.Node())
+	before, after := documentBlockNodes(b.beforeTree), documentBlockNodes(written)
 	held := make(map[string]*pmdoc.Node, len(before))
 	order := make(map[string]int, len(before))
 	for index, block := range before {
@@ -887,7 +948,7 @@ func (b editBatch) readBack(written pmdoc.ValidDocument) (string, error) {
 		}
 		previous = block.id
 	}
-	return boundedReadBack(entries), nil
+	return boundedReadBack(entries)
 }
 
 // documentBlock is one of a document's own blocks: the node and the id it carries.
@@ -1116,6 +1177,15 @@ func (t *batchTree) finder() (*pmdoc.QuoteFinder, error) {
 // well as to apply - takes its own, so no run charges the batch's padding twice. What the batch
 // leaves is weighed against what one upload may hold where it is written (refuseGrowth).
 func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidator, before string) (editBatch, error) {
+	return runBatch(start, ops, validate, before, blockReadBacks{})
+}
+
+// runBatch is applyBatch with backs, the read-back of each document-level block the run's checks
+// have read (blockReadBacks), which every operation of the run shares: the block an operation lands
+// in is the very node the operation before it left there, so n replaces in one block read it back
+// n+1 times rather than twice each. A nil backs runs no read-back check, for a run over trees a run
+// of the same batch has judged already (requirePreconditionCoverage).
+func runBatch(start *batchTree, ops []model.EditOp, validate operationValidator, before string, backs blockReadBacks) (editBatch, error) {
 	tree := start
 	beforeTree := start.node
 	budget := pmdoc.NewWriteBudget()
@@ -1162,7 +1232,7 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 				}
 			}
 		}
-		next, err := applyOperation(tree, op, budget)
+		next, err := applyOperation(tree, op, budget, backs)
 		if err != nil {
 			return editBatch{}, stampOperation(index, err)
 		}
@@ -1472,8 +1542,9 @@ func (s *Service) rejectLiveTableAnchors(ctx context.Context, artifactID, axis s
 
 // applyOperation applies op to tree, padding the tables and table rows it writes on budget, its
 // batch's. Every pmdoc call of it that would validate the tree takes the batch's one validation
-// of it instead (batchTree).
-func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
+// of it instead (batchTree). backs is its run's read-backs (runBatch): nil runs none of the checks
+// that read what the operation wrote back.
+func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget, backs blockReadBacks) (*pmdoc.Node, error) {
 	// Every text an operation writes - a replace's with, an insert's markdown, whether it becomes
 	// blocks or table rows, and a retype's attributes - reaches the document with line feeds
 	// alone (pmdoc.LineFeeds), before any check below reads it.
@@ -1482,7 +1553,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 	op.Attributes = pmdoc.LineFeedAttrs(op.Attributes)
 	switch op.Op {
 	case "replace":
-		return applyReplace(tree, op, budget)
+		return applyReplace(tree, op, budget, backs)
 	case "delete":
 		if op.Block != "" {
 			if op.Find != "" {
@@ -1590,7 +1661,11 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			return nil, &ErrInvalidOp{Field: "markdown", Reason: err.Error()}
 		}
 		// What is stored is the document's rendering, so an insert that leaves it reading back
-		// otherwise than it did would store another document than the one it wrote.
+		// otherwise than it did would store another document than the one it wrote. A run that
+		// judges nothing (nil backs) leaves the read-back to the run that did.
+		if backs == nil {
+			return out, nil
+		}
 		if err := pmdoc.RefuseMisreadWrite(tree.node, out); err != nil {
 			return nil, invalidSchemaOp("markdown", err)
 		}
@@ -2215,8 +2290,8 @@ func blockID(block *pmdoc.Node) string {
 // The `with` goes one of two ways, and the arm stands apart from the operation switch because the
 // two ways meet again in the steps that follow the splice: a `with` naming blocks of its own is
 // written as blocks over the match (blockReplacement), and one of a single paragraph continues the
-// textblock the match sits in (inlineReplacement).
-func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (*pmdoc.Node, error) {
+// textblock the match sits in (inlineReplacement). backs is the run's read-backs (runBatch).
+func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget, backs blockReadBacks) (*pmdoc.Node, error) {
 	if op.Find == "" {
 		return nil, invalidOp("find")
 	}
@@ -2361,11 +2436,15 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	if blocks {
 		next = settleBlockReplacement(valid, next, found, at, r, with, op.With)
 	}
-	// The two read-back checks below read the blocks this replace changed, and the block it
-	// lands in can hold the whole document's text: each block is rendered and parsed once for
-	// the two (blockReadBacks). What the block path wrote is judged after them, over the
-	// document as a whole (refuseWrittenBlocks).
-	backs := blockReadBacks{}
+	// The checks below judge what the replace wrote, which a run that judges nothing (nil backs)
+	// leaves to the run that did. The two read-back checks read the blocks this replace changed,
+	// and the block it lands in can hold the whole document's text: each block is rendered and
+	// parsed once for the two, and once for the batch, since the block the next operation starts
+	// from is the very node this one leaves (blockReadBacks). What the block path wrote is judged
+	// after them, over the document as a whole (refuseWrittenBlocks).
+	if backs == nil {
+		return next, nil
+	}
 	if code {
 		return next, refuseCodeThatReshapesItsBlock(valid, next, found, at, "with", op.With, backs)
 	}

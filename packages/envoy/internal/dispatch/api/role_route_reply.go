@@ -69,7 +69,9 @@ func (s *server) roleHolderReplyOf(ctx context.Context, actor model.Actor, id, q
 // another session holds the role, or none does, are no holder's reply. A lookup the listener did
 // not answer (dispatchenvoy.ErrUnavailable) is the error, which the route answers 503
 // ENVOY_UNAVAILABLE: whether this session may answer is the listener's to say, and a refusal
-// would end a reply its host could make again.
+// would end a reply its host could make again. The error names the route and not the actor: a
+// 503 is an error writeHandlerError reads, and an error that carries an actor's ID can reach that
+// function's log lines.
 func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemptSession *string, actor model.Actor) (roleHolderReply, error) {
 	verdict := roleHolderReply{route: route}
 	parsed, err := model.ParseRoute(route)
@@ -79,7 +81,7 @@ func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemp
 	holder, err := s.deps.Envoy.Role(ctx, parsed.ID)
 	if errors.Is(err, dispatchenvoy.ErrUnavailable) {
 		return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
-			"the Envoy listener did not say who holds %s, so Dispatch cannot tell whether %s may answer this delivery: %s", route, actor.ID, err.Error())
+			"the Envoy listener did not say who holds %s, so Dispatch cannot tell whether this session may answer this delivery: %s", route, err.Error())
 	}
 	verdict.holder = err == nil && holder.SessionID == actor.ID && holder.State == dispatchenvoy.StateLive
 	return verdict, nil

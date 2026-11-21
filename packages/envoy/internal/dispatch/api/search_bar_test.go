@@ -533,21 +533,19 @@ func TestSearchFiltersNarrowEachLegRatherThanThePage(t *testing.T) {
 	}
 }
 
-// A filter is refused as the project and the page parameters beside it are: a repeated, blank or
-// unreadable value answers 400 under a code of its own rather than an answer nobody asked for.
+// A filter is refused as the project and the page parameters beside it are: a blank or unreadable
+// value answers 400 under a code of its own rather than an answer nobody asked for, and a repeated
+// one in the one wording every repeated key gets (refuseRepeatedQueryKeys).
 func TestSearchRefusesAFilterItCannotRead(t *testing.T) {
 	handler := newTestHandler(t)
 	cases := map[string]string{
 		"q=astrolabe&status=":                                          "INVALID_STATUS",
 		"q=astrolabe&status=almost":                                    "INVALID_STATUS",
-		"q=astrolabe&status=todo&status=done":                          "INVALID_STATUS",
 		"q=astrolabe&author=":                                          "INVALID_AUTHOR",
-		"q=astrolabe&author=alice&author=bob":                          "INVALID_AUTHOR",
 		"q=astrolabe&author=two+people":                                "INVALID_AUTHOR",
 		"q=astrolabe&author=" + strings.Repeat("a", searchAuthorMax+1): "INVALID_AUTHOR",
 		"q=astrolabe&updated_since=":                                   "INVALID_UPDATED_SINCE",
 		"q=astrolabe&updated_since=yesterday":                          "INVALID_UPDATED_SINCE",
-		"q=astrolabe&updated_since=2026-01-01T00:00:00Z&updated_since=2026-02-01T00:00:00Z": "INVALID_UPDATED_SINCE",
 	}
 	for query, code := range cases {
 		t.Run(query, func(t *testing.T) {
@@ -560,6 +558,17 @@ func TestSearchRefusesAFilterItCannotRead(t *testing.T) {
 			}](t, response)
 			if body.Code != code {
 				t.Fatalf("search %q code=%q, want %q", query, body.Code, code)
+			}
+		})
+	}
+	for query, key := range map[string]string{
+		"q=astrolabe&status=todo&status=done":                                               "status",
+		"q=astrolabe&author=alice&author=bob":                                               "author",
+		"q=astrolabe&updated_since=2026-01-01T00:00:00Z&updated_since=2026-02-01T00:00:00Z": "updated_since",
+	} {
+		t.Run(query, func(t *testing.T) {
+			if why := notTheRepeatRefusal(searchRequest(t, handler, query), key); why != "" {
+				t.Fatalf("search %q %s", query, why)
 			}
 		})
 	}

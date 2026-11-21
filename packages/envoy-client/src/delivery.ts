@@ -35,7 +35,11 @@ import { z } from "zod";
 import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
-import { DispatchClient } from "./dispatch-http";
+import {
+  DISPATCH_IN_PROCESS_DEADLINE_MS,
+  DispatchClient,
+  DispatchWriteUnsettledError,
+} from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
@@ -140,6 +144,13 @@ function dispatchReplyPath(resource: DispatchDelivery["resource"], id: string): 
  * carries a key of its own, is asked again under it while Dispatch gives no definitive answer,
  * and throws Dispatch's refusal as a `DispatchServiceError`.
  *
+ * It ends at its own deadline (`DISPATCH_IN_PROCESS_DEADLINE_MS`), since the listener's delivery
+ * path or an agent's turn waits on it: a reply Dispatch is, or may be, still running then is not
+ * waited on until Dispatch's run can end, and throws `DispatchWriteUnsettledError` with `running`
+ * set, naming its key (and with `toldRunning` set where Dispatch said it is running it). Where
+ * Dispatch holds that reply, it lands without this side and settles the attempt when it does, so
+ * a caller posts no other answer to the attempt over it (`replyStillRunning`).
+ *
  * `followUp` is the ask that a second answer to an attempt already settled by the first is
  * posted rather than handed back (`?follow_up=true`). It travels as the route's query parameter,
  * never in the body, which the route decodes strictly.
@@ -155,7 +166,9 @@ export async function postDeliveryReply(
   }
 ): Promise<void> {
   const { followUp, ...reply } = result;
-  const client = new DispatchClient(config.url, config.credential);
+  const client = new DispatchClient(config.url, config.credential, fetch, {
+    deadlineMs: DISPATCH_IN_PROCESS_DEADLINE_MS,
+  });
   await client.deliveryReply(
     delivery.resource,
     delivery.id,
@@ -167,6 +180,18 @@ export async function postDeliveryReply(
     },
     followUp === undefined ? {} : { followUp }
   );
+}
+
+/**
+ * Whether a reply's failure is its write still running on Dispatch, or maybe still running, when
+ * its deadline ended (`postDeliveryReply`). Where Dispatch holds such a reply, it lands without
+ * this side and settles the attempt when it does, so its caller posts no other answer to the
+ * attempt over it: one under a key of its own could settle the attempt first, with an error the
+ * person would read in place of the reply. A caller's line says which it is
+ * (`stillRunningText(error.toldRunning)`).
+ */
+export function replyStillRunning(error: unknown): error is DispatchWriteUnsettledError {
+  return error instanceof DispatchWriteUnsettledError && error.running;
 }
 
 /** A message a subscription yielded, and when it arrived. */

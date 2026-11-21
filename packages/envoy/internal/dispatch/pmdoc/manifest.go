@@ -51,6 +51,20 @@ func (e Element) String() string {
 	}
 }
 
+// unknownName is e as UnknownElements names it where this build's manifest does not declare it.
+// A value of an enum attribute is named by what it is - its typed block, its attribute and the
+// word value, "callout kind value" - never by its own text: that is whatever a peer wrote into the
+// attribute, which can be a person's address, and these names reach the server's log. The block
+// and the attribute are this build's own names, since a value is checked only against an enum
+// attribute the manifest declares. Every other element is named by its own name, which is what
+// tells the operator which kind a newer build added.
+func (e Element) unknownName() string {
+	if e.Kind == ChoiceElement {
+		return e.Block + " " + e.Attribute + " " + string(ChoiceElement)
+	}
+	return e.Name
+}
+
 // Versions is e's since and creatable_since in this build's manifest, each 1 where the manifest
 // says none, and false when the manifest does not declare e.
 func (e Element) Versions() (BlockElementVersions, bool) {
@@ -347,7 +361,7 @@ func unknownBeside(doc *Node, err error) error {
 	}) {
 		return err
 	}
-	return unknownElement(fmt.Errorf("%w: %s, in a tree also refused as %v", ErrSchema, unknown, err), unknown.Name)
+	return unknownElement(fmt.Errorf("%w: %s, in a tree also refused as %v", ErrSchema, unknown, err), unknown.unknownName())
 }
 
 // refuseUncreatable is the refusal of a write that makes nodes holding an element this build reads

@@ -112,9 +112,9 @@ const (
 // deadline fires. A check whose context ended with any other cause stopped because the request
 // that ran it ended first - its client leaving, for a write sent without an Idempotency-Key; for a
 // keyed write, whose context no client's leaving ends (keyedWrites), the keyed run's own bound,
-// keyedHandlerLimit - which says nothing of how long the search takes, so it is recorded as
-// cancelled rather than timeout (GET /api/v1/related-checks counts only timeout as skipped for
-// time).
+// contracts.IdempotencyRunLimit - which says nothing of how long the search takes, so it is
+// recorded as cancelled rather than timeout (GET /api/v1/related-checks counts only timeout as
+// skipped for time).
 var errRelatedAllowanceEnded = errors.New("the related-item check's allowance ended")
 
 // relatedAllowance is the deadline the whole check runs under: relatedCheckAllowance on every

@@ -418,12 +418,15 @@ const IdempotencyKeyCommitted = "KEY_COMMITTED"
 const IdempotencyKeyInvalid = "KEY_INVALID"
 const IdempotencyAnswerNotKept = "ANSWER_NOT_KEPT"
 
-// IdempotencyKeyTTL is how long Dispatch keeps a key's answer, and IdempotencyLease how long a
-// key's first request holds it before a repeat may run it again. Generated from
-// IDEMPOTENCY_KEY_TTL_MS and IDEMPOTENCY_LEASE_MS in packages/contracts so the server's windows and
-// the clients' account of them cannot drift apart.
+// IdempotencyKeyTTL is how long Dispatch keeps a key's answer, IdempotencyLease how long a key's
+// first request holds it before a repeat may run it again, and IdempotencyRunLimit how long a keyed
+// handler runs after its client has gone. Generated from IDEMPOTENCY_KEY_TTL_MS,
+// IDEMPOTENCY_LEASE_MS and IDEMPOTENCY_RUN_LIMIT_MS in packages/contracts so the server's windows
+// and the clients' account of them cannot drift apart: a client keeps asking under a key whose run
+// Dispatch says is going for as long as that run can last.
 const IdempotencyKeyTTL = 86400000 * time.Millisecond
 const IdempotencyLease = 60000 * time.Millisecond
+const IdempotencyRunLimit = 600000 * time.Millisecond
 
 // SessionHeartbeat is how often a pane's pi-envoy plugin refreshes its listener registration, and
 // SessionLiveWindow how long a session's last registration keeps it live to the listener. Three

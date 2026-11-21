@@ -351,8 +351,10 @@ func searchAppliedFilters(parameters searchParameters) model.SearchFilters {
 // parseSearchFilters reads the three filters a request may narrow every leg by - the issue status
 // a row belongs to, who wrote the item it names, and when that item was last written - and writes
 // the refusal itself when one of them is repeated, blank or unreadable, each under a code of its
-// own, exactly as the project and the page parameters beside them are refused. A filter the
-// request leaves out narrows nothing.
+// own, exactly as the project and the page parameters beside them are refused. A route reaches it
+// only after refuseRepeatedQueryKeys has refused a repeat, so on a route it is a blank or
+// unreadable value that gets that code; the repeat branches guard a caller that is not behind that
+// layer. A filter the request leaves out narrows nothing.
 func parseSearchFilters(w http.ResponseWriter, query url.Values) (status, author string, since *time.Time, ok bool) {
 	if values, present := query["status"]; present {
 		status = strings.TrimSpace(values[0])

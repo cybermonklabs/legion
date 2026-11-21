@@ -48,6 +48,7 @@ import {
   createDecisionRecorder,
   type DecisionRecorder,
   type RecordRequest,
+  type RecordStillRunning,
 } from "./decision-record";
 import type { Usage } from "./rules-check";
 
@@ -123,13 +124,17 @@ export interface AskGateRegistration {
   readonly loaded: Promise<void>;
   /**
    * Publishes one Dispatch decision record for a write that reached the CLI outside the form the
-   * gate reads (`decision-record.ts`). The write runs until Dispatch has answered it or the
-   * session's shutdown cuts it, and the caller awaits it outside its own handler. Answers the
-   * text for the `recordError` of the `advisor-gate-record` follow-up the caller then appends
-   * when the write failed or was given up, and undefined when it recorded or when the entry is
-   * nothing to record.
+   * gate reads (`decision-record.ts`). The write runs until Dispatch has answered it, its own
+   * deadline ends it or the session's shutdown cuts it, and the caller awaits it outside its own
+   * handler. Answers what the recorder does (`DecisionRecorder.record`): the text for the
+   * `recordError` of the `advisor-gate-record` follow-up the caller then appends when the write
+   * failed or was given up, a `RecordStillRunning` carrying that text when Dispatch was still
+   * running a write of it at its deadline, or may have been, and undefined when it recorded or
+   * when the entry is nothing to record.
    */
-  readonly recordUnmarked: (request: RecordRequest) => Promise<string | undefined>;
+  readonly recordUnmarked: (
+    request: RecordRequest
+  ) => Promise<string | RecordStillRunning | undefined>;
 }
 
 /**
@@ -146,8 +151,8 @@ export function registerAskGate(pi: PiApi, host: AskGateHost): AskGateRegistrati
   const record = createDecisionRecorder({
     env: process.env,
     now: Date.now,
-    dispatchClient: (directory, signal) =>
-      sessionDispatchClient(host.configFile, directory, { signal }, host.session),
+    dispatchClient: (directory, signal, deadlineMs) =>
+      sessionDispatchClient(host.configFile, directory, { signal, deadlineMs }, host.session),
   });
   const loading = loadAskGate(pi, host, record);
   // A rejection is handled here and by the caller's notice; never an unhandled one.

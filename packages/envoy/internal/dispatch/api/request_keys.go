@@ -48,10 +48,11 @@ import (
 //     judged by its digest once that body has arrived, by what the key holds then
 //     (answerDrainedRepeat).
 //   - The handler finishes whatever its client does: it runs on the request's context with the
-//     client's cancellation taken off, bounded by keyedHandlerLimit and counted in the server's
+//     client's cancellation taken off, bounded by IdempotencyRunLimit and counted in the server's
 //     background wait, so a client that gives up and asks again waits on the first run rather than
 //     starting over. The lease is renewed until that bound and no further, so a handler that runs
-//     on past it holds its key a lease longer at most.
+//     on past it holds its key a lease longer at most. The agents' client keeps asking under a key
+//     Dispatch says is running for that bound and one lease, which is why both read one constant.
 //   - The handler runs on a writer that keeps its answer (keyedAnswer). A 2xx or a 4xx is stored and
 //     the row finished in one statement; a 5xx, a 401 (a session that lapsed mid-write), a 408, a 429
 //     and a panic release the key, so the next attempt runs the handler again - unless the request
@@ -102,12 +103,6 @@ const (
 	// keyedClaimTries bounds how often one request goes round the claim's insert, read and takeover
 	// when another request moves the row between them; each pass is one such move.
 	keyedClaimTries = 4
-	// keyedHandlerLimit bounds a keyed handler's run once its client's cancellation no longer
-	// does (keyedWrites): past it the run's context ends, its work rolls back, and the key is
-	// released as for a 5xx. It is far past what any route takes - an architecture refresh's
-	// imports each end at two minutes - and only stops a run that would otherwise hold its key,
-	// its connections and the shutdown wait for ever.
-	keyedHandlerLimit = 10 * time.Minute
 	// keyedLeaseRenewal is how often a running keyed handler renews its key's lease, a third of
 	// IdempotencyLease, so two renewals can fail in a row before a repeat presumes the run dead.
 	keyedLeaseRenewal = 20 * time.Second
@@ -227,7 +222,7 @@ type resolvedCaller struct {
 //
 // A keyed request's handler finishes on the server whatever its client does: it runs on its
 // request's context with the client's cancellation taken off (context.WithoutCancel), bounded by
-// keyedHandlerLimit instead, and counted in the server's background wait, so a shutdown lets it
+// IdempotencyRunLimit instead, and counted in the server's background wait, so a shutdown lets it
 // finish as it lets a delivery finish. A client that gives up - the page's attempt cut off by its
 // own silence bound, a closed tab, a proxy's timeout - asks again under its key and is answered
 // 409 KEY_IN_FLIGHT for as long as the first run lives, then that run's stored answer. While the
@@ -392,12 +387,13 @@ func (s *server) keyLease() time.Duration {
 }
 
 // keyedRunLimit is how long a keyed handler runs once its client's cancellation no longer bounds
-// it (keyedHandlerLimit; requestKeyRunLimit in a test).
+// it (contracts.IdempotencyRunLimit, which the agents' client waits on; requestKeyRunLimit in a
+// test).
 func (s *server) keyedRunLimit() time.Duration {
 	if s.requestKeyRunLimit > 0 {
 		return s.requestKeyRunLimit
 	}
-	return keyedHandlerLimit
+	return contracts.IdempotencyRunLimit
 }
 
 // renewRequestKeyLease renews claim's lease every keyedLeaseRenewal until the returned stop is

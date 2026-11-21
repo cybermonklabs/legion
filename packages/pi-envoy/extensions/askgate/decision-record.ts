@@ -46,34 +46,47 @@
 // login that sent it (`requestKeyLogin`), and every Legion pod writes under the shared agent
 // token, which is one login for all of them, so two pods serving one session share these keys;
 // Dispatch keeps a key 24 h (`IdempotencyKeyTTL`), which outlives the 10 minutes a create's run
-// can hold it (`keyedHandlerLimit`). Each append carries a key of its own, the sha256 of the
+// can hold it (`IDEMPOTENCY_RUN_LIMIT_MS`). Each append carries a key of its own, the sha256 of the
 // session and the record's id, so a late append is replayed rather than written twice, and the
 // same record sent again with another body gets `422 KEY_REUSED` and is not written.
 //
-// How long a write runs: until Dispatch has answered it or the session's shutdown cuts it. The
-// client asks again under the call's key (`DISPATCH_WRITE_RETRY`, 30 s, or 55 s once Dispatch may
-// be running the write,
-// `packages/envoy-client/src/dispatch-http.ts`), so a slow Dispatch is waited out rather than given
-// up at a stop of the recorder's own.
+// How long a write runs: until Dispatch has answered it, the session's shutdown cuts it, or the
+// deadline the recorder names for it ends it (`DISPATCH_IN_PROCESS_DEADLINE_MS`, a minute). Within
+// it the client asks again under the call's key (`DISPATCH_WRITE_RETRY`,
+// `packages/envoy-client/src/dispatch-http.ts`), so a slow Dispatch is waited out for that long.
+// A write Dispatch is still running when the minute ends (it answered `409 KEY_IN_FLIGHT`), or may
+// still be running (an attempt was cut off for silence, and Dispatch may or may not hold it), is
+// not waited on for the ten minutes its run can take, since the session's later records queue
+// behind it: the record answers where the write stands, naming its key (`RecordStillRunning`), and
+// Dispatch's run, where there is one, finishes it all the same. Nothing here sends it again under
+// another key: a record's append is never sent twice, and a create still running is asked again
+// only by the session's next record, under the document's own key, which collects that run's
+// outcome; this record, whose append never went out, is not written.
 //
 // What is lost, and is left visible in a count rather than hidden: a session killed between a
 // decision and its write loses that one record; a session that never reached a gated call writes
-// no document at all; a write that fails or that the session's shutdown cuts is unconfirmed, and
-// one given up that way may have landed all the same, so a record its caller could not confirm
-// can still be in the document, where the reader counts it once by its `id`. What no longer
-// happens: a create given up here and committed on Dispatch after a later record wrote cannot
-// erase that record, since every create of this document is the one keyed create. The caller says
-// where a loss goes: both the core, for a gated call, and the host, for an unmarked write, append
-// an `advisor-gate-record` entry — the host's named by the record's own id, since one tool call
-// can log several unmarked writes — and `scripts/askgate-report.ts` counts each as a decision
-// record the session could not confirm.
+// no document at all; a write that fails, that its deadline ends or that the session's shutdown
+// cuts is unconfirmed, and one given up that way may have landed all the same, so a record its
+// caller could not confirm can still be in the document, where the reader counts it once by its
+// `id`. What no longer happens: a create given up here and committed on Dispatch after a later
+// record wrote cannot erase that record, since every create of this document is the one keyed
+// create. The caller says where a loss goes: both the core, for a gated call, and the host, for an
+// unmarked write, append an `advisor-gate-record` entry — the host's named by the record's own id,
+// since one tool call can log several unmarked writes — and `scripts/askgate-report.ts` counts
+// each as a decision record the session could not confirm.
 import { createHash } from "node:crypto";
 import {
   type CreateArtifactInput,
   type EditArtifactInput,
   IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
-import { DispatchServiceError, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http";
+import {
+  DISPATCH_IN_PROCESS_DEADLINE_MS,
+  DispatchServiceError,
+  DispatchWriteLandedError,
+  DispatchWriteUnsettledError,
+  stillRunningText,
+} from "@legion/envoy-client/dispatch-http";
 import pkg from "../../package.json";
 
 /**
@@ -86,6 +99,54 @@ export const RECORD_CUT_DELAY_MS = 1_250;
 
 /** The `recordError` of a record the session's shutdown cut. */
 export const RECORD_SHUT_DOWN = "the session shut down before Dispatch answered the record";
+
+/**
+ * What a record answers whose write Dispatch was still running, or may still have been, when the
+ * deadline the recorder names for it ended the wait for its outcome (`DispatchWriteUnsettledError`
+ * with `running` set): no failure Dispatch answered, so its caller's line says where the record
+ * stands (`unconfirmedRecordText`), not that it failed.
+ */
+export interface RecordStillRunning {
+  /** The `recordError` of the caller's `advisor-gate-record` entry: the write's own message. */
+  readonly recordError: string;
+  /**
+   * The write Dispatch was running: the record's own append, which Dispatch finishes where it
+   * holds it and nothing here sends again; or the create of the session's document, which left
+   * this record unwritten and which the session's next record asks again under the document's
+   * key, collecting that run's outcome.
+   */
+  readonly write: "append" | "create";
+  /** The write's `Idempotency-Key`. */
+  readonly key: string;
+  /** Whether Dispatch said it is running the write (`DispatchWriteUnsettledError`'s
+   *  `toldRunning`), rather than only an attempt cut off for silence saying it may be. */
+  readonly told: boolean;
+}
+
+/**
+ * The log line of a record its caller could not confirm, `subject` naming the decision (`the
+ * decision of dispatch_ask (t1)`): what stopped it, or, for a write Dispatch was still running or
+ * may have been at its deadline, where the record stands, under which key.
+ */
+export function unconfirmedRecordText(
+  subject: string,
+  answer: string | RecordStillRunning
+): string {
+  if (typeof answer === "string") return `AskGate did not record ${subject} on Dispatch: ${answer}`;
+  const running = stillRunningText(answer.told);
+  if (answer.write === "create") {
+    return (
+      `AskGate did not record ${subject} on Dispatch: the create of the session's decision ` +
+      `document ${running} there under key ${answer.key}, and the session's next record ` +
+      "collects its outcome under that key"
+    );
+  }
+  const finishes = answer.told ? "Dispatch finishes it" : "Dispatch finishes it if it holds it";
+  return (
+    `AskGate's record of ${subject} ${running} on Dispatch under key ${answer.key}: ` +
+    `${finishes}, and nothing here sends it again`
+  );
+}
 
 /**
  * What every decision document's name starts with, the session's own id after it: the one name the
@@ -139,11 +200,15 @@ export interface RecordDeps {
   now: () => number;
   /**
    * The session's Dispatch as the directory given configures it, every request ending with the
-   * signal given; undefined when the session has no Dispatch configuration.
+   * signal given or at the deadline given, counted from this call (`DispatchClient`'s
+   * `deadlineMs`), which ends a write Dispatch is, or may be, still running as such
+   * (`DispatchWriteUnsettledError`'s `running`); undefined when the session has no Dispatch
+   * configuration.
    */
   dispatchClient: (
     directory: string,
-    signal: AbortSignal
+    signal: AbortSignal,
+    deadlineMs: number
   ) => { readonly client: RecordClient } | undefined;
 }
 
@@ -229,11 +294,13 @@ export interface RecordRequest {
  */
 export interface DecisionRecorder {
   /**
-   * Records one decision. The write runs until Dispatch has answered it or the cut ends it.
-   * Answers the text for the entry's `recordError` when the write failed or was cut, and
+   * Records one decision. The write runs until Dispatch has answered it, its deadline ends it
+   * (`DISPATCH_IN_PROCESS_DEADLINE_MS`) or the cut does. Answers the text for the entry's
+   * `recordError` when the write failed or was cut; a `RecordStillRunning`, which carries that
+   * text, when Dispatch was still running a write of it at its deadline, or may have been; and
    * undefined when it recorded or when there was nothing to record.
    */
-  record(request: RecordRequest): Promise<string | undefined>;
+  record(request: RecordRequest): Promise<string | RecordStillRunning | undefined>;
   /**
    * The session is shutting down: gives the records in flight `RECORD_CUT_DELAY_MS` to land, then
    * gives up those still running with `RECORD_SHUT_DOWN`, as it gives up every record started
@@ -283,7 +350,7 @@ export function createDecisionRecorder(deps: RecordDeps): DecisionRecorder {
     sessionId,
     directory,
     id,
-  }: RecordRequest): Promise<string | undefined> => {
+  }: RecordRequest): Promise<string | RecordStillRunning | undefined> => {
     // The calls whose rules check ran, the calls the agent sent anyway — a rebuttal or the
     // breaker, which the gate answers with no check of its own — and the writes that reached the
     // CLI outside the form the gate reads and carry an ask for a person, are the decisions to
@@ -329,12 +396,14 @@ export function createDecisionRecorder(deps: RecordDeps): DecisionRecorder {
     };
     const block = `\`\`\`json\n${JSON.stringify(record)}\n\`\`\``;
     const name = `${DECISION_DOCUMENT_PREFIX}${sessionId}.md`;
+    const recordKey = intentKey(RECORD_KEY_PREFIX, sessionId, id);
     // Past the cut the session is sealing: this record is given up before it asks Dispatch for
     // anything, since what it would hold the session open for is already past.
     if (cutShort) return RECORD_SHUT_DOWN;
-    // What ends this record before Dispatch has answered it, and the only thing that does: the
-    // session's shutdown, through `cut`. The abort ends the request behind it, and the caller is
-    // told the reason given here rather than whatever the aborted request rejects with.
+    // What ends this record before Dispatch has answered it, apart from the deadline its client is
+    // made with: the session's shutdown, through `cut`. The abort ends the request behind it, and
+    // the caller is told the reason given here rather than whatever the aborted request rejects
+    // with.
     const stop = new AbortController();
     const { promise: stopped, resolve: giveUp } = Promise.withResolvers<string>();
     const end = (why: string) => {
@@ -348,7 +417,9 @@ export function createDecisionRecorder(deps: RecordDeps): DecisionRecorder {
     // Inside the write, so a Dispatch configuration that refuses to resolve fails as any other
     // write does: the record is lost and the entry says why.
     const write = async (): Promise<string | undefined> => {
-      const dispatch = deps.dispatchClient(directory, stop.signal);
+      // One client for the record's read, create and append, so its deadline bounds all three:
+      // the session's next record waits on this one, and a minute is all it waits.
+      const dispatch = deps.dispatchClient(directory, stop.signal, DISPATCH_IN_PROCESS_DEADLINE_MS);
       if (dispatch === undefined) return "the session has no Dispatch configuration";
       const client = dispatch.client;
       // A bearer caller names its own session or Dispatch refuses the write (ACTOR_KIND, "bearer
@@ -372,7 +443,7 @@ export function createDecisionRecorder(deps: RecordDeps): DecisionRecorder {
       await client.docEdit(
         held,
         { ops: [{ op: "insert", markdown: block, after: "end" }], actor },
-        intentKey(RECORD_KEY_PREFIX, sessionId, id)
+        recordKey
       );
       return undefined;
     };
@@ -399,6 +470,17 @@ export function createDecisionRecorder(deps: RecordDeps): DecisionRecorder {
       // the client's own attempts share one Idempotency-Key, and another from here would not.
       return await Promise.race([mine, stopped]);
     } catch (error) {
+      // A write Dispatch was still running, or may have been, when its deadline ended the wait is
+      // no failure Dispatch answered: the caller says where the record stands, and the write's key
+      // tells the record's own append from the document's create.
+      if (error instanceof DispatchWriteUnsettledError && error.running) {
+        return {
+          recordError: error.message,
+          write: error.key === recordKey ? "append" : "create",
+          key: error.key,
+          told: error.toldRunning,
+        };
+      }
       // A write that fails costs the gated call nothing: the entry carries why, and that is all.
       const message = error instanceof Error ? error.message : String(error);
       return message === "" ? "the Dispatch write failed without a message" : message;

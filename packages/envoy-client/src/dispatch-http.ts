@@ -85,7 +85,9 @@ import {
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_KEY_IN_FLIGHT,
+  IDEMPOTENCY_LEASE_MS,
   IDEMPOTENCY_REPLAYED_HEADER,
+  IDEMPOTENCY_RUN_LIMIT_MS,
   type IdempotencyLandedCode,
   jitteredDelay,
   NO_ROUTE_MESSAGE_PREFIX,
@@ -195,6 +197,11 @@ export class DispatchGatewayError extends DispatchServiceError {
  * Where the call saw Dispatch's keyed
  * layer judge the write (`keyed`), the message says Dispatch finishes an attempt it received, and
  * that a resend is a new command's, under a new key, so the write is to be read back first.
+ * Where a deadline its maker named ended the wait for a run Dispatch may still be making of the
+ * write (`running`), the message says instead that the write is still running, where Dispatch
+ * said so (`toldRunning`), or that it may still be running, where only an attempt cut off for
+ * silence put it in that wait, and that the same request under `key` returns its outcome once
+ * that run ends.
  */
 export class DispatchWriteUnsettledError extends Error {
   override readonly name = "DispatchWriteUnsettledError";
@@ -210,7 +217,20 @@ export class DispatchWriteUnsettledError extends Error {
      * message otherwise.
      */
     unanswered?: string,
-    keyed = false
+    keyed = false,
+    /**
+     * Whether a deadline the client's maker named (`deadlineMs`) ended the wait for a run Dispatch
+     * may still be making of the write: an attempt was answered `409 KEY_IN_FLIGHT` or cut off for
+     * silence, and Dispatch runs a write it holds to its end whatever this side does. It is no
+     * failure: the same request under `key` returns the outcome once the run ends.
+     */
+    readonly running = false,
+    /**
+     * Whether Dispatch said it is running the write: an attempt was answered `409 KEY_IN_FLIGHT`.
+     * Where `running` is set without it, only an attempt cut off for silence put the write in that
+     * wait, and Dispatch may or may not hold it. False wherever `running` is false.
+     */
+    readonly toldRunning = false
   ) {
     let answer: string;
     // A 5xx can itself come after Dispatch committed the write; any other refusal says the
@@ -237,10 +257,26 @@ export class DispatchWriteUnsettledError extends Error {
       ? ". Dispatch finishes an attempt it received whatever this command does, so read the " +
         "write back before you send it again: a new command sends it under a new key."
       : ": check whether it did before retrying it.";
-    super(`${answer} (${tried}), and ${why}, so it may or may not have taken effect${next}`, {
-      cause: last,
-    });
+    const finishes = toldRunning ? "the write" : "an attempt of the write it received";
+    super(
+      running
+        ? `${answer} (${tried}): Dispatch finishes ${finishes} whatever this side does, and the ` +
+            `same request sent again under Idempotency-Key ${key} returns its outcome once ` +
+            "Dispatch's run ends."
+        : `${answer} (${tried}), and ${why}, so it may or may not have taken effect${next}`,
+      { cause: last }
+    );
   }
+}
+
+/**
+ * The words for where a write stands that Dispatch may still be running at the end of a wait for
+ * its run: `is still running` where Dispatch said so (`409 KEY_IN_FLIGHT`), and
+ * `may still be running` where only an attempt cut off for silence put the write in that wait
+ * (`DispatchWriteUnsettledError`'s `toldRunning`, `DispatchRunWait`'s).
+ */
+export function stillRunningText(told: boolean): string {
+  return told ? "is still running" : "may still be running";
 }
 
 /**
@@ -428,8 +464,22 @@ export interface IssueReadOptions {
  *  `limit` (`parseEventLimit` in packages/envoy/internal/dispatch/api/events.go). */
 const ISSUE_EVENTS_PAGE_MAX = 200;
 
-/** A client's own deadline, counted from when it was made, where its maker names none. */
+/**
+ * A client's own deadline, counted from when it was made, where its maker names none. It ends no
+ * write Dispatch has said it is still running (`DispatchWriteRetry`), since stopping the asking
+ * stops nothing on Dispatch's side, only the caller's chance to learn the write's outcome.
+ */
 export const DISPATCH_TOOL_DEADLINE_MS = 60_000;
+
+/**
+ * The deadline a caller inside an agent's process names (`deadlineMs`) for a write that an agent's
+ * turn, the listener's delivery path or a queue of the session's writes waits on: the default's
+ * minute, named. A named deadline ends a write Dispatch is, or may be, still running as it ends
+ * every other request, so such a write returns within it, as `DispatchWriteUnsettledError` with
+ * `running` set, which names its key, rather than holding its caller until Dispatch's run can end
+ * (`DispatchWriteRetry`). The `dispatch` command names none, and waits for the run.
+ */
+export const DISPATCH_IN_PROCESS_DEADLINE_MS = DISPATCH_TOOL_DEADLINE_MS;
 
 function requestSignal(signal: AbortSignal | undefined, deadlineMs: number): AbortSignal {
   const deadline = AbortSignal.timeout(deadlineMs);
@@ -445,15 +495,23 @@ function requestSignal(signal: AbortSignal | undefined, deadlineMs: number): Abo
  * in that time - is cut off and asked again like one that failed in transport, so a write Dispatch
  * is slow to finish is asked again under its key (and answered `409 KEY_IN_FLIGHT`, then replayed)
  * rather than waited on for the call's whole deadline, while an upload still going out is never
- * cut. Once an attempt of a body under `STREAMED_BODY_MIN` was cut off for silence or answered
+ * cut. Until Dispatch may be running the write, no retry starts more than `inFlightWithinMs` after
+ * the client was made, since the client's deadline counts from there.
+ *
+ * Once an attempt of a body under `STREAMED_BODY_MIN` was cut off for silence or answered
  * `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and its keyed layer finishes that
  * run whatever the client does, so the write keeps asking until it gets the run's stored answer:
- * every `inFlightPauseMs` at most, unless a shorter pause of the schedule's or a longer
- * `Retry-After` applies, with no retry starting once `inFlightWithinMs` has passed. An upload keeps
- * the schedule alone, since each repeat sends its whole body again. No retry of any write starts
- * more than `inFlightWithinMs` after the client was made, since the client's deadline counts from
- * there. `pause` and `now` are the timer and the monotonic clock, which a test replaces; `now`
- * also dates what the process learns about which Dispatch runs the keyed layer
+ * every `inFlightPauseMs` at most (unless a shorter pause of the schedule's or a longer
+ * `Retry-After` applies) until `inFlightWithinMs` after the client was made, then every
+ * `runPauseMs`, so a long run costs Dispatch few asks. It asks until `runWithinMs` after the
+ * latest attempt Dispatch had not answered `409 KEY_IN_FLIGHT` when the write entered this wait,
+ * the one attempt that can have started the run (the first attempt, where Dispatch answered every
+ * one so, since then an earlier call under the key started it), and never stops sooner than
+ * `inFlightWithinMs` after the client was made; the last pause is shortened to end at that bound.
+ * The bound is read once, when the write enters the wait, so a Dispatch that never answers holds
+ * the write for one run window and no more. An upload keeps the schedule alone, since each repeat
+ * sends its whole body again. `pause` and `now` are the timer and the monotonic clock, which a test
+ * replaces; `now` also dates what the process learns about which Dispatch runs the keyed layer
  * (`KEYED_LAYER_MEMORY_MS`).
  */
 export interface DispatchWriteRetry {
@@ -462,6 +520,8 @@ export interface DispatchWriteRetry {
   readonly silenceMs: number;
   readonly inFlightPauseMs: number;
   readonly inFlightWithinMs: number;
+  readonly runPauseMs: number;
+  readonly runWithinMs: number;
   /** Waits `ms`, or rejects with the signal's reason once it aborts. */
   readonly pause?: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly now?: () => number;
@@ -472,8 +532,14 @@ export interface DispatchWriteRetry {
  * write whose every attempt fails at once settles in about 15 s and a `Retry-After` can stretch that
  * to 30 s. A write Dispatch may still be running is asked every 3 s at most (longer only when a
  * `Retry-After` asks) until 55 s, so an attempt cut off for silence at 20 s still has 35 s in which
- * Dispatch can finish it, two silent attempts and the ask that collects the answer fit, and the
- * last ask has 5 s before the client's 60 s deadline.
+ * Dispatch can finish it at that pace, two silent attempts and the ask that collects the answer
+ * fit, and a write Dispatch never said it is running makes its last ask 5 s before the client's
+ * 60 s deadline. Past 55 s it is asked every 10 s, until Dispatch's run limit
+ * (`IDEMPOTENCY_RUN_LIMIT_MS`, 10 minutes) and one lease (`IDEMPOTENCY_LEASE_MS`, 60 s) after the
+ * attempt that could have started the run: Dispatch renews a run's lease until that limit and no
+ * further (`keyedWrites`, packages/envoy/internal/dispatch/api/request_keys.go), so by then the
+ * key holds the run's answer or has been released, and the write ends in what the run did
+ * however long Dispatch took. That is about 60 asks over the ten minutes rather than 200.
  *
  * Measured from the transcript store over 3,612 `dispatch` write commands that succeeded between
  * 2026-10-31 21:00Z and 2026-11-02 07:30Z, Dispatch's busiest days so far: p50 1.8 s, p90 10.5 s,
@@ -489,7 +555,26 @@ export const DISPATCH_WRITE_RETRY: DispatchWriteRetry = {
   silenceMs: 20_000,
   inFlightPauseMs: 3_000,
   inFlightWithinMs: 55_000,
+  runPauseMs: 10_000,
+  runWithinMs: IDEMPOTENCY_RUN_LIMIT_MS + IDEMPOTENCY_LEASE_MS,
 };
+
+/**
+ * What a client tells its maker (`onRunWait`) when a write enters the wait for a run Dispatch may
+ * still be making of it (`DispatchWriteRetry`), which can outlast the client's own deadline.
+ */
+export interface DispatchRunWait {
+  /** The `Idempotency-Key` every attempt of the write carries. */
+  readonly key: string;
+  /** `<METHOD> <url>`, the URL as `requestForText` names it. */
+  readonly request: string;
+  /** The most the write waits from now for the run's outcome, in milliseconds. */
+  readonly withinMs: number;
+  /** Whether Dispatch said it is running the write: an attempt was answered `409 KEY_IN_FLIGHT`.
+   *  False where only an attempt cut off for silence put the write in this wait, after which
+   *  Dispatch may or may not hold it (`stillRunningText`). */
+  readonly toldRunning: boolean;
+}
 
 function pauseFor(ms: number, signal: AbortSignal): Promise<void> {
   const { promise, resolve, reject } = Promise.withResolvers<void>();
@@ -663,17 +748,21 @@ class WriteAttemptSilent extends Error {
 }
 
 /** What a write's attempts have shown, apart from its table state (`WriteState`): what the
- *  pacing and the unsettled message read. */
+ *  unsettled message reads. How long the write asks while Dispatch may still be running it is the
+ *  loop's own (`#write`'s run window). */
 interface WriteProgress {
   /** How many attempts went out: a credential that could not present one sent nothing. */
   sent: number;
-  /** Whether Dispatch may still be running an attempt: one was cut off for silence (an upload's
-   *  excepted, which keeps the schedule) or answered 409 KEY_IN_FLIGHT. The pacing asks again
-   *  sooner and for longer while it is. */
-  running: boolean;
   /** Whether the call saw Dispatch's keyed layer judge the write, which the unsettled message
    *  says. */
   sawKeyedLayer: boolean;
+  /** Whether the write entered the wait for a run Dispatch may still be making of it: an attempt
+   *  was cut off for silence or answered `409 KEY_IN_FLIGHT`. The unsettled message of a write a
+   *  named deadline ended there says it is still running, or may be (`toldRunning`). */
+  running: boolean;
+  /** Whether an attempt was answered `409 KEY_IN_FLIGHT`: Dispatch said it is running the write.
+   *  An attempt cut off for silence says only that Dispatch may be. */
+  toldRunning: boolean;
 }
 
 /** A POST or PATCH call: its one `Idempotency-Key`, the request as a text names it
@@ -744,11 +833,14 @@ interface WriteAttempt {
   /** The credential's own failure, where its presentation failed for a reason other than the
    *  call's stop. */
   readonly credentialFailure?: unknown;
-  /** The identity the attempt went out as (`RequestCredential.identity`) and its headers, where
-   *  it went out: a dead-token answer names those headers to the credential (`stale`). */
+  /** The identity the attempt went out as (`RequestCredential.identity`), its headers, and when it
+   *  went out on the write clock, where it went out: a dead-token answer names those headers to the
+   *  credential (`stale`), and the run window counts from the attempt that could have started the
+   *  run. */
   readonly sent?: {
     readonly as: string | undefined;
     readonly with: Readonly<Record<string, string>>;
+    readonly at: number;
   };
   /** What the answer's headers said, where headers came, whether or not its body then came
    *  whole: that the keyed layer answered (the key echoed), and the wait it asked for
@@ -1003,7 +1095,20 @@ function reachesDispatch(status: number): boolean {
 export class DispatchClient {
   readonly #baseUrl: string;
   readonly #resolvedIssues = new Map<string, Promise<string>>();
+  /** The maker's `signal` and the client's deadline: what ends every request, and each write
+   *  until Dispatch may be running it (`#write`). */
   readonly #signal: AbortSignal;
+  /**
+   * The maker's own stop, which ends a write Dispatch may be running as it ends every request: its
+   * `signal`, and the deadline it named, which is its budget. The default deadline
+   * (`DISPATCH_TOOL_DEADLINE_MS`) is no part of it. Undefined where the maker gave neither.
+   */
+  readonly #stop: AbortSignal | undefined;
+  /** Whether the client's deadline is the default one, which a write Dispatch may still be running
+   *  outlives (`#write`); a deadline its maker named is that maker's budget, which it does not. */
+  readonly #defaultDeadline: boolean;
+  /** Told when a write enters the wait for a run Dispatch may still be making of it. */
+  readonly #onRunWait: ((wait: DispatchRunWait) => void) | undefined;
   readonly #credential: RequestCredential;
   /** The tokens this client presented lately, which every excerpt of an answer redacts beside the
    *  credential's secret now (`SentTokens`). */
@@ -1012,9 +1117,9 @@ export class DispatchClient {
   readonly #retryNoRoute: boolean;
   readonly writeRetry: DispatchWriteRetry;
   /**
-   * When this client was made, on the write clock (`#now`): its deadline counts from here, so
-   * no write asks again later than `writeRetry.inFlightWithinMs` after it, however late in the
-   * client's life the write began.
+   * When this client was made, on the write clock (`#now`): its deadline counts from here, so a
+   * write asks again no later than `writeRetry.inFlightWithinMs` after it, however late in the
+   * client's life the write began, unless Dispatch may be running the write.
    */
   readonly #madeAt: number;
   /** When the client's own deadline ends, on the process's monotonic clock, which the deadline's
@@ -1039,7 +1144,12 @@ export class DispatchClient {
       readonly signal?: AbortSignal | undefined;
       /** The client's own deadline, counted from now: `DISPATCH_TOOL_DEADLINE_MS` when absent. A
        *  maker with a budget of its own names it here rather than as a timed `signal`, so the
-       *  credential is given that budget less the request's reserve (`#credentialSignal`). */
+       *  credential is given that budget less the request's reserve (`#credentialSignal`). A
+       *  named deadline ends every request as `signal` does, and a write Dispatch may still be
+       *  running then ends as still running (`DispatchWriteUnsettledError`'s `running`); the
+       *  default one ends no such write, which asks until its run window ends instead
+       *  (`DispatchWriteRetry`). A caller in an agent's process that must not wait that long
+       *  names `DISPATCH_IN_PROCESS_DEADLINE_MS`. */
       readonly deadlineMs?: number | undefined;
       readonly writeRetry?: DispatchWriteRetry | undefined;
       readonly sleep?: Sleep | undefined;
@@ -1049,6 +1159,10 @@ export class DispatchClient {
        *  of its own to a missing route and wants it at once, rather than after the waits of
        *  `NO_ROUTE_RETRY_DELAYS_MS`. */
       readonly retryNoRoute?: boolean | undefined;
+      /** Told once for each write that enters the wait for a run Dispatch may still be making of
+       *  it, with how long that wait lasts at most, so the maker can tell its own caller that the
+       *  call is not stuck (the `dispatch` command prints it). */
+      readonly onRunWait?: ((wait: DispatchRunWait) => void) | undefined;
     } = {}
   ) {
     this.#credential = credential;
@@ -1082,6 +1196,9 @@ export class DispatchClient {
     );
     const deadlineMs = options.deadlineMs ?? DISPATCH_TOOL_DEADLINE_MS;
     this.#signal = requestSignal(options.signal, deadlineMs);
+    this.#defaultDeadline = options.deadlineMs === undefined;
+    this.#stop = this.#defaultDeadline ? options.signal : this.#signal;
+    this.#onRunWait = options.onRunWait;
     this.#deadlineAt = performance.now() + deadlineMs;
     this.writeRetry = options.writeRetry ?? DISPATCH_WRITE_RETRY;
     this.#sleep = options.sleep ?? sleep;
@@ -2154,7 +2271,7 @@ export class DispatchClient {
       key: key ?? crypto.randomUUID(),
       request: `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`,
       writes,
-      progress: { sent: 0, running: false, sawKeyedLayer: false },
+      progress: { sent: 0, sawKeyedLayer: false, running: false, toldRunning: false },
     };
   }
 
@@ -2249,7 +2366,7 @@ export class DispatchClient {
       method,
       url,
       undefined,
-      this.#credentialSignal(limit)
+      this.#credentialSignal(limit, this.#deadlineAt)
     );
     this.#sent.note(presented);
     const answer = await this.#fetch(url, {
@@ -2293,9 +2410,13 @@ export class DispatchClient {
    * Every attempt presents the credential afresh (a resource server that keeps a replay store
    * refuses a proof it has already seen) and sends the same encoded body. An upload (a body of
    * `STREAMED_BODY_MIN` or more, sent as a stream) keeps the schedule alone: it never enters the
-   * in-flight asking. No ask starts later than `writeRetry.inFlightWithinMs` after the client was
-   * made. A failing answer that echoed the request's key is itself the knowledge that Dispatch
-   * runs the keyed layer; Dispatch's own refusal with no echo sets aside what the process
+   * in-flight asking. Until Dispatch may be running the write, no ask starts later than
+   * `writeRetry.inFlightWithinMs` after the client was made. Once it may be (an attempt cut off
+   * for silence, or answered `409 KEY_IN_FLIGHT`), the write keeps asking until its run window
+   * ends (`DispatchWriteRetry`), bounded by the maker's own stop (`#stop`) and no longer by the
+   * client's default deadline, whose place a deadline at the window's end takes, and tells
+   * `onRunWait` once. A failing answer that echoed the request's key is itself the knowledge that
+   * Dispatch runs the keyed layer; Dispatch's own refusal with no echo sets aside what the process
    * remembers, and the write asks `/healthz` afresh.
    */
   async #write(
@@ -2306,11 +2427,24 @@ export class DispatchClient {
     signal: AbortSignal | undefined,
     write: WriteCall
   ): Promise<WriteAnswer> {
-    const limit = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
+    // What ends the write's attempts and waits: the call's signal with the client's, until Dispatch
+    // may be running the write, then the call's signal with the maker's stop and the run window's
+    // deadline. `deadlineAt` is when the deadline in it ends, on the process's monotonic clock: a
+    // credential is given the time to it less the request's reserve (`#credentialSignal`).
+    let limit = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
+    let deadlineAt = this.#deadlineAt;
     const { key, progress } = write;
     const headers: Record<string, string> = { Accept: accept, [IDEMPOTENCY_KEY_HEADER]: key };
     if (body !== undefined) headers["Content-Type"] = body.type;
-    const { pausesMs, withinMs, silenceMs, inFlightPauseMs, inFlightWithinMs } = this.writeRetry;
+    const {
+      pausesMs,
+      withinMs,
+      silenceMs,
+      inFlightPauseMs,
+      inFlightWithinMs,
+      runPauseMs,
+      runWithinMs,
+    } = this.writeRetry;
     const pause = this.writeRetry.pause ?? pauseFor;
     const bodyBytes =
       body === undefined
@@ -2326,6 +2460,16 @@ export class DispatchClient {
     // The write's pacing round: a no-route retry starts a new one, as a new build may answer it.
     let started = this.#now();
     let paced = 1;
+    // When, on the write clock, the latest attempt Dispatch did not answer 409 KEY_IN_FLIGHT went
+    // out: only such an attempt can have started Dispatch's run of the write. The first attempt
+    // stands in while Dispatch has answered every one so, since then an earlier call under the
+    // key started the run before it.
+    let mayStartRunAt: number | undefined;
+    // The last ask of a write Dispatch may still be running, on the write clock; undefined until
+    // an attempt was cut off for silence or answered 409 KEY_IN_FLIGHT. Read once, when the write
+    // enters that wait, so a Dispatch that never answers holds it one run window and no more.
+    let runUntil: number | undefined;
+    let toldRunWait = false;
     // The latest failure of the credential's own, never the call's stop (`limit.reason`), since a
     // presentation last answered. Before anything may have landed, it is why nothing was sent, so
     // a deadline or a stop that ends the wait for the next presentation ends the write with it,
@@ -2352,7 +2496,7 @@ export class DispatchClient {
           method,
           url,
           undefined,
-          this.#credentialSignal(limit)
+          this.#credentialSignal(limit, deadlineAt)
         );
         this.#sent.note(presented);
         // A credential that answered after the call's signal ended still sends nothing.
@@ -2375,7 +2519,7 @@ export class DispatchClient {
           presented,
         };
       }
-      const sent = { as: identity, with: presented };
+      const sent = { as: identity, with: presented, at: this.#now() };
       progress.sent += 1;
       let response: Response;
       try {
@@ -2440,12 +2584,19 @@ export class DispatchClient {
     };
     // The next attempt, and the loop's own state it moves: a presentation that answered clears
     // the credential's last failure and one that failed sets it; an attempt that went out pins the
-    // identity it went as.
+    // identity it went as, and dates the run it may have started; a `409 KEY_IN_FLIGHT` is
+    // Dispatch saying it is running the write.
     const next = async (): Promise<WriteAttempt> => {
       const result = await attempt();
       if (result.presented !== undefined) credentialFailure = undefined;
       if (result.credentialFailure !== undefined) credentialFailure = result.credentialFailure;
-      if (result.sent !== undefined) login = result.sent.as;
+      if (result.sent !== undefined) {
+        login = result.sent.as;
+        if (result.event !== "in-flight" || mayStartRunAt === undefined) {
+          mayStartRunAt = result.sent.at;
+        }
+      }
+      if (result.event === "in-flight") progress.toldRunning = true;
       return result;
     };
     // A pause or a rolling-release wait the deadline or the caller's stop ended: nothing was in
@@ -2461,7 +2612,30 @@ export class DispatchClient {
     for (;;) {
       const step = writeStep(state, event, write.writes);
       state = step.state;
-      if ((event === "silence" || event === "in-flight") && !upload) progress.running = true;
+      if (
+        (event === "silence" || event === "in-flight") &&
+        !upload &&
+        runUntil === undefined &&
+        mayStartRunAt !== undefined
+      ) {
+        // Dispatch may still be running the write, and it finishes that run whatever this side
+        // does: the write asks until the run window ends, and never stops sooner than it would
+        // have without one. A deadline its maker named still ends it, as still running there.
+        runUntil = Math.max(lastAsk, mayStartRunAt + runWithinMs);
+        progress.running = true;
+        if (this.#defaultDeadline) {
+          // The default deadline gives way to one at the window's end, which leaves the last ask
+          // one silence bound for its answer, as every attempt has, and is never the sooner.
+          const now = performance.now();
+          deadlineAt = Math.max(this.#deadlineAt, now + (runUntil - this.#now()) + silenceMs);
+          const runDeadline = AbortSignal.timeout(Math.max(0, deadlineAt - now));
+          const stop =
+            signal === undefined || this.#stop === undefined
+              ? (signal ?? this.#stop)
+              : AbortSignal.any([this.#stop, signal]);
+          limit = stop === undefined ? runDeadline : AbortSignal.any([stop, runDeadline]);
+        }
+      }
       switch (step.action) {
         case "settle":
           // The table settles only on an answer read whole (`applied`, `judged`).
@@ -2510,20 +2684,30 @@ export class DispatchClient {
           continue;
         }
         case "retry": {
-          const scheduled = progress.running
-            ? Math.min(pausesMs[paced - 1] ?? inFlightPauseMs, inFlightPauseMs)
-            : pausesMs[paced - 1];
+          const now = this.#now();
+          let scheduled: number | undefined;
+          let latest: number;
+          if (runUntil === undefined) {
+            scheduled = pausesMs[paced - 1];
+            latest = Math.min(started + withinMs, lastAsk);
+          } else {
+            // The schedule's pace, `inFlightPauseMs` at most, inside the client's own window, then
+            // `runPauseMs`; the last pause shortened to end at the run window's end, so the last
+            // ask is there rather than up to a pause before it.
+            scheduled =
+              now < lastAsk
+                ? Math.min(pausesMs[paced - 1] ?? inFlightPauseMs, inFlightPauseMs)
+                : runPauseMs;
+            latest = runUntil;
+            if (latest > now) scheduled = Math.min(scheduled, latest - now);
+          }
           const wait = Math.max(scheduled ?? 0, last.heard?.retryAfterMs ?? 0);
-          const latest = Math.min(
-            started + (progress.running ? inFlightWithinMs : withinMs),
-            lastAsk
-          );
-          let again = scheduled !== undefined && this.#now() + wait <= latest;
+          let again = scheduled !== undefined && now + wait <= latest;
           // Dispatch's own refusal with no echo says its keyed layer did not judge this request.
           const { answer } = last;
           const unjudged = answer !== undefined && !answer.echoed && answer.error !== undefined;
           if (again && state === "may-have-landed") {
-            again = (last.heard?.echoed ?? false) || (await this.#runsKeyedLayer(unjudged));
+            again = (last.heard?.echoed ?? false) || (await this.#runsKeyedLayer(unjudged, limit));
             progress.sawKeyedLayer ||= again;
             again &&= this.#now() + wait <= latest;
           } else if (unjudged && state === "nothing-sent") {
@@ -2534,6 +2718,15 @@ export class DispatchClient {
           if (!again) {
             event = "exhausted";
             continue;
+          }
+          if (runUntil !== undefined && !toldRunWait) {
+            toldRunWait = true;
+            this.#onRunWait?.({
+              key,
+              request: write.request,
+              withinMs: Math.max(0, deadlineAt - performance.now()),
+              toldRunning: progress.toldRunning,
+            });
           }
           try {
             await pause(wait, limit);
@@ -2563,13 +2756,15 @@ export class DispatchClient {
   }
 
   /**
-   * The signal a credential presents within: the call's `limit`, and the time left on the
-   * client's own deadline less the request's reserve (`credentialDeadline`). For the 60 s
-   * default the credential waits 59 s and the request has 1 s. A caller's own `signal` ends
-   * `limit` where it ends first, and its length is the caller's, so no reserve is taken from it.
+   * The signal a credential presents within: the call's `limit`, and the time left until
+   * `deadlineAt`, the deadline in it, less the request's reserve (`credentialDeadline`). For the
+   * 60 s default the credential waits 59 s and the request has 1 s; for a write Dispatch may still
+   * be running, past that default, the time left is the run window's (`#write`). A caller's own
+   * `signal` ends `limit` where it ends first, and its length is the caller's, so no reserve is
+   * taken from it.
    */
-  #credentialSignal(limit: AbortSignal): AbortSignal {
-    return credentialDeadline(limit, Math.max(1, this.#deadlineAt - performance.now()));
+  #credentialSignal(limit: AbortSignal, deadlineAt: number): AbortSignal {
+    return credentialDeadline(limit, Math.max(1, deadlineAt - performance.now()));
   }
 
   /** The write clock: `writeRetry.now`, or the process's monotonic one. */
@@ -2626,7 +2821,11 @@ export class DispatchClient {
    * (`DispatchWriteLandedError`) is definite in either state. In `nothing-sent` that reading is
    * what the write throws. In `may-have-landed` the write is `DispatchWriteUnsettledError`
    * carrying its key, with that reading as `last`, and, for a write that ended with no answer,
-   * what ended it.
+   * what ended it. A deadline the client's maker named that ended the wait for a run Dispatch may
+   * still be making of the write (`progress.running`) ends a write that is still running there,
+   * where Dispatch said so, or may be, which the error says (`running`, `toldRunning`); the
+   * default deadline never ends that wait, which ends at the run window's own deadline, when no
+   * run can still hold the key.
    */
   async #endWrite(
     method: string,
@@ -2657,6 +2856,10 @@ export class DispatchClient {
     }
     if (own instanceof DispatchWriteLandedError || state === "nothing-sent") return own;
     const last = own instanceof Error ? own : new Error(String(own));
+    const running =
+      progress.running &&
+      !this.#defaultDeadline &&
+      (event === "deadline" || event === "deadline-in-flight");
     let unanswered: string | undefined;
     if (answer === undefined) {
       switch (event) {
@@ -2672,7 +2875,9 @@ export class DispatchClient {
           break;
         case "deadline":
         case "deadline-in-flight":
-          unanswered = `${request} had no definitive answer when its deadline ended it`;
+          unanswered = running
+            ? `${request} ${stillRunningText(progress.toldRunning)} on Dispatch, and its deadline ended the wait for its outcome`
+            : `${request} had no definitive answer when its deadline ended it`;
           break;
         case "cancelled":
         case "cancelled-in-flight":
@@ -2687,7 +2892,9 @@ export class DispatchClient {
       progress.sent,
       write.key,
       unanswered,
-      progress.sawKeyedLayer
+      progress.sawKeyedLayer,
+      running,
+      running && progress.toldRunning
     );
   }
 
@@ -2698,16 +2905,17 @@ export class DispatchClient {
    * failing together ask once. `unjudged` (Dispatch's own refusal that echoed no key) sets aside
    * what the process remembers, since that answer itself says the layer did not judge the
    * request: the probe decides. Only a yes is kept. It runs only after a write has already
-   * failed, so the normal path costs nothing.
+   * failed, so the normal path costs nothing. The probe runs under the write's `limit`, so a write
+   * Dispatch may still be running asks it past the client's default deadline too.
    */
-  async #runsKeyedLayer(unjudged: boolean): Promise<boolean> {
+  async #runsKeyedLayer(unjudged: boolean, limit: AbortSignal): Promise<boolean> {
     const origin = this.#baseUrl;
     if (unjudged) KEYED_LAYER_SEEN.delete(origin);
     const seen = KEYED_LAYER_SEEN.get(origin);
     if (seen !== undefined && this.#now() - seen < KEYED_LAYER_MEMORY_MS) return true;
     let probe = KEYED_LAYER_PROBES.get(origin);
     if (probe === undefined) {
-      probe = this.#probeKeyedLayer().finally(() => KEYED_LAYER_PROBES.delete(origin));
+      probe = this.#probeKeyedLayer(limit).finally(() => KEYED_LAYER_PROBES.delete(origin));
       KEYED_LAYER_PROBES.set(origin, probe);
     }
     const runs = await probe;
@@ -2716,22 +2924,22 @@ export class DispatchClient {
   }
 
   /**
-   * `GET /healthz`'s `idempotency_keys`, bounded at `KEY_LAYER_PROBE_MS`. Its status is not read:
-   * Dispatch answers 503 whenever its database or NATS is down, the outage a failed write most
-   * likely met, and still says `idempotency_keys: true`, a fact of its binary. A probe that fails,
-   * times out, answers no JSON or leaves the field out is false: the write is reported as it
-   * stands rather than resent, since a Dispatch without the layer would run a repeat as a second
-   * write. It presents no credential: Dispatch mounts `/healthz` above its API chain
-   * (`dispatchHandler`, packages/envoy/cmd/dispatch/main.go), so the route reads none, and a
-   * credential failing at that moment (a fail-fast trade, a pending registration) would otherwise
-   * end a write the layer could take again under its key.
+   * `GET /healthz`'s `idempotency_keys`, bounded at `KEY_LAYER_PROBE_MS` and by `limit`, the
+   * write's. Its status is not read: Dispatch answers 503 whenever its database or NATS is down,
+   * the outage a failed write most likely met, and still says `idempotency_keys: true`, a fact of
+   * its binary. A probe that fails, times out, answers no JSON or leaves the field out is false:
+   * the write is reported as it stands rather than resent, since a Dispatch without the layer
+   * would run a repeat as a second write. It presents no credential: Dispatch mounts `/healthz`
+   * above its API chain (`dispatchHandler`, packages/envoy/cmd/dispatch/main.go), so the route
+   * reads none, and a credential failing at that moment (a fail-fast trade, a pending
+   * registration) would otherwise end a write the layer could take again under its key.
    */
-  async #probeKeyedLayer(): Promise<boolean> {
+  async #probeKeyedLayer(limit: AbortSignal): Promise<boolean> {
     try {
       const response = await this.#fetch(`${this.#baseUrl}/healthz`, {
         method: "GET",
         headers: { Accept: "application/json" },
-        signal: AbortSignal.any([this.#signal, AbortSignal.timeout(KEY_LAYER_PROBE_MS)]),
+        signal: AbortSignal.any([limit, AbortSignal.timeout(KEY_LAYER_PROBE_MS)]),
       });
       if (!isJson(response)) return false;
       const health: unknown = await response.json();

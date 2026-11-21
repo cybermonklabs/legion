@@ -1,5 +1,9 @@
-import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import {
+  type DispatchDelivery,
+  type RenderInboundResult,
+  replyStillRunning,
+} from "@legion/envoy-client/delivery"
+import { type DispatchClient, stillRunningText } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
 import { acceptUserTurn } from "@legion/pi-shared/accept-user-turn"
 import { typedInputReply } from "@legion/pi-shared/dispatch-user-turn"
@@ -53,6 +57,14 @@ export function createCodexUserTurnRouter(options: CodexUserTurnOptions): UserTu
       try {
         await options.reply(delivery, { body: await options.ask(delivery.body) })
       } catch (error) {
+        // A reply still running on Dispatch, or that may be, settles the attempt when it lands,
+        // so no error is posted over it (`replyStillRunning`, as `../user-turn-router` does).
+        if (replyStillRunning(error)) {
+          warn(
+            `a BTW's reply to message ${delivery.id} ${stillRunningText(error.toldRunning)} on Dispatch under key ${error.key}; nothing more is posted`,
+          )
+          return
+        }
         await options.reply(delivery, { error: messageFor(error) })
       }
     })().catch((error: unknown) => {

@@ -1,0 +1,5 @@
+kind: Fixed
+body: Dispatch's error messages no longer carry a signed-in person's address, login or session, so a failed request no longer writes them into the server's logs. The 403 ACTOR_SESSION_MISMATCH a session token gets for a body actor naming another writer now points at GET /api/v1/whoami for the token's session rather than naming it.
+time: 2026-11-20T15:53:50.214500763Z
+custom:
+    Issue: pr3142

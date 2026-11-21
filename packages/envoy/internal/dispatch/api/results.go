@@ -951,7 +951,7 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 			}
 			return markdown, texts, nil
 		}
-		slog.Warn("dispatch: read a document's blocks for its typed blocks' trees", "artifact", artifactID, "type", blockType, "error", err)
+		slog.Warn("dispatch: read a document's blocks for its typed blocks' trees", "artifact", artifactID, "type", blockType, "error", docs.LoggedError(err))
 	}
 	markdown, err := s.deps.Docs.Text(ctx, artifactID)
 	return markdown, nil, err
@@ -1243,7 +1243,7 @@ func blockContent(node *pmdoc.Node) string {
 	markdown, err := pmdoc.Render(&pmdoc.Node{Type: "doc", Children: node.Children})
 	if err != nil {
 		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-		slog.Warn("dispatch: render a typed block's content for its tree", "type", node.Type, "block", id, "error", err)
+		slog.Warn("dispatch: render a typed block's content for its tree", "type", node.Type, "block", id, "error", docs.LoggedError(err))
 		return ""
 	}
 	return markdown

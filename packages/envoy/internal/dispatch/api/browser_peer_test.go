@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -231,6 +233,48 @@ func (p *syncedPeer) appendToFirstParagraph(t *testing.T, text string) {
 		runs[len(runs)-1].Text += text
 		return nil
 	})
+}
+
+// replaceTextAsABrowserDoes replaces find, in the first text run of the live document that holds
+// it, with with through a browser peer, as a person selecting it and typing does, and returns once
+// the room holds the change; a run the change empties is dropped, as the editor keeps no empty
+// text. A browser's update is not held to the read-back check an edit's stored text passes, so
+// this is how a document comes to hold a block that reads back as something else, which the edits
+// route refuses to leave. The peer stays connected for the rest of the test, as an open editor
+// does.
+func replaceTextAsABrowserDoes(t *testing.T, documentService *docs.Service, artifactID, find, with string) {
+	t.Helper()
+	peer := connectBrowserPeer(t, documentService, artifactID)
+	t.Cleanup(peer.close)
+	peer.edit(t, func(tree *pmdoc.Node) error {
+		if !replaceInTextRun(tree, find, with) {
+			return fmt.Errorf("no text run of the browser peer's document holds %q", find)
+		}
+		return nil
+	})
+	peer.barrier(t)
+}
+
+// replaceInTextRun replaces find, in the first text run under node that holds it in document
+// order, with with, drops that run when the change empties it, and reports whether a run held find.
+func replaceInTextRun(node *pmdoc.Node, find, with string) bool {
+	for index, child := range node.Children {
+		if child.Type != "text" {
+			if replaceInTextRun(child, find, with) {
+				return true
+			}
+			continue
+		}
+		before, after, found := strings.Cut(child.Text, find)
+		if !found {
+			continue
+		}
+		if child.Text = before + with + after; child.Text == "" {
+			node.Children = slices.Delete(node.Children, index, index+1)
+		}
+		return true
+	}
+	return false
 }
 
 // assertProjection checks the peer's copy of markID's margin projection against want.

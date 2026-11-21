@@ -93,14 +93,14 @@ const documentNewerContentCloseCode = contracts.DocumentNewerContentCloseCode
 // anything of the document is sent: a browser reads a close code, never the status of a refused
 // upgrade.
 func refuseOutsideSchema(w http.ResponseWriter, r *http.Request, room string, cause error) {
-	slog.Warn("dispatch: refuse a document socket outside Proof schema; a replacement from markdown repairs it", "room", room, "error", cause)
+	slog.Warn("dispatch: refuse a document socket outside Proof schema; a replacement from markdown repairs it", "room", room, "error", LoggedError(cause))
 	closeRefusedSocket(w, r, documentSchemaCloseCode, contracts.DocumentSchemaCloseReason)
 }
 
 // refuseNewerContent completes the upgrade only to close it with documentNewerContentCloseCode
 // before anything of the document is sent.
 func refuseNewerContent(w http.ResponseWriter, r *http.Request, room string, cause error) {
-	slog.Warn("dispatch: refuse a document socket holding an element this build cannot read; the provider reconnects", "room", room, "error", cause)
+	slog.Warn("dispatch: refuse a document socket holding an element this build cannot read; the provider reconnects", newerContentLine(cause, "room", room)...)
 	closeRefusedSocket(w, r, documentNewerContentCloseCode, contracts.DocumentNewerContentCloseReason)
 }
 

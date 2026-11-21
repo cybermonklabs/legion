@@ -66,6 +66,9 @@ type callerKey struct{}
 // copy.
 type recorder struct {
 	http.ResponseWriter
+	// route is the pattern of the route this writer answers (Handler's route), which Route gives
+	// a handler's own log line.
+	route string
 	// mu guards kind, id and credential alone: Note may run on another goroutine than the
 	// handler's while the handler is still writing.
 	mu   sync.Mutex
@@ -138,6 +141,11 @@ func (rec *recorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // connection's deadlines reaches it through this wrapper.
 func (rec *recorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 
+// Route is the pattern of the route this writer answers, the line's `route`: the route's own
+// pattern and never the request's path. A handler's error line names it (api's
+// writeHandlerError), so that line and this one can be read side by side.
+func (rec *recorder) Route() string { return rec.route }
+
 // Handler serves one route and logs the request when it ends. route is the route's own pattern
 // (`/api/v1/issues/{key}`), mounted once, so the line groups a route's requests together whatever
 // ids their paths carry. A handler that panics (an artifact download whose store fails mid-stream
@@ -146,9 +154,9 @@ func (rec *recorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
 func Handler(route string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rec := &recorder{ResponseWriter: w, kind: KindAnonymous}
+		rec := &recorder{ResponseWriter: w, route: route, kind: KindAnonymous}
 		completed := false
-		defer func() { rec.write(route, r, time.Since(start), !completed) }()
+		defer func() { rec.write(r, time.Since(start), !completed) }()
 		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), callerKey{}, rec)))
 		completed = true
 	})
@@ -194,7 +202,7 @@ func Detached(ctx context.Context) context.Context {
 	return context.WithValue(ctx, callerKey{}, (*recorder)(nil))
 }
 
-func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration, aborted bool) {
+func (rec *recorder) write(r *http.Request, elapsed time.Duration, aborted bool) {
 	rec.mu.Lock()
 	kind, id, credential := rec.kind, rec.id, rec.credential
 	rec.mu.Unlock()
@@ -210,7 +218,7 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 	}
 	attrs := []any{
 		"method", clip(r.Method),
-		"route", route,
+		"route", rec.route,
 		"path", clip(r.URL.EscapedPath()),
 		"caller_kind", kind,
 		"caller", clip(id),

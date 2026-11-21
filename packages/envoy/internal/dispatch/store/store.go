@@ -126,15 +126,50 @@ func declaresPoolSize(databaseURL string) (bool, error) {
 // version record in one transaction; marked concurrent indexes run outside a transaction under
 // the same advisory key until their version is recorded. Every wait for that key polls, for the
 // reason lockMigrations gives. It refuses a set pgmigrate.Load refuses before touching the
-// database, refuses a database whose schema_migrations records a version under another file's
-// identity before applying anything (prepareVersionTable), and bounds every migration's lock
-// waits by LockTimeout.
+// database, refuses a connection whose migrations would be created in a schema other than public,
+// which Dispatch's migrations name, before creating or changing schema_migrations
+// (refuseAnotherSchema), refuses a database whose schema_migrations records a version under
+// another file's identity before applying anything (prepareVersionTable), and bounds every
+// migration's lock waits by LockTimeout.
 func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
 }
 
 // versionTable is the table this runner records each applied migration in.
 const versionTable = "schema_migrations"
+
+// migrationSchema is the schema Dispatch's migrations are written for. A migration may name it:
+// 20261115200014_owner_lock_legacy_gate.up.sql names each of its objects with it, so that a login
+// that can create objects in another schema of the search_path cannot put a function of its own
+// ahead of them. Every other migration creates its objects in current_schema(). So under a
+// connection whose current_schema() is another schema, the set builds most of Dispatch's schema
+// there and then fails (42P01) at the first migration that names public, leaving the database half
+// migrated.
+const migrationSchema = "public"
+
+// refuseAnotherSchema reads current_schema(), the schema the runner creates schema_migrations and
+// every migration's unqualified objects in, and refuses one that is not migrationSchema, a null
+// one included, so that nothing is applied in a schema where the set cannot be applied whole.
+// tx must be pinned (pgmigrate.Pin) first, so that it reads the schema under the values every
+// migration is applied under: the values that RESET gives session_authorization, role and
+// search_path. A connection option, the login's default or the database's default can name
+// another schema there, and so can a schema named for the login that stands first under "$user";
+// a session SET cannot, so a read on an unpinned pooled connection could answer another schema
+// than the one the migrations would be created in.
+func refuseAnotherSchema(ctx context.Context, tx pgx.Tx) error {
+	var schema *string
+	if err := tx.QueryRow(ctx, "select current_schema()").Scan(&schema); err != nil {
+		return fmt.Errorf("read the schema the migrations would be created in: %w", err)
+	}
+	const remedy = "give the connection a search_path whose first schema that exists is public, as search_path=public in DATABASE_URL does"
+	if schema == nil {
+		return fmt.Errorf("migrations refused, none applied: the connection's search_path names no schema that exists, so current_schema() is null and no schema was found to create the migrations in, and Dispatch's migrations name schema %s; %s", migrationSchema, remedy)
+	}
+	if *schema != migrationSchema {
+		return fmt.Errorf("migrations refused, none applied: the migrations would be created in schema %q, the connection's current_schema(), and Dispatch's migrations name schema %s; %s", *schema, migrationSchema, remedy)
+	}
+	return nil
+}
 
 func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	if s == nil || s.Pool == nil {
@@ -303,6 +338,11 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 // transaction that inMigrationLockTx opens on the connection that holds the runner's advisory key,
 // and judges every version it records against the set.
 //
+// Before it creates or changes the table, it refuses a connection whose current_schema() is not
+// public (refuseAnotherSchema). It reads the schema in this transaction, after the pin below, so
+// the schema it judges is the one this transaction would create the table in and every migration
+// would create its objects in, and the refusal creates nothing and applies nothing.
+//
 // It creates the table, as the broker's runner creates its own, with the columns that hold what a
 // runner records of each applied migration (pgmigrate.IdentityColumns). Created outside the lock,
 // two processes booting at once against an empty database race `create table if not exists` on
@@ -349,6 +389,9 @@ func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.
 		return s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 			if err := pgmigrate.Pin(ctx, tx); err != nil {
 				return fmt.Errorf("pin the runner's settings: %w", err)
+			}
+			if err := refuseAnotherSchema(ctx, tx); err != nil {
+				return err
 			}
 			if _, err := tx.Exec(ctx, `
 				create table if not exists schema_migrations (

@@ -1,0 +1,5 @@
+kind: Fixed
+body: A write made inside an agent's process (a delivery reply, a side-question reply, an AskGate decision record) keeps its own 60 s deadline; where that deadline ends a write Dispatch is still running, or may be, the caller is told so with the write's key rather than a failure, and a side-question reply that is still running is not followed by an error reply that would settle the turn first.
+time: 2026-11-20T04:21:45.509106617Z
+custom:
+    Issue: pr3142

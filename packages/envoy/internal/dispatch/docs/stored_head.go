@@ -149,7 +149,7 @@ func (s *Service) recordPublishedLoss(write *liveWrite) {
 	}
 	lost, err := s.lostAtStoredHead(ctx, rooms, write, others)
 	if err != nil {
-		slog.Warn("dispatch: read a published write's text back from the document", "room", write.artifactID, "error", err)
+		slog.Warn("dispatch: read a published write's text back from the document", "room", write.artifactID, "error", LoggedError(err))
 		return
 	}
 	write.lost, write.lostVerdict = lost, true

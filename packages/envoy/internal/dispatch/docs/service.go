@@ -1638,7 +1638,7 @@ func (s *Service) retrySettleLocked(room string, state *roomState, generation ui
 		// below.
 		slog.Info("dispatch: document settlement wrote nothing into a replaced room", "room", room, "error", err)
 	default:
-		slog.Error("dispatch: settle document", "room", room, "error", err)
+		slog.Error("dispatch: settle document", "room", room, "error", LoggedError(err))
 	}
 	if !counted {
 		return
@@ -3368,7 +3368,7 @@ func (s *Service) awaitRoomRecovery(ctx context.Context, room string) error {
 		// reach no server log at all: the refusal is what the server knows about the
 		// failure, so it names the room and the cause it refused for.
 		slog.Warn("dispatch: refuse a transaction's operation on a failed document room",
-			"room", room, "error", failure)
+			"room", room, "error", LoggedError(failure))
 		return fmt.Errorf("%w: %w", ErrServiceUnavailable, failure)
 	}
 	if ctx.Value(withoutRecoveryWait{}) != nil {

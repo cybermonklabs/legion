@@ -17,8 +17,12 @@
 // is Dispatch recording that this session accepted that very attempt, and what it injects is
 // the body Dispatch answers with, never the frame's own text.
 import { comparableLines } from "@legion/contracts"
-import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import {
+  type DispatchDelivery,
+  type RenderInboundResult,
+  replyStillRunning,
+} from "@legion/envoy-client/delivery"
+import { type DispatchClient, stillRunningText } from "@legion/envoy-client/dispatch-http"
 import { pictureAddresses } from "@legion/envoy-client/dispatch-pictures"
 import { messageFor } from "@legion/envoy-client/errors"
 import { type AcceptedUserTurnDelivery, acceptUserTurn } from "@legion/pi-shared/accept-user-turn"
@@ -430,6 +434,15 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
       try {
         await reply(delivery, { body: await session.fork(delivery.body) })
       } catch (error) {
+        // A reply still running on Dispatch, or that may be, settles the attempt when it lands:
+        // an error posted over it, under a key of its own, could settle the attempt first with
+        // words the person would read in place of the answer (`replyStillRunning`).
+        if (replyStillRunning(error)) {
+          warn(
+            `a BTW's reply to message ${delivery.id} ${stillRunningText(error.toldRunning)} on Dispatch under key ${error.key}; nothing more is posted`,
+          )
+          return
+        }
         await reply(delivery, { error: messageFor(error) })
       }
     })().catch((error: unknown) => {

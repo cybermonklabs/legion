@@ -555,9 +555,11 @@ function waitStep(run: Run): unknown {
  * The client's limits as this harness sets them (`drive`'s `writeRetry`): the clock moves only by
  * its pauses, each of 1; no ask starts past 2 on it (`inFlightWithinMs`), so two pauses in all;
  * on the plain pacing, one pause a round (`pausesMs: [1]`, `withinMs: 1`); while Dispatch may be
- * running the write, a pause as long as the clock allows (`inFlightPauseMs`). A round starts with
- * the write and again after each rolling-release wait, which the client makes three times
- * (`NO_ROUTE_RETRY_DELAYS_MS`). A dead token is presented afresh once a call.
+ * running the write, a pause as long as the clock allows (`inFlightPauseMs`), with no run window
+ * past that bound (`runWithinMs: 0`), since the run window is the pacing's and not the table's,
+ * and dispatch-keyed-writes.test.ts holds it. A round starts with the write and again after each
+ * rolling-release wait, which the client makes three times (`NO_ROUTE_RETRY_DELAYS_MS`). A dead
+ * token is presented afresh once a call.
  */
 const LIMITS = { pauses: 2, routeWaits: 3, deadTokens: 1 } as const;
 
@@ -701,6 +703,8 @@ async function drive(script: readonly Kind[]): Promise<{ run: Run; error?: unkno
     silenceMs: 1,
     inFlightPauseMs: 1,
     inFlightWithinMs: 2,
+    runPauseMs: 1,
+    runWithinMs: 0,
     pause: async (ms) => {
       const waited = waitStep(run);
       if (waited !== undefined) throw waited;

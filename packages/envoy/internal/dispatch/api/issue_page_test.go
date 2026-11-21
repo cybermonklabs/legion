@@ -315,7 +315,8 @@ func TestListIssuesFiltersStillApplyBesidePaging(t *testing.T) {
 }
 
 // A page the listing cannot serve is refused naming the parameter, and cursor, which the listing
-// does not page with, is refused rather than answered with the first page.
+// does not page with, is refused rather than answered with the first page. A repeated limit or
+// offset is refused in the one wording every repeated key gets (refuseRepeatedQueryKeys).
 func TestListIssuesRefusesAPageItCannotServe(t *testing.T) {
 	handler := newTestHandler(t)
 	createListedIssues(t, handler, "TEST", 2)
@@ -326,11 +327,9 @@ func TestListIssuesRefusesAPageItCannotServe(t *testing.T) {
 		{"limit=x", "limit"},
 		{"limit=1.5", "limit"},
 		{"limit=", "limit"},
-		{"limit=1&limit=2", "limit"},
 		{"offset=-1", "offset"},
 		{"offset=x", "offset"},
 		{"offset=", "offset"},
-		{"limit=1&offset=1&offset=2", "offset"},
 		{"cursor=abc", "cursor"},
 		{"limit=5&cursor=abc", "cursor"},
 	} {
@@ -345,6 +344,15 @@ func TestListIssuesRefusesAPageItCannotServe(t *testing.T) {
 		}](t, response)
 		if body.Code != "INVALID_QUERY" || !strings.HasPrefix(body.Error, test.parameter+" ") {
 			t.Errorf("?%s: refusal %+v, want INVALID_QUERY naming %s", test.query, body, test.parameter)
+		}
+	}
+	for _, test := range []struct{ query, parameter string }{
+		{"limit=1&limit=2", "limit"},
+		{"limit=1&offset=1&offset=2", "offset"},
+	} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=TEST&"+test.query, nil, "alice")
+		if why := notTheRepeatRefusal(response, test.parameter); why != "" {
+			t.Errorf("?%s %s", test.query, why)
 		}
 	}
 }

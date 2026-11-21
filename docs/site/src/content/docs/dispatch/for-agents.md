@@ -388,11 +388,16 @@ carries an `Idempotency-Key` header of its own, and the command asks again under
 attempt fails on the way, gets no answer for 20 seconds while none of its body is going out,
 Dispatch answers 5xx, 408 or 429, or Dispatch is still running an earlier attempt
 (`409 KEY_IN_FLIGHT`): at most five attempts, the last starting within 30 seconds of the first, and
-the whole command within 60. Once an attempt got no answer for 20 seconds or was told
-`409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and it finishes it whatever the
-command does, so the command keeps asking every 3 seconds or less (longer only when Dispatch's
-`Retry-After` asks), starting no ask in the last 5 seconds of its 60, to collect the answer; an
-upload of a megabyte or more, whose every ask sends the whole file again, keeps the five attempts.
+the whole command within 60 while Dispatch has not said it may be running the write. Once an
+attempt got no answer for 20 seconds or was told `409 KEY_IN_FLIGHT`, Dispatch may still be running
+the write, and it finishes it whatever the command does, so the command keeps asking to collect the
+answer: every 3 seconds or less (longer only when Dispatch's `Retry-After` asks) until 55 seconds
+after it started, then every 10 seconds, for up to 11 minutes after the attempt that could have
+started the run, Dispatch's 10-minute limit on a write's run and the minute its key's lease
+outlasts it. As that wait begins, the command prints one line on stderr naming the write's key and
+the longest it will wait: let it run, since stopping it does not stop the write, only your chance
+to learn whether it landed. An upload of a megabyte or more, whose every ask sends the whole file
+again, keeps the five attempts.
 Once an attempt may have reached Dispatch, it asks again only of a Dispatch that judges the key:
 one whose answer carried the key back, or whose `/healthz` said `idempotency_keys: true` in the
 last five minutes, whatever its status; any other would make a repeated write twice. An attempt

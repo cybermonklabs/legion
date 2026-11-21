@@ -12,7 +12,7 @@ import type {
 import { urlForText } from "@legion/contracts/log-text";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
-import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
+import { DispatchClient, type DispatchRunWait, type DispatchWriteRetry } from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
@@ -66,6 +66,10 @@ export interface ExecuteDispatchToolInput {
   readonly fetchImpl?: typeof fetch;
   /** How each write asks Dispatch again under its key (`DISPATCH_WRITE_RETRY` unless set). */
   readonly writeRetry?: DispatchWriteRetry;
+  /** Told once for each write that enters the wait for a run Dispatch may still be making of it,
+   *  which can outlast the client's own deadline (`DispatchClient`); the `dispatch` command prints
+   *  it on stderr, so its caller does not take the wait for a hang. */
+  readonly onRunWait?: (wait: DispatchRunWait) => void;
   /** The wait before each new attempt of a request Dispatch answered with no route
    *  (`DispatchClient`); a test passes one that returns at once. */
   readonly sleep?: Sleep;
@@ -326,6 +330,7 @@ export function sessionContext(
       new DispatchClient(url, credential, fetchImpl, {
         signal: input.signal,
         writeRetry: input.writeRetry,
+        onRunWait: input.onRunWait,
         sleep: input.sleep,
       }),
   };

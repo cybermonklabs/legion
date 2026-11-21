@@ -1,10 +1,14 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
+	"reflect"
+	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -115,6 +119,18 @@ type editLostError struct {
 	Suggestion   *string       `json:"suggestion,omitempty"`
 }
 
+// writeHandlerError answers err, the error a route's handler or one of its layers met, and writes
+// the operator's line for a fault of the server's and for a document the server cannot serve. No
+// line carries text taken from an error's message. A document's text, which can hold a person's
+// address, travels in the messages of the refusals that quote it, and whatever wraps such a
+// refusal carries that text on: a wrapper that keeps the chain (%w) lets errors.Is tell the
+// refusal apart, but one that wraps it with %v, or an apiError whose message a handler formatted
+// from it, reads as any other error, and nothing here can tell that a message holds no such text.
+// So every line names the error by docs.LoggedFault instead - the refusal's class, the messages of
+// the sentinels it is, a Postgres error's SQLSTATE and constraint, and the Go types of its chain -
+// and says where it came from: the handler that met it (handlerSite) and the route it answered
+// (answeredRoute), by which the request's own access-log line, naming its caller, path and
+// status, is found (logHandlerError).
 func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
@@ -128,7 +144,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, apiErr.code, apiErr.status, apiErr.message)
 		// A 500 the handler named is a server fault like any other, so the operator's log shows it.
 		if apiErr.status == http.StatusInternalServerError {
-			slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", err)
+			logHandlerError(w, slog.LevelError, "dispatch: API handler failed", err, "code", apiErr.code)
 		}
 		return
 	}
@@ -139,7 +155,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		return
 	case codeDocumentUnloadable:
 		writeError(w, documentCode, http.StatusConflict, docs.ErrDocumentUnloadable.Error())
-		slog.Warn("dispatch: API document history cannot load", "error", err)
+		logHandlerError(w, slog.LevelWarn, "dispatch: API document history cannot load", err)
 		return
 	case codeDocNewerContent:
 		// The message is the document's own (docs.NewerContentError), the same on every route.
@@ -250,21 +266,24 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	}
 	if docs.IsTooLarge(err) {
 		writeError(w, "CAP_EXCEEDED", http.StatusRequestEntityTooLarge, err.Error())
-		slog.Warn("dispatch: API refused a document too large to store", "error", err)
+		logHandlerError(w, slog.LevelWarn, "dispatch: API refused a document too large to store", err)
 		return
 	}
 	// A tree outside the schema that the document holds answers 409 with its one message, the same
 	// on every route whatever the route wrapped it in (docs.OutsideSchemaError). Any other schema
-	// refusal is a tree an operation produced, which is the server's fault.
+	// refusal is a tree an operation produced, which is the server's fault. Either line names the
+	// refusal as every line here names an error, by its class and never by its message: its chain
+	// carries the document's text and whatever the request wrapped it in, the caller's own identity
+	// among it.
 	if documentCode == codeDocSchema {
 		var outside *docs.OutsideSchemaError
 		if errors.As(err, &outside) {
 			writeError(w, documentCode, http.StatusConflict, outside.Error())
-			slog.Warn("dispatch: API document outside Proof schema", "error", err)
+			logHandlerError(w, slog.LevelWarn, "dispatch: API document outside Proof schema", err)
 			return
 		}
 		writeError(w, documentCode, http.StatusInternalServerError, err.Error())
-		slog.Error("dispatch: API document outside Proof schema", "error", err)
+		logHandlerError(w, slog.LevelError, "dispatch: API document outside Proof schema", err)
 		return
 	}
 	if errors.Is(err, docs.ErrIssueClosed) {
@@ -276,7 +295,89 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
-	slog.Error("dispatch: API handler failed", "error", err)
+	logHandlerError(w, slog.LevelError, "dispatch: API handler failed", err)
+}
+
+// logHandlerError writes one of writeHandlerError's lines: message at level, then args, the
+// attributes the line's own branch names, then the error as docs.LoggedFault describes it, the
+// handler that met it (handlerSite) and the route it answered (answeredRoute). Each is words of
+// this program's own, so the line holds nothing a caller or a document wrote.
+func logHandlerError(w http.ResponseWriter, level slog.Level, message string, err error, args ...any) {
+	args = append(args, "error", docs.LoggedFault(err))
+	if site := handlerSite(); site != "" {
+		args = append(args, "site", site)
+	}
+	if route := answeredRoute(w); route != "" {
+		args = append(args, "route", route)
+	}
+	slog.Log(context.Background(), level, message, args...)
+}
+
+// handlerErrorWriters are the functions handlerSite reads past to the one that met the error:
+// writeHandlerError, and this package's helpers that answer some errors themselves and hand it
+// every other error they are given. Each is named by its method expression, so a rename cannot
+// leave the set naming a function that no longer exists. init fills the set because a variable
+// initialized from them would be an initialization cycle: each of them reaches handlerSite, which
+// reads the set.
+var handlerErrorWriters = map[string]bool{}
+
+func init() {
+	for _, writer := range []any{
+		(*server).writeHandlerError,
+		(*server).writeAuthenticationError,
+		(*server).writeClaimError,
+		(*server).writeEnvoyError,
+		(*server).writeIDPrefixError,
+		(*server).writeSessionGroupError,
+		(*server).writeUploadDocumentError,
+		(*server).refusePriorityWrite,
+	} {
+		handlerErrorWriters[runtime.FuncForPC(reflect.ValueOf(writer).Pointer()).Name()] = true
+	}
+}
+
+// handlerSite is where the error writeHandlerError answers came from: the function and line that
+// called it, past the helpers that only hand an error on (handlerErrorWriters), such as
+// "api.(*server).createIssue:412", and "" when no such caller is on the stack. It names this
+// build's code and never anything a request carried, and it tells two failures of one route apart.
+func handlerSite() string {
+	var callers [32]uintptr
+	frames := runtime.CallersFrames(callers[:runtime.Callers(1, callers[:])])
+	writing := false
+	for {
+		frame, more := frames.Next()
+		switch {
+		case handlerErrorWriters[frame.Function]:
+			writing = true
+		case writing:
+			function := frame.Function[strings.LastIndexByte(frame.Function, '/')+1:]
+			return function + ":" + strconv.Itoa(frame.Line)
+		}
+		if !more {
+			return ""
+		}
+	}
+}
+
+// answeredRoute is the pattern of the route w answers, which the access log's writer holds
+// (accesslog's Route), read through each writer a layer of the route's chain wraps it in, and ""
+// for a writer no route's chain made, such as a test's recorder. It is the route table's pattern,
+// never the request's path.
+func answeredRoute(w http.ResponseWriter) string {
+	for {
+		switch writer := w.(type) {
+		case interface{ Route() string }:
+			return writer.Route()
+		case *keyedAnswer:
+			// The keyed layer's writer has no Unwrap on purpose (keyedAnswer), so the writer it
+			// answers on is read from its field.
+			w = writer.w
+		case interface{ Unwrap() http.ResponseWriter }:
+			w = writer.Unwrap()
+		default:
+			return ""
+		}
+	}
 }
 
 // ambiguousTargetError is the 409 TARGET_AMBIGUOUS body a write answers a quote or heading

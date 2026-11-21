@@ -919,11 +919,11 @@ func (r *renderedReplica) updateChangesMarkdown(room string) (bool, func() map[s
 		r.rendering = nil
 		switch {
 		case errors.Is(err, ErrDocOutsideSchema):
-			slog.Warn("dispatch: updated document outside Proof schema", "room", room, "error", err)
+			slog.Warn("dispatch: updated document outside Proof schema", "room", room, "error", LoggedError(err))
 		case errors.Is(err, ErrDocNewerContent):
-			slog.Warn("dispatch: updated document holds an element this build cannot read", "room", room, "error", err)
+			slog.Warn("dispatch: updated document holds an element this build cannot read", newerContentLine(err, "room", room)...)
 		default:
-			slog.Error("dispatch: read updated document", "room", room, "error", err)
+			slog.Error("dispatch: read updated document", "room", room, "error", LoggedError(err))
 		}
 		return true, nil
 	}
@@ -977,7 +977,7 @@ func (r *renderedReplica) spliceTouched(room string) (changed bool, asks func() 
 		for _, index := range layout.AskBlocks() {
 			block, err := read(index)
 			if err != nil {
-				slog.Error("dispatch: read a block of the updated document to list its ask blocks", "room", room, "error", err)
+				slog.Error("dispatch: read a block of the updated document to list its ask blocks", "room", room, "error", LoggedError(err))
 				return nil
 			}
 			addAskBlockIDs(ids, block)

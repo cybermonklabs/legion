@@ -808,10 +808,12 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// project, so every row read above names an issue or a document. A row naming neither is
 	// refused rather than marked: a mark that went on without the thread's lock would hold the
 	// project while it waited for a row the Inbox's Mark all read may hold while it waits for that
-	// project, the cycle markInboxReadThreads rules out.
+	// project, the cycle markInboxReadThreads rules out. The error names the thread and not whose
+	// row it is: writeHandlerError logs it, and a log line is read by whoever reads the server's
+	// logs.
 	owner := store.OwnerOf(issueKey, artifactID)
 	if owner == nil {
-		s.writeHandlerError(w, fmt.Errorf("%s's user_threads row of thread %s names no issue and no document", login, threadID))
+		s.writeHandlerError(w, fmt.Errorf("the caller's user_threads row of thread %s names no issue and no document", threadID))
 		return
 	}
 	// Whether the mark moves at all, read under that lock in the statement after it

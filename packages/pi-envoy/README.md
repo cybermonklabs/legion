@@ -950,13 +950,22 @@ CLI outside the form the gate reads and carried an ask for a person (`outcome: "
   Dispatch call.
 - **When.** Once the call has been answered: the gate appends the call's `advisor-gate` entry,
   returns, and then hands the record to the session's recorder, so no review is ever cut short to
-  pay for it. It never changes the decision. The write runs until Dispatch has answered it or the
-  session's shutdown cuts it — the client asks again under the call's own `Idempotency-Key`, and
-  nothing retries it from outside — so a Dispatch that is slow under load is waited
-  out rather than given up. A record that fails or that the shutdown cuts writes one line to the
-  host's log and appends one `advisor-gate-record` entry, carrying `toolCallId`, `tool`,
-  `recordError` and, for an unmarked write, the record's own `recordId`; the decision's own entry
-  stands as written. Once the session is shutting down, the one `session_shutdown` handler the
+  pay for it. It never changes the decision. The write runs until Dispatch has answered it, the
+  session's shutdown cuts it or its own deadline of a minute ends it
+  (`DISPATCH_IN_PROCESS_DEADLINE_MS`) — the client asks again under the call's own
+  `Idempotency-Key` within that minute, and nothing retries it from outside — so a Dispatch that
+  is slow under load is waited out for that long. A write Dispatch is still running when the
+  minute ends (it answered `409 KEY_IN_FLIGHT`), or may still be running (an attempt was cut off
+  for silence), is not waited on for the ten minutes its run can take, since the session's later
+  records queue behind it, and Dispatch's run, where there is one, finishes it all the same. Its
+  log line says where the record stands, under the write's key, rather than that it failed: an
+  append still running is Dispatch's to finish, and nothing sends it again; a create still running
+  left the record unwritten, and the session's next record asks for it again under its key. A
+  record that fails, that is still running at its
+  deadline or that the shutdown cuts writes one line to the host's log and appends one
+  `advisor-gate-record` entry, carrying `toolCallId`, `tool`, `recordError` and, for an unmarked
+  write, the record's own `recordId`; the decision's own entry stands as written. Once the
+  session is shutting down, the one `session_shutdown` handler the
   gate binds gives the records 1.25 s from that moment and then cuts them, whether or not the
   gate loaded, and the gate's own handler waits for what is still pending inside the 1.5 s it
   holds shutdown for, so a record still lands, and the entry of one that could not, before the
@@ -987,14 +996,15 @@ CLI outside the form the gate reads and carried an ask for a person (`outcome: "
   which is one login for all of them (`requestKeyLogin`,
   `packages/envoy/internal/dispatch/api/request_keys.go`); Dispatch keeps a key 24 h
   (`IdempotencyKeyTTL`), well past the 10 minutes a create's run can hold it
-  (`keyedHandlerLimit`). The records of one session are written one at a time, each sent once the
-  one before it has settled, and each carries the time the gate made it, which is what the reader
-  counts and sorts by: a write given up on this side may still be running on Dispatch's while the
-  next is sent, so the order they land in is not the order they were made.
+  (`IDEMPOTENCY_RUN_LIMIT_MS`). The records of one session are written one at a time, each sent
+  once the one before it has settled, and each carries the time the gate made it, which is what
+  the reader counts and sorts by: a write given up on this side may still be running on
+  Dispatch's while the next is sent, so the order they land in is not the order they were made.
 - **What is lost, and what is counted.** A session killed between a decision and its write loses
   that one record, and a session that never reached a gated call writes no document. A record
-  that fails, or that the shutdown cuts, is unconfirmed too — and one given up that way may have
-  landed all the same, so a record the session could not confirm can still be in the document,
+  that fails, that is still running on Dispatch at its deadline, or that the shutdown cuts, is
+  unconfirmed too — and one given up that way may have landed all the same, so a record the
+  session could not confirm can still be in the document,
   where the reader counts it once by its `id` and counts the second copy as a duplicate. What no
   longer happens: a create given up here and committed on Dispatch after later records were
   written cannot replace them, since every create of that document is the one keyed create, and

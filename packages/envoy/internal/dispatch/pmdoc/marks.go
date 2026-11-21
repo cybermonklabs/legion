@@ -68,6 +68,41 @@ var renderedMarkTypes = map[string]bool{
 	"link": true, "strong": true, "emphasis": true, "strike_through": true, "inlineCode": true,
 }
 
+// unwrittenMarkAttrs is, for each rendered mark that has any, the attributes the renderer does not
+// write and the parser does not read, which a stored text therefore cannot carry. The browser
+// editor's schema (milkdown's commonmark and gfm presets, which proof-editor builds its schema
+// from) declares one such: a bold's or an italic's marker, `*` by default and `_` on a run typed
+// between underscores, which the renderer writes as `*` whatever it holds and the parser reads as
+// `*` whatever was written. A link's href and title are written and read back, and a
+// strikethrough and a code span carry no attribute there. The read-back comparison leaves these out
+// (sameWrittenMarks): a mark holding any value of one, or none, reads back as itself, and two runs
+// whose marks differ only in one are one run (asWritten), as the renderer writes them.
+var unwrittenMarkAttrs = map[string][]string{
+	"strong":   {"marker"},
+	"emphasis": {"marker"},
+}
+
+// isUnwrittenMarkAttr reports whether name is one of a markType mark's unwrittenMarkAttrs.
+func isUnwrittenMarkAttr(markType, name string) bool {
+	return slices.Contains(unwrittenMarkAttrs[markType], name)
+}
+
+// sameWrittenMarks reports whether left and right, two mark sets in one order (sortMarks), are the
+// same marks as a stored text carries them: each pair of one type, with equal attributes but the
+// unwrittenMarkAttrs of that type.
+func sameWrittenMarks(left, right []Mark) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		markType := left[index].Type
+		if markType != right[index].Type || !attrsEqualBut(left[index].Attrs, right[index].Attrs, func(name string) bool { return isUnwrittenMarkAttr(markType, name) }) {
+			return false
+		}
+	}
+	return true
+}
+
 // writtenMarks is the marks a node's text is written under: its visible marks, less a bare URL's
 // link, which the parser links again on its own, or an autolink's, which its angle brackets write
 // (isAngleURLLink), and less a www link's where the spelling writes it bare (wwwBare,

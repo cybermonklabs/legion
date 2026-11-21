@@ -55,6 +55,8 @@ test("a write whose session switches after an attempt that may have landed ends 
       silenceMs: 5_000,
       inFlightPauseMs: 10,
       inFlightWithinMs: 5_000,
+      runPauseMs: 10,
+      runWithinMs: 5_000,
     },
   });
 

@@ -195,7 +195,7 @@ func (s *Service) writeDocumentAskStates(
 		// same history: the close, reopen or repair writing it goes on without it. The rebuild
 		// that makes it load again writes its closed issue's states itself (RebuildDocument).
 		slog.Warn("dispatch: leave the ask blocks of a document whose history cannot load as they are",
-			"issue", *owner.IssueKey, "artifact", artifactID, "error", err)
+			"issue", *owner.IssueKey, "artifact", artifactID, "error", LoggedError(err))
 		return nil, nil
 	default:
 		return nil, err
@@ -752,7 +752,7 @@ func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) err
 			}
 		}
 		if err != nil {
-			slog.Warn("dispatch: settle a document of an issue", "issue", issueKey, "room", room, "error", err)
+			slog.Warn("dispatch: settle a document of an issue", "issue", issueKey, "room", room, "error", LoggedError(err))
 			failures = append(failures, fmt.Errorf("settle document %s: %w", room, err))
 		}
 	}

@@ -140,7 +140,7 @@ func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 }
 
 // The handler's context is the server's, not the client's: the client's cancellation mid-run does
-// not reach it, and the server's own bound, keyedHandlerLimit, does.
+// not reach it, and the server's own bound, contracts.IdempotencyRunLimit, does.
 func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 	running, proceed := make(chan struct{}), make(chan struct{})
 	type seen struct {
@@ -179,8 +179,8 @@ func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 		t.Fatalf("a run whose client went away mid-run: context error %v, status %d, want it run to its answer",
 			observed.err, response.Code)
 	}
-	if observed.left < keyedHandlerLimit-time.Minute || observed.left > keyedHandlerLimit {
-		t.Fatalf("the handler's deadline is %v away, want the server's %v bound", observed.left, keyedHandlerLimit)
+	if observed.left < contracts.IdempotencyRunLimit-time.Minute || observed.left > contracts.IdempotencyRunLimit {
+		t.Fatalf("the handler's deadline is %v away, want the server's %v bound", observed.left, contracts.IdempotencyRunLimit)
 	}
 }
 
@@ -268,8 +268,8 @@ func TestTheSlowWriteHookDelaysEveryKeyedRunOfItsPath(t *testing.T) {
 	}
 	arm(700)
 	// The bounds on the armed runs are lower ones, which a loaded runner cannot break: load can
-	// only lengthen what a run takes, so it cannot bring one in under its arm, and keyedHandlerLimit
-	// is ten minutes, so it cannot turn one into a 503 either.
+	// only lengthen what a run takes, so it cannot bring one in under its arm, and
+	// contracts.IdempotencyRunLimit is ten minutes, so it cannot turn one into a 503 either.
 	for _, key := range []string{"slow-1", "slow-2"} {
 		started := time.Now()
 		if created := keyedRequest(t, handler, http.MethodPost, path, map[string]any{"body": key}, "alice", key); created.Code != http.StatusCreated {

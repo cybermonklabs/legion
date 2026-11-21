@@ -8,7 +8,11 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type DispatchDelivery, renderInbound } from "@legion/envoy-client/delivery"
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import {
+  type DispatchClient,
+  DispatchWriteUnsettledError,
+} from "@legion/envoy-client/dispatch-http"
+import { messageFor } from "@legion/envoy-client/errors"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
 import { type ModSession, modSession } from "../src/mod-session"
 import {
@@ -130,6 +134,8 @@ interface Harness {
    *  order they happened. */
   readonly order: string[]
   readonly accepts: { readonly id: string; readonly attempt: number }[]
+  /** Every line the router warned. */
+  readonly warnings: string[]
   readonly observe: (event: ModEvent) => void
 }
 
@@ -151,6 +157,8 @@ async function harness(input: {
    *  reason. */
   readonly commandEchoMs?: number
   readonly directory?: string
+  /** What a reply fails with, after it was recorded as posted; undefined, it is taken. */
+  readonly replyFails?: (result: { readonly body?: string; readonly error?: string }) => unknown
 }): Promise<Harness> {
   const directory = input.directory ?? (await mkdtemp(join(tmpdir(), "claude-envoy-turns-")))
   const stateFile = userTurnStateFile(directory, SESSION)
@@ -158,6 +166,7 @@ async function harness(input: {
   const replies: { delivery: DispatchDelivery; body?: string }[] = []
   const order: string[] = []
   const accepts: { id: string; attempt: number }[] = []
+  const warnings: string[] = []
   const session = modSession({
     link: input.link,
     warn: () => undefined,
@@ -185,11 +194,13 @@ async function harness(input: {
         ...(result.body === undefined ? {} : { body: result.body }),
         ...(asked === undefined ? {} : { followUp: asked }),
       })
+      const failure = input.replyFails?.(result)
+      if (failure !== undefined) throw failure
     },
     session,
     sessionId: () => SESSION,
     state,
-    warn: () => undefined,
+    warn: (text) => warnings.push(text),
     ...(input.commandWaitingMs === undefined ? {} : { commandWaitingMs: input.commandWaitingMs }),
     ...(input.inbox === undefined ? {} : { inbox: input.inbox }),
   })
@@ -208,6 +219,7 @@ async function harness(input: {
     session,
     state,
     stateFile,
+    warnings,
   }
 }
 
@@ -753,6 +765,76 @@ test("a BTW is answered from the model's fork and adds nothing to the conversati
     expect(session.replies.map((posted) => posted.body)).toEqual(["It is the migration guard."])
     // A BTW is no attempt of a person's own turn: nothing of it is spent.
     expect(session.accepts).toEqual([])
+  } finally {
+    await rm(session.directory, { recursive: true, force: true })
+  }
+})
+
+// A BTW's reply Dispatch is still running when its deadline ends lands without this side and
+// settles the attempt when it does, so no error is posted over it, which could settle the attempt
+// first with words the person would read in place of the answer; the warning names its key, and
+// says the reply is running only where Dispatch said so: after an attempt cut off for silence
+// alone it may still be. Any other failure of the reply is still answered with its error, so the
+// person sees the attempt fail.
+test.each([
+  {
+    reply: "is still running on Dispatch",
+    error: new DispatchWriteUnsettledError(
+      new DOMException("The operation timed out.", "TimeoutError"),
+      21,
+      "reply-key-1",
+      `POST http://dispatch.test/api/v1/messages/${MESSAGE}/reply is still running on Dispatch, and its deadline ended the wait for its outcome`,
+      true,
+      true,
+      true,
+    ),
+    warning: `a BTW's reply to message ${MESSAGE} is still running on Dispatch under key reply-key-1; nothing more is posted`,
+  },
+  {
+    reply: "may still be running on Dispatch",
+    error: new DispatchWriteUnsettledError(
+      new DOMException("The operation timed out.", "TimeoutError"),
+      3,
+      "reply-key-1",
+      `POST http://dispatch.test/api/v1/messages/${MESSAGE}/reply may still be running on Dispatch, and its deadline ended the wait for its outcome`,
+      false,
+      true,
+      false,
+    ),
+    warning: `a BTW's reply to message ${MESSAGE} may still be running on Dispatch under key reply-key-1; nothing more is posted`,
+  },
+  {
+    reply: "had no definitive answer",
+    error: new DispatchWriteUnsettledError(
+      new DOMException("The operation timed out.", "TimeoutError"),
+      5,
+      "reply-key-1",
+      `POST http://dispatch.test/api/v1/messages/${MESSAGE}/reply had no definitive answer when its deadline ended it`,
+      true,
+    ),
+    warning: undefined,
+  },
+])("a BTW whose reply $reply posts an error over it only where it is not still running", async (row) => {
+  const mod = fakeMod({
+    "model.fork": () => ({ isAnswered: true as const, text: "It is the migration guard." }),
+  })
+  const session = await harness({
+    link: mod.link,
+    replyFails: (result) => (result.body === undefined ? undefined : row.error),
+  })
+  try {
+    await session.router.route(frame(personSends("what blocks it?", { mode: "btw" })))
+    await waitFor(
+      async () => session.order.length + session.warnings.length === 2,
+      "the BTW's reply and what followed it",
+    )
+    await settled()
+
+    expect(session.order).toEqual([
+      "reply:It is the migration guard.",
+      ...(row.warning === undefined ? [`reply:${messageFor(row.error)}`] : []),
+    ])
+    expect(session.warnings).toEqual(row.warning === undefined ? [] : [row.warning])
   } finally {
     await rm(session.directory, { recursive: true, force: true })
   }

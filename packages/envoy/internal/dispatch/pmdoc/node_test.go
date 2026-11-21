@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/reearth/ygo/crdt"
@@ -19,8 +20,9 @@ func TestValidateRejectsUnknownNodeType(t *testing.T) {
 // build wrote: a node, mark or typed block this build's manifest does not name, an attribute a
 // typed block does not declare, or a value its enum attribute does not list. Its refusal is
 // ErrSchema and ErrUnknownElement both, and names those elements as data (UnknownElements), which
-// a caller records in place of the refusal's own message. A known element in a broken shape is
-// ErrSchema alone, so a reader can tell the two apart.
+// a caller records in place of the refusal's own message: a value by its typed block and
+// attribute, never by its text. A known element in a broken shape is ErrSchema alone, so a reader
+// can tell the two apart.
 func TestValidateTellsAnUnknownElementFromABrokenShape(t *testing.T) {
 	paragraph := func() *Node {
 		return &Node{Type: "paragraph", Children: []*Node{{Type: "text", Text: "x"}}}
@@ -40,7 +42,7 @@ func TestValidateTellsAnUnknownElementFromABrokenShape(t *testing.T) {
 			{Type: "text", Text: "x", Marks: []Mark{{Type: "futureMark"}}},
 		}}}}, []string{"futureMark"}},
 		{"an attribute the typed block does not declare", callout(Attrs{"kind": "note", "title": "", "icon": "star"}, paragraph()), []string{"icon"}},
-		{"a value the enum does not list", callout(Attrs{"kind": "danger", "title": ""}, paragraph()), []string{"danger"}},
+		{"a value the enum does not list", callout(Attrs{"kind": "danger", "title": ""}, paragraph()), []string{"callout kind value"}},
 		{"an unknown node inside a known block", &Node{Type: "doc", Children: []*Node{{Type: "blockquote", Children: []*Node{
 			{Type: "future_block", Children: []*Node{paragraph()}},
 		}}}}, []string{"future_block"}},
@@ -57,6 +59,47 @@ func TestValidateTellsAnUnknownElementFromABrokenShape(t *testing.T) {
 			}
 			if got := UnknownElements(err); !slices.Equal(got, test.elements) {
 				t.Fatalf("UnknownElements(%v) = %q, want %q", err, got, test.elements)
+			}
+		})
+	}
+}
+
+// An enum value this build's manifest does not list is named among UnknownElements by its typed
+// block and attribute, never by its own text, in every reading of a stored document that refuses
+// it, as Validate names it: a peer can write any text into the attribute, a person's address among
+// it, and the names reach the server's log. The refusal's message, which answers the caller, still
+// quotes the value.
+func TestAStoredEnumValueThisBuildDoesNotListIsNamedByItsAttribute(t *testing.T) {
+	const address = "person-7@example.com"
+	for _, test := range []struct {
+		name string
+		read func() error
+	}{
+		{"a stored tree whose broken block comes first", func() error {
+			doc := crdt.New()
+			fragment := doc.GetXmlFragment("prosemirror")
+			doc.Transact(func(txn *crdt.Transaction) {
+				fragment.InsertElement(txn, 0, crdt.NewYXmlElement("callout"))
+				callout := crdt.NewYXmlElement("callout")
+				fragment.InsertElement(txn, 1, callout)
+				callout.SetAttributeValue(txn, "kind", address)
+				callout.InsertElement(txn, 0, crdt.NewYXmlElement("paragraph"))
+			})
+			_, err := Read(fragment)
+			return err
+		}},
+		{"a stored rendering", func() error {
+			_, err := ParseRendering(":::callout{#b1 kind=\"" + address + "\" title=\"T\"}\nBody.\n:::\n")
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.read()
+			if !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), address) {
+				t.Fatalf("read = %v, want ErrUnknownElement quoting the value", err)
+			}
+			if got, want := UnknownElements(err), []string{"callout kind value"}; !slices.Equal(got, want) {
+				t.Fatalf("UnknownElements(%v) = %q, want %q", err, got, want)
 			}
 		})
 	}

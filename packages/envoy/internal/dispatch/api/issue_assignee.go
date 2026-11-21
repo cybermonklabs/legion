@@ -35,19 +35,46 @@ func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (a
 	return &canonical, true, nil
 }
 
-// allowedLogin canonicalises login and checks that it names a person who has signed in.
+// allowedLogin canonicalises login, a login the caller named, and checks that it names a person
+// who has signed in. Its refusal quotes login back to the caller, whose own input it is.
 func (s *server) allowedLogin(ctx context.Context, login string) (string, error) {
 	canonical := model.CanonicalLogin(login)
-	var known bool
-	if canonical != "" {
-		if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1)`, canonical).Scan(&known); err != nil {
-			return "", fmt.Errorf("read person %q: %w", canonical, err)
-		}
+	known, err := s.signedIn(ctx, canonical)
+	if err != nil {
+		return "", err
 	}
 	if !known {
 		return "", errorf(http.StatusBadRequest, "ASSIGNEE_NOT_ALLOWED", "%q has not signed in to Dispatch", strings.TrimSpace(login))
 	}
 	return canonical, nil
+}
+
+// allowedActingPerson is allowedLogin for person, the canonical login the request's credential
+// acts for (actorPerson) rather than one the caller typed. Its refusal names no login: the value
+// is the request's own identity, and the refusal is an error that writeHandlerError reads, and an
+// error that carries an identity can reach that function's log lines.
+func (s *server) allowedActingPerson(ctx context.Context, person string) (string, error) {
+	known, err := s.signedIn(ctx, person)
+	if err != nil {
+		return "", err
+	}
+	if !known {
+		return "", errorf(http.StatusBadRequest, "ASSIGNEE_NOT_ALLOWED", "the person this credential acts for has not signed in to Dispatch")
+	}
+	return person, nil
+}
+
+// signedIn reports whether canonical, a canonical login, names a person who has signed in; a blank
+// one names nobody. Its error names no login, since a handler logs a failure's error.
+func (s *server) signedIn(ctx context.Context, canonical string) (bool, error) {
+	if canonical == "" {
+		return false, nil
+	}
+	var known bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1)`, canonical).Scan(&known); err != nil {
+		return false, fmt.Errorf("read whether a person has signed in: %w", err)
+	}
+	return known, nil
 }
 
 // actorPerson is the one rule for which person a credential acts for, read off the actor the

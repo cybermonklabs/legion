@@ -107,8 +107,8 @@ const limitRecordTimeout = 5 * time.Second
 // It keeps the caller's values, so a keyed request's commit step (store.WithBeforeCommit, which
 // api's request keys install) still runs in the ledger write: while the request's attempt holds
 // its key, the write marks that key committed, as ratelimit's Record says. An attempt that has
-// lost its key, past api's keyedHandlerLimit, has the mark refused, and the write of the limit
-// with it.
+// lost its key, past api's run limit (contracts.IdempotencyRunLimit), has the mark refused, and the
+// write of the limit with it.
 func limitRecordContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), limitRecordTimeout)
 }

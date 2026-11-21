@@ -52,7 +52,7 @@ func (s *server) settleIssueBeforeClose(ctx context.Context, issueKey string) {
 		return
 	}
 	if err := s.deps.Docs.SettleIssueDocuments(ctx, issueKey); err != nil {
-		slog.Warn("dispatch: close an issue whose documents did not all settle first", "issue", issueKey, "error", err)
+		slog.Warn("dispatch: close an issue whose documents did not all settle first", "issue", issueKey, "error", docs.LoggedError(err))
 	}
 }
 
@@ -247,7 +247,7 @@ func (s *server) recordRestoredAsksTx(ctx context.Context, ledger *docs.Ledger, 
 // ctx must not end when the client goes away (outlivingTheClient), and no transaction is open.
 func (s *server) sweepClosedIssueAsks(ctx context.Context, issueKey string, withdrawn []model.Ask, actor model.Actor) {
 	if err := s.sweepClosedIssueAsksTx(ctx, issueKey, withdrawn, actor); err != nil {
-		slog.Error("dispatch: sweep the ask blocks of a closed issue", "issue", issueKey, "error", err)
+		slog.Error("dispatch: sweep the ask blocks of a closed issue", "issue", issueKey, "error", docs.LoggedError(err))
 	}
 }
 

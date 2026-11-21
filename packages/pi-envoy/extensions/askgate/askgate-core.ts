@@ -224,9 +224,11 @@
 // counts the rule decisions over a fortnight holds a Dispatch token and nothing else. That write
 // carries no ask text and no quote, and never changes the decision. It runs after the handler has
 // returned, so no review is ever cut short to pay for it: the handler hands it to the session's
-// recorder, whose write runs until Dispatch has answered it or the session's shutdown cuts it,
-// and keeps the wait for it in a pending set. A record that cannot be written — an error, or the
-// shutdown's cut — writes one line to the host's plain log (`runtimeLogger`) and appends one
+// recorder, whose write runs until Dispatch has answered it, its minute's deadline ends it or the
+// session's shutdown cuts it, and keeps the wait for it in a pending set. A record that cannot be
+// confirmed — an error, a write still running on Dispatch at its deadline (or that may be), or the
+// shutdown's cut — writes one line to the host's plain log (`runtimeLogger`), which says where a
+// still-running record stands rather than that it failed (`unconfirmedRecordText`), and appends one
 // `advisor-gate-record` entry carrying `toolCallId`, `tool` and `recordError`; the `advisor-gate`
 // entry it belongs to is written already, so `askgate-report.ts` counts the gated call from that
 // one and the follow-up as a record not confirmed. At shutdown the handler waits for what is still
@@ -261,7 +263,11 @@ import requestTemplate from "./askgate-request.md" with { type: "text" };
 import systemTemplate from "./askgate-system.md" with { type: "text" };
 import uploadRule from "./askgate-upload.md" with { type: "text" };
 import { Breaker, breakerKey, callKeys, refusalThings } from "./breaker";
-import type { DecisionRecorder } from "./decision-record";
+import {
+  type DecisionRecorder,
+  type RecordStillRunning,
+  unconfirmedRecordText,
+} from "./decision-record";
 import ruleCheckRules from "./rule-check.md" with { type: "text" };
 import ruleCheckSystem from "./rule-check-system.md" with { type: "text" };
 import rules from "./rules.md" with { type: "text" };
@@ -2604,19 +2610,21 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       for (const abandon of inflight.values()) abandon("abandoned");
     });
     /**
-     * A decision Dispatch never took: one line to the host's plain log, and one
-     * `advisor-gate-record` entry naming the call and what stopped the record. The call's own
-     * `advisor-gate` entry was written before the record began and stands as it is.
+     * A decision Dispatch never confirmed: one line to the host's plain log, and one
+     * `advisor-gate-record` entry naming the call and what stopped the record. The line says where
+     * a record stands whose write Dispatch was still running at its deadline, or may have been,
+     * rather than that it failed (`unconfirmedRecordText`). The call's own `advisor-gate` entry
+     * was written before the record began and stands as it is.
      */
-    const noteRecordFailure = (entry: GateEntry, recordError: string) => {
+    const noteRecordFailure = (entry: GateEntry, answer: string | RecordStillRunning) => {
       try {
         deps.runtimeLogger.warn(
-          `AskGate did not record the decision of ${entry.tool} (${entry.toolCallId}) on Dispatch: ${recordError}`
+          unconfirmedRecordText(`the decision of ${entry.tool} (${entry.toolCallId})`, answer)
         );
         pi.appendEntry(ADVISOR_GATE_RECORD_ENTRY_TYPE, {
           toolCallId: entry.toolCallId,
           tool: entry.tool,
-          recordError,
+          recordError: typeof answer === "string" ? answer : answer.recordError,
         } satisfies GateRecordEntry);
       } catch {
         // The session is sealed or its file is gone: there is nothing left to tell, and the call
@@ -2626,14 +2634,14 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
     /**
      * Publishes one decision to Dispatch, started as the handler returns and awaited by nothing of
      * the call: the review's deadline pays none of it. The recorder's write runs until Dispatch
-     * has answered it or the session's shutdown cuts it, and a session's records are written one
-     * at a time, each carrying the time the gate made it.
+     * has answered it, its minute's deadline ends it or the session's shutdown cuts it, and a
+     * session's records are written one at a time, each carrying the time the gate made it.
      */
     const startRecord = (entry: GateEntry, ctx: GateCtx) => {
       const done = (async () => {
-        let recordError: string | undefined;
+        let answer: string | RecordStillRunning | undefined;
         try {
-          recordError = await recordDecision.record({
+          answer = await recordDecision.record({
             entry,
             sessionId: ctx.sessionManager.getSessionId(),
             directory: ctx.cwd,
@@ -2642,10 +2650,10 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
             id: entry.toolCallId,
           });
         } catch (error) {
-          recordError = messageOf(error);
+          answer = messageOf(error);
         }
         // The recorder answers why, the shutdown's cut included.
-        if (recordError !== undefined) noteRecordFailure(entry, recordError);
+        if (answer !== undefined) noteRecordFailure(entry, answer);
       })();
       records.add(done);
       void done.finally(() => records.delete(done));

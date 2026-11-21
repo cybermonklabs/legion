@@ -68,6 +68,20 @@ func TestTheWriterSpellsEveryTreeItReadsAsTheEngine(t *testing.T) {
 		// ends in such a line with no line feed after it, which an API write can carry.
 		{"indented code blocks whose whitespace lines the engine keeps", "> -\n>       code\n>       \n>       note\n>       \n>   \n\nBetween.\n\n- a\n\n          x\n        \n- b\n\nAfter.\n\n          y\n        \n       \nEnd.\n", "> - ```\n>   code\n>   \n>   note\n>   ```\n\nBetween.\n\n- a\n\n  ```\n      x\n    \n  ```\n- b\n\nAfter.\n\n```\n      y\n    \n   \n```\n\nEnd.\n"},
 		{"an indented code block ending in a whitespace line with no final line feed", "Before.\n\n    code\n    \n    ", "Before.\n\n```\ncode\n\n```\n"},
+		// The trees no spelling before finalResorts reads back
+		// (TestTheWriterSpellsTreesNoEarlierSpellingReadsBack), each written as the engine reads it.
+		{"a fused run between a bracket and a letter", "*(***&#120;*y***\n", "*(***&#120;*y***\n"},
+		{"a fused run between a letter and a bracket", "*&#120;***)**\n", "*&#120;***)**\n"},
+		{"a fused run after an escaped space", "*&#32;***&#120;**\n", "*&#32;***&#120;**\n"},
+		{"marks kept open through a fused run", "***.**&#32;***.**\n", "***.**&#32;***.**\n"},
+		{"a reference that makes the run before its text want one", "&#120;*&#120;***(**\n", "&#120;*&#120;***(**\n"},
+		{"a code span's backtick inside a run before a letter", "*`x`*&#120;\n", "*`x`*&#120;\n"},
+		{"a code span of a space beside one under another mark", "` `*`` ` ``*\n", "` `*`` ` ``*\n"},
+		// Two texts whose bold marks differ only in a marker, which the renderer does not write and
+		// the parser does not read (unwrittenMarkAttrs), are written as one run: no row here can
+		// name such a tree in markdown, since Parse reads every marker as `*`, so this row is the
+		// one spelling their rendering takes (TestAMarksMarkerIsLeftOutOfTheReadBack).
+		{"a bold run over two texts whose marks differ only in a marker", "**ab**\n", "**ab**\n"},
 	}
 	markdowns := make([]string, len(rows))
 	docs := make([]*Node, len(rows))

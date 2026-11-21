@@ -3,9 +3,13 @@ package pmdoc
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // A document a caller writes is stored as its rendering, so one whose rendering does not read back
@@ -30,6 +34,51 @@ func TestParseForWriteRefusesADocumentItsRenderingReadsBackOtherwise(t *testing.
 		if want == ErrRenderingRefused && !strings.Contains(err.Error(), "an empty list item followed by a blank line") {
 			t.Errorf("ParseForWrite(%q) = %v, want it to name the shape its rendering holds", markdown, err)
 		}
+	}
+}
+
+// A write refused for its stored text is logged, and the line names none of the document's text:
+// the writer is told what reads back otherwise, its own text quoted, while a log line is read by
+// whoever reads the server's logs, and a document can hold a person's address. A paragraph whose
+// stored text reads back holding other words is logged by its block id and its kind of
+// difference, and a text the parser refuses for an attribute's value by the refusal's class.
+func TestARefusedWriteIsLoggedWithNoTextOfTheDocument(t *testing.T) {
+	const address = "person-7@example.com"
+	logs := &logtest.Recorder{}
+	logtest.SetDefault(t, logs)
+	doc := &Node{Type: "doc", Children: []*Node{{
+		Type:     "paragraph",
+		Attrs:    Attrs{BlockIDAttr: "b1"},
+		Children: []*Node{{Type: "text", Text: "Registered by " + address + "."}},
+	}}}
+	misread, err := RefuseMisreadStored(nil, "", doc, "Registered by "+address+" twice.\n")
+	if err != nil || !errors.Is(misread.Refusal, ErrMisreadRendering) || !strings.Contains(misread.Refusal.Error(), address) || misread.Block != "b1" {
+		t.Fatalf("a paragraph stored as other words = %v, %v, block %q; want ErrMisreadRendering quoting the paragraph's text, in block b1", misread.Refusal, err, misread.Block)
+	}
+	refused, err := RefuseMisreadStored(nil, "", doc, ":::callout{kind=\""+address+"\"}\nRegistered.\n:::\n")
+	if err != nil || !errors.Is(refused.Refusal, ErrRenderingRefused) || !strings.Contains(refused.Refusal.Error(), address) {
+		t.Fatalf("a callout whose kind is an address = %v, %v; want ErrRenderingRefused quoting the kind", refused.Refusal, err)
+	}
+	lines := map[string]map[string]string{}
+	for _, record := range logs.Records() {
+		if strings.Contains(record.Message, address) {
+			t.Errorf("a log line's message holds the document's text: %q", record.Message)
+		}
+		attributes := map[string]string{}
+		record.Attrs(func(attribute slog.Attr) bool {
+			attributes[attribute.Key] = attribute.Value.String()
+			if strings.Contains(attribute.Value.String(), address) {
+				t.Errorf("the log line %q carries the document's text in %s: %q", record.Message, attribute.Key, attribute.Value.String())
+			}
+			return true
+		})
+		lines[record.Message] = attributes
+	}
+	if got, want := lines["pmdoc: refused a write whose markdown reads back otherwise"], map[string]string{"block": "b1", "difference": "paragraph text"}; !maps.Equal(got, want) {
+		t.Errorf("the misread's log line carries %v, want %v", got, want)
+	}
+	if got, want := lines["pmdoc: refused a write whose markdown cannot be read back"], map[string]string{"refusal": ErrUnknownElement.Error()}; !maps.Equal(got, want) {
+		t.Errorf("the refusal's log line carries %v, want %v", got, want)
 	}
 }
 
@@ -271,4 +320,99 @@ func documentBesideSpannedTable(width, rows int) *Node {
 // documentAdding is doc with block written after its last.
 func documentAdding(doc, block *Node) *Node {
 	return &Node{Type: "doc", Children: append(slices.Clone(doc.Children), block)}
+}
+
+// A bold's or an italic's marker is written by no renderer here and read by no parser here: every
+// marker is written `*` and read back as `*` (unwrittenMarkAttrs). So the read-back comparison
+// leaves it out, whatever the live document holds there: none - a peer that writes a mark with no
+// attributes of its own leaves none - or the `_` the browser editor gives a run typed between
+// underscores, beside the `*` of the control. Each reads back as the same tree rather than as a
+// misread every later write excuses, and beside the same mark holding `*`, as a document API
+// replace that bolds the next word leaves it, the two texts are one run: `**ab**`, not
+// `**a****b**`, which reads back as the text `a****b`. An attribute the renderer writes, a link's
+// href, is still compared.
+func TestAMarksMarkerIsLeftOutOfTheReadBack(t *testing.T) {
+	text := func(value string, marks ...Mark) *Node { return &Node{Type: "text", Text: value, Marks: marks} }
+	marked := func(markType string, attrs Attrs) Mark { return Mark{Type: markType, Attrs: attrs} }
+	none, underscore, star := Attrs{}, Attrs{"marker": "_"}, Attrs{"marker": "*"}
+	for _, row := range []struct {
+		name  string
+		nodes []*Node
+		want  string
+	}{
+		{"a bold holding `*`, the control", []*Node{text("Theta "), text("beta", marked("strong", star)), text(" kappa.")}, "Theta **beta** kappa.\n"},
+		{"a bold with no marker", []*Node{text("Theta "), text("beta", marked("strong", none)), text(" kappa.")}, "Theta **beta** kappa.\n"},
+		{"a bold marked `_`", []*Node{text("Theta "), text("beta", marked("strong", underscore)), text(" kappa.")}, "Theta **beta** kappa.\n"},
+		{"an italic with no marker", []*Node{text("Theta "), text("beta", marked("emphasis", none)), text(" kappa.")}, "Theta *beta* kappa.\n"},
+		{"an italic marked `_`", []*Node{text("Theta "), text("beta", marked("emphasis", underscore)), text(" kappa.")}, "Theta *beta* kappa.\n"},
+		{"a bold with no marker before one holding `*`", []*Node{text("Theta "), text("beta", marked("strong", none)), text("iota", marked("strong", star)), text(" kappa.")}, "Theta **betaiota** kappa.\n"},
+		{"a bold marked `_` before one holding `*`", []*Node{text("Theta "), text("beta", marked("strong", underscore)), text("iota", marked("strong", star)), text(" kappa.")}, "Theta **betaiota** kappa.\n"},
+		{"an italic marked `_` before one holding `*`", []*Node{text("Theta "), text("beta", marked("emphasis", underscore)), text("iota", marked("emphasis", star)), text(" kappa.")}, "Theta *betaiota* kappa.\n"},
+	} {
+		doc := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: row.nodes}}}
+		rendered, err := Render(doc)
+		if err != nil || rendered != row.want {
+			t.Errorf("%s: Render = %q, %v, want %q", row.name, rendered, err, row.want)
+			continue
+		}
+		if err := RefuseMisreadDocument(doc); err != nil {
+			t.Errorf("%s: %q does not read back as the tree: %v", row.name, rendered, err)
+		}
+	}
+	linked := &Node{Type: "doc", Children: []*Node{{Type: "paragraph", Children: []*Node{
+		text("beta", marked("link", Attrs{"href": "https://a.example", "title": nil})),
+	}}}}
+	if verdict, err := RefuseMisreadStored(nil, "", linked, "[beta](https://b.example)\n"); err != nil || verdict.Refusal == nil {
+		t.Errorf("a link stored with another href is judged %v, %v, want it refused: the href is written and read", verdict.Refusal, err)
+	}
+}
+
+// A table's delimiter row is written from its header cells, so a row an edit adds holding cells
+// with no alignment reads back aligned as its column is, and the edit's tree takes that alignment
+// (SettleDerived), so the text it stores reads back as the tree. A cell a browser edit aligned
+// otherwise than its column, which the edit leaves as it was, keeps its own alignment, which is not
+// the edit's, and the check of the stored text excuses it as the text before already read it back.
+func TestAnEditsTableCellsTakeTheAlignmentTheirMarkdownReadsBackWith(t *testing.T) {
+	cellIn := func(row *Node) *Node { return row.Children[0] }
+	before, err := Parse("| h |\n| :- |\n| old |\n| kept |\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	EnsureBlockIDs(before)
+	table := before.Children[0]
+	browserAligned := cellIn(table.Children[2])
+	browserAligned.Attrs["alignment"] = "center"
+	previous, err := Render(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := cloneNode(before)
+	added := cloneNode(doc.Children[0].Children[1])
+	added.Attrs = nil
+	cellIn(added).Attrs = Attrs{"alignment": nil, "colspan": 1, "colwidth": nil, "rowspan": 1}
+	cellIn(added).Children[0].Children = []*Node{{Type: "text", Text: "new"}}
+	doc.Children[0].Children = append(doc.Children[0].Children, added)
+	EnsureBlockIDs(doc)
+	settled := SettleDerived(before, doc)
+	rows := settled.Children[0].Children
+	if alignment := cellIn(rows[3]).Attrs["alignment"]; alignment != "left" {
+		t.Errorf("the added row's cell holds alignment %v, want its column's left", alignment)
+	}
+	if alignment := cellIn(rows[2]).Attrs["alignment"]; alignment != "center" {
+		t.Errorf("the cell the browser aligned holds alignment %v, want the center it held", alignment)
+	}
+	if alignment := cellIn(doc.Children[0].Children[3]).Attrs["alignment"]; alignment != nil {
+		t.Errorf("SettleDerived changed the tree it was given: the added cell holds alignment %v there", alignment)
+	}
+	rendered, err := Render(settled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdict, err := RefuseMisreadStored(before, previous, settled, rendered)
+	if err != nil || verdict.Refusal != nil {
+		t.Fatalf("the edit's text %q is refused: %v, %v", rendered, verdict.Refusal, err)
+	}
+	if want := []StoredMisread{{Block: blockIDOf(browserAligned), Kind: "table_cell alignment"}}; !slices.Equal(verdict.Excused, want) {
+		t.Errorf("the check excused %+v, want the cell the browser aligned alone, %+v", verdict.Excused, want)
+	}
 }

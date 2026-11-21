@@ -600,15 +600,16 @@ export async function runCodexEnvoyServer(): Promise<void> {
           createCodexUserTurnRouter({
             ask: (question) => askSideQuestion(command(), id.id, question),
             deliver: (item) => codexDelivery.deliver(item),
+            // The budget is the client's own deadline rather than a timed signal, as the Claude
+            // Code server's is: a write Dispatch is still running when it ends is then answered as
+            // still running, naming its key (`DispatchClient`'s `deadlineMs`).
             dispatch: (ms) => {
               const active = activeDispatchSettings(
                 sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }).dispatch,
               )
               return active === null
                 ? undefined
-                : new DispatchClient(active.url, active.credential, fetch, {
-                    signal: AbortSignal.timeout(ms),
-                  })
+                : new DispatchClient(active.url, active.credential, fetch, { deadlineMs: ms })
             },
             expect: (text, messageId) => stream?.expect(text, messageId),
             reply: (target, result) => postDispatchReply(id, configFile, target, result),

@@ -71,19 +71,28 @@ func TestDocumentEditsAddressBlocksByID(t *testing.T) {
 }
 
 // A replace is refused only when it makes the block it lands in unreadable. A document that
-// already holds a block the parser refuses, as a delete can leave one, still takes replaces
-// elsewhere and inside that block.
+// already holds a block the parser refuses, as a browser edit can leave one, still takes replaces
+// elsewhere and inside that block. An edit cannot leave one: the text an edit stores passes the
+// read-back check an upload passes, excusing only a block the parser already refused, so the
+// delete that would leave the first such block is refused, and so is one that would leave a
+// second beside it.
 func TestDocumentEditsReplaceBesideAnUnreadableBlockIsAccepted(t *testing.T) {
-	handler := newTestHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Unreadable block", "Intro.\n\nfoo <div>x</div> bar\n\nOther text.\n")
+	documentService, handler, _ := browserDocumentService(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Unreadable block", "Intro.\n\nfoo <div>x</div> bar\n\nOther text.\n\nqux <p>y</p> end\n")
 	edit := func(op map[string]any) *httptest.ResponseRecorder {
 		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 			"ops": []map[string]any{op},
 		}, "alice")
 	}
-	if deleted := edit(map[string]any{"op": "delete", "find": "foo "}); deleted.Code != http.StatusOK {
-		t.Fatalf("delete: status=%d body=%s", deleted.Code, deleted.Body.String())
+	refusedAsBlockHTML := func(what string, response *httptest.ResponseRecorder) {
+		t.Helper()
+		if body := response.Body.String(); response.Code != http.StatusBadRequest || !strings.Contains(body, `"code":"INVALID_OP"`) ||
+			!strings.Contains(body, "the markdown the document would be stored as cannot be read back: outside Proof schema: block HTML is not accepted by Proof") {
+			t.Fatalf("%s: status=%d body=%s, want 400 INVALID_OP saying the stored markdown cannot be read back", what, response.Code, body)
+		}
 	}
+	refusedAsBlockHTML("delete leaving block HTML", edit(map[string]any{"op": "delete", "find": "foo "}))
+	replaceTextAsABrowserDoes(t, documentService, issue.PrimaryArtifactID, "foo ", "")
 	for _, op := range []map[string]any{
 		{"op": "replace", "find": "Other text.", "with": "Changed."},
 		{"op": "replace", "find": "bar", "with": "baz"},
@@ -92,6 +101,7 @@ func TestDocumentEditsReplaceBesideAnUnreadableBlockIsAccepted(t *testing.T) {
 			t.Fatalf("replace %v: status=%d body=%s", op, replaced.Code, replaced.Body.String())
 		}
 	}
+	refusedAsBlockHTML("delete leaving a second block of block HTML", edit(map[string]any{"op": "delete", "find": "qux "}))
 }
 
 // A replace that leaves its block unreadable is refused with advice for its cause: HTML that
@@ -511,26 +521,22 @@ func TestAcceptingASuggestionStoresBlocksTheDocumentReadsBack(t *testing.T) {
 	}
 }
 
-// acceptCase is a suggestion of with over quote in a document seeded with spec, after replacing
-// emptied's text with refill through the edit route (as an edit can leave a document that already
-// reads back otherwise), and what accepting it does: refused naming says, or stored as want.
+// acceptCase is a suggestion of with over quote in a document seeded with spec, after a browser
+// edit replaced emptied's text with refill (a browser's update can leave a document that already
+// reads back otherwise, which an edit cannot), and what accepting it does: refused naming says, or
+// stored as want.
 type acceptCase struct{ name, spec, quote, with, emptied, refill, says, want string }
 
 // checkAccept accepts test's suggestion and checks the outcome. A refusal is 400 INVALID_OP naming
 // test.says, with the document unchanged and the suggestion open. A stored accept reads back as
 // the live document: a document seeded with the stored markdown holds the accepted one's token,
 // except after an empty replacement, whose emptied paragraph stays in the live document, and in a
-// document the edit left reading back otherwise already.
+// document the browser edit left reading back otherwise already.
 func checkAccept(t *testing.T, handler http.Handler, documentService *docs.Service, key string, test acceptCase) {
 	t.Helper()
 	issue := createInteractionIssue(t, handler, key, test.name, test.spec)
 	if test.emptied != "" {
-		edited := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
-			"ops": []map[string]any{{"op": "replace", "find": test.emptied, "with": test.refill}},
-		}, "alice")
-		if edited.Code != http.StatusOK || !strings.Contains(edited.Body.String(), `"changed":true`) {
-			t.Fatalf("empty %q: status=%d body=%s", test.emptied, edited.Code, edited.Body.String())
-		}
+		replaceTextAsABrowserDoes(t, documentService, issue.PrimaryArtifactID, test.emptied, test.refill)
 	}
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "suggest", "anchor": map[string]any{"artifact": "spec", "quote": test.quote},
@@ -583,19 +589,24 @@ func checkAccept(t *testing.T, handler http.Handler, documentService *docs.Servi
 // accept writes where a callout it rewrites or consumes stood. A task item emptied of its text
 // reads back as a plain item, so emptying one is refused, naming that and advising rejecting. What
 // the document already reads back otherwise is not the accept's: a task item read back as plain,
-// a paragraph ending in a hard break that reads back with a literal backslash. Text elsewhere, or
-// beside it in the same block, is stored, and a second task item emptied is still refused.
+// a paragraph ending in a hard break that reads back with a literal backslash. A browser edit
+// leaves a document so; the edits route refuses the same emptying, since every block an edit
+// writes passes the read-back check an upload passes. Text elsewhere, or beside it in the same
+// block, is stored, and a second task item emptied is still refused.
 func TestAcceptingASuggestionIsJudgedByTheDocumentItStores(t *testing.T) {
-	var documentService *docs.Service
-	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
-		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
-		return documentService
-	})
+	documentService, handler, _ := browserDocumentService(t)
 	const (
 		callout = ":::callout{#c1 kind=\"note\" title=\"T\"}\nBody.\n:::"
 		task    = "leaves blocks the document reads back otherwise (a task item reads back as a plain list item); reject the suggestion"
 	)
+	unchecked := createInteractionIssue(t, handler, "LR", "an edit emptying a task item", "- [ ] Done\n\nBody.\n")
+	emptied := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+unchecked.PrimaryArtifactID+"/edits", map[string]any{
+		"ops": []map[string]any{{"op": "replace", "find": "Done", "with": ""}},
+	}, "alice")
+	if body := emptied.Body.String(); emptied.Code != http.StatusBadRequest || !strings.Contains(body, `"code":"INVALID_OP"`) ||
+		!strings.Contains(body, "the markdown the document would be stored as reads back otherwise (a task item reads back as a plain list item)") {
+		t.Fatalf("empty \"Done\": status=%d body=%s, want 400 INVALID_OP saying the stored markdown reads back otherwise", emptied.Code, body)
+	}
 	for index, test := range []acceptCase{
 		{name: "a list before a list", spec: "Intro.\n\nBody.\n\n- y\n", quote: "Body.", with: "- x", want: "Intro.\n\n- x\n\n* y\n"},
 		{name: "a list after a list", spec: "Intro.\n\n- y\n\nBody.\n", quote: "Body.", with: "- x", want: "Intro.\n\n- y\n\n* x\n"},

@@ -36,6 +36,13 @@ type renderer struct {
 	// openers is each text `<` the inline run being written wrote as it is (angleOpener), and
 	// escapedOpeners those of them its writing again escapes (writeInlineRun).
 	openers, escapedOpeners []angleOpener
+	// segments, while a run is written with its segments recorded (runSegments), is that run's
+	// segments: where its cuts are written, and the spelling each segment is written in where the
+	// run is written by segments.
+	segments *runSegments
+	// markRuns is each delimiter run the marks of the inline run being written wrote beside a text
+	// (markRun), for the run's first writing to be judged by (misflanked).
+	markRuns []markRun
 	// footnoteLineAt is where the last footnote definition's first line begins in the markdown,
 	// and footnoteLabel is its label as written, so that the line is read after a reference to it.
 	footnoteLineAt int
@@ -672,12 +679,15 @@ func opensWithUnwrittenParagraph(item *Node) bool {
 // firstRule reports whether a rule opening the blocks is written `***` too.
 //
 // One blank line is written wherever the block after would otherwise be absorbed: a block that
-// cannot open on the line after the block before it (opensAfterBlock, mergesIntoQuote), written after a block that
-// ends in a paragraph a lazy line continues (blockEndsInParagraph), would be read as that
-// paragraph's own text - a paragraph taken into the quote before it, a list that interrupts no
-// paragraph read as text, an empty item's marker read as a setext underline. The item then reads
-// back spread, which a write refuses (RefuseMisreadDocument) and a rendering with no read-back -
-// a delete op, settlement - would otherwise store as a document holding less than it was given.
+// cannot open on the line after the block before it (opensAfterBlock, mergesIntoQuote), written
+// after a block that ends in a paragraph a lazy line continues (blockEndsInParagraph), would be
+// read as that paragraph's own text - a paragraph taken into the quote before it, a list that
+// interrupts no paragraph read as text, an empty item's marker read as a setext underline - and a
+// settlement, which stores its rendering unjudged, would store a document holding less than it was
+// given. The item then reads back spread. A whole document a write makes is refused where its tree
+// holds the item tight (RefuseMisreadDocument), and an edit's tree takes the spread before the text
+// it stores is judged (SettleDerived, RefuseMisreadStored), a delete's included, so it stores the
+// item spread and writes it so.
 func (r *renderer) itemBlocks(blocks []*Node, spread bool, prefix, indent string, firstRule bool) {
 	otherMarkers := otherListMarkers(blocks)
 	for index, child := range blocks {
@@ -1060,33 +1070,38 @@ func hardBreaksAsSpaces(nodes []*Node) []*Node {
 
 // asWritten is doc as its markdown writes it: without the marks the rendering does not write
 // (renderedMarkTypes) and with adjacent text runs under equal marks merged (writtenTree, which is
-// what StripAnchorMarks copies), with each line break its textblocks hold in the one form markdown
-// carries, and with each U+0000 as U+FFFD (nulsWrittenTree). The U+0000s are written last, once
-// every merge is decided, so each decision is taken on the values as they are: two runs whose
-// links differ only in a U+0000 and a U+FFFD stay two runs. The browser editor holds two more line
-// breaks. A soft line break it keeps from a paste (a hard break with isInline) it draws as a
-// space, and one is written: both parsers read a soft break as one too. A line feed in text
-// outside code it draws as a line break (white-space: break-spaces), and a hard break is written,
-// which both parsers read back as the editor draws it, except where nothing but whitespace follows
-// it in its textblock: a hard break there reads back as a backslash, and a line feed as nothing,
-// as trailing whitespace does.
+// what StripAnchorMarks copies) - marks equal but for the attributes the rendering does not write
+// and the parser does not read included (unwrittenMarkAttrs), so that two runs whose bolds differ
+// only in a marker are one run, as the renderer writes them - with each line break its textblocks
+// hold in the one form markdown carries, and with each U+0000 as U+FFFD (nulsWrittenTree). The
+// U+0000s are written last, once every merge is decided, so each decision is taken on the values
+// as they are: two runs whose links differ only in a U+0000 and a U+FFFD stay two runs. The
+// browser editor holds two more line breaks. A soft line break it keeps from a paste (a hard break
+// with isInline) it draws as a space, and one is written: both parsers read a soft break as one
+// too. A line feed in text outside code it draws as a line break (white-space: break-spaces), and
+// a hard break is written, which both parsers read back as the editor draws it, except where
+// nothing but whitespace follows it in its textblock: a hard break there reads back as a
+// backslash, and a line feed as nothing, as trailing whitespace does.
 //
 // It never writes doc, and shares doc's nodes, their attributes and their marks wherever they are
 // written as they are: only a node written otherwise, and the nodes above it, is a copy, so a
 // document with no anchor mark, no line break to rewrite and no U+0000 is doc itself. What it
-// returns is only read.
+// returns is only read, and compared with a read-back by marks as written (sameWrittenMarks).
 func asWritten(doc *Node) *Node {
-	return nulsWrittenTree(writtenTree(doc, true))
+	return nulsWrittenTree(writtenTree(doc, true, true))
 }
 
 // writtenTree is node as asWritten writes it but for the U+0000s under it, which nulsWrittenTree
 // writes after every merge is decided (childrenAsWritten); node itself where nothing under it is
 // written otherwise. lineBreaks is whether a paragraph or heading at or under node has its line
 // breaks written (writtenLineBreaks): not under a textblock or a code block, and under none of
-// them for StripAnchorMarks, which copies what it gives with lineBreaks false.
-func writtenTree(node *Node, lineBreaks bool) *Node {
+// them for StripAnchorMarks, which copies what it gives with lineBreaks false. alike is whether
+// runs whose marks differ only in attributes the rendering does not write merge
+// (childrenAsWritten), which asWritten asks and StripAnchorMarks does not, since what it gives is a
+// tree a write keeps, whose every mark keeps its own attributes.
+func writtenTree(node *Node, lineBreaks, alike bool) *Node {
 	marks, marksKept := renderedMarks(node.Marks)
-	children, childrenKept := childrenAsWritten(node, lineBreaks)
+	children, childrenKept := childrenAsWritten(node, lineBreaks, alike)
 	if marksKept && childrenKept {
 		return node
 	}
@@ -1119,12 +1134,13 @@ func renderedMarks(marks []Mark) ([]Mark, bool) {
 
 // childrenAsWritten is node's children as asWritten writes them, and whether that is node's own
 // slice. Each child is written (writtenTree), and adjacent text runs whose written marks are equal
-// merge into one that keeps the first's attributes and children. A paragraph or heading's children
-// then have their line breaks written where they hold one to rewrite (holdsLineBreakToWrite).
-// Nothing here writes a U+0000, which nulsWrittenTree writes after every one of these decisions is
-// taken, so each is taken on the values as they are: two runs whose links differ only in a U+0000
-// and a U+FFFD stay two runs.
-func childrenAsWritten(node *Node, lineBreaks bool) ([]*Node, bool) {
+// merge into one that keeps the first's attributes, marks and children; with alike, so do runs
+// whose marks differ only in attributes the rendering does not write (sameWrittenMarks). A
+// paragraph or heading's children then have their line breaks written where they hold one to
+// rewrite (holdsLineBreakToWrite). Nothing here writes a U+0000, which nulsWrittenTree writes
+// after every one of these decisions is taken, so each is taken on the values as they are: two
+// runs whose links differ only in a U+0000 and a U+FFFD stay two runs.
+func childrenAsWritten(node *Node, lineBreaks, alike bool) ([]*Node, bool) {
 	textblock := lineBreaks && (node.Type == "paragraph" || node.Type == "heading")
 	childLineBreaks := lineBreaks && !textblock && node.Type != "code_block"
 	children := node.Children
@@ -1133,14 +1149,15 @@ func childrenAsWritten(node *Node, lineBreaks bool) ([]*Node, bool) {
 	var out []*Node
 	merged := false
 	for index, child := range children {
-		clean := writtenTree(child, childLineBreaks)
+		clean := writtenTree(child, childLineBreaks, alike)
 		var previous *Node
 		if out != nil {
 			previous = out[len(out)-1]
 		} else if index > 0 {
 			previous = children[index-1]
 		}
-		mergeable := previous != nil && previous.Type == "text" && clean.Type == "text" && marksEqual(previous.Marks, clean.Marks)
+		mergeable := previous != nil && previous.Type == "text" && clean.Type == "text" &&
+			(marksEqual(previous.Marks, clean.Marks) || alike && sameWrittenMarks(previous.Marks, clean.Marks))
 		if mergeable && merged {
 			previous.Text += clean.Text
 			continue

@@ -493,7 +493,7 @@ func (s *server) adviseWrite(
 }
 
 func (s *server) logAdviceError(route, issueKey, query string, err error) {
-	slog.Warn("dispatch: write advice omitted", "route", route, "issue", issueKey, "query", query, "error", err)
+	slog.Warn("dispatch: write advice omitted", "route", route, "issue", issueKey, "query", query, "error", docs.LoggedError(err))
 }
 
 // adviceSavepoint opens the savepoint one document report runs behind and bounds its statements,
@@ -918,7 +918,7 @@ var typedOpening = regexp.MustCompile(`:{3,}[A-Za-z0-9_-]+\{`)
 func readDocumentBlocks(markdown string) *documentBlocks {
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
-		slog.Warn("dispatch: decision block count failed", "error", err)
+		slog.Warn("dispatch: decision block count failed", "error", docs.LoggedError(err))
 		return nil
 	}
 	return documentBlocksOf(tree)

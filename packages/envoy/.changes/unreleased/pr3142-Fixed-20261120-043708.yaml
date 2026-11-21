@@ -1,0 +1,5 @@
+kind: Fixed
+body: Dispatch's markdown writer chooses its escape spelling for each space-separated segment of a paragraph where no one spelling of the whole paragraph reads back, so one hard spot no longer makes it write the whole paragraph in a spelling that misreads, and a large paragraph is read back a few times its length rather than once per spelling. Text that already reads back keeps its bytes.
+time: 2026-11-20T04:37:08.666791892Z
+custom:
+    Issue: pr3142

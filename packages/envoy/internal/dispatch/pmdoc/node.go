@@ -63,12 +63,13 @@ func unknownElement(err error, names ...string) error {
 
 // UnknownElements names the elements a refusal of an element this build does not know
 // (ErrUnknownElement) is of: the type of the node, mark or typed block the manifest does not
-// name, the attributes a typed block does not declare, or the value an enum attribute does not
-// list. It is empty for every other error.
+// name, the attributes a typed block does not declare, or, for a value an enum attribute does not
+// list, that attribute (Element.unknownName). It is empty for every other error.
 //
 // It is there for a caller that records what a document holds without recording the refusal
 // itself: an error's message carries whatever the chain that answered the request wrapped it in,
-// the caller's own identity among it, and these names carry the document and nothing else.
+// the caller's own identity among it, and quotes the document. A value is named by its attribute
+// and never by its text, which is whatever a peer wrote there, a person's address among it.
 func UnknownElements(err error) []string {
 	var unknown *unknownElementError
 	if errors.As(err, &unknown) {
@@ -316,7 +317,7 @@ func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
 		if value == nil && definition.Default == nil {
 			continue
 		}
-		if err := validateAttributeValue(definition, value); err != nil {
+		if err := validateAttributeValue(n.Type, name, definition, value); err != nil {
 			return fmt.Errorf("%w: typed block %q attribute %q: %w", ErrSchema, n.Type, name, err)
 		}
 	}

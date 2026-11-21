@@ -240,10 +240,10 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 			// Another build wrote an element this build does not know, during a release; a build
 			// that reads it indexes the document, which stays owed until then.
 			slog.Warn("dispatch: block index skipped a document holding an element this build cannot read",
-				"artifact", document.id, "error", err)
+				newerContentLine(err, "artifact", document.id)...)
 		case err != nil:
 			slog.Error("dispatch: block index skipped a document it could not index",
-				"artifact", document.id, "error", err)
+				"artifact", document.id, "error", LoggedError(err))
 		case ahead:
 			tick.LiveAhead++
 			if cold && !document.markedAt.IsZero() && s.srv.GetDoc(document.id) == nil {
@@ -269,7 +269,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 				return tick, ctx.Err()
 			}
 			slog.Error("dispatch: block index skipped an item it could not index",
-				"kind", item.Kind, "id", item.ID, "error", err)
+				"kind", item.Kind, "id", item.ID, "error", LoggedError(err))
 			continue
 		}
 		if indexed {
@@ -288,7 +288,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 				return tick, ctx.Err()
 			}
 			slog.Error("dispatch: block index skipped the blocks of an item it could not index",
-				"kind", item.Kind, "id", item.ID, "error", err)
+				"kind", item.Kind, "id", item.ID, "error", LoggedError(err))
 			continue
 		}
 		if indexed {
@@ -307,7 +307,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 				return tick, ctx.Err()
 			}
 			slog.Error("dispatch: block index skipped text it could not index with the whole grammar",
-				"kind", source.Kind, "id", source.ID, "error", err)
+				"kind", source.Kind, "id", source.ID, "error", LoggedError(err))
 			continue
 		}
 		if indexed {
@@ -921,7 +921,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 		return false, false, ctx.Err()
 	case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
 		slog.Warn("dispatch: block index cannot read the document; its latest version is indexed with no blocks",
-			"artifact", document.id, "error", err)
+			"artifact", document.id, "error", LoggedError(err))
 		unreadable = true
 	case err != nil:
 		return false, false, err

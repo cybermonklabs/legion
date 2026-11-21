@@ -151,7 +151,7 @@ func blockPointers(artifactID, markdown string, blocks []model.ArtifactBlock, tr
 		read, err := pmdoc.ParseRendering(markdown)
 		if err != nil {
 			slog.Warn("dispatch: a document version's block pointers are not indexed: its markdown does not read back",
-				"artifact", artifactID, "error", err)
+				"artifact", artifactID, "error", LoggedError(err))
 			return nil
 		}
 		tree = read
@@ -550,15 +550,15 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 			return documents, false, ctx.Err()
 		case errors.Is(err, ErrDocNewerContent):
 			slog.Warn("dispatch: reference excerpt reconciliation deferred a document holding an element this build cannot read; its mentions stay owed for a build that reads it",
-				"artifact", document.FromID, "version", document.Version, "error", err)
+				newerContentLine(err, "artifact", document.FromID, "version", document.Version)...)
 			deferDocument(document)
 			continue
 		case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
 			slog.Warn("dispatch: reference excerpt reconciliation cannot read the document; its mentions keep the document's name",
-				"artifact", document.FromID, "error", err)
+				"artifact", document.FromID, "error", LoggedError(err))
 		case err != nil:
 			slog.Error("dispatch: reference excerpt reconciliation deferred a document it could not read",
-				"artifact", document.FromID, "error", err)
+				"artifact", document.FromID, "error", LoggedError(err))
 			deferDocument(document)
 			continue
 		default:

@@ -5638,7 +5638,8 @@ describe("executeDispatchTool", () => {
     const inFlight = () =>
       refusal(409, "KEY_IN_FLIGHT", "an earlier request with this key is still running");
     // A KEY_IN_FLIGHT says Dispatch may still be running the close, so it is asked every 3 s at
-    // most until 55 s rather than five times: 20 attempts.
+    // most until 55 s, then every 10 s until Dispatch's run limit and a lease after the first
+    // attempt, rather than five times: 82 attempts.
     for (const [first, then, expected, attempts] of [
       [
         () => gatewayPage(502, "Bad Gateway"),
@@ -5655,10 +5656,10 @@ describe("executeDispatchTool", () => {
           throw new TypeError("fetch failed");
         },
         inFlight,
-        "KEY_IN_FLIGHT (the last of 20 " +
+        "KEY_IN_FLIGHT (the last of 82 " +
           "attempts), and Dispatch was still running an earlier attempt of the write, so it may " +
           `or may not have taken effect${keyedTail}${unknownSentence}`,
-        20,
+        82,
       ],
     ] as const) {
       let patches = 0;

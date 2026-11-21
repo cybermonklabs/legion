@@ -32,6 +32,7 @@ import { delimiter, dirname, join } from "node:path";
 import {
   canonicalTopic,
   type Envelope,
+  IDEMPOTENCY_KEY_IN_FLIGHT,
   legacyDispatchIssueSubject,
   type SessionAnswer,
   uncapturedTopicRefusal,
@@ -18403,6 +18404,135 @@ console.log(JSON.stringify(args));
       { actor, attempt: 1, body: "Answer 2" },
       { actor, attempt: 1, body: "Answer 3" },
     ]);
+  });
+
+  // A BTW's reply Dispatch is still running when its minute ends (`postDeliveryReply`'s own
+  // deadline) lands without this side and settles the attempt when it does, so no error reply is
+  // posted over it: one under a key of its own could settle the attempt first with words the
+  // person would read in place of the answer. The line names the reply's key, and says the reply
+  // is running only where Dispatch said so: after attempts cut off for silence alone it may still
+  // be. The claim is released as a refusal's is, so a Retry the person sends if the reply never
+  // lands runs the side turn again.
+  test.each([
+    {
+      standing: "is still running",
+      silent: false,
+      // Asked at 0, 1 and 3 s, then every 3 s to 57 s.
+      attempts: 21,
+    },
+    {
+      standing: "may still be running",
+      silent: true,
+      // Asked at 0, 21 and 43 s, each attempt cut off after 20 s of silence.
+      attempts: 3,
+    },
+  ])("posts no error over a BTW reply that $standing on Dispatch at its minute, and releases its claim", async (row) => {
+    process.env.DISPATCH_URL = "http://dispatch.test";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
+    const replies: Array<{ readonly key: string; readonly body: unknown }> = [];
+    let running = true;
+    const posted = Promise.withResolvers<void>();
+    // What ends the wait for the first frame: the line that says where the reply stands, or an
+    // error reply posted over it.
+    const followed = Promise.withResolvers<unknown>();
+    globalThis.fetch = async (input, init) => {
+      const { pathname } = new URL(input.toString());
+      // Dispatch's keyed layer, which a write whose attempt went unanswered asks about before it
+      // asks again.
+      if (pathname === "/healthz") return Response.json({ idempotency_keys: true });
+      if (pathname === "/api/v1/messages/11111111-1111-4111-8111-111111111111/reply") {
+        const key = new Headers(init?.headers).get("Idempotency-Key") ?? "";
+        const body: Record<string, unknown> = JSON.parse(init?.body?.toString() ?? "{}");
+        replies.push({ key, body });
+        if (body.error !== undefined) followed.resolve("an error reply");
+        if (running && row.silent && body.error === undefined) {
+          // No answer, until the attempt is cut off.
+          const { promise, reject } = Promise.withResolvers<Response>();
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+          return await promise;
+        }
+        // Dispatch's keyed layer echoes the key on every answer to a keyed write.
+        const headers = { "Idempotency-Key": key, "Retry-After": "1" };
+        if (running && body.error === undefined) {
+          return Response.json(
+            {
+              code: IDEMPOTENCY_KEY_IN_FLIGHT,
+              error: "an earlier request with this key is still running",
+            },
+            { status: 409, headers }
+          );
+        }
+        if (body.error === undefined) posted.resolve();
+        return Response.json({}, { headers });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const stopSink = logger.registerLogSink((entry) => {
+      if (
+        entry.level === "warn" &&
+        entry.message === `envoy: a BTW's reply ${row.standing} on Dispatch`
+      ) {
+        followed.resolve(entry.context);
+      }
+    });
+    try {
+      const { default: envoyExtension } = await import(
+        `./envoy.ts?targeted-btw-${row.silent ? "silent" : "still-running"}`
+      );
+      const fixture = createPi();
+      let sideTurns = 0;
+      envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.(
+        {},
+        {
+          ...sessionContext("ses_delivery"),
+          runEphemeralTurn: async () => {
+            sideTurns += 1;
+            return { replyText: `Answer ${sideTurns}` };
+          },
+        }
+      );
+      const agent = natsState.controls.get("notifications.agent.ses_delivery");
+      if (agent === undefined) throw new Error("agent subject was not subscribed");
+      const btw = (eventID: string) =>
+        JSON.stringify({
+          ...JSON.parse(
+            targetedDispatchEnvelope(
+              "btw",
+              `targeted-btw-${row.silent ? "silent" : "still-running"}`
+            )
+          ),
+          event_id: eventID,
+        });
+
+      const context = await onTestClock(async () => {
+        agent.push(btw("evt-btw-first"));
+        return await followed.promise;
+      });
+
+      // The one reply under its one key, and no error reply after it.
+      const key = replies[0]?.key;
+      const actor = { id: "ses_delivery", kind: "session" };
+      expect(replies).toEqual(
+        Array.from({ length: row.attempts }, () => ({
+          key,
+          body: { actor, attempt: 1, body: "Answer 1" },
+        }))
+      );
+      expect(context).toEqual({ eventID: "evt-btw-first", key });
+
+      // The claim went back: the person's Retry, a new event under the attempt's dedupe key, runs
+      // the side turn again.
+      running = false;
+      agent.push(btw("evt-btw-retry"));
+      await posted.promise;
+      expect(sideTurns).toBe(2);
+      expect(replies.at(-1)?.body).toEqual({ actor, attempt: 1, body: "Answer 2" });
+    } finally {
+      stopSink();
+    }
   });
 
   test("leaves a BTW that drains in during session_shutdown for the next holder, starting no side turn", async () => {

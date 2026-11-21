@@ -272,7 +272,7 @@ func (s *Service) reconcileTaskProgressBatch(
 		counted, err := pmdoc.CountTasksMarkdown(issue.markdown)
 		if err != nil {
 			slog.Warn("dispatch: issue task progress reconciliation cannot read the spec; counting none",
-				"issue", issue.key, "error", err)
+				"issue", issue.key, "error", LoggedError(err))
 			continue
 		}
 		progress[index] = counted

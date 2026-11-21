@@ -273,6 +273,20 @@ export const IDEMPOTENCY_KEY_TTL_MS = 24 * 60 * 60 * 1000;
 export const IDEMPOTENCY_LEASE_MS = 60 * 1000;
 
 /**
+ * How long Dispatch runs a keyed write's handler after its client has gone: the handler runs on
+ * with the client's cancellation taken off, and past this its context ends, its work rolls back,
+ * and the key is released as after a 5xx. It is far past what any route takes (an architecture
+ * refresh's imports each end at two minutes), and only stops a run that would otherwise hold its
+ * key, its connections and the server's shutdown wait for ever. The key's lease
+ * (`IDEMPOTENCY_LEASE_MS`) is renewed until this limit and no further, so no run holds its key past
+ * this limit and one lease after it began. A client that was told its write is running
+ * (`409 IDEMPOTENCY_KEY_IN_FLIGHT`, or an attempt cut off for silence) keeps asking under the key
+ * for that long after the attempt that could have started the run, so it learns the run's stored
+ * outcome rather than giving up on a write that lands. 10 minutes.
+ */
+export const IDEMPOTENCY_RUN_LIMIT_MS = 10 * 60 * 1000;
+
+/**
  * How long a repeated delivery is recognised, in milliseconds: the window behind the dashboard's
  * promise that a same-mode Retry "won't deliver it twice". This comment is where that promise is
  * stated; every other place that relies on it points here.

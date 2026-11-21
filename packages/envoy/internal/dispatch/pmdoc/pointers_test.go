@@ -126,6 +126,7 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatal("the shared block pointer table is empty")
 	}
+	const typeName, name = "plan_task", "serves"
 	attr := BlockAttributeSchema{Kind: "block[]", Targets: []string{"requirement"}}
 	for _, row := range rows {
 		parsed, err := ParseBlockPointerValue(row.Value)
@@ -148,7 +149,7 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 		if row.OK && strings.Join(parsed, " ") != row.Value {
 			t.Errorf("ParseBlockPointerValue(%q) = %q, want the references as written", row.Value, parsed)
 		}
-		if _, err := parseTypedAttributeValue(attr, row.Value); (err == nil) != row.OK {
+		if _, err := parseTypedAttributeValue(typeName, name, attr, row.Value); (err == nil) != row.OK {
 			t.Errorf("parseTypedAttributeValue(%q) (%s) = %v, want accepted %t", row.Value, row.Why, err, row.OK)
 		}
 		// A tree holds the value as the array Yjs gives back.
@@ -158,7 +159,7 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 				items = append(items, item)
 			}
 		}
-		if err := validateAttributeValue(attr, items); (err == nil) != row.OK {
+		if err := validateAttributeValue(typeName, name, attr, items); (err == nil) != row.OK {
 			t.Errorf("validateAttributeValue(%q) (%s) = %v, want accepted %t", items, row.Why, err, row.OK)
 		}
 	}

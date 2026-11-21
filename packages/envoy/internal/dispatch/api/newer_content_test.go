@@ -4,11 +4,15 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/reearth/ygo/crdt"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -128,6 +132,63 @@ func requireNewerContentWarnings(t *testing.T, logs *logtest.Recorder, least int
 	}
 	if warned < least {
 		t.Errorf("warn lines %q = %d, want at least one per route the document refused (%d)", newerContentWarning, warned, least)
+	}
+}
+
+// A document whose stored callout holds a kind this build's manifest does not list - a kind a
+// newer build added, or any text a peer wrote into the attribute, a person's address among it -
+// answers 409 DOC_NEWER_CONTENT quoting the value, so the caller is told what the document holds.
+// The WARN line names the value by its typed block and attribute alone, and no log record carries
+// the value: a log line is read by whoever reads the server's logs, which no text of a document
+// reaches.
+func TestAnEnumValueThisBuildDoesNotListIsLoggedByItsAttributeAlone(t *testing.T) {
+	const address = "person-7@example.com"
+	logs := &logtest.Recorder{}
+	logtest.SetDefault(t, logs)
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	issue := createArtifactIssue(t, handler)
+	artifact := createCorruptedDocument(t, handler, database, deps, issue.Key, "kind.md", func(ctx context.Context, database *store.Store, artifactID string) error {
+		return docs.AppendStoredChangeForTest(ctx, database, artifactID, func(transaction *crdt.Transaction, fragment *crdt.YXmlFragment) error {
+			callout := crdt.NewYXmlElement("callout")
+			fragment.InsertElement(transaction, len(fragment.Children()), callout)
+			callout.SetAttributeValue(transaction, "kind", address)
+			paragraph := crdt.NewYXmlElement("paragraph")
+			callout.InsertElement(transaction, 0, paragraph)
+			body := crdt.NewYXmlText()
+			paragraph.InsertText(transaction, 0, body)
+			body.Insert(transaction, 0, "Registered.", nil)
+			return nil
+		})
+	})
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifact.ID+"/text", nil, "alice")
+	answer := decodeBody[struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}](t, response)
+	if response.Code != http.StatusConflict || answer.Code != "DOC_NEWER_CONTENT" || !strings.Contains(answer.Error, address) {
+		t.Fatalf("/text: status=%d body=%s, want 409 DOC_NEWER_CONTENT quoting the callout's kind", response.Code, response.Body.String())
+	}
+	warned := 0
+	for _, record := range logs.Records() {
+		if strings.Contains(record.Message, address) {
+			t.Errorf("a log line's message holds the callout's kind: %q", record.Message)
+		}
+		record.Attrs(func(attribute slog.Attr) bool {
+			if strings.Contains(attribute.Value.String(), address) {
+				t.Errorf("the log line %q carries the callout's kind in %s: %q", record.Message, attribute.Key, attribute.Value.String())
+			}
+			if record.Message == newerContentWarning && attribute.Key == "elements" {
+				warned++
+				elements, _ := attribute.Value.Any().([]string)
+				if want := []string{"callout kind value"}; !slices.Equal(elements, want) {
+					t.Errorf("the warn line's elements are %q, want %q", attribute.Value.String(), want)
+				}
+			}
+			return true
+		})
+	}
+	if warned == 0 {
+		t.Errorf("the log holds no line %q naming the elements", newerContentWarning)
 	}
 }
 

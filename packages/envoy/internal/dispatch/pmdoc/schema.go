@@ -212,7 +212,7 @@ func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) e
 		}
 	}
 	if attr.Default != nil {
-		if err := validateAttributeValue(attr, attr.Default); err != nil {
+		if err := validateAttributeValue(typeName, name, attr, attr.Default); err != nil {
 			return fmt.Errorf("type %q attribute %q default: %w", typeName, name, err)
 		}
 		if items, _ := stringSlice(attr.Default); attr.Kind == BlockAttributeBlockList && len(items) > 0 {
@@ -222,7 +222,10 @@ func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) e
 	return nil
 }
 
-func validateAttributeValue(attr BlockAttributeSchema, value any) error {
+// validateAttributeValue refuses value for attribute name of typed block typeName, whose schema is
+// attr. A value its enum does not list is ErrUnknownElement, named by typeName and name rather
+// than by its text (Element.unknownName); the refusal's message still quotes it.
+func validateAttributeValue(typeName, name string, attr BlockAttributeSchema, value any) error {
 	switch attr.Kind {
 	case BlockAttributeString, BlockAttributeActor:
 		if _, ok := value.(string); !ok {
@@ -250,7 +253,7 @@ func validateAttributeValue(attr BlockAttributeSchema, value any) error {
 				return nil
 			}
 		}
-		return unknownElement(fmt.Errorf("must be one of %s, got %q", strings.Join(attr.Choices, ", "), text), text)
+		return unknownElement(fmt.Errorf("must be one of %s, got %q", strings.Join(attr.Choices, ", "), text), Element{Kind: ChoiceElement, Block: typeName, Attribute: name, Name: text}.unknownName())
 	case BlockAttributeStringList:
 		switch items := value.(type) {
 		case []string:
@@ -328,14 +331,14 @@ func validateBlockPointerValues(values []string) error {
 	return nil
 }
 
-func parseTypedAttributeValue(attr BlockAttributeSchema, raw any) (any, error) {
+func parseTypedAttributeValue(typeName, name string, attr BlockAttributeSchema, raw any) (any, error) {
 	text, ok := raw.(string)
 	if !ok {
 		return nil, fmt.Errorf("must be encoded as a string, got %T", raw)
 	}
 	switch attr.Kind {
 	case BlockAttributeString, BlockAttributeEnum, BlockAttributeActor, BlockAttributeTimestamp:
-		if err := validateAttributeValue(attr, text); err != nil {
+		if err := validateAttributeValue(typeName, name, attr, text); err != nil {
 			return nil, err
 		}
 		return text, nil
@@ -354,7 +357,7 @@ func parseTypedAttributeValue(attr BlockAttributeSchema, raw any) (any, error) {
 			}
 			value = legacy
 		}
-		if err := validateAttributeValue(attr, value); err != nil {
+		if err := validateAttributeValue(typeName, name, attr, value); err != nil {
 			return nil, err
 		}
 		return value, nil

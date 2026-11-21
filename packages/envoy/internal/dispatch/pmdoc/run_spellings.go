@@ -60,6 +60,11 @@ import (
 // lastResorts' spellings, so that none changes the bytes of a run another writing stores. A run
 // none of the cases above reads back, but whose free asterisk run stands beside a bold or italic
 // code span (delimitersInText's lastHeld), is read back as well, and written again only there.
+// Only where none of those reads back either is it written in finalResorts' spellings, which
+// write a letter beside a delimiter run as a reference wherever the flanking rules ask for
+// punctuation there, keep a run that closes one mark and opens another, and size each code span
+// to its own text; a run whose first writing fused a delimiter run, wrote one that cannot open or
+// close where it must, or sized a code span otherwise is read back for them.
 //
 // What a writing reads back as is decided by its bytes alone, and many spellings write the same
 // bytes: a flag the run gives nothing to change. So each spelling is written once and only bytes
@@ -70,22 +75,35 @@ import (
 // A read that is provably the same parse as one already made is not made again (readsBackUnder):
 // storedMarkdown reads markdown holding no `~` as inlineMarkdown does, since the rules differ only
 // beside a `~`, and flankingMarkdown reads markdown as storedMarkdown does where no `*` or `_` run
-// could open or close otherwise under flankingRules (flankingDivergenceKey).
+// could open or close otherwise under flankingRules (flankingDivergenceKey). And a run whose first
+// writing does not read back under every reader, and that holds a space it can be cut at
+// (runSegments), reads each later writing back a group of its segments at a time first: a writing
+// one of whose groups does not read back under a reader does not read back under it whole either,
+// so the run is read whole only where every group reads back under inlineMarkdown, and a group
+// whose bytes an earlier writing wrote is not read again. The search keeps the writing it kept
+// before; it reads less of the run to find it.
+//
+// Last, where no writing reads back under inlineMarkdown, the run is written in a spelling for each
+// of its segments, each chosen as the search would choose it for that segment alone
+// (spellBySegment), and kept where that reads back under inlineMarkdown. Where it does not, or the
+// run holds no space it can be cut at, the first writing is kept, as before.
 func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlineContext) {
 	from := r.b.Len()
 	fused := r.writeInlineRun(nodes, prefix, context, runSpelling{})
-	needs := runNeedsOf(nodes, context, fused)
+	needs := runNeedsOf(nodes, context, fused, r.misflanked(from))
 	if r.err != nil || needs == (runNeeds{}) {
 		return
 	}
 	labels, signature := referencedLabels(nodes), inlineSignature(nodes)
 	// firstReads is how many of the readBackReaderCount readers, from the first, the first writing
 	// reads back under.
-	firstReads := r.readsBackUnder(from, prefix, labels, signature)
+	firstReads := readsBackUnder(r.b.Bytes()[from:], prefix, labels, signature)
 	if firstReads == readBackReaderCount {
 		return
 	}
 	written := string(r.b.Bytes()[from:])
+	// segments is the run's segments, nil where it holds no cut.
+	segments := newRunSegments(nodes, prefix)
 	// readsByBytes is how many of those readers, from the first, each writing read back so far
 	// reads back under, by the digest of its bytes.
 	readsByBytes := map[[sha256.Size]byte]int{sha256.Sum256(r.b.Bytes()[from:]): firstReads}
@@ -97,14 +115,26 @@ func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlin
 		reads := make([]int, len(spellings))
 		for index, spelling := range spellings {
 			r.b.Truncate(from)
-			if r.writeInlineRun(nodes, prefix, context, spelling) && spelling.order != marksAsWritten {
+			r.segments = segments
+			discarded := r.writeInlineRun(nodes, prefix, context, spelling) && spelling.order != marksAsWritten && !spelling.flankingFused
+			r.segments = nil
+			// bound is how many readers, from the first, every group of the run's segments reads
+			// back under, which the whole reads back under no more of.
+			bound := readBackReaderCount
+			if segments != nil && r.err == nil {
+				bound = segments.read(r.b.Bytes()[from:], spelling, readsByBytes)
+			}
+			if discarded {
 				reads[index] = -1
 				continue
 			}
 			digest := sha256.Sum256(r.b.Bytes()[from:])
 			count, read := readsByBytes[digest]
 			if !read {
-				count = r.readsBackUnder(from, prefix, labels, signature)
+				count = bound
+				if bound > 0 && !segments.readWhole() {
+					count = readsBackUnder(r.b.Bytes()[from:], prefix, labels, signature)
+				}
 				if count == readBackReaderCount {
 					return true
 				}
@@ -124,7 +154,10 @@ func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlin
 		return false
 	}
 	spellings := runSpellings(needs)
-	if keepsDeeper(spellings) || firstReads == 0 && keepsDeeper(lastResorts(needs, spellings)) {
+	if keepsDeeper(spellings) || firstReads == 0 && (keepsDeeper(lastResorts(needs, spellings)) || keepsDeeper(finalResorts(needs, nestsMarks(nodes)))) {
+		return
+	}
+	if firstReads == 0 && segments != nil && r.spellBySegment(segments, from, context, labels, signature, readsByBytes) {
 		return
 	}
 	r.b.Truncate(from)
@@ -140,30 +173,55 @@ func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlin
 // or an `@` (writesAddressSyntax), whether the first writing fused two delimiter runs where a text
 // is under more than one mark, which keepingOpen can then order otherwise (nestsMarks), whether a
 // delimiter run has punctuation just inside it (delimiterBesidePunctuation) and a letter just
-// outside it the flanking spellings can write as a reference (letterBesideDelimiter), and whether
-// it holds an email link it can write as its address (writesBareEmail). A run that needs none of
-// these is not read back.
+// outside it the flanking spellings can write as a reference (letterBesideDelimiter), whether
+// it holds an email link it can write as its address (writesBareEmail), and, each read back only
+// for finalResorts: whether the first writing fused two delimiter runs at all (fusedRun), whether
+// it wrote a delimiter run beside a text that cannot open or close where it must (misflanked), and
+// whether a code span's fence or padding, sized as the writer sizes it, is not what the span's own
+// text needs (splitCode). A run that needs none of these is not read back.
 type runNeeds struct {
 	held, lastHeld                                      delimiterEscapes
 	bareURL, colons, dots, ats, fused, flanking, emails bool
+	fusedRun, misflanked, splitCode                     bool
 }
 
 // runNeedsOf is the runNeeds of nodes, written in context, whose first writing fused two delimiter
-// runs where fused.
-func runNeedsOf(nodes []*Node, context inlineContext, fused bool) runNeeds {
+// runs where fused and wrote a run that cannot open or close where misflanked.
+func runNeedsOf(nodes []*Node, context inlineContext, fused, misflanked bool) runNeeds {
 	colons, dots, ats := writesAddressSyntax(nodes)
 	held, lastHeld := delimitersInText(nodes)
 	return runNeeds{
-		held:     held,
-		lastHeld: lastHeld,
-		bareURL:  writesBareURL(nodes, context.tableCell),
-		colons:   colons,
-		dots:     dots,
-		ats:      ats,
-		fused:    fused && nestsMarks(nodes),
-		flanking: delimiterBesidePunctuation(nodes, context.tableCell) && letterBesideDelimiter(nodes),
-		emails:   writesBareEmail(nodes),
+		held:       held,
+		lastHeld:   lastHeld,
+		bareURL:    writesBareURL(nodes, context.tableCell),
+		colons:     colons,
+		dots:       dots,
+		ats:        ats,
+		fused:      fused && nestsMarks(nodes),
+		flanking:   delimiterBesidePunctuation(nodes, context.tableCell) && letterBesideDelimiter(nodes),
+		emails:     writesBareEmail(nodes),
+		fusedRun:   fused,
+		misflanked: misflanked,
+		splitCode:  splitsCodeFence(nodes),
 	}
+}
+
+// splitsCodeFence reports whether a code node among nodes has a code node after it, whose text
+// inlineCodeFence sizes its fence and padding over with its own, where the two are not what its
+// own text alone needs: a span of spaces padded for the backtick the next span starts with reads
+// back as those spaces and two more.
+func splitsCodeFence(nodes []*Node) bool {
+	for index := range len(nodes) - 1 {
+		if nodes[index].Type != "text" || !nodeHasMark(nodes[index], "inlineCode") || nodes[index+1].Type != "text" || !nodeHasMark(nodes[index+1], "inlineCode") {
+			continue
+		}
+		fence, padded := inlineCodeFence(nodes, index)
+		ownFence, ownPadded := inlineCodeFence(nodes[index:index+1], 0)
+		if fence != ownFence || padded != ownPadded {
+			return true
+		}
+	}
+	return false
 }
 
 // readBackReaderCount is how many readers inlineWithEscapes reads a run back under, in the order
@@ -179,8 +237,13 @@ const readBackReaderCount = 3
 // (bareURLColons), the order it opens each text's marks in (markOrder), whether a letter beside a
 // delimiter run that punctuation stands inside is a character reference (flanking), whether it
 // writes each email link as its address (isBareEmailLink), text outside a link to the escapes,
-// whether a literal backslash right before such a reference is written `\\` (pairBackslash), and
-// whether an escaped tilde is written `\~` (tildeBackslash) rather than as its reference.
+// whether a literal backslash right before such a reference is written `\\` (pairBackslash),
+// whether an escaped tilde is written `\~` (tildeBackslash) rather than as its reference, whether
+// a letter beside a fused delimiter run with punctuation or whitespace on its other side is a
+// character reference, the writing kept though it fuses (flankingFused), whether every letter or
+// digit beside a delimiter run a mark writes is one (flankingAll), and whether each code span's
+// fence and padding are sized to its own text (codeAlone, openInlineMark); finalResorts sets the
+// last three.
 type runSpelling struct {
 	escapes                               delimiterEscapes
 	angleURLs, schemeColons, wwwDots, ats bool
@@ -189,6 +252,7 @@ type runSpelling struct {
 	flanking                              bool
 	bareEmails                            bool
 	pairBackslash, tildeBackslash         bool
+	flankingFused, flankingAll, codeAlone bool
 }
 
 // markOrder is the order writeInlineNodes opens a text's marks in, after those written open before
@@ -322,6 +386,71 @@ func lastResorts(needs runNeeds, spellings []runSpelling) []runSpelling {
 	if needs.bareURL {
 		for _, delimiters := range escapes {
 			resorts = append(resorts, runSpelling{escapes: delimiters, bareURLColons: true})
+		}
+	}
+	return resorts
+}
+
+// finalResorts is every spelling inlineWithEscapes writes a run in only where no writing before,
+// lastResorts' included, reads back under inlineMarkdown, so that no run another writing stores
+// changes its bytes. Each is kept where it reads back, fused or not:
+//   - CommonMark and GFM let a delimiter run open only after whitespace or punctuation where
+//     punctuation follows it, close only before them where punctuation precedes it, and do both
+//     only where the characters on its two sides are both punctuation or both something else; a
+//     character reference is punctuation to those rules. Where the first writing fused two
+//     delimiter runs (fusedRun), one fused run that closes a mark and opens another
+//     (`*(***&#120;*y***`) takes a reference on its letter side where its other side is
+//     punctuation or whitespace (flankingFused): the escapes from the fewest (lastHeld's), each
+//     without the flanking references beside unfused runs and then, where the run can take them
+//     (flanking), with them.
+//   - Where a reference on one side of a run makes the run beside the other end of that text want
+//     one too (`&#120;*&#120;***(**`), or a code span's or link's syntax stands just inside a run
+//     beside a letter (`*`x`*&#120;`), every letter or digit beside a run a mark writes is a
+//     reference (flankingAll), so that every such run has punctuation, whitespace or the line's
+//     own start or end on both sides: the escapes from the fewest, where the run fused two
+//     delimiter runs, can take a flanking reference at all, or wrote a run that cannot open or
+//     close where it must (misflanked).
+//   - Where a text is under more than one mark (nestsMarks), each of these comes again with the
+//     marks kept open (`***.**&#32;***.**`), ordered by reach and reopened, orders whose writings
+//     fuse otherwise and so are never kept before.
+//   - Where a code span's fence or padding, sized over the code nodes after it as well, is not
+//     what its own text needs (splitCode), every one of these sizes each span to its own text
+//     (codeAlone), after the escapes from the fewest with that alone.
+func finalResorts(needs runNeeds, nested bool) []runSpelling {
+	var resorts []runSpelling
+	add := func(spelling runSpelling) {
+		spelling.codeAlone = needs.splitCode
+		resorts = append(resorts, spelling)
+	}
+	escapes := escapesFrom(needs.lastHeld)
+	if needs.splitCode {
+		for _, delimiters := range escapes {
+			add(runSpelling{escapes: delimiters})
+		}
+	}
+	if !needs.fusedRun && !needs.flanking && !needs.misflanked {
+		return resorts
+	}
+	orders := []markOrder{marksAsWritten}
+	if nested {
+		orders = append(orders, marksKeptOpen, marksByReach, marksReopened)
+	}
+	if needs.fusedRun {
+		flanking := []bool{false}
+		if needs.flanking {
+			flanking = append(flanking, true)
+		}
+		for _, order := range orders {
+			for _, delimiters := range escapes {
+				for _, flanked := range flanking {
+					add(runSpelling{escapes: delimiters, order: order, flanking: flanked, flankingFused: true})
+				}
+			}
+		}
+	}
+	for _, order := range orders {
+		for _, delimiters := range escapes {
+			add(runSpelling{escapes: delimiters, order: order, flankingFused: true, flankingAll: true})
 		}
 	}
 	return resorts
@@ -538,20 +667,20 @@ func writesAddressSyntax(nodes []*Node) (colons, dots, ats bool) {
 	return colons, dots, ats
 }
 
-// readsBackUnder is how many of the three readers, from the first, the inline markdown written
-// since from reads back under as the nodes whose footnote labels are labels and whose
-// inlineSignature is signature: the run's own lines, with the prefix its later lines are written
-// behind taken off, read after a definition for each label, since a reference reads as one only
-// then. It stops at the first reader the run does not read back under, and makes no read that is
-// the same parse as one it made: storedMarkdown reads a source holding no `~` as inlineMarkdown
-// does, since editorRules and storedRules differ only beside a `~` (a `*` or `_` run's widening by
-// one, tildeParser, tildeDelimiters, and the `~` runs' own group in delimiterList), so that
-// parse's nodes, error and divergence are inlineMarkdown's; and flankingMarkdown reads a source as
-// storedMarkdown does unless the stored parse reported a `*` or `_` run that could open or close
-// otherwise under flankingRules (parseInlineWithDefinitions). A label's `~` is the source's own:
-// the run writes every label it refers to as `[^label]`, and escapeFootnoteLabel escapes no `~`.
-func (r *renderer) readsBackUnder(from int, prefix string, labels, signature []string) int {
-	written := r.b.Bytes()[from:]
+// readsBackUnder is how many of the three readers, from the first, written, inline markdown a run
+// or a segment of one wrote (runSegments), reads back under as the nodes whose footnote labels are
+// labels and whose inlineSignature is signature: its own lines, with the prefix its later lines are
+// written behind taken off, read after a definition for each label, since a reference reads as one
+// only then. It stops at the first reader the markdown does not read back under, and makes no read
+// that is the same parse as one it made: storedMarkdown reads a source holding no `~` as
+// inlineMarkdown does, since editorRules and storedRules differ only beside a `~` (a `*` or `_`
+// run's widening by one, tildeParser, tildeDelimiters, and the `~` runs' own group in
+// delimiterList), so that parse's nodes, error and divergence are inlineMarkdown's; and
+// flankingMarkdown reads a source as storedMarkdown does unless the stored parse reported a `*` or
+// `_` run that could open or close otherwise under flankingRules (parseInlineWithDefinitions). A
+// label's `~` is the source's own: the run writes every label it refers to as `[^label]`, and
+// escapeFootnoteLabel escapes no `~`.
+func readsBackUnder(written []byte, prefix string, labels, signature []string) int {
 	var lines strings.Builder
 	lines.Grow(len(written))
 	for start := 0; start < len(written); {

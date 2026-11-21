@@ -295,8 +295,10 @@ func (m matchBlocks) lastAfter(after *pmdoc.Node) int {
 // than once a check: the block a write lands in can hold the whole document's text, where
 // rendering and parsing it again cost a one-word edit of a mebibyte-long paragraph about ten
 // mebibytes (sjawhar/legion#2519). One write's checks read trees no one changes while they run -
-// every pmdoc edit answers a copy - so a block's read-back stands for as long as the map does,
-// which is the one operation that made it.
+// every pmdoc edit answers a copy, and the trims a replace makes in place touch only the nodes its
+// own splice made, before any check reads them - so a block's read-back stands for as long as the
+// map does: an accept's one operation, or an edit batch's whole run (runBatch), whose next
+// operation starts from the very block node the one before it left and checks it again.
 type blockReadBacks map[*pmdoc.Node]pmdoc.BlockReadBack
 
 // read is the parser's refusal of block's markdown, and shape what that markdown reads back as
@@ -311,6 +313,7 @@ func (backs blockReadBacks) of(block *pmdoc.Node) pmdoc.BlockReadBack {
 		return back
 	}
 	back := pmdoc.ReadBackBlock(block)
+	countBlockReadBack()
 	backs[block] = back
 	return back
 }

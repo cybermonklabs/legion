@@ -1,6 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { type Envelope, legacyDispatchIssueSubject } from "@legion/contracts";
+import {
+  type Envelope,
+  IDEMPOTENCY_KEY_IN_FLIGHT,
+  legacyDispatchIssueSubject,
+} from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { decode } from "@toon-format/toon";
 import { bearerCredential } from "../bearer";
@@ -11,6 +15,7 @@ import {
   replyWith,
   senderLabel,
 } from "../delivery";
+import { DISPATCH_IN_PROCESS_DEADLINE_MS, DispatchWriteUnsettledError } from "../dispatch-http";
 
 const reader = "01a01111-2222-7333-4444-555555555555";
 const actor = { kind: "session", id: "session-1" };
@@ -579,6 +584,120 @@ describe("renderInbound dispatch events", () => {
       expect(keys[2]).not.toBe(keys[0] as string);
     } finally {
       server.stop(true);
+    }
+  });
+
+  // The listener's delivery path and the agent's turn wait on a reply, so it ends at its own
+  // minute even where Dispatch says it is still running it, rather than at the end of the run
+  // Dispatch may still be making of it (about 11 minutes). It ends as still running, under its
+  // one key, and Dispatch's run goes on without it. Where only silence put the reply in that wait,
+  // Dispatch may not hold it at all, and the error says that it may still be running.
+  test.each([
+    {
+      how: "answers 409 KEY_IN_FLIGHT for",
+      silent: false,
+      // Asked at 0, 1 and 3 s, then every 3 s to 57 s; the 10 s pause after it ends at 60 s.
+      attempts: 21,
+      standing: "is still running",
+      finishes: "the write",
+    },
+    {
+      how: "leaves silent through",
+      silent: true,
+      // Asked at 0, 21 and 43 s, each attempt cut off after 20 s of silence; the minute ends the
+      // third.
+      attempts: 3,
+      standing: "may still be running",
+      finishes: "an attempt of the write it received",
+    },
+  ])("a reply Dispatch $how its minute ends then as one that $standing, naming its key", async (row) => {
+    jest.useFakeTimers();
+    const otherFetch = globalThis.fetch;
+    const keys: string[] = [];
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        // Dispatch's keyed layer, which a write whose attempt went unanswered asks about before
+        // it asks again.
+        if (new URL(input.toString()).pathname === "/healthz") {
+          return Response.json({ idempotency_keys: true });
+        }
+        const key = new Headers(init?.headers).get("Idempotency-Key") ?? "";
+        keys.push(key);
+        if (row.silent) {
+          // No answer, until the attempt is cut off.
+          const { promise, reject } = Promise.withResolvers<Response>();
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+          return await promise;
+        }
+        return Response.json(
+          {
+            code: IDEMPOTENCY_KEY_IN_FLIGHT,
+            error: "an earlier request with this key is still running",
+          },
+          { status: 409, headers: { "Idempotency-Key": key, "Retry-After": "1" } }
+        );
+      },
+      { preconnect: otherFetch.preconnect }
+    );
+    try {
+      const started = performance.now();
+      const ended: { at?: number; error?: unknown } = {};
+      const reply = postDeliveryReply(
+        { url: "http://dispatch.test", credential: bearerCredential(REPLY_TOKEN) },
+        reader,
+        {
+          resource: "message",
+          id: "message-1",
+          attempt: 1,
+          mode: "btw",
+          replyPath: "/api/v1/messages/message-1/reply",
+          replyFields: {},
+          issueKey: null,
+          body: "status?",
+        },
+        { body: "green" }
+      ).then(
+        () => {
+          ended.at = performance.now();
+        },
+        (error: unknown) => {
+          ended.at = performance.now();
+          ended.error = error;
+        }
+      );
+      // The fake timers move a second at a time while the reply waits, and each attempt and its
+      // answer take no time; the loop stops past the longest run window, should the reply wait it.
+      while (ended.at === undefined && performance.now() - started < 700_000) {
+        for (let i = 0; i < 100; i++) await Promise.resolve();
+        if (ended.at === undefined) jest.advanceTimersByTime(1_000);
+      }
+      await reply;
+
+      expect(ended.at === undefined ? undefined : ended.at - started).toBe(
+        DISPATCH_IN_PROCESS_DEADLINE_MS
+      );
+      expect(keys).toHaveLength(row.attempts);
+      expect(new Set(keys)).toEqual(new Set([keys[0] as string]));
+      expect(ended.error).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect(ended.error).toEqual(
+        expect.objectContaining({
+          key: keys[0],
+          running: true,
+          toldRunning: row.standing === "is still running",
+        })
+      );
+      expect((ended.error as Error).message).toBe(
+        `POST http://dispatch.test/api/v1/messages/message-1/reply ${row.standing} on ` +
+          "Dispatch, and its deadline ended the wait for its outcome (the last of " +
+          `${row.attempts} attempts): Dispatch finishes ${row.finishes} whatever this side ` +
+          `does, and the same request sent again under Idempotency-Key ${keys[0]} returns its ` +
+          "outcome once Dispatch's run ends."
+      );
+    } finally {
+      globalThis.fetch = otherFetch;
+      jest.useRealTimers();
     }
   });
 

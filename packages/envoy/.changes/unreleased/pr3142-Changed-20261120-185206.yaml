@@ -1,0 +1,5 @@
+kind: Changed
+body: Dispatch's handler error lines (a 500, a document whose history cannot load, one too large to store, one outside the schema) no longer carry an error's message, which can quote a document's text and a person's address in it. Each line holds the refusal's class, a known sentinel's own words, a database error's SQLSTATE and constraint name, the error's Go type chain, the handler that answered (site) and the route; the access log's line for the request gives the rest. The dispatch README's "Handler error lines" section says what each field holds.
+time: 2026-11-20T18:52:06.754412845Z
+custom:
+    Issue: pr3142

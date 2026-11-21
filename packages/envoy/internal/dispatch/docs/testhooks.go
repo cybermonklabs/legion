@@ -323,6 +323,40 @@ func countDocumentRender(markdown string) {
 	}
 }
 
+// blockReadBacksCounted is the count a test installs over every read-back of a document-level
+// block this package makes (blockReadBacks.of, pmdoc.ReadBackBlock), as documentRenders is the
+// record over its renders: the block an edit lands in can hold the whole document's text, so an
+// edit costs what its read-backs cost. Outside a test it is nil, and a read-back loads it and does
+// nothing else. One test at a time holds it, and clears it in t.Cleanup.
+var blockReadBacksCounted atomic.Pointer[atomic.Int64]
+
+// countBlockReadBack counts one read-back of a document-level block on the count a test
+// installed.
+func countBlockReadBack() {
+	if count := blockReadBacksCounted.Load(); count != nil {
+		count.Add(1)
+	}
+}
+
+// judgedTexts is the rewrite a test installs over the two texts a write's stored-text check judges
+// (applyLiveWritten: the text the document was stored as before the write, and the text the write
+// stores), as documentRenders is the record over its renders. The trees a test builds are rendered
+// in spellings that read back, so a test makes a text that reads back otherwise reach the check
+// only through this, and the check refuses the write, or excuses a block, as it would a text an
+// earlier renderer or a browser left. Only the texts judged are rewritten: what the write stores is
+// its own rendering. Outside a test it is nil and the texts are judged as they are. One test at a
+// time holds it, and clears it in t.Cleanup.
+var judgedTexts atomic.Pointer[func(markdown string) string]
+
+// judgedText is markdown as a write's stored-text check judges it: rewritten by the rewrite a test
+// installed (judgedTexts), or as it is.
+func judgedText(markdown string) string {
+	if rewrite := judgedTexts.Load(); rewrite != nil {
+		return (*rewrite)(markdown)
+	}
+	return markdown
+}
+
 // RoomCapsForTest is the service's room and connection caps (reserveRoom, reserveConnection).
 // cmd/dispatch's settings test reads it to see DISPATCH_MAX_LIVE_ROOMS and
 // DISPATCH_MAX_DOC_CONNECTIONS reach the service through Deps.

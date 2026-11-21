@@ -466,7 +466,7 @@ func (s *Service) reconcileAskBlocks(
 			switch {
 			case err != nil:
 				slog.Error("dispatch: cannot write a decided ask's wording back into its block",
-					"ask", ask.ID, "artifact", artifactID, "block", block.id, "error", err)
+					"ask", ask.ID, "artifact", artifactID, "block", block.id, "error", LoggedError(err))
 			case changed:
 				reconciled.repairs = append(reconciled.repairs, askRepair(block.id, decidedWording(ask)))
 				reworded = true

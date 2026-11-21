@@ -19,7 +19,11 @@ import {
 import { newAsks } from "@legion/envoy-client/askgate-new-asks";
 import { bearerCredential } from "@legion/envoy-client/bearer";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
-import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
+import {
+  DispatchClient,
+  DispatchServiceError,
+  DispatchWriteUnsettledError,
+} from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
@@ -7692,8 +7696,9 @@ describe("the Dispatch decision record (A5)", () => {
         stored.set(input.name, answer.artifact.id);
         return answer;
       },
-      docEdit: async (id, input) => {
+      docEdit: async (id, input, key) => {
         for (const op of input.ops ?? []) edits.push({ id, markdown: op.markdown ?? "" });
+        if (answers.docEdit) return await answers.docEdit(id, input, key);
         return { applied: (input.ops ?? []).length };
       },
     } satisfies RecordClient;
@@ -7847,6 +7852,65 @@ describe("the Dispatch decision record (A5)", () => {
     expect(g.runtimeWarnings).toEqual([
       "AskGate did not record the decision of dispatch_ask (t1) on Dispatch: dispatch: 503 Service Unavailable",
     ]);
+  });
+
+  // A write Dispatch was still running when its minute ended, or may have been, is no failure
+  // Dispatch answered, so the log line says where the record stands, under the write's key, not
+  // that it was not recorded: an append still running is Dispatch's to finish, and nothing sends
+  // it again; a create still running left this record unwritten, and the session's next record
+  // asks for that create again under its key. Dispatch's having said it runs the write
+  // (409 KEY_IN_FLIGHT) is the difference between "is" and "may".
+  test.each([
+    {
+      write: "append",
+      told: true,
+      line: (key: string) =>
+        `AskGate's record of the decision of dispatch_ask (t1) is still running on Dispatch under key ${key}: Dispatch finishes it, and nothing here sends it again`,
+    },
+    {
+      write: "append",
+      told: false,
+      line: (key: string) =>
+        `AskGate's record of the decision of dispatch_ask (t1) may still be running on Dispatch under key ${key}: Dispatch finishes it if it holds it, and nothing here sends it again`,
+    },
+    {
+      write: "create",
+      told: false,
+      line: (key: string) =>
+        `AskGate did not record the decision of dispatch_ask (t1) on Dispatch: the create of the session's decision document may still be running there under key ${key}, and the session's next record collects its outcome under that key`,
+    },
+  ])("a record whose $write Dispatch was still running at its deadline (told: $told) is logged as where it stands", async (row) => {
+    let failure: DispatchWriteUnsettledError | undefined;
+    /** The client's answer at the write's deadline, for a write that entered the wait for its run. */
+    const stillRunning = (key: string) => {
+      failure = new DispatchWriteUnsettledError(
+        new DOMException("The operation timed out.", "TimeoutError"),
+        3,
+        key,
+        `POST https://dispatch.example/api/v1/... ${row.told ? "is still running" : "may still be running"} on Dispatch, and its deadline ended the wait for its outcome`,
+        row.told,
+        true,
+        row.told
+      );
+      return Promise.reject(failure);
+    };
+    const dispatch = recordingDispatch(
+      row.write === "append"
+        ? { docEdit: (_id, _input, key) => stillRunning(key) }
+        : { projectArtifact: (_project, _input, key) => stillRunning(key ?? "") }
+    );
+    const g = bind({
+      complete: bySystem(ALLOW, MATCHED),
+      env: { OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
+      dispatch: dispatch.session,
+    });
+    expect((await g.device("t1", "dispatch_ask", KEEP))?.block).toBe(true);
+    await recorded();
+    if (failure === undefined) throw new Error(`the record's ${row.write} was never sent`);
+    expect(g.recordEntries).toEqual([
+      { toolCallId: "t1", tool: "dispatch_ask", recordError: failure.message },
+    ]);
+    expect(g.runtimeWarnings).toEqual([row.line(failure.key)]);
   });
 
   test("with no record project set the gate asks Dispatch for nothing and records nothing", async () => {

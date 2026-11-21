@@ -56,6 +56,7 @@ import {
   postDeliveryReply,
   type RenderInboundResult,
   renderInbound,
+  replyStillRunning,
   senderLabel,
   wholeCarriedBody,
 } from "@legion/envoy-client/delivery";
@@ -79,7 +80,7 @@ import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
 } from "@legion/envoy-client/dispatch-first";
-import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
+import { DispatchServiceError, stillRunningText } from "@legion/envoy-client/dispatch-http";
 import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { pictureAddresses } from "@legion/envoy-client/dispatch-pictures";
 import {
@@ -254,6 +255,7 @@ import {
   type GateEntry,
   type GateRecordEntry,
 } from "./askgate/askgate-core";
+import { type RecordStillRunning, unconfirmedRecordText } from "./askgate/decision-record";
 import { registerEnvoyMessageRenderer } from "./envoy-message-renderer";
 import { registerEnvoyWhoamiCommand } from "./envoy-whoami-command";
 
@@ -2131,6 +2133,20 @@ export default function envoyExtension(hostApi: PiApi): void {
               await postDispatchReply(delivery, { body: reply.replyText }, session);
               await taken();
             } catch (error) {
+              if (replyStillRunning(error)) {
+                // Where Dispatch holds the reply, it lands without this side and settles the
+                // attempt when it does: an error posted over it, under a key of its own, could
+                // settle the attempt first with words the person would read in place of the
+                // answer. So nothing more is posted, and the claim is released as a refusal's is,
+                // so a Retry the person sends if the reply never lands reaches the session again.
+                logger.warn(
+                  `envoy: a BTW's reply ${stillRunningText(error.toldRunning)} on Dispatch`,
+                  { eventID: envelope?.event_id, key: error.key }
+                );
+                held.release();
+                relayed.done();
+                return;
+              }
               await refuse(delivery, messageFor(error));
             }
           });
@@ -5105,27 +5121,27 @@ export default function envoyExtension(hostApi: PiApi): void {
         } satisfies GateEntry);
         if (recorder === undefined) continue;
         void (async () => {
-          let recordError: string | undefined;
+          let answer: string | RecordStillRunning | undefined;
           try {
-            recordError = await recorder.recordUnmarked({
+            answer = await recorder.recordUnmarked({
               entry: { ...entry, asksCarried },
               sessionId: context.sessionManager.getSessionId(),
               directory: context.cwd,
               id: recordId,
             });
           } catch (error) {
-            recordError = messageFor(error);
+            answer = messageFor(error);
           }
-          if (recordError === undefined) return;
-          logger.warn(
-            `envoy: AskGate did not record the unmarked ${entry.path} on Dispatch: ${recordError}`
-          );
+          if (answer === undefined) return;
+          // A record Dispatch was still running at its deadline, or may have been, is logged as
+          // where it stands rather than as a failure (`unconfirmedRecordText`).
+          logger.warn(`envoy: ${unconfirmedRecordText(`the unmarked ${entry.path}`, answer)}`);
           try {
             pi.appendEntry(ADVISOR_GATE_RECORD_ENTRY_TYPE, {
               toolCallId: entry.toolCallId,
               tool: entry.tool,
               recordId,
-              recordError,
+              recordError: typeof answer === "string" ? answer : answer.recordError,
             } satisfies GateRecordEntry);
           } catch {
             // The session is sealed or its file is gone: there is nothing left to tell, and the
