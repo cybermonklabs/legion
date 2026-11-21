@@ -19,11 +19,18 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// The cases run in a fixed order with the FIFO last: should its read hang, Receive gives up
+// 30 s before the test binary's deadline, and a case run after it would begin with no time left
+// and be blamed for that hang.
 func TestAConfigPathThatIsNotARegularFileIsRefused(t *testing.T) {
-	for name, create := range map[string]func(path string) error{
-		"a directory": func(path string) error { return os.Mkdir(path, 0o700) },
-		"a FIFO":      func(path string) error { return syscall.Mkfifo(path, 0o600) },
+	for _, tc := range []struct {
+		name   string
+		create func(path string) error
+	}{
+		{"a directory", func(path string) error { return os.Mkdir(path, 0o700) }},
+		{"a FIFO", func(path string) error { return syscall.Mkfifo(path, 0o600) }},
 	} {
+		name, create := tc.name, tc.create
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
