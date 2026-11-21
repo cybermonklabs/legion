@@ -1154,11 +1154,12 @@ const legionWebhookAppGap = z.object({
  * carries a copy of it. It keeps contract 152's shape for every caller: the operator's `legion
  * state` states no contract and asks from no pod, so the daemon serves it this block, and a
  * `legion state` of 152 reads its webhook App lines from that list. A plugin of an earlier
- * contract reads the block with that contract's own schema, which also requires `owners`, `mapped`
- * and `refused`, so the route serves a caller below 202 that older block, written from the same
- * entries: the contract its plugin states, else the highest its pod's claims record (`api.stateFor`,
- * `withoutRepositoriesLive`). That body is never served to a plugin of this contract, so this
- * schema reads only this block. */
+ * contract up to 189 reads the block with that contract's own schema, which also requires
+ * `owners`, `mapped` and `refused`, and one from 193 on reads every key of the block as optional
+ * (main's #3659). The route serves every caller below 202 that older block all the same, written
+ * from the same entries: the contract its plugin states, else the highest its pod's claims record
+ * (`api.stateFor`, `withoutRepositoriesLive`). That body is never served to a plugin of this
+ * contract, so this schema reads only this block. */
 const legionRepositories = z.object({
   live: z.array(legionLiveRepository).optional(),
   withoutWebhookApp: z.array(legionWebhookAppGap).optional(),

@@ -1152,9 +1152,9 @@ func populatedRepositoriesAt152(t *testing.T) repositoriesAt152 {
 	return repositoriesAt152{
 		Owners: []string{"acme", "cybermonklabs", "zeta"},
 		Mapped: []servedRepositoryAt152{
-			{Repo: "acme/widgets", Apps: both, Cache: entry("acme/widgets").Cache},
-			{Repo: "cybermonklabs/legion", Apps: both},
-			{Repo: "zeta/tools", Apps: both, Cache: entry("zeta/tools").Cache},
+			{Repo: "acme/widgets", Apps: &both, Cache: entry("acme/widgets").Cache},
+			{Repo: "cybermonklabs/legion", Apps: &both},
+			{Repo: "zeta/tools", Apps: &both, Cache: entry("zeta/tools").Cache},
 		},
 		Refused: []refusedRepositoryAt152{
 			{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
@@ -1266,7 +1266,7 @@ func TestTheRepositoriesBlockIsNarrowedBelowItsContract(t *testing.T) {
 		_, block := repositoriesServed(t, stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1))
 		want := repositoriesAt152{
 			Owners: []string{"acme"},
-			Mapped: []servedRepositoryAt152{{Repo: "acme/stale", Apps: AppInstallationsView{Implement: true, Review: true}}},
+			Mapped: []servedRepositoryAt152{{Repo: "acme/stale", Apps: &AppInstallationsView{Implement: true, Review: true}}},
 			Refused: []refusedRepositoryAt152{
 				{Repo: "acme/fresh", Reason: "GitHub has not answered for it yet"},
 				{Repo: "sjawhar/moved", Reason: "the implement and review Apps are not installed on cybermonklabs/moved", Apps: &AppInstallationsView{}},
