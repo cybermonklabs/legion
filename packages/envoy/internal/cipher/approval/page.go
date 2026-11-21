@@ -604,8 +604,11 @@ const (
 // record Dispatch could not say whether login may see (requests.ErrProjectAccessUnavailable) is
 // decided by nobody, and the POST's other records are decided as ever: the page it lands on says
 // that one is unavailable. An approval for which Dispatch could not say whether the request's
-// person is a restricted member (*projectaccess.MemberKindUncheckable) is decided by nobody
-// either, and its page says it could not be decided; neither writes an ERROR line. A record of a
+// person is a restricted member, and any decision for which it could not say whether the deciding
+// person is one (*projectaccess.MemberKindUncheckable), is decided by nobody either, and its page
+// says it could not be decided; neither writes an ERROR line. A deciding person Dispatch calls a
+// restricted member decides nothing (requests.ErrRestrictedDecider), said in its own words with no
+// code, as a record not theirs to decide is. A record of a
 // private project login may not see is "no such record", as for an id no record has (the
 // machine's refusal is pgx.ErrNoRows alone), so the POST tells them nothing of it. A refusal
 // record.ErrNotApprover carries for a record whose approver line names someone else is said by the
@@ -641,6 +644,8 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 		return "refused: " + err.Error(), refusedChain, false
 	case errors.Is(err, requests.ErrRequestersGroupUnread):
 		return "refused: " + err.Error(), refusedGroupUnread, false
+	case errors.Is(err, requests.ErrRestrictedDecider):
+		return "refused: " + err.Error(), "", false
 	case errors.Is(err, record.ErrNotApprover):
 		if d, read := p.cfg.Machine.ReadRecord(ctx, id); read == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login, p.cfg.Machine.Groups) {
 			return "refused: " + err.Error(), "", false
@@ -649,10 +654,10 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
 		return "unavailable: " + err.Error(), "", false
 	case errors.As(err, new(*projectaccess.MemberKindUncheckable)):
-		// Dispatch could not say whether the request's person is a restricted member, which an
-		// approval asks (requests.Machine.restrictedOperator): nothing was decided, and the
-		// person approves again once Dispatch answers. Dispatch not answering is no fault of the
-		// page's, so no ERROR line; the decision line logs the outcome.
+		// Dispatch could not say whether the request's person or the deciding person is a
+		// restricted member, which a decision asks (requests.Machine.ApplyDecision): nothing was
+		// decided, and the person decides again once Dispatch answers. Dispatch not answering is no
+		// fault of the page's, so no ERROR line; the decision line logs the outcome.
 		return "unavailable: " + err.Error(), refusedError, false
 	case errors.Is(err, requests.ErrJudgeHolds):
 		return "refused: the model judge is deciding this request", "", false

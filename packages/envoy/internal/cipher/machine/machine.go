@@ -358,11 +358,13 @@ type serviceDenier struct {
 // every signed-in person's to deny for no other reason. It asks Dispatch (projectaccess.Restricted,
 // through the enroll service's client) only for a record that is a service's login, so a person's
 // deny of their own machine login asks nothing; a broker with no client of Dispatch asks nothing
-// either. A failure to ask is the *projectaccess.MemberKindUncheckable it carries, and a failure to
-// read the record is that read's error; the transaction answers either for a service's login alone,
-// after the code and the record's own rule: a check that cannot decide refuses. A record it finds
-// no row for, or cannot parse or verify, asks nothing: the transaction reads it again and refuses
-// it.
+// either. The read runs within projectaccess.RelayedReadBound, since Dispatch relays the deny and
+// waits for its answer no longer than that read could otherwise take. A failure to ask, one the
+// bound cut short included, is the *projectaccess.MemberKindUncheckable it carries, and a failure
+// to read the record is that read's error; the transaction answers either for a service's login
+// alone, after the code and the record's own rule: a check that cannot decide refuses. A record it
+// finds no row for, or cannot parse or verify, asks nothing: the transaction reads it again and
+// refuses it.
 func (s *Service) readServiceDenier(ctx context.Context, recordID, login string) serviceDenier {
 	if s.Enroll == nil || s.Enroll.Projects == nil {
 		return serviceDenier{}
@@ -385,6 +387,8 @@ func (s *Service) readServiceDenier(ctx context.Context, recordID, login string)
 	if err != nil || obj.Service() == "" {
 		return serviceDenier{}
 	}
+	ctx, cancel := context.WithTimeout(ctx, projectaccess.RelayedReadBound)
+	defer cancel()
 	restricted, err := projectaccess.Restricted(ctx, s.Enroll.Projects, record.CanonicalLogin(login))
 	return serviceDenier{restricted: restricted, err: err}
 }

@@ -3,7 +3,9 @@ package machine
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
@@ -15,9 +17,10 @@ import (
 // but not by a person Dispatch calls a restricted member, who is no approver of a secret: their
 // deny is refused record.ErrNotApprover and the login stays pending, while a full member's deny,
 // the control, denies it. While Dispatch cannot say what kind of member the denying person is, the
-// deny is refused *projectaccess.MemberKindUncheckable naming them, and the login stays pending. A
-// restricted member's own machine login is theirs alone to decide: they deny it, asking Dispatch
-// nothing.
+// deny is refused *projectaccess.MemberKindUncheckable naming them, and the login stays pending; a
+// read Dispatch does not answer at all ends before Dispatch stops waiting for the route it relays,
+// and the deny is refused the same way. A restricted member's own machine login is theirs alone to
+// decide: they deny it, asking Dispatch nothing.
 func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 	const (
 		guest  = "guest@outside.example"
@@ -77,6 +80,22 @@ func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 		}
 	})
 
+	t.Run("while Dispatch does not answer, the deny is refused within the wait of the route Dispatch relays", func(t *testing.T) {
+		svc := newFixture(t)
+		recordID, code, _ := insertServiceRecord(t, svc, record.AnyoneApprover)
+		stalled := &stalledKind{}
+		svc.Enroll.Projects = stalled
+		_, _, err := svc.ApplyDecision(ctx, recordID, false, member, code)
+		var uncheckable *projectaccess.MemberKindUncheckable
+		if !errors.As(err, &uncheckable) || uncheckable.Person != member {
+			t.Fatalf("ApplyDecision(deny) by %s while Dispatch does not answer = %v; want MemberKindUncheckable naming them", member, err)
+		}
+		if n := decisions(t, svc, recordID); n != 0 {
+			t.Fatalf("the refused deny wrote %d decisions; want none", n)
+		}
+		stalled.requireBounded(t)
+	})
+
 	t.Run("a restricted member's own machine login is theirs to deny, asking nothing", func(t *testing.T) {
 		svc := newFixture(t)
 		code, err := openLogin(t, svc, signMachineLogin(t, guest, "guest-host", ""))
@@ -97,4 +116,57 @@ func TestARestrictedMemberDeniesNoServicesLogin(t *testing.T) {
 			t.Fatalf("the deny of their own machine login asked Dispatch %d times; want none", n)
 		}
 	})
+}
+
+// dispatchRelayWait is how long Dispatch's server waits for the broker's answer to a route it
+// relays (internal/dispatch/cipher's defaultTimeout): a read of Dispatch that such a route makes
+// must end before it, or the route answers nobody.
+const dispatchRelayWait = 5 * time.Second
+
+// stalledKind is a projectaccess.Access whose member-kind reads Dispatch never answers: each waits
+// until its caller's context ends, and records how long that context had left. A read whose
+// context has no deadline would wait as long as its caller, so it is answered at once with an
+// error and counted as unbounded, which the row reads as the fault. It answers no project.
+type stalledKind struct {
+	mu        sync.Mutex
+	unbounded int
+	bounds    []time.Duration
+}
+
+func (s *stalledKind) Access(context.Context, string, string) (projectaccess.Answer, error) {
+	return projectaccess.Answer{}, errors.New("stalledKind answers no project")
+}
+
+func (s *stalledKind) States(context.Context, []string) (map[string]projectaccess.Answer, error) {
+	return nil, errors.New("stalledKind answers no project")
+}
+
+func (s *stalledKind) MemberKind(ctx context.Context, _ string) (string, error) {
+	deadline, bounded := ctx.Deadline()
+	s.mu.Lock()
+	if !bounded {
+		s.unbounded++
+		s.mu.Unlock()
+		return "", errors.New("stalledKind: a member-kind read with no deadline")
+	}
+	s.bounds = append(s.bounds, time.Until(deadline))
+	s.mu.Unlock()
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+// requireBounded fails t unless s was asked at least one member-kind read, and every read had a
+// deadline short of dispatchRelayWait.
+func (s *stalledKind) requireBounded(t *testing.T) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.unbounded != 0 || len(s.bounds) == 0 {
+		t.Fatalf("the deny asked %d member-kind reads with no deadline and %d with one; want at least one read, each bounded", s.unbounded, len(s.bounds))
+	}
+	for _, bound := range s.bounds {
+		if bound >= dispatchRelayWait {
+			t.Fatalf("the deny read a member kind with %s to run; want less than the %s Dispatch waits for the route", bound, dispatchRelayWait)
+		}
+	}
 }

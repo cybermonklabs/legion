@@ -1530,17 +1530,20 @@ type Dismissal struct {
 // record.CanonicalLogin(login), record.AnyoneApprover, nor a group the group reader admits login
 // to now (record.GroupAdmits), which is the list's own rule for whose list holds a record
 // (dismissAdmits), for an empty login, one that is record.AnyoneApprover itself, or one spelled as
-// a group, which name nobody, and for a secret request when Dispatch calls login a restricted
-// member, whose list holds none (restricted_approver.go); the *projectaccess.MemberKindUncheckable
-// that member-kind read returns when Dispatch could not be asked; ErrNotExpired for a record nobody
-// has decided whose deadline has not passed; and ErrTerminal for every other record, one approved,
-// denied or revoked, and a secret request cancelled before its deadline. A secret request
-// cancelled after its deadline is expired, and is dismissed like any other. A machine login, a
-// person's own or a service's, is dismissed as before, asking Dispatch nothing of login.
+// a group, which name nobody; ErrRestrictedDismissal, which is record.ErrNotApprover, when Dispatch
+// calls login a restricted member and the record waits on login only as one of its approvers
+// (approverRow: a secret request, or a service's legacy machine login), none of which their list
+// holds (restricted_approver.go); the *projectaccess.MemberKindUncheckable that member-kind read
+// returns when Dispatch could not be asked; ErrNotExpired for a record nobody has decided whose
+// deadline has not passed; and ErrTerminal for every other record, one approved, denied or
+// revoked, and a secret request cancelled before its deadline. A secret request cancelled after
+// its deadline is expired, and is dismissed like any other. A person's own machine login is
+// dismissed as before, asking Dispatch nothing of login.
 //
 // The person rule is read on the pool before the transaction (hideUnseenRecord), since it may ask
 // Dispatch, and no call to Dispatch runs in a transaction that holds locks; so is login's member
-// kind, after the rule and only for a secret request whose list holds login (dismissApproves).
+// kind, after the rule and only for a record whose list holds login as one of its approvers
+// (dismissApproves).
 // The rule reads the record's rows rather than its signed request, so a record signed for another
 // broker address is refused an outsider as an unknown id too, not with the error of a request
 // this broker cannot verify.
@@ -1566,7 +1569,7 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 		return Dismissal{}, err
 	}
 	login = record.CanonicalLogin(login)
-	approves, err := m.dismissApproves(ctx, login, facts)
+	standing, err := m.dismissApproves(ctx, login, facts)
 	if err != nil {
 		return Dismissal{}, err
 	}
@@ -1579,7 +1582,13 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 	if err := tx.QueryRow(ctx, `select kind, approver from credential_requests where id=$1`, recordID).Scan(&kind, &approver); err != nil {
 		return Dismissal{}, err
 	}
-	if !dismissAdmits(m.Groups, approver, login) || kind == record.KindAgentSecret && !approves {
+	switch {
+	case !dismissAdmits(m.Groups, approver, login):
+		return Dismissal{}, record.ErrNotApprover
+	case approverRow(kind, approver, login) && !standing.approves:
+		if standing.restricted {
+			return Dismissal{}, ErrRestrictedDismissal
+		}
 		return Dismissal{}, record.ErrNotApprover
 	}
 	lock := `select 1 from credential_requests where id=$1 for share`
@@ -1631,21 +1640,27 @@ func dismissAdmits(groups record.Groups, approver, login string) bool {
 }
 
 // dismissApproves answers whether login, canonical, may dismiss the record facts describe as one
-// of its approvers, read before Dismiss's transaction: true for a machine login, which is a
-// person's own or a service's and asks nothing; for a secret request whose list holds login
-// (dismissAdmits), whether Dispatch calls login no restricted member (approvesSecrets), who is no
-// approver of a secret (restricted_approver.go); and false, asking nothing, for a secret request
-// no arm admits login to, which the transaction refuses whatever it is, so a group read that
-// comes to admit login between the two reads admits nothing unasked. A machine with no client of
-// Dispatch asks nothing, and every approver stands as before.
-func (m *Machine) dismissApproves(ctx context.Context, login string, facts rowFacts) (bool, error) {
+// of its approvers, read before Dismiss's transaction: approving, and asking nothing, for a
+// record that waits on login as a person, their own machine login; for a record whose list holds
+// login only as one of its approvers (approverRow: a secret request, or a service's legacy machine
+// login) and whose approver admits login (dismissAdmits), whether Dispatch calls login no restricted
+// member (approvesSecrets), who is no approver of either (restricted_approver.go); and approving
+// nothing, asking nothing, for such a record no arm admits login to, which the transaction refuses
+// whatever it is, so a group read that comes to admit login between the two reads admits nothing
+// unasked. A machine with no client of Dispatch asks nothing, and every approver stands as before.
+func (m *Machine) dismissApproves(ctx context.Context, login string, facts rowFacts) (approverStanding, error) {
+	approver := deref(facts.approver)
 	switch {
-	case m.Projects == nil || facts.kind != record.KindAgentSecret:
-		return true, nil
-	case !dismissAdmits(m.Groups, deref(facts.approver), login):
-		return false, nil
+	case m.Projects == nil || !approverRow(facts.kind, approver, login):
+		return approverStanding{approves: true}, nil
+	case !dismissAdmits(m.Groups, approver, login):
+		return approverStanding{}, nil
 	}
-	return m.approvesSecrets(ctx, login)
+	approves, err := m.approvesSecrets(ctx, login)
+	if err != nil {
+		return approverStanding{}, err
+	}
+	return approvesAsReadBy(approves), nil
 }
 
 // ExpirePending expires every pending request past its deadline, writing the state transition,
@@ -1756,10 +1771,13 @@ func (m *Machine) endPending(ctx context.Context, scope store.PendingScope, arg 
 // the sweep is about to write would leave it dormant (mayGrant below) — and otherwise the
 // request is denied.
 // It re-reads the record body, recomputes its id, refuses any login but the record's own approver
-// (record.ErrNotApprover) whatever the record's state, and an approval by any login the current
-// policy would not have approve one of the request's names (currentPolicyAdmits). A denial
-// releases nothing, so the record's approver may still deny a request an owner change left them
-// unable to approve. An approval of a name the current policy denies because the secret's
+// (record.ErrNotApprover) whatever the record's state, and then a person Dispatch calls a
+// restricted member, approving or denying (ErrRestrictedDecider, restricted_approver.go), or one
+// Dispatch could not be asked about (*projectaccess.MemberKindUncheckable), and an approval by any
+// login the current policy would not have approve one of the request's names
+// (currentPolicyAdmits). A denial releases nothing, so the record's approver may still deny a
+// request an owner change left them unable to approve. An approval of a name the current policy
+// denies because the secret's
 // requesters tag no longer lists the session is neither refused nor granted: nobody could
 // approve it back, so the request is recorded denied by the broker itself (PolicyDeniedActor)
 // with that reason as its detail, and the event still names the person who pressed approve.
@@ -2292,8 +2310,18 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	// project facts' atDecision read is the last read of Dispatch before the transaction and the
 	// facts the decision rests on are under projectaccess.CacheTTL old when it is made. The
 	// judge's refusal reads neither, so it builds no reads at all.
+	//
+	// A person's decision asks Dispatch about the deciding person as well, after the person rule:
+	// a person Dispatch calls a restricted member is no approver of a secret and decides none
+	// (restricted_approver.go). The approval page signs in only the deployment's domain, and this
+	// read keeps the rule from resting on that domain being the one Dispatch calls full. The
+	// transaction answers it after the record's own approver check, so a person the record does not
+	// name is refused as ever: ErrRestrictedDecider for a restricted member, and the
+	// *projectaccess.MemberKindUncheckable when Dispatch could not be asked, deciding nothing.
 	var restricted bool
 	var facts projectFacts
+	var deciderRestricted bool
+	var deciderUnread error
 	if approve || !who.isJudge() {
 		reads, cancel := decisionReads(ctx, who)
 		defer cancel()
@@ -2304,6 +2332,9 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		}
 		if facts, err = m.decisionFacts(reads, recordID, who, pre, set); err != nil {
 			return Decision{}, false, err
+		}
+		if !who.isJudge() {
+			deciderRestricted, deciderUnread = m.restrictedPerson(reads, record.CanonicalLogin(who.login))
 		}
 	}
 	tx, err := m.Store.Pool.Begin(ctx)
@@ -2417,8 +2448,13 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		}
 	} else {
 		who.login, err = parsed.ApproverLogin(record.KindAgentSecret, "", who.login, m.Groups)
-		if err != nil {
+		switch {
+		case err != nil:
 			return Decision{}, false, err
+		case deciderUnread != nil:
+			return Decision{}, false, deciderUnread
+		case deciderRestricted:
+			return Decision{}, false, ErrRestrictedDecider
 		}
 	}
 	// The request's names, read once rather than three times: the default lifetime below,

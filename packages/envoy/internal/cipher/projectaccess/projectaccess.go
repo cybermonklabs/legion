@@ -55,6 +55,14 @@ const (
 // before the removal (BROKER_ACCESS_TOKEN_SECONDS).
 const CacheTTL = 30 * time.Second
 
+// RelayedReadBound is how long a member-kind read made for a route Dispatch's server relays may
+// run: Dispatch waits 5 seconds for the broker's whole answer (internal/dispatch/cipher's
+// defaultTimeout), and one call to Dispatch may take requestTimeout, so a read with no bound of its
+// own could outlast the call it is made for, and the route would answer nobody rather than the
+// rows it lists without the read, the refusal, or the revoke that goes ahead. A caller bounds its
+// read with it (context.WithTimeout), and takes a read it cut short as one Dispatch did not answer.
+const RelayedReadBound = 2 * time.Second
+
 // requestTimeout bounds one call to Dispatch, the dial included.
 const requestTimeout = 10 * time.Second
 
@@ -348,19 +356,19 @@ func fresh(ctx context.Context) bool {
 }
 
 // askedNowKey marks a context whose member-kind reads take no failure an earlier read kept and
-// join no call already in flight (askedNow), though they still take a young answer from the
-// cache: a read whose failure lets something through, as ListAllowed's empty list does. It is a
-// context marker rather than a method, so an Access that hands the context on, a wrapper
-// included, keeps the rule.
+// join no call already in flight (AskedNow), though they still take a young answer from the
+// cache: a read whose failure lets something through, as ListAllowed's empty list does and an
+// approver's revoke does (requests.Machine.RevokeByApprover). It is a context marker rather than a
+// method, so an Access that hands the context on, a wrapper included, keeps the rule.
 type askedNowKey struct{}
 
-// askedNow is ctx for a member-kind read that is asked of Dispatch itself whenever the cache
+// AskedNow is ctx for a member-kind read that is asked of Dispatch itself whenever the cache
 // holds no young answer (askedNowKey).
-func askedNow(ctx context.Context) context.Context {
+func AskedNow(ctx context.Context) context.Context {
 	return context.WithValue(ctx, askedNowKey{}, true)
 }
 
-// isAskedNow reports whether ctx is one askedNow or Fresh made, or derived from one.
+// isAskedNow reports whether ctx is one AskedNow or Fresh made, or derived from one.
 func isAskedNow(ctx context.Context) bool {
 	marked, _ := ctx.Value(askedNowKey{}).(bool)
 	return marked || fresh(ctx)
@@ -423,9 +431,9 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 // contexts, so a reader that gives up ends only its own wait; and a read that failed is the
 // answer to that person's reads for failureTTL from when it came back. So while Dispatch does not
 // answer, a person's reads wait on one call at a time, each for no longer than that call's
-// requestTimeout, rather than each making a call of its own. A read under Fresh, or one ListAllowed
-// asks (askedNow), joins no call already in flight, which may have been asked before the change it
-// must see, and takes no kept failure: it asks Dispatch itself (memberKindAskedNow).
+// requestTimeout, rather than each making a call of its own. A read under Fresh, or one under
+// AskedNow, joins no call already in flight, which may have been asked before the change it must
+// see, and takes no kept failure: it asks Dispatch itself (memberKindAskedNow).
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
 	if isAskedNow(ctx) {
 		return c.memberKindAskedNow(ctx, person)
@@ -764,14 +772,14 @@ func (c *Client) clock() time.Time { return c.now() }
 // through either. Any other MemberKind failure answers an error that is ErrUnchecked and wraps it:
 // the list is allowed, as it is today while Dispatch cannot be reached, and the caller that goes
 // on logs that it did so unchecked. Because that failure lets the list through, the member kind is
-// asked afresh (askedNow, which any Access that hands the context on honours), never answered by
+// asked afresh (AskedNow, which any Access that hands the context on honours), never answered by
 // a failure an earlier read kept: the list goes through unchecked only while Dispatch does not
 // answer.
 func ListAllowed(ctx context.Context, a Access, person string, projects []string) error {
 	if len(projects) > 0 {
 		return Visible(ctx, a, person, projects)
 	}
-	kind, err := a.MemberKind(askedNow(ctx), person)
+	kind, err := a.MemberKind(AskedNow(ctx), person)
 	switch {
 	case errors.Is(err, dispatchread.ErrBrokerRefused), errors.Is(err, ErrUnknownMemberKind):
 		return err

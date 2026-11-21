@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/wire"
 )
@@ -61,13 +62,46 @@ func (s *server) lookupMachineLogin(w http.ResponseWriter, r *http.Request, _ st
 type launcherCredentialsResponse = wire.LauncherCredentialsResponse
 
 // listLauncherCredentials lists the machine logins the person ?approver= names may revoke
-// (enroll.Service.LiveCredentials, through writeLauncherCredentials).
+// (enroll.Service.LiveCredentials, through writeLauncherCredentials): for a person Dispatch calls a
+// restricted member, who is no approver of a secret and sees nothing beyond their own projects,
+// their own machine logins alone (enroll.Service.OwnLiveCredentials), as their own machine lists
+// them; and 503 MEMBER_KIND_UNCHECKABLE while Dispatch cannot say what kind of member the person is
+// (machineLoginsOwnOnly).
 func (s *server) listLauncherCredentials(w http.ResponseWriter, r *http.Request, _ string) {
 	approver := r.URL.Query().Get("approver")
 	if !requireApprover(w, approver) {
 		return
 	}
-	s.writeLauncherCredentials(w, r, s.deps.Enroll.LiveCredentials, approver)
+	ownOnly, ok := s.machineLoginsOwnOnly(w, r, approver, "the machine-login list")
+	if !ok {
+		return
+	}
+	list := s.deps.Enroll.LiveCredentials
+	if ownOnly {
+		list = s.deps.Enroll.OwnLiveCredentials
+	}
+	s.writeLauncherCredentials(w, r, list, approver)
+}
+
+// machineLoginsOwnOnly reports whether the machine-login routes Dispatch relays for person hold
+// person to their own machine logins: true for a person Dispatch calls a restricted member
+// (projectaccess.Restricted), since a service's login is every signed-in person's only as an
+// approver of it, and ending one ends every session it enrolled. It asks Dispatch through the enroll
+// service's client within projectaccess.RelayedReadBound, and asks nothing on a broker with no
+// client of Dispatch. When Dispatch could not be asked it answers 503 MEMBER_KIND_UNCHECKABLE
+// (writeMemberKindUncheckable), refusing what, and ok false: a revoke fails closed here, unlike an
+// approver's revoke of a grant, since it would end other people's sessions.
+func (s *server) machineLoginsOwnOnly(w http.ResponseWriter, r *http.Request, person, what string) (ownOnly, ok bool) {
+	if s.deps.Enroll.Projects == nil {
+		return false, true
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), projectaccess.RelayedReadBound)
+	defer cancel()
+	restricted, err := projectaccess.Restricted(ctx, s.deps.Enroll.Projects, record.CanonicalLogin(person))
+	if writeMemberKindUncheckable(w, what, err) {
+		return false, false
+	}
+	return restricted, true
 }
 
 // writeLauncherCredentials answers the machine logins list names for person, each one that can
@@ -95,8 +129,12 @@ func (s *server) writeLauncherCredentials(w http.ResponseWriter, r *http.Request
 // (enroll.Service.RevokeCredential, through revokeCredentialAs): a service's as anyone signed in, a
 // person's machine's as the person who approved it, and a person's pod login as the person
 // BROKER_POD_OPERATORS maps the pod's account to, and as nobody else, although such a login
-// carries a service and a subject. The caller that relayed it is logged beside that person, whose
-// name the broker still takes on the caller's word: a revoke only takes power away.
+// carries a service and a subject. A person Dispatch calls a restricted member ends their own
+// logins alone (enroll.Service.RevokeOwnCredential), and a service's is 404 to them, as an id no
+// login has; while Dispatch cannot say what kind of member the person is, the revoke is 503
+// MEMBER_KIND_UNCHECKABLE and ends nothing (machineLoginsOwnOnly). The caller that relayed it is
+// logged beside that person, whose name the broker still takes on the caller's word: a revoke only
+// takes power away.
 func (s *server) revokeLauncherCredential(w http.ResponseWriter, r *http.Request, callerName string) {
 	id, ok := pathUUID(w, r, "id", "CREDENTIAL_ID_INPUT", "launcher credential")
 	if !ok {
@@ -112,7 +150,15 @@ func (s *server) revokeLauncherCredential(w http.ResponseWriter, r *http.Request
 	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
 	// (answer.ClipFields).
 	slog.Info("machine login revocation relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "credential", id})...)
-	s.revokeCredentialAs(w, r, s.deps.Enroll.RevokeCredential, id, body.Approver, record.HumanActor(body.Approver))
+	ownOnly, ok := s.machineLoginsOwnOnly(w, r, body.Approver, "the machine login's revoke")
+	if !ok {
+		return
+	}
+	revoke := s.deps.Enroll.RevokeCredential
+	if ownOnly {
+		revoke = s.deps.Enroll.RevokeOwnCredential
+	}
+	s.revokeCredentialAs(w, r, revoke, id, body.Approver, record.HumanActor(body.Approver))
 }
 
 // revokeCredentialAs ends machine login id, expired or not, with revoke on the word of person
