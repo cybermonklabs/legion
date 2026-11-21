@@ -27,12 +27,14 @@
 // *projectaccess.MemberKindUncheckable, which the API answers 503 MEMBER_KIND_UNCHECKABLE, and the
 // two lists leave the approver rows of that read off and log it (approverKindUnreadMessage), as
 // they leave off a row whose project Dispatch could not be asked about. While Dispatch does not
-// answer (projectaccess.Unanswered), a revoke goes ahead where nobody else could end the grant, and
-// logs it (revokeApproves): as the grant's named approver, and through any approver arm of a grant
-// whose session acts for no person, a service's pod, since a revoke only takes access away; every
-// other failure, and a revoke through a group or as anyone of a grant whose session acts for a
-// person, who ends it as its operator, refuses it as it refuses the rest. A machine with no client
-// of Dispatch asks nothing, and every approver stands as before.
+// answer (projectaccess.Unanswered), only the person a grant names as its approver ends it as an
+// approver, and the revoke logs it (revokeApproves), since a revoke only takes access away; every
+// other failure, and every revoke through a group or as anyone, whatever session holds the grant,
+// refuses it as it refuses the rest. A grant on a person's session can still be ended by that
+// person as its operator, asking Dispatch nothing; a grant on a session that acts for no person (a
+// service's pod, a person's pod BROKER_POD_OPERATORS no longer maps, or a machine's own session) is
+// ended through the broker by nobody but its named approver until Dispatch answers. A machine with
+// no client of Dispatch asks nothing, and every approver stands as before.
 package requests
 
 import (

@@ -115,33 +115,47 @@ var (
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
 	ErrUnchecked = errors.New("projectaccess: dispatch could not be asked, so the empty list is allowed unchecked")
-	// errUnavailable is a 502, 503 or 504 that says Dispatch is not answering now (Unanswered):
-	// one whose body names no code of Dispatch's, a gateway's or a load balancer's page in front
-	// of it, or one that names a code Dispatch answers for its own outage (outageCodes).
+	// errUnavailable is a status that says Dispatch is not answering now (Unanswered): a 502, 503
+	// or 504 whose body names no code of Dispatch's, a gateway's or a load balancer's page in front
+	// of it, or one that names a code Dispatch answers for its own outage (outageCodes); and a 500
+	// whose body names no code or names internalCode.
 	errUnavailable = errors.New("projectaccess: dispatch is unavailable")
 )
 
 // outageCodes are the codes Dispatch answers its access routes with, beside a 503, for an outage
 // of its own that says nothing of the person or the project asked about: OIDC_ISSUER_UNAVAILABLE
 // while it cannot reach the issuer of the broker's own account token (internal/dispatch/api,
-// serviceTokenActor), and DATABASE_UNAVAILABLE while it has no database to read (readyPool). A
-// 502, 503 or 504 whose body names any other code, such as FEATURE_OFF or
-// GITHUB_APP_UNCONFIGURED, is Dispatch answering, and that answer lasts until somebody fixes it.
+// serviceTokenActor), and DATABASE_UNAVAILABLE, which only a Dispatch with no database configured
+// answers (readyPool, begin). A 502, 503 or 504 whose body names any other code, such as
+// FEATURE_OFF or GITHUB_APP_UNCONFIGURED, is Dispatch answering, and that answer lasts until
+// somebody fixes it.
 var outageCodes = []string{"DATABASE_UNAVAILABLE", "OIDC_ISSUER_UNAVAILABLE"}
+
+// internalCode is the code of Dispatch's 500 for a handler that failed (internal/dispatch/api,
+// writeHandlerError), which is how its access routes answer while its database fails: a query
+// that fails at once, in a failover or a restart, is that 500, not a 503. A 500 naming it, or
+// naming no code at all (a page in front of Dispatch), is Dispatch not answering now; a 500 naming
+// any other code of Dispatch's, such as IDENTITY_ERROR, is an answer that lasts until somebody
+// fixes it. The cost is that a Dispatch bug that answers 500 INTERNAL reads as an outage while it
+// lasts, which lets only what an outage lets through: a revoke by the person a grant names as its
+// approver, which takes access away.
+const internalCode = "INTERNAL"
 
 // Unanswered reports whether err, a failed read of Dispatch, is Dispatch not answering: a failure
 // that clears by itself once Dispatch answers again. That is the read's deadline passing, its
 // caller's own bound (RelayedReadBound) included; the transport failing before Dispatch's whole
-// answer arrived (dispatchread.ErrNoAnswer); and a 502, 503 or 504 whose body names no code of
-// Dispatch's, or one of the codes Dispatch answers for its own outage (outageCodes). Every other
-// failure is an answer, one that lasts until somebody fixes it: Dispatch refusing the broker's own
-// account (dispatchread.ErrBrokerRefused), answering a member kind this broker does not know
-// (ErrUnknownMemberKind), a 404 that answers nothing of the person or the project, a 502, 503 or
-// 504 naming any other code of Dispatch's, any other status, or a body that does not decode; a
-// certificate that does not verify and a name that does not resolve (dispatchread.Reader.Get); and
-// so is a read its caller gave up on (context.Canceled), which says nothing of Dispatch. A caller
-// that lets something through only while Dispatch does not answer goes ahead on Unanswered alone
-// (requests.Machine.RevokeByApprover).
+// answer arrived (dispatchread.ErrNoAnswer); a 502, 503 or 504 whose body names no code of
+// Dispatch's, or one of the codes Dispatch answers for its own outage (outageCodes); and a 500
+// whose body names no code or internalCode, the 500 Dispatch answers while its database fails.
+// Every other failure is an answer, one that lasts until somebody fixes it: Dispatch refusing the
+// broker's own account (dispatchread.ErrBrokerRefused), answering a member kind this broker does
+// not know (ErrUnknownMemberKind), a 404 that answers nothing of the person or the project, a 500
+// naming any other code of Dispatch's, a 502, 503 or 504 naming any other code of Dispatch's, any
+// other status, or a body that does not decode; a certificate that does not verify and a name that
+// does not resolve (dispatchread.Reader.Get); and so is a read its caller gave up on
+// (context.Canceled), which says nothing of Dispatch. A caller that lets something through only
+// while Dispatch does not answer goes ahead on Unanswered alone
+// (requests.Machine.RevokeByApprover, for the grant's named approver).
 func Unanswered(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
@@ -212,15 +226,19 @@ func (e *MemberKindUncheckable) CallerEnded() bool { return errors.Is(e.Err, con
 // uncheckableReason is why a person's member kind could not be read (err, a MemberKind failure),
 // in words a refused caller may read: Dispatch refusing the broker's own account, which the
 // deployment fixes; Dispatch answering a kind this broker does not know, which a newer broker
-// fixes; and otherwise Dispatch not answering, or answering what the broker cannot read.
+// fixes; the broker not asking Dispatch, while Dispatch does not answer (Unanswered) or the
+// caller went away; and otherwise Dispatch answering what the broker cannot read, an answer that
+// lasts until somebody fixes it.
 func uncheckableReason(err error) string {
 	switch {
 	case errors.Is(err, dispatchread.ErrBrokerRefused):
 		return "Dispatch refused the broker's own account"
 	case errors.Is(err, ErrUnknownMemberKind):
 		return "Dispatch answered a member kind this broker does not know"
+	case Unanswered(err) || errors.Is(err, context.Canceled):
+		return "the broker could not ask Dispatch"
 	}
-	return "the broker could not ask Dispatch"
+	return "Dispatch answered what the broker cannot read"
 }
 
 // Restricted reports whether Dispatch calls person a restricted member (MemberRestricted), for a
@@ -709,9 +727,10 @@ func (c *Client) sweepLocked() {
 // its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's
 // project route answers a project it does not hold with; any other 404 (a Dispatch that does not
 // serve the route, a wrong path behind an ingress) is a failure naming its code. A 502, 503 or 504
-// whose body names no code, or one of outageCodes, is errUnavailable, Dispatch not answering now
-// (Unanswered); one naming any other code is Dispatch's answer. Every other status, a transport
-// failure and a body it could not read or decode are errors naming what failed and never the token.
+// whose body names no code, or one of outageCodes, and a 500 whose body names no code or
+// internalCode, are errUnavailable, Dispatch not answering now (Unanswered); one naming any other
+// code is Dispatch's answer. Every other status, a transport failure and a body it could not read
+// or decode are errors naming what failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
 	answer, err := c.read.Get(ctx, path, query)
 	if err != nil {
@@ -725,6 +744,10 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 				return http.StatusNotFound, nil
 			}
 			return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
+		case http.StatusInternalServerError:
+			if code == "" || code == internalCode {
+				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
+			}
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 			if code == "" || slices.Contains(outageCodes, code) {
 				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
