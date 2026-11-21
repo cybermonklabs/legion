@@ -9,48 +9,61 @@
 #   main  verification v16's seed: PUB, public, and PRIV, made private through the visibility
 #         route; alice, a full member no list names; bob, a restricted member PRIV's list names;
 #         carol, a full member PRIV's list names, who owns both; carol's token that lists PRIV,
-#         alice's token that lists PRIV, carol's token that lists no project, and the shared
-#         token. Each project holds an issue whose spec is a document with blocks, a comment, an
-#         ask, a message, an issue document, a project document, an agent session of its own
-#         that the fake Envoy lists, and a repository its issue names as its own `repo`. PUB's
-#         issue holds a comment of carol's that names PRIV's issue and its spec, the seed's
-#         reference from PUB to PRIV. PRIV also holds ses-priv-worker, a session main's fake Envoy
-#         lists, recorded as having acted in PRIV; a broadcast to PRIV's session and a file of its
-#         conversation; and a pull request of the deploy repository naming PRIV's issue, with a
+#         minted while PRIV is public, carol's token that lists PUB, carol's token that lists no
+#         project, and the shared token. Each project holds an issue whose spec is a document with
+#         blocks, a comment, an ask, a message, an issue document, a project document, an agent
+#         session of its own that the fake Envoy lists, and a repository its issue names as its own
+#         `repo`. PUB's issue holds a comment of carol's that names PRIV's issue and its spec, the
+#         seed's reference from PUB to PRIV. PRIV also holds ses-priv-worker, a session main's fake
+#         Envoy lists, recorded as having acted in PRIV; a broadcast to PRIV's session and a file of
+#         its conversation; and a pull request of the deploy repository naming PRIV's issue, with a
 #         PR-checks run of it.
 #   twin  the same seed with PRIV never written: the same PUB, its comment naming a key the twin
-#         never holds, the same people, carol's token that lists no project, and alice's token,
-#         whose list names PRIV, a project the twin never holds. Its fake Envoy lists PUB's
-#         session alone: a session whose credential lists PRIV is PRIV's, as hidden as its
-#         objects.
+#         never holds, the same people, and carol's three tokens, of which the one that lists PRIV
+#         on main lists nothing here. Its fake Envoy lists PUB's session alone: a session whose
+#         credential lists PRIV is PRIV's, as hidden as its objects.
+# No personal token lists a private project whose key DISPATCH_PRIVATE_PROJECTS names (R18): main's
+# switch of PRIV to private revokes carol's PRIV token, so that token is a listed caller only while
+# PRIV is public (--all-public), and once PRIV is private the private section holds it revoked and a
+# new token naming PRIV refused. No token of alice's lists PRIV: once PRIV is private no credential
+# of a full member who cannot see it lists it.
 # Then, in sections, each of which runs whatever the ones before found:
 #   private     the two commands an operator runs on the deploy (envoy-dispatch
 #               backfill-session-projects and scrub-access-events) run against main's database,
 #               and PRIV is made private through PATCH /api/v1/projects/PRIV/access. walk, search,
 #               sockets, proxy and writes need it, and are reported as not run when the route
-#               refuses, as it always does in a build that runs no private-hub admission proof
-#               (409 PRIVATE_PROJECTS_UNAVAILABLE); listed and confined run either way. With
-#               --private-by-sql, that refusal is stood in for by the store write the route makes
-#               (`update projects set visibility = 'private'`), so every section below runs, and
-#               the run passes when they do. The route checks, in the transaction it refuses, that
-#               PRIV is provisioned and that the store is complete (PRIV's census and the markers
-#               of the two commands) before it reaches the proof, so that refusal says the
-#               switch's preconditions hold; any other answer of the route fails the run. The
-#               stand-in does not append the route's project.access_changed event, an event of
-#               PRIV, which no unseeing caller reads.
+#               refuses, as it always does here: this Dispatch names no secrets broker, so the
+#               route answers 409 PRIVATE_PROJECTS_NEED_BROKER, and a build that runs no
+#               private-hub admission proof answers 409 PRIVATE_PROJECTS_UNAVAILABLE; listed and
+#               confined run either way. With --private-by-sql, that refusal is stood in for by the
+#               store writes the route makes (PRIV private with its full switch recorded, and every
+#               personal token that lists it revoked, its closing state's revocation), so every
+#               section below runs, and the run passes when they do. The route checks, in the
+#               transaction it refuses, that PRIV is provisioned and that the store is complete
+#               (PRIV's census and the markers of the two commands) before it reaches either, so
+#               that refusal says the switch's preconditions hold; any other answer of the route
+#               fails the run. The stand-in does
+#               not append the route's project.access_changed events, events of PRIV, which no
+#               unseeing caller reads. Either way the twin's carol PRIV token, listing nothing, is
+#               revoked beside main's, so carol's list of her tokens compares alike. Then PRIV's
+#               tokens are held to R18: carol's PRIV token answers 401 TOKEN_REVOKED, and a new
+#               token naming PRIV is refused 403 PRIVATE_PROJECT_TOKEN.
 #               With --all-public, PRIV is left public and listed and confined alone run: every
 #               other section prints `not run: <section> (slice A3b, #t-a-36)`, the slice that
 #               makes a project private, and the run passes when those two do.
-#   listed      bob, carol and carol's PRIV token find each object of PRIV.
-#   confined    bob and carol's PRIV token find nothing of PUB, no person (once PRIV is private)
-#               and no agent outside PRIV, and no direct message that is not their own.
-#   walk        for alice, alice's PRIV token, carol's token that lists no project and the shared
-#               token ("the unseeing callers"): every GET row of GET /api/v1 whose path names an
-#               object, filled once with PRIV's objects and once with ids that do not exist, each
-#               kind of object as the row's Probe names it, answers the same status, headers and
-#               bytes; a row that names an object and has no Probe fails the run, named. A GET row
-#               that names no object is a list, and one whose every wildcard names a node of no
-#               project is filled alike on both servers: either answers as the twin answers it.
+#   listed      bob and carol find each object of PRIV, and carol's PRIV token too while PRIV is
+#               public.
+#   confined    bob finds nothing of PUB, no person (once PRIV is private) and no agent outside
+#               PRIV, and no direct message that is not his own. carol's PRIV token, a full
+#               member's, lists PUB beside PRIV while PRIV is public: a full member's list decides
+#               only which private projects it sees (R3).
+#   walk        for alice, carol's token that lists no project and the shared token ("the unseeing
+#               callers"): every GET row of GET /api/v1 whose path names an object, filled once with
+#               PRIV's objects and once with ids that do not exist, each kind of object as the row's
+#               Probe names it, answers the same status, headers and bytes; a row that names an
+#               object and has no Probe fails the run, named. A GET row that names no object is a
+#               list, and one whose every wildcard names a node of no project is filled alike on
+#               both servers: either answers as the twin answers it.
 #               Every GET row filled with PUB's objects answers as the twin answers it, so no read
 #               of PUB names PRIV's objects through the reference from PUB to PRIV.
 #   search      both legs of search, the keyword leg alone and the two together, answer each
@@ -278,24 +291,56 @@ else
     if [ "$private_by_sql" = 0 ]; then
       unrun "PRIV is not private: $refusal; the walk, search, sockets, proxy and writes sections need it and did not run"
       note "PRIV is not private: HTTP $status"
-    elif [ "$status" != 409 ] || [ "$(jq -r '.code // empty' "$work/body" 2>/dev/null)" != PRIVATE_PROJECTS_UNAVAILABLE ]; then
-      # The route reaches the record only once PRIV is provisioned and the store complete: any
+    elif [ "$status" != 409 ] || ! jq -e '.code == "PRIVATE_PROJECTS_NEED_BROKER" or .code == "PRIVATE_PROJECTS_UNAVAILABLE"' "$work/body" >/dev/null 2>&1; then
+      # The route reaches either refusal only once PRIV is provisioned and the store complete: any
       # other refusal is a precondition the stand-in would skip.
-      fail "--private-by-sql stands in only for 409 PRIVATE_PROJECTS_UNAVAILABLE, the refusal of a switch whose preconditions hold: $refusal"
+      fail "--private-by-sql stands in only for 409 PRIVATE_PROJECTS_NEED_BROKER or PRIVATE_PROJECTS_UNAVAILABLE, the refusals of a switch whose preconditions hold: $refusal"
     else
-      psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 -c "update projects set visibility = 'private' where key = 'PRIV'" >/dev/null ||
+      # The store writes the route makes: its closing state revokes every personal token that
+      # lists PRIV, and its commit makes PRIV private and records its full switch.
+      psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 \
+        -c "update agent_tokens set revoked_at = now() where revoked_at is null and 'PRIV' = any(projects)" \
+        -c "update projects set visibility = 'private', full_switch_at = now() where key = 'PRIV'" >/dev/null ||
         fail "main: the stand-in could not make PRIV private"
       priv_private=1
-      note "PRIV is private by the store write the route makes (--private-by-sql): the route answered 409 PRIVATE_PROJECTS_UNAVAILABLE, its preconditions held"
+      note "PRIV is private by the store writes the route makes (--private-by-sql): the route answered 409 $(jq -r '.code' "$work/body"), its preconditions held"
     fi
   fi
+  if [ "$priv_private" = 1 ]; then
+    # The twin's carol PRIV token, which lists nothing there, is revoked as main's is, so carol's
+    # list of her tokens compares alike: a revocation names no project.
+    send twin carol DELETE "/api/v1/me/agent-tokens/$(recalled twin "carol-priv-token id")"
+    expect_status 204 "twin: carol revokes her second token as main's switch revoked hers"
+    # R18: no personal token lists PRIV once it is private and DISPATCH_PRIVATE_PROJECTS names it.
+    # The token of carol's that listed it answers as a revoked token, and a new one is refused,
+    # naming PRIV, which carol sees.
+    send main carol-priv-token GET /api/v1/whoami
+    problem=''
+    [ "$status" = 401 ] && [ "$(jq -r '.code // empty' "$work/body" 2>/dev/null)" = TOKEN_REVOKED ] ||
+      problem="main: carol's PRIV token once PRIV is private: HTTP $status, want 401 TOKEN_REVOKED: $(head -c 300 "$work/body")"
+    judge "$status" "$problem"
+    send main carol POST /api/v1/me/agent-tokens '{"name":"after the switch","projects":["PRIV"]}'
+    problem=''
+    if [ "$status" != 403 ] || [ "$(jq -r '.code // empty' "$work/body" 2>/dev/null)" != PRIVATE_PROJECT_TOKEN ] || ! grep -q PRIV "$work/body"; then
+      problem="main: carol's new token naming PRIV once PRIV is private: HTTP $status, want 403 PRIVATE_PROJECT_TOKEN naming PRIV: $(head -c 300 "$work/body")"
+    fi
+    judge "$status" "$problem"
+    note "carol's PRIV token answers as revoked, and a new token naming PRIV is refused"
+  fi
   pass
+fi
+
+# The callers PRIV's list lets in, as they stand now: carol's PRIV token only while PRIV is public,
+# since the switch revoked it.
+listed_now=("${listed_callers[@]}")
+if [ "$priv_private" = 1 ]; then
+  listed_now=(bob carol)
 fi
 
 begin listed
 # Each listed caller reads each object of PRIV: 200, and the answer names the object.
 found=0
-for caller in "${listed_callers[@]}"; do
+for caller in "${listed_now[@]}"; do
   for path in "${object_reads[@]}"; do
     path=${path//\{P\}/PRIV}
     send main "$caller" GET "$(resolve main "$path")"
@@ -308,13 +353,16 @@ for caller in "${listed_callers[@]}"; do
     judge "$status" "$problem"
   done
 done
-note "$found of $((${#listed_callers[@]} * ${#object_reads[@]})) reads of PRIV's objects found them"
+note "$found of $((${#listed_now[@]} * ${#object_reads[@]})) reads of PRIV's objects found them"
 pass
 
 begin confined
-# bob and carol's PRIV token: PUB's objects answer as missing, and the lists hold PRIV alone.
+# bob: PUB's objects answer as missing, and the lists hold PRIV alone. A restricted member's list
+# narrows what that person sees; a full member's list decides only which private projects it
+# sees, so carol's PRIV token sees PUB too (below).
 : >"$work/fill-empty"
-for caller in bob carol-priv-token; do
+confined_callers=(bob)
+for caller in "${confined_callers[@]}"; do
   for path in "${object_reads[@]}"; do
     pub=$(resolve main "${path//\{P\}/PUB}")
     none=${path//\{P\}/ZZNONE}
@@ -381,7 +429,16 @@ for caller in bob carol-priv-token; do
   esac
   judge "$status" "$problem"
 done
-note "bob and carol's PRIV token read PUB's objects, the projects, the people, the agents and a direct message"
+note "bob read PUB's objects, the projects, the people, the agents and a direct message"
+# carol's PRIV token, a full member's, sees PUB, which it does not list, beside PRIV. Once PRIV is
+# private the switch has revoked it (the private section holds it to 401).
+if [ "$priv_private" = 0 ]; then
+  send main carol-priv-token GET /api/v1/projects
+  keys=$(jq -c '[.[].key]' "$work/body" 2>/dev/null || echo "not a list: $(head -c 200 "$work/body")")
+  problem=''
+  [ "$keys" = '["PRIV","PUB"]' ] || problem="carol-priv-token GET /api/v1/projects: lists $keys, want [\"PRIV\",\"PUB\"]"
+  judge "$status" "$problem"
+fi
 pass
 
 if [ "$priv_private" = 1 ]; then
@@ -455,9 +512,8 @@ if [ "$priv_private" = 1 ]; then
     # PRIV) and then on PUB's, on each server. Each server's answer is the frames the caller was
     # sent by that server; each comment's id is remembered under one label on both servers, so the
     # mask names it alike. A PRIV event on main differs from the twin's answer. Every unseeing
-    # caller but alice's PRIV token sees PUB, so the twin sends it the PUB comment, and an answer
-    # holding no event fails the pair: the compare must see the socket send something. alice's PRIV
-    # token sees no project, so both servers send it nothing, which the compare holds them to.
+    # caller sees PUB, so the twin sends it the PUB comment, and an answer holding no event fails
+    # the pair: the compare must see the socket send something.
     for server in main twin; do
       rm -f "$work/live-ready-$server" "$work/live-written-$server"
       bun "$(dirname "$0")/socket-access.ts" live "${build_url[$server]}" "$work/auth/$server-$caller" \
@@ -487,12 +543,10 @@ if [ "$priv_private" = 1 ]; then
       cp "$work/live-body-$server" "$work/body"
       keep_answer "$server" "$server"
     done
-    if [ "$caller" != alice-priv-token ]; then
-      problem=''
-      grep -q '"type":"event"' "$work/answers/twin.body" ||
-        problem="$caller /ws/live: the twin sent no event of carol's PUB comment, so the compare saw nothing: $(head -c 300 "$work/answers/twin.body")"
-      judge "$(<"$work/answers/twin.status")" "$problem"
-    fi
+    problem=''
+    grep -q '"type":"event"' "$work/answers/twin.body" ||
+      problem="$caller /ws/live: the twin sent no event of carol's PUB comment, so the compare saw nothing: $(head -c 300 "$work/answers/twin.body")"
+    judge "$(<"$work/answers/twin.status")" "$problem"
     same_answers "$caller /ws/live (beside the twin)" main twin
   done
   # The document socket admits a person by their cookie alone, at the merge base as now, so a

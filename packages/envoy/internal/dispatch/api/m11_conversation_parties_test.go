@@ -75,7 +75,7 @@ func TestASwitchToPrivateCountsADirectConversationThatNamesNoParty(t *testing.T)
 			if _, err := database.Pool.Exec(context.Background(), mend); err != nil {
 				t.Fatalf("mend %s: %v", broken.name, err)
 			}
-			if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice"); response.Code != http.StatusOK {
+			if response := fullSwitch(t, handler, database, "PRIV", "alice", private); response.Code != http.StatusOK {
 				t.Fatalf("with every direct message naming its parties, PATCH PRIV private = %d %s, want 200", response.Code, response.Body.String())
 			}
 			if got := visibilityOf(t, database, "PRIV"); got != model.ProjectPrivate {

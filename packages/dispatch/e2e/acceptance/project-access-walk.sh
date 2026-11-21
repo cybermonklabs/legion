@@ -304,28 +304,37 @@ seed_scenario() {
     send main bob POST "$thread" "$(jq -cn --arg r "$(jq -r .id "$work/body")" '{body: "bob answers carol.", reply_to: $r}')"
     expect_status 201 "main: bob answers carol's thread at $thread"
   done
+  # carol's token that lists PRIV is minted while PRIV is public. No personal token lists a private
+  # project whose key DISPATCH_PRIVATE_PROJECTS names (R18), so once PRIV is private this token is
+  # revoked (project-access.sh's private section) and reads only while PRIV is public: under
+  # --all-public, in the listed and confined sections. No token of alice's lists PRIV: under R18 no
+  # credential of a full member who cannot see a private project lists it, so that caller does not
+  # exist once PRIV is private, where the walk reads.
   mint_token main carol carol-priv-token '["PRIV"]'
-  mint_token main alice alice-priv-token '["PRIV"]'
-  # The twin's alice holds a token whose list names PRIV, which the twin never wrote: no route mints
-  # a list naming a project nobody sees, so the list is written beside the mint, on the token the
-  # mint made. It sees what alice's PRIV token sees once PRIV is private: nothing.
-  mint_token twin alice alice-priv-token
-  psql "$twin_database_url" -X -q -v ON_ERROR_STOP=1 \
-    -c "update agent_tokens set projects = '{PRIV}' where id = '$(recalled twin "alice-priv-token id")'" >/dev/null ||
-    fail "twin: could not write the list of alice's PRIV token"
-  # carol's second token is a row of carol's, a no-project object; only its list names PRIV, and
-  # that list is what a reader who does not see PRIV may not read. So the twin holds the same token,
-  # listing nothing, used once as main's is used, and carol's list of her tokens compares alike.
+  # carol's token that lists PRIV is a row of carol's, a no-project object; only its list names
+  # PRIV, and that list is what a reader who does not see PRIV may not read. So the twin holds the
+  # same token, listing nothing, minted at the same step and used once as main's is used, and
+  # revoked when main's is (project-access.sh's private section), so carol's list of her tokens
+  # compares alike, its order (newest first) and its last use included.
   mint_token twin carol carol-priv-token
-  send twin carol-priv-token GET /api/v1/whoami
-  expect_status 200 "twin: carol's second token reads whoami"
+  for server in main twin; do
+    send "$server" carol-priv-token GET /api/v1/whoami
+    expect_status 200 "$server: carol's second token reads whoami"
+  done
+  # carol's token that lists PUB is a credential that lists projects, which the walk's rows whose
+  # object no project owns refuse (it is not open). It is minted on both servers, after the token
+  # above, for the same reason.
+  for server in main twin; do
+    mint_token "$server" carol carol-pub-token '["PUB"]'
+  done
 }
 
 # The callers PRIV's list lets in, which project-access.sh's listed section reads as, and those it
-# does not, whom the walk reads as.
+# does not, whom the walk reads as. carol's PRIV token is a listed caller only while PRIV is public:
+# the private section revokes it (listed_now).
 # shellcheck disable=SC2034 # read by project-access.sh's listed section
 readonly listed_callers=(bob carol carol-priv-token)
-readonly unseeing_callers=(alice alice-priv-token carol-token shared)
+readonly unseeing_callers=(alice carol-token shared)
 # The object routes the listed callers read, each naming one object of {P}'s seed.
 # shellcheck disable=SC2034 # read by project-access.sh's listed and confined sections
 readonly object_reads=(
@@ -482,7 +491,7 @@ walk_rows() {
       # The object belongs to no project, so there is no object of PRIV to hide: the row is held
       # to its class's refusal (scopeDeployment) of every caller that is not open.
       target=$(sed -E 's/\{[^}]+\}/project-access-walk/g' <<<"$pattern")
-      for caller in bob alice-priv-token carol-priv-token; do
+      for caller in bob carol-pub-token; do
         send main "$caller" "$method" "$target" "$body"
         refused=$((refused + 1))
         problem=''
@@ -656,13 +665,11 @@ query_fill() {
 }
 
 # walk_queries walks every query parameter of every GET row of the route index (query_kind). Of a
-# row whose path names an object, the path is filled with PUB's, which every unseeing caller but
-# alice's PRIV token sees; that token sees no project, so it is answered alike for the two fills
-# whatever the parameter names. carol, who sees PRIV, must be answered 2xx for PRIV's fill and
-# otherwise than for the missing one, each masked with its own fill: a refusal says the fill is no
-# value the parameter takes, and an answer alike says the fill selects nothing of PRIV, and either
-# way a hidden and a missing answer would be alike whatever the server hides, so the parameter did
-# not run.
+# row whose path names an object, the path is filled with PUB's, which every unseeing caller sees.
+# carol, who sees PRIV, must be answered 2xx for PRIV's fill and otherwise than for the missing one,
+# each masked with its own fill: a refusal says the fill is no value the parameter takes, and an
+# answer alike says the fill selects nothing of PRIV, and either way a hidden and a missing answer
+# would be alike whatever the server hides, so the parameter did not run.
 walk_queries() {
   local pattern test_hook pairs wildcards wildcard kind path param fixed values hidden none caller
   local -A query_params=()

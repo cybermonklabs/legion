@@ -87,6 +87,12 @@ type testServerOptions struct {
 	// private makes before its commit. Nil and nil are the deployment that names no private project.
 	privateProjects []string
 	hubAdmission    HubAdmission
+	// agentSecrets is the secrets broker a switch to private counts its developer-box tokens with
+	// (Deps.AgentSecrets). A deployment that names a private project gets a stand-in that counts
+	// none live unless the test gives its own, or sets noAgentSecrets for the deployment with no
+	// broker, whose switch to private is refused 409 PRIVATE_PROJECTS_NEED_BROKER.
+	agentSecrets   *brokerStandIn
+	noAgentSecrets bool
 	// brokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme. It is built from the test's own database, as the persistence seam below
 	// is, because the verifier's DPoP replay store is a table of it (store.NewDPoPProofs); nil
@@ -327,6 +333,13 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
+	}
+	if !options.noAgentSecrets && (options.agentSecrets != nil || len(options.privateProjects) > 0) {
+		standIn := options.agentSecrets
+		if standIn == nil {
+			standIn = newBrokerStandIn()
+		}
+		deps.AgentSecrets = standIn.serve(t)
 	}
 	deps.LiveSocketAge = options.liveSocketAge
 	mux := http.NewServeMux()

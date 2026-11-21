@@ -126,6 +126,7 @@ func TestASwitchToPrivateRefusesASharedSlackChannel(t *testing.T) {
 		t.Fatalf("alice names C0SHARED001 on PUB while it is public: %d %s, want 200", response.Code, response.Body.String())
 	}
 	unlisted := mintListed(t, server.handler, "alice", "alice's token listing no project", nil)
+	startClosing(t, server.handler, server.database, "PUB", "alice")
 	private := map[string]string{"visibility": model.ProjectPrivate}
 	for _, row := range []struct {
 		who  string
@@ -167,6 +168,7 @@ func TestASwitchToPrivateSetsTheChannelsTime(t *testing.T) {
 		t.Fatalf("alice names C0PUB000001 on PUB while it is public: %d %s, want 200", response.Code, response.Body.String())
 	}
 	named := channelsTimeOf(t, server.database, "PUB")
+	startClosing(t, server.handler, server.database, "PUB", "alice")
 	switched := server.patch(t, "PUB", map[string]string{"visibility": model.ProjectPrivate})
 	if switched.Code != http.StatusOK {
 		t.Fatalf("PATCH PUB private = %d %s, want 200", switched.Code, switched.Body.String())
@@ -189,6 +191,7 @@ func TestASwitchToPrivateSetsTheChannelsTime(t *testing.T) {
 			t.Errorf("PUB: %s carries slack_channels_changed_at %v, want %v, the moment of its switch to private", where, carried, at)
 		}
 	}
+	startClosing(t, server.handler, server.database, "OTHER", "alice")
 	if response := server.patch(t, "OTHER", map[string]string{"visibility": model.ProjectPrivate}); response.Code != http.StatusOK {
 		t.Fatalf("PATCH OTHER private = %d %s, want 200", response.Code, response.Body.String())
 	}
@@ -210,7 +213,10 @@ func TestBothPatchShapesTakeLocksInOneOrder(t *testing.T) {
 		"the PATCH of private":                  `{"visibility":"private"}`,
 	}
 	for round := range 200 {
-		if _, err := server.database.Pool.Exec(context.Background(), `update projects set visibility = 'public', slack_channels = '{}' where key = 'PRIV'`); err != nil {
+		// PRIV public again, with its closing state started and settled, so each switch completes in
+		// one request (startClosing).
+		if _, err := server.database.Pool.Exec(context.Background(), `update projects set visibility = 'public', slack_channels = '{}',
+			closing_since = now() - interval '1 hour', full_switch_at = null where key = 'PRIV'`); err != nil {
 			t.Fatalf("round %d: make PRIV public again: %v", round, err)
 		}
 		start := make(chan struct{})

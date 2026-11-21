@@ -230,6 +230,7 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 	t.Run("a hub that refuses the proof", func(t *testing.T) {
 		admission := &recordingAdmission{proveErr: refusal}
 		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, admission)
+		startClosing(t, handler, database, "PRIV", "alice")
 		before := allEvents(t, database)
 		// The owner change in the same body goes back with it: the proof is the switch's last step.
 		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access",
@@ -243,6 +244,7 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 
 	t.Run("no proof", func(t *testing.T) {
 		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, nil)
+		startClosing(t, handler, database, "PRIV", "alice")
 		before := allEvents(t, database)
 		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
 		requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_UNAVAILABLE", "DISPATCH_PRIVATE_HUBS")
@@ -251,7 +253,7 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 	t.Run("a proof that admits", func(t *testing.T) {
 		admission := &recordingAdmission{}
 		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, admission)
-		made := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
+		made := fullSwitch(t, handler, database, "PRIV", "alice", private)
 		if made.Code != http.StatusOK || decodeBody[model.ProjectAccess](t, made).Visibility != model.ProjectPrivate ||
 			visibilityOf(t, database, "PRIV") != model.ProjectPrivate {
 			t.Fatalf("PATCH PRIV private with a proof that admits = %d %s, PRIV %s; want 200 and PRIV private",
@@ -282,6 +284,7 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 		`); err != nil {
 			t.Fatalf("make every commit that makes a project private fail: %v", err)
 		}
+		startClosing(t, handler, database, "PRIV", "alice")
 		failed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
 		if failed.Code == http.StatusOK || visibilityOf(t, database, "PRIV") != model.ProjectPublic {
 			t.Fatalf("PATCH PRIV private whose commit fails = %d %s, PRIV %s; want a failure and PRIV public",
@@ -325,6 +328,7 @@ func TestThePrivateListAnswersOnlyCommittedRows(t *testing.T) {
 	if _, listed := lists(t); listed {
 		t.Fatal("the broker's read lists PRIV before its switch to private")
 	}
+	startClosing(t, server.handler, server.database, "PRIV", "alice")
 	// PRIV's switch is held at its commit, after every statement of it, its proof included, until
 	// the test releases the lock the trigger waits for.
 	if _, err := server.database.Pool.Exec(ctx, `
@@ -412,6 +416,7 @@ func TestAFullSwitchRunsTheWholePathOnceForADayOnePrivateProject(t *testing.T) {
 		t.Fatalf("make PRIV private before its full switch: %v", err)
 	}
 
+	startClosing(t, handler, database, "PRIV", "alice")
 	before := allEvents(t, database)
 	refused := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
 	if body := refused.Body.String(); refused.Code != http.StatusConflict || !strings.Contains(body, `"code":"PRIVATE_PROJECTS_UNAVAILABLE"`) {
@@ -445,7 +450,7 @@ func TestAFullSwitchRunsTheWholePathOnceForADayOnePrivateProject(t *testing.T) {
 		t.Fatalf("PRIV made public still records the full switch %v, want it cleared", at)
 	}
 	admission.project = "OTHER"
-	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/OTHER/access", private, "alice"); response.Code != http.StatusOK {
+	if response := fullSwitch(t, handler, database, "OTHER", "alice", private); response.Code != http.StatusOK {
 		t.Fatalf("PATCH OTHER private = %d %s, want 200", response.Code, response.Body.String())
 	}
 	if at := fullSwitchOf(t, database, "OTHER"); at == nil {

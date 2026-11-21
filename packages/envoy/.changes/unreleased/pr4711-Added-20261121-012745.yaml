@@ -1,0 +1,23 @@
+kind: Added
+body: |-
+  A project's switch to private closes it to developer boxes first, and needs the secrets broker:
+  with `DISPATCH_AGENT_SECRETS_URL` unset it is `409 PRIVATE_PROJECTS_NEED_BROKER`, with nothing
+  changed. The owner's switch starts the project's closing state (`closing_since` on
+  `GET /api/v1/projects/{key}/access`): it revokes every live personal token that lists the
+  project, and the membership answer says `closed_to_developer_boxes`, so the broker mints and
+  renews no developer-box token of it. The switch then asks the broker's count, sending the Slack
+  channels the project will hold and its deadline, and completes only once the broker counts no
+  live developer-box token of the project and the closing state is 60 s old; until then it answers
+  `409 DEVELOPER_BOX_TOKENS_LIVE`, or `503 DEVELOPER_BOX_TOKENS_UNAVAILABLE` while the broker does
+  not answer, and keeps the closing state. A switch to private runs within 90 s (a context deadline
+  and `transaction_timeout`, PostgreSQL 17 or later), past which it is
+  `503 PRIVATE_SWITCH_TIMED_OUT` with nothing changed. A switch that does not commit, and a switch
+  to public of a private or closing project, owe the broker the forget of its record of the
+  project: migration `20261121141405_broker_forgets` holds them, and every process sends them
+  until the broker takes them. A project closing, or private by its full switch or with its key in
+  `DISPATCH_PRIVATE_PROJECTS`, is in no personal token: a mint or edit naming one is
+  `403 PRIVATE_PROJECT_TOKEN`, and the boot that first reads such a key revokes the live personal
+  tokens that list it.
+time: 2026-11-21T01:27:45Z
+custom:
+    Issue: pr4711

@@ -185,7 +185,7 @@ func TestTheChannelsTimeMovesOnlyWhenTheListChanges(t *testing.T) {
 		t.Errorf("the write's project.access_changed = %#v, want the slack_channels change", event.Payload)
 	}
 	read, readErr := ReadProject(ctx, database.Pool, "PUB", server)
-	membership, answerErr := Answer(ctx, database.Pool, "PUB", "")
+	membership, answerErr := Answer(ctx, database.Pool, "PUB", "", nil)
 	for _, carried := range []struct {
 		name string
 		at   *time.Time

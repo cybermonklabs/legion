@@ -13,14 +13,16 @@ import (
 // Answer is the membership answer for one project and one person (K3), which the secrets broker
 // reads with a token of its own, outside any transaction: the project's owner and visibility, the
 // person's member kind as the answer spells it, whether the rule lets that person see the project,
-// and the project's Slack channels with when that list last changed. It names no repositories. A
-// person no people row holds reads as the broker reads them, a full member, since the broker signs
-// in only people of its own sign-in domain; the answer still names their kind none. A question
-// naming no person reads as the rule reads a viewer with no person: it sees the project only when
-// the project is public, so visible says whether it is, as the broker reads it
+// the project's Slack channels with when that list last changed, and whether the project is closed
+// to developer boxes (closedSQL, listed being the keys DISPATCH_PRIVATE_PROJECTS names), in which
+// case the broker mints no developer-box token that lists it. It names no repositories. A person
+// no people row holds reads as the broker reads them, a full member, since the broker signs in only
+// people of its own sign-in domain; the answer still names their kind none. A question naming no
+// person reads as the rule reads a viewer with no person: it sees the project only when the
+// project is public, so visible says whether it is, as the broker reads it
 // (projectaccess.Client.States). An unknown project is ErrProjectNotFound; a project the person
 // cannot see still answers, with visible false.
-func Answer(ctx context.Context, q Querier, key, person string) (model.AccessAnswer, error) {
+func Answer(ctx context.Context, q Querier, key, person string, listed []string) (model.AccessAnswer, error) {
 	login := model.CanonicalLogin(person)
 	answer := model.AccessAnswer{Person: login}
 	err := q.QueryRow(ctx, `
@@ -30,11 +32,11 @@ func Answer(ctx context.Context, q Querier, key, person string) (model.AccessAns
 		select p.key, p.visibility, coalesce(p.owner, ''), coalesce(person.member_kind, 'none'),
 			case when $2 = '' then p.visibility = 'public'
 			else coalesce(`+PersonSeesProjectSQL("$2", "coalesce(person.member_kind, 'full')", "p")+`, false) end,
-			p.slack_channels, p.slack_channels_changed_at
+			p.slack_channels, p.slack_channels_changed_at, `+closedSQL("p", "$3")+`
 		from projects p, person
 		where p.key = $1
-	`, key, login).Scan(&answer.Project, &answer.Visibility, &answer.Owner, &answer.MemberKind, &answer.Visible,
-		&answer.SlackChannels, &answer.SlackChannelsChangedAt)
+	`, key, login, listedKeys(listed)).Scan(&answer.Project, &answer.Visibility, &answer.Owner, &answer.MemberKind, &answer.Visible,
+		&answer.SlackChannels, &answer.SlackChannelsChangedAt, &answer.ClosedToDeveloperBoxes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.AccessAnswer{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}

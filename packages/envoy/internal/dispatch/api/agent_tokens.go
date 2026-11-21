@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -140,6 +141,9 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if !s.refuseClosedTokenProjects(w, r, tx, projects) {
+		return
+	}
 	token, err := scanAgentToken(tx.QueryRow(r.Context(), `
 		insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects)
 		values ($1, $2, $3, $4, $5, $6)
@@ -211,6 +215,9 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if !s.refuseClosedTokenProjects(w, r, tx, projects) {
+		return
+	}
 	token, err := scanAgentToken(tx.QueryRow(r.Context(), `
 		update agent_tokens
 		set scopes = $3, projects = coalesce($4::text[], projects)
@@ -347,6 +354,31 @@ func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested
 		}
 	}
 	return projects, true
+}
+
+// codePrivateProjectToken refuses a personal token that would list a project closed to developer
+// boxes: one in its closing state, or private after its full switch (access.closedSQL).
+const codePrivateProjectToken = "PRIVATE_PROJECT_TOKEN"
+
+// refuseClosedTokenProjects is the mint's and the edit's last check, in the transaction that
+// writes the token: it writes 403 PRIVATE_PROJECT_TOKEN naming the first of projects that is
+// closed to developer boxes, and answers false, or answers true when none is
+// (access.RefuseClosedTokenProjects). A personal token is a credential a developer box can hold,
+// so Dispatch makes none that lists such a project; the owner's switch to private revoked every
+// one made before (access.StartClosing). projects are the keys tokenProjects passed, every one a
+// key the caller sees, so the refusal names nothing the caller may not see.
+func (s *server) refuseClosedTokenProjects(w http.ResponseWriter, r *http.Request, tx pgx.Tx, projects []string) bool {
+	err := access.RefuseClosedTokenProjects(r.Context(), tx, projects, s.deps.PrivateProjects)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, access.ErrClosedTokenProject):
+		writeError(w, codePrivateProjectToken, http.StatusForbidden, err.Error()+
+			"; work on it in a session of the project's own namespace, or at Dispatch's pages")
+	default:
+		s.writeHandlerError(w, err)
+	}
+	return false
 }
 
 func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {

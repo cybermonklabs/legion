@@ -411,6 +411,10 @@ type ProjectAccess struct {
 	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
 	// rule admits each of them once they sign in.
 	NotSignedIn []string `json:"not_signed_in"`
+	// ClosingSince is when the project's closing state began, and absent while it is in none:
+	// the owner started a switch to private, which completes only once no developer-box token
+	// that lists the project is live.
+	ClosingSince *time.Time `json:"closing_since,omitempty"`
 }
 
 // AccessGroup is a named list of full members that an access list can name: its one owner, the
@@ -452,6 +456,12 @@ type AccessAnswer struct {
 	// SlackChannelsChangedAt is when that list last changed, as ProjectAccess carries it: null
 	// until a write changes the list.
 	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+	// ClosedToDeveloperBoxes is true while no developer-box credential may list the project, and
+	// absent otherwise: while it is in its closing state, the start of an owner's switch to
+	// private, and while it is private by its full switch or with its key in
+	// DISPATCH_PRIVATE_PROJECTS. The secrets broker then mints and renews no developer-box token
+	// that lists it.
+	ClosedToDeveloperBoxes bool `json:"closed_to_developer_boxes,omitempty"`
 }
 
 // PrivateProjectChannels is one private project's Slack channels as the secrets broker reads

@@ -81,6 +81,7 @@ var referenceDispositions = map[string]referenceDisposition{
 	"asks.issue_key":                            {ownColumn, "the ask's issue"},
 	"asks.asked_of":                             {filteredReference, "a person the writer sees: leaveOutHiddenAskPersons in every ask read (queueAskDetails, attachAskReadFields); payloads by leaveOutHiddenReferences"},
 	"block_refs.artifact_id":                    {ownColumn, "the document whose block holds the link"},
+	"broker_forgets.project":                    {internalColumn, "a forget owed the secrets broker, which only its sender reads (sendBrokerForgets)"},
 	"check_result_retractions.session":          {ownColumn, "the retraction's own writer"},
 	"check_results.check_artifact_id":           {sameOwnerColumn, "the Verification document of the recording issue or an ancestor (results.go)"},
 	"check_results.check_issue_key":             {sameOwnerColumn, "the recording issue or an ancestor, which shares its project (results.go, issue_parent.go)"},

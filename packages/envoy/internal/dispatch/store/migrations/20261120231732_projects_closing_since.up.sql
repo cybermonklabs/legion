@@ -1,0 +1,21 @@
+-- 20261120231732_projects_closing_since.up.sql — a project's closing state, the start of its
+-- owner's switch to private.
+--
+-- A developer box holds no credential that lists a private project after its full switch. The
+-- owner's switch to private first puts the project in its closing state (`access.StartClosing`):
+-- Dispatch revokes every live personal token that lists it and makes none that does, the
+-- membership answer says no developer-box credential may list it, and the secrets broker mints and
+-- renews no developer-box token that lists it. The switch completes only once the broker counts no
+-- such token live. The column is set to the statement's own start when the closing state begins,
+-- so that wait is read against the database's clock, and set back to null by every write of the
+-- visibility (`access.SetVisibility`), the switch's completion and the owner's switch to public
+-- alike. A project private on its first day goes through the same state at the switch that
+-- completes its full switch, so the column is set on a private project too.
+--
+-- Adding a nullable column with no default writes the catalog alone, so it holds the table's
+-- ACCESS EXCLUSIVE lock for milliseconds and rewrites no row. The release before this one neither
+-- reads nor writes the column, so it serves beside it unchanged.
+--
+-- Its identifier is the UTC moment it was written, as `migrationid` requires of every migration
+-- past the numbered series, which closed at 0161.
+alter table projects add column closing_since timestamptz;

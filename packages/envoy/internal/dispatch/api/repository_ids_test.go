@@ -481,6 +481,7 @@ func TestASwitchWaitsForTheOwnersRepositoryConfirmation(t *testing.T) {
 	requireWaitingFor(t, database, "PRIV", switchToPrivate(t, handler, "PRIV"), "acme/priv")
 	requireStatus(t, "alice confirms acme/priv as 9101", dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/PRIV/repositories/confirm",
 		map[string]any{"repo": "acme/priv", "id": 9101}, "alice"), http.StatusOK)
+	startClosing(t, handler, database, "PRIV", "alice")
 	made := switchToPrivate(t, handler, "PRIV")
 	if made.Code != http.StatusOK || visibilityOf(t, database, "PRIV") != model.ProjectPrivate {
 		t.Fatalf("the switch after the owner's confirmations answered %d %s, PRIV %s, want 200 and PRIV private",
@@ -600,6 +601,7 @@ func TestARepositorySharedBeforeTheSwitchStaysSharedAndIsReported(t *testing.T) 
 			t.Fatalf("%s's create naming acme/both recorded %s, want 9107", created, idOf(id))
 		}
 	}
+	startClosing(t, handler, database, "PRIV", "alice")
 	if made := switchToPrivate(t, handler, "PRIV"); made.Code != http.StatusOK || visibilityOf(t, database, "PRIV") != model.ProjectPrivate {
 		t.Fatalf("PRIV's switch beside OTHER's issue naming acme/both answered %d %s, want 200 and PRIV private: a shared repository informs and holds nothing",
 			made.Code, strings.TrimSpace(made.Body.String()))
