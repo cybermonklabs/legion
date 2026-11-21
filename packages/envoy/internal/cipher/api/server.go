@@ -165,6 +165,11 @@ type Deps struct {
 	// never stops in the first place - ciphertest and the in-process rigs - for which the broker
 	// is never draining.
 	Draining func() bool
+	// NATSHold is the NATS writer hold's routes, /v1/nats-hold and the three under it, which
+	// the operator alone calls (NATSHold). Every Deps mounts them; the zero NATSHold refuses
+	// every caller 403 not_operator, as a broker whose BROKER_NATS_SERVICES lists no operator
+	// does.
+	NATSHold NATSHold
 }
 
 type server struct {
@@ -186,6 +191,9 @@ type server struct {
 func Register(mux *http.ServeMux, deps Deps) {
 	if deps.OAuth != nil && (deps.MachineLogin == nil || deps.DeviceLogin == nil || deps.TokenHooks.Before == nil || deps.TokenHooks.After == nil) {
 		panic("api: Deps.OAuth needs MachineLogin, DeviceLogin and both TokenHooks")
+	}
+	if deps.NATSHold.OperatorToken != nil && (deps.NATSHold.Pool == nil || deps.NATSHold.Schema == "") {
+		panic("api: Deps.NATSHold.OperatorToken needs the Pool and the Schema of the hold's tables")
 	}
 	limits := DefaultLauncherLimits
 	if deps.LauncherLimits != nil {
@@ -277,8 +285,9 @@ const (
 // being 429 RATE_LIMITED with Retry-After, so a flood of forged tokens past that bucket costs no
 // verification and no fetch of the issuer's keys; a listed caller must then hold the power its
 // row declares, and a service's token must name an account BROKER_SERVICE_LOGINS lists and
-// BROKER_POD_OPERATORS does not map (serviceCaller). The approval page's routes spend that same
-// bucket, for the same reason: see the authSignIn case.
+// BROKER_POD_OPERATORS does not map (serviceCaller). The NATS writer hold's routes (operatorAuth)
+// spend that bucket before the operator's token is verified, for the same reason, and the
+// approval page's routes spend it too: see the authSignIn case.
 func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiRoute) (caller, bool) {
 	auth := route.Handler.auth
 	switch auth {
@@ -307,6 +316,11 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 			return caller{}, false
 		}
 		return s.serviceCaller(w, r)
+	case authOperator:
+		if s.refuseAccountAddress(w, r) {
+			return caller{}, false
+		}
+		return s.operatorCaller(w, r)
 	case authSignIn:
 		// The page's routes and the sign-in's spend the bucket the account class spends, so no
 		// caller drives them unmetered either. GET /approve/{record} with no session does one
@@ -370,8 +384,9 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 
 // answerCaller is the caller class and identity the answer's record names for a request
 // authenticate let through on route (answer.Recorder.NoteCaller): the launcher credential, the
-// enrollment, the listed account, the service and the account it presented, or the signed-in
-// person. A route that takes no credential is public, and a route of the approval page reached
+// enrollment, the listed account, the service and the account it presented, the writer hold's
+// operator, as the service operator@<its account>, or the signed-in person. A route that takes no
+// credential is public, and a route of the approval page reached
 // with no live sign-in unauthenticated; a handler that authenticates its own caller notes its
 // class over this one (tokenLogin, and rereadSecret for a session's proof).
 func (c caller) answerCaller(route routeHandler) (class, id string) {
@@ -384,6 +399,8 @@ func (c caller) answerCaller(route routeHandler) (class, id string) {
 		return answer.CallerAccount, c.account.Name
 	case authService:
 		return answer.CallerService, serviceIdentity(c.service)
+	case authOperator:
+		return answer.CallerService, "operator@" + c.operator
 	case authSignIn:
 		if c.signIn.Login == "" {
 			return answer.CallerUnauthenticated, ""

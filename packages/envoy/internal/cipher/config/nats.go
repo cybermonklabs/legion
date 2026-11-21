@@ -1,11 +1,14 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"strings"
+	"unicode"
 
 	"github.com/nats-io/nkeys"
 )
@@ -57,6 +60,34 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 		return NATSCallout{}, errors.New("BROKER_NATS_K8S_AUDIENCE needs BROKER_K8S_OIDC_ISSUER, whose projected tokens a service presents to the NATS auth service")
 	}
 	return settings, nil
+}
+
+// loadNATSHold reads the writer hold's switch and signing keys (Config.NATS documents both) into
+// settings. BROKER_NATS_HOLD_READ is true, false or unset, which is false, and nothing else: a
+// misspelled value must refuse the start rather than leave the rule off. Each entry of
+// BROKER_NATS_HOLD_SIGNING_KEYS, parted by whitespace or commas, is the unpadded base64url of a
+// 32-byte Ed25519 public key, and one that is not is refused by its place in the list, never by
+// its text, since text pasted there in error may be the private half. Neither setting needs the
+// auth service's others: the hold's routes verify every write against the keys whether or not
+// the auth service reads the row, and the switch is refused without its operator and its keys by
+// the broker's start, which reads the operator from BROKER_NATS_SERVICES (cmd/cipherd).
+func loadNATSHold(getenv func(string) string, settings *NATSCallout) error {
+	switch value := strings.TrimSpace(getenv("BROKER_NATS_HOLD_READ")); value {
+	case "", "false":
+	case "true":
+		settings.HoldRead = true
+	default:
+		return fmt.Errorf("BROKER_NATS_HOLD_READ must be true or false, got %q", value)
+	}
+	entries := strings.FieldsFunc(getenv("BROKER_NATS_HOLD_SIGNING_KEYS"), func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	for index, entry := range entries {
+		key, err := base64.RawURLEncoding.Strict().DecodeString(entry)
+		if err != nil || len(key) != ed25519.PublicKeySize {
+			return fmt.Errorf("BROKER_NATS_HOLD_SIGNING_KEYS entry %d is not the unpadded base64url of a %d-byte Ed25519 public key", index+1, ed25519.PublicKeySize)
+		}
+		settings.HoldSigningKeys = append(settings.HoldSigningKeys, ed25519.PublicKey(key))
+	}
+	return nil
 }
 
 // hubURLRefusal is why entry, one of BROKER_NATS_URLS, cannot name the hub, or "" when it can. The
