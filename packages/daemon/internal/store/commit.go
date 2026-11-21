@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"runtime/debug"
 	"sync/atomic"
 	"time"
 
@@ -426,7 +427,7 @@ func watchOutcome(ctx context.Context, pool TxPool, xid string, hooks []func()) 
 		case result == outcomeCommitted:
 			slog.Warn("store: a transaction whose outcome was unknown committed; its commit hooks run now",
 				"transaction", xid, "hooks", len(hooks))
-			runHooks(hooks)
+			runWatchedHooks(xid, hooks)
 			return
 		case result == outcomeAborted:
 			slog.Info("store: a transaction whose outcome was unknown did not commit; its commit hooks are dropped",
@@ -437,6 +438,23 @@ func watchOutcome(ctx context.Context, pool TxPool, xid string, hooks []func()) 
 				"transaction", xid, "hooks", len(hooks))
 			return
 		}
+	}
+}
+
+// runWatchedHooks runs hooks in order on the watcher's goroutine, each under a recover. Nothing
+// above the watcher recovers a panic, as net/http does for a route's goroutine, so a hook that
+// panics there is logged with its transaction and its stack, and the next hook still runs.
+func runWatchedHooks(xid string, hooks []func()) {
+	for _, hook := range hooks {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					slog.Error("store: a commit hook the watcher ran panicked",
+						"transaction", xid, "panic", fmt.Sprint(recovered), "stack", string(debug.Stack()))
+				}
+			}()
+			hook()
+		}()
 	}
 }
 

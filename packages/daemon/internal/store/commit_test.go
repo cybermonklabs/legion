@@ -32,6 +32,7 @@ const (
 	unknownCommitted   = "store: a transaction whose outcome was unknown committed; its commit hooks run now"
 	unknownAborted     = "store: a transaction whose outcome was unknown did not commit; its commit hooks are dropped"
 	unknownPoolClosed  = "store: the pool closed before the store said whether a transaction committed; its commit hooks did not run"
+	watchedHookPanic   = "store: a commit hook the watcher ran panicked"
 )
 
 // commitMatch is the SQL every commit test's body sends, which each fault is armed on.
@@ -428,6 +429,46 @@ func TestAnUnreachableStoreLeavesTheOutcomeUnknownUntilItAnswers(t *testing.T) {
 	}
 	if n := logged(log, unknownCommitted, "transaction="+xid+" "); n != 1 {
 		t.Fatalf("the log holds %d lines %q naming transaction %s, want 1", n, unknownCommitted, xid)
+	}
+}
+
+// A hook that panics on the watcher's goroutine is recovered and logged with its transaction,
+// and the transaction's later hooks still run. Nothing above the watcher recovers, as net/http
+// does for a route's goroutine, so a panic there would end the daemon.
+func TestAHookThatPanicsOnTheWatchersGoroutineIsLoggedAndTheRestRun(t *testing.T) {
+	rig := newCommitRig(t)
+	log := captureCommitLog(t)
+	parent := WithTransactionTracking(context.Background())
+	child, cancel := context.WithCancel(parent)
+	defer cancel()
+
+	var xid string
+	fired := rig.fault.HoldReply(commitMatch, time.Hour)
+	done := rig.transact(child, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "insert into commit_probe values (1)"); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, "select pg_current_xact_id()::text").Scan(&xid); err != nil {
+			return err
+		}
+		OnCommit(ctx, func() { panic("a hook that panics") })
+		OnCommit(ctx, func() { rig.hooks.Add(1) })
+		return nil
+	})
+	testdb.Met(t, fired)
+	rig.waitVisible(t)
+	cancel()
+	rig.fault.Refuse(true)
+	if got := returned(t, done); !errors.Is(got.err, ErrCommitOutcomeUnknown) {
+		t.Fatalf("Transact = %v, want %v", got.err, ErrCommitOutcomeUnknown)
+	}
+	rig.fault.Refuse(false)
+
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the watcher runs the hook after the one that panicked", func() bool {
+		return rig.hooks.Load() == 1
+	})
+	if n := logged(log, watchedHookPanic, "transaction="+xid+" ", `panic="a hook that panics"`); n != 1 {
+		t.Fatalf("the log holds %d lines %q naming transaction %s and the panic, want 1", n, watchedHookPanic, xid)
 	}
 }
 
