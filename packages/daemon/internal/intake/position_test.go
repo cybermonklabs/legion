@@ -40,11 +40,11 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.comment.created", envelopeJSON(t, "dispatch-comment", "dispatch",
 		`{"id":2,"issue_key":"CAPTURE-3","seq":9,"notify":true,"type":"comment.created","payload":{"body":"hi"}}`))
 
-	consumers, err := OpenConsumers(context.Background(), js, migratedPool(t), spec)
+	consumers, err := OpenConsumers(requestContext(t), js, migratedPool(t), spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
-	target, err := consumers.DispatchTarget(context.Background())
+	target, err := consumers.DispatchTarget(requestContext(t))
 	if err != nil {
 		t.Fatalf("DispatchTarget: %v", err)
 	}
@@ -55,11 +55,12 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	// messages, so it has none pending and none awaiting an ack, and no delivery of its own will
 	// ever carry them. A consumer that could still deliver one would make the idle below true for
 	// another reason than the one this test is about.
-	consumer, err := stream.Consumer(context.Background(), dispatchConsumerName(spec.Project))
+	read := requestContext(t)
+	consumer, err := stream.Consumer(read, dispatchConsumerName(spec.Project))
 	if err != nil {
 		t.Fatalf("read the Dispatch consumer: %v", err)
 	}
-	info, err := consumer.Info(context.Background())
+	info, err := consumer.Info(read)
 	if err != nil {
 		t.Fatalf("read the Dispatch consumer's info: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 		t.Fatalf("the consumer has delivered %d, with %d pending and %d awaiting an ack; want it to have delivered none of the two and to have none to deliver",
 			info.Delivered.Consumer, info.NumPending, info.NumAckPending)
 	}
-	position, err := consumers.DispatchPosition(context.Background())
+	position, err := consumers.DispatchPosition(requestContext(t))
 	if err != nil {
 		t.Fatalf("DispatchPosition: %v", err)
 	}
@@ -96,12 +97,12 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 			return startConsume(t, js, spec, pool, factMarks())
 		}},
 		{"SetRepositories", func(t *testing.T, js jetstream.JetStream, pool *pgxpool.Pool, spec ConsumerSpec, missing func()) func() {
-			consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+			consumers, err := OpenConsumers(requestContext(t), js, pool, spec)
 			if err != nil {
 				t.Fatalf("OpenConsumers: %v", err)
 			}
 			missing()
-			if err := consumers.SetRepositories(context.Background(), capturedRepositories); err != nil {
+			if err := consumers.SetRepositories(requestContext(t), capturedRepositories); err != nil {
 				t.Fatalf("SetRepositories: %v", err)
 			}
 			return runConsumers(t, consumers, factMarks())
@@ -122,7 +123,7 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 			stop()
 
 			defer reopen.open(t, js, pool, spec, func() {
-				if err := stream.DeleteConsumer(context.Background(), github); err != nil {
+				if err := stream.DeleteConsumer(requestContext(t), github); err != nil {
 					t.Fatalf("delete the GitHub consumer: %v", err)
 				}
 				for number := 2; number <= 4; number++ {
@@ -143,7 +144,7 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 			if line := logLine(logs.String(), "level=ERROR", "consumer="+github); line != "" {
 				t.Errorf("a consumer whose position the stream still holds logged an error: %s", line)
 			}
-			info, err := stream.Info(context.Background())
+			info, err := stream.Info(requestContext(t))
 			if err != nil {
 				t.Fatalf("stream info: %v", err)
 			}
@@ -166,7 +167,7 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 // goroutine's and Lag's. CI's daemon-go job runs this package under -race (ci_job_reads.py's
 // DAEMON_RACE_PACKAGES).
 func TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn(t *testing.T) {
-	ctx := context.Background()
+	ctx := requestContext(t)
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	logs := &lockedBuffer{}
@@ -274,7 +275,7 @@ func TestAMissingConsumerWithNoStoredPositionStartsAtTheNextMessage(t *testing.T
 		t.Fatalf("%d positions stored for a message acknowledged without a transaction, want none", positions)
 	}
 
-	if err := stream.DeleteConsumer(context.Background(), github); err != nil {
+	if err := stream.DeleteConsumer(requestContext(t), github); err != nil {
 		t.Fatalf("delete the GitHub consumer: %v", err)
 	}
 	publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
@@ -349,12 +350,13 @@ func pullRequestOpenedEnvelope(t *testing.T, number int) []byte {
 // waitDelivered waits until consumer has delivered and had acknowledged every message it has.
 func waitDelivered(t *testing.T, stream jetstream.Stream, consumer string) {
 	t.Helper()
+	ctx := requestContext(t)
 	testwait.Eventually(t, consumer+" has every message delivered and acknowledged", func() bool {
-		item, err := stream.Consumer(context.Background(), consumer)
+		item, err := stream.Consumer(ctx, consumer)
 		if err != nil {
 			return false
 		}
-		info, err := item.Info(context.Background())
+		info, err := item.Info(ctx)
 		return err == nil && info.NumPending == 0 && info.NumAckPending == 0
 	})
 }

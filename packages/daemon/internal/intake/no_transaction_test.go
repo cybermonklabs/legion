@@ -178,13 +178,11 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	}
 }
 
-// publishAt publishes data on subject and returns its stream sequence. The publish waits as
-// publish's does, until the row's hang guards end (testwait.Remaining).
+// publishAt publishes data on subject and returns its stream sequence, waiting for the server as
+// publish does, until the row's hang guards end (requestContext).
 func publishAt(t *testing.T, js jetstream.JetStream, subject string, data []byte) uint64 {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
-	defer cancel()
-	ack, err := js.Publish(ctx, subject, data)
+	ack, err := js.Publish(requestContext(t), subject, data)
 	if err != nil {
 		t.Fatalf("publish %s: %v", subject, err)
 	}
@@ -196,15 +194,12 @@ func publishAt(t *testing.T, js jetstream.JetStream, subject string, data []byte
 // waiting, so this is every message handled for good. Its bound is what is left of the test
 // binary's deadline less 30 s (testwait.Remaining), so a handling whose store read is slow is
 // waited out, and one that never ends fails the row here, by name, before the binary's own
-// timeout. Its reads of the consumer end there too, in place of the five seconds nats.go gives a
-// request whose context has no deadline, though a read that fails only makes the next poll read
-// again.
+// timeout. Its reads of the consumer end there too (requestContext), though a read that fails only
+// makes the next poll read again.
 func waitAcknowledged(t *testing.T, stream jetstream.Stream, consumer string, last uint64) {
 	t.Helper()
-	bound := testwait.Remaining(t)
-	ctx, cancel := context.WithTimeout(context.Background(), bound)
-	defer cancel()
-	testwait.WithinPolling(t, bound, testwait.Poll, consumer+" acknowledged every message", func() bool {
+	ctx := requestContext(t)
+	testwait.WithinPolling(t, testwait.Remaining(t), testwait.Poll, consumer+" acknowledged every message", func() bool {
 		item, err := stream.Consumer(ctx, consumer)
 		if err != nil {
 			return false

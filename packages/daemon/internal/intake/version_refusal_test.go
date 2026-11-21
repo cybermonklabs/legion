@@ -1,7 +1,6 @@
 package intake
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -20,7 +19,7 @@ import (
 // v2.15.1, on which the same call opens the consumers.
 func TestOpenConsumersRefusesAServerThatSkipsAFilter(t *testing.T) {
 	pool := migratedPool(t)
-	ctx := context.Background()
+	ctx := requestContext(t)
 
 	url := testnats.StartImage(t, testnats.SkippingImage)
 	conn, err := nats.Connect(url, nats.Name(t.Name()))

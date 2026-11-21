@@ -106,12 +106,9 @@ type warnings = testlog.Buffer
 // drain must also take under a minute from the first publish; the time is logged either way.
 func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.T) {
 	ctx := context.Background()
-	// requests bounds the row's own NATS requests (publishes, consumer info) by the row's deadline,
-	// the test binary's deadline less 30 s (testwait.Remaining), in place of the five seconds the
-	// client gives a request whose context has no deadline (nats.go's defaultAPITimeout), so a NATS
-	// server the machine holds is waited out.
-	requests, cancelRequests := context.WithTimeout(ctx, testwait.Remaining(t))
-	defer cancelRequests()
+	// requests bounds the row's own NATS requests (publishes, consumer info) and OpenConsumers' by
+	// the row's deadline (requestContext).
+	requests := requestContext(t)
 	dsn := testpg.Clone(t, "legion_intake_drain_test")
 	direct := drainPool(t, dsn)
 	seedDrainProject(t, direct)
@@ -139,7 +136,7 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	// GitHub answers that the approver can write to the repository; the count is every review the
 	// consumer asked GitHub about.
 	var asked atomic.Int64
-	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{
+	consumers, err := intake.OpenConsumers(requests, js, pool, intake.ConsumerSpec{
 		Project: drainProject, Repositories: []ghrepo.Repository{repository},
 		AckWait: testwait.Remaining(t), NakDelay: time.Second, Logger: log,
 		ReviewPermission: func(context.Context, intake.PullRequestReview) (bool, error) {

@@ -142,7 +142,7 @@ func runNULConsumers(t *testing.T, pool *pgxpool.Pool) (jetstream.JetStream, jet
 	// the rows' subject: a fixed one let the machine decide whether a slow read was cut and its
 	// message delivered a second time, which these rows count. It is what is left of the test
 	// binary's deadline less 30 s (testwait.Remaining), so a read however slow is waited out.
-	consumers, err := intake.OpenConsumers(t.Context(), js, store.NewPool(pool), intake.ConsumerSpec{
+	consumers, err := intake.OpenConsumers(requestContext(t), js, store.NewPool(pool), intake.ConsumerSpec{
 		Project: nulProject, Repositories: []ghrepo.Repository{ghrepo.MustParse(nulRepo)},
 		AckWait: testwait.Remaining(t), NakDelay: time.Second, Logger: log,
 		ReviewPermission: func(context.Context, intake.PullRequestReview) (bool, error) { return true, nil },
@@ -192,10 +192,12 @@ func acknowledgedOnce(t *testing.T, stream jetstream.Stream, consumer string, se
 	}
 }
 
-// requestContext is the context of a row's own JetStream requests: it ends where the row's hang
-// guards end, the test binary's deadline less 30 s (testwait.Remaining), in place of the five
-// seconds nats.go gives a request whose context has no deadline (its defaultAPITimeout), so a NATS
-// server the machine holds is waited out and one that never answers fails the row by name.
+// requestContext is the context of a row's own JetStream requests, and of the product calls that
+// make JetStream requests under the context they are given (intake.OpenConsumers): it ends where
+// the row's hang guards end, the test binary's deadline less 30 s (testwait.Remaining), in place of
+// the five seconds nats.go gives a request whose context has no deadline (its defaultAPITimeout),
+// so a NATS server the machine holds is waited out and one that never answers fails the row by
+// name. Package intake's own tests have the same helper (intake_test.go).
 func requestContext(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))

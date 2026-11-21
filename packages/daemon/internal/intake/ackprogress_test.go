@@ -153,7 +153,7 @@ func publishIssueEvent(t *testing.T, js jetstream.JetStream, key string, id int)
 // they differ only in their name and the window they give a delivery.
 func issueConsumer(t *testing.T, stream jetstream.Stream, durable string, ackWait time.Duration) jetstream.Consumer {
 	t.Helper()
-	consumer, err := stream.CreateOrUpdateConsumer(context.Background(), jetstream.ConsumerConfig{
+	consumer, err := stream.CreateOrUpdateConsumer(requestContext(t), jetstream.ConsumerConfig{
 		Durable:       durable,
 		FilterSubject: "notifications.dispatch.issue.>",
 		AckPolicy:     jetstream.AckExplicitPolicy,
@@ -240,7 +240,7 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 		prepared[issue.Key]++
 		return issue, nil
 	}
-	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	consumers, err := OpenConsumers(requestContext(t), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
@@ -287,11 +287,12 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce(t *
 	// so a copy JetStream made and the daemon dropped as a duplicate would show even though no
 	// second preparation did. The two-second window set above is what makes this exact count
 	// sound, and the comment on it says what sized it.
-	item, err := stream.Consumer(context.Background(), dispatchConsumerName(spec.Project))
+	read := requestContext(t)
+	item, err := stream.Consumer(read, dispatchConsumerName(spec.Project))
 	if err != nil {
 		t.Fatalf("read the Dispatch consumer: %v", err)
 	}
-	info, err := item.Info(context.Background())
+	info, err := item.Info(read)
 	if err != nil {
 		t.Fatalf("read the Dispatch consumer's info: %v", err)
 	}
@@ -361,7 +362,7 @@ func TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSign
 		return entered[first] >= 2 && len(entered) == heldBacklog
 	})
 
-	info, err := consumer.Info(context.Background())
+	info, err := consumer.Info(requestContext(t))
 	if err != nil {
 		t.Fatalf("read the control consumer's info: %v", err)
 	}
@@ -601,7 +602,7 @@ func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
 	spec.HandlerLimit = time.Minute
 	held := &heldNak{hold: spec.AckWait/3 + 100*time.Millisecond}
 	spec.Logger = slog.New(slog.NewTextHandler(held, nil))
-	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	consumers, err := OpenConsumers(requestContext(t), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
@@ -666,7 +667,7 @@ func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
 	// as the window's own, and a small fraction of the row's patience (testwait.Eventually waits a
 	// minute), so a limit that never cuts fails the row instead of holding it.
 	spec.HandlerLimit = 600 * time.Millisecond
-	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	consumers, err := OpenConsumers(requestContext(t), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
@@ -737,7 +738,7 @@ func TestAFactHeldPastItsAcknowledgementWindowSaysSoOnceWithHowLongItTook(t *tes
 	// Far above the hold below, so the limit cuts nothing: a cut handler is the warn line beside
 	// this one, and that is the row above's claim.
 	spec.HandlerLimit = time.Minute
-	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	consumers, err := OpenConsumers(requestContext(t), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}

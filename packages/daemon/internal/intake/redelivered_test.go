@@ -108,7 +108,7 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: redeliveredProject, Repositories: redeliveredRepositories{}, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, 10, redeliveredProject, log)
-	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{
+	consumers, err := intake.OpenConsumers(requestContext(t), js, pool, intake.ConsumerSpec{
 		Project: redeliveredProject, Repositories: []ghrepo.Repository{repository},
 		AckWait: 30 * time.Second, NakDelay: time.Second, Logger: log,
 	})
@@ -432,7 +432,7 @@ func startListener(t *testing.T, binary, natsURL string) *listenerProcess {
 
 func streamSubjects(t *testing.T, stream jetstream.Stream) []string {
 	t.Helper()
-	info, err := stream.Info(context.Background())
+	info, err := stream.Info(requestContext(t))
 	if err != nil {
 		t.Fatalf("read the stream's info: %v", err)
 	}
@@ -441,13 +441,14 @@ func streamSubjects(t *testing.T, stream jetstream.Stream) []string {
 
 func setStreamSubjects(t *testing.T, js jetstream.JetStream, stream jetstream.Stream, subjects []string) {
 	t.Helper()
-	info, err := stream.Info(context.Background())
+	ctx := requestContext(t)
+	info, err := stream.Info(ctx)
 	if err != nil {
 		t.Fatalf("read the stream's info: %v", err)
 	}
 	config := info.Config
 	config.Subjects = subjects
-	if _, err := js.UpdateStream(context.Background(), config); err != nil {
+	if _, err := js.UpdateStream(ctx, config); err != nil {
 		t.Fatalf("set the stream's subjects to %v: %v", subjects, err)
 	}
 }
@@ -455,7 +456,7 @@ func setStreamSubjects(t *testing.T, js jetstream.JetStream, stream jetstream.St
 // storedOn counts the stream's messages on subject.
 func storedOn(t *testing.T, stream jetstream.Stream, subject string) uint64 {
 	t.Helper()
-	info, err := stream.Info(context.Background(), jetstream.WithSubjectFilter(subject))
+	info, err := stream.Info(requestContext(t), jetstream.WithSubjectFilter(subject))
 	if err != nil {
 		t.Fatalf("read the stream's messages on %s: %v", subject, err)
 	}

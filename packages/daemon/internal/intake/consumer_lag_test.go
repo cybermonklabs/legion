@@ -25,7 +25,7 @@ import (
 // with none handled — a message it keeps naking is not progress. A poison message it terminates is
 // handled.
 func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor60Seconds(t *testing.T) {
-	ctx := context.Background()
+	ctx := requestContext(t)
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -109,7 +109,7 @@ func TestConsumerLagCountsWhatWaitsAndCallsAConsumerStalledWhenNoneIsHandledFor6
 // STREAM.MSG.GET that fails or never answers leaves only the oldest unknown, the never-answered
 // read cut at its own bound, before the consumer's.
 func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
-	ctx := context.Background()
+	ctx := requestContext(t)
 	served, stream := testJetStream(t)
 	standIn := &lagStandIn{JetStream: served}
 	clock := &lagClock{now: time.Now()}
@@ -177,7 +177,7 @@ func TestConsumerLagNamesWhatNATSDidNotAnswer(t *testing.T) {
 // message could not be read keeps its waiting count and stalled flag and names that read, and Lag
 // as a whole stays within one consumerLagBound.
 func TestConsumerLagCountsEveryConsumerWhileNATSRefusesTheOldestMessageRead(t *testing.T) {
-	ctx := context.Background()
+	ctx := requestContext(t)
 	daemonSeed, daemonPublic := testnkeys.User(t)
 	adminSeed, adminPublic := testnkeys.User(t)
 	_, uri := testnats.StartNkeyAuthorizedUsers(t, testnats.Image,
@@ -292,11 +292,12 @@ func (s lagStandInStream) GetMsg(ctx context.Context, seq uint64, opts ...jetstr
 // publishStored publishes data on subject and is the time the stream stored it at.
 func publishStored(t *testing.T, js jetstream.JetStream, stream jetstream.Stream, subject string, data []byte) time.Time {
 	t.Helper()
-	ack, err := js.Publish(context.Background(), subject, data)
+	ctx := requestContext(t)
+	ack, err := js.Publish(ctx, subject, data)
 	if err != nil {
 		t.Fatalf("publish %s: %v", subject, err)
 	}
-	message, err := stream.GetMsg(context.Background(), ack.Sequence)
+	message, err := stream.GetMsg(ctx, ack.Sequence)
 	if err != nil {
 		t.Fatalf("read message %d back: %v", ack.Sequence, err)
 	}

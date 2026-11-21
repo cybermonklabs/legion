@@ -698,14 +698,14 @@ func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
 	backlog := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
-	if _, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{
+	if _, err := stream.CreateConsumer(requestContext(t), jetstream.ConsumerConfig{
 		Durable:        dispatchConsumerName(spec.Project),
 		FilterSubjects: []string{"notifications.dispatch.issue.>", settingsSubject(spec.Project)},
 		AckPolicy:      jetstream.AckExplicitPolicy, AckWait: spec.AckWait,
 	}); err != nil {
 		t.Fatalf("create the earlier daemon's consumer: %v", err)
 	}
-	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	consumers, err := OpenConsumers(requestContext(t), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers over the earlier daemon's consumer: %v", err)
 	}
@@ -751,7 +751,7 @@ func TestSetRepositoriesChangesTheRepositoriesGitHubIntakeHears(t *testing.T) {
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
-	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	consumers, err := OpenConsumers(requestContext(t), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
@@ -759,7 +759,7 @@ func TestSetRepositoriesChangesTheRepositoriesGitHubIntakeHears(t *testing.T) {
 	defer stop()
 
 	widgets := []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
-	if err := consumers.SetRepositories(context.Background(), widgets); err != nil {
+	if err := consumers.SetRepositories(requestContext(t), widgets); err != nil {
 		t.Fatalf("SetRepositories: %v", err)
 	}
 	if got, want := consumerInfo(t, stream, githubConsumerName(spec.Project)).Config.FilterSubjects, githubFilters(widgets); !slices.Equal(got, want) {
@@ -769,7 +769,7 @@ func TestSetRepositoriesChangesTheRepositoriesGitHubIntakeHears(t *testing.T) {
 	publish(t, js, "notifications.github.acme.widgets.pr.42", []byte(opened))
 	testwait.Eventually(t, "the newly listed repository's event applied", func() bool { return writeCount(t, pool) == 1 })
 
-	if err := consumers.SetRepositories(context.Background(), capturedRepositories); err != nil {
+	if err := consumers.SetRepositories(requestContext(t), capturedRepositories); err != nil {
 		t.Fatalf("SetRepositories: %v", err)
 	}
 	if decoded, err := decodeMessage("notifications.github.acme.widgets.pr.42", spec.Project, consumers.repositories(), []byte(opened)); err != nil || decoded.Fact != nil {
@@ -777,7 +777,7 @@ func TestSetRepositoriesChangesTheRepositoriesGitHubIntakeHears(t *testing.T) {
 	}
 	// A daemon serving no repository hears none: the consumer filters on a subject no repository's
 	// events are published on, never on none, which would hear every subject of the stream.
-	if err := consumers.SetRepositories(context.Background(), nil); err != nil {
+	if err := consumers.SetRepositories(requestContext(t), nil); err != nil {
 		t.Fatalf("SetRepositories of none: %v", err)
 	}
 	if got := consumerInfo(t, stream, githubConsumerName(spec.Project)).Config.FilterSubjects; !slices.Equal(got, []string{"notifications.github.-.-"}) {
@@ -794,7 +794,7 @@ func TestSetRepositoriesChangesTheRepositoriesGitHubIntakeHears(t *testing.T) {
 func TestAFailedSetRepositoriesChangesNothing(t *testing.T) {
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
-	consumers, err := OpenConsumers(context.Background(), js, migratedPool(t), spec)
+	consumers, err := OpenConsumers(requestContext(t), js, migratedPool(t), spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
@@ -1114,7 +1114,7 @@ func TestABootedDaemonOpensNoDispatchServerDurable(t *testing.T) {
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
-	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	consumers, err := OpenConsumers(requestContext(t), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
@@ -1123,7 +1123,7 @@ func TestABootedDaemonOpensNoDispatchServerDurable(t *testing.T) {
 		t.Fatalf("the boot's consumers = %q, want %q", got, want)
 	}
 	var opened []string
-	names := stream.ConsumerNames(context.Background())
+	names := stream.ConsumerNames(requestContext(t))
 	for name := range names.Name() {
 		opened = append(opened, name)
 	}
@@ -1389,7 +1389,7 @@ func TestAFreshConsumerStartsAtTheNextMessage(t *testing.T) {
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	publish(t, js, "notifications.github.sjawhar.legion.pr.42", capturedGitHubEnvelope(t, "pr-opened.json"))
 
-	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	consumers, err := OpenConsumers(requestContext(t), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
@@ -1422,13 +1422,13 @@ func TestAnExistingConsumerKeepsItsPosition(t *testing.T) {
 		{Durable: dispatchConsumerName(spec.Project), FilterSubject: "notifications.dispatch.issue.>", AckPolicy: jetstream.AckExplicitPolicy, AckWait: spec.AckWait},
 		{Durable: githubConsumerName(spec.Project), FilterSubjects: githubFilters(spec.Repositories), AckPolicy: jetstream.AckExplicitPolicy, AckWait: spec.AckWait},
 	} {
-		if _, err := stream.CreateConsumer(context.Background(), config); err != nil {
+		if _, err := stream.CreateConsumer(requestContext(t), config); err != nil {
 			t.Fatalf("create the earlier daemon's consumer %s: %v", config.Durable, err)
 		}
 	}
 
 	spec.Repositories = []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
-	if _, err := OpenConsumers(context.Background(), js, pool, spec); err != nil {
+	if _, err := OpenConsumers(requestContext(t), js, pool, spec); err != nil {
 		t.Fatalf("OpenConsumers over existing consumers: %v", err)
 	}
 	for _, name := range []string{dispatchConsumerName(spec.Project), githubConsumerName(spec.Project)} {
@@ -1456,13 +1456,10 @@ func TestAnExistingConsumerKeepsItsPosition(t *testing.T) {
 }
 
 // consumerInfo reads the named consumer's info. A failed read fails the row, so the read waits
-// for the server until the row's hang guards end, the test binary's deadline less 30 s
-// (testwait.Remaining), in place of the five seconds nats.go gives a request whose context has no
-// deadline (its defaultAPITimeout), which would let a NATS server the machine holds decide it.
+// for the server until the row's hang guards end (requestContext).
 func consumerInfo(t *testing.T, stream jetstream.Stream, name string) *jetstream.ConsumerInfo {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
-	defer cancel()
+	ctx := requestContext(t)
 	consumer, err := stream.Consumer(ctx, name)
 	if err != nil {
 		t.Fatalf("look up consumer %s: %v", name, err)
@@ -1523,7 +1520,7 @@ func consumerSpec(logs *lockedBuffer) ConsumerSpec {
 
 func startConsume(t *testing.T, js jetstream.JetStream, spec ConsumerSpec, pool *pgxpool.Pool, handlers ...Handler) func() {
 	t.Helper()
-	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
+	consumers, err := OpenConsumers(requestContext(t), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
@@ -1552,15 +1549,24 @@ func testJetStream(t *testing.T) (jetstream.JetStream, jetstream.Stream) {
 	return js, testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 }
 
-// publish publishes data on subject and returns its acknowledgement. The publish waits for the
-// server's answer until the row's hang guards end, the test binary's deadline less 30 s
+// requestContext is the context of a row's own JetStream requests, and of the product calls
+// that make JetStream requests under the context they are given (OpenConsumers, SetRepositories,
+// DispatchPosition): it ends where the row's hang guards end, the test binary's deadline less 30 s
 // (testwait.Remaining), in place of the five seconds nats.go gives a request whose context has no
-// deadline (its defaultAPITimeout), so a NATS server the machine holds is waited out.
-func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) *jetstream.PubAck {
+// deadline (its defaultAPITimeout), so a NATS server the machine holds is waited out and one that
+// never answers fails the row by name before the binary's own timeout.
+func requestContext(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
-	defer cancel()
-	ack, err := js.Publish(ctx, subject, data)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// publish publishes data on subject and returns its acknowledgement, waiting for the server's
+// answer until the row's hang guards end (requestContext).
+func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) *jetstream.PubAck {
+	t.Helper()
+	ack, err := js.Publish(requestContext(t), subject, data)
 	if err != nil {
 		t.Fatalf("publish %s: %v", subject, err)
 	}
@@ -1572,11 +1578,10 @@ func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) 
 // deliveries, because one message can be delivered more than once (the delivery mechanism:
 // ConsumerSpec.HandlerLimit's comment in consume.go). That is at-least-once delivery the consumer
 // deduplicates and which a delivery count would read as more. Its reads wait for the server until
-// the row's hang guards end (testwait.Remaining), as assertNoAckPending's do.
+// the row's hang guards end (requestContext), as assertNoAckPending's do.
 func assertAcknowledgedThrough(t *testing.T, stream jetstream.Stream, consumer string, last *jetstream.PubAck) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
-	defer cancel()
+	ctx := requestContext(t)
 	testwait.Eventually(t, fmt.Sprintf("%s has acknowledged through stream sequence %d", consumer, last.Sequence), func() bool {
 		item, err := stream.Consumer(ctx, consumer)
 		if err != nil {
@@ -1588,14 +1593,11 @@ func assertAcknowledgedThrough(t *testing.T, stream jetstream.Stream, consumer s
 }
 
 // assertNoAckPending waits for consumer to owe no acknowledgement. Its reads wait for the server
-// until the row's hang guards end (testwait.Remaining), in place of the five seconds nats.go gives
-// a request whose context has no deadline: a read that fails only makes the next poll read again,
-// but each held read spends five seconds of the wait's own bound and the last one it makes decides
-// the row.
+// until the row's hang guards end (requestContext): a read that fails only makes the next poll
+// read again, but against a server held past the wait's own bound every read failed.
 func assertNoAckPending(t *testing.T, stream jetstream.Stream, consumer string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
-	defer cancel()
+	ctx := requestContext(t)
 	testwait.Eventually(t, consumer+" has no acknowledgement pending", func() bool {
 		item, err := stream.Consumer(ctx, consumer)
 		if err != nil {
