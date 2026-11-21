@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, jest, type Mock, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render } from "@testing-library/react";
+import { type RenderResult, render } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -91,12 +91,20 @@ export function thread(
   };
 }
 
+/** A card `renderCard` drew: its view, the query client it reads through, and the way to draw
+ *  the next ask in its place. */
+export interface DrawnCard {
+  readonly queryClient: QueryClient;
+  readonly rerender: (next: ReactNode) => void;
+  readonly view: RenderResult;
+}
+
 export function renderCard(
   node: ReactNode,
   queryClient: QueryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   })
-) {
+): DrawnCard {
   const drawn = (card: ReactNode) => (
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>{card}</QueryClientProvider>

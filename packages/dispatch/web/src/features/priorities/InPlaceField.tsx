@@ -1,4 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
+
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   borderDefault,
   focusVisibleRing,
@@ -121,7 +123,8 @@ export function InPlaceField({
         className={className}
         list={listId}
         onKeyDown={(event) => {
-          if (event.key !== "Enter") return;
+          // The Enter that confirms an input method's word is the input method's, not the save.
+          if (event.key !== "Enter" || inputMethodKey(event)) return;
           event.preventDefault();
           save();
           event.currentTarget.blur();

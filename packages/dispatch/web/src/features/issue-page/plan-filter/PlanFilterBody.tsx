@@ -695,6 +695,7 @@ function PlanChart({
     // after Escape the same Tab goes back to the row under either drawing.
     treeEnterKey({ moveTo: (index) => moveTo(items(), index), rows: items }),
     {
+      effect: "moves the reader",
       id: "tree-next",
       keys: ["j", "ArrowDown"],
       label: "Move to the next row",
@@ -707,6 +708,7 @@ function PlanChart({
     },
     {
       // Up from the page itself goes to the first bar, as down does.
+      effect: "moves the reader",
       id: "tree-previous",
       keys: ["k", "ArrowUp"],
       label: "Move to the previous row",
@@ -719,6 +721,7 @@ function PlanChart({
       when: () => reading() && items().length > 0,
     },
     {
+      effect: "moves the reader",
       id: "tree-first",
       keys: "Home",
       label: "Move to the first row",
@@ -730,6 +733,7 @@ function PlanChart({
       when: () => at(items()) !== -1,
     },
     {
+      effect: "moves the reader",
       id: "tree-last",
       keys: "End",
       label: "Move to the last row",
@@ -745,6 +749,7 @@ function PlanChart({
       // one tab stop, so a key reaches them; Enter on the link it left the focus on is the
       // browser's own. The link is focused as the outline's f focuses one, letting the browser
       // bring it on screen, so a row the reader scrolled away does not keep its link off screen.
+      effect: "moves the reader",
       id: "tree-link",
       keys: "f",
       label: "Move to the next link on the focused row",
@@ -764,6 +769,7 @@ function PlanChart({
       // Enter on a row goes to its task in the conversation, where it is edited: the chart
       // draws each step and edits none. A cycle's row goes to the task it stands for. On a link
       // inside the row Enter is the link's own.
+      effect: "moves the reader",
       id: "tree-edit",
       keys: "Enter",
       label: "Go to the focused step in the conversation",
@@ -780,6 +786,7 @@ function PlanChart({
       // is where the keys that move through the chart are; from the row itself it leaves the
       // chart, once the page has cleared its words filter, which comes first in the key table's
       // order. The outline's own Escape, under its id (`useTreeKeymap.ts`'s `tree-leave`).
+      effect: "moves the reader",
       id: "tree-leave",
       keys: "Escape",
       label: "Leave the control, then the tree",

@@ -797,6 +797,13 @@ check_fireevent_reasons_test: &check_fireevent_reasons_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-fireevent-reasons.test.sh'
   - '.github/scripts/check-fireevent-reasons.sh'
+check_readers_place_test: &check_readers_place_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-readers-place.test.sh'
+  - '.github/scripts/check-readers-place.sh'
 check_daemon_api_contract_test: &check_daemon_api_contract_test
   - *ci_router
   - *ci_filters_data
@@ -1016,6 +1023,7 @@ test:
   - *check_private_names_keys_test
   - *check_plugin_names_test
   - *check_fireevent_reasons_test
+  - *check_readers_place_test
   - *check_daemon_api_contract_test
   - *check_release_credentials_test
   - *repo_paths_test
@@ -1410,7 +1418,6 @@ dispatch_ui:
   - 'packages/contracts/src/dispatch-api-graph.ts'
   - 'packages/contracts/src/dispatch-api-inbox.ts'
   - 'packages/contracts/src/dispatch-api-issues.ts'
-  - 'packages/contracts/src/dispatch-api-limits.ts'
   - 'packages/contracts/src/dispatch-api-live.ts'
   - 'packages/contracts/src/dispatch-api-messages.ts'
   - 'packages/contracts/src/dispatch-api-refs.ts'
@@ -1422,6 +1429,7 @@ dispatch_ui:
   - 'packages/contracts/src/dispatch-api.generated.ts'
   - 'packages/contracts/src/dispatch-api.ts'
   - 'packages/contracts/src/dispatch-block-ref.ts'
+  - 'packages/contracts/src/dispatch-constants.ts'
   - 'packages/contracts/src/dispatch-href.ts'
   - 'packages/contracts/src/dispatch-snippet.ts'
   - 'packages/contracts/src/dispatch-text-references.ts'
@@ -1481,7 +1489,6 @@ dispatch_browser:
   - 'packages/contracts/src/dispatch-api-graph.ts'
   - 'packages/contracts/src/dispatch-api-inbox.ts'
   - 'packages/contracts/src/dispatch-api-issues.ts'
-  - 'packages/contracts/src/dispatch-api-limits.ts'
   - 'packages/contracts/src/dispatch-api-live.ts'
   - 'packages/contracts/src/dispatch-api-messages.ts'
   - 'packages/contracts/src/dispatch-api-refs.ts'
@@ -1493,6 +1500,7 @@ dispatch_browser:
   - 'packages/contracts/src/dispatch-api.generated.ts'
   - 'packages/contracts/src/dispatch-api.ts'
   - 'packages/contracts/src/dispatch-block-ref.ts'
+  - 'packages/contracts/src/dispatch-constants.ts'
   - 'packages/contracts/src/dispatch-href.ts'
   - 'packages/contracts/src/dispatch-snippet.ts'
   - 'packages/contracts/src/dispatch-text-references.ts'
@@ -1863,7 +1871,6 @@ dispatch_two_builds_go:
   - 'packages/contracts/src/dispatch-api-graph.ts'
   - 'packages/contracts/src/dispatch-api-inbox.ts'
   - 'packages/contracts/src/dispatch-api-issues.ts'
-  - 'packages/contracts/src/dispatch-api-limits.ts'
   - 'packages/contracts/src/dispatch-api-live.ts'
   - 'packages/contracts/src/dispatch-api-messages.ts'
   - 'packages/contracts/src/dispatch-api-refs.ts'
@@ -1875,6 +1882,7 @@ dispatch_two_builds_go:
   - 'packages/contracts/src/dispatch-api.generated.ts'
   - 'packages/contracts/src/dispatch-api.ts'
   - 'packages/contracts/src/dispatch-block-ref.ts'
+  - 'packages/contracts/src/dispatch-constants.ts'
   - 'packages/contracts/src/dispatch-href.ts'
   - 'packages/contracts/src/dispatch-snippet.ts'
   - 'packages/contracts/src/dispatch-text-references.ts'
@@ -1953,7 +1961,6 @@ dispatch_two_builds:
   - 'packages/contracts/src/dispatch-api-graph.ts'
   - 'packages/contracts/src/dispatch-api-inbox.ts'
   - 'packages/contracts/src/dispatch-api-issues.ts'
-  - 'packages/contracts/src/dispatch-api-limits.ts'
   - 'packages/contracts/src/dispatch-api-live.ts'
   - 'packages/contracts/src/dispatch-api-messages.ts'
   - 'packages/contracts/src/dispatch-api-refs.ts'
@@ -1965,6 +1972,7 @@ dispatch_two_builds:
   - 'packages/contracts/src/dispatch-api.generated.ts'
   - 'packages/contracts/src/dispatch-api.ts'
   - 'packages/contracts/src/dispatch-block-ref.ts'
+  - 'packages/contracts/src/dispatch-constants.ts'
   - 'packages/contracts/src/dispatch-href.ts'
   - 'packages/contracts/src/dispatch-snippet.ts'
   - 'packages/contracts/src/dispatch-text-references.ts'
@@ -3117,6 +3125,7 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/dispatch/testlimits/*'
   - 'packages/envoy/internal/dispatch/text/*'
   - 'packages/envoy/internal/dispatch/texttrees/*'
+  - 'packages/envoy/internal/cputest/*'
   - 'packages/envoy/internal/explaintest/*'
   - 'packages/envoy/internal/fold/*'
   - 'packages/envoy/internal/githubappjwt/*'

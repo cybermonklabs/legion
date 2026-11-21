@@ -151,7 +151,7 @@ const REANCHOR_SEND_WAIT_MS = 5000;
 
 /** How long a refused send waits for a document to register its bridge before the margin tells
  *  the reader the document is not open. The bridge binds only once the document has synced and
- *  its editor is built (`ProofDocument`'s `onSynced`, `createEditor`, `bindEditor`), while a
+ *  its editor is built (`ProofDocument`'s `onSynced`, `constructEditor`, `bindEditor`), while a
  *  reload resumes a margin send pressed within `KEPT_SEND_RESUME_MS`: the refusal of a send on
  *  the document the reader is looking at can land seconds before that document's editor exists.
  *  Long enough for a document to load on a slow connection, and short enough that a reader on no
@@ -257,6 +257,11 @@ interface MarginContextValue {
   hoveredItemId: string | undefined;
   hoveredMarkId: string | undefined;
   markPlacements: ReadonlyMap<string, MarkPlacement>;
+  /** Whether the margin is laying its cards out against the open document's blocks and marks: a
+   *  desktop margin that is up, or a compact sheet the reader has opened. A document measures
+   *  where its blocks and marks sit only for a reader who can see a card placed against them
+   *  (`ProofDocument`, dispatch://INFRA-341 requirement R11). */
+  placesItems: boolean;
   /** Whether the registered document has reported its layout: it says so by publishing
    *  placements, and the answer resets whenever a document registers or unregisters, or the
    *  registered document withdraws a hidden layout. An empty map is still an answer - a document
@@ -275,6 +280,8 @@ interface MarginContextValue {
   setHoveredItemId(id: string | undefined): void;
   setMarkItemIds(markItemIds: ReadonlyMap<string, string>): void;
   setMarkPlacements(placements: ReadonlyMap<string, MarkPlacement>): void;
+  /** The margin sheet says whether it is laying its cards out; nothing else calls it. */
+  setPlacesItems(places: boolean): void;
   shownCompose: ShownCompose | undefined;
   /** Takes back the registered document's layout while it is hidden and has no layout to report. */
   withdrawPlacements(): void;
@@ -301,6 +308,7 @@ const MarginContext = createContext<MarginContextValue>({
   hoveredItemId: undefined,
   hoveredMarkId: undefined,
   markPlacements: new Map(),
+  placesItems: false,
   placementsReported: false,
   registerDocument: unavailableMargin,
   revealCompose: unavailableMargin,
@@ -311,6 +319,9 @@ const MarginContext = createContext<MarginContextValue>({
   setHoveredItemId: unavailableMargin,
   setMarkItemIds: unavailableMargin,
   setMarkPlacements: unavailableMargin,
+  // A margin sheet outside a provider - a test's bare one - lays its cards out for no document,
+  // so it reports that to nobody rather than throwing on a render of its own.
+  setPlacesItems: () => {},
   shownCompose: undefined,
   withdrawPlacements: unavailableMargin,
 });
@@ -343,6 +354,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
     () => new Map()
   );
   const [placementsReported, setPlacementsReported] = useState(false);
+  const [placesItems, setPlacesItems] = useState(false);
   const [composes, setComposes] = useState<ReadonlyMap<string, DocumentCompose>>(() => new Map());
   const [shownCompose, setShownCompose] = useState<ShownCompose>();
   const [selectedItemId, setSelectedItemId] = useState<string>();
@@ -738,6 +750,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       hoveredMarkId,
       markPlacements,
       placementsReported,
+      placesItems,
       registerDocument,
       revealCompose,
       retypeCompose,
@@ -747,6 +760,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       setHoveredItemId: selectHoveredItem,
       setMarkItemIds,
       setMarkPlacements: publishMarkPlacements,
+      setPlacesItems,
       shownCompose,
       withdrawPlacements,
     }),
@@ -768,6 +782,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       hoveredMarkId,
       markPlacements,
       placementsReported,
+      placesItems,
       publishBlockPlacements,
       publishMarkPlacements,
       registerDocument,

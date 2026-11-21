@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, Suspense, useRef, useState } from "react";
 
 import {
   backdrop50,
@@ -10,13 +10,18 @@ import {
 import type { InboxRoute } from "../refs/routes";
 import { DIALOG_SCOPE } from "../shell/keymap";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
-import { Inbox } from "./Inbox";
+
+import { InboxList } from "./InboxList";
 
 /**
  * The Inbox as a peek over whatever page is open (LEGION-547): the same list, cards and actions
- * as the Inbox page, mounted once in the app shell as a sibling of `<main>` so a route change
+ * as the Inbox page, mounted by the app shell as a sibling of `<main>` so a route change
  * underneath never unmounts the page beneath it - the drawer itself closes instead
- * (`useCloseOnNavigation`), which is also what "open the item" from inside it does.
+ * (`useCloseOnNavigation`), which is also what "open the item" from inside it does. Its chunk is
+ * asked for the first time a reader opens it (`features/shell/deferred-shell.ts`), and from then
+ * on the shell keeps it mounted and tells it whether it is open: a drawer unmounted on each
+ * close would start every peek from an empty filter and an empty search box, which nothing in
+ * the spec asks for (dispatch://INFRA-341). Closed it draws nothing.
  *
  * Its filters, sort, grouping, Inbox-or-Dismissed switch and search text are its own `useState`,
  * never the URL: `Inbox`'s `filter`/`onFilterChange` exist exactly so a peek embedded on, say,
@@ -32,10 +37,20 @@ import { Inbox } from "./Inbox";
  * the thread order, and which bands they folded - is theirs rather than the address's, so the
  * drawer and the page agree.
  */
-export function InboxDrawer({ onClose, open }: { onClose: () => void; open: boolean }): ReactNode {
+export function InboxDrawer({
+  onClose,
+  open,
+}: {
+  onClose: () => void;
+  /** Whether the peek is showing. Closed, this draws nothing and keeps what the reader last
+   *  narrowed it to. */
+  open: boolean;
+}): ReactNode {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // An empty route is the Inbox as it opens: the reader's own work, newest first, banded by
-  // priority, every thread they have not dismissed, and nothing typed in the search box.
+  // priority, every thread they have not dismissed, and nothing typed in the search box. It is
+  // this component's state and outlives a close, so the peek a reader opens again is the peek
+  // they left.
   const [filter, setFilter] = useState<InboxRoute>({});
   const dialog = useDialog<HTMLElement>({ initialFocusRef: closeButtonRef, onClose, open });
   useCloseOnNavigation(open, onClose);
@@ -43,6 +58,7 @@ export function InboxDrawer({ onClose, open }: { onClose: () => void; open: bool
   if (!open) {
     return null;
   }
+
   return (
     <>
       <div aria-hidden="true" className={`fixed inset-0 z-30 ${backdrop50}`} onClick={onClose} />
@@ -65,13 +81,15 @@ export function InboxDrawer({ onClose, open }: { onClose: () => void; open: bool
             Close
           </button>
         </div>
-        <Inbox
-          filter={filter}
-          keymapScope={DIALOG_SCOPE}
-          onFilterChange={setFilter}
-          pane={false}
-          scroller={dialog.containerRef}
-        />
+        <Suspense fallback={null}>
+          <InboxList
+            filter={filter}
+            keymapScope={DIALOG_SCOPE}
+            onFilterChange={setFilter}
+            pane={false}
+            scroller={dialog.containerRef}
+          />
+        </Suspense>
       </aside>
     </>
   );

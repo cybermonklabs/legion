@@ -524,6 +524,56 @@ test("a composer opened from the document is in the margin's view after a commen
   }
 });
 
+// SLOW(>=2s): the long seeded document, its landing, and the correction the growth asks for.
+// The page's own focus moving out of the document while a comment link lands: the margin's reply
+// field takes it as the link expands its card, and React commits that before or after the
+// landing's own focus as it schedules the two. This row makes the late order happen every time -
+// it moves the focus by script, as that field does, once the landing has begun - and then grows
+// the paragraph above the quote, as the document's web font grows each paragraph, so the landing
+// has a growth to correct after the focus moved. Read as the reader, that focus ended the landing
+// and left the quote where the growth pushed it (`focused`, `features/doc/refocus-when-settled.ts`).
+// @webkit @firefox: the two engines the late order was measured in, beside `chromium`.
+test("a focus the page moves out of the document while a comment link lands does not end the landing @webkit @firefox", async ({
+  browser,
+}) => {
+  const { comment, issue, markId } = await seedLongDocument();
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
+
+    const reply = page.getByTestId("margin-sheet").getByRole("textbox", { name: "Reply" });
+    // The landing has begun once the quote is in view: the editor's focus scroll put it there.
+    await expect(markSpan(page, markId)).toBeInViewport();
+    await expect(reply).toBeVisible();
+    // The page's own focus, after the landing's: no press, no touch and no key before it.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await reply.evaluate((element) => (element as HTMLElement).focus());
+    await expect(reply).toBeFocused();
+    // The paragraph above the quote grows, below every line the browser could anchor the page
+    // on, so the quote goes down with it and only the landing can bring it back.
+    const above = `.ProseMirror p:has(+ p [data-id="${markId}"])`;
+    await page.addStyleTag({ content: `${above} { padding-bottom: 240px; }` });
+    // The rule took: a selector that matched nothing would grow nothing, and the landing would
+    // then have nothing to correct.
+    await expect
+      .poll(
+        () =>
+          page.evaluate((selector) => {
+            const paragraph = document.querySelector(selector);
+            return paragraph === null ? "no paragraph" : getComputedStyle(paragraph).paddingBottom;
+          }, above),
+        { message: "the paragraph above the quote's padding-bottom" }
+      )
+      .toBe("240px");
+    await markLanded(page, markId);
+    await expect(markSpan(page, markId)).toBeInViewport();
+  } finally {
+    await context.close();
+  }
+});
+
 // SLOW(>=2s): the long document and three seeded asks are both halves of the hold this row
 // proves - the transport held so the editor reports no layout, the asks held so their group
 // relays the margin out after the press - and each half ends in a settle measured in the

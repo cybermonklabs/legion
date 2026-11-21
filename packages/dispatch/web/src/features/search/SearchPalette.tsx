@@ -15,6 +15,7 @@ import { useNavigate } from "react-router-dom";
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult, SearchResultKind } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   backdrop50,
   badgeLow,
@@ -34,9 +35,10 @@ import {
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
+import { placeInView } from "../doc/readers-place";
 import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { referenceTriggerProps } from "../refs/RefPreview";
+import { referenceTriggerProps } from "../refs/ref-preview-state";
 import {
   buildIssuePath,
   buildProjectPath,
@@ -432,6 +434,8 @@ function PaletteDialog({
   // close, so pressing it twice still opens and closes.
   useKeymap(DIALOG_SCOPE, [
     {
+      // The focus goes back to whatever opened the bar.
+      effect: "moves the reader",
       id: "search-close",
       inEditable: true,
       keys: "$mod+k",
@@ -632,7 +636,8 @@ function PaletteDialog({
       return;
     }
     const keepInView = () => {
-      document.getElementById(shownId)?.scrollIntoView({ block: "nearest" });
+      const highlighted = document.getElementById(shownId);
+      if (highlighted !== null) placeInView(highlighted, { block: "nearest" });
     };
     keepInView();
     const list = listRef.current;
@@ -698,7 +703,8 @@ function PaletteDialog({
             : walkable - 1
           : stepActive(activeIndex, delta, walkable);
       setActive({ hits: listedQuery, id: rows[next]?.id ?? null });
-    } else if (event.key === "Enter" && activeRow !== undefined) {
+    } else if (event.key === "Enter" && activeRow !== undefined && !inputMethodKey(event)) {
+      // The Enter that confirms an input method's word is the input method's, not the open.
       event.preventDefault();
       selectRow(activeRow);
     }

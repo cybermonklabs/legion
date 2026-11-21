@@ -10,7 +10,8 @@
 // and Dispatch answers what changed since. Dispatch rotates every socket once it reaches its age,
 // or, behind Identity-Aware Proxy, once the assertion its upgrade carried expires (close 4001); the
 // page reopens at once, with a fresh assertion, and shows nothing of it.
-import { type AgentStreamResponder, LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
+import type { AgentStreamResponder } from "@legion/contracts/agent-stream";
+import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts/dispatch-constants";
 import { hashKey, type QueryClient, type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 

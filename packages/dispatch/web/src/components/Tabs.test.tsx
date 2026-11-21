@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the tablist's own scroll events below, which user-event has no form for
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -134,6 +134,47 @@ test("a tab reached from the keyboard is scrolled into the tablist, without movi
     expect(tablist.scrollLeft).toBe(60);
     expect(window.scrollY).toBe(scrollY);
   } finally {
+    view.unmount();
+  }
+});
+
+// A rectangle read inside the commit that mounted the tablist forces the whole page's style and
+// layout into that task: on a phone at 4x CPU throttling those two reads were 170-200 ms of the
+// one task that mounts an issue page, which is already over the 500 ms a reader feels as a
+// freeze (dispatch://INFRA-341, R11). So the reveal waits for a frame, where the layout it reads
+// is the one the browser was about to compute, and still scrolls before that frame is painted.
+test("the active tab is revealed in a frame of its own, never in the commit that mounted it", async () => {
+  let measured = 0;
+  // The same 300 px tablist as the row above, with its second tab overhanging by 60 px, measured
+  // wherever the reveal asks; `measured` is what says which task asked.
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ): DOMRect {
+    measured += 1;
+    if (this.getAttribute("role") === "tablist") {
+      return rect(0, 300);
+    }
+    const scrolled = this.parentElement?.scrollLeft ?? 0;
+    return rect(200 - scrolled, 360 - scrolled);
+  });
+  const view = render(<SelectingTabs initial="documents" tabs={projectTabs} />);
+
+  try {
+    expect(measured).toBe(0);
+    const tablist = screen.getByRole("tablist", { name: "Project" });
+    // Its scroll stops at the end, as the row above's does: the tab is the last one, so it stops
+    // there rather than clear of a fade that is off at the end of the scroll.
+    layOutScrollBox(tablist, { client: 300, scroll: 360 });
+    expect(tablist.scrollLeft).toBe(0);
+
+    const painted = Promise.withResolvers<void>();
+    requestAnimationFrame(() => painted.resolve());
+    await painted.promise;
+
+    expect(measured).toBeGreaterThan(0);
+    expect(tablist.scrollLeft).toBe(60);
+  } finally {
+    boxes.mockRestore();
     view.unmount();
   }
 });
@@ -447,6 +488,9 @@ test("End onto the already-selected last tab brings it back into view after the 
     // The last tab rests at the end of the scroll, 749 - 528 = 221.
     layOut(528);
     expect(tablist.scrollLeft).toBe(221);
+    // The mount's settle waits a frame; it runs here, so no frame of the mount's runs during
+    // the keystroke below and puts the strip back by itself.
+    await nextFrame();
     // The reader scrolls the strip back to its start, which leaves Collaborators out of view.
     scrollTo(0);
     collaborators.focus();

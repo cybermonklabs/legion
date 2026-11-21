@@ -719,6 +719,8 @@ func TestApplyOperationRejectsFindTargetSpanningTextblocks(t *testing.T) {
 	}
 }
 
+// A plain-text find matches the text of a code span or a link without its syntax, and the text
+// written over it stays inside that span (TestReplaceInsideAMarkedSpanKeepsTheSpanWhole).
 func TestApplyOperationMatchesPlainTextInsideInlineCodeAndLinks(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -730,13 +732,13 @@ func TestApplyOperationMatchesPlainTextInsideInlineCodeAndLinks(t *testing.T) {
 			name:     "inline code",
 			markdown: "before `code anchor` after\n",
 			anchor:   "code anchor",
-			want:     "before updated after\n",
+			want:     "before `updated` after\n",
 		},
 		{
 			name:     "link",
 			markdown: "before [link anchor](https://example.com) after\n",
 			anchor:   "link anchor",
-			want:     "before updated after\n",
+			want:     "before [updated](https://example.com) after\n",
 		},
 	}
 	for _, test := range tests {
@@ -3091,9 +3093,11 @@ func TestApplyOperationQuoteOpeningWithAListMarkerSelectsTheItem(t *testing.T) {
 			op:   model.EditOp{Op: "replace", Find: "- bullet two", With: "- bullet 2"},
 			want: "- bullet 2\n",
 		},
+		// The selected item is the parent of the paragraph the anchor names, so the insert lands in
+		// that item, beside its text (pmdoc.ValidDocument.BlockBoundary).
 		"an insert anchor": {
 			op:   model.EditOp{Op: "insert", Markdown: "Done.", After: "3. A fresh reviewer checks points 1 to 4."},
-			want: "\n\nDone.\n",
+			want: "3. A fresh reviewer checks points 1 to 4.\n\n   Done.\n",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -3953,7 +3957,481 @@ func TestReplacementBrokePassesAPanicOnAsAnError(t *testing.T) {
 	}
 }
 
-// applyAlone applies op to tree as a write of its own, on a budget of its own.
+// A delete whose find opens with a list marker selects an item of that kind of list whose text
+// starts with the rest, as the edit's help says, and deletes that item whole: its text past the
+// find and the items nested in it go with it, and the last item of a list deleted so takes the
+// list with it, as a delete of the item's block does. It deleted only the words the find spelled
+// and left the item standing, `- &#32;(run between …`, for each of the 24 hours version 335 of
+// dispatch://INFRA/artifact/superfan-fans-log-md deleted this way (dispatch://INFRA-4517).
+func TestADeleteWhoseFindSelectsAListItemRemovesTheItem(t *testing.T) {
+	const kept = "- **2026-11-18, 16:00Z to 17:00Z** (run between the clock reads 2026-11-18T17:00:20Z and 17:11:38Z): kept.\n"
+	const plan = "Plan:\n\n1. **First** step, to keep.\n2. **Second** step, to delete.\n\nAfter.\n"
+	const log = "## Hours\n\n" +
+		"- **2026-11-17, 00:00Z to 01:00Z** (run between the clock reads 2026-11-17T01:00:20Z and 01:11:38Z, clone at `491a02af`): nothing new.\n" +
+		"- **2026-11-17, 01:00Z to 02:00Z** (run between the clock reads 2026-11-17T02:00:12Z and 02:09:40Z): two pull requests merged.\n" +
+		"  - **4400** merged at 03:15Z.\n" +
+		"  - **4427** merged at 05:12Z.\n" +
+		kept + "\n" + plan
+	for _, test := range []struct {
+		name string
+		ops  []model.EditOp
+		want string
+	}{
+		{
+			name: "two items with bold leads, one holding a nested list",
+			ops: []model.EditOp{
+				{Op: "delete", Find: "- **2026-11-17, 00:00Z to 01:00Z**"},
+				{Op: "delete", Find: "- **2026-11-17, 01:00Z to 02:00Z**"},
+			},
+			want: "## Hours\n\n" + kept + "\n" + plan,
+		},
+		{
+			name: "every item of the list",
+			ops: []model.EditOp{
+				{Op: "delete", Find: "- **2026-11-17, 00:00Z to 01:00Z**"},
+				{Op: "delete", Find: "- **2026-11-17, 01:00Z to 02:00Z**"},
+				{Op: "delete", Find: "- **2026-11-18, 16:00Z to 17:00Z**"},
+			},
+			want: "## Hours\n\n" + plan,
+		},
+		{
+			name: "an ordered item under another number",
+			ops:  []model.EditOp{{Op: "delete", Find: "5. **Second**"}},
+			want: strings.TrimSuffix(log, plan) + "Plan:\n\n1. **First** step, to keep.\n\nAfter.\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := parseInput(log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch, err := applyOperations(tree, test.ops)
+			if err != nil {
+				t.Fatalf("deletes by list marker = %v, want them applied", err)
+			}
+			if markdown, err := renderTree(batch.tree); err != nil || markdown != test.want {
+				t.Fatalf("after the deletes = %q, %v; want %q", markdown, err, test.want)
+			}
+		})
+	}
+}
+
+// A find that opens with a list marker before bold text selects the item, as one before plain text
+// does: a replace writes over the item's bold lead, and its with may carry the item's own marker.
+// The find was read as markdown first, which takes the marker for list syntax and drops it, so it
+// matched the bold text wherever it stood - here in a paragraph too, which made it ambiguous - and
+// a with carrying the marker was refused as writing it twice.
+func TestAReplaceWhoseFindSelectsAnItemByItsBoldLead(t *testing.T) {
+	tree, err := parseInput("**Lead** in a paragraph.\n\n- **Lead** of the item.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ambiguous *pmdoc.ErrTargetAmbiguous
+	if _, _, err := pmdoc.NewQuoteFinder(tree).FindSpelling("- **Lead**", nil, nil); !errors.As(err, &ambiguous) {
+		t.Fatalf("the find read as markdown = %v, want it to match the bold text in both blocks", err)
+	}
+	out, err := applyAlone(tree, model.EditOp{Op: "replace", Find: "- **Lead**", With: "- **First**"})
+	if err != nil {
+		t.Fatalf("replace of an item's bold lead by its marker = %v, want it applied", err)
+	}
+	if markdown, err := renderTree(out); err != nil || markdown != "**Lead** in a paragraph.\n\n- **First** of the item.\n" {
+		t.Fatalf("after the replace = %q, %v; want the item's lead replaced and the paragraph's kept", markdown, err)
+	}
+}
+
+// newEntries is a list of count items with bold leads, as an hourly log writes them.
+func newEntries(count int) string {
+	var entries strings.Builder
+	for hour := range count {
+		fmt.Fprintf(&entries, "- **2026-11-18, %02d:00Z** new entry %d.\n", hour, hour)
+	}
+	return entries.String()
+}
+
+// An insert anchored on a list or inside it joins that list (pmdoc.ValidDocument.ListBoundary), and
+// a later operation of the same edit that deletes the list deletes all the list holds but what the
+// insert wrote: the items the insert wrote stay, a list of their own where that list stood. Version
+// 336 of dispatch://INFRA/artifact/superfan-fans-log-md inserted a 16-item list after a list's own
+// block and then deleted that block, and lost both lists: the insert's items had become the list's
+// last items, and the delete took them with it (dispatch://INFRA-4517). A paragraph written into a
+// requirement stays where the requirement stood when a later operation deletes the requirement,
+// and a block such a delete keeps is no block it removed, so an operation after it may name it.
+func TestAnInsertBesideABlockALaterOperationDeletesKeepsItsBlocks(t *testing.T) {
+	inserted := newEntries(16)
+	const lists = "Intro.\n\n- old one\n- old two\n\nAfter.\n"
+	const requirement = ":::requirement{#r1}\nThe read succeeds.\n:::\n\nAfter.\n"
+	const callout = ":::callout{#c1 kind=\"note\" title=\"T\"}\nNote body.\n:::\n\nAfter.\n"
+	for _, test := range []struct {
+		name, markdown string
+		// ops builds the batch from the id of the document's first block.
+		ops  func(first string) []model.EditOp
+		want string
+	}{
+		{
+			name:     "a list inserted after a list's own block",
+			markdown: lists,
+			ops: func(string) []model.EditOp {
+				return []model.EditOp{{Op: "insert", After: "block:{list}", Markdown: inserted}, {Op: "delete", Block: "{list}"}}
+			},
+			want: "Intro.\n\n" + inserted + "\nAfter.\n",
+		},
+		{
+			name:     "a list inserted before a list's own block",
+			markdown: lists,
+			ops: func(string) []model.EditOp {
+				return []model.EditOp{{Op: "insert", Before: "block:{list}", Markdown: inserted}, {Op: "delete", Block: "{list}"}}
+			},
+			want: "Intro.\n\n" + inserted + "\nAfter.\n",
+		},
+		{
+			name:     "a list inserted after an item's text",
+			markdown: lists,
+			ops: func(string) []model.EditOp {
+				return []model.EditOp{{Op: "insert", After: "old two", Markdown: inserted}, {Op: "delete", Block: "{list}"}}
+			},
+			want: "Intro.\n\n" + inserted + "\nAfter.\n",
+		},
+		{
+			name:     "a paragraph inserted into a requirement",
+			markdown: requirement,
+			ops: func(first string) []model.EditOp {
+				return []model.EditOp{
+					{Op: "insert", After: "The read succeeds.", Markdown: "It answers within a second."},
+					{Op: "delete", Block: first},
+				}
+			},
+			want: "It answers within a second.\n\nAfter.\n",
+		},
+		{
+			name:     "a requirement written into a callout, moved once the callout is deleted",
+			markdown: callout,
+			ops: func(first string) []model.EditOp {
+				return []model.EditOp{
+					{Op: "insert", After: "Note body.", Markdown: ":::requirement{#r9}\nThe read succeeds.\n:::"},
+					{Op: "delete", Block: first},
+					{Op: "move", Block: "r9", After: "After."},
+				}
+			},
+			want: "After.\n\n:::requirement{#r9}\nThe read succeeds.\n:::\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := parseInput(test.markdown)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, _ := tree.Children[0].Attrs[pmdoc.BlockIDAttr].(string)
+			list, _ := tree.Children[1].Attrs[pmdoc.BlockIDAttr].(string)
+			ops := test.ops(first)
+			for index := range ops {
+				ops[index].After = strings.ReplaceAll(ops[index].After, "{list}", list)
+				ops[index].Before = strings.ReplaceAll(ops[index].Before, "{list}", list)
+				ops[index].Block = strings.ReplaceAll(ops[index].Block, "{list}", list)
+			}
+			batch, err := applyOperations(tree, ops)
+			if err != nil {
+				t.Fatalf("insert, then delete = %v, want both applied", err)
+			}
+			if markdown, err := renderTree(batch.tree); err != nil || markdown != test.want {
+				t.Fatalf("after the insert and the delete = %q, %v; want %q", markdown, err, test.want)
+			}
+		})
+	}
+}
+
+// A delete of a block keeps only the blocks an earlier insert of the same edit wrote into it: a
+// block an earlier replace wrote there is the block's, and goes with it. A replace that writes a
+// typed block over the paragraph of the one it stands in, a second paragraph into a callout, or a
+// heading into a quote gives what it writes an id the edit began without, and the delete kept
+// each where the block stood, so the text the caller deleted stayed, where the same edit with a
+// replace that keeps its paragraph's id deleted it. The last row is that replace.
+func TestADeleteTakesTheBlocksAnEarlierReplaceWroteInsideItsBlock(t *testing.T) {
+	const requirement = ":::requirement{#r1}\nThe read succeeds.\n:::\n\nAfter.\n"
+	for _, test := range []struct {
+		name, markdown string
+		// ops builds the batch from the id of the document's first block.
+		ops func(first string) []model.EditOp
+	}{
+		{
+			name:     "a requirement a replace rewrote under its own id",
+			markdown: requirement,
+			ops: func(string) []model.EditOp {
+				return []model.EditOp{
+					{Op: "replace", Find: "The read succeeds.", With: ":::requirement{#r1}\nThe read fails.\n:::"},
+					{Op: "delete", Block: "r1"},
+				}
+			},
+		},
+		{
+			name:     "a paragraph a replace wrote into a callout",
+			markdown: ":::callout{#c1 kind=\"note\" title=\"T\"}\nNote body.\n:::\n\nAfter.\n",
+			ops: func(string) []model.EditOp {
+				return []model.EditOp{
+					{Op: "replace", Find: "Note body.", With: "Note body.\n\nSecond."},
+					{Op: "delete", Block: "c1"},
+				}
+			},
+		},
+		{
+			name:     "a heading a replace wrote into a quote",
+			markdown: "> Quoted words.\n\nAfter.\n",
+			ops: func(first string) []model.EditOp {
+				return []model.EditOp{
+					{Op: "replace", Find: "Quoted words.", With: "## Heading"},
+					{Op: "delete", Block: first},
+				}
+			},
+		},
+		{
+			name:     "a replace that keeps its paragraph's id",
+			markdown: requirement,
+			ops: func(string) []model.EditOp {
+				return []model.EditOp{
+					{Op: "replace", Find: "succeeds", With: "fails"},
+					{Op: "delete", Block: "r1"},
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := parseInput(test.markdown)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, _ := tree.Children[0].Attrs[pmdoc.BlockIDAttr].(string)
+			batch, err := applyOperations(tree, test.ops(first))
+			if err != nil {
+				t.Fatalf("replace, then delete = %v, want both applied", err)
+			}
+			if markdown, err := renderTree(batch.tree); err != nil || markdown != "After.\n" {
+				t.Fatalf("after the replace and the delete = %q, %v; want %q", markdown, err, "After.\n")
+			}
+		})
+	}
+}
+
+// A delete of a block keeps the blocks an earlier move of the same edit wrote into it, as it keeps
+// an insert's: a list item moved into a list, then the list deleted, stays where the list stood, a
+// list of its own. It went with the list.
+func TestADeleteKeepsTheBlocksAnEarlierMoveWroteInsideIt(t *testing.T) {
+	tree, err := parseInput("- moved one\n\nIntro.\n\n- old one\n- old two\n\nAfter.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _ := tree.Children[0].Children[0].Attrs[pmdoc.BlockIDAttr].(string)
+	list, _ := tree.Children[2].Attrs[pmdoc.BlockIDAttr].(string)
+	if item == "" || list == "" || tree.Children[2].Type != "bullet_list" {
+		t.Fatalf("the fixture parsed as %d blocks, item %q, list %q", len(tree.Children), item, list)
+	}
+	batch, err := applyOperations(tree, []model.EditOp{
+		{Op: "move", Block: item, After: "old two"},
+		{Op: "delete", Block: list},
+	})
+	if err != nil {
+		t.Fatalf("move, then delete = %v, want both applied", err)
+	}
+	if markdown, err := renderTree(batch.tree); err != nil || markdown != "Intro.\n\n- moved one\n\nAfter.\n" {
+		t.Fatalf("after the move and the delete = %q, %v; want %q", markdown, err, "Intro.\n\n- moved one\n\nAfter.\n")
+	}
+}
+
+// Each operation of an edit reads the document as the operations before it left it, so one whose
+// target an earlier operation of the same edit removed - the block its id names, the block its
+// anchor names, the text its find or its anchor quotes, the heading its anchor names - is refused
+// naming itself, and nothing in the batch is written: a block an earlier `delete {block:…}`
+// removed, that block or one inside it, is 400 INVALID_OP naming that delete (removedBlockError),
+// and any other target gone is 404 TARGET_NOT_FOUND, the refusal of a target the document never
+// held.
+func TestAnOperationWhoseTargetAnEarlierOperationRemovedIsRefused(t *testing.T) {
+	tree, err := parseInput("# Plan\n\nIntro.\n\nBody.\n\n- Parent\n  - Child\n\n| Key | Value |\n| --- | --- |\n| a | b |\n| c | d |\n\nAfter.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, _ := tree.Children[3].Attrs[pmdoc.BlockIDAttr].(string)
+	parent, _ := tree.Children[3].Children[0].Attrs[pmdoc.BlockIDAttr].(string)
+	child, _ := tree.Children[3].Children[0].Children[1].Children[0].Attrs[pmdoc.BlockIDAttr].(string)
+	table, _ := tree.Children[4].Attrs[pmdoc.BlockIDAttr].(string)
+	if tree.Children[3].Type != "bullet_list" || tree.Children[4].Type != "table" || child == "" {
+		t.Fatalf("the fixture parsed as %s, %s, child %q", tree.Children[3].Type, tree.Children[4].Type, child)
+	}
+	const quoteRule = `quotes match the block text as rendered (inline markdown is tolerated; use "heading:<title>", "block:<id>", "start", or "end" as insert and move anchors)`
+	for name, test := range map[string]struct {
+		ops []model.EditOp
+		// code is the code the edit route answers the refusal with (api.writeHandlerError), and
+		// want the refusal's whole text.
+		code, want string
+	}{
+		"an insert after a block an earlier delete removed": {
+			ops:  []model.EditOp{{Op: "delete", Block: list}, {Op: "insert", After: "block:" + list, Markdown: "New."}},
+			code: "TARGET_NOT_FOUND",
+			want: `operation 1: block "` + list + `" is not in the document. Anchor by quote instead: write the text of that block in after, in place of "block:` + list + `".`,
+		},
+		"a delete of a block an earlier delete removed with the block holding it": {
+			ops:  []model.EditOp{{Op: "delete", Block: parent}, {Op: "delete", Block: child}},
+			code: "INVALID_OP",
+			want: `operation 1: invalid document operation field "block": block "` + child + `" was removed by operation 0 as a cascade of delete {block:"` + parent + `"}; remove it from the atomic batch`,
+		},
+		"a move of a block an earlier delete removed": {
+			ops:  []model.EditOp{{Op: "delete", Block: list}, {Op: "move", Block: child, After: "Intro."}},
+			code: "INVALID_OP",
+			want: `operation 1: invalid document operation field "block": block "` + child + `" was removed by operation 0 as a cascade of delete {block:"` + list + `"}; remove it from the atomic batch`,
+		},
+		"a row delete in a table an earlier delete removed": {
+			ops:  []model.EditOp{{Op: "delete", Block: table}, {Op: "delete_row", Block: table, Index: json.RawMessage("1")}},
+			code: "INVALID_OP",
+			want: `operation 1: invalid document operation field "block": block "` + table + `" was removed by operation 0 with delete {block:"` + table + `"}; remove it from the atomic batch`,
+		},
+		"a find whose text an earlier replace took away": {
+			ops:  []model.EditOp{{Op: "replace", Find: "Body.", With: "Text."}, {Op: "replace", Find: "Body.", With: "Words."}},
+			code: "TARGET_NOT_FOUND",
+			want: `operation 1: quote "Body." not found; ` + quoteRule + `; nearest blocks: "Plan" | "Intro." | "Text."`,
+		},
+		"an insert before text an earlier delete removed": {
+			ops:  []model.EditOp{{Op: "replace", Find: "After.", With: "Then."}, {Op: "delete", Find: "Intro."}, {Op: "insert", Before: "Intro.", Markdown: "New."}},
+			code: "TARGET_NOT_FOUND",
+			want: `operation 2: quote "Intro." not found; ` + quoteRule + `; nearest blocks: "Plan" | "Body." | "Parent"`,
+		},
+		"an insert after a heading an earlier delete removed": {
+			ops:  []model.EditOp{{Op: "delete", Find: "# Plan"}, {Op: "insert", After: "heading:Plan", Markdown: "New."}},
+			code: "TARGET_NOT_FOUND",
+			want: `operation 1: heading anchor "Plan" not found; the document has no headings`,
+		},
+		// Before dispatch://INFRA-4517 the first delete took only the item's text, and the second
+		// found its item; the first now takes the whole item, so the second quotes text no block holds.
+		"an item an earlier delete removed with the item holding it": {
+			ops:  []model.EditOp{{Op: "delete", Find: "- Parent"}, {Op: "delete", Find: "- Child"}},
+			code: "TARGET_NOT_FOUND",
+			want: `operation 1: quote "- Child" not found; a leading list marker is no text the item holds: it selects an item of a bullet list, its number not matched, whose text starts with the rest; quote the item's text without the marker ("Child") to match it anywhere; nearest blocks: "Plan" | "Intro." | "Body."`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			batch, err := applyOperations(tree, test.ops)
+			var invalid *ErrInvalidOp
+			code := ""
+			switch {
+			case errors.As(err, &invalid):
+				code = "INVALID_OP"
+			case errors.Is(err, pmdoc.ErrTargetNotFound):
+				code = "TARGET_NOT_FOUND"
+			}
+			if code != test.code || !isEditRefusal(err) || batch.tree != nil {
+				t.Fatalf("the batch = %v (code %q), tree %v; want it refused %s", err, code, batch.tree, test.code)
+			}
+			if err.Error() != test.want {
+				t.Fatalf("refusal = %q, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+// No operation of an edit removes or changes a block it does not name: across a batch of inserts,
+// deletes, a replace and a move over lists, typed blocks, paragraphs and headings, every block of
+// the document that no operation names is the same block, written byte for byte as it was and in
+// the order it was, and every block an insert wrote that no later operation names is in the
+// document the batch leaves (dispatch://INFRA-4517).
+func TestABatchChangesNoBlockItsOperationsDoNotName(t *testing.T) {
+	const document = "# Plan\n\nIntro paragraph.\n\n- a one\n- a two\n\n" +
+		":::requirement{#r1}\nThe read succeeds.\n:::\n\n" +
+		"Replace me here.\n\n" +
+		"- **2026-11-17, 00:00Z** first hour.\n- **2026-11-17, 01:00Z** second hour.\n  - nested note.\n- **2026-11-18, 16:00Z** kept hour.\n\n" +
+		":::callout{#c1 kind=\"note\" title=\"T\"}\nNote body.\n:::\n\n" +
+		"Between.\n\n- m one\n- m two\n\n" +
+		":::requirement{#r2}\nThe write succeeds.\n:::\n\n" +
+		"1. first\n2. second\n\nMove me.\n\n## Tail\n\nOutro.\n"
+	tree, err := parseInput(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := func(index int) string {
+		blockID, _ := tree.Children[index].Attrs[pmdoc.BlockIDAttr].(string)
+		return blockID
+	}
+	if len(tree.Children) != 14 || tree.Children[8].Type != "bullet_list" || tree.Children[11].Type != "paragraph" {
+		t.Fatalf("the fixture parsed as %d blocks", len(tree.Children))
+	}
+	inserted := newEntries(16)
+	batch, err := applyOperations(tree, []model.EditOp{
+		{Op: "insert", After: "block:" + id(8), Markdown: inserted},
+		{Op: "delete", Block: id(8)},
+		{Op: "delete", Find: "- **2026-11-17, 00:00Z**"},
+		{Op: "delete", Find: "- **2026-11-17, 01:00Z**"},
+		{Op: "replace", Find: "Replace me", With: "Replaced"},
+		{Op: "insert", After: "The read succeeds.", Markdown: "It answers within a second."},
+		{Op: "delete", Block: "r2"},
+		{Op: "move", Block: id(11), After: "heading:Plan"},
+	})
+	if err != nil {
+		t.Fatalf("the batch = %v, want it applied", err)
+	}
+	// The blocks no operation names: a paragraph, a list, a callout, a paragraph between two
+	// lists, an ordered list, a heading and the closing paragraph.
+	unnamed := []int{1, 2, 6, 7, 10, 12, 13}
+	beforeMarkdown, beforeOffsets, err := renderTreeWithOffsets(tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterMarkdown, afterOffsets, err := renderTreeWithOffsets(batch.tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := func(markdown string, offsets []pmdoc.BlockOffset, blockID string) (string, bool) {
+		for _, offset := range offsets {
+			if offset.ID == blockID {
+				return markdown[offset.From:offset.To], true
+			}
+		}
+		return "", false
+	}
+	at := make(map[string]int, len(batch.tree.Children))
+	for index, block := range batch.tree.Children {
+		blockID, _ := block.Attrs[pmdoc.BlockIDAttr].(string)
+		at[blockID] = index
+	}
+	last := -1
+	for _, index := range unnamed {
+		blockID := id(index)
+		place, held := at[blockID]
+		if !held {
+			t.Fatalf("block %d (%s %q) is gone from %q", index, tree.Children[index].Type, blockID, afterMarkdown)
+		}
+		if !batch.tree.Children[place].EqualWithBlockIDs(tree.Children[index]) {
+			t.Fatalf("block %d (%s %q) changed: %#v, want %#v", index, tree.Children[index].Type, blockID, batch.tree.Children[place], tree.Children[index])
+		}
+		was, _ := written(beforeMarkdown, beforeOffsets, blockID)
+		is, _ := written(afterMarkdown, afterOffsets, blockID)
+		if was == "" || is != was {
+			t.Fatalf("block %d (%s %q) is written %q, want %q", index, tree.Children[index].Type, blockID, is, was)
+		}
+		if place <= last {
+			t.Fatalf("block %d (%s %q) stands at %d, before the block before it in the document (at %d)", index, tree.Children[index].Type, blockID, place, last)
+		}
+		last = place
+	}
+	// The blocks the inserts wrote, which no later operation names.
+	for _, want := range []string{inserted, "The read succeeds.\n\nIt answers within a second.\n"} {
+		if !strings.Contains(afterMarkdown, want) {
+			t.Fatalf("the document after the batch = %q, want it to hold %q", afterMarkdown, want)
+		}
+	}
+	// What the operations named is gone or changed as they said.
+	for _, gone := range []string{"m one", "m two", "first hour", "second hour", "nested note", "The write succeeds.", "Replace me"} {
+		if strings.Contains(afterMarkdown, gone) {
+			t.Fatalf("the document after the batch = %q, want %q gone", afterMarkdown, gone)
+		}
+	}
+	if !strings.HasPrefix(afterMarkdown, "# Plan\n\nMove me.\n\nIntro paragraph.\n") || !strings.Contains(afterMarkdown, "- **2026-11-18, 16:00Z** kept hour.\n") || !strings.Contains(afterMarkdown, "Replaced here.") {
+		t.Fatalf("the document after the batch = %q, want the move, the kept hour and the replace written", afterMarkdown)
+	}
+}
+
+// applyAlone applies op to tree as a write of its own: a batch of that one operation
+// (applyOperations), so each row runs every step applyBatch takes for an operation, and it answers
+// the tree the batch leaves. A refusal is the batch's, stamped as operation 0's (stampOperation),
+// which errors.As and errors.Is read as they read the operation's own error.
 func applyAlone(tree *pmdoc.Node, op model.EditOp) (*pmdoc.Node, error) {
-	return applyOperation(newBatchTree(tree), op, pmdoc.NewWriteBudget())
+	batch, err := applyOperations(tree, []model.EditOp{op})
+	if err != nil {
+		return nil, err
+	}
+	return batch.tree, nil
 }

@@ -273,6 +273,79 @@ test("a reader asks back from a decision block: the question threads under the b
   }
 });
 
+// dispatch://INFRA-969 on the page it was reported on. On a decision block that takes several
+// answers, a tick of a real option once Other was ticked hid the box for the person's own words
+// with Other still ticked, and Answer refuses Other without its words, so the decision could not
+// be answered until the reader found the box again. The box is a value of the answer's state now:
+// it stays while Other is ticked, and the card draws no control that hides it. Each absence below
+// is read beside the option it ticked and the box it found.
+test("a decision block that takes several answers keeps the box for the reader's own words while Other is ticked, with no control that hides it, and answers with the option and the words", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: 'Intro.\n\n:::ask{#checks urgency="med" multiple="true"}\nWhich checks run before the merge?\n\n- Docs\n- Tests\n:::\n\nAfter.\n',
+    title: "Several answers",
+  });
+  const blockAsk = await indexedBlockAsk(issue.key, "checks");
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`/issues/${issue.key}`);
+    const block = documentEditor(page).locator('[data-dispatch-ask-block="checks"]');
+    const hosted = await expectHosted(block);
+    const other = hosted.getByRole("checkbox", { exact: true, name: "Other" });
+    const docs = hosted.getByRole("checkbox", { exact: true, name: "Docs" });
+    const box = hosted.getByLabel("Your answer");
+    const disclosure = hosted.locator("[data-ask-note-disclosure]");
+    // Nothing ticked: the box is folded behind its disclosure, as it always was.
+    await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    await expect(box).toHaveCount(0);
+
+    await other.check();
+    await expect(box).toBeVisible();
+    await docs.check();
+    await expect(docs).toBeChecked();
+    await expect(other).toBeChecked();
+    await expect(box).toBeVisible();
+    await expect(disclosure).toHaveCount(0);
+
+    await box.fill("And the release notes.");
+    await docs.uncheck();
+    await expect(docs).not.toBeChecked();
+    await docs.check();
+    await expect(docs).toBeChecked();
+    await expect(other).toBeChecked();
+    await expect(box).toHaveValue("And the release notes.");
+    await expect(disclosure).toHaveCount(0);
+
+    // Unticking Other drops its words on an ask that takes several answers (`toggleOther`), and
+    // with nothing left asking for the box it folds behind its disclosure again.
+    await other.uncheck();
+    await expect(other).not.toBeChecked();
+    await expect(box).toHaveCount(0);
+    await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+
+    await other.check();
+    await box.fill("And the release notes.");
+    const answer = hosted.getByRole("button", { exact: true, name: "Answer" });
+    await expect(answer).toHaveCount(1);
+    await answer.click();
+    await expect
+      .poll(() => getAsk(blockAsk.id))
+      .toMatchObject({
+        ask: {
+          answer: { selected: ["Docs"], text: "And the release notes." },
+          state: "answered",
+        },
+      });
+  } finally {
+    await alice.close();
+  }
+});
+
 test("a resolved decision block is read-only", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", spec: "Context\n", title: "Resolved ask" });

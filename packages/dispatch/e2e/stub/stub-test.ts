@@ -3,8 +3,9 @@
  *  A stubbed row runs in a real browser against a recording: the page and its assets come from
  *  the build under test over e2e/stub/static-server.ts, every `/api/v1/**` and `/auth/whoami`
  *  answer comes from a committed HAR, `/ws/live` answers from the contract fixtures
- *  (e2e/stub/live-frames.ts), and there is no Go server, no Postgres, no fake listener, no
- *  sign-in and no database reset in the run at all.
+ *  (e2e/stub/live-frames.ts), `/ws/doc/**` is closed as a socket no document server stands
+ *  behind, and there is no Go server, no Postgres, no fake listener, no sign-in and no database
+ *  reset in the run at all.
  *
  *  A file that holds such rows is named `*.stub.e2e.ts`, which is the `testMatch` of both
  *  stubbed projects - `stub` and `stub-phone` - and every other project's `testIgnore`
@@ -38,6 +39,10 @@
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import {
+  NO_DOCUMENT_SERVER_CLOSE_CODE,
+  NO_DOCUMENT_SERVER_CLOSE_REASON,
+} from "@legion/contracts/dispatch-constants";
 import { test as base, type Page } from "@playwright/test";
 
 import { answerTo, type LiveClientFrame } from "./live-frames";
@@ -87,6 +92,24 @@ async function answerTheLiveSocket(page: Page): Promise<void> {
       const answer = answerTo(frame);
       if (answer !== undefined) socket.send(JSON.stringify(answer));
     });
+  });
+}
+
+/** Answers every document socket (`/ws/doc/{room}`) with `NO_DOCUMENT_SERVER_CLOSE_CODE`, the
+ *  code this layer alone sends: nothing behind it holds a document, and a HAR records no socket.
+ *
+ *  Left unrouted, the upgrade reached e2e/stub/static-server.ts and was answered with
+ *  `index.html`, so the socket failed, reconnected, and never said why. A document address holds
+ *  the page's other reads for the editor's first batch (`web/src/features/doc/first-batch.ts`),
+ *  and with no answer the page waited out `LONGEST_WAIT_FOR_THE_DOCUMENT_MS`, ten seconds, on
+ *  every stub row that opens a document before it read a held panel. The page answers this code
+ *  by releasing that hold and nothing else (`ProofDocument`'s `onNoDocumentServer`): it keeps
+ *  its own draw of the document, shows no alert, and stops reconnecting, which is what the rows
+ *  were recorded to read. The Go server never sends the code, so the real stack's deadline is
+ *  untouched. */
+async function answerTheDocumentSocket(page: Page): Promise<void> {
+  await page.routeWebSocket("**/ws/doc/**", (socket) => {
+    socket.close({ code: NO_DOCUMENT_SERVER_CLOSE_CODE, reason: NO_DOCUMENT_SERVER_CLOSE_REASON });
   });
 }
 
@@ -167,6 +190,7 @@ export function stubbed<Scene>(seed: () => Promise<Scene>) {
           retargeted(readFileSync(har, "utf8"), new URL(baseURL ?? "").origin)
         );
         await answerTheLiveSocket(page);
+        await answerTheDocumentSocket(page);
         await page.routeFromHAR(retargetedHar, {
           notFound: "abort",
           update: false,

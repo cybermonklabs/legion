@@ -342,7 +342,7 @@ test("an answer that lands after the card moves to another ask leaves that ask's
     await user.click(await screen.findByRole("radio", { name: "Ship" }));
     await user.click(screen.getByRole("button", { name: "Answer" }));
 
-    setAnswerDraft(next.id, "Hold until Friday");
+    setAnswerDraft(next.id, { mentions: [], text: "Hold until Friday" });
     rerender(
       <AskCard
         answerAsk={answerAsk}
@@ -361,7 +361,7 @@ test("an answer that lands after the card moves to another ask leaves that ask's
     expect(screen.getByLabelText<HTMLTextAreaElement>("Your answer").value).toBe(
       "Hold until Friday"
     );
-    expect(answerDraft(next.id)).toBe("Hold until Friday");
+    expect(answerDraft(next.id).text).toBe("Hold until Friday");
   } finally {
     realClock();
     view.unmount();
@@ -398,7 +398,7 @@ test("a stopped question back's Retry after the card moves to another ask posts 
     expect(again?.[0]).toBe("CORE-1");
     expect(again?.[1]).toEqual({ ask_id: "ask-1", body: "Ship what, exactly?" });
     expect(again?.[2].key).toBe(stoppedKey);
-    expect(answerDraft("ask-1")).toBe("");
+    expect(answerDraft("ask-1").text).toBe("");
   } finally {
     realClock();
     view.unmount();
@@ -445,7 +445,7 @@ test("a stopped upload's Retry after the card moves to another ask adds the file
     const again = uploadArtifact.mock.calls.at(-1);
     expect(again?.[0]).toEqual({ issue: "CORE-1" });
     expect(again?.[2].key).toBe(stoppedKey);
-    expect(answerDraft("ask-1")).toBe(SHOT_TEXT);
+    expect(answerDraft("ask-1").text).toBe(SHOT_TEXT);
     expect(screen.getByLabelText("Your answer")).toHaveValue("");
   } finally {
     realClock();

@@ -153,6 +153,7 @@ export function useAgentsKeymap(
     // filter bar does not render at all - so the key falls through to the global binding instead
     // of doing nothing.
     {
+      effect: "moves the reader",
       id: "search",
       keys: "/",
       label: "Search agents",
@@ -160,8 +161,9 @@ export function useAgentsKeymap(
       when: () => searchInputRef.current !== null,
     },
     // Movement and marking walk the list with the row in hand; a palette row for either helps
-    // nobody.
+    // nobody. Movement focuses the row it lands on, and the page scrolls to it.
     {
+      effect: "moves the reader",
       id: "next",
       keys: "j",
       label: "Next agent",
@@ -170,6 +172,7 @@ export function useAgentsKeymap(
       when: () => navigation.items.some((item) => item.kind === "row"),
     },
     {
+      effect: "moves the reader",
       id: "previous",
       keys: "k",
       label: "Previous agent",
@@ -178,6 +181,7 @@ export function useAgentsKeymap(
       when: () => navigation.items.some((item) => item.kind === "row"),
     },
     {
+      effect: "moves the reader",
       id: "compose",
       keys: "Enter",
       label: "Message the focused agent",
@@ -188,6 +192,7 @@ export function useAgentsKeymap(
       when: () => focusedAgentRow() !== null,
     },
     {
+      effect: "moves the reader",
       id: "issue-picker",
       keys: "i",
       label: "Pick an issue for the message",
@@ -216,6 +221,8 @@ export function useAgentsKeymap(
       },
     },
     {
+      // A toggle of the row's pin, pressed where the focus already is.
+      effect: "moves nothing",
       id: "pin",
       keys: "Shift+P",
       label: "Pin or unpin the focused agent",
@@ -223,6 +230,8 @@ export function useAgentsKeymap(
       when: () => focusedAgentRow() !== null,
     },
     {
+      // A tick of the row's selection, pressed where the focus already is.
+      effect: "moves nothing",
       id: "select",
       keys: "x",
       label: "Select or deselect the focused agent",
@@ -231,6 +240,7 @@ export function useAgentsKeymap(
       when: () => focusedAgentRow() !== null,
     },
     {
+      effect: "moves the reader",
       id: "back",
       inEditable: true,
       keys: "Escape",

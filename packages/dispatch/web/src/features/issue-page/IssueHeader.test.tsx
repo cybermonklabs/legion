@@ -34,6 +34,7 @@ import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ACTION_WORDS } from "./approval-chip-box";
+import { PROPERTY_LABELS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
@@ -933,6 +934,64 @@ test("the approval chip's keys press its own actions, and only while those take 
     answered.reject(new Error("the connection dropped"));
     view.unmount();
     createArtifactReview.mockRestore();
+    restore();
+  }
+});
+
+// Every key the header binds says what it does to the reader, and the watches over the reader's
+// place read the key by that alone (`effectOf`, read by `features/doc/readers-scroll.ts`): a key
+// that puts the focus in a header control, opens the title's editor or opens Request changes,
+// whose dialog takes the focus, moves the reader, as does Escape out of a focused control; the
+// digits, the pin and Approve write the issue and leave the focus where it was.
+test("the header's keys move the reader where they move the focus, and the writing keys move nobody", async () => {
+  const restore = stubHeader({
+    ...issue,
+    artifacts: [
+      { ...issue.artifacts[0], approval: { latest_version: 2, state: "stale", version: 1 } },
+    ],
+    open_asks: [approvalAsk()],
+  });
+  const view = renderHeader();
+  const effectOf = (key: string, held: KeyboardEventInit = {}, into: Element = document.body) => {
+    const event = new KeyboardEvent("keydown", { ...held, key });
+    Object.defineProperty(event, "target", { value: into });
+    return appKeymap.effectOf(event);
+  };
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    await within(stateActions).findByRole("button", { name: "Approve v2" });
+    const chip = stateActions.querySelector<HTMLElement>("[data-approval-artifact]");
+    if (chip === null) throw new Error("the header draws no approval chip");
+
+    expect({
+      "0": effectOf("0"),
+      "3": effectOf("3"),
+      e: effectOf("e"),
+      p: effectOf("p"),
+      s: effectOf("s"),
+      "Shift+P": effectOf("P", { shiftKey: true }),
+    }).toEqual({
+      "0": "moves nothing",
+      "3": "moves nothing",
+      e: "moves the reader",
+      p: "moves the reader",
+      s: "moves the reader",
+      "Shift+P": "moves nothing",
+    });
+
+    act(() => chip.focus());
+    expect({
+      a: effectOf("a", {}, chip),
+      "Shift+R": effectOf("R", { shiftKey: true }, chip),
+    }).toEqual({ a: "moves nothing", "Shift+R": "moves the reader" });
+
+    const status = screen.getByRole("combobox", { name: PROPERTY_LABELS.status });
+    act(() => status.focus());
+    expect(effectOf("Escape", {}, status)).toBe("moves the reader");
+  } finally {
+    view.unmount();
     restore();
   }
 });

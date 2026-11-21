@@ -2516,6 +2516,8 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
     let turnedOff = 0;
     const unregister = appKeymap.register("global", [
       {
+        // It only counts its presses, so it moves no one's focus.
+        effect: "moves nothing",
         id: "verification-off",
         keys: "t k",
         label: "Turn the view off",

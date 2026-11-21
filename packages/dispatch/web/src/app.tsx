@@ -4,6 +4,7 @@ import {
   type ReactNode,
   type RefObject,
   Suspense,
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -14,23 +15,25 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-r
 
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
-import { useLiveSocketPill } from "./api/live-socket";
-import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
+import { whoAmIQuery } from "./api/queries";
 import { askSignInAgain } from "./api/query-client";
 import type { AuthenticatedUser } from "./api/types";
+import { chunkComponent } from "./components/chunk-component";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ShellSkeleton } from "./components/ShellSkeleton";
 import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
-import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
 import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
-import { TextAskBlockCard } from "./features/doc/AskBlockCard";
+import { DeferredAskCard } from "./features/doc/DeferredAskCard";
+import { ReaderIsHere } from "./features/doc/first-batch";
+import { openDocumentEarly } from "./features/doc/open-document-early";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
-import { Inbox } from "./features/inbox/Inbox";
-import { InboxDrawer } from "./features/inbox/InboxDrawer";
+import { InboxList, importInbox } from "./features/inbox/InboxList";
 import { useInboxCount } from "./features/inbox/useInboxCount";
-import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
-import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
+import { IssueHeaderSkeleton, IssueTabsSkeleton } from "./features/issue/issue-page-skeleton";
+import { issueTabChunks } from "./features/issue/issue-tab-list";
 import { useIssuePageChoice } from "./features/issue-page/choice";
 import { IconRail } from "./features/issue-page/IconRail";
 import {
@@ -44,12 +47,10 @@ import {
   ShellNavigationContext,
 } from "./features/issue-page/shell-navigation";
 import { ShortcutHelpOpener } from "./features/issue-page/shortcut-help-opener";
-import { MarginColumn } from "./features/margin/MarginColumn";
+import { MarginColumn, ReservedMarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
-import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
-import { RefPreviewHost } from "./features/refs/RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
 import {
   AGENT_ARTIFACT_PATH,
@@ -57,6 +58,8 @@ import {
   ANSWERS_PATH,
   buildInboxPath,
   buildProjectPath,
+  type IssueRoute,
+  issueTabForRoute,
   liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
@@ -66,8 +69,14 @@ import {
   routeProjectOf,
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
-import { SearchPalette } from "./features/search/SearchPalette";
-import { ErrorBoundary } from "./features/shell/ErrorBoundary";
+import { ConnectionPill } from "./features/shell/ConnectionPill";
+import {
+  AgentRegistryPoller,
+  CreateIssueDialog,
+  InboxDrawer,
+  RefPreviewHost,
+  SearchPalette,
+} from "./features/shell/deferred-shell";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
 import {
   appKeymap,
@@ -75,8 +84,10 @@ import {
   MOD_KEY_LABEL,
   useKeymap,
 } from "./features/shell/keymap";
+import { rememberShellLayout } from "./features/shell/last-shell-layout";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
 import { RailButton } from "./features/shell/RailButton";
+import { ShellCounts } from "./features/shell/ShellCounts";
 import { ShortcutHelp } from "./features/shell/ShortcutHelp";
 import {
   SIGN_OUT_SETTLE_MS,
@@ -103,13 +114,7 @@ import { type Write, writesOf } from "./features/writes/write-store";
 import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
-  badgeBlocking,
   borderDefault,
-  borderStrong,
-  borderTransparent,
-  calloutDangerBg,
-  calloutDangerBorder,
-  calloutWarningBorder,
   canvasText,
   card,
   linkHoverText,
@@ -119,7 +124,6 @@ import {
   primaryButtonHoverBg,
   railAccentHoverText,
   railAccentText,
-  railActiveBg,
   railBg,
   railBorder,
   railDangerText,
@@ -127,25 +131,39 @@ import {
   railFocusOverlayText,
   railHoverBg,
   railMutedText,
-  railNeedsYouBadgeBg,
-  railNeedsYouBadgeText,
   railText,
   skeletonBg,
-  statusConnecting,
   textMutedOnSurface,
   textSecondaryOnSurface,
-  textTransparent,
 } from "./theme/classes";
 
-const IssuePage = lazy(() =>
-  import("./features/issue-page/IssuePage").then((module) => ({ default: module.IssuePage }))
-);
+const importIssuePage = () => import("./features/issue-page/IssuePage");
+const importProjectPage = () => import("./features/project/ProjectPage");
+const importDocumentPage = () => import("./features/document/DocumentPage");
 
-const ProjectPage = lazy(() =>
-  import("./features/project/ProjectPage").then((module) => ({ default: module.ProjectPage }))
+/**
+ * The three pages a reader lands on, each drawn in the commit its chunk arrives in rather than
+ * under the route's `Suspense` (`components/chunk-component.tsx` says what that boundary costs
+ * a page whose chunk is already on its way). The space each keeps is the skeleton that
+ * boundary drew.
+ *
+ * The issue page's own arrival is committed as a transition, which is what splits its first
+ * render into short tasks (`IssuePageInATransition` below says why that render is the one worth
+ * splitting). The transition that element opens is over by the time this chunk answers, so the
+ * arrival has to say so itself.
+ */
+const IssuePage = chunkComponent(
+  () => importIssuePage().then((module) => module.IssuePage),
+  <IssuePageSpace />,
+  true
 );
-const DocumentPage = lazy(() =>
-  import("./features/document/DocumentPage").then((module) => ({ default: module.DocumentPage }))
+const ProjectPage = chunkComponent(
+  () => importProjectPage().then((module) => module.ProjectPage),
+  <IssuePageFallback />
+);
+const DocumentPage = chunkComponent(
+  () => importDocumentPage().then((module) => module.DocumentPage),
+  <IssuePageFallback />
 );
 const PrioritiesPage = lazy(() =>
   import("./features/priorities/PrioritiesPage").then((module) => ({
@@ -155,6 +173,58 @@ const PrioritiesPage = lazy(() =>
 const PriorityPage = lazy(() =>
   import("./features/priorities/PriorityPage").then((module) => ({ default: module.PriorityPage }))
 );
+
+/**
+ * The tab panel an issue address opens, where the page keeps that panel in a chunk of its own
+ * (`features/issue/issue-tab-list.ts` holds the one map both this and `IssuePage` read, so a tab
+ * added to the page keeps its early request). The Spec and a named artifact open the document
+ * surface instead, whose chunk the page preloads with its own (`DOCUMENT_ADDRESS_MODULES` in
+ * `web/vite.config.ts`), and a tab with no chunk of its own is drawn from the page's.
+ *
+ * The artifact a slug names has not been read yet, so a slug that turns out to be the issue's
+ * primary document reads here as the Artifacts tab - which has no chunk of its own either way.
+ */
+function importTheOpenTab(route: IssueRoute): Promise<unknown> | undefined {
+  const tab = issueTabForRoute(route, undefined);
+  return tab in issueTabChunks ? issueTabChunks[tab as keyof typeof issueTabChunks]() : undefined;
+}
+
+/**
+ * Requests the chunks of the page this address opens, as this module evaluates - which is while
+ * the shell is still asking who is signed in, and well before the route tree that would ask for
+ * them renders. A document's page used to wait for that check before its chunk was so much as
+ * requested, and then for the chunk before anything of the document was asked for
+ * (dispatch://INFRA-341, R11); the chunk needs neither, and a request for it changes nothing
+ * about what the page then shows or who may see it.
+ *
+ * Every page a reader lands on is worth the request, and so is the tab panel an issue address
+ * names: a chunk asked for here is usually in hand by the commit that draws its part, so the
+ * reader is shown that part rather than the space kept for it. Every other route's chunk is
+ * asked for by its own `lazy` as it always was, and so is each of these on a later navigation,
+ * where the shell is long since up.
+ */
+function requestTheOpenPagesChunk(pathname: string): void {
+  const issue = parseIssuePath(pathname);
+  if (issue !== undefined) {
+    void importIssuePage().catch(() => undefined);
+    void importTheOpenTab(issue)?.catch(() => undefined);
+    return;
+  }
+  const project = parseProjectPath(pathname);
+  if (project?.kind === "document") {
+    void importDocumentPage().catch(() => undefined);
+    return;
+  }
+  if (project !== undefined) {
+    void importProjectPage().catch(() => undefined);
+    return;
+  }
+  if (routeIsInbox(pathname)) {
+    void importInbox().catch(() => undefined);
+  }
+}
+
+requestTheOpenPagesChunk(window.location.pathname);
 
 const AgentsPage = lazy(() =>
   import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
@@ -199,42 +269,8 @@ const SettingsPage = lazy(() =>
 function IssuePageFallback(): ReactNode {
   return (
     <div aria-busy="true">
-      <header className={`mb-6 border-b pb-6 ${borderDefault}`}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className={`text-sm font-semibold ${linkText}`}>
-            <span
-              className={`inline-block h-4 w-16 animate-pulse rounded align-middle ${skeletonBg}`}
-            />
-          </p>
-          <button
-            className={`rounded-lg border px-3 py-2 text-sm font-medium ${textTransparent} ${borderStrong}`}
-            disabled
-            type="button"
-          >
-            Pin issue
-          </button>
-        </div>
-        <h1
-          className={`mt-2 w-full rounded-lg border px-2 py-1 text-2xl font-semibold ${borderTransparent}`}
-        >
-          <span
-            className={`inline-block h-7 w-2/3 animate-pulse rounded align-middle ${skeletonBg}`}
-          />
-        </h1>
-      </header>
-      {/* `overflow-hidden`: the ten labels are wider than a narrow window and this row neither
-          wraps nor scrolls, where the real tablist scrolls inside itself. Clipped, a chunk's load
-          never scrolls the page sideways. */}
-      <div className={`mb-4 flex gap-2 overflow-hidden border-b ${borderDefault}`} role="tablist">
-        {ISSUE_TAB_LABELS.map((label) => (
-          <span
-            className={`animate-pulse rounded px-3 py-2 text-sm ${textTransparent} ${skeletonBg}`}
-            key={label}
-          >
-            {label}
-          </span>
-        ))}
-      </div>
+      <IssueHeaderSkeleton />
+      <IssueTabsSkeleton />
       <div className="space-y-3">
         {[0, 1, 2, 3].map((row) => (
           <div className={`h-4 w-full animate-pulse rounded ${skeletonBg}`} key={row} />
@@ -242,6 +278,80 @@ function IssuePageFallback(): ReactNode {
       </div>
     </div>
   );
+}
+
+/**
+ * The issue page, rendered at transition priority.
+ *
+ * An issue page is the largest first render the app does, and a document's is the largest of
+ * those: the header, the tab strip, the margin's reads and the document surface are one commit,
+ * measured at about 0.7 s on a phone at 4x CPU throttling, and nothing a reader does reaches
+ * the main thread while it runs (dispatch://INFRA-341, R11). React renders a transition in
+ * short pieces, yielding to the browser between them, so the page's own paint and the reader's
+ * scroll are not held behind the whole of it.
+ *
+ * The shell paints `IssuePageSpace` first - the space the page's own chunk keeps until it
+ * arrives (`chunkComponent`'s `space`, above), the skeleton the route's `Suspense` fallback
+ * draws for the same address - and this element's effect then starts the transition. So the
+ * page appears exactly as it does today: the skeleton, then the page, with nothing in between
+ * that a reader did not see before.
+ *
+ * Two transitions carry two renders. This one carries the render that mounts the page's chunk
+ * component, and the page's own first render where that chunk is already in hand; where it is
+ * not, the arrival lands in a promise callback long after this transition has ended, so it
+ * opens one of its own (`chunkComponent`'s `inATransition`, above) and that transition is what
+ * splits the page's first render into short tasks.
+ */
+function IssuePageInATransition(): ReactNode {
+  const [renderThePage, setRenderThePage] = useState(false);
+  useEffect(() => {
+    startTransition(() => setRenderThePage(true));
+  }, []);
+  return renderThePage ? <IssuePage /> : <IssuePageSpace />;
+}
+
+/**
+ * The space the issue page keeps until it is drawn: the skeleton the route's own `Suspense`
+ * fallback draws for the same address, chosen as the shell chooses its frame (`useIssueFrame`).
+ * The new page's frame keeps its own skeleton, which names no control and no tab
+ * (`IssueFrameFallback`), and every other reader today's (`IssuePageFallback`), on an address
+ * the route `/issues/:key/*` takes and `parseIssuePath` refuses as well: the shell draws no frame
+ * there.
+ */
+function IssuePageSpace(): ReactNode {
+  return useIssueFrame() ? <IssueFrameFallback /> : <IssuePageFallback />;
+}
+
+/**
+ * Whether the shell draws the new issue page's frame (R1, R14): on an issue's address, as
+ * `parseIssuePath` reads it, for a reader who chose the new page. Every other page, and every
+ * other reader's issue page, keeps the standard shell.
+ */
+function useIssueFrame(): boolean {
+  const [choice] = useIssuePageChoice();
+  const { pathname, search } = useLocation();
+  return choice === "outline" && parseIssuePath(pathname, search) !== undefined;
+}
+
+/**
+ * Tells the shell the commit the route the reader asked for is drawn in.
+ *
+ * It stands inside that route's own `Suspense`, so it is mounted when the boundary's content
+ * lands rather than while its fallback stands there, and it draws nothing itself.
+ *
+ * The shell's own parts wait for it (`SearchPalette`, `RefPreviewHost`,
+ * `AgentRegistryPoller`). Each lives in a chunk of its own and none of them is on any route's
+ * first frame (`features/shell/deferred-shell.ts`), but mounted beside the route they are
+ * boundaries suspended beside it, and React charges a page for that: the first fallback a page
+ * commits opens a 300 ms window (`FALLBACK_THROTTLE_MS` in react-dom), and while it is open
+ * every render that resolves one suspended boundary with another still suspended is held to
+ * the end of it. Measured on this pod, a page load paid one of those waits for parts the
+ * reader cannot see (dispatch://INFRA-341, R11). Mounted after the route, they suspend beside
+ * nothing, and their chunks are asked for where they compete with nothing either.
+ */
+function TheRouteIsDrawn({ tell }: { tell: () => void }): null {
+  useEffect(tell, [tell]);
+  return null;
 }
 
 /**
@@ -275,6 +385,15 @@ function IssueFrameFallback(): ReactNode {
   );
 }
 
+/**
+ * The new issue page's icon rail, reading the Inbox count itself, so the shell's own render reads
+ * no count: the shell's counts are drawn by parts of their own (`features/shell/ShellCounts.tsx`,
+ * dispatch://INFRA-341 R11).
+ */
+function CountedIconRail(props: Omit<Parameters<typeof IconRail>[0], "inboxCount">): ReactNode {
+  return <IconRail {...props} inboxCount={useInboxCount()} />;
+}
+
 function ShellMessagePage({ children, title }: { children?: ReactNode; title: string }): ReactNode {
   return (
     <main className={`grid min-h-dvh place-items-center px-6 ${canvasText}`}>
@@ -303,7 +422,11 @@ function InboxPage(): ReactNode {
           Answered by you
         </Link>
       </div>
-      <Inbox />
+      {/* The heading and its link are this module's own, so they are on the screen while the
+          list's chunk is still arriving, as they are while the list's own read is out. */}
+      <Suspense fallback={null}>
+        <InboxList />
+      </Suspense>
     </section>
   );
 }
@@ -350,35 +473,6 @@ function ConnectionErrorPage({ onRetry }: { onRetry: () => void }): ReactNode {
   );
 }
 
-function ShellSkeleton(): ReactNode {
-  return (
-    <div aria-busy="true" className={`xl:flex ${canvasText}`}>
-      <header
-        className={`flex items-center px-3 xl:hidden ${railBorder} ${railBg} ${railText} border-b`}
-      >
-        <span className="text-lg font-semibold">Dispatch</span>
-      </header>
-      <aside
-        className={`hidden p-5 xl:block xl:min-h-dvh xl:w-80 xl:border-r ${railBorder} ${railBg} ${railText}`}
-      >
-        <span className="text-lg font-semibold">Dispatch</span>
-        <div aria-label="Loading navigation" className="mt-6 space-y-2" role="status">
-          {[0, 1, 2, 3].map((row) => (
-            <div className={`h-4 w-full animate-pulse rounded ${railActiveBg}`} key={row} />
-          ))}
-        </div>
-      </aside>
-      <main className="min-w-0 flex-1 p-6">
-        <div aria-label="Loading Dispatch" className="space-y-3" role="status">
-          {[0, 1, 2].map((row) => (
-            <div className={`h-4 w-full animate-pulse rounded ${skeletonBg}`} key={row} />
-          ))}
-        </div>
-      </main>
-    </div>
-  );
-}
-
 /** What the rail says of a sign-out that did not land, with its Retry beside it. One Dispatch
  *  refused left the person signed in. One the reader stopped may have ended the session, which the
  *  page cannot know: it says so, and that Retry - a sign-out of its own, which lands on finding
@@ -400,6 +494,7 @@ function NavigationContents({
   onOpenInboxDrawer,
   onSearch,
   onSignOut,
+  reached,
   signOutError,
   signOutPending,
   user,
@@ -412,6 +507,7 @@ function NavigationContents({
   onOpenInboxDrawer: () => void;
   onSearch: () => void;
   onSignOut: () => void;
+  reached: boolean;
   /** What the rail says of the last sign-out where it did not land (`signOutFailure`). */
   signOutError: string | undefined;
   signOutPending: boolean;
@@ -461,6 +557,7 @@ function NavigationContents({
         onHide={compact ? undefined : onHideSidebar}
         onNavigate={onClose}
         onOpenInboxDrawer={compact ? undefined : onOpenInboxDrawer}
+        reached={reached || compact}
         user={user}
       />
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
@@ -521,10 +618,25 @@ function ShellProviders({
   );
 }
 
-function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
+/**
+ * The shell itself, exported for `web/src/__tests__/shell-first-commit.test.tsx`.
+ *
+ * That row renders this with no effect ever flushed, which is the one way to read the commit
+ * the reader's first paint comes from: the margin's column is reserved in that commit wherever
+ * the route will draw a margin, and in no other (dispatch://INFRA-341, R11). Nothing else
+ * outside this module renders it; the app reaches it through `AuthGate`.
+ */
+export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
+  // Whether the peek has ever been opened on this load. Once it has, the shell keeps it mounted
+  // through every close, so what the reader narrowed it to is there when they open it again.
+  const [inboxDrawerEverOpened, setInboxDrawerEverOpened] = useState(false);
+  const openTheInboxDrawer = () => {
+    setInboxDrawerEverOpened(true);
+    setInboxDrawerOpen(true);
+  };
   // Whether the bar is open. `$mod+k`, `/`, `g p` and the rail's Search control open the one
   // bar: this page's actions, the person's recent items, the projects a query names and the
   // hits, with a chip saying what it will act on.
@@ -553,19 +665,25 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     },
     String
   );
+  // The same layout under one key for the whole browser, so the next load's first paint can
+  // read it before it knows who is signed in (`features/shell/last-shell-layout.ts`). Here
+  // rather than beside each setter: `AppShell` is mounted only for a signed-in reader, so
+  // these three are always that reader's own resolved values, and a load that reads them
+  // writes them back unchanged - which is what gives a reader who set a column before this
+  // existed the benefit of it on their next load.
+  useEffect(() => {
+    rememberShellLayout(marginHidden, marginWidth, sidebarHidden);
+  }, [marginHidden, marginWidth, sidebarHidden]);
   const location = useLocation();
-  // The new issue page's frame (R1, R14), computed here once: an issue's
-  // address, for a reader who chose the new page. In it an icon rail of 56 px stands where the
-  // sidebar stands, from Tailwind's `md` up, and below that the page's header draws the control
-  // that opens the navigation (`ShellNavigationContext`); the margin is Details, a drawer over
-  // the page. The rail is drawn by the query that is `md` itself, in `rem`, because the room the
-  // page makes for it is `md:pl-14`: a pixel query draws the rail over the page wherever the two
-  // disagree, which is every width from 768 to 959 px at a 20 px default font. Every other page,
-  // and every other reader's issue page, keeps the shell below exactly as it was.
-  const [issuePageChoice] = useIssuePageChoice();
-  const issueFrame =
-    issuePageChoice === "outline" &&
-    parseIssuePath(location.pathname, location.search) !== undefined;
+  // The new issue page's frame (`useIssueFrame`), read here once for the whole shell. In it an
+  // icon rail of 56 px stands where the sidebar stands, from Tailwind's `md` up, and below that
+  // the page's header draws the control that opens the navigation (`ShellNavigationContext`);
+  // the margin is Details, a drawer over the page. The rail is drawn by the query that is `md`
+  // itself, in `rem`, because the room the page makes for it is `md:pl-14`: a pixel query draws
+  // the rail over the page wherever the two disagree, which is every width from 768 to 959 px at
+  // a 20 px default font. Every other page, and every other reader's issue page, keeps the shell
+  // below exactly as it was.
+  const issueFrame = useIssueFrame();
   const railFits = useMediaQuery(MD_VIEWPORT_QUERY);
   const iconRailShown = issueFrame && railFits;
   // Whether Details is open, held for the issue it was opened on: every load opens it closed, and
@@ -617,6 +735,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
   const fillsViewport =
     routeFillsViewport(location.pathname) || (routeIsInbox(location.pathname) && readingPaneShown);
+  // Whether the reader has reached for the shell's own parts before the editor's first batch
+  // let go of them: the navigation sheet opened, the inbox peeked at, a press or a tab into
+  // the sidebar's column. They are drawn then rather than at the batch
+  // (`features/doc/AfterTheFirstBatch.tsx`).
+  const [shellReached, setShellReached] = useState(false);
+  const reachForTheShell = () => setShellReached(true);
+  // Whether the route the reader asked for is on the page, which is when the shell's own
+  // parts are mounted (`TheRouteIsDrawn`).
+  const [theRouteIsDrawn, setTheRouteIsDrawn] = useState(false);
+  const tellTheRouteIsDrawn = useCallback(() => setTheRouteIsDrawn(true), []);
   // The session whose live view the address names, or `null` on every other page. The shell
   // mounts that view and the one the person left (`MountedLiveViews`, below `<Routes>`), so it
   // is the one thing about the live view the router still decides.
@@ -657,11 +785,6 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       window.localStorage.removeItem(key);
     })();
   }, [user.login, writePin]);
-  const connection = useLiveSocketPill();
-  // One number for the Inbox, composed in one place (`useInboxCount.ts`): the work
-  // waiting on the reader plus the threads they have not read.
-  const inboxCount = useInboxCount();
-  const unreadReplies = totalUnreadReplies(useQuery(userAgentStateQuery()).data);
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
@@ -699,11 +822,18 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
+  // Each binding says what it does to the reader (`effect`, `features/shell/keymap.ts`): every
+  // one that opens a dialog, the bar or the drawer, or goes to another page, moves them, and so
+  // does `Shift+M` in the new issue page's frame, which opens Details with the focus on its Close
+  // and closes it giving the focus back (`Margin.tsx`); the sidebar's toggle and the margin's only
+  // redraw the page around what the reader is reading, which the page's keepers hold them
+  // through, and move nothing.
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
       // the bar's own `$mod+k` binding closes it. It fires while the reader is writing, so
       // the key reaches the bar from inside a document's editor too.
+      effect: "moves the reader",
       id: "search",
       inEditable: true,
       keys: "$mod+k",
@@ -714,6 +844,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       // The same bar. No row: chosen from the bar it would only reopen the bar. Not
       // `inEditable`, so a slash typed into a document stays a slash, and the Agents page
       // shadows it with its own filter box.
+      effect: "moves the reader",
       id: "search-only",
       keys: "/",
       label: "Search",
@@ -721,16 +852,42 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       run: () => setBarOpen(true),
     },
     {
+      effect: "moves the reader",
       id: "help",
       keys: "?",
       label: "Keyboard shortcuts",
       run: () => setHelpSnapshot(appKeymap.describe()),
     },
-    { id: "create", keys: "c", label: "Create issue", run: () => setCreateOpen(true) },
-    { id: "go-inbox", keys: "g i", label: "Go to Inbox", run: () => navigate("/") },
-    { id: "go-agents", keys: "g a", label: "Go to Agents", run: () => navigate("/agents") },
-    { id: "go-settings", keys: "g s", label: "Go to Settings", run: () => navigate("/settings") },
     {
+      effect: "moves the reader",
+      id: "create",
+      keys: "c",
+      label: "Create issue",
+      run: () => setCreateOpen(true),
+    },
+    {
+      effect: "moves the reader",
+      id: "go-inbox",
+      keys: "g i",
+      label: "Go to Inbox",
+      run: () => navigate("/"),
+    },
+    {
+      effect: "moves the reader",
+      id: "go-agents",
+      keys: "g a",
+      label: "Go to Agents",
+      run: () => navigate("/agents"),
+    },
+    {
+      effect: "moves the reader",
+      id: "go-settings",
+      keys: "g s",
+      label: "Go to Settings",
+      run: () => navigate("/settings"),
+    },
+    {
+      effect: "moves the reader",
       id: "go-documents",
       keys: "g d",
       label: "Go to Documents",
@@ -744,6 +901,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     {
       // The same bar again, where a reader after a project types its name: its projects are
       // rows of the one list. No row, for `/`'s reason.
+      effect: "moves the reader",
       id: "go-project",
       keys: "g p",
       label: "Go to project…",
@@ -751,15 +909,28 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       run: () => setBarOpen(true),
     },
     {
+      effect: "moves the reader",
       id: "inbox-drawer",
       keys: "i",
       label: "Open the inbox",
-      run: () => setInboxDrawerOpen((open) => !open),
+      run: () => {
+        reachForTheShell();
+        // Opening from the keyboard mounts the peek like every other way in: the drawer is
+        // mounted only once it has been opened (`inboxDrawerEverOpened`, so a reader who never
+        // peeks never downloads it), and a bare `setInboxDrawerOpen(true)` here would open a
+        // drawer that is not in the page.
+        if (inboxDrawerOpen) {
+          setInboxDrawerOpen(false);
+          return;
+        }
+        openTheInboxDrawer();
+      },
       // The Inbox page already shows everything the drawer would, so a peek over itself is
       // never offered; `g i` still gets the reader there from anywhere else.
       when: () => !routeIsInbox(location.pathname),
     },
     {
+      effect: "moves nothing",
       id: "toggle-sidebar",
       keys: "Shift+S",
       label: "Toggle sidebar",
@@ -768,21 +939,30 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       // so it is in the new issue page's frame, whose navigation is its icon rail.
       when: () => !isCompactViewport && !issueFrame,
     },
-    {
-      // In the new issue page's frame the margin is Details, which this key opens and closes at
-      // every width. Its id follows the gate, so that crossing it registers the binding again
-      // and the list of keys reads the label of the shell it is in.
-      id: detailsDrawer === undefined ? "toggle-margin" : "toggle-details",
-      keys: "Shift+M",
-      label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
-      run: () =>
-        detailsDrawer === undefined
-          ? setMarginHidden(!marginHidden)
-          : detailsDrawer.setOpen(!detailsDrawer.open),
-      // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
-      // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
-      when: () => detailsDrawer !== undefined || (!isCompactViewport && hasMargin),
-    },
+    // In the new issue page's frame the margin is Details, which `Shift+M` opens and closes at
+    // every width; elsewhere it toggles the margin. Each is a binding of its own, whose id
+    // follows the gate, so that crossing it registers the binding again and the list of keys
+    // reads the label of the shell it is in.
+    detailsDrawer === undefined
+      ? {
+          effect: "moves nothing",
+          id: "toggle-margin",
+          keys: "Shift+M",
+          label: "Toggle margin",
+          run: () => setMarginHidden(!marginHidden),
+          // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the
+          // preference only from `xl`, so a toggle there would change nothing on screen and flip
+          // it for later.
+          when: () => !isCompactViewport && hasMargin,
+        }
+      : {
+          // Opening Details puts the focus on its Close, and closing it gives the focus back.
+          effect: "moves the reader",
+          id: "toggle-details",
+          keys: "Shift+M",
+          label: "Open or close Details",
+          run: () => detailsDrawer.setOpen(!detailsDrawer.open),
+        },
   ]);
   const login = user.login;
   // Each press signs out the person signed in when it was made, and carries their login: the
@@ -860,7 +1040,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       onClose={() => setNavigationOpen(false)}
       onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}
-      onOpenInboxDrawer={() => setInboxDrawerOpen(true)}
+      onOpenInboxDrawer={openTheInboxDrawer}
       onSearch={() => setBarOpen(true)}
       onSignOut={() => {
         // Signing out discards the person's own writes in every tab of this browser, so it asks
@@ -888,6 +1068,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           signOut.mutate(login);
         });
       }}
+      reached={shellReached}
       signOutError={
         signOutRefused && signOut.error !== null ? signOutFailure(signOut.error) : undefined
       }
@@ -896,14 +1077,67 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     />
   );
 
-  // One count on one control: the work waiting on the reader and the threads they have not
-  // read, which the Inbox lists together now. On the Inbox page it stays plain text - the page
-  // is the Inbox already, so there is nowhere for it to go. The peek that opened the drawer
-  // from this bar stays beside it, without the count it used to carry.
-  const inboxLabel = inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`;
-  const inboxBadgeClass = `whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${
-    inboxCount === 0 ? railHoverBg : `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`
-  }`;
+  /** What stands in the sidebar's place: the new issue page's icon rail, else the sidebar's
+   *  column, its spacer or its collapsed rail. */
+  const sidebarSlot = (): ReactNode => {
+    if (iconRailShown) {
+      return (
+        <CountedIconRail
+          navigationOpen={navigationOpen}
+          onOpenNavigation={() => setNavigationOpen(true)}
+          project={routeProject}
+          user={user}
+        />
+      );
+    }
+    if (issueFrame) return null;
+    if (isCompactViewport) {
+      // Below `xl` the navigation is the drawer's, and this column holds none of it. It is drawn
+      // all the same, hidden until `xl`, so that the frame which already lays the desktop shell
+      // out while this render is still the compact one holds the sidebar's width, and `<main>` is
+      // laid out at the width it keeps rather than across the sidebar's column. A collapsed
+      // sidebar's gutter is `<main>`'s own padding.
+      return sidebarHidden ? null : (
+        <div aria-hidden="true" className="hidden order-1 w-80 xl:block" />
+      );
+    }
+    if (sidebarHidden) {
+      return (
+        <aside
+          aria-label="Collapsed sidebar"
+          className={`fixed inset-y-0 left-0 z-10 hidden w-14 justify-center border-r p-2 xl:flex ${railBorder} ${railBg} ${railText}`}
+          data-testid="sidebar-rail"
+        >
+          <button
+            aria-label="Show sidebar"
+            className={`min-h-11 min-w-11 rounded-lg text-sm font-medium ${railHoverBg}`}
+            onClick={() => setSidebarHidden(false)}
+            type="button"
+          >
+            <span aria-hidden="true">›</span>
+          </button>
+        </aside>
+      );
+    }
+    // The sidebar is first in the document and as tall as the viewport, so left to itself
+    // Chromium's scroll anchoring picks it as the anchor node - and since it never moves, nothing
+    // is ever compensated. Excluding it makes the browser anchor inside <main>, so content
+    // growing above the reader (a card's thread loading, Markdown rendering) no longer shifts what
+    // they are looking at.
+    return (
+      <aside
+        aria-label="Navigation"
+        className={`relative hidden order-1 w-80 max-w-none border-r [overflow-anchor:none] xl:block ${railBorder} ${railBg} ${railText}`}
+        onFocusCapture={reachForTheShell}
+        onPointerDownCapture={reachForTheShell}
+      >
+        {/* The aside stretches to the page's height, so the navigation is a viewport-tall column
+            that sticks inside it: on a long issue the links stay reachable, and the identity
+            footer sits at the bottom of the screen rather than the bottom of the document. */}
+        <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">{navigation}</div>
+      </aside>
+    );
+  };
 
   return (
     <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
@@ -921,39 +1155,25 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             cannot keep for a reload above the connection pill. Above the highest composer fixed
             at the foot of the screen (`--foot-composer-inset`, `useFootInset`), so neither sits
             over its controls; otherwise just above the phone's bottom bar. Only what it shows
-            takes the pointer. A socket Dispatch refuses carries no status the page can read, so
-            nothing in the pill is terminal: once reconnecting has gone on for two minutes it
-            offers a reload, and the page keeps trying underneath. */}
+            takes the pointer. */}
         <div
           className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />
           <DraftsNotKept />
-          {connection === "stuck" ? (
-            <p
-              aria-live="polite"
-              className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium shadow-lg ${calloutDangerBorder} ${calloutDangerBg} ${badgeBlocking.text}`}
-              data-testid="connection-pill"
-            >
-              Live updates are not reaching this page
-              <button className="underline" onClick={() => window.location.reload()} type="button">
-                Reload
-              </button>
-            </p>
-          ) : connection === "reconnecting" ? (
-            <p
-              aria-live="polite"
-              className={`rounded-full border px-3 py-1 text-xs font-medium shadow-lg ${calloutWarningBorder} ${statusConnecting.bg} ${statusConnecting.text}`}
-              data-testid="connection-pill"
-            >
-              Reconnecting…
-            </p>
-          ) : null}
+          <ConnectionPill />
         </div>
+        {/* Every box below whose place hangs on the 1280 px breakpoint - this bar, the sidebar's
+            column and rail, and the margin's (`features/margin/Margin.tsx`) - takes its display
+            from an `xl:` class, the clock the shell's own `xl:flex` runs on. The browser applies
+            those in the frame a window crosses the breakpoint, while `isCompactViewport` follows
+            a task or two later; a box this state placed drew a frame or two of the other layout,
+            which squeezed `<main>` to almost nothing crossing upward (dispatch://INFRA-1630). So
+            the state chooses what a box holds, and never where the box goes. */}
         {isCompactViewport && !issueFrame ? (
           <header
-            className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
+            className={`flex items-center justify-between border-b px-3 xl:hidden ${railBorder} ${railBg} ${railText}`}
           >
             {/* The title never shrinks and no count breaks its own words: the counts that do not
                 fit beside the title wrap onto a second row of the bar, with Menu on the right. */}
@@ -961,37 +1181,23 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               <Link className="shrink-0 text-lg font-semibold" to="/">
                 Dispatch
               </Link>
-              {routeIsInbox(location.pathname) ? (
-                <span className={inboxBadgeClass}>{inboxLabel}</span>
-              ) : (
-                <>
-                  <button
-                    aria-label="Peek at the inbox without leaving this page"
-                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
-                    onClick={() => setInboxDrawerOpen(true)}
-                    type="button"
-                  >
-                    Peek
-                  </button>
-                  <Link className={inboxBadgeClass} to="/">
-                    {inboxLabel}
-                  </Link>
-                </>
-              )}
-              {unreadReplies === 0 ? null : (
-                <Link
-                  className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-                  to="/agents"
-                >
-                  {unreadRepliesLabel(unreadReplies)}
-                </Link>
-              )}
+              {/* Everywhere but the Inbox page, the inbox peek also opens the Inbox drawer. */}
+              <ShellCounts
+                onOpenInboxDrawer={() => {
+                  reachForTheShell();
+                  openTheInboxDrawer();
+                }}
+                reached={shellReached}
+              />
             </div>
             <button
               aria-expanded={navigationOpen}
               aria-label="Open navigation"
               className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${railHoverBg}`}
-              onClick={() => setNavigationOpen(true)}
+              onClick={() => {
+                reachForTheShell();
+                setNavigationOpen(true);
+              }}
               type="button"
             >
               Menu
@@ -1016,46 +1222,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </aside>
           </>
         ) : null}
-        {iconRailShown ? (
-          <IconRail
-            inboxCount={inboxCount}
-            navigationOpen={navigationOpen}
-            onOpenNavigation={() => setNavigationOpen(true)}
-            project={routeProject}
-            user={user}
-          />
-        ) : isCompactViewport || issueFrame ? null : sidebarHidden ? (
-          <aside
-            aria-label="Collapsed sidebar"
-            className={`fixed inset-y-0 left-0 z-10 flex w-14 justify-center border-r p-2 ${railBorder} ${railBg} ${railText}`}
-            data-testid="sidebar-rail"
-          >
-            <button
-              aria-label="Show sidebar"
-              className={`min-h-11 min-w-11 rounded-lg text-sm font-medium ${railHoverBg}`}
-              onClick={() => setSidebarHidden(false)}
-              type="button"
-            >
-              <span aria-hidden="true">›</span>
-            </button>
-          </aside>
-        ) : (
-          // The sidebar is first in the document and as tall as the viewport, so left to itself
-          // Chromium's scroll anchoring picks it as the anchor node - and since it never moves,
-          // nothing is ever compensated. Excluding it makes the browser anchor inside <main>, so
-          // content growing above the reader (a card's thread loading, Markdown rendering) no
-          // longer shifts what they are looking at.
-          <aside
-            aria-label="Navigation"
-            className={`relative order-1 w-80 max-w-none border-r [overflow-anchor:none] ${railBorder} ${railBg} ${railText}`}
-          >
-            {/* The aside stretches to the page's height, so the navigation is a viewport-tall
-                column that sticks inside it: on a long issue the links stay reachable, and the
-                identity footer sits at the bottom of the screen rather than the bottom of the
-                document. */}
-            <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">{navigation}</div>
-          </aside>
-        )}
+        {sidebarSlot()}
         {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
             Contents pane and its column each keep the inset the prototype gives them, the pane
             against the rail, which `md:pl-14` makes room for. Its references open no card on
@@ -1092,7 +1259,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
-                <Route element={<IssuePage />} path="/issues/:key/*" />
+                <Route element={<IssuePageInATransition />} path="/issues/:key/*" />
                 <Route element={<PrioritiesPage />} path="/priorities" />
                 <Route element={<PriorityPage />} path="/priorities/:id" />
                 <Route element={<ProjectPage />} path="/projects/:key" />
@@ -1107,6 +1274,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<PipelinePage />} path="/pipeline" />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
+              <TheRouteIsDrawn tell={tellTheRouteIsDrawn} />
             </Suspense>
           </ErrorBoundary>
           {/* The live views the person has open, inside `<main>` so each takes the layout and
@@ -1116,22 +1284,84 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               The live route's own element renders nothing. */}
           <MountedLiveViews front={frontLiveView} />
         </main>
-        <ErrorBoundary region="the margin" resetKey={location.pathname}>
-          <MarginColumn
-            collapsed={marginHidden}
-            onCollapsedChange={setMarginHidden}
-            onWidthChange={setMarginWidth}
-            width={marginWidth}
-          />
-        </ErrorBoundary>
-        <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
-        <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
+        {/* The margin's chunk is the fourth part that waits for the route (`TheRouteIsDrawn`),
+            and its column is not: `MarginColumn` suspends, so mounting it before the route is
+            drawn would put a suspended boundary beside the route's own and cost the page a
+            300 ms fallback throttle, which is the whole reason the parts below wait. The box it
+            will fill suspends on nothing, so the shell holds it from its own first frame
+            instead - the same `ReservedMarginColumn` the chunk's `Suspense` falls back to, at
+            the same width and under the same three answers - and the chunk arrives into a
+            column that is already there. Without it `<main>` was laid out across the margin's
+            column for the 72 to 149 ms between the shell's first commit and the route's, on
+            every margin route measured (dispatch://INFRA-341, R11). */}
+        {theRouteIsDrawn ? (
+          <ErrorBoundary region="the margin" resetKey={location.pathname}>
+            <MarginColumn
+              collapsed={marginHidden}
+              onCollapsedChange={setMarginHidden}
+              onWidthChange={setMarginWidth}
+              width={marginWidth}
+            />
+          </ErrorBoundary>
+        ) : (
+          <ReservedMarginColumn collapsed={marginHidden} width={marginWidth} />
+        )}
+        {/* The bar is mounted on every route, closed: the row a close is about to run is run by
+            the closed bar's own effect, once the close has put focus back where it was, so
+            unmounting it when nothing is open would lose that row. Closed it draws nothing, so
+            the frames before its chunk arrives look exactly as the frames after. */}
+        {theRouteIsDrawn ? (
+          <Suspense fallback={null}>
+            <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
+          </Suspense>
+        ) : null}
+        {/* Mounted from the reader's first peek on, closed or open: its chunk is asked for then,
+            and from then on the filter, the search text and the bands it folded are kept, so
+            the peek they open again is the peek they left (dispatch://INFRA-341). */}
+        {inboxDrawerEverOpened ? (
+          // The reader is in the peek, so every read inside it goes out now rather than
+          // waiting for the editor's first batch (`features/doc/first-batch.ts`).
+          <ReaderIsHere value={inboxDrawerOpen}>
+            <Suspense fallback={null}>
+              <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
+            </Suspense>
+          </ReaderIsHere>
+        ) : null}
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
-        {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
-        <RefPreviewHost />
+        {createOpen ? (
+          <Suspense fallback={null}>
+            <CreateIssueDialog onClose={() => setCreateOpen(false)} />
+          </Suspense>
+        ) : null}
+        {theRouteIsDrawn ? (
+          <>
+            <Suspense fallback={null}>
+              <RefPreviewHost />
+            </Suspense>
+            {/* The one owner of the agent registry's refresh cadence. It draws nothing, and
+                nothing on the page waits for it: a reader it would have named is named from
+                the cache until it lands. */}
+            <Suspense fallback={null}>
+              <AgentRegistryPoller />
+            </Suspense>
+          </>
+        ) : null}
       </div>
     </ShellProviders>
   );
+}
+
+/** The open document's own reads, started from the address the moment the shell is up rather
+ *  than when the page that shows the document finally renders (`openDocumentEarly`). It renders
+ *  nothing, and is its own component so that a navigation re-runs this effect alone instead of
+ *  rendering the shell again. */
+function OpenDocumentEarly(): null {
+  const queryClient = useQueryClient();
+  const { pathname, search } = useLocation();
+  useEffect(() => {
+    openDocumentEarly(queryClient, pathname, search);
+  }, [pathname, queryClient, search]);
+  return null;
 }
 
 function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
@@ -1147,11 +1377,12 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
   }, [login, queryClient]);
   useEventFeed();
   // Every Markdown body the shell renders - routes, the margin, the inbox drawer, previews and
-  // dialogs - draws a decision block in its text as the read-only card (`TextAskCard`).
+  // dialogs - draws a decision block in its text as the read-only card (`TextAskCard`), which is
+  // fetched after the first paint (`features/doc/DeferredAskCard.tsx`).
   return (
     <KeymapProvider>
-      <AgentRegistryPoller />
-      <TextAskCard.Provider value={TextAskBlockCard}>
+      <OpenDocumentEarly />
+      <TextAskCard.Provider value={DeferredAskCard}>
         <AppShell user={user} />
       </TextAskCard.Provider>
     </KeymapProvider>

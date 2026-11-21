@@ -695,7 +695,7 @@ type RouteMux interface {
 // started the relay, or at once under the test hooks.
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon}
+	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon, FirstScreen: s.firstScreen}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -717,6 +717,10 @@ type Background struct {
 	// its own: one per process is what lets its readers share an observation. Only a server
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
+	// FirstScreen is the HTML of the opening blocks of the document a browser address names
+	// (firstScreen), which the page handler puts into the page it sends a reader with a session
+	// that may read it (routes.servePage, dispatch://INFRA-341 R11).
+	FirstScreen func(context.Context, *http.Request, FirstScreenAddress) FirstScreen
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
@@ -1735,6 +1739,18 @@ func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiErro
 	}
 	logUndeclaredMembers(r, value, body)
 	return nil
+}
+
+// decodeJSONBody is decodeJSON for a route that reads its body's bytes again for what the decoded
+// value cannot say, such as whether a member was there at all (replaceFieldsRefusal); it answers
+// them.
+func decodeJSONBody(r *http.Request, value any) ([]byte, error) {
+	body, err := readJSONBody(r, value, maxJSONRequestBytes, errJSONTooLarge)
+	if err != nil {
+		return nil, err
+	}
+	logUndeclaredMembers(r, value, body)
+	return body, nil
 }
 
 // decodeJSONTestHook is decodeJSON for a route this tree alone calls: the test hooks, mounted only

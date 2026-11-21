@@ -28,6 +28,7 @@ import { z } from "zod";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import { linkFor } from "../dispatch-commands/links";
+import { edgeLine } from "../dispatch-commands/render-graph";
 import type { ExecFn } from "../dispatch-cwd";
 import {
   type DispatchToolResult,
@@ -6490,7 +6491,7 @@ describe("executeDispatchTool", () => {
           "Text:",
           "We ship on Friday.\n\nThe release waits for OPS-1.",
           "Referenced by:",
-          `- mentions comment ${commentRef} (See the decision. · 2026-10-21T00:00:00Z)`,
+          `- mentions from comment ${commentRef} (See the decision. · 2026-10-21T00:00:00Z)`,
           "Links:",
           "- mentions issue dispatch://OPS-1 (2026-10-20T00:00:00Z)",
           "- part_of artifact dispatch://CORE-1/artifact/spec (2026-10-19T00:00:00Z)",
@@ -6850,7 +6851,7 @@ describe("executeDispatchTool", () => {
       });
 
       expect(result.text).toContain(
-        "Referenced by:\n- mentions issue dispatch://OPS-1 (2026-10-21T00:00:00Z) (block dispatch://CORE/artifact/handbook-md#b-ship-it)\nLinks:"
+        "Referenced by:\n- mentions from issue dispatch://OPS-1 (2026-10-21T00:00:00Z) (block dispatch://CORE/artifact/handbook-md#b-ship-it)\nLinks:"
       );
     });
 
@@ -6961,7 +6962,7 @@ describe("executeDispatchTool", () => {
             "Beta.",
             `Node: block ${commentRef}#b-b2 · made by user alice@example.com · changed by user alice@example.com at 2026-10-20T00:00:00Z · part of ${commentRef} (revision 2)`,
             "Referenced by:",
-            `- mentions message ${messageRef} block b1 (The message cites it. · 2026-10-21T00:00:00Z)`,
+            `- mentions from message ${messageRef} block b1 (The message cites it. · 2026-10-21T00:00:00Z)`,
             "Links:",
             "- none",
           ].join("\n"),
@@ -7215,7 +7216,7 @@ describe("executeDispatchTool", () => {
           })
         );
         expect((await result).text).toContain(
-          `Referenced by:\n- mentions ask ${askRef} block b1 (Ship on Friday? · 2026-10-21T00:00:00Z)\nLinks:`
+          `Referenced by:\n- mentions from ask ${askRef} block b1 (Ship on Friday? · 2026-10-21T00:00:00Z)\nLinks:`
         );
       });
 
@@ -10711,6 +10712,66 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // An edit under a block guard that took blocks the guard did not name - the nested list of an
+  // item a marker delete removed - says so, with each block's token to compare with the one the
+  // caller read, under the Applied line, and its details carry them for the session's ledger.
+  test("names the blocks a guarded edit took that its guard did not name", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          primary_artifact_id: "artifact-42",
+          artifacts: [{ id: "artifact-42", slug: "spec", name: "spec.md", primary: true }],
+        });
+      }
+      if (path === "/api/v1/artifacts/artifact-42/edits") {
+        return response({
+          applied: 1,
+          version: { number: 3 },
+          changed: true,
+          unchanged_ops: [],
+          lost_ops: [],
+          token: "sha256:after-edit",
+          written: "",
+          unguarded_blocks: [{ id: "nested-1", token: "sha256:nested" }],
+        });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_doc_edit",
+      args: {
+        issue: "DSP-42",
+        artifact: "spec",
+        ops: [{ op: "delete", find: "- Parent" }],
+        precondition: { blocks: [{ id: "parent-1", token: "sha256:parent" }] },
+      },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toBe(
+      "Applied 1 ops (version 3)\n" +
+        "Block guard: this edit also took a block the guard did not name: nested-1 (token sha256:nested); compare its token with the one you read.\n" +
+        "Document token: sha256:after-edit"
+    );
+    expect(result.details).toEqual({
+      issue: "DSP-42",
+      applied: 1,
+      version: 3,
+      lost_ops: [],
+      unguarded_blocks: [{ id: "nested-1", token: "sha256:nested" }],
+      token: "sha256:after-edit",
+    });
+  });
+
   // A concurrent browser deletion that lands after the version is written is past undoing, so the
   // edit reports it: the version records text the live document no longer has (LEGION-269). An
   // edit that survives reads exactly as it always did.
@@ -12672,7 +12733,7 @@ describe("executeDispatchTool", () => {
         "comment-1 · user sami",
         "Body: JSON, please.",
         "Referenced by:",
-        "- mentions message dispatch://ACME-3/message/message-7 (Decided in dispatch://DSP-42/ask/aaaaaaaa-0000-4000-8000-000000000042. Shipping. · 2026-09-10T08:00:00Z)",
+        "- mentions from message dispatch://ACME-3/message/message-7 (Decided in dispatch://DSP-42/ask/aaaaaaaa-0000-4000-8000-000000000042. Shipping. · 2026-09-10T08:00:00Z)",
         "Links:",
         "- followed_by session author-1 (2026-09-09T00:00:00Z)",
       ].join("\n"),
@@ -12785,7 +12846,7 @@ describe("executeDispatchTool", () => {
         "Options:",
         `- JSON API — Use the HTTP API. (${askRef}#b-b2)`,
         "  Referenced by:",
-        "  - mentions comment dispatch://DSP-42/comment/comment-9 (I'd take JSON. · 2026-09-10T08:00:00Z)",
+        "  - mentions from comment dispatch://DSP-42/comment/comment-9 (I'd take JSON. · 2026-09-10T08:00:00Z)",
         `- MCP API (${askRef}#b-b3)`,
         "State: answered",
         `Ask id: ${ask}`,
@@ -12795,11 +12856,11 @@ describe("executeDispatchTool", () => {
         "- Text: Ship JSON.",
         `- Reference: ${askRef}#b-b4`,
         "  Referenced by:",
-        "  - mentions issue dispatch://OPS-1 (The answer decides it. · 2026-09-10T08:00:00Z)",
+        "  - mentions from issue dispatch://OPS-1 (The answer decides it. · 2026-09-10T08:00:00Z)",
         "Replies:",
         "- none",
         "Referenced by:",
-        `- mentions message dispatch://ACME-3/message/message-7 (Which API? · 2026-09-10T08:00:00Z) (block ${askRef}#b-b1)`,
+        `- mentions from message dispatch://ACME-3/message/message-7 (Which API? · 2026-09-10T08:00:00Z) (block ${askRef}#b-b1)`,
         "Links:",
         "- none",
       ]);
@@ -12829,9 +12890,37 @@ describe("executeDispatchTool", () => {
         "Replies:",
         "- none",
         "Referenced by:",
-        `- mentions comment dispatch://DSP-42/comment/comment-9 (I'd take JSON. · 2026-09-10T08:00:00Z) (block ${askRef}#b-b2)`,
-        `- mentions issue dispatch://OPS-1 (The answer decides it. · 2026-09-10T08:00:00Z) (block ${askRef}#b-b4)`,
-        `- mentions message dispatch://ACME-3/message/message-7 (Which API? · 2026-09-10T08:00:00Z) (block ${askRef}#b-b1)`,
+        `- mentions from comment dispatch://DSP-42/comment/comment-9 (I'd take JSON. · 2026-09-10T08:00:00Z) (block ${askRef}#b-b2)`,
+        `- mentions from issue dispatch://OPS-1 (The answer decides it. · 2026-09-10T08:00:00Z) (block ${askRef}#b-b4)`,
+        `- mentions from message dispatch://ACME-3/message/message-7 (Which API? · 2026-09-10T08:00:00Z) (block ${askRef}#b-b1)`,
+        "Links:",
+        "- none",
+      ]);
+    });
+
+    // A server from before the server-side fix sends `selected: null` rather than an empty list:
+    // the read says no option was picked, and still prints the answer's text.
+    test("an answer whose selected is null reads as none, with its text", async () => {
+      expect(await readAsk({ ...askBody, answer: { ...askBody.answer, selected: null } })).toEqual([
+        "Question: The service needs a public API. Which approach should we use?",
+        "Options:",
+        `- JSON API — Use the HTTP API. (${askRef}#b-b2)`,
+        "  Referenced by:",
+        "  - mentions from comment dispatch://DSP-42/comment/comment-9 (I'd take JSON. · 2026-09-10T08:00:00Z)",
+        `- MCP API (${askRef}#b-b3)`,
+        "State: answered",
+        `Ask id: ${ask}`,
+        "Answer:",
+        "- By: sami",
+        "- Selected: none",
+        "- Text: Ship JSON.",
+        `- Reference: ${askRef}#b-b4`,
+        "  Referenced by:",
+        "  - mentions from issue dispatch://OPS-1 (The answer decides it. · 2026-09-10T08:00:00Z)",
+        "Replies:",
+        "- none",
+        "Referenced by:",
+        `- mentions from message dispatch://ACME-3/message/message-7 (Which API? · 2026-09-10T08:00:00Z) (block ${askRef}#b-b1)`,
         "Links:",
         "- none",
       ]);
@@ -13911,13 +14000,13 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain(
       [
         "Referenced by:",
-        `- replies_to comment ${ref(leaf)} (2026-09-09T02:00:00Z)`,
-        `- replies_to comment ${ref(middle)} (2026-09-09T01:00:00Z)`,
+        `- replies_to from comment ${ref(leaf)} (2026-09-09T02:00:00Z)`,
+        `- replies_to from comment ${ref(middle)} (2026-09-09T01:00:00Z)`,
         "Links:",
         "- none",
       ].join("\n")
     );
-    expect(result.text).not.toContain(`- answers comment ${ref(middle)}`);
+    expect(result.text).not.toContain(`- answers from comment ${ref(middle)}`);
     const leafRead = await read(leaf);
     expect(leafRead.text).toContain(
       [
@@ -14124,6 +14213,170 @@ describe("executeDispatchTool", () => {
 
       expect(text).not.toContain("Node:");
       expect(text).toEndWith("Reply chain:\n- none\nReferenced by:\n- none\nLinks:\n- none");
+    });
+  });
+
+  // Each end of an edge reads it from its own side. The node that writes the edge lists it under
+  // `Links:` in the edge's own words; the node it points at lists it under `Referenced by:` in the
+  // inverse words (`blocks`, `parent of`), or as `<kind> from` its source where the kind names no
+  // inverse. In the edge's own words a `Referenced by:` row read as the read issue's own edge:
+  // `- blocked_by issue dispatch://DSP-3` on DSP-2's read said DSP-2 waits on DSP-3, when it is
+  // DSP-3 that waits on DSP-2.
+  describe("each end of an edge reads it from its own side", () => {
+    const nodes: Record<string, { kind: string; id: string; ref: string }> = {
+      "dispatch://DSP-1": { kind: "issue", id: "DSP-1", ref: "dispatch://DSP-1" },
+      "dispatch://DSP-2": { kind: "issue", id: "DSP-2", ref: "dispatch://DSP-2" },
+      "dispatch://DSP-3": { kind: "issue", id: "DSP-3", ref: "dispatch://DSP-3" },
+      "dispatch://DSP-1/spec": { kind: "artifact", id: "artifact-1", ref: "dispatch://DSP-1/spec" },
+    };
+    // DSP-2 and DSP-3 are children of DSP-1, DSP-3 waits on DSP-2, and DSP-1's spec cites DSP-3:
+    // newest first, as the server orders a read.
+    const edges = [
+      { kind: "mentions", from: "dispatch://DSP-1/spec", to: "dispatch://DSP-3", at: "10-23" },
+      { kind: "blocked_by", from: "dispatch://DSP-3", to: "dispatch://DSP-2", at: "10-22" },
+      { kind: "child_of", from: "dispatch://DSP-3", to: "dispatch://DSP-1", at: "10-21" },
+      { kind: "child_of", from: "dispatch://DSP-2", to: "dispatch://DSP-1", at: "10-20" },
+    ] as const;
+    /** `GET /api/v1/references` over `edges`: `?to=` answers the edges pointing at the node, each
+     *  naming the node it comes from, and `?from=` the edges the node writes, each naming the node
+     *  it points at. */
+    const references = (target: URL) => {
+      const to = target.searchParams.get("to");
+      const ref = to ?? target.searchParams.get("from") ?? "";
+      const [here, there] = to === null ? (["from", "to"] as const) : (["to", "from"] as const);
+      return {
+        node: nodes[ref],
+        edges: edges
+          .filter((edge) => edge[here] === ref)
+          .map((edge) => ({
+            kind: edge.kind,
+            direction: to === null ? "out" : "in",
+            node: nodes[edge[there]],
+            created_at: `2026-${edge.at}T00:00:00Z`,
+            source_seq: null,
+          })),
+      };
+    };
+    const readIssue = async (key: string) => {
+      const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+        const target = new URL(String(url));
+        if (target.pathname === `/api/v1/issues/${key}`) {
+          return response({
+            key,
+            title: `Issue ${key}`,
+            status: "todo",
+            priority: null,
+            assignee: null,
+            claim: null,
+            components: {
+              mode: "inherit",
+              ids: [],
+              unknown: [],
+              reason: null,
+              inherited_from: null,
+            },
+            route: null,
+            repo: null,
+            resolved_repo: null,
+            open_asks: [],
+            last_seq: 0,
+            external_links: [],
+            labels: [],
+            advances: [],
+            advances_revision: 0,
+          });
+        }
+        if (target.pathname === `/api/v1/issues/${key}/events`) return response([]);
+        if (target.pathname === "/api/v1/references") return response(references(target));
+        // The closure and coverage reads, which this case asserts nothing about.
+        return response({ error: "missing", code: "NOT_FOUND" }, 404);
+      };
+      return (
+        await executeDispatchTool({
+          tool: "dispatch_read",
+          args: { issue: key },
+          cwd: "/workspace",
+          host: "omp",
+          config,
+          env: {},
+          exec: repoExec("owner/repo"),
+          fetchImpl: fetchImpl as typeof fetch,
+        })
+      ).text;
+    };
+
+    test.each([
+      [
+        "DSP-1, the parent, reads each child_of edge pointing at it as parent of",
+        "DSP-1",
+        [
+          "- parent of issue dispatch://DSP-3 (2026-10-21T00:00:00Z)",
+          "- parent of issue dispatch://DSP-2 (2026-10-20T00:00:00Z)",
+        ],
+        ["- none"],
+      ],
+      [
+        "DSP-2 reads the blocked_by edge pointing at it as blocks, and its own child_of as written",
+        "DSP-2",
+        ["- blocks issue dispatch://DSP-3 (2026-10-22T00:00:00Z)"],
+        ["- child_of issue dispatch://DSP-1 (2026-10-20T00:00:00Z)"],
+      ],
+      [
+        "DSP-3 reads its own blocked_by and child_of as written, and a mention, a kind with no named inverse, as mentions from",
+        "DSP-3",
+        ["- mentions from artifact dispatch://DSP-1/spec (2026-10-23T00:00:00Z)"],
+        [
+          "- blocked_by issue dispatch://DSP-2 (2026-10-22T00:00:00Z)",
+          "- child_of issue dispatch://DSP-1 (2026-10-21T00:00:00Z)",
+        ],
+      ],
+    ] as const)("%s", async (_name, key, referencedBy, links) => {
+      expect(await readIssue(key)).toEndWith(
+        ["Referenced by:", ...referencedBy, "Links:", ...links].join("\n")
+      );
+    });
+
+    // The words of every structural kind and of a typed block's attribute kind (`serves`): a kind
+    // whose other direction has a name of its own reads with it, and any other with `from`.
+    test.each([
+      ["blocked_by", "blocks"],
+      ["child_of", "parent of"],
+      ["owned_by", "owns"],
+      ["followed_by", "follows"],
+      ["mentions", "mentions from"],
+      ["attached_to", "attached_to from"],
+      ["anchored_to", "anchored_to from"],
+      ["replies_to", "replies_to from"],
+      ["answers", "answers from"],
+      ["part_of", "part_of from"],
+      ["depends_on", "depends_on from"],
+      ["affects", "affects from"],
+      ["serves", "serves from"],
+    ] as const)("an inbound %s edge reads %p, an outbound one its kind", (kind, inbound) => {
+      const edge = (direction: "in" | "out"): GraphEdge => ({
+        kind,
+        direction,
+        node: {
+          kind: "issue",
+          id: "DSP-2",
+          ref: "dispatch://DSP-2",
+          made_by: [],
+          made_at: null,
+          changed_by: [],
+          changed_at: null,
+          parent: null,
+          parent_version: null,
+        },
+        created_at: "2026-10-22T00:00:00Z",
+        source_seq: null,
+      });
+
+      expect(edgeLine(edge("in"), "in")).toBe(
+        `- ${inbound} issue dispatch://DSP-2 (2026-10-22T00:00:00Z)`
+      );
+      expect(edgeLine(edge("out"), "out")).toBe(
+        `- ${kind} issue dispatch://DSP-2 (2026-10-22T00:00:00Z)`
+      );
     });
   });
 
@@ -14784,8 +15037,8 @@ describe("executeDispatchTool", () => {
       result.text.endsWith(
         [
           "Referenced by:",
-          "- mentions artifact dispatch://OPS/artifact/design-notes (The plan lives in dispatch://DSP-42 and nowhere else. · 2026-09-11T10:00:00Z)",
-          "- child_of issue dispatch://DSP-43 (Child work · 2026-09-10T10:00:00Z)",
+          "- mentions from artifact dispatch://OPS/artifact/design-notes (The plan lives in dispatch://DSP-42 and nowhere else. · 2026-09-11T10:00:00Z)",
+          "- parent of issue dispatch://DSP-43 (Child work · 2026-09-10T10:00:00Z)",
           "Links:",
           "- none",
         ].join("\n")

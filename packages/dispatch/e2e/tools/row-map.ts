@@ -78,14 +78,16 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 // says. Each is a bounded child, so what it cost is in the line this generation prints on its
 // own stderr when that child ends (`e2e/__tests__/bounded-subprocess.ts`).
 //
-// The second names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts).
+// The second names the six `-alone` projects (`clockProjectNames`, e2e/configurations.ts).
 // They carry `default: false` since dispatch://INFRA-1280, so a listing that names no project
 // holds no row of `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` or
-// `nested-directive.e2e.ts` - 51 rows of those three files in this head's wall-clock listing -
-// and with the default listing alone this generation refused outright: "the listing names no
-// real-stack row in them: heavy-bodies.e2e.ts, nested-directive.e2e.ts", measured by running
-// the tool before the second listing was added, when those two were the whole of the set.
-// Neither listing names a process count, so both run one Dispatch process, which is
+// `nested-directive.e2e.ts` - 51 rows of those three files in this head's `-alone` listing,
+// which holds 59 with the five rows of the three `large-documents` files the wall-clock
+// projects run whole and the three of `large-documents-long-build.e2e.ts`'s phone half - and with
+// the default listing alone this generation refused outright: "the listing names no real-stack
+// row in them: heavy-bodies.e2e.ts, nested-directive.e2e.ts", measured by running the tool
+// before the second listing was added, when those two were the whole of the set. Neither
+// listing names a process count, so both run one Dispatch process, which is
 // the only mode whose project list declares the wall-clock projects at all.
 const [defaultListing, clockListing] = await Promise.all([
   listing(import.meta.url, "e2e/playwright.config.ts", {}),

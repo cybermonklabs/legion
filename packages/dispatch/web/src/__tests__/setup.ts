@@ -8,6 +8,10 @@ import { configure } from "@testing-library/react";
 import "fake-indexeddb/auto";
 import { notifyManager } from "@tanstack/react-query";
 import { resetReachability } from "../api/reachability";
+import { theFirstBatchIsAwaited } from "../features/doc/first-batch";
+import { resetFirstScreen } from "../features/doc/first-screen";
+import { resetDocumentOpening } from "../features/doc/open-document-early";
+import { resetWhereThePageLeftIt } from "../features/doc/readers-place";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
 import { resetDraftStorage } from "../features/inbox/draft-store";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
@@ -198,6 +202,21 @@ afterEach(resetReachability);
 // `<Timestamp>` would tick. `clearTimeout` clears a timer of either clock (measured on Bun 1.4.4),
 // so this reset needs no place relative to the clock restore below.
 afterEach(resetTimestampTick);
+// What a page records about itself outlives the test that drew the page, and is that test's
+// alone: where the page's own place-keeping last left the window (`readers-place.ts`), which a
+// row whose own scroll puts the window there would read as the page's; the address the shell
+// last opened early and the read it made for it (`open-document-early.ts`), which the next row
+// to open that address would take for the shell's second call for it, and open nothing; the
+// address the server drew a first screen for (`first-screen.ts`), which outlives the draw a row
+// put in the page; and the page's reads held for a document's first batch, with the two
+// deadlines that let them go (`first-batch.ts`), which a row that opened a document address
+// leaves armed into the rows after it. Each record that a part of the page holds only while it
+// is mounted - the keepers' boxes, the reader's scroll and press, the hover card, a key that
+// reached for the issue's chrome - is let go by that part as it unmounts, and needs nothing here.
+afterEach(resetWhereThePageLeftIt);
+afterEach(resetDocumentOpening);
+afterEach(resetFirstScreen);
+afterEach(() => theFirstBatchIsAwaited(false));
 // Each text a row reads is kept in one module-level cache (`row-references.ts`), and so is the id of
 // each list of keys it was read against. A rerun of the file keeps both with the module: a row that
 // counts the readings it makes found its texts read by the run before and counted fewer reads than

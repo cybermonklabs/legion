@@ -16,7 +16,9 @@ import {
   detailRead,
   expectReadWhileHeld,
   holdIssuePatches,
+  holdSignInUntil,
   ISSUE_PAGE_PICKERS,
+  isSignInCheck,
   lastEventSeq,
   logReads,
   pagePicker,
@@ -113,37 +115,46 @@ test("project table filters narrow issues; documents stay scoped to the project"
       "aria-selected",
       "true"
     );
+    // Every row below is named inside the issue list. An issue's title is on the page twice
+    // whenever a pointer rests on its row: the row's own link, and the reference preview card
+    // that link opens (`features/refs/RefPreview.tsx`, whose heading is the key and the title
+    // and whose link's accessible name is `CORE-1Triage work Triage`, the status pill with
+    // them). A press that leaves the pointer over a row - every filter press here, at the width
+    // where the controls sit above the table - opens that card, so an unscoped `getByText` names
+    // two elements and fails as a strict-mode violation rather than as a product fault.
+    const issues = page.getByRole("region", { name: "Project issues" });
+
     // Closed issues load when the Status filter lets Done through; the bar's own Done cell,
     // which only exists once they are loaded, then narrows to them.
     await pickFilterOption(page, "Status", "Done");
     await page.getByRole("button", { name: "Done 1", exact: true }).click();
-    await expect(page.getByText("Done work", { exact: true })).toBeVisible();
-    await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
+    await expect(issues.getByText("Done work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Child work", { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Testing 1", exact: true }).click();
-    await expect(page.getByText("Child work", { exact: true })).toBeVisible();
-    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
+    await expect(issues.getByText("Child work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Backlog work", { exact: true })).toHaveCount(0);
     await pickFilterOption(page, "Status", "Triage");
-    await expect(page.getByText("Triage work", { exact: true })).toBeVisible();
-    await expect(page.getByText("Child work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Triage work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Child work", { exact: true })).toBeVisible();
     await expect(page).toHaveURL(/status=testing.*status=triage/);
     await filterPicker(page, "Status").click();
     await page.getByRole("button", { name: "Clear status", exact: true }).click();
     await page.keyboard.press("Escape");
-    await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Backlog work", { exact: true })).toBeVisible();
     await pickFilterOption(page, "Labels", "frontend");
-    await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
-    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
+    await expect(issues.getByText("Needs attention", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Backlog work", { exact: true })).toHaveCount(0);
     await filterPicker(page, "Labels").click();
     await page.getByRole("button", { name: "Clear labels", exact: true }).click();
     await page.keyboard.press("Escape");
     const search = page.getByRole("searchbox", { name: "Search issues" });
     await search.fill("backlog");
-    await expect(page.getByText("Backlog work", { exact: true })).toBeVisible();
-    await expect(page.getByText("Child work", { exact: true })).toHaveCount(0);
+    await expect(issues.getByText("Backlog work", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Child work", { exact: true })).toHaveCount(0);
     await search.clear();
     await page.getByRole("button", { name: "Needs you", exact: true }).click();
-    await expect(page.getByText("Needs attention", { exact: true })).toBeVisible();
-    await expect(page.getByText("Backlog work", { exact: true })).toHaveCount(0);
+    await expect(issues.getByText("Needs attention", { exact: true })).toBeVisible();
+    await expect(issues.getByText("Backlog work", { exact: true })).toHaveCount(0);
 
     await page.getByRole("tab", { name: "Documents" }).click();
     await expect(page).toHaveURL("/projects/CORE/documents");
@@ -407,12 +418,14 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
   browser,
 }) => {
   const key = await issueAtP3();
+  const renamed = "Priority under two held saves, renamed after a reload";
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     const shown = await watchShown(page, `Priority of ${key}`, "main");
     const held = await holdIssuePatches(page, key);
     const reads = logReads(page, detailRead(key));
+    const signIns = logReads(page, isSignInCheck);
     const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
     await expect(picker).toHaveValue("3");
@@ -423,28 +436,52 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
     await expect.poll(() => shown.values.at(-1)).toBe("2");
     const beforeReload = shown.values.length;
     const reloadedAt = Date.now();
+    // The reloaded page asks for the issue before it knows who is signed in
+    // (`features/shell/boot.ts`), and takes up the two picks the reload kept only once it does
+    // (`app.tsx`'s `AuthenticatedApp`). The sign-in check is held until that read is answered,
+    // so its answer, carrying P3, is in before either pick is taken up: the order a loaded
+    // machine gives, made certain here.
+    await holdSignInUntil(page, () =>
+      reads.some((read) => read.sentAt >= reloadedAt && read.answeredAt !== undefined)
+    );
     await page.reload();
     await expect(picker).toBeVisible();
+    // A rename of the issue, straight to the server: its live event has the page read the issue
+    // again, and the answer, carrying P3 still, lands while the P1 the page sent again is held.
+    const renamedAt = Date.now();
+    await patchIssue(key, { title: renamed });
+    await expect(page.getByRole("heading", { name: renamed })).toBeVisible();
     held.release();
     await savesEnded(page, held);
 
-    // The reloaded page's first read of the issue was answered while the P1 it sent again was
-    // held: that answer, carrying P3, landed under the newest pick.
-    const timeline = JSON.stringify({ reads, reloadedAt, saves: held.sent });
+    const timeline = JSON.stringify({ reads, reloadedAt, renamedAt, saves: held.sent, signIns });
     const resent = held.sent.find(
       (patch) =>
         patch.arrivedAt >= reloadedAt &&
         JSON.stringify(patch.body) === JSON.stringify({ priority: 1 })
     );
-    const firstRead = reads.find((read) => read.sentAt >= reloadedAt);
     expect(resent, `the reloaded page sent P1 again: ${timeline}`).toBeDefined();
+    // The two answers carrying P3 the badge is read over: the reloaded page's first read of the
+    // issue, answered before the sign-in check and so before the picks were taken up, and a read
+    // sent after the rename and answered while the resent P1 was held.
+    const firstRead = reads.find((read) => read.sentAt >= reloadedAt);
+    const signIn = signIns.find((read) => read.sentAt >= reloadedAt);
     expect(
       firstRead?.answeredAt !== undefined &&
-        resent !== undefined &&
-        resent.endedAt !== undefined &&
-        firstRead.answeredAt >= resent.arrivedAt &&
-        firstRead.answeredAt <= resent.endedAt,
-      `the first read of the issue after the reload was answered while the resent P1 was held: ${timeline}`
+        signIn?.answeredAt !== undefined &&
+        firstRead.answeredAt <= signIn.answeredAt,
+      `the first read of the issue after the reload was answered before the sign-in check: ${timeline}`
+    ).toBe(true);
+    expect(
+      reads.some(
+        (read) =>
+          read.sentAt >= renamedAt &&
+          read.answeredAt !== undefined &&
+          resent?.endedAt !== undefined &&
+          read.sentAt >= resent.arrivedAt &&
+          read.answeredAt <= resent.endedAt
+      ),
+      `a read of the issue sent after the rename was answered while the resent P1 was held: ${timeline}`
     ).toBe(true);
 
     // From the reloaded document's first frame: no picker until the page draws one, and then P2
@@ -453,7 +490,7 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
       [...new Set(shown.values.slice(beforeReload).filter((value) => value !== "(none)"))],
       `every value the badge showed from the reload on: ${JSON.stringify(shown.values.slice(beforeReload))}`
     ).toEqual(["2"]);
-    expect(await getIssue(key)).toMatchObject({ priority: 2 });
+    expect(await getIssue(key)).toMatchObject({ priority: 2, title: renamed });
     await expect(picker).toHaveValue("2");
   } finally {
     await context.close();

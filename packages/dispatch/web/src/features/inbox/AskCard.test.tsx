@@ -30,11 +30,14 @@ import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
 import {
   answeredAsk,
+  type DrawnCard,
   firstAnswer,
   installAskCardApiMocks,
   renderCard,
   thread,
 } from "./ask-card-fixture";
+import { draftEmpty } from "./draft-store";
+import { ApprovalExchange } from "./ReadingPane";
 import { ThreadBody } from "./ThreadBody";
 
 installAskCardApiMocks();
@@ -393,6 +396,9 @@ test("a compact card's change shows the seeded note, so nothing is sent unseen",
     expect(note.value).toBe("First note");
     expect(view.getByRole("button", { name: "Save answer" })).toBeTruthy();
     expect(view.getByRole("button", { name: "Cancel" })).toBeTruthy();
+    // The recorded answer's own words are in the box, so the card offers nothing that folds them
+    // away (dispatch://INFRA-969).
+    expect(view.container.querySelectorAll("[data-ask-note-disclosure]")).toHaveLength(0);
   } finally {
     view.unmount();
   }
@@ -414,7 +420,7 @@ test("Change answer then Cancel leaves the recorded answer alone and no draft be
     expect(card.queryByTestId("ask-unsent-answer")).not.toBeInTheDocument();
     // Nor is any of it left in the draft every card for this ask reads, and the Inbox's reading
     // column holds the question in the column by (`pane-selection.ts`, `paneAsk`).
-    expect(answerDraft(mine.id)).toBe("");
+    expect(draftEmpty(answerDraft(mine.id))).toBe(true);
   } finally {
     view.unmount();
   }
@@ -884,6 +890,205 @@ for (const surface of ["inline", "collapsed"] as const) {
     }
   });
 }
+
+// INFRA-341, testing round 17. The Inbox reading pane's approval request keeps its reply box under
+// the open ask (`ApprovalExchange`'s `repliesWhileOpen`), the card the same request is drawn as
+// below the pane's width draws none while the ask is open, and every thread of one ask shares one
+// draft (`reply-drafts.ts`). Neither may read a draft the other is still writing as a reply whose
+// send failed: only a reply typed under the settled ask, which then opened again, is one.
+
+/** The reading pane's approval request for `ask`: its exchange alone (`ApprovalExchange`), seeded
+ *  from the Inbox row as the pane seeds it. */
+function paneExchange(ask: Ask): ReactNode {
+  const { ask: _seeded, ...seed } = thread(ask);
+  return (
+    <ApprovalExchange
+      ask={{ ...ask, last_reply: null, priority: null, snoozed_until: null, thread: seed }}
+    />
+  );
+}
+
+/** The card `ask` is drawn as below the pane's width and in the Inbox drawer, its thread drawn
+ *  inline, or `collapsed` behind Write a reply as the Conversation draws it. */
+function plainCard(ask: Ask, surface: "inline" | "collapsed" = "inline"): ReactNode {
+  return (
+    <AskCard
+      ask={ask}
+      getAskThread={async () => thread(ask)}
+      initialThread={thread(ask)}
+      thread={surface}
+    />
+  );
+}
+
+/** `ask` as it now stands, under a card drawn by `draw`: its thread read says so, and the card is
+ *  drawn from it, as the list it is drawn from is. */
+function moveAsk(drawn: DrawnCard, draw: (ask: Ask) => ReactNode, ask: Ask): void {
+  act(() => {
+    drawn.queryClient.setQueryData<AskRead>(["ask-thread", ask.id], thread(ask));
+  });
+  drawn.view.rerender(
+    <MemoryRouter>
+      <QueryClientProvider client={drawn.queryClient}>{draw(ask)}</QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+/** That `container` draws no reply as unsent: no unsent box, and not its note. */
+function expectNoUnsentReply(container: HTMLElement): void {
+  const scope = within(container);
+  expect(scope.queryByTestId("ask-unsent-reply")).not.toBeInTheDocument();
+  expect(scope.queryByText(/opened again before you sent your reply/)).not.toBeInTheDocument();
+}
+
+test("a reply typed in the approval pane's box on the open ask is no unsent reply in the ask's card, inline or collapsed", async () => {
+  const user = userEvent.setup();
+  const open = approvalAsk();
+  const typed = "A reply I have not sent yet.";
+  const pane = renderCard(paneExchange(open));
+  try {
+    await user.click(within(pane.view.container).getByRole("textbox", { name: "Reply" }));
+    await user.paste(typed);
+  } finally {
+    // The window narrows below the pane's width: the pane goes, and the card takes its place.
+    pane.view.unmount();
+  }
+
+  for (const surface of ["inline", "collapsed"] as const) {
+    const { view } = renderCard(plainCard(open, surface));
+    try {
+      expect(
+        await within(view.container).findByRole("radio", { name: "Approve" })
+      ).toBeInTheDocument();
+      expectNoUnsentReply(view.container);
+    } finally {
+      view.unmount();
+    }
+  }
+
+  // The draft is still the ask's: the pane drawn again holds it in its box.
+  const again = renderCard(paneExchange(open));
+  try {
+    expect(within(again.view.container).getByRole("textbox", { name: "Reply" })).toHaveValue(typed);
+  } finally {
+    again.view.unmount();
+  }
+});
+
+test("a reply typed under a settled ask is in the approval pane's box with no note, and once written there no card reads it as unsent", async () => {
+  const user = userEvent.setup();
+  const open = approvalAsk();
+  const withdrawn: Ask = {
+    ...open,
+    resolution: resolvedAsk("withdrawn").resolution,
+    state: "resolved",
+  };
+  const typed = "Before this goes back for review: name the lease reading.";
+  const card = renderCard(plainCard(withdrawn));
+  const cardScope = within(card.view.container);
+  let pane: DrawnCard | undefined;
+  try {
+    await user.click(await cardScope.findByRole("textbox", { name: "Reply" }));
+    await user.paste(typed);
+
+    pane = renderCard(paneExchange(withdrawn));
+    const paneScope = within(pane.view.container);
+    expect(paneScope.getByRole("textbox", { name: "Reply" })).toHaveValue(typed);
+    expectNoUnsentReply(pane.view.container);
+
+    // The issue reopens, and the request with it. The card has no box left for a reply typed
+    // under the settled ask, so it shows it as not sent; the pane's box still holds it.
+    moveAsk(card, plainCard, open);
+    moveAsk(pane, paneExchange, open);
+    expect(await cardScope.findByTestId("ask-unsent-reply")).toHaveTextContent(typed);
+    const paneBox = paneScope.getByRole("textbox", { name: "Reply" });
+    expect(paneBox).toHaveValue(typed);
+    expectNoUnsentReply(pane.view.container);
+
+    // The reader rewrites it in the pane's box while the ask is open: a reply they are still
+    // writing there, which the card no longer reads as one that was not sent.
+    const rewritten = "Name the lease reading in the rollout note.";
+    await user.clear(paneBox);
+    await user.paste(rewritten);
+    expect(paneBox).toHaveValue(rewritten);
+    await waitFor(() => expectNoUnsentReply(card.view.container));
+    expect(cardScope.getByRole("radio", { name: "Approve" })).toBeInTheDocument();
+  } finally {
+    card.view.unmount();
+    pane?.view.unmount();
+  }
+});
+
+test("a reply typed under a settled ask that opens again is not sent, inline and collapsed, and is back in the box once the ask settles again", async () => {
+  const user = userEvent.setup();
+  const open = approvalAsk();
+  const withdrawn: Ask = {
+    ...open,
+    resolution: resolvedAsk("withdrawn").resolution,
+    state: "resolved",
+  };
+  const typed = "Before this goes back for review: name the lease reading.";
+  const collapsedCard = (ask: Ask) => plainCard(ask, "collapsed");
+  const inline = renderCard(plainCard(withdrawn));
+  const collapsed = renderCard(collapsedCard(withdrawn));
+  const inlineScope = within(inline.view.container);
+  const collapsedScope = within(collapsed.view.container);
+  try {
+    await user.click(await inlineScope.findByRole("textbox", { name: "Reply" }));
+    await user.paste(typed);
+
+    // The issue reopens, and the request with it: no box is left for the reply.
+    moveAsk(inline, plainCard, open);
+    moveAsk(collapsed, collapsedCard, open);
+    for (const scope of [inlineScope, collapsedScope]) {
+      const unsent = await scope.findByTestId("ask-unsent-reply");
+      expect(unsent).toHaveTextContent(typed);
+      expect(unsent).toHaveTextContent(/opened again before you sent your reply/);
+      expect(scope.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+    }
+
+    // The issue closes again and the request is withdrawn with it: the box is back, with the draft.
+    moveAsk(inline, plainCard, withdrawn);
+    moveAsk(collapsed, collapsedCard, withdrawn);
+    expect(await inlineScope.findByRole("textbox", { name: "Reply" })).toHaveValue(typed);
+    await user.click(await collapsedScope.findByRole("button", { name: "Write a reply" }));
+    expect(collapsedScope.getByRole("textbox", { name: "Reply" })).toHaveValue(typed);
+    expectNoUnsentReply(inline.view.container);
+    expectNoUnsentReply(collapsed.view.container);
+  } finally {
+    inline.view.unmount();
+    collapsed.view.unmount();
+  }
+});
+
+test("a reply typed in the approval pane's box is no unsent reply in the card while the ask is open, and is in its box once the ask settles", async () => {
+  const user = userEvent.setup();
+  const open = approvalAsk();
+  const approved: Ask = {
+    ...open,
+    answer: { at: "2026-10-08T03:00:00Z", selected: ["Approve"], text: null, user: "bob" },
+    state: "answered",
+  };
+  const typed = "A reply I have not sent yet.";
+  const pane = renderCard(paneExchange(open));
+  const card = renderCard(plainCard(open));
+  const cardScope = within(card.view.container);
+  try {
+    await user.click(within(pane.view.container).getByRole("textbox", { name: "Reply" }));
+    await user.paste(typed);
+    expect(await cardScope.findByRole("radio", { name: "Approve" })).toBeInTheDocument();
+    expectNoUnsentReply(card.view.container);
+
+    // Somebody else approves the request: the card's thread takes a reply, and its box holds the
+    // reply the reader was writing in the pane.
+    moveAsk(card, plainCard, approved);
+    expect(await cardScope.findByRole("textbox", { name: "Reply" })).toHaveValue(typed);
+    expectNoUnsentReply(card.view.container);
+  } finally {
+    pane.view.unmount();
+    card.view.unmount();
+  }
+});
 
 // Handing a question to somebody else is a move on a question still waiting for an answer, so
 // the control is part of an open card and of no record: an answered, a resolved or a withdrawn

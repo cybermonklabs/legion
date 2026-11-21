@@ -1,4 +1,4 @@
-import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
+import { MAX_ISSUE_ADVANCES } from "@legion/contracts/dispatch-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -7,6 +7,7 @@ import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
 import { usePageWords, useTooltips } from "../../components/tooltips";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   dangerText,
   dismissButtonText,
@@ -333,8 +334,9 @@ export function IssuePriorityLine({
           className={`flex ${wraps ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2`}
           onKeyDown={(event) => {
             // A press that ends an IME composition gives up what the reader was composing, not
-            // the form: the form leaves it alone, unmarked, as the key registry does.
-            if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+            // the form: the form leaves it alone, unmarked, as the key registry does
+            // (`inputMethodKey`).
+            if (event.key !== "Escape" || inputMethodKey(event)) return;
             // Escape closes this form and goes no further. The panel the line sits in closes on
             // Escape too - Details on the new issue page, which on a phone is a sheet whose
             // Escape is the key registry's dialog binding (`useDialog`) - and one press reaching

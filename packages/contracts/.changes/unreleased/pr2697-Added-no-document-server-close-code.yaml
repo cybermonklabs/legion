@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+    `NO_DOCUMENT_SERVER_CLOSE_CODE` (4404) and `NO_DOCUMENT_SERVER_CLOSE_REASON` (`NO_DOCUMENT_SERVER`) in `./dispatch-constants`: the close the Dispatch dashboard's stubbed browser layer answers a document websocket with, since that layer serves no document socket. The Go server never sends it, and `scripts/gen-go.ts` does not emit it. The dashboard answers it by releasing the hold on the editor's first batch and nothing else.
+time: 2026-11-13T15:00:00.000000000Z
+custom:
+    Issue: pr2697

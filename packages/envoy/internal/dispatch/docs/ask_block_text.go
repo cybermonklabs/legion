@@ -89,13 +89,13 @@ func (s *Service) SetAskBlockText(
 		if err != nil {
 			return err
 		}
-		// A block read leniently is weighed on its empty question alone. No document edit
-		// repairs it: a delete may not leave a decision it changes unreadable
-		// (validateEditedAskBlocks), and one asking nothing is unreadable, so the deletes the
-		// content rule's refusal names are a step no caller can take yet, and a refusal must
-		// name only the step that applies now. That step is the question, which this route
-		// writes into the block whatever the content rule says, since no document edit writes
-		// a paragraph inside a decision (refuseEmptyQuestionEdit holds that reason). Every
+		// A block read leniently is weighed on its empty question alone. No delete repairs it: a
+		// delete may not leave a decision it changes unreadable (validateEditedAskBlocks), and
+		// one asking nothing is unreadable, so the deletes the content rule's refusal names are a
+		// step no caller can take yet, and a refusal must name only the step that applies now.
+		// That step is the question, which this route writes into the block whatever the content
+		// rule says, as an insert anchored on one of its paragraphs writes it beside that
+		// paragraph (refuseEmptyQuestionEdit holds both). Every
 		// other block is weighed on its content rule instead: for one that reads as a decision
 		// the rule is decided once, before the edit is built, and askBlockChildren then yields
 		// the question's paragraphs and at most one list, which keeps it. A block that breaks
@@ -621,30 +621,18 @@ func normalizeAskOptions(options []model.AskOption) []model.AskOption {
 // paragraphs are, and an edit carrying none is refused with that step, since the block's own
 // sentence names none and an agent reading it has nowhere to go.
 //
-// This is where the reason the rest of this package names lives: no document edit writes a decision
-// a question, since a delete writes no words and an insert anchored on a block of a decision
-// lands beside that decision rather than in it (pmdoc.ValidDocument.BlockBoundary reads the
-// document-level block holding the anchor); and a decision left asking nothing is refused every
-// document edit that changes it (validateEditedAskBlocks). So the question is written here or
-// nowhere, and a refusal that names a document edit of such a decision names a step no caller can
-// take.
+// A document edit that deletes writes no words, and a decision left asking nothing is refused
+// every document edit that changes it (validateEditedAskBlocks), so no delete repairs such a
+// block. An insert anchored on one of its paragraphs writes a question into it, beside that
+// paragraph (pmdoc.ValidDocument.BlockBoundary), which is the other repair.
 //
 // An ask asking nothing has no text in the paragraphs the write replaces, so replacing them
 // loses no word. It can still lose what is no word - an image, a link whose text is empty - so a
 // paragraph that writes more than the text in it is refused before the write, and the refusal
-// quotes it and names the two places the question can be written without losing it: an upload of
-// the document as a new version, which carries a block whose question it writes and is the path
-// an agent has, and the document editor, where a person writes the question beside the
-// paragraph. The upload is named with the owner the document belongs to, since the command does
-// not address the document without one, and both spellings of that owner stand in one clause,
-// since an agent holding a project document would read a step it cannot run were the issue named
-// alone. It carries --force, because the command refuses an upload under the name of a document
-// the owner already holds and this upload is one. The refusal says a document edit reaches this
-// block for nothing: an agent reading it
-// has been told to change a document with a document edit rather than to upload its name again
-// (the dispatch_artifact tool's own description), and only the reason above lets it do otherwise
-// here. The block and the paragraph are quoted as data (quotedAskChild), never written into the
-// reason raw.
+// quotes it and names the two places the question can be written beside it without losing it: a
+// document edit inserting the question after that paragraph's block, the path an agent has, and
+// the document editor, where a person writes it. The block and the paragraph are quoted as data
+// (quotedAskChild), never written into the reason raw.
 func refuseEmptyQuestionEdit(block askBlock, edit AskBlockEdit) error {
 	for _, child := range block.node.Children {
 		if child.Type == "bullet_list" || writesNothingButItsText(child) {
@@ -654,16 +642,17 @@ func refuseEmptyQuestionEdit(block askBlock, edit AskBlockEdit) error {
 		if err != nil {
 			return err
 		}
+		// A paragraph the document has yet to stamp an id into has no block an insert names.
+		insert := "after that paragraph's block once the document has settled its block ids (a few seconds)"
+		if id, _ := child.Attrs[pmdoc.BlockIDAttr].(string); id != "" {
+			insert = fmt.Sprintf("after %q", "block:"+id)
+		}
 		return &ErrAskBlockUnrepresentable{Field: "block", Reason: fmt.Sprintf(
 			"ask block %q has an empty question, and writing a question into it would delete what one of its "+
-				"paragraphs holds, which is no text: %s; no document edit writes a paragraph into a "+
-				"decision, so none reaches this block - upload the document again "+
-				"as a new version with the question written beside that paragraph (dispatch artifact "+
-				"--issue <KEY>, or --project <KEY> for a project's document, --name <the document> "+
-				"--content-file - --force, and --precondition-json '{\"document\":\"<the token dispatch doc-read "+
-				"prints>\"}' where the command has that flag, which names the text the upload replaces), or write the question beside it in "+
-				"the document editor; either keeps what the paragraph holds",
-			block.id, quoted)}
+				"paragraphs holds, which is no text: %s; write the question beside that paragraph instead - "+
+				"a document edit inserting it %s (dispatch doc-edit) writes it into the decision, "+
+				"and so does the document editor; either keeps what the paragraph holds",
+			block.id, quoted, insert)}
 	}
 	if edit.Question != nil && normalizeAskQuestion(*edit.Question) != "" {
 		return nil
@@ -706,9 +695,9 @@ func renderBlock(block *pmdoc.Node) (string, error) {
 // edit deletes, in one edit, the blocks the refusal names (planAskRepair), and the ask edit
 // follows. A decision reaching here asks something: one whose question a person emptied is
 // weighed on that question instead, and an edit carrying one writes it (refuseEmptyQuestionEdit).
-// Where a decision nested in this one holds no paragraph with text, no document edit repairs
-// that one either, for the reason refuseEmptyQuestionEdit holds, so the refusal says what it
-// needs is words written, and names the editor. Until the document settles its block ids (a
+// Where a decision nested in this one holds no paragraph with text, no delete repairs that one
+// either, for the reason refuseEmptyQuestionEdit holds, so the refusal says what it needs is
+// words written, and names the editor. Until the document settles its block ids (a
 // child with no id, or an id repeated in the tree, which ApplyOps would restamp first) the
 // refusal names no delete and asks for a retry. Where no one edit of deletes leaves every
 // decision it changes readable, the refusal names no delete and no decision to edit: it says the

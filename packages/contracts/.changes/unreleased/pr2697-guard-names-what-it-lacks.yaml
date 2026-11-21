@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  `dispatch_doc_edit`'s description says a block guard must name the block each op names or whose
+  text it matches, and for a `move` the block it moves, and that a guard leaving one out is refused
+  naming each block it lacks. What an op takes beyond that - the rest of what a `delete` or `move`
+  removes, such as the nested lists of a list item a `find`'s marker selects or a list or quote its
+  removal empties, and a typed block a `replace` rewrites - the guard need not name: the result's
+  `unguarded_blocks` and a line of the result name each such block with the token the edit read,
+  and naming them in the guard refuses the edit with `PRECONDITION_FAILED` if any of them changed.
+  `EditArtifactResponse` in `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts`
+  carries the optional `unguarded_blocks`, a list of `EditBlockPrecondition`.
+  `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the same description.
+time: 2026-11-19T20:30:00Z
+custom:
+    Issue: pr2697

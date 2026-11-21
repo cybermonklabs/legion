@@ -141,7 +141,8 @@ export function optionalString(args: Record<string, unknown>, name: string): str
 }
 
 /** A field the server reads as a tri-state: absent leaves it, null clears it, a string sets it.
- *  `assignee` is one, and `--clear-assignee` is how the command sends its null. */
+ *  `assignee` and `parent` are two, and `--clear-assignee` and `--clear-parent` are how the
+ *  command sends their null. */
 export function optionalNullableString(
   args: Record<string, unknown>,
   name: string

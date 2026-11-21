@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   backdrop40,
   card,
@@ -57,7 +58,8 @@ export function NameVersionDialog({
   };
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
-    if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+    // The Enter that confirms an input method's word is the input method's, not the save.
+    if (event.key !== "Enter" || inputMethodKey(event)) {
       return;
     }
     event.preventDefault();

@@ -8,12 +8,14 @@ import {
   type AgentStreamSettings,
   type AgentStreamSettingsReported,
   type AgentStreamToolResult,
-  comparableLines,
   isTypableCommandName,
+} from "@legion/contracts/agent-stream";
+import {
+  comparableLines,
   PICTURE_PLACEHOLDER,
   pictureSyntax,
   trimmedLines,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-text-rules";
 import { dispatchMetadata, type KeyedMessage } from "./dispatch-marks";
 
 /** The `context` frame as the contract carries it: the two figures, with the share they make

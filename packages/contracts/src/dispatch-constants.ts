@@ -1,10 +1,44 @@
 /**
- * The Dispatch API's closed lists, caps and wire constants: the values the server enforces, the
- * clients refuse on, and `scripts/gen-go.ts` emits into Go, so each is one literal rather than a
- * server string and a client pattern that can drift apart. It imports nothing, so every other
- * module of the contract - and `dispatch-tools.ts`, whose tool schemas take the same caps - can
- * read it.
+ * Dispatch's plain values: the caps, codes, headers, closed lists and pure functions the wire
+ * contract is stated in, and nothing that builds a schema.
+ *
+ * They live apart from `dispatch-api.ts` because loading that module builds every zod schema in
+ * it, and the Dispatch dashboard reaches for these values alone - it holds the types and parses
+ * nothing. Importing `@legion/contracts/dispatch-constants` therefore leaves zod out of the
+ * browser's entry chunk, where evaluating it was one main-thread task of about a second on a
+ * phone at 4x CPU throttling (dispatch://INFRA-341, R11). `dispatch-api.ts` imports what its own
+ * schemas need from here, so each value is still declared once; `scripts/gen-go.ts` reads them
+ * here too.
+ *
+ * Nothing in this module may import a value from a module that builds a schema. A type is
+ * another matter: a type import is erased, so a type of `dispatch-api.ts` would cost the
+ * browser nothing; this module names none today.
  */
+
+/**
+ * How a verified service token's subject reads wherever an actor is shown.
+ *
+ *  A Kubernetes subject — exactly `system:serviceaccount:<namespace>:<name>` —
+ *  renders `<namespace>/<name>`, because the namespace is the half that
+ *  disambiguates: every namespace has a `default` service account, so the name
+ *  alone names no one once a second namespace authenticates. Every other
+ *  subject renders whole. Truncating a subject whose shape is unknown is the
+ *  mistake this rule exists to undo, so the fallback shows all of it.
+ *
+ *  The persisted actor always carries the full subject; this is presentation. */
+export function serviceSubjectLabel(subject: string): string {
+  const parts = subject.split(":");
+  if (
+    parts.length === 4 &&
+    parts[0] === "system" &&
+    parts[1] === "serviceaccount" &&
+    parts[2] !== "" &&
+    parts[3] !== ""
+  ) {
+    return `${parts[2]}/${parts[3]}`;
+  }
+  return subject;
+}
 
 /** Maximum entries in an issue's blocked_by input, before duplicate keys are removed. */
 export const MAX_ISSUE_BLOCKERS = 20;
@@ -18,6 +52,24 @@ export const MAX_ISSUE_BLOCKERS = 20;
  * enforce as `400 ADVANCES_INPUT` naming the limit.
  */
 export const MAX_ISSUE_ADVANCES = 20;
+
+/**
+ * How long an issue claim is held for a holder the Envoy registry calls `unresponsive`: a
+ * session past the listener's live window but inside its gone horizon has missed heartbeats, not
+ * ended, and under box load that is ordinary. Dispatch refuses another agent's claim or release
+ * while the holder was last seen no longer ago than this, so a stalled session keeps the issue
+ * it is working and two sessions never write the same branch; a person still forces the claim
+ * (`force`), which is the escape this grace leaves open.
+ *
+ * Twenty minutes is four times the listener's live window (`ENVOY_SESSION_LIVE_WINDOW`, 5m) and
+ * well inside its gone horizon (`ENVOY_SESSION_GONE_HORIZON`, 1h), so a session that is merely
+ * slow keeps its work while a box that really lost one frees it long before the horizon.
+ * `scripts/gen-go.ts` emits it as `contracts.IssueClaimUnresponsiveGrace`, so the refusal the
+ * server writes and the wait a client predicts are one number. It lives here rather than beside
+ * `IssueClaimLiveness` because `claim-holds.ts`, which the dashboard loads without zod, reads
+ * the number itself (`dispatch-api.ts`'s own guide row).
+ */
+export const ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS = 20 * 60 * 1000;
 
 /**
  * The longest issue title, in UTF-16 units, counted after the trim `POST /api/v1/issues` and
@@ -58,6 +110,35 @@ export const DEFAULT_ISSUE_PAGE_LIMIT = 50;
  * `events` nor `all_events`: what `DispatchClient.read` returns by default.
  */
 export const DEFAULT_ISSUE_READ_EVENTS = 10;
+
+/**
+ * The options `answer` picked, as a list: the one reading of `AskAnswer.selected`, whose wire
+ * schema is a nullish array (see the field). Every reader that wants the options as a list goes
+ * through here, on the page, in the `dispatch` command and in `@legion/envoy-client` alike - a
+ * reader that coerces it again is a reader that can forget to, and an answer whose `selected` is
+ * `null` then throws where it is read as a list.
+ *
+ * A reading that is not about the list keeps the field. `sessionAnswersWords`
+ * (`envoy-client/src/session-answers.ts`) fingerprints `item.selected ?? null`, because an
+ * answer that names no options and one that names an empty list must fingerprint differently,
+ * and this function answers `[]` for both.
+ *
+ * It takes the whole answer rather than the field, since every caller holds one, and takes it
+ * by the one property it reads rather than as an `AskAnswer`: a session answer and an ask's
+ * answer carry `selected` under their own shapes. One member rather than a union of the two,
+ * though not for safety: both shapes refuse a value with no `selected`; the single member names
+ * the weak-type check in its error.
+ */
+export function answerSelected(answer: {
+  readonly selected?: readonly string[] | null | undefined;
+}): readonly string[] {
+  return answer.selected ?? [];
+}
+
+/** Ask urgency levels the Dispatch server accepts, in ascending order. It is a plain list
+ *  rather than a schema, so the dashboard's Inbox filters read it without loading zod
+ *  (`features/refs/routes.ts`), as `dispatch-tools.ts` reads it for `z.enum`. */
+export const ASK_URGENCIES = ["low", "med", "high", "blocking"] as const;
 
 /** Who holds the turn on an open ask after a reply: `human` when the human needs to act,
  *  `agent` when the asking agent still owes the next move (a progress note). */
@@ -486,6 +567,31 @@ export const DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE = 4412;
  *  Generated into Go as `contracts.DocumentAdmissionRevokedCloseReason`. */
 export const DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON = "DOC_ADMISSION_REVOKED";
 
+/**
+ * The close code the stubbed browser layer answers a page's document websocket with, because
+ * that layer serves no document socket: its origin is a static file server over the build under
+ * test and a recording of the API (`packages/dispatch/e2e/stub/`), and nothing behind it holds a
+ * document to sync. **The Go server never sends it**, and nothing in `generated.go` names it.
+ *
+ * What the page does on it is one thing: the document surface stops holding the page's other
+ * reads for an editor's first batch (`features/doc/first-batch.ts`), since no batch is coming.
+ * The provider stops reconnecting, as it does on `DOCUMENT_SCHEMA_CLOSE_CODE`, and nothing else
+ * moves: the page keeps its own draw of the document, shows no alert, and reads the socket as
+ * offline, which is what it read while the stub answered the upgrade with a page of HTML. A
+ * reader on a real server whose socket is slow never meets this code, so they are held as
+ * before, up to `LONGEST_WAIT_FOR_THE_DOCUMENT_MS`.
+ *
+ * 4404 is free on every path that closes a socket of this product: the Go server sends 4001
+ * (`LIVE_SOCKET_MAX_AGE_CLOSE`), 4409 (`DOCUMENT_SCHEMA_CLOSE_CODE`), 4412
+ * (`DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE`), 4425 (`DOCUMENT_NEWER_CONTENT_CLOSE_CODE`) and the
+ * standard 1008, 1011, 1012 and 1013; the page closes a silent live socket with 4000; ygo and
+ * Hocuspocus use 4205, 4401, 4403 and 4408, and 1009.
+ */
+export const NO_DOCUMENT_SERVER_CLOSE_CODE = 4404;
+
+/** The reason the stubbed layer's document websocket closes with `NO_DOCUMENT_SERVER_CLOSE_CODE`. */
+export const NO_DOCUMENT_SERVER_CLOSE_REASON = "NO_DOCUMENT_SERVER";
+
 /** The close code Dispatch ends a live socket with once the socket reaches its age, a random point
  *  in [LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS), or once the Identity-Aware Proxy assertion
  *  its upgrade carried expires (`DISPATCH_IDENTITY=iap`). It is in the private 4000-4999 range,
@@ -499,6 +605,114 @@ export const LIVE_SOCKET_MAX_AGE_MS = 3_600_000;
 /** The most subscriptions one live socket holds at once; a subscribe past it is refused with a
  *  `TOO_MANY_SUBSCRIPTIONS` error frame. */
 export const LIVE_SOCKET_MAX_SUBSCRIPTIONS = 64;
+
+/** The members `GET /api/v1/search` carried before `GET /api/v1/search/results` was added.
+ *  `session` is among them because `openapi.go` declares it on every operation of every build
+ *  and `actingPerson` reads it on every route, so a request carrying it is one an older build
+ *  serves correctly and must not be sent to a path that build refuses. */
+export const SEARCH_MEMBERS_EVERY_BUILD_READS = [
+  "q",
+  "project",
+  "limit",
+  "offset",
+  "session",
+] as const;
+
+/** Whether every member a search request carries is one of `SEARCH_MEMBERS_EVERY_BUILD_READS`,
+ *  which is the one rule that picks a search's path: a request carrying anything beyond them
+ *  goes to `GET /api/v1/search/results`. A Dispatch released before that route answers the
+ *  new path `404 no route`, which is a refusal, where it answers `GET /api/v1/search` `200` with
+ *  the member dropped, which is unnarrowed rows under the filters a person chose. A key whose
+ *  value is `undefined` is not carried, which is how both clients build a request out of
+ *  optional filters, and the keys are read from the request itself, so a member added later
+ *  routes itself. */
+export function everyBuildReadsSearch(request: object): boolean {
+  const read: readonly string[] = SEARCH_MEMBERS_EVERY_BUILD_READS;
+  return Object.entries(request).every(
+    ([member, value]) => value === undefined || read.includes(member)
+  );
+}
+
+/** How the message of a Dispatch process's `404 NOT_FOUND` starts when the process has no route for
+ *  the request ("no route for GET /api/v1/…"). While a release rolls out, two builds of Dispatch
+ *  answer, and the older one answers this way for a route only the newer one serves. No handler
+ *  ran, so a client may send the request again whatever its method. A `404 NOT_FOUND` for a
+ *  resource the server does not know says "not found" instead. */
+export const NO_ROUTE_MESSAGE_PREFIX = "no route for ";
+
+/** The waits before each new attempt of a request a Dispatch process answered with no route. Each
+ *  wait is jittered by ±25 % (`jitteredDelay`), so the attempts of many clients spread out, and
+ *  each attempt may reach another process. */
+export const NO_ROUTE_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_000, 4_000];
+
+/** What a client says when every attempt of a request met a Dispatch process with no route for it. */
+export const NO_ROUTE_ROLLING_RELEASE_MESSAGE =
+  "The Dispatch process that answered does not offer this action yet, because a new release of " +
+  "Dispatch is in progress. Try again in one minute.";
+
+/** Waits `ms` milliseconds, or until `signal` aborts. A client takes one so that a test does not
+ *  wait. */
+export type Sleep = (ms: number, signal?: AbortSignal | null) => Promise<void>;
+
+/** The `Sleep` a client waits with when its caller gives none: a timer. When `signal` aborts,
+ *  before or during the wait, the wait rejects at once with the signal's reason, so an aborted
+ *  request sends nothing more. */
+export const sleep: Sleep = (ms, signal) => {
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  if (signal?.aborted) {
+    reject(signal.reason);
+    return promise;
+  }
+  const abort = () => {
+    clearTimeout(timer);
+    reject(signal?.reason);
+  };
+  const timer = setTimeout(() => {
+    signal?.removeEventListener("abort", abort);
+    resolve();
+  }, ms);
+  signal?.addEventListener("abort", abort, { once: true });
+  return promise;
+};
+
+/** `ms` jittered by ±25 %: a wait of `NO_ROUTE_RETRY_DELAYS_MS`, as a client waits it
+ *  (`retryNoRoute`, and the Dispatch write client's own loop). */
+export function jitteredDelay(ms: number): number {
+  return ms * (0.75 + Math.random() * 0.5);
+}
+
+/**
+ * Runs `attempt` until a Dispatch process that serves the route answers. An attempt `isNoRoute`
+ * recognises is made again after each of `NO_ROUTE_RETRY_DELAYS_MS`, jittered (`jitteredDelay`)
+ * and waited with `options.sleep` (a timer, `sleep`, when the caller names none): while a release
+ * rolls out, two builds of Dispatch answer, and the next attempt may reach the build that serves
+ * the route. No handler ran, so this is safe for every method, and every attempt is the same
+ * request. After the last attempt it throws what `options.exhausted` builds, which is the
+ * caller's own error for `NO_ROUTE_ROLLING_RELEASE_MESSAGE`. Anything else `attempt` throws is
+ * thrown on at once, and an abort of `options.signal` during a wait rejects with the abort's
+ * reason, so nothing more is sent.
+ */
+export async function retryNoRoute<T>(
+  attempt: () => Promise<T>,
+  isNoRoute: (error: unknown) => boolean,
+  options: {
+    readonly exhausted: () => Error;
+    readonly sleep?: Sleep;
+    readonly signal?: AbortSignal | null;
+  }
+): Promise<T> {
+  const wait = options.sleep ?? sleep;
+  for (const delay of [...NO_ROUTE_RETRY_DELAYS_MS, undefined]) {
+    try {
+      return await attempt();
+    } catch (error) {
+      if (!isNoRoute(error)) throw error;
+      if (delay === undefined) break;
+    }
+    await wait(jitteredDelay(delay), options.signal);
+  }
+  throw options.exhausted();
+}
 
 /**
  * The subject Dispatch announces its server fleet's build on, directly on the bus rather than

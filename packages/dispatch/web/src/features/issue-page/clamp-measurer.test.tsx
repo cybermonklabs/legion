@@ -3,6 +3,7 @@ import { act, render } from "@testing-library/react";
 
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { CutWords } from "./CutWords";
+import { clampPainted } from "./clamp-measurer";
 
 /**
  * The page's one measurer of where each row's words are cut (`clamp-measurer.ts`). Each row once
@@ -64,19 +65,22 @@ function installResizeObserver() {
  * moves `readMs` on each read of a box's height. Each such read notes how many rows were drawn
  * cut when it was made, in the list of the frame it was made in. Every box lays out where `box`
  * says, by default a 600 px box right under the view, where a row is near and wholly outside the
- * view; `observer` false draws the rows in a browser with no intersection observer, and `fonts`
- * stands for the page's font set.
+ * view, and a row's words run as tall as `runs` says, by default 600 px; `observer` false draws
+ * the rows in a browser with no intersection observer, and `fonts` stands for the page's font
+ * set.
  */
 function drawRows({
   box = () => new DOMRect(0, window.innerHeight, 600, 600),
   fonts,
   observer = true,
   readMs = 0,
+  runs = () => 600,
 }: {
   box?: (element: HTMLElement) => DOMRect;
   fonts?: EventTarget;
   observer?: boolean;
   readMs?: number;
+  runs?: (element: HTMLElement) => number;
 } = {}) {
   const near = installIntersectionObserver();
   restores.push(near.restore);
@@ -105,10 +109,10 @@ function drawRows({
   const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
     configurable: true,
-    get: () => {
+    get(this: HTMLElement) {
       clock += readMs;
       cutWhenRead.at(-1)?.push(document.querySelectorAll("[data-node-more]").length);
-      return 600;
+      return runs(this);
     },
   });
   restores.push(() => {
@@ -316,8 +320,10 @@ test("a row that goes away keeps its cut, and the typeface's arrival measures ag
  * mount's own pass, which `mountPass` lets run, finds no row in view, and every cut is a batch's.
  * A row's words lay out `whole` px tall until `typefaceArrives` lays them out taller in the
  * page's typeface, which tells in the count a cut holds back (`hiddenOf`) which face it was
- * measured on. `read` holds the place of every row whose box, or whose words' box, was read;
- * `scrolls` holds each scroll, with how many rows were drawn cut when it was made.
+ * measured on, or `paintEnds` lays them out taller in the face they are drawn in, as the rest of
+ * a reading painted over several tasks does. `read` holds the place of every row whose box, or
+ * whose words' box, was read; `scrolls` holds each scroll, with how many rows were drawn cut when
+ * it was made.
  */
 function stackRows(whole: number) {
   const MORE = 24;
@@ -389,6 +395,15 @@ function stackRows(whole: number) {
     },
     /** Lets the pass the rows' mount asked for run: it finds no row in view. */
     mountPass: () => act(async () => {}),
+    /** The rest of the reading of rows `from` up to `to` is painted, in which every row's words
+     *  lay out `height` px tall, and the paint ends (`clampPainted`), as `RowText`'s
+     *  `onLatePaint` says it ends. */
+    paintEnds: (from: number, to: number, height: number) => {
+      laidOut = height;
+      return act(async () => {
+        for (const element of words.slice(from, to)) clampPainted(element);
+      });
+    },
     near,
     pageTop,
     read,
@@ -611,4 +626,117 @@ test("the typeface's arrival measures again every row cut on the fallback face: 
     hidden([3, 4]),
     "a stale row the scroll left outside the view kept its cut on the fallback face"
   ).toEqual([76, 52]);
+});
+
+// A row's reading can be painted after the commit that mounted it, once the page's Markdown
+// engine has loaded (`RowText`'s `onLatePaint`). Until then its words run no height, so the
+// mount's pass and the batches measure it whole. The paint measures the rows in view as they
+// mount and cuts them before any frame runs, and leaves every other row to the batches as one
+// never measured: the typeface's arrival reads none of them where it stands. Unpainted, each row
+// is 30 px tall, so rows 0 to 25 stand in the 768 px view and rows 26 to 40 under it; painted,
+// each is 300 px tall, and rows 0 to 2 stand in view.
+test("a reading painted after the rows' commit cuts the rows in view before a frame runs, and leaves every other row to the batches as one never measured", async () => {
+  const fonts = new EventTarget();
+  let painted = false;
+  let rows: (Element | null)[] = [];
+  const drawn = drawRows({
+    box: (element) => {
+      const height = painted ? 300 : 30;
+      const at = rows.indexOf(element.closest("li"));
+      return new DOMRect(0, at * height, 600, element.matches("p") ? 2 * height : height);
+    },
+    fonts,
+    runs: () => (painted ? 600 : 0),
+  });
+  rows = [...drawn.view.container.querySelectorAll("li")];
+  await act(async () => {});
+  act(() => {
+    for (const element of drawn.words.slice(26, 41)) drawn.near.show(element);
+  });
+  drawn.runFrame();
+  expect(
+    drawn.words.some((element) => drawn.cut(element)),
+    "a row with no words was cut"
+  ).toBe(false);
+
+  painted = true;
+  await act(async () => {
+    for (const element of drawn.words) clampPainted(element);
+  });
+  expect(
+    drawn.words.slice(0, 4).map((element) => drawn.cut(element)),
+    "a row in view as its reading was painted was not cut before a frame ran, or one outside it was"
+  ).toEqual([true, true, true, false]);
+  expect(drawn.frames, "the paint asked for a frame").toEqual([]);
+
+  act(() => {
+    fonts.dispatchEvent(new Event("loadingdone"));
+  });
+  drawn.runFrame();
+  expect(
+    drawn.cutWhenRead.at(-1),
+    "the typeface's arrival read a row measured on no words alone"
+  ).toEqual([]);
+  expect(
+    drawn.words.slice(3).some((element) => drawn.cut(element)),
+    "a row measured on no words was cut where it stood once the typeface arrived"
+  ).toBe(false);
+
+  // Left to the batches, row 3 is cut once it comes near, wholly under the view.
+  act(() => {
+    if (drawn.words[3] !== undefined) drawn.near.show(drawn.words[3]);
+  });
+  drawn.runFrame();
+  expect(drawn.cut(drawn.words[3]), "a row left to the batches was not cut as it came near").toBe(
+    true
+  );
+});
+
+// A reading of more nodes than one task attaches is painted a batch a task, and its paint ends in
+// a later task than the rows' commit (`RowText`'s `onLatePaint`) even where the engine has loaded:
+// between the tasks a row holds part of its words, and a batch can cut it on them. That cut is a
+// measure of words on the face it was read on, which the paint's end keeps: the typeface's
+// arrival measures it again with every other cut read on the fallback face, here of rows that
+// went away from the view before the paint ended, which no batch reads meanwhile. Rows 3 to 5,
+// cut under the view on the fallback face, hold back 52 words there and 76 on the typeface.
+test("a row a batch cut on part of its words keeps the face of its cut once its paint ends, and the typeface's arrival measures it again", async () => {
+  const { drawn, hiddenOf, mountPass, near, paintEnds, scrollTo, typefaceArrives } = stackRows(300);
+  await mountPass();
+  scrollTo(0);
+  near(3, 6, true);
+  drawn.runFrame();
+  const hidden = () => [3, 4, 5].map((at) => hiddenOf(at));
+  expect(hidden(), "a row under the view was not cut on the fallback face").toEqual([52, 52, 52]);
+
+  near(3, 6, false);
+  await paintEnds(3, 6, 300);
+  expect(drawn.frames, "the paint's end of rows away from the view asked for a frame").toEqual([]);
+
+  typefaceArrives(600);
+  expect(drawn.frames, "the typeface's arrival asked for no batch").toHaveLength(1);
+  drawn.runFrame();
+  expect(hidden(), "a row cut before its paint ended kept its cut on the fallback face").toEqual([
+    76, 76, 76,
+  ]);
+});
+
+// The same paint: a batch cut rows 3 to 5 under the view on the part of their words painted by
+// then, which lay out 300 px tall and hold back 52 words. The rest of the words paint, and the
+// whole of them lay out 600 px tall: once the paint ends, the next batch measures each row again
+// on its whole words, and its cut holds back 76 of them.
+test("a row a batch cut on part of its words is cut on the whole of them once its paint ends", async () => {
+  const { drawn, hiddenOf, mountPass, near, paintEnds, scrollTo } = stackRows(300);
+  await mountPass();
+  scrollTo(0);
+  near(3, 6, true);
+  drawn.runFrame();
+  const hidden = () => [3, 4, 5].map((at) => hiddenOf(at));
+  expect(hidden(), "a row under the view was not cut on part of its words").toEqual([52, 52, 52]);
+
+  await paintEnds(3, 6, 600);
+  expect(drawn.frames, "the paint's end asked for no batch").toHaveLength(1);
+  drawn.runFrame();
+  expect(hidden(), "a row cut on part of its words kept that cut once its paint ended").toEqual([
+    76, 76, 76,
+  ]);
 });

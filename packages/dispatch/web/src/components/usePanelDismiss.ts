@@ -1,5 +1,7 @@
 import { type RefObject, useEffect } from "react";
 
+import { inputMethodKey } from "../hooks/inputMethodKey";
+
 export interface PanelDismissOptions {
   /** Closing the panel, which is the host's state: the hook never holds `open` of its own. */
   readonly onOpenChange: (open: boolean) => void;
@@ -28,7 +30,9 @@ export function usePanelDismiss({
   useEffect(() => {
     if (!open) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
+      // The Escape that ends an input method's composition is the input method's, and the
+      // panel stays open (`inputMethodKey`).
+      if (inputMethodKey(event)) return;
       if (event.key !== "Escape") return;
       // The panel is what Escape acts on while it stands open, not the view behind it.
       event.stopPropagation();

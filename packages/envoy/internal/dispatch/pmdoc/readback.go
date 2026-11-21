@@ -165,10 +165,13 @@ func RefuseMisreadDocument(doc *Node) error {
 // documents back as renderSpanless writes them. An insert checks its write with it once for each
 // operation of a batch, and a batch holds as many as a request carries, where a budget of span
 // cells for each read-back would let one batch spend two for every operation. An insert writes
-// markdown, which carries no span, between document-level blocks, so it changes no table, and every
-// table reads back the same way before and after it under the same block ids: a table that reads
-// back otherwise does so in both, and NewMisread's filter of misreads before already held, which
-// keys on the block id, sets it aside either way. Spanless, a render writes no more than the cells
+// markdown, which carries no span, between blocks no table holds - the document's, a typed
+// block's, a list item's, a blockquote's or a list's children (ValidDocument.BlockBoundary,
+// ValidDocument.ListBoundary) - so it changes no table, and every table reads back the same way
+// before and after it under the same block ids: a table that reads back otherwise does so in
+// both, and NewMisread's filter of misreads before already held, which keys on the block id, sets
+// it aside either way. Spanless,
+// a render writes no more than the cells
 // the tables hold, and its parse pads the rows a span leaves short on the read-back's own budget
 // (ParseRendering).
 func RefuseMisreadWrite(before, after *Node) error {

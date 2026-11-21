@@ -10,7 +10,6 @@ import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { type DrawnRow, pathTo } from "./tree-fold";
 import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
-import { inputMethodKey } from "./useNodeEditing";
 
 /**
  * The tree's keyboard: every key of the issue page's key table that acts on the tree itself,
@@ -169,6 +168,7 @@ export function treeEnterKey({
   readonly moveTo: (index: number) => void;
 }): KeyBinding {
   return {
+    effect: "moves the reader",
     id: "tree-enter",
     keys: ["Tab", "Shift+Tab"],
     label: "Move into the tree",
@@ -302,6 +302,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     // The tree is one tab stop, which Tab from the page itself enters (`treeEnterKey`).
     treeEnterKey({ moveTo, rows: () => drawn().elements }),
     {
+      effect: "moves the reader",
       id: "tree-next",
       keys: ["j", "ArrowDown"],
       label: "Move to the next row",
@@ -314,6 +315,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: () => reading() && !scrollsABlock() && drawn().elements.length > 0,
     },
     {
+      effect: "moves the reader",
       id: "tree-previous",
       keys: ["k", "ArrowUp"],
       label: "Move to the previous row",
@@ -328,6 +330,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       // Home and End are the page's own scroll keys everywhere else, so they move through the
       // tree only while the reader is standing in it.
+      effect: "moves the reader",
       id: "tree-first",
       keys: "Home",
       label: "Move to the first row",
@@ -336,6 +339,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: () => inTheTree() && !scrollsABlock(),
     },
     {
+      effect: "moves the reader",
       id: "tree-last",
       keys: "End",
       label: "Move to the last row",
@@ -346,6 +350,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       // Right unfolds what is closed and then steps into it, which is the WAI-ARIA tree
       // pattern's rule for the key.
+      // Into a child, into a zoom, or the focused row's branch opened: each moves the reader.
+      effect: "moves the reader",
       id: "tree-unfold",
       keys: "ArrowRight",
       label: "Unfold the focused row, or move into it",
@@ -381,6 +387,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: () => !scrollsABlock() && at(drawn().elements) !== -1,
     },
     {
+      // To the parent, into a zoom, or the focused row's branch folded: each moves the reader.
+      effect: "moves the reader",
       id: "tree-fold",
       keys: "ArrowLeft",
       label: "Fold the focused row, or move to its parent",
@@ -433,6 +441,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: () => !scrollsABlock() && at(drawn().elements) !== -1,
     },
     {
+      // The pin is a toggle: the focused row's body is open already, and the focus stays on it.
+      effect: "moves nothing",
       id: "tree-pin",
       keys: "o",
       label: "Keep the focused row's body open",
@@ -451,6 +461,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // control of the row they are standing on (WCAG 2.1.1). The key presses the control the
       // row draws, which is what a pointer does, and is offered exactly while that control is
       // drawn and would take a click.
+      // Keep writes the decision, and its control keeps the focus on the row (`keepFocusOnRow`).
+      effect: "moves nothing",
       id: "tree-keep",
       keys: "Shift+K",
       label: `${CONTROL_LABELS.keep_decision} the focused decision`,
@@ -463,6 +475,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: () => rowAction("keep") !== null,
     },
     {
+      // Change opens a form whose field takes the caret (below), which moves the reader.
+      effect: "moves the reader",
       id: "tree-change",
       keys: "Shift+C",
       label: `${CONTROL_LABELS.change_decision} the focused decision`,
@@ -484,6 +498,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // presses - and the last comes back to the first, so a row that points at several things
       // is read through them all; Enter on the one the key left the focus on is the browser's
       // own, and follows the link or presses the control (`tree-edit` leaves it Enter).
+      effect: "moves the reader",
       id: "tree-link",
       keys: "f",
       label: "Move to the next link or control on the focused row",
@@ -498,6 +513,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: () => rowStops().length > 0,
     },
     {
+      effect: "moves the reader",
       id: "tree-zoom-in",
       keys: ".",
       label: "Zoom into the focused row",
@@ -518,6 +534,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: () => at(drawn().elements) !== -1,
     },
     {
+      effect: "moves the reader",
       id: "tree-zoom-out",
       keys: ",",
       label: "Zoom back out one level",
@@ -539,6 +556,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: reading,
     },
     {
+      effect: "moves the reader",
       id: "tree-question",
       keys: "q",
       label: "Move to the next open question",
@@ -553,6 +571,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       when: reading,
     },
     {
+      effect: "moves the reader",
       id: "tree-decision",
       keys: "w",
       label: "Move into the decision behind the focused row",
@@ -570,7 +589,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       // Reply to the focused row: a comment, a message or an ask whatever its state sets
       // the line at the outline's foot to reply to it, as the row's own Reply does; the caret
-      // goes to the line.
+      // goes to the line, which moves the reader.
+      effect: "moves the reader",
       id: "tree-reply",
       keys: "r",
       label: `${CONTROL_LABELS.reply} to the focused row`,
@@ -588,6 +608,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     },
     {
       // Answer the focused open question: the line answers it, its options its chips.
+      // The writer puts the caret in the line (`answerNode`), which moves the reader.
+      effect: "moves the reader",
       id: "tree-answer",
       keys: "a",
       label: `${CONTROL_LABELS.answer} the focused question`,
@@ -603,6 +625,9 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       },
     },
     {
+      // It moves no focus, but draws rows above the focused row and scrolls that row back on
+      // screen (`IssueTree`'s `cycleDrawn`), which moves the reader.
+      effect: "moves the reader",
       id: "tree-cycle",
       keys: "z",
       label: "Cycle how much of the tree is drawn",
@@ -617,6 +642,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // stands for and draws no row of, so the chord that reaches them is the tree's: it puts
       // the focus on the group's first row and opens their own address, `/children`
       // (`IssueTree`'s `onChildren`).
+      effect: "moves the reader",
       id: "tree-children",
       keys: "t h",
       label: "Move to the issue's children",
@@ -636,6 +662,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // stopped on is followed by it, a button is pressed by it - and a key that took Enter
       // from them would leave a reader who reached them with no way to press them at all
       // (WCAG 2.1.1).
+      effect: "moves the reader",
       id: "tree-edit",
       keys: "Enter",
       label: "Put the caret in the focused row",
@@ -654,17 +681,18 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // Escape leaves the caret for the row it came from, and leaves the tree from the row
       // (below). It extends the Escape the page already binds for its header controls, which
       // answers for a focused select and never for these two. The Escape that ends an input
-      // method's composition is the input method's and leaves nothing (`inputMethodKey`): the
-      // keymap passes over one marked `isComposing`, and Safari's comes unmarked. It is offered
+      // method's composition is the input method's and leaves nothing: the keymap passes over
+      // every input method's key, Safari's unmarked one included (`inputMethodKey`). It is offered
       // from an editable inside the tree alone, while a row is edited: an editor elsewhere on the
       // page has keys of its own, and no row's caret to leave.
+      // Leaving the caret gives the row the focus back, which moves the reader.
+      effect: "moves the reader",
       id: "tree-leave-caret",
       inEditable: true,
       keys: "Escape",
       label: "Leave the row's text",
       palette: false,
-      run: (event) => {
-        if (inputMethodKey(event)) return;
+      run: () => {
         (document.activeElement as HTMLElement | null)?.blur();
         // The editing's end gives the row the caret came from the focus back (`useNodeEditing`).
         tree.onEditEnd();
@@ -682,6 +710,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // the row is where the keys that move through the tree are; from the row itself it leaves
       // the tree, once the page has cleared its filter by words and turned its filter off, which
       // come first in the key table's order.
+      // Either way the focus moves, to the row or off the tree, which moves the reader.
+      effect: "moves the reader",
       id: "tree-leave",
       keys: "Escape",
       label: "Leave the control, then the tree",

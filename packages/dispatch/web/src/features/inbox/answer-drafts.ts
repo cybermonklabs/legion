@@ -1,4 +1,4 @@
-import { createDraftStore } from "./draft-store";
+import { createMentionDraftStore, EMPTY_DRAFT, keptMentionDraft } from "./draft-store";
 
 /**
  * Unsent ask-answer drafts, by ask id, for the reason the reply drafts beside them live in one
@@ -12,8 +12,12 @@ import { createDraftStore } from "./draft-store";
  * their text under it - until they select another row (`pane-selection.ts`, `paneAsk`;
  * `AskCard.tsx`, `unsentAnswer`). An answer the server records drops the draft, since it is no
  * longer unsent.
+ *
+ * The draft is the text and the mentions picked in it (`draft-store.ts`), so a box that closes
+ * and opens again holds both, and so does the page a reload draws. An answer cannot carry a
+ * mention, so the card refuses to send one rather than dropping it (`AskAnswerArea.tsx`).
  */
-const store = createDraftStore("answer");
+const store = createMentionDraftStore("answer", EMPTY_DRAFT, keptMentionDraft);
 
 /** What the reader has typed into the ask's answer box and not sent, read without subscribing to
  *  it: the Inbox asks at the commit that drops the row, not at every keystroke in the column. */

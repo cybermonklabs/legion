@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { actorActText, type SessionAnswer } from "@legion/contracts";
+import { actorActText, answerSelected, type SessionAnswer } from "@legion/contracts";
 import { urlForText } from "@legion/contracts/log-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
@@ -99,7 +99,7 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
     lines.push(`Question: ${textHead(item.ask.question, QUESTION_HEAD)}`);
   }
   if (item.kind === "answer") {
-    const selected = item.selected ?? [];
+    const selected = answerSelected(item);
     lines.push(`Selected: ${selected.length === 0 ? "none" : selected.join(", ")}`);
   }
   const words = dispatchWordsText(item.dispatch_words);

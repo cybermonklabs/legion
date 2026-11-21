@@ -1292,7 +1292,7 @@ grep -qxF -- "- $tuesday ($tuesday_ref)" "$work/out" ||
 pass A6 "read shows it on the option"
 mapfile -t under < <(grep -A 2 -xF -- "- $monday ($monday_ref)" "$work/out")
 [[ "${#under[@]}" == 3 && "${under[1]}" == "  Referenced by:" &&
-  "${under[2]}" == "  - mentions comment $citing_ref block b1 "* ]] ||
+  "${under[2]}" == "  - mentions from comment $citing_ref block b1 "* ]] ||
   fail A6 "read lists the comment citing the option under that option" \
     "$(printf '%s\n' "${under[@]-}")"
 pass A6 "read lists the comment citing the option under that option"

@@ -1,8 +1,40 @@
-// The init-script and worker helpers `e2e/mermaid.e2e.ts`'s rows share: the wrappers that record,
-// hold, refuse or fail the page's `Worker`, the two scroll helpers (one turns the browser's scroll
-// anchoring off, one reads the offset once it settles), and the route that makes the real worker
-// chunk hold a diagram's source.
-import { expect, type Page } from "@playwright/test";
+// The helpers the rows that draw diagrams share: the wrappers that record, hold, refuse or fail
+// the page's `Worker`, the two scroll helpers (one turns the browser's scroll anchoring off, one
+// reads the offset once it settles), the route that makes the real worker chunk hold a diagram's
+// source, and the way a comment thread is opened so its bodies render in full.
+import { expect, type Locator, type Page, type TestInfo } from "@playwright/test";
+
+/** The comment thread `rootId` opened in the Conversation, where its bodies render in full rather
+ *  than as the collapsed card's preview: the turn itself on a desktop, the full-screen Thread
+ *  view on a phone. The turn shows `lead`, the root comment's first text, before it is expanded,
+ *  so the click lands on a turn that has rendered. */
+export async function openCommentThread(
+  page: Page,
+  testInfo: TestInfo,
+  rootId: string,
+  lead: string
+): Promise<Locator> {
+  const turn = page
+    .getByRole("list", { name: "Conversation turns" })
+    .locator(`:scope > li[data-turn="comment:${rootId}"]`);
+  await expect(turn).toContainText(lead);
+  const expand = turn.getByRole("button", { exact: true, name: "Expand thread" });
+  const phone = testInfo.project.name === "iphone";
+  const thread = page.getByRole("dialog", { name: "Thread" });
+  const opened = phone
+    ? thread
+    : turn.getByRole("button", { exact: true, name: "Collapse thread" });
+  // Retried for the reason the reader's click on `Mermaid source` is: the page moves while the
+  // turn's diagrams draw, so a click can land on whatever slid under the pointer and the thread
+  // never opens. Measured on firefox, where the expand click was lost and the row waited out its
+  // budget for a `Collapse thread` that never appeared. The expand button is gone once the
+  // thread is open, so the retry clicks only while it is still there.
+  await expect(async () => {
+    if (await expand.isVisible()) await expand.click();
+    await expect(opened).toBeVisible({ timeout: 1_000 });
+  }).toPass({ timeout: 5_000 });
+  return phone ? thread.locator(`li[data-turn="comment:${rootId}"]`) : turn;
+}
 
 // What this file's init scripts keep on the page's window.
 declare global {

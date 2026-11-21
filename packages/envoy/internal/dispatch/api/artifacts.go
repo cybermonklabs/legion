@@ -1364,6 +1364,80 @@ type editArtifactInput struct {
 	Actor        *model.Actor            `json:"actor"`
 }
 
+// jsonMember decodes any JSON value into whether it is null, so a map of them says which members
+// a JSON object names, and which of those are null, and reading one copies none of its value.
+type jsonMember struct{ null bool }
+
+func (m *jsonMember) UnmarshalJSON(data []byte) error {
+	m.null = string(data) == "null"
+	return nil
+}
+
+// replaceTakes reports whether member is one a replace takes: op, find, with and occurrence. Every
+// other member is another operation's or none's, so a replace carrying one sends what replace
+// never reads.
+func replaceTakes(member string) bool {
+	switch member {
+	case "op", "find", "with", "occurrence":
+		return true
+	}
+	return false
+}
+
+// replaceFieldsRefusal is the refusal of the first replace of ops whose JSON in body, the request's
+// bytes, names no with or carries a member a replace does not take (replaceTakes), whatever that
+// member holds: 400 REPLACE_FIELDS naming the operation and each such member; and nil where every
+// replace names with and replace's members alone. Read as an empty with, a replace naming none
+// deleted its match (dispatch://INFRA-1946), and one carrying another member was applied as if it
+// held none. Only the body says either: a decoded op's With is "" both for no with and for with
+// "", which deletes the match on purpose, a JSON null with is none, and a member model.EditOp does
+// not declare decodes to nothing. So a batch holding a replace reads body a second time, for each
+// op's member names alone (jsonMember). The decoder stops after body's one value, as the first
+// read did (readJSONBody, which accepts a value followed by a closing bracket or brace), so a body
+// the route accepted reads here too.
+func replaceFieldsRefusal(ops []model.EditOp, body []byte) error {
+	if !slices.ContainsFunc(ops, func(op model.EditOp) bool { return op.Op == "replace" }) {
+		return nil
+	}
+	var named struct {
+		Ops []map[string]jsonMember `json:"ops"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&named); err != nil {
+		return fmt.Errorf("read the edit's members: %w", err)
+	}
+	if len(named.Ops) != len(ops) {
+		return fmt.Errorf("read the edit's members: the second read found %d operations, the first %d", len(named.Ops), len(ops))
+	}
+	for index, op := range ops {
+		if op.Op != "replace" {
+			continue
+		}
+		with, withNamed := named.Ops[index]["with"]
+		omitted := !withNamed || with.null
+		var foreign []string
+		for member := range named.Ops[index] {
+			if !replaceTakes(member) {
+				foreign = append(foreign, member)
+			}
+		}
+		if !omitted && len(foreign) == 0 {
+			continue
+		}
+		var problems []string
+		if omitted {
+			problems = append(problems, "names no with, which would delete the text find matches")
+		}
+		if len(foreign) > 0 {
+			slices.Sort(foreign)
+			problems = append(problems, fmt.Sprintf("carries %s, which replace does not take", strings.Join(foreign, " and ")))
+		}
+		return errorf(http.StatusBadRequest, "REPLACE_FIELDS",
+			`operation %d: replace %s; a replace takes find, with and occurrence alone: write the new text in with, or with "" to delete the match on purpose`,
+			index, strings.Join(problems, ", and "))
+	}
+	return nil
+}
+
 // editArtifactResponse is the body POST /api/v1/artifacts/{id}/edits and its issue and project
 // artifact patterns answer.
 type editArtifactResponse struct {
@@ -1383,6 +1457,11 @@ type editArtifactResponse struct {
 	// moved, in document order, and a line for each one it removed or emptied. It is empty for a
 	// batch that left the document as it was.
 	Written string `json:"written"`
+	// UnguardedBlocks is, for an edit under a block guard, each block the edit took that the
+	// guard did not name, with the token the edit read it at (docs.EditOutcome.UnguardedBlocks):
+	// the guard did not name them, and a named block that holds one may still cover it; naming
+	// them in it refuses the edit when one changed. It is absent where there is none.
+	UnguardedBlocks []model.EditBlockPrecondition `json:"unguarded_blocks,omitempty"`
 }
 
 func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
@@ -1390,7 +1469,12 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input editArtifactInput
-	if err := decodeJSON(r, &input); err != nil {
+	body, err := decodeJSONBody(r, &input)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := replaceFieldsRefusal(input.Ops, body); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1524,13 +1608,14 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		unchanged = []int{}
 	}
 	responsePayload := editArtifactResponse{
-		Applied:      edit.Applied,
-		Changed:      edit.Changed,
-		LostOps:      lostOps(ledger, artifact.ID),
-		Token:        edit.Token,
-		UnchangedOps: unchanged,
-		Version:      version,
-		Written:      edit.Written,
+		Applied:         edit.Applied,
+		Changed:         edit.Changed,
+		LostOps:         lostOps(ledger, artifact.ID),
+		Token:           edit.Token,
+		UnchangedOps:    unchanged,
+		Version:         version,
+		Written:         edit.Written,
+		UnguardedBlocks: edit.UnguardedBlocks,
 	}
 	// The ask blocks the edit added, read from the documents the batch was applied to: whether an
 	// operation's markdown makes a block depends on where it lands and on the parser's reading of

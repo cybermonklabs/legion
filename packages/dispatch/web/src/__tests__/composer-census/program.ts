@@ -226,27 +226,113 @@ export function readProgram(root: string): Program {
   return program;
 }
 
-/** A `lazy(() => import("./x").then((module) => ({ default: module.Name })))` constant. */
+/** The module and the declaration a local name of `mod` stands for: its own top-level one, or
+ *  the one it imports by name. */
+function declNamed(
+  program: Program,
+  mod: Mod,
+  local: string
+): { readonly decl: ts.Node; readonly mod: Mod } | undefined {
+  const own = mod.decls.get(local);
+  if (own !== undefined) return { decl: own, mod };
+  const imported = mod.imports.get(local);
+  const from = imported?.from === undefined ? undefined : program.mods.get(imported.from);
+  const decl = from?.decls.get(imported?.name ?? "");
+  return from === undefined || decl === undefined ? undefined : { decl, mod: from };
+}
+
+/** The `import("…")` literal under `node`, with the module it sits in. */
+function importUnder(
+  mod: Mod,
+  node: ts.Node
+): { readonly mod: Mod; readonly spec: string } | undefined {
+  let spec: string | undefined;
+  const visit = (current: ts.Node) => {
+    if (
+      spec === undefined &&
+      ts.isCallExpression(current) &&
+      current.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      current.arguments.length > 0 &&
+      ts.isStringLiteral(current.arguments[0])
+    ) {
+      spec = current.arguments[0].text;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return spec === undefined ? undefined : { mod, spec };
+}
+
+/** The module a lazy constant's loader imports: the `import()` written in it, or the one in the
+ *  loader it calls - a constant of its own module or another's (`importIssuePage()`,
+ *  `importInbox()`), or a property of such a constant object (`issueTabChunks.conversation()`),
+ *  each of which holds the one `import()` of its chunk. */
+function loadedImport(
+  program: Program,
+  mod: Mod,
+  init: ts.CallExpression
+): { readonly mod: Mod; readonly spec: string } | undefined {
+  // The loader alone, `lazy(…)`'s or `chunkComponent(…)`'s first argument: the call itself names
+  // the wrapper, whose module is no chunk's.
+  const loader = init.arguments[0];
+  if (loader === undefined) return undefined;
+  const inline = importUnder(mod, loader);
+  if (inline !== undefined) return inline;
+  let found: { readonly mod: Mod; readonly spec: string } | undefined;
+  const visit = (node: ts.Node) => {
+    if (found !== undefined) return;
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      if (ts.isIdentifier(callee)) {
+        const named = declNamed(program, mod, callee.text);
+        if (named !== undefined) found = importUnder(named.mod, named.decl);
+      } else if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
+        const named = declNamed(program, mod, callee.expression.text);
+        let object =
+          named !== undefined && ts.isVariableDeclaration(named.decl)
+            ? named.decl.initializer
+            : undefined;
+        while (
+          object !== undefined &&
+          (ts.isSatisfiesExpression(object) || ts.isAsExpression(object))
+        ) {
+          object = object.expression;
+        }
+        const property =
+          object !== undefined && ts.isObjectLiteralExpression(object)
+            ? object.properties.find(
+                (each) => ts.isPropertyAssignment(each) && each.name.getText() === callee.name.text
+              )
+            : undefined;
+        if (named !== undefined && property !== undefined) found = importUnder(named.mod, property);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(loader);
+  return found;
+}
+
+/** A constant that loads a component from a chunk of its own: `lazy(() =>
+ *  import("./x").then((module) => ({ default: module.Name })))`, or this tree's
+ *  `chunkComponent(() => load().then((module) => module.Name), …)`
+ *  (`components/chunk-component.tsx`), whose loader may be a constant of its own. Read as the
+ *  component it loads, so a tag of it is a use of that component. */
 function lazyTarget(program: Program, mod: Mod, decl: ts.Node): string | undefined {
   if (!ts.isVariableDeclaration(decl) || decl.initializer === undefined) return undefined;
   const init = decl.initializer;
-  if (!ts.isCallExpression(init) || init.expression.getText() !== "lazy") return undefined;
-  let spec: string | undefined;
+  if (!ts.isCallExpression(init)) return undefined;
+  const callee = init.expression.getText();
+  if (callee !== "lazy" && callee !== "chunkComponent") return undefined;
   const names: string[] = [];
   const visit = (node: ts.Node) => {
-    if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length > 0 &&
-      ts.isStringLiteral(node.arguments[0])
-    ) {
-      spec = node.arguments[0].text;
-    }
     if (ts.isPropertyAccessExpression(node)) names.push(node.name.text);
     ts.forEachChild(node, visit);
   };
   visit(init);
-  const from = spec === undefined ? undefined : resolveSpec(program.mods, mod.rel, spec);
+  const loaded = loadedImport(program, mod, init);
+  const from =
+    loaded === undefined ? undefined : resolveSpec(program.mods, loaded.mod.rel, loaded.spec);
   const target = from === undefined ? undefined : program.mods.get(from);
   if (target === undefined) return undefined;
   for (const name of names) {

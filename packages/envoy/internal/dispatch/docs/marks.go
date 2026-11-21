@@ -354,13 +354,18 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		}
 		// Accepted text stays inside every ask and comment anchor the suggestion lay wholly inside,
 		// as an edit's replacement does, and the suggestion's own mark goes with the text it
-		// replaced. Only text that stays in the textblock carries them: a block replacement can
-		// land a code block, which an ask's mark cannot cover.
+		// replaced. It stays inside every bold, italic, struck, link or code span the suggestion
+		// lay wholly inside too, as an edit's replacement does (applyReplace), so the span stays
+		// whole; text that writes a mark of the span's type itself keeps its own. Only text that
+		// stays in the textblock carries them: a block replacement can land a code block, which an
+		// ask's mark cannot cover.
 		inline := code || isInlineDocument(replacement)
 		if inline {
-			pmdoc.AddMarks(replacement, slices.DeleteFunc(pmdoc.AnchorMarksCovering(tree, range_), func(mark pmdoc.Mark) bool {
+			anchors, spans := pmdoc.MarksCovering(tree, range_)
+			pmdoc.AddMarks(replacement, slices.DeleteFunc(anchors, func(mark pmdoc.Mark) bool {
 				return mark.Type == string(MarkSuggestion) && mark.Attrs["id"] == id
 			}))
+			pmdoc.AddSpanMarks(replacement, spans)
 		}
 		next, err := valid.Splice(range_, replacement)
 		if err != nil {

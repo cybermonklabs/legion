@@ -1,17 +1,20 @@
-import { actorActText } from "@legion/contracts";
+import { actorActText } from "@legion/contracts/actor-label";
+import { answerSelected } from "@legion/contracts/dispatch-constants";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { DispatchEvent, DisplayTree } from "../../api/types";
+import type { DispatchEvent } from "../../api/types";
 import { linkText, textMutedOnSurface, textPrimaryOnSurface } from "../../theme/classes";
 import { AskOptionList } from "../inbox/AskOptionList";
 import { eventDescription } from "../issue/event-description";
-import { AgentParts, AskResolutionLine } from "../refs/AgentName";
+import { AskResolutionLine } from "../refs/AgentName";
 import { askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath, buildReferencePath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { LineParts } from "./ActivityLine";
+import { payloadTree } from "./event-trees";
 
 type AskEvent = Extract<DispatchEvent, { type: "ask.opened" | "ask.answered" | "ask.resolved" }>;
 
@@ -19,15 +22,6 @@ export function isAskEvent(event: DispatchEvent): event is AskEvent {
   return (
     event.type === "ask.opened" || event.type === "ask.answered" || event.type === "ask.resolved"
   );
-}
-
-/** The tree of one stored text an event's payload carries, by that text's path in the envelope
- *  (`payload.body`, `payload.resolution.reason`). A payload keeps the shape every reader of the
- *  message bus knows, so its trees ride beside it in `trees` rather than on it
- *  (`api/event_trees.go`); a frame from a Dispatch older than the map carries none, and the
- *  body then renders as its own literal text. */
-function payloadTree(event: DispatchEvent, path: string): DisplayTree | undefined {
-  return event.trees?.[path];
 }
 
 function AskEventBody({
@@ -61,7 +55,10 @@ function AskEventBody({
         source={source}
         tree={payloadTree(event, "payload.question")}
       />
-      <AskOptionList options={optionsWithTrees} selected={answer?.selected ?? []} />
+      <AskOptionList
+        options={optionsWithTrees}
+        selected={answer === null ? [] : answerSelected(answer)}
+      />
       <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
         Opened <Timestamp at={created_at} />
       </p>
@@ -84,7 +81,7 @@ function AskEventBody({
             <p className={`mt-1 text-xs ${textMutedOnSurface}`}>
               <s>
                 was:{" "}
-                {[(previous.selected ?? []).join(", "), previous.text ?? ""]
+                {[answerSelected(previous).join(", "), previous.text ?? ""]
                   .filter((part) => part !== "")
                   .join(" - ")}
               </s>
@@ -181,9 +178,11 @@ export function EventBody({
       </>
     );
   }
+  // A question the line quotes is Markdown its author wrote, so the margin shows it formatted
+  // and cut to the line, as the Activity tab's own line does.
   return (
     <p className={`font-medium ${textPrimaryOnSurface}`}>
-      <AgentParts parts={eventDescription(event)} />
+      <LineParts description={eventDescription(event)} />
     </p>
   );
 }

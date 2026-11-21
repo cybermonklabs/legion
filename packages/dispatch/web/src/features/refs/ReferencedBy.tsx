@@ -10,9 +10,10 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { useAfterTheFirstBatch } from "../doc/first-batch";
 import { compiledBlockSchema } from "../doc/schema";
 import { blockFragment, isBlockItemKind } from "./block-reference";
-import { referenceTriggerProps } from "./RefPreview";
+import { referenceTriggerProps } from "./ref-preview-state";
 import { referencesQuery } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
 import { buildReferencePath, parseNodeReference } from "./routes";
@@ -251,7 +252,12 @@ export function ReferencedBy({
    *  and then the panel is its own heading. */
   toggle?: { id: string };
 }): ReactNode {
-  const query = useQuery(referencesQuery(reference));
+  // Beside an opening document the graph read waits for the editor's first batch: this list
+  // stands under the document the reader is waiting for, and on a phone well under the fold
+  // (dispatch://INFRA-341, R11, `features/doc/first-batch.ts`). A host that renders the panel
+  // only once the reader opens it says so for its whole subtree (`ReaderIsHere` in
+  // `features/issue/IssueHeader.tsx`), and the read goes out then.
+  const query = useQuery({ ...referencesQuery(reference), enabled: useAfterTheFirstBatch() });
   // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
   // end, that this page does not know; the page leaves such an edge out rather than draw it under
   // another edge's label.

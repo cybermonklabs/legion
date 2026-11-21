@@ -27,6 +27,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ComponentPicker } from "../architecture/ComponentPicker";
+import { useAfterTheFirstBatch } from "../doc/first-batch";
 import { buildIssuePath } from "../refs/routes";
 import { useIssueComponents } from "./useIssueComponents";
 
@@ -104,7 +105,13 @@ export function IssueComponentsLine({
   const page = usePageWords();
   const inDetails = page !== null && inRow;
   const { components } = issue;
-  const sources = useQuery(projectArchitectureSourcesQuery(issue.project));
+  // Beside an opening document the sources wait for the editor's first batch: all they decide
+  // is whether this line offers the picker, which is a control in the details rail and not the
+  // block the reader is waiting for (`features/doc/first-batch.ts`).
+  const sources = useQuery({
+    ...projectArchitectureSourcesQuery(issue.project),
+    enabled: useAfterTheFirstBatch(),
+  });
   const [pickerOpen, setPickerOpen] = useState(false);
   const namesComponents = components.mode === "explicit" && (components.ids ?? []).length > 0;
   const tree = useQuery({

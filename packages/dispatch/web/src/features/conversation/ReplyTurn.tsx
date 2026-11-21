@@ -1,4 +1,4 @@
-import type { MessageDeliveryMode } from "@legion/contracts";
+import type { MessageDeliveryMode } from "@legion/contracts/dispatch-constants";
 import type { ReactNode } from "react";
 
 import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";

@@ -1,7 +1,7 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -181,7 +181,11 @@ async function openTitleEditor(): Promise<HTMLInputElement> {
     return existing;
   }
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("heading", { level: 1 }));
+  // The header is a chunk of its own, drawn in a held box that has a heading of its own and no
+  // title to edit (`issue-page-skeleton.tsx`): the first row of this file to draw the page
+  // finds that box, so the press waits for the header itself.
+  const header = await screen.findByTestId("issue-header");
+  await user.click(within(header).getByRole("heading", { level: 1 }));
   return (await screen.findByLabelText("Issue title")) as HTMLInputElement;
 }
 

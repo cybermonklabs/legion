@@ -487,10 +487,12 @@ test("the chord that opens a view with no row brings its failed read's Retry on 
     const retry = await page.findByRole("button", { name: "Retry" });
     await waitFor(() => expect(document.activeElement).toBe(retry));
     await frames(2);
-    // Its top is brought 8 px below the band, which nothing publishes here (`bringOnScreen`).
-    expect(scrolled, "the Retry the chord reached was left above the screen").toHaveBeenCalledWith({
-      top: -108,
-    });
+    // Its top is brought 8 px below the band, which nothing publishes here (`bringOnScreen`). The
+    // move goes through readers-place.ts's moveTheBox, which scrolls the page by (0, dy).
+    expect(scrolled, "the Retry the chord reached was left above the screen").toHaveBeenCalledWith(
+      0,
+      -108
+    );
   } finally {
     page.unmount();
     boxes.mockRestore();

@@ -33,8 +33,8 @@ set -euo pipefail
 # that the caller built, which this run execs instead of building them from this checkout (the
 # build below; run-server.sh's DISPATCH_E2E_SERVER_BIN is the precedent). Unset, this script
 # builds them, which is what a developer's machine and an issue pod do. Its one caller is CI:
-# the shard and alone jobs of .github/workflows/dispatch-browser.yaml run in a container with
-# no Go toolchain, and that file's binaries job builds the three for them.
+# the shard, alone and visual jobs of .github/workflows/dispatch-browser.yaml, which run no Go
+# command, and that file's binaries job builds the three for them.
 #
 # It serves one directory only, packages/envoy/out/dispatch-e2e-broker under this checkout, and
 # the check below refuses every other one: e2e/real-broker.ts runs requestseed out of that path
@@ -74,7 +74,7 @@ work="$(cd "$e2e_dir/../../envoy" && pwd)/out/dispatch-e2e-broker"
 # This script execs exactly one of broker and dev-oidc-issuer per invocation and never runs
 # requestseed: e2e/real-broker.ts runs that one itself, out of
 # packages/envoy/out/dispatch-e2e-broker, the fixed path the build below writes to and the one
-# the shard and alone jobs download the binaries into. That is why the check below asks a
+# the shard, alone and visual jobs download the binaries into. That is why the check below asks a
 # handed-over directory for requestseed too, and why it refuses a directory that is not that
 # one.
 # Unset, the build below is this checkout's, as it always was: a developer's machine and an

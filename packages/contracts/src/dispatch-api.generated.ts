@@ -4860,6 +4860,7 @@ export interface components {
       lost_ops: number[] | null;
       token: string;
       unchanged_ops: number[] | null;
+      unguarded_blocks?: components["schemas"]["EditBlockPrecondition"][];
       version: components["schemas"]["Version"] | null;
       written: string;
     };

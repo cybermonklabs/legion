@@ -1,0 +1,38 @@
+kind: Fixed
+body: |-
+  `dispatch doc-edit`'s `replace` and an accepted suggestion keep the bold, italic, strikethrough,
+  link or code span the replaced text lies wholly inside: replacing `said` in `**Sami said bold**`
+  gives `**Sami answered bold**`, where the span was split and its edges written as character
+  references (`**Sami&#32;**&#97;nswered`), and replacing a span's whole text keeps its mark, where
+  it was dropped. A `find` that spells the span's markup over all of the span's text it covers
+  (`**Sami bold**`) lets `with` decide that formatting, and one that spells it over part of that
+  text (`a **b** c` over `**a b c**`) keeps the span; one that matched the text as written spells
+  none, so `2*3*4` in `*a 2\*3\*4 b*` stays in the italic. A `replace` whose `find` crosses a
+  span's edge, covering text inside it and text outside it (`wrote this`, where only `this` is a
+  link), is refused with `400 FIND_CROSSES_SPAN` naming the span, and nothing is written, where the
+  link went with its URL and a span cut to end on a space was written with character references:
+  narrow the `find` to the span's inside, or spell the whole span's markup in it. Each span is
+  weighed alone, so a `find` that spells one link's markup and covers a second link
+  (`wrote [this](https://a.example/1) and that`) is refused naming `that`. A link is spelled only
+  with the URL and title it has: a `find` that writes its text under another URL or title
+  (`wrote [this](https://wrong.example/9) today`) is refused naming the link, with its own URL and
+  title in the markup to spell, and so is a `find` that is that link alone
+  (`[this](https://wrong.example/9)`), which was written inside the link under the URL it held.
+  A bare URL or a bare `www.` link is its own markup, so a `find` that covers the whole of it
+  spells it: `docs at https://example.com/x` was refused with that same `find` as the markup to
+  spell.
+
+  The rule has two limits. No `find` spells strikethrough's markup, so a `find` crossing a struck
+  span's edge is narrowed to its inside, and the text outside it replaced in an operation of its
+  own. A span is kept only by a `with` of one paragraph: a `with` that parses to blocks keeps the
+  ask and comment anchors the match lies inside, and none of its spans.
+
+  A `replace` takes `op`, `find`, `with` and `occurrence` alone. One that names no `with`, or
+  carries any other member whatever it holds (`markdown`, `markdown: ""`, `text`, `replacement`),
+  is refused with `400 REPLACE_FIELDS` naming the operation and the member, and nothing in the
+  batch is written. It was read as an empty `with` and deleted the text its `find` matched, as a
+  `replace` that sent its new text as `markdown` did, or applied beside a member it never read.
+  `with: ""` still deletes the match on purpose.
+time: 2026-11-16T20:55:00Z
+custom:
+    Issue: pr2697

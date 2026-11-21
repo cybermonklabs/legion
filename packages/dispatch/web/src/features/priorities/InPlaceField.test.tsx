@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { render, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the Enter row below reads
+import { fireEvent, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { InPlaceField } from "./InPlaceField";
@@ -53,4 +54,33 @@ test("a text written elsewhere replaces what a field the reader is not holding s
     "Written elsewhere"
   );
   view.unmount();
+});
+
+// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
+// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
+// Safari sends it (WebKit bug 165004). It saves nothing and leaves the field held; a plain Enter
+// after it saves what was typed and leaves the field.
+test("the Enter that confirms an input method's word saves nothing and keeps the field, and a plain Enter saves and leaves it", async () => {
+  const user = userEvent.setup();
+  const saved: string[] = [];
+  const view = render(
+    <InPlaceField label="Title" onSave={(next) => saved.push(next)} value="Old name" />
+  );
+  try {
+    const field = within(view.container).getByRole("textbox", { name: "Title" });
+    await user.clear(field);
+    await user.type(field, "New name");
+    // user-event cannot mark a key as an input method's, so the two such Enters are fired.
+    expect(fireEvent.keyDown(field, { isComposing: true, key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(field, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
+    expect(saved).toEqual([]);
+    expect(document.activeElement).toBe(field);
+
+    // The plain Enter goes the same way as the two above, so only the composition mark differs.
+    expect(fireEvent.keyDown(field, { key: "Enter" })).toBe(false);
+    expect(saved.at(0)).toBe("New name");
+    expect(document.activeElement).not.toBe(field);
+  } finally {
+    view.unmount();
+  }
 });

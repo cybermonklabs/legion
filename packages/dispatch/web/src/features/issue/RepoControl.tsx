@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { api, apiErrorMessage } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords, useTooltips } from "../../components/tooltips";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   dangerText,
   focusBorder,
@@ -18,6 +19,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { useAfterTheFirstBatch } from "../doc/first-batch";
 import { focusOnDocument } from "../shell/roving";
 import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
@@ -172,6 +174,11 @@ export function RepoControl({
   const page = usePageWords();
   const inDetails = page !== null && inRow;
   const [wanted, setWanted] = useState(false);
+  // Beside an opening document the mappings wait for the editor's first batch, as the other
+  // reads of this header do (`features/doc/first-batch.ts`): what they fill is the box's
+  // suggestions in the details rail, and a reader who reaches for it has the list read then
+  // rather than at the batch.
+  const afterTheFirstBatch = useAfterTheFirstBatch(wanted);
   /** What the reader has typed since the box was last written, left or restored; null while the
    *  box shows the issue's own repository. */
   const [draft, setDraft] = useState<string | null>(null);
@@ -193,7 +200,7 @@ export function RepoControl({
       : (pickLook({ field: "repo", issueKey, value: repo }).fields.resolved_repo ??
         hostResolvedRepo);
   const mappings = useQuery({
-    enabled: wanted || resolvedRepo === null,
+    enabled: (wanted || resolvedRepo === null) && afterTheFirstBatch,
     queryKey: ["repo-projects"],
     queryFn: () => api.listRepoProjects(),
   });
@@ -368,8 +375,9 @@ export function RepoControl({
               ? undefined
               : (event) => {
                   // A press that ends an IME composition gives up what the reader was composing,
-                  // not the box: the place leaves it alone, unmarked, as the key registry does.
-                  if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+                  // not the box: the place leaves it alone, unmarked, as the key registry does
+                  // (`inputMethodKey`).
+                  if (event.key !== "Escape" || inputMethodKey(event)) return;
                   // Inside `NoTooltips` the press is the box's, from the box or from its clear
                   // control: it puts back what the issue holds, closes the box in a row of
                   // Details, and closes nothing around it. On a phone the box sits in Details, a
@@ -441,6 +449,9 @@ export function RepoControl({
                   want();
                 }}
                 onKeyDown={(event) => {
+                  // The Enter that confirms an input method's word is the input method's, not
+                  // the write, and so is the Escape that ends its composition, not the restore.
+                  if (inputMethodKey(event)) return;
                   if (event.key === "Enter") {
                     event.preventDefault();
                     commit();

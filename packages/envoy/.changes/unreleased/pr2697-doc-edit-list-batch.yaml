@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  `dispatch doc-edit`'s `delete` whose `find` opens with a list marker, which selects an item of
+  that kind of list whose text starts with the rest, deletes that whole item, the items nested in
+  it included. It deleted only the words the `find` matched and left the rest of the item
+  standing: `{"op":"delete","find":"- **2026-11-17, 00:00Z to 01:00Z**"}` left
+  `- &#32;(run between …`. A `find` or quote anchor that opens with a list marker and matches no
+  text as written selects the item before it is read as markdown, which took the marker for list
+  syntax and dropped it, so a marker before bold or code text matched that text wherever it stood:
+  a `replace` of such a `find` writes over the same text of the item it selects, and its `with`
+  may now carry the item's own marker, as it may for a `find` of plain text.
+
+  The operations of one edit apply in order, each reading the document as the operations before
+  it left it, and none removes or changes a block it does not name. A delete of a block removes
+  all it holds but the blocks an earlier `insert` or `move` of the edit wrote into it, so list
+  content an `insert` joined to the list it was anchored on stays where the list stood, a list of
+  its own, a paragraph an `insert` wrote into a typed block stays where that block stood, and a
+  list item a `move` put in a list stays where the list stood. A block an earlier `replace` wrote
+  there is the deleted block's, and goes with it. An insert of a list after a list's own block,
+  then a delete of that block, lost both lists: the inserted items had joined the list, and the
+  delete took them with it. A later operation of the same edit may still name a block such a
+  delete kept. A `delete` naming both `block` and `find` is `400 INVALID_OP` before either is
+  read, as before.
+time: 2026-11-18T19:45:00Z
+custom:
+    Issue: pr2697

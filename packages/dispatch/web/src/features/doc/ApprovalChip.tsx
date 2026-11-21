@@ -5,6 +5,7 @@ import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/cl
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
+import { RefusableButton } from "../../components/RefusableButton";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -28,6 +29,7 @@ import {
   primaryButtonBg,
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
+  secondaryButton,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
@@ -48,10 +50,12 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
  * Each colour the chip, its two actions and its two dialogs draw inside `NoTooltips`, the new
  * issue page's, by the role `main`'s colour has: a dialog is the page's paper inside its hairline
  * rule over the icon rail's dark, the one page colour dark in both schemes; its heading and a
- * review are the ink, the reviewer's reason and a label the muted grey, Close and a pending read
- * the quiet grey, a refusal the failed red; Approve and the dialog's Request changes are filled
- * with the ink, as the header's one filled control is, and the other actions are the header's
- * control. The reason box keeps `main`'s focus rule, the application's one focus indicator.
+ * review are the ink, the reviewer's reason and a label the muted grey, Close, a pending read
+ * and the reason the dialog's Request changes refuses the quiet grey, a refusal the failed red;
+ * Approve is filled with the ink, as the header's one filled control is (the dialog's Request
+ * changes is `RefusableButton`'s primary, filled the same), and the other actions are the
+ * header's control. The reason box keeps `main`'s focus rule, the application's one focus
+ * indicator.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -71,6 +75,7 @@ const ON_PAGE = {
   pending: pageQuietText,
   reason: pageMutedText,
   reasonBox: `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`,
+  refusal: pageQuietText,
   review: pageInkText,
 } as const;
 
@@ -223,6 +228,10 @@ function RequestChangesDialog({
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
   const page = usePageWords();
   const trimmed = reason.trim();
+  const refusalId = useId();
+  // An empty reason refuses the submit; the save already out is its `busy`, and nothing else
+  // holds it.
+  const refusal = trimmed === "" ? "Say what needs to change." : null;
 
   return (
     <>
@@ -286,6 +295,16 @@ function RequestChangesDialog({
                   : "Could not request changes. Try again."}
             </p>
           )}
+          {/* The reason the submit refuses, on screen under the field it names, and the
+              description the button carries. */}
+          {refusal === null ? null : (
+            <p
+              className={`text-xs ${page === null ? textMutedOnSurface : ON_PAGE.refusal}`}
+              id={refusalId}
+            >
+              {refusal}
+            </p>
+          )}
           <div className="flex items-center justify-end gap-2">
             <button
               // Inside `NoTooltips`, while the write is out, this button reads Close and closes the
@@ -299,20 +318,15 @@ function RequestChangesDialog({
             >
               {page !== null && saving ? page.CONTROL_LABELS.close : "Cancel"}
             </button>
-            <button
-              aria-disabled={(page !== null && saving) || undefined}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`}
-              disabled={trimmed === "" || (page === null && saving)}
-              onClick={() => {
-                if (saving) {
-                  return;
-                }
-                onSubmit(trimmed);
-              }}
-              type="button"
+            <RefusableButton
+              busy={saving ? "Submitting…" : undefined}
+              onPress={() => onSubmit(trimmed)}
+              refusal={refusal}
+              refusalShownBy={refusalId}
+              refusedWhileOut={page !== null && saving}
             >
-              {saving ? "Submitting…" : "Request changes"}
-            </button>
+              Request changes
+            </RefusableButton>
           </div>
         </div>
       </div>
@@ -352,6 +366,17 @@ export interface ApprovalChipProps {
   variant?: "header" | "list";
   /** The issue header exposes review actions only after an approval request exists. */
   showActions?: boolean;
+  /**
+   * The state alone, as text a reader cannot press: no reviews to open and no actions.
+   *
+   * For the space a host keeps while its header is still held back
+   * (`ChromeAfterTheFirstBatch`). A press inside that space replaces the space with the header
+   * it was keeping, in the same press, so a control drawn there swallows the press it was drawn
+   * for: the reader presses the chip and gets neither the reviews nor the chip. What the reader
+   * is owed there is the state, which they are never told otherwise, and the header a press
+   * brings carries the real chip.
+   */
+  asText?: boolean;
   /** `contents` lets a parent flex group place the state chip and actions independently. */
   layout?: "contents" | "inline";
   /** Whether Approve and Request changes sit in one box that does not wrap, so in a parent's line
@@ -386,12 +411,13 @@ interface DocumentReview {
 export function ApprovalChip({
   actionsDocument,
   artifact,
+  asText = false,
   keepActionsTogether = false,
   layout = "inline",
   onReviewed,
   size = "default",
   variant = "list",
-  showActions = variant === "header",
+  showActions = variant === "header" && !asText,
 }: ApprovalChipProps): ReactNode {
   const { approval } = artifact;
   const [reviewsOpen, setReviewsOpen] = useState(false);
@@ -497,23 +523,36 @@ export function ApprovalChip({
     <div
       className={layout === "contents" ? "contents" : "inline-flex flex-wrap items-center gap-2"}
     >
-      <button
-        aria-haspopup="dialog"
-        className={approvalPillClassName(approval.state, size, page !== null)}
-        // Inside `NoTooltips`, the document whose approval this is, which an approval request's
-        // own address puts the focus on.
-        data-approval-artifact={page === null ? undefined : artifact.id}
-        onClick={() => setReviewsOpen(true)}
-        ref={chipButton}
-        title={
-          tooltips && approval.state === "stale"
-            ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
-            : undefined
-        }
-        type="button"
-      >
-        {approvalLabel(approval, page?.CONTROL_LABELS.approval_latest)}
-      </button>
+      {asText ? (
+        <span
+          className={approvalPillClassName(approval.state, size, page !== null)}
+          title={
+            tooltips && approval.state === "stale"
+              ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
+              : undefined
+          }
+        >
+          {approvalLabel(approval, page?.CONTROL_LABELS.approval_latest)}
+        </span>
+      ) : (
+        <button
+          aria-haspopup="dialog"
+          className={approvalPillClassName(approval.state, size, page !== null)}
+          // Inside `NoTooltips`, the document whose approval this is, which an approval request's
+          // own address puts the focus on.
+          data-approval-artifact={page === null ? undefined : artifact.id}
+          onClick={() => setReviewsOpen(true)}
+          ref={chipButton}
+          title={
+            tooltips && approval.state === "stale"
+              ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
+              : undefined
+          }
+          type="button"
+        >
+          {approvalLabel(approval, page?.CONTROL_LABELS.approval_latest)}
+        </button>
+      )}
       {variant === "header" && showActions ? (
         <ActionsGroup together={keepActionsTogether}>
           {approval.state === "approved" ? null : (
@@ -552,13 +591,13 @@ export function ApprovalChip({
             // press of it does nothing: the dialog it opens gives the focus back to it once a
             // change request lands and its new approval is read, and a `disabled` button takes no
             // focus, which then falls to the body. Outside it is `disabled` while the write is
-            // out, as on `main`.
+            // out, in the header's second action's look (`secondaryButton`).
             aria-disabled={(page !== null && review.isPending) || undefined}
             aria-label={actionNames?.requestChanges}
             className={
               size === "compact"
                 ? pageHeaderControl
-                : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`
+                : `${page === null ? secondaryButton : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${ON_PAGE.action}`} md:min-h-8 md:py-1`
             }
             disabled={page === null && review.isPending}
             onClick={() => {

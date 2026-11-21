@@ -7,7 +7,8 @@ import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { changingEachHandle, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -27,7 +28,7 @@ import type {
   Version,
 } from "../../api/types";
 import { CHANGED_BLOCK_CLASS, type ChangeBaseline, changeMarksAgainst } from "../doc/change-marks";
-import type { CreateEditor, EditorHandle } from "../doc/editor";
+import type { EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -168,10 +169,10 @@ function askNodeOf(markdown: string): ProseMirrorNode {
  *  write puts it there: a version draws the reading the server sent (`setDocumentJSON`), and one
  *  that arrived with no reading writes its own markdown instead (`setMarkdown`), which is the
  *  fallback this change gives the version view. Either replaces everything in the editor's
- *  root. */
-function drawAskBlock(markdown: string): (inner: CreateEditor) => CreateEditor {
-  return (inner) => async (root, options) => {
-    const handle: EditorHandle = await inner(root, options);
+ *  root, and the handle is the one the binding answers, which is the first moment the node
+ *  views are on the view (`changingEachHandle`, `__tests__/document-runtime.ts`). */
+function drawAskBlock(markdown: string): (handle: EditorHandle) => void {
+  return (handle) => {
     const nodeViews = handle.view.props.nodeViews as Record<
       string,
       (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
@@ -181,14 +182,13 @@ function drawAskBlock(markdown: string): (inner: CreateEditor) => CreateEditor {
     const writtenMarkdown = handle.setMarkdown;
     handle.setMarkdown = (text: string) => {
       writtenMarkdown(text);
-      root.append(construct(askNodeOf(markdown)).dom);
+      handle.view.dom.append(construct(askNodeOf(markdown)).dom);
     };
     const writtenDocument = handle.setDocumentJSON;
     handle.setDocumentJSON = (json) => {
       writtenDocument(json);
-      root.append(construct(askNodeOf(markdown)).dom);
+      handle.view.dom.append(construct(askNodeOf(markdown)).dom);
     };
-    return handle;
   };
 }
 
@@ -201,9 +201,8 @@ function recordMarks(
   markdown: string,
   drawn: ChangeDecorations[],
   { paintMarks = false }: { paintMarks?: boolean } = {}
-): (inner: CreateEditor) => CreateEditor {
-  return (inner) => async (root, options) => {
-    const handle: EditorHandle = await inner(root, options);
+): (handle: EditorHandle) => void {
+  return (handle) => {
     const state = handle.view.state as unknown as { doc: ProseMirrorNode };
     state.doc = renderedDocument(markdown);
     handle.setChangeDecorations = (decorations) => {
@@ -212,40 +211,39 @@ function recordMarks(
       const block = globalThis.document.createElement("p");
       block.className = CHANGED_BLOCK_CLASS;
       block.textContent = "The plan ships behind a canary today.";
-      root.append(block);
+      handle.view.dom.append(block);
     };
-    return handle;
   };
 }
 
 /** Gives the fake editor the blocks a real one would draw, each stamped with its block id as
  *  `@legion/proof-editor` stamps them: the pane reads its section off the drawn document. */
-function drawBlocks(blocks: string): (inner: CreateEditor) => CreateEditor {
-  return (inner) => async (root, options) => {
-    const handle: EditorHandle = await inner(root, options);
-    root.innerHTML = blocks;
-    return handle;
+function drawBlocks(blocks: string): (handle: EditorHandle) => void {
+  return (handle) => {
+    handle.view.dom.innerHTML = blocks;
   };
 }
 
 function renderPane({
   ask,
-  createEditor,
   seed = () => {},
+  whenBound,
 }: {
   ask: InboxRow;
-  createEditor?: (inner: CreateEditor) => CreateEditor;
   seed?: (client: QueryClient) => void;
+  /** Given each handle as the pane's editor binds it, for a row that reads or replaces what
+   *  that editor answers. */
+  whenBound?: (handle: EditorHandle) => void;
 }) {
   const fake = fakeDocumentRuntime({ text: "The live document" });
   /** Each document the column opened a room for, in the order it opened them. */
   const opened: string[] = [];
   const runtime = {
     ...fake.runtime,
-    createEditor:
-      createEditor === undefined
-        ? fake.runtime.createEditor
-        : createEditor(fake.runtime.createEditor),
+    constructEditor:
+      whenBound === undefined
+        ? fake.runtime.constructEditor
+        : changingEachHandle(fake.runtime.constructEditor, whenBound),
     loadTransport: async () => {
       const connect = await fake.runtime.loadTransport();
       return (artifactId: string, callbacks: Parameters<typeof connect>[1]) => {
@@ -339,7 +337,7 @@ test("a decision block draws the document in pane mode, with Skip to the answer 
   try {
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
     expect(opened).toEqual(["artifact-1"]);
-    runtime.sync();
+    act(() => runtime.sync());
     await waitFor(() => expect(runtime.editors).toHaveLength(1));
     // What `surface="pane"` means where the editor is built: no presence, and no edits.
     expect(runtime.editors[0]?.options).toMatchObject({ access: "read", awareness: null });
@@ -352,7 +350,7 @@ test("a decision block draws the document in pane mode, with Skip to the answer 
 test("a decision block's column marks the section from its heading down to the block", async () => {
   const { runtime, view } = renderPane({
     ask: decisionAsk(),
-    createEditor: drawBlocks(
+    whenBound: drawBlocks(
       '<h1 data-block-id="title">Plan</h1><h2 data-block-id="rollout">Rollout</h2>' +
         '<p data-block-id="context">How it goes out.</p>' +
         '<section data-block-id="ship_it">Ship behind a flag?</section>'
@@ -362,7 +360,7 @@ test("a decision block's column marks the section from its heading down to the b
 
   try {
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
-    runtime.sync();
+    act(() => runtime.sync());
     expect(await screen.findByTestId("pane-section-bar")).toBeDefined();
   } finally {
     view.unmount();
@@ -372,7 +370,7 @@ test("a decision block's column marks the section from its heading down to the b
 test("a decision block before any heading sits in no section, so no bar is drawn", async () => {
   const { runtime, view } = renderPane({
     ask: decisionAsk(),
-    createEditor: drawBlocks(
+    whenBound: drawBlocks(
       '<p data-block-id="context">How it goes out.</p>' +
         '<section data-block-id="ship_it">Ship behind a flag?</section>' +
         '<h2 data-block-id="rollout">Rollout</h2>'
@@ -382,7 +380,7 @@ test("a decision block before any heading sits in no section, so no bar is drawn
 
   try {
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
-    runtime.sync();
+    act(() => runtime.sync());
     await waitFor(() => expect(runtime.editors).toHaveLength(1));
     await waitFor(() =>
       expect(screen.getByTestId("inbox-pane")).toHaveTextContent("Ship behind a flag?")
@@ -400,7 +398,7 @@ test("an approval draws the latest version marked against the version it follows
   const drawn: ChangeDecorations[] = [];
   const { view } = renderPane({
     ask: approvalAsk(EARLIER_APPROVAL),
-    createEditor: recordMarks(latest, drawn),
+    whenBound: recordMarks(latest, drawn),
     seed: (client) =>
       seedDocument(
         client,
@@ -437,7 +435,7 @@ test("an approval marks the version against a baseline answered with no reading"
   const drawn: ChangeDecorations[] = [];
   const { view } = renderPane({
     ask: approvalAsk(EARLIER_APPROVAL),
-    createEditor: recordMarks(latest, drawn, { paintMarks: true }),
+    whenBound: recordMarks(latest, drawn, { paintMarks: true }),
     seed: (client) => {
       seedDocument(
         client,
@@ -473,7 +471,7 @@ test("an approval of a document nobody has approved marks nothing and offers no 
   const drawn: ChangeDecorations[] = [];
   const { view } = renderPane({
     ask: approvalAsk(),
-    createEditor: recordMarks(latest, drawn),
+    whenBound: recordMarks(latest, drawn),
     seed: (client) =>
       seedDocument(
         client,
@@ -507,7 +505,7 @@ test("an approval whose version drew marks offers Next change", async () => {
   const drawn: ChangeDecorations[] = [];
   const { view } = renderPane({
     ask: approvalAsk(EARLIER_APPROVAL),
-    createEditor: recordMarks(latest, drawn, { paintMarks: true }),
+    whenBound: recordMarks(latest, drawn, { paintMarks: true }),
     seed: (client) =>
       seedDocument(
         client,
@@ -534,7 +532,7 @@ test("an approval whose baseline loaded but whose marks never drew offers no Nex
   const { view } = renderPane({
     ask: approvalAsk(EARLIER_APPROVAL),
     // The marks are computed and handed over, and nothing of them reaches the drawn document.
-    createEditor: recordMarks(latest, drawn),
+    whenBound: recordMarks(latest, drawn),
     seed: (client) =>
       seedDocument(
         client,
@@ -563,7 +561,7 @@ test("an approved document shows the approval it follows in place of the actions
   const drawn: ChangeDecorations[] = [];
   const { view } = renderPane({
     ask: approvalAsk(EARLIER_APPROVAL),
-    createEditor: recordMarks(latest, drawn),
+    whenBound: recordMarks(latest, drawn),
     seed: (client) =>
       seedDocument(
         client,
@@ -611,6 +609,92 @@ test("an approval draws the request's own question above the document, inside th
     expect(screen.getByTestId("inbox-pane-scroller").contains(block)).toBe(true);
   } finally {
     view.unmount();
+  }
+});
+
+/** A reply on the approval request's own ask, as the Inbox row's thread carries it. */
+function approvalReply(id: string, author: InboxRow["author"], body: string, at: string) {
+  return {
+    ...commentDeliveryFields(),
+    anchor: null,
+    ask_id: "ask-a",
+    author,
+    body,
+    created_at: at,
+    edited_at: null,
+    id,
+    issue_key: "CORE-1",
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+}
+
+const PERSON_REPLY = "Does the canary hold the old flag for a day?";
+const AGENT_REPLY = "It does: the flag stays on until the canary has run a full day.";
+
+test("an approval draws the replies on its ask from the row's own thread, with its reply box and no read of its own", async () => {
+  await warmMarkdownRenderer();
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  // The row carries the ask's thread, as the Inbox's one list read hydrates every row's: the
+  // column draws it from there, and a read of the ask's thread is a request it never makes.
+  const getAsk = spyOn(api, "getAsk").mockRejectedValue(new Error("the column read the thread"));
+  const row = approvalAsk();
+  const { view } = renderPane({
+    ask: {
+      ...row,
+      thread: {
+        ...row.thread,
+        replies: [
+          approvalReply(
+            "reply-person",
+            { id: "bob", kind: "user" },
+            PERSON_REPLY,
+            "2026-09-11T01:00:00Z"
+          ),
+          approvalReply(
+            "reply-agent",
+            { id: "session-1", kind: "session" },
+            AGENT_REPLY,
+            "2026-09-11T02:00:00Z"
+          ),
+        ],
+      },
+    },
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
+        { 4: latest }
+      ),
+  });
+
+  try {
+    const question = await screen.findByTestId("pane-approval-question");
+    const thread = await screen.findByTestId("thread-ask-a");
+    expect(await within(thread).findByText(PERSON_REPLY)).toBeDefined();
+    expect(await within(thread).findByText(AGENT_REPLY)).toBeDefined();
+    // The box a reply is written in, with the button that sends it, under the replies.
+    expect(within(thread).getByRole("textbox", { name: "Reply" })).toBeDefined();
+    expect(within(thread).getByRole("button", { name: "Reply" })).toBeDefined();
+    // Under the question, and above the version the request asks about, in the one scroller.
+    expect(
+      question.compareDocumentPosition(thread) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeGreaterThan(0);
+    const drawn = await screen.findByLabelText("Document version 4");
+    expect(
+      thread.compareDocumentPosition(drawn) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeGreaterThan(0);
+    expect(screen.getByTestId("inbox-pane-scroller").contains(thread)).toBe(true);
+    // The question is the column's own block, and the card's parts draw it nowhere else.
+    expect(screen.getAllByText("Approve spec.md at version 4?")).toHaveLength(1);
+    expect(getAsk).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
   }
 });
 
@@ -918,13 +1002,13 @@ test("an approval draws the ask card of a question block in the version it shows
   const latest = '# Plan\n\n:::ask{urgency="high"}\nShip behind a flag?\n:::\n';
   const { view } = renderPane({
     ask: approvalAsk(),
-    createEditor: drawAskBlock(latest),
     seed: (client) =>
       seedDocument(
         client,
         document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
         { 4: latest }
       ),
+    whenBound: drawAskBlock(latest),
   });
 
   try {
@@ -948,7 +1032,7 @@ test("an approval draws the ask card of a version answered with no reading", asy
   const latest = '# Plan\n\n:::ask{urgency="high"}\nShip behind a flag?\n:::\n';
   const { view } = renderPane({
     ask: approvalAsk(),
-    createEditor: drawAskBlock(latest),
+    whenBound: drawAskBlock(latest),
     seed: (client) => {
       seedDocument(
         client,
@@ -1065,7 +1149,7 @@ test("a project document's head names the project and the document, and opens it
       issue: undefined,
       issue_key: null,
     }),
-    createEditor: drawBlocks(
+    whenBound: drawBlocks(
       '<h2 data-block-id="rollout">Rollout</h2>' +
         '<section data-block-id="ship_it">Ship behind a flag?</section>'
     ),
@@ -1082,7 +1166,7 @@ test("a project document's head names the project and the document, and opens it
     expect(screen.queryByRole("combobox", { name: /^Priority of/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Assign / })).not.toBeInTheDocument();
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
-    runtime.sync();
+    act(() => runtime.sync());
     await waitFor(() =>
       expect(screen.getByRole("link", { name: "Open page" })).toHaveAttribute(
         "href",

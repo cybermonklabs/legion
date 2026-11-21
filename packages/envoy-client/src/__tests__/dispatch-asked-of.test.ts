@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import {
@@ -7,11 +7,8 @@ import {
   AskEventPayloadSchema,
   dispatchToolSpecs,
 } from "@legion/contracts";
-import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags } from "../dispatch-command";
-import { resetAdviceMemory } from "../dispatch-execute";
+import { useIssueUpdateCli } from "./issue-update-cli";
 
 // Who an open ask waits on, from the command line and from the texts an agent reads. A person
 // hands an ask on through the web app or `PUT /api/v1/asks/{id}/asked-of`, both person-scoped, so
@@ -20,10 +17,7 @@ import { resetAdviceMemory } from "../dispatch-execute";
 // sentences every description and skill shares, and the scan that fails a new line telling an
 // agent to address or hand on an ask.
 
-const makeDirectory = temporaryDirectories("dispatch-asked-of");
-
-/** The Dispatch bearer each command is handed. */
-const TOKEN = fixtureSecret("dsp");
+const { run, calls, patchBody, forget } = useIssueUpdateCli("dispatch-asked-of");
 
 /** The repository root, from this file's own path rather than the working directory, which bun
  *  sets to the package when the check runs `cd packages/envoy-client && bun test`. */
@@ -31,102 +25,10 @@ const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 
 const ASSIGNEE = "bob@example.com";
 
-interface Recorded {
-  readonly method: string;
-  readonly path: string;
-  readonly body: unknown;
-}
-
-const requests: Recorded[] = [];
-
-/** DSP-1 as `GET /api/v1/issues/DSP-1` reads it: open, with nobody holding it. */
-const ISSUE = {
-  key: "DSP-1",
-  title: "Native workspace",
-  status: "in_progress",
-  labels: [],
-  priority: null,
-  assignee: null,
-  route: null,
-  parent: null,
-  blocked_by: [],
-  components: [],
-  repo: null,
-  resolved_repo: null,
-  closed_at: null,
-  external_links: [],
-  artifacts: [],
-};
-
-const server = Bun.serve({
-  port: 0,
-  async fetch(request) {
-    const { pathname } = new URL(request.url);
-    const text = await request.text();
-    const body: unknown = text === "" ? undefined : JSON.parse(text);
-    requests.push({ method: request.method, path: pathname, body });
-    if (pathname === "/api/v1/issues/DSP-1" && request.method === "GET") {
-      return Response.json(ISSUE);
-    }
-    if (pathname === "/api/v1/issues/DSP-1" && request.method === "PATCH") {
-      const sent = (body ?? {}) as { assignee?: string | null };
-      return Response.json({ ...ISSUE, assignee: sent.assignee ?? null });
-    }
-    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
-});
-
-afterAll(() => server.stop(true));
-
-let stateDir = "";
-beforeEach(() => {
-  requests.length = 0;
-  stateDir = makeDirectory();
-  resetAdviceMemory();
-});
-
-async function run(argv: readonly string[]): Promise<{
-  code: number;
-  stdout: string;
-  stderr: string;
-}> {
-  let stdout = "";
-  let stderr = "";
-  const code = await runDispatchCli(
-    argv,
-    {
-      HOME: stateDir,
-      DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: TOKEN,
-      DISPATCH_STATE_DIR: stateDir,
-      DISPATCH_HOST: "omp",
-      DISPATCH_SESSION_ID: "ses-1",
-    },
-    {
-      stdout: (text) => {
-        stdout += text;
-      },
-      stderr: (text) => {
-        stderr += text;
-      },
-      readText: () => "",
-      cwd: stateDir,
-    }
-  );
-  return { code, stdout, stderr };
-}
-
-/** What the recorder saw, as `METHOD path`. */
-function calls(): string[] {
-  return requests.map((recorded) => `${recorded.method} ${recorded.path}`);
-}
-
 /** The `assignee` the one PATCH of this run sent, with `undefined` telling a field the body left
  *  out apart from the null that clears it. */
 function sentAssignee(): unknown {
-  const patch = requests.find((recorded) => recorded.method === "PATCH");
-  if (patch === undefined) throw new Error("no PATCH was sent");
-  const body = patch.body as Record<string, unknown>;
+  const body = patchBody();
   return "assignee" in body ? body.assignee : undefined;
 }
 
@@ -140,7 +42,7 @@ describe("dispatch issue-update sets who the issue's asks wait on", () => {
     expect(sentAssignee()).toBe(ASSIGNEE);
     expect(set.stdout).toContain(`assignee -> ${ASSIGNEE}`);
 
-    requests.length = 0;
+    forget();
     const cleared = await run(["issue-update", "--issue", "DSP-1", "--clear-assignee"]);
 
     expect(cleared.stderr).toBe("");

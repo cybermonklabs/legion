@@ -43,8 +43,12 @@ function phoneMargin(queryClient: QueryClient): () => void {
 }
 
 /** Opens the comment's thread from its card, as a tap on a phone does: full-screen, over the
- *  margin's list. Answers the thread view. */
+ *  margin's list. A shut sheet draws no card nothing has named (`MarginSheet`'s `covered`), and
+ *  on a phone it is 64 px of `Review (N)` with its cards out of sight, so the reader opens the
+ *  review panel first where it is shut. Answers the thread view. */
 async function openThread(user: UserEvent): Promise<HTMLElement> {
+  const toggle = await screen.findByRole("button", { name: /review panel/ });
+  if (toggle.getAttribute("aria-expanded") === "false") await user.click(toggle);
   const card = await screen.findByTestId(`margin-comment-${comment.id}`);
   await user.click(within(card).getByRole("button", { expanded: false }));
   return screen.findByRole("dialog", { name: "Thread" });

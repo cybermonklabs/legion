@@ -1,3 +1,4 @@
+import { answerSelected } from "@legion/contracts/dispatch-constants";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
@@ -70,6 +71,9 @@ function AnswerRow({
         <AskOwnerLink owner={row.owner} />
         {row.kind === "answer" && !row.current ? <LabelPill>Changed since</LabelPill> : null}
       </div>
+      {/* The question is Markdown its asker wrote, so it is formatted and then cut to two lines,
+          as the reply below is to three; the note the person answered with is drawn whole
+          (`MarkdownBody`). */}
       <MarkdownPreview
         className={`mt-1 text-sm font-medium ${textPrimaryOnCanvas}`}
         fullTitle
@@ -80,9 +84,9 @@ function AnswerRow({
       />
       {row.kind === "answer" && row.answer !== undefined ? (
         <div className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
-          {(row.answer.selected ?? []).length === 0 ? null : (
+          {answerSelected(row.answer).length === 0 ? null : (
             <div className="flex flex-wrap gap-1.5">
-              {(row.answer.selected ?? []).map((label) => (
+              {answerSelected(row.answer).map((label) => (
                 <LabelPill key={label} selected>
                   {label}
                 </LabelPill>
@@ -100,16 +104,24 @@ function AnswerRow({
           )}
         </div>
       ) : null}
+      {/* The reply is Markdown its author wrote, so it is formatted and then cut, three lines of
+          it: the `inline` variant read the first block alone and flattened the rest. `Replied:`
+          is the app's own word and stays beside it, so the quote keeps the row's whole width.
+          `links="live"`, because this preview's default is `inert` and a reply's URL or
+          `dispatch://` reference is one of the things the reader came here to follow: R6 asked
+          for the formatting, not for dead links. */}
       {row.kind === "reply" && row.reply !== undefined ? (
-        <p className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
-          <span className={`font-medium ${textMutedOnCanvas}`}>Replied:</span>{" "}
-          <MarkdownBody
+        <div className={`mt-2 flex items-baseline gap-1 text-sm ${textPrimaryOnCanvas}`}>
+          <span className={`shrink-0 font-medium ${textMutedOnCanvas}`}>Replied:</span>
+          <MarkdownPreview
+            className="min-w-0 flex-1"
+            lines={3}
+            links="live"
             markdown={row.reply.body}
             source={source}
             tree={row.reply.body_tree}
-            variant="inline"
           />
-        </p>
+        </div>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
         {/* The server's `ref` is the ask's own item route: an issue ask's lands an anchored ask on

@@ -58,27 +58,112 @@ var ErrReplacementDoesNotFit = errors.New("replacement does not fit document")
 // repaired.
 var ErrJoinEmptiesTypedBlock = errors.New("the range runs into a typed block from the text before it, and joining them would leave that block empty")
 
-// BlockBoundary is the document-level boundary before or after the block containing target, over
-// the tree d validated. The zero ValidDocument wants a document.
-func (d ValidDocument) BlockBoundary(target Range, after bool) (int, error) {
-	if d.doc == nil {
-		return 0, wantsDocument("BlockBoundary")
-	}
-	_, start, end, err := documentBlock(d.doc, target)
-	if err != nil {
-		return 0, err
-	}
-	if after {
-		return end, nil
-	}
-	return start, nil
+// Boundary is where an insert anchored on a block lands (ValidDocument.BlockBoundary,
+// ValidDocument.ListBoundary): Position, between two children of Holder, the block whose children
+// the insert joins - the innermost typed block, list item or blockquote holding the anchor, a
+// list for list content, or the document (Holder nil); Index, the place among those children the
+// inserted blocks take; and Content, the range Holder's children span, which is the zero Range
+// for the document, whose children span it whole.
+type Boundary struct {
+	Position int
+	Index    int
+	Holder   *Node
+	Content  Range
 }
 
-// documentBlock is the index and the ProseMirror range of the document-level block holding target,
-// the first whose range holds it, over a document its caller has validated.
-func documentBlock(doc *Node, target Range) (index, start, end int, err error) {
-	position := 0
-	for index, block := range doc.Children {
+// BlockBoundary is the boundary before or after the block containing target among the children
+// of that block's own parent, over the tree d validated: the innermost typed block, list item or
+// blockquote whose content holds target, or the document where none does. An insert anchored on a
+// paragraph of a requirement, an ask or a callout lands in that typed block, beside the
+// paragraph; one anchored on a list item's text lands in the item, beside its text; and one
+// anchored on a quote's paragraph lands in the quote. One anchored on such a block's own range
+// lands beside that block, among its parent's children - a list item's beside its list, since a
+// list holds items alone - and one anchored in a table lands after the whole table, whose cells
+// hold one paragraph each. The zero ValidDocument wants a document.
+func (d ValidDocument) BlockBoundary(target Range, after bool) (Boundary, error) {
+	return d.boundary("BlockBoundary", target, after, false)
+}
+
+// ListBoundary is BlockBoundary for list content (ListContent), which joins the list its anchor
+// stands in: the boundary before or after the item holding target, among the children of that
+// item's list, so the content becomes a sibling of the item, or, where target is a list's own
+// block, the boundary inside that list before its first item or past its last, rather than beside
+// the list, where markdown would write a second list that reads back as one with it. It is the
+// same descent as BlockBoundary's, with a list as the parent where BlockBoundary takes the item,
+// so a typed block or a quote between the list and target holds the content, as it holds a
+// paragraph: list content anchored on a requirement's paragraph inside a list item stays in the
+// requirement, and one anchored on a quote's paragraph lands in the quote. Where no list holds
+// target inside its parent, ListBoundary is BlockBoundary. The zero ValidDocument wants a
+// document.
+func (d ValidDocument) ListBoundary(target Range, after bool) (Boundary, error) {
+	return d.boundary("ListBoundary", target, after, true)
+}
+
+// boundary is BlockBoundary, or ListBoundary where list is true. It goes down the blocks holding
+// target, each the first of its parent's children whose range holds it (childBlock), until no
+// child of the block holds it or the block holds no children: each parent on the way whose
+// children hold target moves the boundary in among them (holdsInsert), so the last is the
+// innermost's. For list content, a list the descent stops at, target being that list's own block,
+// takes the content as its first or last item.
+func (d ValidDocument) boundary(method string, target Range, after, list bool) (Boundary, error) {
+	if d.doc == nil {
+		return Boundary{}, wantsDocument(method)
+	}
+	index, start, end, err := childBlock(d.doc, 0, target)
+	if err != nil {
+		return Boundary{}, err
+	}
+	boundary := besideChild(nil, Range{}, index, start, end, after)
+	for node, from, to := d.doc.Children[index], start, end; !isOpaqueNodeType(node.Type); {
+		content := Range{From: from + 1, To: to - 1}
+		if index, start, end, err = childBlock(node, content.From, target); err != nil {
+			if list && isList(node) {
+				boundary = Boundary{Position: content.From, Holder: node, Content: content}
+				if after {
+					boundary.Position, boundary.Index = content.To, len(node.Children)
+				}
+			}
+			break
+		}
+		if holdsInsert(node, list) {
+			boundary = besideChild(node, content, index, start, end, after)
+		}
+		node, from, to = node.Children[index], start, end
+	}
+	return boundary, nil
+}
+
+// holdsInsert reports whether node is a parent an insert anchored on one of its children joins:
+// a typed block or a blockquote, and a list item for blocks or a list for list content, which
+// joins the list rather than the item.
+func holdsInsert(node *Node, list bool) bool {
+	switch {
+	case node.Type == "blockquote":
+		return true
+	case node.Type == "list_item":
+		return !list
+	case isList(node):
+		return list
+	}
+	_, typed := typedBlock(node.Type)
+	return typed
+}
+
+// besideChild is the boundary before or after the child at index of holder, whose range is start
+// to end, among holder's children, which span content.
+func besideChild(holder *Node, content Range, index, start, end int, after bool) Boundary {
+	if after {
+		return Boundary{Position: end, Index: index + 1, Holder: holder, Content: content}
+	}
+	return Boundary{Position: start, Index: index, Holder: holder, Content: content}
+}
+
+// childBlock is the index and the ProseMirror range of the child of parent holding target, the
+// first whose range holds it, where parent's children start at from, over a document its caller
+// has validated; with the document as parent and 0 as from, the document-level block holding it.
+func childBlock(parent *Node, from int, target Range) (index, start, end int, err error) {
+	position := from
+	for index, block := range parent.Children {
 		end := position + nodeSize(block)
 		if target.From >= position && target.To <= end {
 			return index, position, end, nil
@@ -86,37 +171,6 @@ func documentBlock(doc *Node, target Range) (index, start, end int, err error) {
 		position = end
 	}
 	return 0, 0, 0, ErrTargetNotFound
-}
-
-// ListBoundary is the boundary inside a list where list content anchored on target belongs: the
-// boundary before or after the item holding target, so the content becomes a sibling of that item,
-// or, where target is a list's own block, the boundary inside that list before its first item or
-// past its last. inList is false where target lies in no list, and the caller takes the
-// document-level boundary (BlockBoundary) there, as it does for content that is no list content
-// (ListContent): an insert of a paragraph on a block inside a list still lands after the whole
-// list, and one on a block of a decision beside the decision. The zero ValidDocument wants a
-// document.
-func (d ValidDocument) ListBoundary(target Range, after bool) (position int, inList bool, err error) {
-	if d.doc == nil {
-		return 0, false, wantsDocument("ListBoundary")
-	}
-	found, ok := listAnchor(d.doc, target)
-	if !ok {
-		return 0, false, nil
-	}
-	if found.node.Type == "list_item" {
-		// An item's own edges are positions of its list, between two of its items.
-		if after {
-			return found.end, true, nil
-		}
-		return found.start, true, nil
-	}
-	// The list's own block: inside it, past its last item or before its first, rather than beside
-	// the list, where markdown would write a second list that reads back as one with it.
-	if after {
-		return found.end - 1, true, nil
-	}
-	return found.start + 1, true, nil
 }
 
 // listAnchorFound is where a list anchor stands: the node, its path and its ProseMirror range.
@@ -127,11 +181,12 @@ type listAnchorFound struct {
 	end   int
 }
 
-// listAnchor is the innermost list item or list holding target: the item a sibling item stands
-// beside, or the list an item joins where target is that list's own block. The innermost wins, so
-// a block of a nested item answers that item rather than the one holding its list, and a nested
-// list's own block answers the nested list. Containers of target are visited from the outermost in
-// (walk), so the last of them seen is the innermost. A target in no list has none.
+// listAnchor is the innermost list item or list holding target: the item a moved item stands
+// beside, or the list it joins where target is that list's own block (moveListItem). The
+// innermost wins, so a block of a nested item answers that item rather than the one holding its
+// list, and a nested list's own block answers the nested list. Containers of target are visited
+// from the outermost in (walk), so the last of them seen is the innermost. A target in no list
+// has none.
 func listAnchor(doc *Node, target Range) (listAnchorFound, bool) {
 	var found listAnchorFound
 	ok := false
@@ -165,11 +220,11 @@ func ListContent(fragment *Node) bool {
 }
 
 // BlockIndexes is the index of the document-level block holding target's start and of the one
-// holding its end, both by documentBlock's rule - the first block whose range holds the position -
-// found in one pass over the document's children. A write reads the blocks it changed from the
-// two, so it walks the document once rather than once an endpoint. Either endpoint lying in no
-// block is ErrTargetNotFound, as a lookup of that endpoint alone gives it, and the zero
-// ValidDocument wants a document.
+// holding its end, both by childBlock's rule over the document - the first block whose range
+// holds the position - found in one pass over the document's children. A write reads the blocks
+// it changed from the two, so it walks the document once rather than once an endpoint. Either
+// endpoint lying in no block is ErrTargetNotFound, as a lookup of that endpoint alone gives it,
+// and the zero ValidDocument wants a document.
 func (d ValidDocument) BlockIndexes(target Range) (first, last int, err error) {
 	if d.doc == nil {
 		return 0, 0, wantsDocument("BlockIndexes")
@@ -330,7 +385,7 @@ func insertAt(doc *Node, pos int, with *Node) (*Node, error) {
 	for index := len(boundaries) - 1; index >= 0; index-- {
 		boundary := boundaries[index]
 		parent := nodeAtPath(doc, boundary.path)
-		replacement, fits := fitReplacement(parent, with, enclosingListItem(doc, boundary.path), false)
+		replacement, fits := fitReplacement(parent, with, enclosingListItem(doc, boundary.path), parent.Children[:boundary.index])
 		if !fits {
 			continue
 		}
@@ -450,7 +505,11 @@ func fitContent(parent *Node, selection spliceSelection, path []int, r Range, wi
 	if err != nil {
 		return nil, false, err
 	}
-	replacement, fits := fitReplacement(parent, with, openingItem, preservedParagraph(before, parent))
+	var kept []*Node
+	if before != nil {
+		kept = before.Children
+	}
+	replacement, fits := fitReplacement(parent, with, openingItem, kept)
 	if !fits {
 		return nil, false, nil
 	}
@@ -737,7 +796,11 @@ func EmptyDocument(doc *Node) bool {
 	return len(doc.Children) == 1 && doc.Children[0].Type == "paragraph" && len(doc.Children[0].Children) == 0
 }
 
-func fitReplacement(parent, with, openingListItem *Node, hasPrefixParagraph bool) ([]*Node, bool) {
+// fitReplacement is with's blocks as parent holds them, where they land after kept, the children
+// of parent the splice keeps ahead of them: an insert's are the children before its boundary, and
+// a range replacement's the fragment of parent before the range (sliceBoundaries). It reports
+// false where parent holds no such blocks, so the fit climbs to the parent above.
+func fitReplacement(parent, with, openingListItem *Node, kept []*Node) ([]*Node, bool) {
 	var source []*Node
 	if !EmptyDocument(with) {
 		source = make([]*Node, 0, len(with.Children))
@@ -768,7 +831,12 @@ func fitReplacement(parent, with, openingListItem *Node, hasPrefixParagraph bool
 		}
 		return items, true
 	case "list_item":
-		if len(source) == 0 || source[0].Type == "paragraph" || hasPrefixParagraph {
+		// A list item opens with its text, a paragraph, and holds any block after it (paragraph
+		// block*). Blocks that land after that text, which kept opens with, are written as they
+		// are: an empty paragraph ahead of them would stand between the text and them, written
+		// as a line of indentation alone that a read of the markdown drops (INFRA-341). Only blocks
+		// that open the item need a paragraph ahead of a first block that is none.
+		if len(source) == 0 || source[0].Type == "paragraph" || len(kept) > 0 && kept[0].Type == "paragraph" {
 			return source, true
 		}
 		return append([]*Node{{Type: "paragraph"}}, source...), true
@@ -813,10 +881,6 @@ func listItemAttrs(item *Node) Attrs {
 		return cloneAttrs(item.Attrs)
 	}
 	return Attrs{"label": "•", "listType": "bullet", "spread": false}
-}
-
-func preservedParagraph(fragment, parent *Node) bool {
-	return parent.Type == "list_item" && fragment != nil && len(fragment.Children) > 0 && fragment.Children[0].Type == "paragraph"
 }
 
 func normalizeFragment(node *Node) *Node {

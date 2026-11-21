@@ -10,7 +10,7 @@ import type {
   OpenAsk,
   OpenAsksResponse,
 } from "@legion/contracts";
-import { actorActText, encodeBlockId } from "@legion/contracts";
+import { actorActText, answerSelected, encodeBlockId } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
@@ -37,6 +37,7 @@ export function askSummary(
   outgoing: GraphReferences | string
 ): string {
   const answer = ask.answer;
+  const selected = answer === null ? [] : answerSelected(answer);
   const earlierAnswers = (answers ?? []).slice(0, -1);
   const parts = askPartEdges(ask, incoming);
   const partRef = (id: string) => `${askRef}#b-${encodeBlockId(id)}`;
@@ -63,7 +64,7 @@ export function askSummary(
       ? ["- none"]
       : [
           `- By: ${actorActText(answer.user, answer.act)}`,
-          `- Selected: ${(answer.selected ?? []).length === 0 ? "none" : (answer.selected ?? []).join(", ")}`,
+          `- Selected: ${selected.length === 0 ? "none" : selected.join(", ")}`,
           ...(answer.text === null ? [] : [`- Text: ${answer.text}`]),
           ...(answer.id === undefined ? [] : [`- Reference: ${partRef(answer.id)}`]),
           ...partReferenceLines(parts.at, answer.id),
@@ -128,12 +129,13 @@ function askPartEdges(
   return { at, rest: { node: incoming.node, edges: rest } };
 }
 
-/** The edges at one part of an ask, indented under the line naming that part. A part nothing
- *  points at, and one the ask carries no id for, print nothing. */
+/** The edges at one part of an ask, indented under the line naming that part and read from the
+ *  part's side, as the ask's own `Referenced by:` is. A part nothing points at, and one the ask
+ *  carries no id for, print nothing. */
 function partReferenceLines(at: Map<string, GraphEdge[]>, id: string | undefined): string[] {
   const edges = id === undefined ? undefined : at.get(id);
   if (edges === undefined || edges.length === 0) return [];
-  return ["  Referenced by:", ...edges.map((edge) => `  ${edgeLine(edge)}`)];
+  return ["  Referenced by:", ...edges.map((edge) => `  ${edgeLine(edge, "in")}`)];
 }
 
 function openAskAge(ageSeconds: number): string {

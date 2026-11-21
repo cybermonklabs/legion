@@ -1112,9 +1112,10 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 
 	// The paragraph a question would be written over holds no text, but it holds an image, which
 	// no question carries: writing the question would delete it unseen. The refusal quotes it and
-	// names the two places it is kept, since a document edit cannot write a question beside it:
-	// an upload of the document as a new version, which is the path an agent has, and the
-	// document editor, where a person writes it.
+	// names the two places the question is written beside it, which keep it: a document edit
+	// inserting the question after that paragraph's block, which writes it into the decision
+	// (dispatch://INFRA-3142), and the document editor, where a person writes it. The insert it
+	// names then repairs the block, image and all.
 	t.Run("a paragraph the question would replace holds an image", func(t *testing.T) {
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
@@ -1128,18 +1129,28 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 		err := sendAskOptions(service, artifactID, AskBlockEdit{Question: new("Should we ship?")})
 		want := `block: ask block "ask-lists" has an empty question, and writing a question into it would delete ` +
 			`what one of its paragraphs holds, which is no text: block ` + strconv.Quote(photo) +
-			` (paragraph) reads "![a photo](/photo.png)"; no document edit writes a paragraph into a decision, ` +
-			`so none reaches this block - upload the document again as a new version ` +
-			`with the question written beside that paragraph (dispatch artifact --issue <KEY>, or ` +
-			`--project <KEY> for a project's document, --name <the document> --content-file - --force, ` +
-			`and --precondition-json '{"document":"<the token dispatch doc-read prints>"}' where the command ` +
-			`has that flag, which names the text the upload replaces), or write the ` +
-			`question beside it in the document editor; ` +
+			` (paragraph) reads "![a photo](/photo.png)"; write the question beside that paragraph instead - ` +
+			`a document edit inserting it after ` + strconv.Quote("block:"+photo) + ` (dispatch doc-edit) ` +
+			`writes it into the decision, and so does the document editor; ` +
 			`either keeps what the paragraph holds`
 		if err == nil || err.Error() != want {
 			t.Fatalf("refusal =\n%v\nwant\n%s", err, want)
 		}
 		assertAskEditWroteNothing(t, service, artifactID, before, err)
+
+		if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{
+			Op: "insert", After: "block:" + photo, Markdown: "Should we ship?",
+		}}, model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil); err != nil {
+			t.Fatalf("the insert the refusal names: %v", err)
+		}
+		repaired := firstAsk(liveTree(t, service, artifactID))
+		markdown, err := renderBlock(repaired)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(markdown, "![a photo](/photo.png)\n\nShould we ship?\n\n- ") {
+			t.Fatalf("the decision after the insert = %q, want the image, then the question, then its options", markdown)
+		}
 	})
 }
 

@@ -82,8 +82,10 @@ import {
   minutesFromNow,
   offPageColours,
   openAsk,
+  type ProofDocumentPage,
   priorities,
   proofDocument,
+  proofDocumentPage,
   RAW_COLOR_PATTERN,
   SPEC_ID,
   STALLED_SESSION,
@@ -426,6 +428,17 @@ function pressing(name: string | RegExp) {
 // Every shared control's code file, and `MultiSelect`, in the states that draw its colours
 // ---------------------------------------------------------------------------------------------
 
+/** The ProofDocument page the badges' mount last drew, which its `settle` syncs: the page draws
+ *  its editor, and reads the badges, only once its socket has synced (dispatch://INFRA-341). The
+ *  mount and its long-valued twin both draw through `drawnDocumentPage`, so the twin's own page
+ *  is the one synced. */
+let documentPage: ProofDocumentPage | undefined;
+
+function drawnDocumentPage(): ReactNode {
+  documentPage = proofDocumentPage();
+  return documentPage.node;
+}
+
 /** The roots of what `AskCard`'s children of other files draw (the rule that no shared control
  *  sets a `title` leaves them out, since the new page draws no `AskCard`): each option row
  *  (`AskChoiceRow`, the label inside the options' fieldset), the decline control
@@ -609,10 +622,12 @@ const MOUNTS: readonly Mount[] = [
         { ...blockAsk("ask-b1", "b-1", "Should we ship?"), last_reply: null },
         { ...blockAsk("ask-b2", "b-2", "Which region?"), last_reply: null },
       ]);
-      return proofDocument();
+      return drawnDocumentPage();
     },
     outside: documentEditor,
     settle: async (view) => {
+      // The page's editor, and the badges that wait for it, are drawn once its socket syncs.
+      await documentPage?.sync();
       await within(view.container).findByRole("navigation", { name: "Open decisions" });
       await within(view.container).findByRole("button", { name: "2 references on block" });
     },
@@ -1415,7 +1430,9 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [mountNamed("RefusableButton, primary refused and compact secondary"), ["Write a reason first."]],
   [
     mountNamed("ApprovalChip, each state, and the Request changes dialog"),
-    ["Approved at version 3; the latest version is 5"],
+    // The dialog's Request changes is a `RefusableButton` (dispatch://INFRA-341), which carries
+    // its refusal of an empty reason as its `title` outside `NoTooltips`.
+    ["Say what needs to change.", "Approved at version 3; the latest version is 5"],
   ],
   [
     mountNamed("ApprovalChip, the Reviews dialog"),
@@ -1443,6 +1460,10 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       "Copy session ID session-live-0001",
       "Copy session title Implementer",
       "Copy tmux target legion:3",
+      // Answer and Ask back are `RefusableButton`s, which carry a refusal as their `title`
+      // outside `NoTooltips` (dispatch://INFRA-341).
+      "Pick an option or write an answer.",
+      "Write something first.",
     ],
   ],
   [
@@ -1462,6 +1483,8 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
       localTime("2026-10-08T00:00:00Z"),
       "Copy reference dispatch://CORE-1/ask/ask-2",
       "Add a reason to send Request changes",
+      // Ask back's refusal of an empty box, its `RefusableButton`'s `title` (dispatch://INFRA-341).
+      "Write something first.",
     ],
   ],
   [
@@ -1794,7 +1817,7 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
         { ...blockAsk("ask-b1", "b-1", LONG.question), last_reply: null },
         { ...blockAsk("ask-b2", "b-2", "Which region?"), last_reply: null },
       ]);
-      return proofDocument();
+      return drawnDocumentPage();
     },
     values: [LONG.question],
   }),
@@ -2094,8 +2117,11 @@ function wrapOffences(mountName: string, value: Element, root: Element): string[
  */
 const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
+  "features/conversation/MentionField.tsx",
   "features/doc/ApprovalChip.tsx",
+  "features/inbox/AskAnswerArea.tsx",
   "features/inbox/AskCard.tsx",
+  "features/inbox/AskHeader.tsx",
   "features/inbox/AskThread.tsx",
   "features/issue-page/IssueFieldForms.tsx",
   "features/issue/RepoControl.tsx",

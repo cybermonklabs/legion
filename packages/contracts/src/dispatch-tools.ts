@@ -1,4 +1,5 @@
 import {
+  ASK_URGENCIES,
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
   ISSUE_TITLE_MAX,
@@ -6,7 +7,7 @@ import {
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
-} from "./dispatch-api-limits";
+} from "./dispatch-constants";
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
@@ -259,18 +260,59 @@ function preconditionKept(value: unknown): boolean {
   return (typeof precondition.document === "string") !== Array.isArray(precondition.blocks);
 }
 
+/** The keys a replace operation takes. Every other key an operation may carry is another
+ *  operation's, so a replace that carries one sends text that replace never writes. */
+const REPLACE_OP_KEYS: Readonly<Record<string, true>> = {
+  op: true,
+  find: true,
+  with: true,
+  occurrence: true,
+};
+
+const REPLACE_OP_RULE =
+  'A replace names with and takes find, with and occurrence alone: with "" deletes the match on purpose, and a replace without with, or with its new text under another key such as markdown, would delete the match too.';
+
+/** The refusal of each replace operation of `value` that names no with or carries a key replace
+ *  does not take, each by its index in ops, or undefined when every replace keeps the rule. */
+function replaceOpsProblem(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || !("ops" in value)) return undefined;
+  const ops = value.ops;
+  if (!Array.isArray(ops)) return undefined;
+  const problems: string[] = [];
+  ops.forEach((op: unknown, index) => {
+    if (typeof op !== "object" || op === null || !("op" in op) || op.op !== "replace") return;
+    const foreign = Object.entries(op)
+      .filter(([key, held]) => REPLACE_OP_KEYS[key] !== true && held !== undefined)
+      .map(([key]) => key);
+    if (foreign.length > 0) {
+      problems.push(
+        `ops[${index}] is a replace carrying ${foreign.join(" and ")}, which replace does not take: it takes find, with and occurrence, and its new text goes in with.`
+      );
+    }
+    if (!("with" in op) || op.with === undefined) {
+      problems.push(
+        `ops[${index}] is a replace with no with, which would delete the text find matches: write the new text in with, or with "" to delete it on purpose.`
+      );
+    }
+  });
+  return problems.length === 0 ? undefined : problems.join(" ");
+}
+
 function documentEditProblem(value: unknown): string | undefined {
+  const replaceProblem = replaceOpsProblem(value);
   return brokenParts([
     [documentEditOwner.check(value), documentEditOwner.message],
     [preconditionKept(value), PRECONDITION_RULE],
+    [replaceProblem === undefined, replaceProblem ?? REPLACE_OP_RULE],
   ]);
 }
 
 const documentEditValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => documentEditProblem(value) === undefined,
-  message: `${documentEditOwner.message} ${PRECONDITION_RULE}`,
+  message: `${documentEditOwner.message} ${PRECONDITION_RULE} ${REPLACE_OP_RULE}`,
   refusal: (value) =>
-    documentEditProblem(value) ?? `${documentEditOwner.message} ${PRECONDITION_RULE}`,
+    documentEditProblem(value) ??
+    `${documentEditOwner.message} ${PRECONDITION_RULE} ${REPLACE_OP_RULE}`,
 };
 
 /** dispatch_comment: the document-owner rule, `turn` only alongside `reply_to_ask`, and the
@@ -385,6 +427,7 @@ function issueUpdateProblem(value: unknown): string | undefined {
     Array.isArray(input.external_links) ||
     typeof input.route === "string" ||
     typeof input.parent === "string" ||
+    input.parent === null ||
     Array.isArray(input.blocked_by) ||
     Array.isArray(input.advances) ||
     (typeof input.components === "object" && input.components !== null) ||
@@ -507,9 +550,6 @@ function imagesArgument<E extends SchemaNode<E>>(z: SchemaApi<E>, owner: string)
     )
     .optional();
 }
-
-/** Ask urgency levels the Dispatch server accepts, in ascending order. */
-export const ASK_URGENCIES = ["low", "med", "high", "blocking"] as const;
 
 /**
  * Longest one block of a comment, comment edit, message, broadcast or ask part may be, in UTF-16
@@ -699,7 +739,9 @@ const RESULT_SHAPE_RULE =
 function resultProblem(value: unknown): string | undefined {
   const input = value as Record<string, unknown>;
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
+  // biome-ignore lint/complexity/useLiteralKeys: input is a bare Record, so retract comes from its index signature, and claude-envoy compiles this file with noPropertyAccessFromIndexSignature, which refuses the dot form.
   if (typeof input["retract"] === "string") {
+    // biome-ignore lint/complexity/useLiteralKeys: reason comes from that same index signature, so the bracket form is the one that compiles.
     const reason = input["reason"];
     if (typeof reason !== "string" || reason.trim() === "") {
       return "retract needs reason, the words that say why the result is wrong.";
@@ -709,6 +751,7 @@ function resultProblem(value: unknown): string | undefined {
     }
     return undefined;
   }
+  // biome-ignore lint/complexity/useLiteralKeys: reason comes from the same index signature, so the bracket form is the one claude-envoy's typecheck accepts.
   if (input["reason"] !== undefined) {
     return "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.";
   }
@@ -898,8 +941,8 @@ export const dispatchToolSpecs = [
       "Update an existing issue: move its lifecycle status, retitle it, replace its labels, set " +
       "its priority, set or clear its assignee, link a URL (the pull request that delivers it, a " +
       "run, a document), set its " +
-      "route, set or clear its parent, replace the issues it is blocked by, replace the " +
-      "priorities it advances, attach it to " +
+      "route, set or clear its parent (--clear-parent clears it), replace the issues it is " +
+      "blocked by, replace the priorities it advances, attach it to " +
       "architecture components, set the repository it targets, or move it on its project's " +
       "board. Status is one of " +
       `${ISSUE_STATUSES.join(", ")}; outside Legion, move it yourself as the work advances; inside ` +
@@ -976,10 +1019,16 @@ export const dispatchToolSpecs = [
         .string()
         .describe("Route the issue to role:<name> or session:<id>; an empty string clears it.")
         .optional(),
+      // Describes last, after `.nullable().optional()`, for the reason `priority` does. It names
+      // only null as the clear: the CLI's `--parent ''` clears too, because the envoy-client
+      // executor sends JSON null for an empty value (`dispatch-commands/issues.ts`), but the going
+      // catalogue (`GoingCaller.Do`) sends a call's arguments as given, and the server refuses a
+      // blank parent with 400 PARENT_INPUT.
       parent: z
         .string()
-        .describe("Parent issue key in the same project; an empty string clears the parent.")
-        .optional(),
+        .nullable()
+        .optional()
+        .describe("Parent issue key in the same project; null clears the parent."),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(
@@ -1492,9 +1541,10 @@ export const dispatchToolSpecs = [
       "Do not use it for review feedback or for reading; use dispatch comment, dispatch suggest, or dispatch doc-read instead. " +
       "For replace, delete, and quote anchors, find text as rendered: inline Markdown (**bold**, `code`) is tolerated and must be balanced; a leading '# ' matches a heading at any level. A find that opens with a list marker ('- ', '5. ', with an optional '[ ] ' or '[x] ' after it) and matches no text as written selects an item of that kind of list whose text starts with the rest, its number not matched and a box matching only a task item in that state. A find or quote anchor stays inside one block, and in a table inside one cell: ' | ' is the boundary markdown writes between two cells, not text a cell holds, so a quote that runs across cells is refused, naming the cells; change several cells with one operation per cell in the same batch, and anchor on one cell's text. replace parses with as markdown, as insert parses its markdown: a with that parses to one paragraph is the new text of the matched span, and one that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, so a marker of a different kind from the block's own opens the block it names ('4. Design' is an ordered list, which a heading cannot hold) unless you escape it ('4\\. Design'). A with that opens with a marker of the same kind as the matched block's own would write it twice and is INVALID_OP - including prose that merely looks like one ('1999. was a year' into an ordered item), which you write as text by escaping it ('1999\\. was a year'). The exceptions are an item a find's list marker selected (it matched no text as written): replace(find=\"5. Old\", with=\"5. New\") gives the item the text 'New' under its own number, and a with that is the marker alone is INVALID_OP; and a heading rename whose find carried a heading marker: replace(find=\"## Old\", with=\"## New\") gives '## New', where a different level applies only when find named the heading's actual level (find \"## Old\" with \"### New\" makes it an h3), since '# ' selects a heading without naming its level. A task item (`- [ ]` / `- [x]`) is ticked the same way: when find matches from the start of the item's text and with opens with '[x] ' or '[ ] ', the opening sets the item's box and the rest is its new text (replace(find=\"Write it\", with=\"[x] Write it\") ticks it); the same opening over a plain list item or a paragraph stays literal text. Any non-empty with that renders to no text - whitespace alone - is INVALID_OP rather than a silent deletion; pass an empty with to delete the matched text on purpose - a list item, quote, typed block or footnote definition left holding only the emptied paragraph keeps it. " +
       "The blocks a with writes are refused, with the document unchanged, where the block holding the match cannot hold them: a heading and any cell of a table, which hold one line of text, and a typed block whose content rule they break - write that block's new text alone, and insert the blocks beside it. A hard break in with is INVALID_OP when the matched text is in a heading or a table cell, which are written on one line. In a table cell, with is the cell's text: write a | in it bare, in code too, since code whose text has an odd run of backslashes right before a | cannot be stored in a cell and is INVALID_OP, naming the cell. " +
-      "A delete whose find is a block's entire text removes the block (a list emptied of its items goes too); delete with block removes any block by id, and move with block relocates one. A delete or retype that would take an ask block out of the document while its ask is open is refused, with nothing sent. delete_row and delete_column take a table block and a zero-based index, preserving the table block id and refusing to remove cells with open asks or unresolved comments. " +
+      "A delete whose find is a block's entire text removes the block (a list emptied of its items goes too), and one whose find's list marker selected an item removes that whole item, the items nested in it included; delete with block removes any block by id, and move with block relocates one. A delete or retype that would take an ask block out of the document while its ask is open is refused, with nothing sent. delete_row and delete_column take a table block and a zero-based index, preserving the table block id and refusing to remove cells with open asks or unresolved comments. " +
+      "The ops apply in order, each reading the document as the ops before it left it, and none removes or changes a block it does not name: a delete of a block removes all it holds but the blocks an earlier insert or move wrote into it, so a list an earlier insert joined to it stays where it stood. An op whose block field names a block an earlier delete with block removed, that block or one inside it, is refused with INVALID_OP naming that delete; an after or before anchor block:<id> naming such a block, and an op naming any other block, text or heading an earlier op removed, get TARGET_NOT_FOUND, the document unchanged. " +
       'Insert and move anchors also accept "start", "end", "heading:<exact heading text>", and "block:<id>"; dispatch doc-read --blocks lists every block\'s id, type, opening words and token, and each table\'s rows and cells with the indexes delete_row and delete_column take (GET /api/v1/artifacts/{artifact UUID}/blocks serves the same list). ' +
-      "Optionally require the state just read: precondition selects exactly one of a document token from dispatch doc-read, or block {id, token} values from dispatch doc-read --blocks. A block guard must include every block the batch changes; Dispatch resolves quote targets and rejects an uncovered batch rather than applying it. Use a document token for insert or move, which depend on document order. Prefer block tokens when the covered content blocks are independent sections. Tokens include inline marks, so a fresh human comment also makes a stale edit fail. PRECONDITION_FAILED means re-read; EDIT_QUEUE_FULL means back off before retrying. " +
+      "Optionally require the state just read: precondition selects exactly one of a document token from dispatch doc-read, or block {id, token} values from dispatch doc-read --blocks. A block guard must include the block each op names or whose text it matches, and for a move the block it moves; Dispatch resolves quote targets and rejects an uncovered batch rather than applying it, naming each block it lacks. What an op takes beyond that - the rest of what a delete or move removes, such as the nested lists of a list item a find's marker selects or a list or quote its removal empties, and a typed block a replace rewrites - the guard need not name: the result's unguarded_blocks, and a line of the result, name each such block the guard left out with the token the edit read, and naming those blocks in the guard refuses the edit with PRECONDITION_FAILED if any of them changed. Use a document token for insert or move, which depend on document order. Prefer block tokens when the covered content blocks are independent sections. Tokens include inline marks, so a fresh human comment also makes a stale edit fail. PRECONDITION_FAILED means re-read; EDIT_QUEUE_FULL means back off before retrying. " +
       `${CI_CHECK_RULE} ` +
       "The result carries the document token this edit produced, so a chain of guarded edits passes each result's token as the next edit's precondition with no dispatch doc-read between them. " +
       "A batch that leaves the document exactly as it was mints no version, named or not, and the result says nothing changed and names each operation that did nothing. " +
@@ -1530,7 +1580,7 @@ export const dispatchToolSpecs = [
               with: z
                 .string()
                 .describe(
-                  "Replacement text for replace: inside a code block, the code's literal text as sent (line breaks at its end do not survive a read); elsewhere parsed as markdown, as insert's markdown is. Text that parses to one paragraph is written inside the matched block, where a backslash escape keeps prose that merely looks like a marker, a leading '[x] ' or '[ ] ' over a task item's text matched from its start sets the item's checkbox, and any non-empty value that renders to no text is refused - only an empty value deletes the match. Text that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, fitted as the editor fits them, and is refused, with the document unchanged, where the block holding the match cannot hold them: a heading, any cell of a table, and a typed block whose content rule they break. A leading marker of the same kind as the matched block's own is refused either way, since the block renders it already, unless it is a heading rename (where a level named by find is what lets with change it) or an item find's own marker selected. A CR LF or a lone carriage return in it is written as a line feed."
+                  "Replacement text for replace, which every replace names: an empty value deletes the match on purpose. A replace takes op, find, with and occurrence alone, and one without with, or carrying any other key whatever it holds, is refused before it is sent, and by the server with 400 REPLACE_FIELDS, the document unchanged. Inside a code block, with is the code's literal text as sent (line breaks at its end do not survive a read); elsewhere parsed as markdown, as insert's markdown is. Text that parses to one paragraph is written inside the matched block, where a backslash escape keeps prose that merely looks like a marker, a leading '[x] ' or '[ ] ' over a task item's text matched from its start sets the item's checkbox, and any non-empty value that renders to no text is refused - only an empty value deletes the match. Such text keeps every bold, italic, strikethrough, link or code span the match lies wholly inside, so replacing 'said' in '**Sami said bold**' gives '**Sami answered bold**'; a find that spells a span's own markup ('**Sami bold**') lets with decide that span's formatting, keeping it by writing it or dropping it by leaving it off. A find that matched the text as written spells no markup: '2*3*4' in '*a 2\\*3\\*4 b*' is the span's own text, so the italic stays. A find that crosses a span's edge, covering text inside it and text outside it ('wrote this' where only 'this' is a link), is refused with 400 FIND_CROSSES_SPAN, naming the span, and nothing is written: narrow find to the span's inside, or spell the whole span's markup in find ('wrote [this](https://example.com/Sami)', a link with the URL and title it has), which then replaces the markup too; a find that spells a link with another URL or title is refused the same way, even one that is that link alone ('[this](https://wrong.example/9)'); no find spells strikethrough's markup, so replace the text outside a struck span in an operation of its own. Text that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, fitted as the editor fits them, and keeps none of the spans the match lies inside; it is refused, with the document unchanged, where the block holding the match cannot hold them: a heading, any cell of a table, and a typed block whose content rule they break. A leading marker of the same kind as the matched block's own is refused either way, since the block renders it already, unless it is a heading rename (where a level named by find is what lets with change it) or an item find's own marker selected. A CR LF or a lone carriage return in it is written as a line feed."
                 )
                 .optional(),
               occurrence: z

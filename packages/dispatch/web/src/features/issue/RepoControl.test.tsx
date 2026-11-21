@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, and for an Enter and an Escape marked as an input method's (`isComposing`, keyCode 229), neither of which user-event has a form for
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import {
@@ -14,6 +14,8 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/types";
+import { CONTROL_LABELS } from "../issue-page/page-words";
+import { draw, settleReads, undraw } from "../issue-page/shared-controls-fixture";
 import { RepoControl } from "./RepoControl";
 
 const issue: Issue = {
@@ -470,6 +472,68 @@ test("RepoControl restores the issue's repository on Escape", async () => {
   }
 });
 
+// The Escape that ends an IME composition gives up what the reader was composing, not the
+// repository they typed: an Escape that is the input method's, marked `isComposing`, or sent
+// unmarked with keyCode 229 after the composition's end, as Safari sends it (WebKit bug 165004),
+// restores nothing on `main`'s page. A plain Escape after it restores the issue's repository.
+test("RepoControl restores nothing on an input method's Escape, and restores on a plain Escape", async () => {
+  const patchIssue = answerIssuePatches();
+  const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
+  try {
+    await user.click(box());
+    await user.paste("-typo");
+    // Keys user-event cannot mark as an input method's, so the two such Escapes are fired.
+    fireEvent.keyDown(box(), { isComposing: true, key: "Escape" });
+    fireEvent.keyDown(box(), { isComposing: false, key: "Escape", keyCode: 229 });
+    expect(box().value).toBe("acme/gadgets-typo");
+
+    // The plain Escape goes the same way as the two above, so only the composition mark differs.
+    fireEvent.keyDown(box(), { key: "Escape" });
+    expect(box().value).toBe("acme/gadgets");
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// Inside `NoTooltips` the box's place takes Escape (`RepoControl.tsx`), and an input method's
+// Escape, marked or sent with keyCode 229 as above, leaves the box open with what was typed in
+// it. A plain Escape after it closes the box.
+test("inside NoTooltips an input method's Escape leaves the repository box open, and a plain Escape closes it", async () => {
+  const user = userEvent.setup();
+  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mappings);
+  const view = draw(
+    <RepoControl inRow issueKey="CORE-1" project="CORE" repo={null} resolvedRepo={null} />,
+    "inside"
+  );
+  const scope = within(view.container);
+  const field = () => scope.queryByRole("combobox", { name: "Repository of CORE-1" });
+  try {
+    await user.click(
+      scope.getByRole("button", { name: `${CONTROL_LABELS.none}, Repository of CORE-1` })
+    );
+    const typed = field();
+    if (!(typed instanceof HTMLInputElement)) throw new Error("the none control opened no box");
+    // The focus in the box starts the mappings' read, which lands before what follows.
+    await settleReads();
+    await user.keyboard("acme/web");
+    // Keys user-event cannot mark as an input method's, read by whether the place took them.
+    expect(fireEvent.keyDown(typed, { isComposing: true, key: "Escape" })).toBe(true);
+    expect(fireEvent.keyDown(typed, { isComposing: false, key: "Escape", keyCode: 229 })).toBe(
+      true
+    );
+    expect(field()).toBe(typed);
+    expect(typed.value).toBe("acme/web");
+
+    // The plain Escape goes the same way as the two above, so only the composition mark differs.
+    expect(fireEvent.keyDown(typed, { key: "Escape" })).toBe(false);
+    expect(field()).toBeNull();
+  } finally {
+    undraw(view);
+    listRepoProjects.mockRestore();
+  }
+});
+
 // The placeholder is for sighted readers; the box's description says the same in words, so a
 // screen reader hears the target and whether it is the issue's own.
 test("RepoControl describes the repository the issue resolves to", async () => {
@@ -638,6 +702,37 @@ test("RepoControl draws the pick, and the repository it resolves to, in every co
     );
   } finally {
     notifications?.tell();
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
+// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
+// Safari sends it (WebKit bug 165004). It writes nothing; a plain Enter after it writes the box.
+test("RepoControl writes nothing on the Enter that confirms an input method's word, and writes on a plain Enter", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "acme/gadgets",
+    resolved_repo: "acme/gadgets",
+    last_seq: 2,
+  });
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  try {
+    await user.click(box());
+    await user.paste("acme/gadgets");
+    // Keys user-event cannot mark as an input method's, read by whether the box took them.
+    expect(fireEvent.keyDown(box(), { isComposing: true, key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(box(), { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
+    await act(async () => {});
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    // The plain Enter goes the same way as the two above, so only the composition mark differs.
+    expect(fireEvent.keyDown(box(), { key: "Enter" })).toBe(false);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
+    );
+  } finally {
     unmount();
     patchIssue.mockRestore();
   }

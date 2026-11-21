@@ -3,7 +3,8 @@ import {
   type ThreadMessageLike,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { type AgentStreamCommand, isShellCommandReport } from "@legion/contracts";
+import { type AgentStreamCommand, isShellCommandReport } from "@legion/contracts/agent-stream";
+import type { MessageDeliveryMode } from "@legion/contracts/dispatch-constants";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo } from "react";
 
 import type { Message, MessageRead } from "../../api/types";
@@ -80,7 +81,9 @@ export function AgentRuntimeThread({
   conversation,
   empty,
   front,
+  modes,
   notice,
+  onPickMode,
   onSend,
   ownSendCount,
   sends,
@@ -99,9 +102,13 @@ export function AgentRuntimeThread({
   /** Whether this is the view the person is looking at; the transcript's own scrolling reads
    *  it (`AgentThread`). */
   front: boolean;
+  /** The delivery modes this session takes, which the `/` list offers beside its commands. */
+  modes: readonly MessageDeliveryMode[];
   /** The line above a transcript that holds turns while the session is silent, by the relay's
    *  word or the session list's, or undefined for none (`AgentThread`). */
   notice: string | undefined;
+  /** Picks the mode the next message goes in, as the row under the message box does. */
+  onPickMode: (mode: MessageDeliveryMode) => void;
   /** Hands `body` to the session as a write of its own, as the page's delivery mode stands. */
   onSend: (body: string) => void;
   /** Bumped once per message this viewer sent that the session accepted, so their own send takes
@@ -289,13 +296,16 @@ export function AgentRuntimeThread({
         front={front}
         held={sendDisabled}
         initialPlace={initialPlace}
+        modes={modes}
         notice={notice}
+        onPickMode={onPickMode}
         onPlace={onPlace}
         ownSendCount={ownSendCount}
         placeholder={placeholder}
         replayCount={replayCount}
         resetKey={resetKey}
         sends={sends}
+        sessionId={sessionId}
       />
     </AssistantRuntimeProvider>
   );

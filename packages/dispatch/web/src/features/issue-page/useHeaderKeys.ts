@@ -106,6 +106,8 @@ function outsideInputsAndAskCards(): boolean {
 export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
   useKeymap("issue", [
     {
+      // Focusing a header control moves the reader's focus, so `s` and `p` move the reader.
+      effect: "moves the reader",
       id: "status",
       keys: "s",
       label: "Focus the status",
@@ -113,6 +115,7 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       when: () => usableControl(STATUS_SELECT) !== null,
     },
     {
+      effect: "moves the reader",
       id: "priority",
       keys: "p",
       label: "Focus the priority",
@@ -120,6 +123,8 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       when: () => usableControl(PRIORITY_SELECT) !== null,
     },
     {
+      // The digits write the issue's priority and move nobody's focus or place.
+      effect: "moves nothing",
       id: "set-priority",
       keys: ["0", "1", "2", "3"],
       label: "Set priority P0–P3",
@@ -131,6 +136,7 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       // heading that already holds the focus - where Escape and Enter leave it - takes no new
       // focus. The selector finds the heading only while the issue is open and not edited
       // (otherwise its `tabIndex` is -1), so the key is offered exactly while a click opens it.
+      effect: "moves the reader",
       id: "title",
       keys: "e",
       label: "Edit the title",
@@ -138,6 +144,8 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       when: () => usableControl(TITLE_HEADING) !== null,
     },
     {
+      // The pin writes the issue and leaves the focus where it was.
+      effect: "moves nothing",
       id: "pin",
       keys: "Shift+P",
       label: "Pin or unpin the issue",
@@ -154,6 +162,8 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
     // focus is still on the chip and runs the one chosen once the focus is back on it
     // (`SearchPalette.tsx`), and neither key walks a list or repeats an action with a row.
     {
+      // Approve sends the review at once, with no dialog, and the focus stays on the chip.
+      effect: "moves nothing",
       id: "approve",
       keys: "a",
       label: "Approve the focused approval request",
@@ -161,6 +171,8 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       when: () => focusedApprovalAction("approve") !== null,
     },
     {
+      // Request changes opens its dialog, which takes the focus.
+      effect: "moves the reader",
       id: "request-changes",
       keys: "Shift+R",
       label: "Request changes on the focused approval request",
@@ -172,6 +184,8 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       // and the next keystroke is the select's own type-ahead - `t` would pick Todo or Testing
       // rather than start a view's chord. Escape is the way back out, as it is on the Inbox
       // rows, the board's cards and the architecture rows.
+      // Leaving the control blurs it, which takes the focus back to the page.
+      effect: "moves the reader",
       id: "back",
       inEditable: true,
       keys: "Escape",

@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  `dispatch read` prints each `Referenced by:` row from the side of the node it reads. Such a row
+  used to carry its edge's own kind, so when B is blocked by A, the read of A printed
+  `- blocked_by issue dispatch://B`, which reads as A blocked by B. It now prints
+  `- blocks issue dispatch://B`. A `child_of` edge reads `parent of`, `owned_by` reads `owns` and
+  `followed_by` reads `follows`; every other kind reads `<kind> from` its source, as in
+  `- mentions from comment dispatch://B/comment/<id> block b1`. The rows under an ask's option or
+  answer read the same way, and `Links:` is unchanged.
+time: 2026-11-17T21:48:46Z
+custom:
+    Issue: pr2697

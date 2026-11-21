@@ -247,7 +247,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const reason = optionalString(args, "reason");
   const title = optionalString(args, "title");
   const route = optionalString(args, "route");
-  const parent = optionalString(args, "parent");
+  const parent = optionalNullableString(args, "parent");
   const components = optionalComponents(args, "components");
   const repo = optionalString(args, "repo");
   const rankBefore = optionalString(args, "before");
@@ -342,6 +342,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ...(priority === undefined ? {} : { priority }),
       ...(assignee === undefined ? {} : { assignee }),
       ...(route === undefined ? {} : { route }),
+      // `--parent ''` clears as `--clear-parent` does: the server clears a parent on JSON null and
+      // refuses a blank one (400 PARENT_INPUT), so an empty value goes out as null. The tool's
+      // description names only null, since the going catalogue sends `""` as given.
       ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
       ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
       ...advancesWrite,

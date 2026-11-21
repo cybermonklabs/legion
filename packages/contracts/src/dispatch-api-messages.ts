@@ -2,11 +2,6 @@ import { z } from "zod";
 import type { MessageWithTrees } from "./dispatch-api.generated";
 import { ActorSchema, InboundActorSchema } from "./dispatch-api-core";
 import {
-  DELIVERY_ATTEMPT_STATES,
-  DELIVERY_CAPABILITIES,
-  SETTLED_DELIVERY_STATES,
-} from "./dispatch-api-limits";
-import {
   carriedBodyFields,
   type ReplyBlock,
   ReplyBlockSchema,
@@ -14,6 +9,11 @@ import {
   threadLoginsFields,
   WrittenReplyBlockSchema,
 } from "./dispatch-api-refs";
+import {
+  DELIVERY_ATTEMPT_STATES,
+  DELIVERY_CAPABILITIES,
+  SETTLED_DELIVERY_STATES,
+} from "./dispatch-constants";
 
 /**
  * The message: what one session or person sends another, how each send was delivered, the

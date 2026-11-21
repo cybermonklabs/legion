@@ -14,6 +14,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { putTheBoxAt } from "../doc/readers-place";
 import { type ColorFacet, colorKeyFor, PLACEHOLDER_COLOR } from "./lib/colorScale";
 import {
   buildPRListRows,
@@ -305,7 +306,7 @@ export function PRList({
     const target = Math.min(sorted.length - 1, Math.max(0, index));
     const element = scrollRef.current;
     const top = scrollTopToShowRow(target, element?.scrollTop ?? scrollTop, viewportHeight);
-    if (element !== null) element.scrollTop = top;
+    if (element !== null) putTheBoxAt(element, top);
     setScrollTop(top);
     setFocusIndex(target);
     focusPendingRef.current = true;

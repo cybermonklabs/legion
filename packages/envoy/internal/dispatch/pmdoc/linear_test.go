@@ -54,7 +54,7 @@ var alternatingBlocks = []int{4_096, 16_384}
 // as many times as it takes for the clock to resolve its time (cputest.Measure), since a clock that
 // moves in 10 ms steps, as gVisor's does, reads a shorter call as 0 or one step. The collector is
 // settled before each timed window and stopped during it, because a collection's CPU time depends
-// on when it lands rather than on the call (timedWindow has the mechanism).
+// on when it lands rather than on the call (cputest.TimedWithoutCollections has the mechanism).
 //
 // growsLinearly also samples every size the same number of times and keeps the fastest
 // (growthVerdict's sampleCount), so neither a first run's warm-up nor whichever side a stray spike
@@ -616,33 +616,36 @@ const growthAllowance = 4
 // sampleCount is how many times growthVerdict measures each size before keeping the fastest - the
 // same count at every size, so neither side of a comparison draws from more samples than the
 // other (an asymmetric draw biases a minimum low on the side with more samples, independent of
-// any real growth). Measuring CPU time rather than wall time (processCPUTime, below) removes most
-// of what ambient box load would otherwise still leave to sample away.
+// any real growth). Measuring CPU time rather than wall time (cputest.Process) removes most of
+// what ambient box load would otherwise still leave to sample away.
 const sampleCount = 3
-
-// processCPUTime is this process's total CPU time, user and system, since it started
-// (cputest.Process), not wall time: it leaves out the time the process waits for a core, which is
-// LEGION-569/571's whole flake history (the file-level comment above has the fuller account), though
-// another process's load still slows its own CPU time through shared caches and clock frequency.
-// No test in this package calls t.Parallel (there is no t.Parallel() anywhere under
-// internal/dispatch/pmdoc), so ordinarily at most one measured call runs at a time.
-// leakedCallGuard (below) is what keeps that true even once a call has missed its own deadline
-// and gone on running in the background. Every measured call reads it through timedWindow.
-func processCPUTime() time.Duration { return cputest.Process() }
 
 // cpuTimeOf is the CPU time one run of an operation takes. prepare builds one run's input, untimed,
 // and returns the run; a run that changes its input, as a write into a document does, gets a fresh
 // one from each call, and again is the prepare of one that changes nothing. cputest.Measure picks
 // how many runs one timed window holds, so the clock resolves the window, and divides by them;
-// every run's input is built before its window opens (timedWindow), since the input is not the
-// code under test.
+// every run's input is built before its window opens, since the input is not the code under test.
+//
+// Each window is timed in this process's CPU (cputest.Process), not wall time: it leaves out the
+// time the process waits for a core, which is LEGION-569/571's whole flake history (the file-level
+// comment above has the fuller account). No test in this package calls t.Parallel (there is no
+// t.Parallel() anywhere under internal/dispatch/pmdoc), so ordinarily at most one measured call
+// runs at a time; leakedCallGuard (below) keeps that true even once a call has missed its own
+// deadline and gone on running in the background. The collector is stopped in each window
+// (cputest.TimedWithoutCollections), because a collection that lands in a full size's window and
+// not in its small size's grows the one against the other without the work growing, which is how
+// a linear write went over linearSlack's bound. A window runs inside the goroutine runWithDeadline
+// starts, which a call that misses its deadline leaves running past its test's end, so its error
+// is reported by the caller waiting on runWithDeadline, on its test's own goroutine
+// (timedWithDeadline); such a call may also never return to restore the collector, so
+// runWithDeadline restores it as well.
 func cpuTimeOf(prepare func() (run func())) (time.Duration, error) {
 	return cputest.Measure(func(count int) (time.Duration, error) {
 		runs := make([]func(), count)
 		for i := range runs {
 			runs[i] = prepare()
 		}
-		return timedWindow(func() {
+		return cputest.TimedWithoutCollections(windowMemoryLimit, func() {
 			for _, run := range runs {
 				run()
 			}
@@ -655,57 +658,13 @@ func again(run func()) func() func() {
 	return func() func() { return run }
 }
 
-// timedWindow is the CPU time this process spends running op, with the garbage collector settled
-// before op starts and stopped while it runs, so the time is op's own work alone.
-//
-// A collection inside the window adds CPU time that depends on when it lands rather than on op.
-// Whether one lands depends on the heap goal the untimed setup and the tests before it leave
-// behind, so a small size's write can run with no collection at all while a full-size write runs
-// one or two. A collection's own CPU time varies several times over between cycles, since its
-// idle mark workers run on every processor the single-threaded write leaves idle and
-// processCPUTime counts them. Either way the full size's time grows against the small size's
-// without the work growing, which is how a linear write went over linearSlack's bound.
-//
-// Stopping the collector hides nothing a regression would show: work that grows quadratically
-// does so on op's own goroutine, and allocation that grows quadratically still pays inside the
-// window for the fresh memory it touches. The heap may grow to windowMemoryLimit while the
-// collector is stopped, so a regression that allocates without bound is collected rather than
-// killing the process; a window that reaches the limit comes back with an error naming its
-// collections, since that collection would put its noise back into the time.
-//
-// timedWindow reports through no *testing.T. It runs inside the goroutine runWithDeadline starts,
-// which a call that misses its deadline leaves running past its test's end, and testing panics the
-// whole binary on a Fail from such a goroutine; the caller waiting on runWithDeadline reports the
-// error on its test's own goroutine (timedWithDeadline). A call that misses its deadline may also
-// never return to restore the collector, so runWithDeadline restores it as well.
-func timedWindow(op func()) (time.Duration, error) {
-	runtime.GC()
-	defer debug.SetGCPercent(debug.SetGCPercent(-1))
-	limit := min(debug.SetMemoryLimit(-1), windowMemoryLimit)
-	defer debug.SetMemoryLimit(debug.SetMemoryLimit(limit))
-	cycles := gcCycles()
-	before := processCPUTime()
-	op()
-	took := processCPUTime() - before
-	if collected := gcCycles() - cycles; collected != 0 {
-		return took, fmt.Errorf("%d collections ran inside a timed window, which grew the heap to the %d MiB memory limit; their CPU time is in its %s", collected, limit>>20, took.Round(time.Millisecond))
-	}
-	return took, nil
-}
-
-// windowMemoryLimit is the most memory timedWindow lets a window grow the heap to with the
-// collector stopped, unless the process already runs under a lower limit. The largest window here,
-// seeding a mebibyte of paragraphs, allocates about 1 GiB, and a parse of a mebibyte table about
-// 800 MiB. A window of many runs of a smaller size holds about 50 of the clock's steps of work
-// (cputest.Measure), around a second's even at gVisor's 10 ms step.
+// windowMemoryLimit is the most memory this file's timed windows let the runtime hold with the
+// collector stopped (cputest.TimedWithoutCollections's limit), unless the process already runs
+// under a lower limit. The largest window here, seeding a mebibyte of paragraphs, allocates about
+// 1 GiB, and a parse of a mebibyte table about 800 MiB. A window of many runs of a smaller size
+// holds about 50 of the clock's steps of work (cputest.Measure), around a second's even at
+// gVisor's 10 ms step.
 const windowMemoryLimit = 3 << 30
-
-// gcCycles is how many collections this process has completed.
-func gcCycles() uint64 {
-	sample := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}}
-	metrics.Read(sample)
-	return sample[0].Value.Uint64()
-}
 
 // collectorSettings is GOGC and the memory limit as they stand, read without changing either.
 func collectorSettings() (percent int, limit int64) {
@@ -718,7 +677,7 @@ func collectorSettings() (percent int, limit int64) {
 // running past their own deadline - a count, not a single flag, so two concurrently leaking calls
 // sharing one label cannot be mistaken for one clearing when either returns. Go cannot cancel a
 // goroutine mid-computation, so this is the only way a later call can tell that measuring right
-// now would share processCPUTime's process-wide counter with CPU a still-running earlier call
+// now would share cputest.Process's process-wide counter with CPU a still-running earlier call
 // keeps spending. runWithDeadline adds to it the instant a deadline misses and removes from it
 // only once that call's own goroutine finally returns; leakedCallGuard reads it.
 var leaking struct {
@@ -745,7 +704,7 @@ func leakedCallGuard(what string) string {
 		labels = append(labels, label)
 	}
 	sort.Strings(labels) // a fixed order, not map iteration's, so the message is reproducible
-	return fmt.Sprintf("%s: refusing to measure while %s is still running past its own deadline (processCPUTime is this whole process's, so measuring now would attribute its ongoing CPU to this call instead)", what, strings.Join(labels, ", "))
+	return fmt.Sprintf("%s: refusing to measure while %s is still running past its own deadline (cputest.Process is this whole process's, so measuring now would attribute its ongoing CPU to this call instead)", what, strings.Join(labels, ", "))
 }
 
 // runWithDeadline runs op, labelled what, in its own goroutine and reports whether it returned
@@ -758,10 +717,11 @@ func leakedCallGuard(what string) string {
 // receive, at no CPU cost, for as long as the test binary runs. cleared, non-nil only on a
 // deadline miss, closes the instant that goroutine deregisters op's own entry - the signal
 // waitForLeakToClear waits on, rather than polling. err is op's own, a timed window's verdict
-// (timedWindow), handed back only with an op that returned in time: a late op's is dropped with it,
-// since no test waits for it any more. It hands back the collector's settings as it found them on
-// either return, since an op stopped inside timedWindow that misses its deadline would
-// otherwise leave the collector stopped for every later test in the binary.
+// (cputest.TimedWithoutCollections), handed back only with an op that returned in time: a late
+// op's is dropped with it, since no test waits for it any more. It hands back the collector's
+// settings as it found them on either return, since an op stopped inside a timed window that
+// misses its deadline would otherwise leave the collector stopped for every later test in the
+// binary.
 func runWithDeadline(what string, deadline time.Duration, op func() (time.Duration, error)) (took time.Duration, onTime bool, cleared <-chan struct{}, err error) {
 	percent, limit := collectorSettings()
 	defer debug.SetMemoryLimit(limit)
@@ -845,7 +805,7 @@ func TestRunWithDeadlineReportsAHangPromptly(t *testing.T) {
 // TestLeakedCallBlocksTheNextMeasurement proves leakedCallGuard directly: once a synthetic op has
 // missed its own deadline and is still running, a second, otherwise-healthy call through
 // timedWithDeadline refuses to start - naming the first call - rather than silently sharing its
-// still-accruing CPU (processCPUTime is this whole process's, not per-goroutine). The op is held
+// still-accruing CPU (cputest.Process is this whole process's, not per-goroutine). The op is held
 // until the guard has answered, so it is still running when asked, however late the test runs.
 func TestLeakedCallBlocksTheNextMeasurement(t *testing.T) {
 	const deadline = 20 * time.Millisecond
@@ -868,7 +828,7 @@ func TestLeakedCallBlocksTheNextMeasurement(t *testing.T) {
 }
 
 // TestAMissedDeadlineLeavesTheCollectorAsItWas proves runWithDeadline hands back the collector as
-// it found it when a call misses its deadline inside timedWindow, where the collector is
+// it found it when a call misses its deadline inside a timed window, where the collector is
 // stopped: the call may never return to restore it, and a collector left stopped would hold every
 // later test in this binary to the window's memory limit with no collection below it.
 func TestAMissedDeadlineLeavesTheCollectorAsItWas(t *testing.T) {
@@ -876,7 +836,7 @@ func TestAMissedDeadlineLeavesTheCollectorAsItWas(t *testing.T) {
 	stopped, release := make(chan struct{}), make(chan struct{})
 	runtime.GC() // so the window's own collection takes no part of the deadline
 	_, onTime, cleared, _ := runWithDeadline("synthetic hang inside a timed window", time.Second, func() (time.Duration, error) {
-		return timedWindow(func() {
+		return cputest.TimedWithoutCollections(windowMemoryLimit, func() {
 			close(stopped)
 			<-release
 		})
@@ -941,7 +901,7 @@ func TestALateCallFinishingAfterItsTestDoesNotPanicHelper(t *testing.T) {
 	t.Run("a call that misses its deadline", func(t *testing.T) {
 		timedWithDeadline(t, lateCallWhat, time.Second, func() (time.Duration, error) {
 			defer close(finished)
-			return timedWindow(func() {
+			return cputest.TimedWithoutCollections(windowMemoryLimit, func() {
 				close(stopped)
 				<-release
 				runtime.GC() // a collection inside the window, once its test has ended

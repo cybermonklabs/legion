@@ -1,5 +1,5 @@
 import { afterEach, expect, jest, type Mock, mock, test } from "bun:test";
-import type { AgentStreamSettingsReported } from "@legion/contracts";
+import type { AgentStreamSettingsReported } from "@legion/contracts/agent-stream";
 // biome-ignore lint/style/noRestrictedImports: the same-task pair a closed select's own key makes (`stepWithKey`), and the blur that leaves a picker
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

@@ -960,7 +960,9 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
     );
     try {
       await screen.findByRole("button", { name: "Show sidebar" });
-      expect(screen.getByRole("button", { name: "Show margin" })).toBeTruthy();
+      // The margin is a deferred part of the shell (`features/shell/deferred-shell.ts`), so its
+      // control can draw a commit after the sidebar's: read it once it has.
+      expect(await screen.findByRole("button", { name: "Show margin" })).toBeTruthy();
 
       await user.click(screen.getByRole("button", { name: "Show margin" }));
       expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(

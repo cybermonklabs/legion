@@ -479,13 +479,13 @@ so that read is this gate's (ci_job_reads.py's dispatch_ui).
 ## dispatch_browser: The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
 
 The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
-holds: the shards, the three `-alone` projects, the two-process job, the
+holds: the shards, the six `-alone` projects, the two-process job, the
 fake-embedder job, the visual review and the merge job. Every entry is something a
 browser row reads: the dashboard and its contracts, the Dispatch server its harness
 builds, and the two workflow files that hold the steps. The retired `dispatch` job's
 filter also held three fixture sets whose only readers are the dashboard's and the
 proof editor's unit tests, and they are not here: dispatch-ui's filter names all
-three, and with this output ungated on a pull request they would start four shard
+three, and with this output ungated on a pull request they would start five shard
 machines and the merge job for a fixture-only change. The dispatch_browser gate in
 .github/scripts/ci_job_reads.py says what this suite reads, and check-ci-filters.sh
 holds this filter to that gate - it refuses a filter that misses a read, never one
@@ -511,7 +511,7 @@ every project and the two-process job, which is the lane the nightly
 whole suite on a pull request with the label, and the group is where a change to
 that file meets it before main anyway. The nightly itself is not in this list:
 no step of this suite reads it, which rule 9's second direction refuses, since
-four shard machines and the merge job would start over a change no row sees. It
+five shard machines and the merge job would start over a change no row sees. It
 is a read of the ci_filters gate instead, so a change to it re-runs this check,
 which holds this filter and that gate together.
 
@@ -1071,8 +1071,8 @@ of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session
 build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
 listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
-the API's of that set, and the binaries, multiprocess
-and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
+the API's of that set, and the binaries and
+multiprocess jobs of dispatch-browser.yaml, which build the Dispatch server and the real
 broker's commands out of that same set), go-envoy-infra
 (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
 .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
@@ -1650,7 +1650,7 @@ Vite build aliases its sources, so that spawn is the whole of what the build is 
 ## The browser suite job: its lanes, its one input, and why the matrix is in the called file
 
 Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
-holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
+holds: the binaries job that builds the Go commands the lanes run, the shard legs, the six
 `-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
 lanes, the containerised visual review, and the merge job that joins the shard and alone
 reports into one and posts this job's ci-ok report.
@@ -1659,7 +1659,7 @@ Two lanes, and which run pays for which. A pull request without the label `full-
 `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
 proves those two rows and no more - it is not the run that proves the suite before main.
 Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
-- runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
+- runs `full`: every project, the six `-alone` ones and the two-process job. So the merge
 group is where a change meets the whole suite before it lands, and the nightly
 (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
 lane, from main) runs it again on main's tip.

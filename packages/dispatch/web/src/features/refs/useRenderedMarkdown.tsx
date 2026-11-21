@@ -10,10 +10,16 @@ import {
 import { createPortal } from "react-dom";
 
 import type { DisplayTree } from "../../api/types";
+import { keepTheReadersPlace } from "../doc/readers-place";
 import { type AskBlockHost, applyAskBlockShell, askShellSlots } from "../doc/typed-block-drawing";
 import { collectPictureAnchors, DispatchPicture, type PictureAnchor } from "./DispatchPicture";
 import { TextAskCard } from "./markdown-cards";
-import { type MarkdownEngine, renderWithEngine, type SoftBreaks } from "./markdown-engine";
+import {
+  type MarkdownEngine,
+  type RawHtml,
+  renderWithEngine,
+  type SoftBreaks,
+} from "./markdown-engine";
 import { drawMermaidDiagrams } from "./mermaid-diagrams";
 import {
   collectReferenceAnchors,
@@ -185,12 +191,10 @@ function paintsAcrossTasks(parsed: ProseMirrorNode): boolean {
   return nodesInDocument(parsed, ATTACH_BATCH + 1) > ATTACH_BATCH;
 }
 
-/** What a sliced paint tells its caller as it runs: `beforeBatch` opens each task, before the
- *  work of it reaches the element; `afterPageBatch` ends a task that stopped on a piece which
- *  reached the page; `done` runs once the last piece is in. */
+/** What a sliced paint tells its caller as it runs: `afterPageBatch` ends a task that stopped
+ *  on a piece which reached the page; `done` runs once the last piece is in. */
 interface SlicedPaintSteps {
   afterPageBatch(): void;
-  beforeBatch(): void;
   done(): void;
 }
 
@@ -208,11 +212,10 @@ interface SlicedPaintSteps {
  */
 function paintAcrossTasks(
   slices: Generator<SliceYield>,
-  { afterPageBatch, beforeBatch, done }: SlicedPaintSteps
+  { afterPageBatch, done }: SlicedPaintSteps
 ): () => void {
   let timer: number | undefined;
   const nextSlice = (): void => {
-    beforeBatch();
     const until = performance.now() + SLICE_MS;
     let last = false;
     let reachedThePage = false;
@@ -240,6 +243,35 @@ function paintAcrossTasks(
   };
 }
 
+/** Which surface a render is for. */
+export type MarkdownPolicy = "body" | "document";
+
+/**
+ * What each surface's policy decides, in one table rather than three options with one caller.
+ *
+ * - `whilePending`: what the element holds while the parse worker still owes this source its
+ *   formatting. A body holds its own literal text, which the reader reads meanwhile; a document
+ *   holds whatever it has, because its markdown is as long as the page it draws - the reader
+ *   would meet 400,000 characters of syntax in one text node and the page would lay every line
+ *   of it out twice - and its element may already hold the blocks its own server drew.
+ * - `keepAPostedParse`: whether an answer to a source this element has moved on from is still
+ *   worth painting (`markdown-engine.ts`). The streaming turn in the live view needs it: the
+ *   frame the worker is holding is the newest parse its reader can be shown before the stream
+ *   pauses. A document's source does not stream, so an unmount leaves the queue nothing to
+ *   build on the reader's thread for a paint that would be thrown away.
+ * - `theWorkerOrNothing`: whether the element takes the worker's own answer or none at all,
+ *   rather than a parse the page makes on the reader's thread when the worker misses its
+ *   deadline, crashes or cannot be created. A body must end formatted whatever became of the
+ *   worker; a document already has its first screenful drawn with the editor arriving behind it.
+ */
+const MARKDOWN_POLICIES = {
+  body: { keepAPostedParse: true, theWorkerOrNothing: false, whilePending: "source" },
+  document: { keepAPostedParse: false, theWorkerOrNothing: true, whilePending: "hold" },
+} as const satisfies Record<
+  MarkdownPolicy,
+  { keepAPostedParse: boolean; theWorkerOrNothing: boolean; whilePending: "source" | "hold" }
+>;
+
 /** What a surface tells `useRenderedMarkdown` beyond its element, source and paint; each has a
  *  default, so a surface names only what it changes. */
 export interface RenderedMarkdownOptions {
@@ -250,12 +282,27 @@ export interface RenderedMarkdownOptions {
   decorate?: DecorateMarkdown;
   /** Called after each render lands; none by default. */
   onRendered?: () => void;
-  /** The parse policy (`SoftBreaks`): `space`, the default, or `line`. */
+  /** The soft-break parse policy (`SoftBreaks`): `space`, the default, or `line`. */
   softBreaks?: SoftBreaks;
+  /** The raw-HTML parse policy (`RawHtml`): `refuse`, the default, which keeps an HTML comment
+   *  as the characters its author wrote, or `text`, which every body renderer passes - an HTML
+   *  comment draws as nothing. Any other raw HTML reads as its literal characters either way,
+   *  and neither policy sends a body to the literal-text fallback. */
+  rawHtml?: RawHtml;
   /** `paint`, a piece at a time (`PaintMarkdownInSlices`), for a body of more nodes than one task
    *  puts into the page (`paintsAcrossTasks`); without one such a body is painted in one go, as
    *  every other body is. */
   paintInSlices?: PaintMarkdownInSlices;
+  /** Which surface this is, which decides three policies that go together and are not a
+   *  caller's to mix (`MARKDOWN_POLICIES`): `"body"`, the default, every comment, ask, message
+   *  and turn; `"document"`, the one surface whose source is a whole document rather than text
+   *  a reader would read as it waits (`features/doc/DocumentPreview.tsx`). */
+  policy?: MarkdownPolicy;
+  /** Whether this element draws nothing at all for now and keeps what it holds. A surface passes
+   *  it while what is on the screen is not this hook's to replace: the document preview holds the
+   *  blocks the server drew until the whole document has been parsed, and holds whatever it has
+   *  drawn from the task the editor's build begins in (`features/doc/DocumentPreview.tsx`). */
+  holding?: boolean;
   /** What the link pass may link in the painted text (`ReferenceLinking`): what the surface's
    *  own reading of its source cites and what is known about it (`useTextReferences`). */
   references: ReferenceLinking;
@@ -304,74 +351,6 @@ export function onMarkdownLatePaint(listener: LatePaintListener): () => void {
 }
 
 /**
- * Where the content under `element` starts, as the reader sees it now: the element's own bottom
- * edge in the viewport. A shift the browser's own scroll anchoring already made is in that
- * measurement, so the page is never moved twice.
- */
-function whereTheContentUnderItWas(element: HTMLElement): number {
-  return element.getBoundingClientRect().bottom;
-}
-
-/** The reader's place across one late paint, kept while the paint grows `element` under them. */
-interface ReadersPlace {
-  /** Read before a batch of the paint goes in, so a page the reader has moved since the last
-   *  correction is held to where they moved it rather than where it was. */
-  hold(): void;
-  /** Puts the reader back for whatever the batch just added. */
-  keep(): void;
-}
-
-/**
- * Keeps the reader where they are across a paint that grows `element`, which lands after the
- * commit that drew it: nothing else measures a second time (`ViewportAnchor` measures once per
- * commit, `use-follow-latest.ts` places once).
- *
- * A body wholly above the top of the page pushes everything the reader is looking at down by
- * what its formatting added, so the page scrolls back by exactly that. A body the reader can see
- * is left alone - its top does not move, and that is where they are reading from. What is
- * measured is the element's own bottom edge in the viewport, which is where the content under it
- * starts.
- *
- * `keep` runs once per batch of a sliced paint rather than once for the whole of it, because the
- * reader is not still while 32 batches land: with one measurement taken before the first batch
- * and the correction applied after the last, a reader who scrolled by S in between was carried
- * back by exactly S (sjawhar/legion#2519). Each batch already reads the element's rectangle to
- * have its own layout done while it is all that is dirty (`useRenderedMarkdown`'s slice loop),
- * so a correction per batch costs no layout the paint was not paying anyway.
- *
- * `hold` is what keeps the reader's own scrolling: between one correction and the next batch the
- * page can move for two reasons, and the page's own scroll position tells them apart from where
- * the content under the element has got to. Where the reader scrolled, the content under the
- * element is no longer where the last correction left it, and the place to hold the rest of the
- * paint to is the one they chose. Where it was the browser's own scroll anchoring, the content
- * is exactly where the last correction left it - that is what anchoring does - so re-reading it
- * changes nothing and the page is never moved twice. Nothing is read at all while the page has
- * not moved, which is every batch of a reader sitting still.
- */
-function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
-  let under = whereTheContentUnderItWas(element);
-  let placedAt = window.scrollY;
-  return {
-    hold() {
-      if (window.scrollY === placedAt) {
-        return;
-      }
-      under = whereTheContentUnderItWas(element);
-      placedAt = window.scrollY;
-    },
-    keep() {
-      if (under <= 0) {
-        const moved = whereTheContentUnderItWas(element) - under;
-        if (moved !== 0) {
-          window.scrollBy(0, moved);
-        }
-      }
-      placedAt = window.scrollY;
-    },
-  };
-}
-
-/**
  * What every Markdown-bearing element does once mounted, in the layout phase of the commit
  * (`renderWithEngine`, which says why that phase): `tree`, the reading Go made of a stored
  * text, is drawn and handed to `paint`; a text Dispatch does not store, which carries no tree,
@@ -403,12 +382,14 @@ function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
  * page's own thread (`markdown-engine.ts`), so it lands a frame or more after the commit that
  * rendered it. A stored text never does, however long it is: its tree is drawn in the commit
  * that mounted it. Until a parse lands, `isPending` is set and the element holds the body's own
- * literal text - selectable, under nothing - unless it already holds a paint of an earlier
- * source, which it keeps instead, so a streaming turn never flips back to its source between
- * frames. Every paint, the pending one included, recomputes the ask hosts, the reference anchors
- * and the picture anchors in the same callback, so no portal is left pointing into a page that
- * has been replaced; a kept paint replaces nothing and keeps the portals it has. `onRendered`
- * fires on the paint that formats the body, never on the pending one.
+ * literal text - selectable, under nothing - or whatever it already holds where the surface
+ * asked for that (`whilePending: "hold"`: nothing, or the blocks its own server drew), unless
+ * it already holds a paint of an earlier source, which it keeps instead, so a streaming turn
+ * never flips back to its source between frames. Every paint, the pending one included,
+ * recomputes the ask hosts, the reference anchors and the picture anchors in the same callback,
+ * so no portal is left pointing into a page that has been replaced; a kept paint replaces
+ * nothing and keeps the portals it has. `onRendered` fires on the paint that formats the body,
+ * never on the pending one.
  *
  * The wait for an answer belongs to this element, not to the render of one frame. A turn
  * streaming into the live view renders up to ten frames a second (`AgentThread.tsx`), and every
@@ -422,8 +403,11 @@ function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
  *
  * A body that formats after its commit must not move the reader, and nothing else measures a
  * second time: `ViewportAnchor` measures once per commit and `use-follow-latest.ts` places the
- * reader once. So the late paint keeps the reader's place itself (`keepTheReadersPlace`), once
- * per batch it lands and holding to wherever the reader has scrolled to meanwhile, and tells
+ * reader once. So the late paint keeps the reader's place itself, for as long as it is landing
+ * - the page's own keeper and no copy of it (`features/doc/readers-place.ts`'s
+ * `keepTheReadersPlace`), so a body formatting in the Inbox's reading column holds the reader
+ * by scrolling that column rather than the page it does not move. It answers every batch where
+ * the batch is seen and holds to wherever the reader has scrolled to meanwhile, and tells
  * `use-follow-latest.ts` about itself (`onMarkdownLatePaint`), which places the reader again
  * where Jump to latest had placed them at the turn that just formatted.
  *
@@ -462,10 +446,14 @@ export function useRenderedMarkdown(
     decorate,
     onRendered,
     paintInSlices,
+    policy = "body",
+    rawHtml = "refuse",
     references,
     softBreaks = "space",
+    holding = false,
   }: RenderedMarkdownOptions
 ): RenderedMarkdown {
+  const { keepAPostedParse, theWorkerOrNothing, whilePending } = MARKDOWN_POLICIES[policy];
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
   const Card = useContext(TextAskCard);
@@ -512,6 +500,11 @@ export function useRenderedMarkdown(
     if (element === null) {
       throw new Error("The Markdown element is unavailable.");
     }
+    // A held element draws nothing: what is in front of the reader is the surface's own, and
+    // this hook neither replaces it nor asks for a parse it would replace it with.
+    if (holding) {
+      return;
+    }
     setIsFallback(false);
     renders.current += 1;
     const render = renders.current;
@@ -522,6 +515,7 @@ export function useRenderedMarkdown(
       markdown,
       tree,
       softBreaks,
+      rawHtml,
       ({ engine, openMermaidFence, parsed, pending }) => {
         // Nothing of an answer reaches an element that has gone, or one a newer frame has
         // already painted: those are the two ways a kept answer stops being worth having.
@@ -537,6 +531,12 @@ export function useRenderedMarkdown(
             // tasks is one of those: nothing but the paint that replaces it, or the unmount,
             // stops it, so this source's text written here would stand in front of the batches
             // that paint goes on attaching (sjawhar/legion#2519).
+            return;
+          }
+          // A surface whose source reads as nothing until it is formatted keeps whatever its
+          // element holds meanwhile (`whilePending`) - nothing, or the blocks its own server
+          // drew; every other one holds the body's own text.
+          if (whilePending === "hold") {
             return;
           }
           element.replaceChildren(document.createTextNode(markdown));
@@ -571,10 +571,23 @@ export function useRenderedMarkdown(
         // 16,000 elements, which one `replaceChildren` of holds WebKit's thread for about a
         // second (`ATTACH_BATCH`) (sjawhar/legion#2519).
         const first = painted.current !== markdown;
-        let place: ReadersPlace | undefined;
+        /** The reader's place, kept for as long as this paint is landing. */
+        let releaseTheirPlace: (() => void) | undefined;
+        // Let go once the correction for the batch that has just landed has been made: the
+        // keeper answers a mutation in the microtask that mutation queued, which is ahead of
+        // this one, and a `disconnect()` in the same task would drop the last batch's own
+        // correction on the floor (`features/doc/readers-place.ts`).
+        const letTheirPlaceGo = (): void => {
+          const release = releaseTheirPlace;
+          if (release === undefined) {
+            return;
+          }
+          releaseTheirPlace = undefined;
+          queueMicrotask(release);
+        };
         // Everything a surface reads from the element, once the whole body is in it.
         const finish = (): void => {
-          place?.keep();
+          letTheirPlaceGo();
           setIsPending(owed());
           let hosts = NO_ASK_HOSTS;
           if (engine !== undefined && parsed !== undefined && Card !== undefined) {
@@ -593,7 +606,7 @@ export function useRenderedMarkdown(
               element,
               parsed,
               markdown,
-              (source) => engine.parse(source, softBreaks),
+              (source) => engine.parse(source, softBreaks, rawHtml),
               openMermaidFence
             );
           }
@@ -627,8 +640,14 @@ export function useRenderedMarkdown(
         // engine's cache on a fresh mount is without ever having been pending. A paint that is
         // neither - every body that reaches the page in one task - measures nothing, so a short
         // body never lays the page out in this effect.
+        //
+        // The keeper is the page's own (`features/doc/readers-place.ts`): it holds the reader
+        // against whatever scrolls this body - the Inbox's reading column, or the page - it
+        // answers each batch where the batch is seen rather than a frame later, and a scroll
+        // it did not make is the reader's place now, which is what holds a paint to wherever
+        // they scrolled to while it was still landing (sjawhar/legion#2519).
         if (replacesPending || inSlices !== undefined) {
-          place = keepTheReadersPlace(element);
+          releaseTheirPlace = keepTheReadersPlace(element);
         }
         if (inSlices === undefined) {
           paint(element, parsed, engine.serializer);
@@ -652,17 +671,9 @@ export function useRenderedMarkdown(
             // is dirty. Left to the engine, the layout of every batch would fall into whichever
             // task first reads the page's geometry, and in WebKit a list of 8,000 items laid out
             // in one go is ~700 ms of that task (sjawhar/legion#2519). Laid out a batch at a
-            // time it is a few milliseconds each. The reader is put back for what this batch
-            // added from that same reading, so the correction never carries them off a place
-            // they scrolled to while the rest of the body was still landing
-            // (`keepTheReadersPlace`).
+            // time it is a few milliseconds each. The keeper reads that same layout from the
+            // mutation this batch made, so the reader is put back for it without a second one.
             element.getBoundingClientRect();
-            place?.keep();
-          },
-          beforeBatch() {
-            // What the reader has done to the page since the last batch, before this one grows
-            // it under them.
-            place?.hold();
           },
           done() {
             running = false;
@@ -672,16 +683,38 @@ export function useRenderedMarkdown(
           },
         });
         if (running) {
-          painting.current = stop;
+          painting.current = () => {
+            stop();
+            // A paint thrown away part-built keeps nobody's place: the element is about to be
+            // written over by the paint that replaced it, or has left the page.
+            releaseTheirPlace?.();
+            releaseTheirPlace = undefined;
+          };
         }
       },
-      // The frame the worker is holding is the newest parse a streaming turn can be shown
-      // before it pauses, so this element is still given that answer after it has asked for a
-      // newer frame (`markdown-engine.ts`).
-      { keepAPostedParse: true }
+      // What this surface wants of a parse it has moved on from, and of one the worker never
+      // answers: both are its policy's (`MARKDOWN_POLICIES`), and a body's are the live view's -
+      // the frame the worker is holding is the newest parse a streaming turn can be shown before
+      // it pauses, and every body must end formatted whatever became of the worker.
+      { keepAPostedParse, theWorkerOrNothing }
     );
     return cancelRender;
-  }, [Card, decorate, markdown, paint, paintInSlices, references, root, softBreaks, tree]);
+  }, [
+    Card,
+    decorate,
+    holding,
+    keepAPostedParse,
+    markdown,
+    paint,
+    paintInSlices,
+    rawHtml,
+    references,
+    root,
+    softBreaks,
+    theWorkerOrNothing,
+    tree,
+    whilePending,
+  ]);
 
   return {
     isFallback,

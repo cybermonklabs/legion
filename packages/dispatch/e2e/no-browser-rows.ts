@@ -110,9 +110,24 @@ export type StaleExemption = {
  * the suite no longer holds, or one naming a row that now drives a browser — so this list cannot
  * quietly grow stale.
  *
- * It ships empty: every row of the suite drives a browser.
+ * It holds one entry: the row that reads what the other person's pen leaves behind when the
+ * document's room refuses him as a writer (dispatch://INFRA-341, review round 3). Every other
+ * row of the suite drives a browser.
  */
-export const exemptions: readonly Exemption[] = [];
+export const exemptions: readonly Exemption[] = [
+  {
+    file: "large-documents-build.e2e.ts",
+    reason:
+      "The claim is about `theOtherPersonsPen` (e2e/large-documents-rows.ts), the Node client " +
+      "three rows of the large-document files write as the other person with: that a room which " +
+      "admits him read-only leaves none of his provider, his socket or his copy of the document " +
+      "alive. Reading it takes the server's own `/ws/doc` admission - a signed-in cookie, the " +
+      "block schema the server answers, and an issue closed under him - so no bun test of this " +
+      "directory can hold it, and a browser page would be a page this claim never looks at.",
+    title:
+      '"the other person\'s pen drops its socket and its copy when the room refuses him @phone"',
+  },
+];
 
 /** The fixtures that are a browser. Playwright's `request` is not one of them: it is
  *  Playwright's HTTP client, which opens no page. */

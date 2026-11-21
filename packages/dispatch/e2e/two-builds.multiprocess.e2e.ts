@@ -2,6 +2,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ArtifactUploadResponse } from "../web/src/api/types";
+import { issueTabChunks } from "../web/src/features/issue/issue-tab-list";
 import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -18,6 +19,7 @@ import {
   patchIssue,
   publishAgentStreamFrame,
   putArchitectureSource,
+  putStep,
   syncArchitectureSource,
   userHeaders,
 } from "./api";
@@ -32,6 +34,7 @@ import {
   webDistOf,
 } from "./harness-processes";
 import { withIssuePage } from "./issue-page-option";
+import { expectNoneOf } from "./none-of";
 import { sql } from "./psql";
 import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
@@ -129,12 +132,16 @@ const session: FakeSession = {
 /** The text each seeded thing shows, which its route's landmark finds. */
 const shown = {
   agentReply: "The release notes are read.",
+  check: "Every route is served by both processes.",
   child: "Split the rollout",
   comment: "The rollout waits on the canary.",
+  decision: "Serve each build's assets from either process",
   document: "The handbook explains the rollout.",
   issue: "Roll out two builds",
   issueArtifact: "These notes track the rollout.",
+  planTask: "Pin the assets to the other process.",
   spec: "Both builds serve every page.",
+  stepTask: "rollout",
 };
 
 /** The list the issue message carries under its diagram, drawn from the tree the server read the
@@ -201,10 +208,10 @@ interface Seeded {
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
- *  project with an architecture source, an issue with a spec, a child, a comment, a message
- *  holding a Mermaid diagram and a document artifact, a project document, a live session with a
- *  broadcast, a replayed conversation and a picture, a priority with a description and an issue
- *  in flight that advances it, and the delivery timeline's runs. */
+ *  project with an architecture source, an issue with a spec, a child, a comment, a run of a step,
+ *  a message holding a Mermaid diagram and a document artifact, a project document, a live session
+ *  with a broadcast, a replayed conversation and a picture, a priority with a description and an
+ *  issue in flight that advances it, and the delivery timeline's runs. */
 async function seedEveryRoute(): Promise<Seeded> {
   await setLiveSessions([session]);
   await createProject({ key: "CORE", name: "Core" });
@@ -232,6 +239,40 @@ async function seedEveryRoute(): Promise<Seeded> {
   const issueArtifact = await createIssueArtifact(issue.key, {
     content: `# Rollout notes\n\n${shown.issueArtifact}\n`,
     name: "rollout-notes.md",
+  });
+  // The issue's three role documents, so the Verification, Plan and Decisions tabs each draw
+  // their own content rather than the empty state that says the document is missing. Each of
+  // those tabs is a chunk of its own (`features/issue/IssuePage.tsx`), asked for from the
+  // address that opens it (`importTheOpenTab` in `web/src/app.tsx`).
+  await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is proved.\n\n:::check{#c-rollout surface="browser" run="bun run e2e:multiprocess"}\n${shown.check}\n:::\n`,
+    name: "verification.md",
+  });
+  await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is built.\n\n:::plan_task{#t-rollout}\n${shown.planTask}\n:::\n`,
+    name: "plan.md",
+  });
+  // An agent's decision nobody has kept, which the Decisions tab lists under the reader's
+  // review (`decisions_test.go`: an `agent` decision with no Keep is `waiting_review`).
+  await createIssueArtifact(issue.key, {
+    content: `## ${shown.decision}\n\nChosen so either process can serve either build's page.\n`,
+    name: "decisions.md",
+  });
+  // A run of a step as Legion's daemon records it, so the Steps tab draws its table rather than
+  // the state that says no step of the issue has run. That tab is a chunk of its own as well
+  // (`issueTabChunks` in `web/src/features/issue/issue-tab-list.ts`).
+  await putStep(issue.key, crypto.randomUUID(), {
+    agent: `legion-core-${issue.key.toLowerCase()}-implementer`,
+    ended_at: "2026-11-16T09:40:00Z",
+    generation: 1,
+    kind: "step",
+    model: "anthropic/claude-opus-5",
+    result: "passed",
+    role: "implementer",
+    started_at: "2026-11-16T09:00:00Z",
+    step: 2,
+    task: shown.stepTask,
+    type: "implementation",
   });
   const document = await createProjectDocument("CORE", {
     content: `# Handbook\n\n${shown.document}\n`,
@@ -298,12 +339,23 @@ async function seedEveryRoute(): Promise<Seeded> {
   };
 }
 
+/** What a reader does on a page the walk has opened, for a part of the shell that no address
+ *  carries: the Inbox drawer and the create-issue dialog are each a chunk of their own that the
+ *  shell asks for the first time the reader opens it (`features/shell/deferred-shell.ts`), so
+ *  the walk opens them the way they are opened - a press on the control that offers them. */
+interface Opens {
+  readonly press: (page: Page) => Promise<void>;
+  readonly shows: (page: Page) => readonly Locator[];
+}
+
 /** One page load of the walk: the route of `walkRoutes` it opens, the address, what on the page
- *  shows the route rendered its own content, and the lazy pieces that content needed. */
+ *  shows the route rendered its own content, what a reader then opens on it, and the lazy
+ *  pieces that content needed. */
 interface Visit {
   readonly route: WalkRoutePath;
   readonly url: string;
   readonly shows: (page: Page) => readonly Locator[];
+  readonly opens?: Opens;
   readonly loads?: readonly LazyPiece[];
   /** Runs before the visit's `goto`, and what it sets stays on the walk's one context. */
   readonly prepare?: (page: Page) => Promise<void>;
@@ -342,7 +394,20 @@ function visits(seed: Seeded): readonly Visit[] {
       ],
       url: "/answers",
     },
-    { route: "/agents", shows: (page) => [heading(page, "Agents")], url: "/agents" },
+    {
+      // The rail's Peek opens the Inbox over whatever page is open, which is where the drawer's
+      // chunk is asked for. Every page but the Inbox itself offers it (`features/sidebar`), and
+      // this is the first of the walk's that does.
+      loads: ["inbox-drawer"],
+      opens: {
+        press: (page) =>
+          page.getByRole("button", { name: "Peek at the inbox without leaving this page" }).click(),
+        shows: (page) => [page.getByTestId("inbox-drawer")],
+      },
+      route: "/agents",
+      shows: (page) => [heading(page, "Agents")],
+      url: "/agents",
+    },
     {
       // The preview is the headless renderer's: without it the bold is literal asterisks.
       loads: ["headless-markdown"],
@@ -459,6 +524,54 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `${issue}/activity`,
     },
     {
+      // Each of the five tabs below is a chunk of its own, asked for from the address that
+      // opens it (`importTheOpenTab` in `web/src/app.tsx`), so each needs an address of its own
+      // here: a walk that opened only the Spec, Conversation, Children, Artifacts and Activity
+      // tabs asked the other build's process for none of them.
+      // The document itself is the editor's, as on the Spec tab; the connection dot is not,
+      // since a role document's tab draws no toolbar to hold one (`RoleDocumentPanel`).
+      loads: ["editor"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page.getByTestId("verification-check"),
+        documentEditor(page).filter({ hasText: shown.check }),
+      ],
+      url: `${issue}/verification`,
+    },
+    {
+      loads: ["editor"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page.getByTestId("plan-task"),
+        documentEditor(page).filter({ hasText: shown.planTask }),
+      ],
+      url: `${issue}/plan`,
+    },
+    {
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .getByRole("table", { exact: true, name: `Steps of task ${shown.stepTask}` })
+          .locator("tbody tr", { hasText: "implementer" }),
+      ],
+      url: `${issue}/steps`,
+    },
+    {
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .getByRole("region", { exact: true, name: "Waiting for your review" })
+          .getByRole("heading", { name: shown.decision }),
+      ],
+      url: `${issue}/decisions`,
+    },
+    {
+      // Alice filed the issue and commented on it, so she is one of the people who worked it.
+      route: "/issues/:key/*",
+      shows: (page) => [page.getByRole("region", { exact: true, name: "People" })],
+      url: `${issue}/collaborators`,
+    },
+    {
       route: "/priorities",
       shows: (page) => [
         heading(page, "Priorities"),
@@ -529,7 +642,17 @@ function visits(seed: Seeded): readonly Visit[] {
       shows: (page) => [heading(page, "Enter machine login code")],
       url: "/credentials/machine",
     },
-    { route: "/settings", shows: (page) => [heading(page, "Settings")], url: "/settings" },
+    {
+      // The rail's New issue opens the create dialog, which is where its chunk is asked for.
+      loads: ["create-issue-dialog"],
+      opens: {
+        press: (page) => page.getByRole("button", { name: "New issue" }).click(),
+        shows: (page) => [page.getByRole("dialog", { name: "Create issue" })],
+      },
+      route: "/settings",
+      shows: (page) => [heading(page, "Settings")],
+      url: "/settings",
+    },
     {
       // ECharts draws the timeline on a canvas it creates inside the chart's host.
       loads: ["echarts"],
@@ -573,16 +696,32 @@ async function walk(
 ): Promise<void> {
   const seed = await seedEveryRoute();
   const planned = visits(seed);
-  expect(
-    walkRoutes.filter((route) => !planned.some((visit) => visit.route === route.path)),
-    "every route of e2e/two-builds-routes.ts has a visit"
-  ).toEqual([]);
-  expect(
-    Object.keys(lazyPieces).filter((piece) =>
-      planned.every((visit) => !visit.loads?.includes(piece as LazyPiece))
-    ),
-    "every lazy piece of e2e/two-builds-routes.ts has a visit that loads it"
-  ).toEqual([]);
+  // Every route and every lazy piece has a visit, over the 23 routes and 7 pieces the table holds
+  // (e2e/two-builds-routes.ts): a table emptied from under this read would meet each clause with
+  // nothing in it. The visits the walk then makes are those, so the failures read below range
+  // over at least the 23 routes' pages.
+  expectNoneOf(walkRoutes, {
+    amongAtLeast: 23,
+    are: (route) => !planned.some((visit) => visit.route === route.path),
+    matched: "routes no visit opens",
+    measured: "routes of e2e/two-builds-routes.ts (`walkRoutes`)",
+  });
+  expectNoneOf(Object.keys(lazyPieces), {
+    amongAtLeast: 7,
+    are: (piece) => planned.every((visit) => !visit.loads?.includes(piece as LazyPiece)),
+    matched: "lazy pieces no visit loads",
+    measured: "lazy pieces of e2e/two-builds-routes.ts (`lazyPieces`)",
+  });
+  // Every issue tab that is a chunk of its own has a visit that opens it, over the eight the map
+  // holds: a map emptied or moved from under this read would meet the clause with no tab at all.
+  expectNoneOf(Object.keys(issueTabChunks), {
+    amongAtLeast: 8,
+    are: (tab) => !planned.some((visit) => visit.url === `/issues/${seed.issue}/${tab}`),
+    matched: "tabs no visit opens",
+    measured:
+      "issue tabs that are a chunk of their own (`issueTabChunks`, " +
+      "web/src/features/issue/issue-tab-list.ts)",
+  });
 
   const assetsFrom = `Dispatch ${assetProcess.toUpperCase()}`;
   const context = await browser.newContext();
@@ -641,7 +780,7 @@ async function walk(
   try {
     for (const visit of planned) {
       problems = [];
-      const shows = visit.shows(page);
+      let shows = visit.shows(page);
       try {
         await visit.prepare?.(page);
         awaitingCommit = true;
@@ -655,6 +794,19 @@ async function walk(
             return true;
           })
           .toBe(true);
+        if (problems.length === 0 && visit.opens !== undefined) {
+          // The page is up, so the control the reader presses is on it; what the press opens is
+          // what this visit waits for from here.
+          await visit.opens.press(page);
+          shows = visit.opens.shows(page);
+          await expect
+            .poll(async () => {
+              if (problems.length > 0) return true;
+              for (const locator of shows) if (!(await locator.isVisible())) return false;
+              return true;
+            })
+            .toBe(true);
+        }
         if (problems.length === 0) {
           await expect(page.locator("#root")).not.toBeEmpty();
           await expect.poll(() => pending.size).toBe(0);
@@ -681,16 +833,20 @@ async function walk(
         `assets from ${assetsFrom}`
     )
     .toEqual([]);
-  const missed = build.assets.filter(
-    (file) =>
-      /\.(js|css)$/.test(file) &&
-      !unreachable.some(({ file: pattern }) => pattern.test(file)) &&
-      !answers.get(`/assets/${file}`)?.includes(200)
+  // Every script and stylesheet of the build was answered 200, over at least one chunk per lazy
+  // piece and per issue tab that is a chunk of its own (each is split apart by design), so a
+  // build whose assets this read missed altogether cannot meet the clause.
+  expectNoneOf(
+    build.assets.filter(
+      (file) => /\.(js|css)$/.test(file) && !unreachable.some(({ file: p }) => p.test(file))
+    ),
+    {
+      amongAtLeast: Object.keys(lazyPieces).length + Object.keys(issueTabChunks).length,
+      are: (file) => !answers.get(`/assets/${file}`)?.includes(200),
+      matched: `scripts and stylesheets ${assetsFrom} did not answer 200`,
+      measured: `scripts and stylesheets of ${build.dist}/assets`,
+    }
   );
-  expect(
-    missed,
-    `every script and stylesheet of ${build.dist}/assets was answered 200 by ${assetsFrom}`
-  ).toEqual([]);
 }
 
 // A walk opens about twenty-five pages, each waiting on its own content, so it outlasts the

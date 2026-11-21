@@ -2208,11 +2208,12 @@ func TestArtifactTextReportsTheLatestVersion(t *testing.T) {
 	}
 }
 
-// The route renders INVALID_OP and TARGET_AMBIGUOUS from the typed error, not the wrapped chain,
-// so a refusal inside a multi-operation batch has to reach the response still naming its operation.
+// The route renders INVALID_OP, TARGET_AMBIGUOUS and FIND_CROSSES_SPAN from the typed error, not
+// the wrapped chain, so a refusal inside a multi-operation batch has to reach the response still
+// naming its operation.
 func TestDocumentEditRefusalsReachTheResponseNamingTheirOperation(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Refusal shapes", "Body.\n\n- Retracted\n\nShared line.\n\nShared line.\n")
+	issue := createInteractionIssue(t, handler, "TEST", "Refusal shapes", "Body.\n\n- Retracted\n\nShared line.\n\nShared line.\n\nSami wrote [this](https://example.com/Sami) today.\n")
 	for _, test := range []struct {
 		name   string
 		ops    []map[string]any
@@ -2248,6 +2249,16 @@ func TestDocumentEditRefusalsReachTheResponseNamingTheirOperation(t *testing.T) 
 			status: http.StatusBadRequest,
 			code:   "TARGET_SPANS_BLOCKS",
 			wants:  []string{"operation 0", `"Body. Retracted"`},
+		},
+		{
+			name: "a find across a link's edge in operation 1",
+			ops: []map[string]any{
+				{"op": "replace", "find": "Body.", "with": "Body!"},
+				{"op": "replace", "find": "wrote this", "with": "wrote that"},
+			},
+			status: http.StatusBadRequest,
+			code:   "FIND_CROSSES_SPAN",
+			wants:  []string{"operation 1", `"wrote this"`, `link "this"`, `"[this](https://example.com/Sami)"`},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

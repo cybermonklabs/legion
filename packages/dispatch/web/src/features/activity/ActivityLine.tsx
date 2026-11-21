@@ -6,44 +6,56 @@ import { issueQuery } from "../../api/queries";
 import type { Artifact, DispatchEvent } from "../../api/types";
 import { linkText } from "../../theme/classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
+import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
 
 type ArtifactVersionEvent = Extract<DispatchEvent, { type: "artifact.version" }>;
 
+/** An activity line's parts as this tab draws them: a question the line quotes is formatted and
+ *  cut to the one line the row gives it, and with `artifact` the artifact's name is a link to
+ *  it. The margin's event line draws the same parts the same way (`EventBody.tsx`), so the two
+ *  stay in lockstep by sharing this rather than by writing the quote renderer twice. */
+export function LineParts({
+  artifact,
+  description,
+}: {
+  artifact?: (name: string) => ReactNode;
+  description: readonly AgentPart[];
+}): ReactNode {
+  return (
+    <AgentParts
+      artifact={artifact}
+      parts={description}
+      quote={(markdown, tree) => (
+        <MarkdownPreview className="min-w-0" lines={1} markdown={markdown} tree={tree} />
+      )}
+    />
+  );
+}
+
 /** The activity text with the artifact's name turned into a link, so the reader opens the
- *  upload from the Conversation instead of hunting for it on the Artifacts tab. The text itself
- *  comes from `activityDescription`, in a text part; an agent part is never searched for it. The
- *  link goes on the last reading of the name, because a correction's line names the document
- *  twice - `renamed <old> to <new>` - and it is the new title that has the page. */
+ *  upload from the Conversation instead of hunting for it on the Artifacts tab. The name is a
+ *  part of its own (`{ artifact }`, from `activityDescription`), so the link is that part: the
+ *  sentence's text is never searched for the name, which a quoted question in the same line
+ *  could otherwise hold, and a correction's line - `renamed <old> to <new>` - names the
+ *  document twice but makes a part of the new title alone, which is the one that has the
+ *  page. */
 function LinkedName({
   description,
-  name,
   to,
 }: {
   description: readonly AgentPart[];
-  name: string;
   to: string;
 }): ReactNode {
-  const linked = description.findIndex((part) => typeof part === "string" && part.includes(name));
   return (
     <span>
-      <AgentParts
-        parts={description}
-        text={(part, index) => {
-          if (index !== linked) {
-            return part;
-          }
-          const at = part.lastIndexOf(name);
-          return (
-            <>
-              {part.slice(0, at)}
-              <Link className={`dispatch-inline-link underline ${linkText}`} to={to}>
-                {name}
-              </Link>
-              {part.slice(at + name.length)}
-            </>
-          );
-        }}
+      <LineParts
+        artifact={(name) => (
+          <Link className={`dispatch-inline-link underline ${linkText}`} to={to}>
+            {name}
+          </Link>
+        )}
+        description={description}
       />
     </span>
   );
@@ -67,14 +79,13 @@ function SavedVersionLine({
   if (artifact === undefined) {
     return (
       <span>
-        <AgentParts parts={description} />
+        <LineParts description={description} />
       </span>
     );
   }
   return (
     <LinkedName
       description={description}
-      name={event.payload.name}
       to={buildReferencePath(documentRoute(artifact, event.payload.version.number))}
     />
   );
@@ -99,7 +110,6 @@ export function ActivityLine({
       return (
         <LinkedName
           description={description}
-          name={event.payload.artifact.name}
           to={buildReferencePath(documentRoute(event.payload.artifact))}
         />
       );
@@ -109,7 +119,7 @@ export function ActivityLine({
       return (
         <>
           <span>
-            <AgentParts parts={description} />
+            <LineParts description={description} />
           </span>
           <Link
             className={`dispatch-inline-link underline ${linkText}`}
@@ -122,7 +132,7 @@ export function ActivityLine({
     default:
       return (
         <span>
-          <AgentParts parts={description} />
+          <LineParts description={description} />
         </span>
       );
   }

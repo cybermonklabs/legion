@@ -369,9 +369,9 @@ func TestFindMarkReadsEachOfTwoMarksOfOneTypeOnOneRun(t *testing.T) {
 			if attrs, ok := MarkAttrs(doc, "proofComment", "c2"); !ok || attrs["by"] != "user:alice" {
 				t.Fatalf("MarkAttrs(c2) = %v %t, want Alice's", attrs, ok)
 			}
-			covering := AnchorMarksCovering(doc, Range{From: 7, To: 12})
-			if len(covering) != 2 || !containsSameMark(covering, bob) || !containsSameMark(covering, alice) {
-				t.Fatalf("AnchorMarksCovering(brown) = %v, want both comments", covering)
+			covering, spans := MarksCovering(doc, Range{From: 7, To: 12})
+			if len(covering) != 2 || !containsSameMark(covering, bob) || !containsSameMark(covering, alice) || len(spans) != 0 {
+				t.Fatalf("MarksCovering(brown) = %v, %v, want both comments and no span", covering, spans)
 			}
 			bobsRef := Marked{MarkRef{Type: "proofComment", ID: "c1"}, "user:bob"}
 			alicesRef := Marked{MarkRef{Type: "proofComment", ID: "c2"}, "user:alice"}

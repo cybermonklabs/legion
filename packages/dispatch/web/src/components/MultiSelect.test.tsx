@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the two outside-press sites below are a pointerdown with no release, which user-event has no form for.
+// biome-ignore lint/style/noRestrictedImports: the two outside-press sites below are a pointerdown with no release, and the Enter row's keys are marked as an input method's (`isComposing`, keyCode 229); user-event has a form for neither.
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -109,6 +109,35 @@ test("the search narrows the rows and arrows, Enter and Escape drive them from t
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(trigger).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean in the search confirms a word with Enter: that Enter
+// is the input method's, marked `isComposing`, or sent unmarked with keyCode 229 after the
+// composition's end, as Safari sends it (WebKit bug 165004), and toggles no row. A plain Enter
+// after it toggles the active row.
+test("the Enter that confirms an input method's word in the search toggles no row, and a plain Enter toggles the active one", async () => {
+  const user = userEvent.setup();
+  const view = render(<Host options={["api", "docs", "frontend"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Labels" }));
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    expect(search).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: "api" }).id
+    );
+    // user-event cannot mark a key as an input method's, so the two such Enters are fired.
+    expect(fireEvent.keyDown(search, { isComposing: true, key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(search, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(
+      true
+    );
+    expect(screen.getByTestId("selected").textContent).toBe("");
+
+    // The plain Enter goes the same way as the two above, so only the composition mark differs.
+    expect(fireEvent.keyDown(search, { key: "Enter" })).toBe(false);
+    expect(screen.getByTestId("selected").textContent).toBe("api");
   } finally {
     view.unmount();
   }

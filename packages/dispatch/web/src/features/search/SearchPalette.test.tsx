@@ -6,7 +6,8 @@ import {
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the composition row sends
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
@@ -16,6 +17,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -544,6 +546,39 @@ test("arrow keys move aria-activedescendant and Enter navigates to the active hr
   }
 });
 
+// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
+// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
+// Safari sends it (WebKit bug 165004). It opens nothing; a plain Enter after it opens the
+// highlighted row.
+test("the Enter that confirms an input method's word opens no row, and a plain Enter opens the highlighted one", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    const [first] = screen.getAllByRole("option");
+    if (first === undefined) throw new Error("the palette listed no option");
+    expect(input).toHaveAttribute("aria-activedescendant", first.id);
+    const route = screen.getByTestId("current-route").textContent;
+
+    // Keys user-event cannot mark as an input method's, read by whether the box took them.
+    expect(fireEvent.keyDown(input, { isComposing: true, key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
+    expect(screen.getByTestId("current-route").textContent).toBe(route);
+
+    // The plain Enter goes the same way as the two above, so only the composition mark differs.
+    expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      "/issues/LEGION-2/spec?q=astrolabe"
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 function issueHit(key: string): SearchResult {
   return {
     href: `/issues/${key}`,
@@ -717,7 +752,13 @@ const CLOSE_ROW = "search-option-action-global-close";
 // `Close issue` stands for any row whose label holds a search word somewhere past its start.
 function registerClose(ran: string[]): () => void {
   return appKeymap.register("global", [
-    { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
+    {
+      effect: "moves nothing",
+      id: "close",
+      keys: [],
+      label: "Close issue",
+      run: () => ran.push("close"),
+    },
   ]);
 }
 
@@ -894,9 +935,27 @@ test("while the search is out the arrows walk only the actions the query starts,
   const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = appKeymap.register("global", [
-    { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
-    { id: "report", keys: [], label: "Issue the report", run: () => ran.push("report") },
-    { id: "triage", keys: [], label: "Issue triage", run: () => ran.push("triage") },
+    {
+      effect: "moves nothing",
+      id: "close",
+      keys: [],
+      label: "Close issue",
+      run: () => ran.push("close"),
+    },
+    {
+      effect: "moves nothing",
+      id: "report",
+      keys: [],
+      label: "Issue the report",
+      run: () => ran.push("report"),
+    },
+    {
+      effect: "moves nothing",
+      id: "triage",
+      keys: [],
+      label: "Issue triage",
+      run: () => ran.push("triage"),
+    },
   ]);
   const hit = issueHit("LEGION-3");
   const answer = Promise.withResolvers<SearchResponse>();
@@ -968,8 +1027,20 @@ test("a background refetch keeps the actions the query starts and the hits walka
   const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = appKeymap.register("global", [
-    { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
-    { id: "report", keys: [], label: "Issue the report", run: () => ran.push("report") },
+    {
+      effect: "moves nothing",
+      id: "close",
+      keys: [],
+      label: "Close issue",
+      run: () => ran.push("close"),
+    },
+    {
+      effect: "moves nothing",
+      id: "report",
+      keys: [],
+      label: "Issue the report",
+      run: () => ran.push("report"),
+    },
   ]);
   const hit = issueHit("LEGION-3");
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([hit]));
@@ -1335,6 +1406,64 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
   } finally {
     search.mockRestore();
     getIssue.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+/** The list's own box, and the row the arrows reach below its fold: happy-dom lays nothing
+ *  out, computes no overflow and scrolls nothing, so what `whatScrolls` reads to find the box
+ *  and the rectangles the placement measures are stated here
+ *  (`features/doc/readers-place.ts`). */
+const LIST_TOP = 100;
+const LIST_HEIGHT = 300;
+const ROW_BELOW = 400;
+
+test("the palette keeping its highlighted row in view is the page's own move", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    const list = screen.getByRole("listbox");
+    let scrolled = 0;
+    list.style.overflowY = "auto";
+    Object.defineProperty(list, "clientHeight", { configurable: true, get: () => LIST_HEIGHT });
+    Object.defineProperty(list, "scrollHeight", { configurable: true, get: () => 2_000 });
+    Object.defineProperty(list, "scrollTop", {
+      configurable: true,
+      get: () => scrolled,
+      set: (next: number) => {
+        scrolled = next;
+      },
+    });
+    list.getBoundingClientRect = () =>
+      ({ bottom: LIST_TOP + LIST_HEIGHT, height: LIST_HEIGHT, top: LIST_TOP }) as DOMRect;
+    const [, second] = screen.getAllByRole("option");
+    if (second === undefined) throw new Error("the palette listed fewer than two options");
+    second.getBoundingClientRect = () =>
+      ({
+        bottom: LIST_TOP + ROW_BELOW + 40 - scrolled,
+        height: 40,
+        top: LIST_TOP + ROW_BELOW - scrolled,
+      }) as DOMRect;
+
+    // The arrows move the highlight while the focus stays in the input, so the list scrolls the
+    // highlighted row into its own view. That is the page moving what it draws, written through
+    // the one call that records it (`placeInView`, `features/doc/readers-place.ts`), which
+    // measures what the browser's own `scrollIntoView({ block: "nearest" })` would do: the row
+    // is below the fold, so its bottom edge comes to the list's bottom edge and no further.
+    await user.keyboard("{ArrowDown}");
+
+    expect(list.scrollTop).toBe(ROW_BELOW + 40 - LIST_HEIGHT);
+    expect(thePageLeftItThere(list)).toBe(true);
+
+    // A scrollbar drag of the reader's own leaves the list standing where the page did not.
+    list.scrollTop = 20;
+    expect(thePageLeftItThere(list)).toBe(false);
+  } finally {
+    search.mockRestore();
     view.unmount();
     view.queryClient.clear();
   }

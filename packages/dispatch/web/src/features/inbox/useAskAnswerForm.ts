@@ -1,21 +1,8 @@
+import { answerSelected } from "@legion/contracts/dispatch-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  type FormEvent,
-  type SetStateAction,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type FormEvent, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 
-import {
-  ApiError,
-  api,
-  apiErrorMessage,
-  type WriteBounds,
-  type WriteMethod,
-} from "../../api/client";
+import { ApiError, apiErrorMessage, type WriteBounds, type WriteMethod } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type {
@@ -31,14 +18,13 @@ import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
-import { setAnswerDraft, useAnswerDraft } from "./answer-drafts";
-import {
-  clearPendingAskThreadInvalidation,
-  hasPendingAskThreadInvalidation,
-} from "./ask-thread-freshness";
+import { setAnswerDraft as setAnswerDraftOfAsk, useAnswerDraft } from "./answer-drafts";
+import { askCommentInput, postAskComment } from "./ask-comment";
+import { type Draft, draftTargets, EMPTY_DRAFT, emptyDraftRefusal } from "./draft-store";
 import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
-import { askArtifactId, invalidateOwnerReads } from "./owner-reads";
+import { invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
+import { useAskThreadRead } from "./useAskThreadRead";
 
 interface UseAskAnswerFormOptions {
   ask: AskWithTrees;
@@ -66,6 +52,17 @@ interface AskAnswerFailure {
   retryable: boolean;
 }
 
+/** Why Answer and **Answer with it anyway** refuse a draft that names a session: an answer is a
+ *  decision on the ask, which carries no mentions (`AnswerAskInput`), so the words would reach
+ *  the session as prose and the session itself not at all. Ask back posts a comment, which does
+ *  carry them, which is why the reason says where to send it instead. */
+export const ANSWER_MENTION_REFUSAL =
+  "An answer cannot mention a session. Remove the mention, or send it with Ask back.";
+
+/** Why Answer refuses a draft that is neither an option picked nor words written: the two ways
+ *  an ask is answered, and the box holds neither. */
+export const ANSWER_REFUSAL = "Pick an option or write an answer.";
+
 /** One press of the answer: the ask it is of (`AskPress`) and what it sends. */
 interface AnswerPress extends AskPress {
   readonly input: AnswerAskInput;
@@ -77,9 +74,10 @@ function changesAnswer({ input }: AnswerPress): boolean {
   return input.expected_answer_at !== undefined;
 }
 
-/** One press of a question back: the ask it is of (`AskPress`) and the text it posts. */
+/** One press of a question back: the ask it is of (`AskPress`) and the comment it posts - the
+ *  words and the sessions picked in them, frozen with the press (`askCommentInput`). */
 interface ClarificationPress extends AskPress {
-  readonly text: string;
+  readonly input: CreateCommentInput;
 }
 
 /**
@@ -162,82 +160,46 @@ export function useAskAnswerForm({
   const [justAnswered, setJustAnswered] = useState<Ask | null>(null);
   const [askChanged, setAskChanged] = useState(false);
   const [changing, setChanging] = useState(false);
-  // The reader's unsent answer, which outlives this form: the ask's own Inbox row can leave
-  // under it (withdrawn, resolved, or answered by somebody else), and the reading column then
-  // keeps the question with this text under it rather than taking both off the screen.
+  // The reader's unsent answer - what they typed and the sessions they picked in it - which
+  // outlives this form: the ask's own Inbox row can leave under it (withdrawn, resolved, or
+  // answered by somebody else), and the reading column then keeps the question with this text
+  // under it rather than taking both off the screen.
   const [draftAnswer, setDraftAnswer] = useAnswerDraft(ask.id);
-  // The text of a recorded answer the reader is changing. It is this form's own and never the
+  // The recorded answer the reader is changing. It is this form's own and never the
   // shared draft: an answer the server has recorded is not unsent text, so a change they cancel
   // or walk away from leaves nothing behind for another card to show them as one
   // (`unsentAnswer`) or for the reading column to hold the question by (`pane-selection.ts`,
   // `paneAsk`).
   // Cancelling is what puts the draft that stood before the change back in the box.
-  const [changeAnswer, setChangeAnswer] = useState("");
-  const answerText = changing ? changeAnswer : draftAnswer;
-  const setAnswerText = changing ? setChangeAnswer : setDraftAnswer;
+  const [changeAnswer, setChangeAnswer] = useState<Draft>(EMPTY_DRAFT);
+  const answerDraft = changing ? changeAnswer : draftAnswer;
+  const setAnswerDraft = changing ? setChangeAnswer : setDraftAnswer;
+  const answerText = answerDraft.text;
   const replacing = useRef<AskAnswer | undefined>(undefined);
   const initialChangeConsumed = useRef(false);
   const submitGuard = useSubmitGuard();
-  // Shared by this card, its edit-version history, its collapsed disclosure, and its inline
-  // thread. A thread invalidated while its Inbox snapshot was in flight bypasses that snapshot,
-  // and so does every thread on an issue whose claim or route moved while it was in flight.
-  const refreshInitialThread =
-    initialThread !== undefined && hasPendingAskThreadInvalidation(queryClient, ask);
-  // A view that reads this thread with no seed (the reading column's thread, `ThreadPane`) may
-  // already have a read of it out, asked at a time this card cannot know: perhaps before the Inbox
-  // read the seed comes from, so that it answers an older thread - the ask still open, say, after
-  // the seed showed it answered. TanStack puts the seed into that read's query, which holds no
-  // data yet, and leaves the read running, and its answer then replaces the seed with no compare
-  // of their ages. So the card notes on its first render, before `useQuery` puts the seed in,
-  // whether it seeds over such a read, and if it does, puts the seed over that read as every write
-  // goes over the reads still out (`replaceQueryData`).
-  const threadBeforeSeed = queryClient.getQueryState(["ask-thread", ask.id]);
-  const seedsOverRead = useRef(
-    initialThread !== undefined &&
-      !refreshInitialThread &&
-      threadBeforeSeed !== undefined &&
-      threadBeforeSeed.data === undefined &&
-      threadBeforeSeed.fetchStatus !== "idle"
-  );
-  const threadQuery = useQuery<AskRead, Error>({
-    initialData: refreshInitialThread ? undefined : initialThread,
-    initialDataUpdatedAt: refreshInitialThread ? undefined : initialThreadUpdatedAt,
-    queryKey: ["ask-thread", ask.id],
-    queryFn: () => getAskThread(ask.id),
-    staleTime: Number.POSITIVE_INFINITY,
+  // The ask's thread, as every view of it on the page reads it (`useAskThreadRead`).
+  const threadQuery = useAskThreadRead({
+    ask,
+    getAskThread,
+    initialThread,
+    initialThreadUpdatedAt,
   });
-  // In a layout effect, so that no answer from the network lands between the commit that drew the
-  // seed and this write. Cancelling the read puts its query back as it stood before that read,
-  // with no data, so the seed is written after the cancel; and with a read cancelled,
-  // `replaceQueryData` asks the thread again, so the next answer is of a read asked after the seed.
-  useLayoutEffect(() => {
-    if (!seedsOverRead.current) return;
-    seedsOverRead.current = false;
-    replaceQueryData<AskRead>(
-      queryClient,
-      ["ask-thread", ask.id],
-      (current) => current ?? initialThread
-    );
-  }, [ask.id, initialThread, queryClient]);
-  useEffect(() => {
-    if (refreshInitialThread && threadQuery.data !== undefined) {
-      clearPendingAskThreadInvalidation(queryClient, ask.id);
-    }
-  }, [ask.id, queryClient, refreshInitialThread, threadQuery.data]);
   const edits = threadQuery.data?.edits ?? [];
   const answers = threadQuery.data?.answers ?? [];
   // What a press does to the card goes to the press's own ask. Its callbacks run with the newest
   // render's values (`useKeyedWrite`), and a host may draw this form for one ask after another,
   // so the state they set - the answer the card shows, the form it closes, the choice it clears -
   // is set only while the form is drawn for the press's ask (`drawnFor`), and never on the ask
-  // the card shows by then; the reads they refresh are the press's ask's either way. Text a press
-  // addresses to its ask is this form's own while the form is drawn for that ask, and that ask's
-  // draft once a host has drawn the form for another (`setAnswerDraft`), so the text a landing
-  // clears, or an upload adds, is the press's ask's and never the one the card shows.
+  // the card shows by then; the reads they refresh are the press's ask's either way. A draft a
+  // press addresses to its ask is this form's own while the form is drawn for that ask, and that
+  // ask's stored draft once a host has drawn the form for another (`setAnswerDraftOfAsk`), so the
+  // draft a landing clears, or an upload adds to, is the press's ask's and never the one the card
+  // shows.
   const drawnFor = (press: AskPress) => press.ask.id === ask.id;
-  const setAnswerTextOf = (askId: string, next: SetStateAction<string>) => {
-    if (askId === ask.id) setAnswerText(next);
-    else setAnswerDraft(askId, next);
+  const setAnswerDraftOf = (askId: string, next: SetStateAction<Draft>) => {
+    if (askId === ask.id) setAnswerDraft(next);
+    else setAnswerDraftOfAsk(askId, next);
   };
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
@@ -293,7 +255,7 @@ export function useAskAnswerForm({
       }
       // The text is the recorded answer now, not an unsent draft: a later card for this ask
       // starts empty, and nothing offers to copy what the server already took.
-      setAnswerTextOf(press.ask.id, "");
+      setAnswerDraftOf(press.ask.id, EMPTY_DRAFT);
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
           const changedAnswer = updatedAsk.answer;
@@ -321,21 +283,16 @@ export function useAskAnswerForm({
     inline: true,
     label: (press: ClarificationPress) => `Question back on “${press.ask.question}”`,
     method: "POST",
-    write: (press: ClarificationPress, bounds) => {
-      if (press.ask.issue_key === null) {
-        return api.createArtifactComment(
-          askArtifactId(press.ask),
-          { ask_id: press.ask.id, body: press.text },
-          bounds
-        );
-      }
-      return createReply(press.ask.issue_key, { ask_id: press.ask.id, body: press.text }, bounds);
-    },
+    // The clarification is a comment, so the sessions the reader picked ride with it and each
+    // one gets the comment; the targets are frozen with the attempt, as the text is
+    // (`askCommentInput`).
+    write: (press: ClarificationPress, bounds) =>
+      postAskComment(press.ask, press.input, bounds, createReply),
     onSettled: () => {
       submitGuard.release();
     },
     onSuccess: (_comment, press) => {
-      setAnswerTextOf(press.ask.id, "");
+      setAnswerDraftOf(press.ask.id, EMPTY_DRAFT);
       if (drawnFor(press)) setQuestionChoice(false);
       void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
       // A clarification hands the turn to the asker: every surface that renders this ask from
@@ -361,7 +318,7 @@ export function useAskAnswerForm({
   const startChanging = () => {
     if (!canChangeAnswer || recordedAsk?.answer === null || recordedAsk === null) return;
     const current = recordedAsk.answer;
-    const realSelected = (current.selected ?? []).filter((label) =>
+    const realSelected = answerSelected(current).filter((label) =>
       (recordedAsk.options ?? []).some((option) => option.label === label)
     );
     replacing.current = current;
@@ -369,8 +326,9 @@ export function useAskAnswerForm({
     setSelected(realSelected);
     setOtherSelected(realSelected.length === 0 && current.text !== null && current.text !== "");
     // `changing` is still false this render, so the recorded text goes straight to the form's
-    // own state rather than through `setAnswerText` into the shared draft.
-    setChangeAnswer(current.text ?? "");
+    // own state rather than through `setAnswerDraft` into the shared draft. A recorded answer
+    // carries no mentions, since no answer ever could.
+    setChangeAnswer({ mentions: [], text: current.text ?? "" });
     setQuestionChoice(false);
     setChanging(true);
   };
@@ -418,6 +376,16 @@ export function useAskAnswerForm({
     reasonRequired && trimmedAnswer === ""
       ? `Add a reason to send ${reasonRequiredFor}`
       : undefined;
+  // The sessions this draft would reach, which an answer cannot carry: Answer and "Answer with
+  // it anyway" refuse while one stands, by button and by Ctrl/Cmd+Enter alike, rather than
+  // sending the mention as prose to nobody.
+  const answerMentioned = draftTargets(answerDraft).length > 0;
+  /** Why Answer refuses the draft as it stands, or null while it would take it. An approval
+   *  whose choice demands a reason keeps its own words; the rest is a draft nothing can send. */
+  const answerRefusal =
+    submitHint ?? (answerMentioned ? ANSWER_MENTION_REFUSAL : canAnswer ? null : ANSWER_REFUSAL);
+  /** Why Ask back refuses it: it posts what the box holds, and the box is empty. */
+  const clarificationRefusal = emptyDraftRefusal(answerDraft);
   const answerPlaceholder = reasonRequired
     ? "Why?"
     : isApproval && selected.includes("Approve")
@@ -426,6 +394,7 @@ export function useAskAnswerForm({
         ? "Add a note (optional)"
         : "Answer in your own words, or ask a question back";
   const sendAnswer = (text: string) => {
+    if (answerRefusal !== null) return;
     submitGuard.guard(() => {
       const answerSelection = isApproval || hasOptions ? selected : [];
       mutation.mutate({
@@ -455,7 +424,7 @@ export function useAskAnswerForm({
       setOtherSelected((current) => {
         const next = !current;
         if (!next) {
-          setAnswerText("");
+          setAnswerDraft(EMPTY_DRAFT);
         }
         return next;
       });
@@ -467,7 +436,9 @@ export function useAskAnswerForm({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canAnswer) return;
+    // The buttons swallow their own refused clicks, but Ctrl/Cmd+Enter in the field submits the
+    // form without passing through one, so the form owes the same refusal.
+    if (answerRefusal !== null) return;
     if (
       !isApproval &&
       !otherSelected &&
@@ -480,9 +451,10 @@ export function useAskAnswerForm({
     sendAnswer(answerText);
   };
   const sendClarification = () => {
-    const text = answerText.trim();
-    if (text === "") return;
-    submitGuard.guard(() => clarification.mutate({ ask, text }));
+    if (clarificationRefusal !== null) return;
+    submitGuard.guard(() =>
+      clarification.mutate({ ask, input: askCommentInput(ask.id, answerDraft) })
+    );
   };
   const completed = changing ? null : recordedAsk;
   // What the reader typed and no form will ever send: the question closed under them - withdrawn,
@@ -492,17 +464,19 @@ export function useAskAnswerForm({
   const unsentAnswer = completed !== null && justAnswered === null ? answerText : "";
 
   return {
+    answerDraft,
     answerFailure: mutation.error === null ? null : answerFailure(mutation),
     answerFieldId,
     answerPlaceholder,
+    answerRefusal,
     answers,
     answerText,
     askChanged,
-    canAnswer,
     canChangeAnswer,
     cancelChanging,
     changing,
     clarification,
+    clarificationRefusal,
     completed,
     displayedAsk,
     edits,
@@ -512,18 +486,16 @@ export function useAskAnswerForm({
     otherSelected,
     questionChoice,
     reasonRequired,
-    requiresReason,
     selectRealOption,
     selected,
     sendAnswer,
     sendClarification,
-    setAnswerText,
-    setAnswerTextOf,
+    setAnswerDraft,
+    setAnswerDraftOf,
     setQuestionChoice,
     startChanging,
     submitGuard,
     submit,
-    submitHint,
     toggleOther,
     threadQuery,
     trimmedAnswer,

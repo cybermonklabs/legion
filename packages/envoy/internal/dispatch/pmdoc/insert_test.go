@@ -2,6 +2,7 @@ package pmdoc
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -258,12 +259,9 @@ func TestListBoundaryPlacesContentBesideTheAnchoredItem(t *testing.T) {
 		{after: true, want: "- a\n  - x\n  - z\n  - y\n- b\n"},
 		{after: false, want: "- a\n  - z\n  - x\n  - y\n- b\n"},
 	} {
-		position, inList, err := listBoundary(doc, anchor, test.after)
+		position, err := listBoundary(doc, anchor, test.after)
 		if err != nil {
 			t.Fatal(err)
-		}
-		if !inList {
-			t.Fatalf("after=%v: the anchor reads as outside every list", test.after)
 		}
 		out, err := splice(doc, Range{From: position, To: position}, with)
 		if err != nil {
@@ -294,12 +292,9 @@ func TestListBoundaryOnTheListsOwnBlockTakesTheContentAsAnItem(t *testing.T) {
 		{after: true, want: "- a\n- b\n- c\n"},
 		{after: false, want: "- c\n- a\n- b\n"},
 	} {
-		position, inList, err := listBoundary(doc, target, test.after)
+		position, err := listBoundary(doc, target, test.after)
 		if err != nil {
 			t.Fatal(err)
-		}
-		if !inList {
-			t.Fatalf("after=%v: the list's own block reads as outside every list", test.after)
 		}
 		out, err := splice(doc, Range{From: position, To: position}, with)
 		if err != nil {
@@ -309,8 +304,9 @@ func TestListBoundaryOnTheListsOwnBlockTakesTheContentAsAnItem(t *testing.T) {
 	}
 }
 
-// A target in no list has no boundary inside one, and its caller takes the document-level boundary.
-func TestListBoundaryAnswersNothingForATargetInNoList(t *testing.T) {
+// A target in no list takes the boundary BlockBoundary answers: no list holds it for list content
+// to join, so the content lands beside the anchor's block as any other content does.
+func TestListBoundaryOfATargetInNoListIsBlockBoundary(t *testing.T) {
 	doc, err := Parse("Intro.\n\n- a\n")
 	if err != nil {
 		t.Fatal(err)
@@ -319,8 +315,10 @@ func TestListBoundaryAnswersNothingForATargetInNoList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, inList, err := listBoundary(doc, anchor, true); err != nil || inList {
-		t.Fatalf("list boundary of a paragraph anchor = inList %v, %v; want none", inList, err)
+	listed, listErr := listBoundary(doc, anchor, true)
+	block, blockErr := blockBoundary(doc, anchor, true)
+	if listErr != nil || blockErr != nil || listed != block {
+		t.Fatalf("list boundary of a paragraph anchor = %d, %v; want the block boundary %d, %v", listed, listErr, block, blockErr)
 	}
 }
 
@@ -342,6 +340,113 @@ func TestListContentIsAFragmentOfListsAlone(t *testing.T) {
 		}
 		if got := ListContent(fragment); got != want {
 			t.Fatalf("ListContent(%q) = %v, want %v", markdown, got, want)
+		}
+	}
+}
+
+// A splice that lands blocks after a list item's text writes them as they are, whether an insert
+// lands them beside one of the item's children (BlockBoundary) or a range replacement over the
+// item's text keeps some of it ahead of the range: the item holds what it kept and the blocks,
+// and no empty paragraph. The insert wrote one between the item's text and a first block that is
+// no paragraph, which renders as a line of indentation alone that a read of the markdown drops
+// (INFRA-341). The item's content rule, paragraph block*, asks for a paragraph ahead of a block
+// only where that block would open the item.
+func TestASpliceAfterAListItemsTextWritesNoEmptyParagraph(t *testing.T) {
+	quote := func(text string) func(*testing.T, *Node) Range {
+		return func(t *testing.T, doc *Node) Range {
+			t.Helper()
+			r, err := FindQuote(doc, text, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}
+	}
+	beside := func(text string, after bool) func(*testing.T, *Node) Range {
+		return func(t *testing.T, doc *Node) Range {
+			t.Helper()
+			position, err := blockBoundary(doc, quote(text)(t, doc), after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return Range{From: position, To: position}
+		}
+	}
+	for _, place := range []struct {
+		name string
+		at   func(*testing.T, *Node) Range
+		// ahead and behind count the item's paragraphs the splice keeps before the blocks and
+		// after them.
+		ahead, behind int
+	}{
+		{name: "inserted after the item's text", at: beside("one", true), ahead: 1, behind: 1},
+		{name: "inserted before a later child", at: beside("more", false), ahead: 1, behind: 1},
+		{name: "inserted after a later child", at: beside("more", true), ahead: 2},
+		{name: "over a later child's text", at: quote("more"), ahead: 1},
+		{name: "over the end of the item's text", at: quote("ne"), ahead: 1, behind: 1},
+	} {
+		for _, block := range []struct {
+			name, markdown string
+			kinds          []string
+		}{
+			{name: "a heading", markdown: "## Heading\n", kinds: []string{"heading"}},
+			{name: "a code block", markdown: "```\ncode here\n```\n", kinds: []string{"code_block"}},
+			{name: "a quote", markdown: "> Quoted aside.\n", kinds: []string{"blockquote"}},
+			{name: "a table", markdown: "| a | b |\n|---|---|\n| 1 | 2 |\n", kinds: []string{"table"}},
+			{name: "a list", markdown: "1. three\n", kinds: []string{"ordered_list"}},
+			{name: "a heading and a paragraph", markdown: "## Heading\n\nNoted.\n", kinds: []string{"heading", "paragraph"}},
+		} {
+			t.Run(place.name+", "+block.name, func(t *testing.T) {
+				doc, err := Parse("- one\n\n  more\n- two\n")
+				if err != nil {
+					t.Fatal(err)
+				}
+				with, err := Parse(block.markdown)
+				if err != nil {
+					t.Fatal(err)
+				}
+				out, err := splice(doc, place.at(t, doc), with)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := make([]string, 0, place.ahead+len(block.kinds)+place.behind)
+				for range place.ahead {
+					want = append(want, "paragraph")
+				}
+				want = append(want, block.kinds...)
+				for range place.behind {
+					want = append(want, "paragraph")
+				}
+				var kinds []string
+				for _, child := range out.Children[0].Children[0].Children {
+					kinds = append(kinds, child.Type)
+				}
+				if !slices.Equal(kinds, want) {
+					t.Errorf("the item's children are %v, want %v", kinds, want)
+				}
+				empty := false
+				Walk(out, func(node *Node) bool {
+					empty = empty || node.Type == "paragraph" && len(node.Children) == 0
+					return !empty
+				})
+				if empty {
+					t.Errorf("the document holds an empty paragraph: the item's children are %v", kinds)
+				}
+				markdown := renderedMarkdown(t, out)
+				for _, line := range strings.Split(markdown, "\n") {
+					if line != "" && strings.TrimSpace(line) == "" {
+						t.Errorf("the markdown holds a line of indentation alone: %q", markdown)
+						break
+					}
+				}
+				reread, err := Parse(markdown)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if again := renderedMarkdown(t, reread); again != markdown {
+					t.Errorf("a read of %q renders %q", markdown, again)
+				}
+			})
 		}
 	}
 }

@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  `dispatch doc-edit`'s `insert` writes its markdown beside the block its anchor names, inside that
+  block's own parent: a typed block - a `requirement`, an `ask`, a `check`, a `plan_task` or a
+  `callout` - a list item or a blockquote. Anchored on a block inside a typed block, it was written
+  after the typed block, at the document's own level, and nothing said so: a requirement's words
+  stood outside every requirement, where no check's `serves` reached them. Anchored on a list
+  item's text or a quote's paragraph, it was written after the whole list or quote. List content
+  anchored inside a list still joins that list. An insert anchored on a typed block's own block,
+  or on a block at the document's level, lands where it did. Markdown that parent's content rule
+  cannot hold there - a heading in a requirement, a paragraph after an ask's options, a heading
+  before a list item's text - is refused with `400 INSERT_DOES_NOT_FIT` naming the block, its
+  rule and what breaks it, and nothing in the batch is written: write what the rule holds there,
+  or anchor the insert on that block itself to write the markdown outside it. An ask edit refused
+  for an emptied question whose paragraph holds an image names that insert as the way to write
+  the question beside the image.
+time: 2026-11-17T03:40:00Z
+custom:
+    Issue: pr2697

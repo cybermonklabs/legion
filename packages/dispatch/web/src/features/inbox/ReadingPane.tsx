@@ -1,5 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
@@ -9,16 +17,20 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
+import { keepWhatStandsUnder, moveTheBox } from "../doc/readers-place";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
+import { AskThread, askUploadOwner } from "./AskThread";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";
 import { artifactQueryOptions, DocumentPane, PaneFrame, useSettled } from "./PaneDocument";
 import { holdSection, type SectionHold } from "./pane-placement";
 import { ReadingPaneHead } from "./ReadingPaneHead";
 import { ThreadPane } from "./ThreadPane";
+import { useAskThreadRead } from "./useAskThreadRead";
 
 /** What the selected question is, which is what the column shows. */
 type PaneSubject =
@@ -128,8 +140,56 @@ function useMarkedBlocks(content: RefObject<HTMLDivElement | null>): boolean {
   return marked;
 }
 
+/** The replies on an approval request's own ask and the box a reply is written in, which the
+ *  column draws under the request's question through the inline thread every ask card draws
+ *  (`AskThread`), from the same read of the ask's thread (`useAskThreadRead`), in the reader's
+ *  own order. The read is the row's own, seeded as the card the column falls back to seeds it
+ *  (`QuestionCard`), so drawing it asks the server for nothing; once it reads the ask settled, it
+ *  is the ask the thread stands under, as a card's is. The reply box stands while the ask is
+ *  open too, since nothing else the column draws posts to the thread (`repliesWhileOpen`). No
+ *  reply is marked read here, as none is by the Inbox's other cards.
+ *
+ *  It stands above the version the reader reads, so a reply that lands while they are down in
+ *  that version grows this box above them: the page answers each growth of the box while it
+ *  stands above the top of the column (`keepWhatStandsUnder`, `features/doc/readers-place.ts`),
+ *  and the words under it stay on the line they are on. A reader who can see the box watches the
+ *  reply land. One box for each request, so the next request's replies are a box of their own
+ *  rather than a growth of this one, and where the column stands is the placement's to say. */
+export function ApprovalExchange({ ask }: { ask: InboxRow }): ReactNode {
+  const box = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = box.current;
+    return element === null ? undefined : keepWhatStandsUnder(element);
+  }, []);
+  const thread = useAskThreadRead({
+    ask,
+    getAskThread: (id) => api.getAsk(id),
+    initialThread: { ask, ...ask.thread },
+  });
+  const [order] = useThreadOrder();
+  const threadAsk = thread.data?.ask;
+  const current = threadAsk !== undefined && threadAsk.state !== "open" ? threadAsk : ask;
+  return (
+    // `flow-root`, so the box measures the whole of what it draws: a margin inside it would
+    // otherwise collapse out through it and be counted by no correction.
+    <div className={`mb-3 flow-root border-b pb-3 ${borderDefault}`} ref={box}>
+      <AskThread
+        ask={current}
+        embedded
+        order={order}
+        owner={ask.document}
+        repliesWhileOpen
+        thread={thread}
+        uploadOwner={askUploadOwner(current, ask.document)}
+      />
+    </div>
+  );
+}
+
 /** An approval request: the document's latest version - the version Approve approves - with
- *  every word changed since the last approval marked, and "Next change" stepping the marks. */
+ *  every word changed since the last approval marked, and "Next change" stepping the marks;
+ *  above it the request's own question, and under the question the replies on its ask with the
+ *  box a reply is written in (`ApprovalExchange`). */
 function ApprovalBody({
   approval,
   artifactId,
@@ -234,8 +294,10 @@ function ApprovalBody({
     //
     // The start is written straight rather than through `scrollElementToTop`: that one measures
     // the move against the drawn rects, and where nothing is laid out every rect is zero and
-    // the move computes to nothing.
-    column.scrollTop = 0;
+    // the move computes to nothing. It goes through `moveTheBox` all the same, so the write is
+    // recorded as the page's own place-keeping and no landing correction watching this column
+    // reads it as the reader (`readers-place.ts`).
+    moveTheBox(column, -column.scrollTop);
     // Once for each request, and the hold is what says so: let go here, it answers no to every
     // later pass of this request - a new version of the document, or a read that failed and
     // recovered - and the next request the reader opens arms a hold of its own.
@@ -287,10 +349,11 @@ function ApprovalBody({
       latestVersion === undefined ||
       (approvedVersion !== undefined && baselineQuery.isPending);
     // The question stands while the skeleton does: it is the pane's alone to draw, and waits
-    // on none of the document's reads.
+    // on none of the document's reads. So do the replies under it, which the row carries.
     return (
       <>
         {question}
+        <ApprovalExchange ask={ask} key={ask.id} />
         {opening ? (
           <LoadingSkeleton label={`Opening ${approval.name}`} />
         ) : (

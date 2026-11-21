@@ -12,18 +12,26 @@
  * draws open so the source is readable at once.
  *
  * A document's blocks draw here too, through the editor's drawer: `features/doc/editor.ts` gives
- * `createProofEditor` `requestMermaidDrawing` as its `drawMermaid`, so the live editor, a
+ * `constructProofEditor` `requestMermaidDrawing` as its `drawMermaid`, so the live editor, a
  * read-only document and a past version share this queue, its time limit and its cache with every
- * body on the page. The editor's code-block view asks once when a block opens and again 300 ms
- * after the last edit of its source, and keeps its last drawing until the answer replaces it.
+ * body on the page. Neither a body's block nor a document's asks for anything until it is within
+ * `MERMAID_DRAW_MARGIN` of the viewport, one viewport height each way
+ * (`drawWhenNearViewport`, `@legion/proof-editor/mermaid`): a document of 140 diagrams or a
+ * comment holding 20 draws the few a reader has reached rather than all of them. The editor's
+ * code-block view asks once a block is that near and again 300 ms after the last edit of its
+ * source, and keeps its last drawing until the answer replaces it.
  * `requestMermaidDrawing` draws a source at most once and never after its cancel runs: inside the
  * call when it is cached, later when the worker answers. When no worker can run (it failed to
  * start or load) the draw gets `unavailable` instead, inside the call for a source asked for while
  * the worker is failed and at the failure for a source waiting on it, so a body's block stays code
  * and an editor's block drops any drawing of an earlier source and shows its source.
- * `mermaidDrawsSettled` resolves once no source is waiting, so a focus in a document (a block
- * link, a comment link's quote, a reader's click to a block, a past version's highlighted mark)
- * can run again after the diagrams above its target have drawn and moved it.
+ * `mermaidDrawsWaiting` answers whether any source is still waiting, which is what a focus in a
+ * document (a block link, a comment link's quote, a reader's click to a block, a past version's
+ * highlighted mark) watches: it runs again once the page has held still with nothing waiting,
+ * read once a frame rather than awaited, since the blocks near the viewport ask from an
+ * observer's first delivery and the page's height goes on settling after the last of them
+ * (`features/doc/refocus-when-settled.ts`). `mermaidDrawsSettled` resolves once no source is
+ * waiting, which is how a test waits out the queue.
  *
  * Both mount the SVG with `showMermaidSvg` in an open shadow root of the preview element, so the
  * diagram's own `<style>` styles that diagram alone rather than every SVG and `<text>` on the
@@ -67,6 +75,7 @@
  * a diagram's first draw moves the content below it once.
  */
 import {
+  drawWhenNearViewport,
   type MermaidDrawing,
   mermaidSvgElement,
   showMermaidSvg,
@@ -337,14 +346,46 @@ export function requestMermaidDrawing(source: string, draw: LateDraw): () => voi
 }
 
 /**
+ * Asks for `pre`'s drawing once the block is within `MERMAID_DRAW_MARGIN` of the viewport, and
+ * answers the cancel: it takes the block off the watch and off its source's job, whichever it is
+ * on. A body of 20 diagrams costs the reader the ones around what they are reading.
+ *
+ * A source the page has drawn already, or is drawing now, is asked for wherever the block sits.
+ * A drawn one costs a clone of its SVG rather than the renderer, and a body re-painted while a
+ * turn streams must show it in the commit that painted it rather than a frame of its source as
+ * code; a source in flight must keep its place on the job the worker holds, which the re-ask in
+ * that commit is what buys (`WorkerQueue.wait`). Only a source nobody has started waits for the
+ * viewport.
+ */
+function drawBlockWhenNear(pre: HTMLPreElement): () => void {
+  let cancelRequest: (() => void) | undefined;
+  const ask = () => {
+    cancelRequest = requestMermaidDrawing(pre.textContent ?? "", (drawn, key) =>
+      drawBlock(pre, drawn, key)
+    );
+  };
+  const key = sourceKey(pre.textContent ?? "");
+  if (drawings.has(key) || mermaidQueue.holds(key)) {
+    ask();
+    return () => cancelRequest?.();
+  }
+  const stopWatching = drawWhenNearViewport(pre, ask);
+  return () => {
+    stopWatching();
+    cancelRequest?.();
+  };
+}
+
+/**
  * Draws every mermaid code block `element` holds (painted from `parsed`, the parse of
- * `markdown`) but one whose fence is still open, each through `requestMermaidDrawing`. `openFence`
- * is that check's answer where the parse worker already made it with the parse
- * (`markdown-parse.worker.ts`); where it is `undefined` the check runs here, with `reparse`, which
- * parses with the engine and soft-break policy that produced `parsed`, and only when the body ends
- * in a mermaid block. A block whose source is cached draws now; every other one when the worker
- * answers, in the order the bodies were painted. Returns the cancel for those late draws, which
- * runs each block's own cancel.
+ * `markdown`) but one whose fence is still open, each through `requestMermaidDrawing` once it is
+ * near the viewport (`drawBlockWhenNear`). `openFence` is that check's answer where the parse
+ * worker already made it with the parse (`markdown-parse.worker.ts`); where it is `undefined` the
+ * check runs here, with `reparse`, which parses with the engine and soft-break policy that
+ * produced `parsed`, and only when the body ends in a mermaid block. A block near the viewport
+ * whose source is cached draws at once; every other one when the worker answers, in the order the
+ * bodies were painted. Returns the cancel for those late draws, which runs each block's own
+ * cancel.
  */
 export function drawMermaidDiagrams(
   element: HTMLElement,
@@ -359,9 +400,7 @@ export function drawMermaidDiagrams(
   if (blocks.length > 0 && (openFence ?? endsInOpenMermaidFence(parsed, markdown, reparse))) {
     blocks.pop();
   }
-  const cancels = blocks.map((pre) =>
-    requestMermaidDrawing(pre.textContent ?? "", (drawn, key) => drawBlock(pre, drawn, key))
-  );
+  const cancels = blocks.map(drawBlockWhenNear);
   return () => {
     for (const cancel of cancels) cancel();
   };
@@ -370,8 +409,10 @@ export function drawMermaidDiagrams(
 /**
  * Resolves on the microtask after no source is waiting for the worker: every block that asked
  * has drawn, been refused or been cancelled, or a failure or a reset cleared the queue. With
- * none waiting it resolves at once. A focus in a document runs again then, after the diagrams
- * above its target have drawn and moved it (`features/doc/refocus-when-settled.ts`).
+ * none waiting it resolves at once. It is the queue's own settle point, which is what a test
+ * waits on rather than polling the page, and what a document's focus correction waits on for
+ * the diagrams above its target, beside the height of the drawn document itself
+ * (`features/doc/refocus-when-settled.ts`).
  */
 export function mermaidDrawsSettled(): Promise<void> {
   if (!mermaidQueue.waiting) return Promise.resolve();

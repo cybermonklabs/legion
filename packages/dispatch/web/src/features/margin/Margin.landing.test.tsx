@@ -418,7 +418,13 @@ test("on a phone, a link that keeps Details open leaves the sheet open, and a pl
 function ListOfKeys(): ReactNode {
   const [snapshot, setSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
   useKeymap("global", [
-    { id: "help", keys: "?", label: "Keyboard shortcuts", run: () => setSnapshot([]) },
+    {
+      effect: "moves the reader",
+      id: "help",
+      keys: "?",
+      label: "Keyboard shortcuts",
+      run: () => setSnapshot([]),
+    },
   ]);
   return <ShortcutHelp onClose={() => setSnapshot(null)} snapshot={snapshot} />;
 }

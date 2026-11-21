@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  `dispatch_doc_edit`'s description says a `delete` whose `find`'s list marker selected an item
+  removes that whole item, the items nested in it included, and that the ops of one edit apply in
+  order, each reading the document as the ops before it left it, none removing or changing a
+  block it does not name: a delete of a block removes all it holds but the blocks an earlier
+  insert or move wrote into it, so a list an earlier insert joined to it stays where it stood. It
+  says an
+  op whose `block` names a block an earlier `delete` by `block` removed, that block or one inside
+  it, is `INVALID_OP` naming that delete, and that a `block:<id>` anchor naming such a block, and
+  an op naming any other block, text or heading an earlier op removed, are `TARGET_NOT_FOUND`.
+  `packages/envoy/internal/contracts/dispatch_tools_generated.go` carries the same text.
+time: 2026-11-18T19:45:00Z
+custom:
+    Issue: pr2697

@@ -189,7 +189,13 @@ test("a press on the one control leaves the focus where it is, then opens its me
 function DialogOverTheRow(): ReactNode {
   const [open, setOpen] = useState(false);
   useKeymap("global", [
-    { id: "over-the-row", keys: "?", label: "A dialog over the row", run: () => setOpen(true) },
+    {
+      effect: "moves the reader",
+      id: "over-the-row",
+      keys: "?",
+      label: "A dialog over the row",
+      run: () => setOpen(true),
+    },
   ]);
   const dialog = useDialog<HTMLDivElement>({ onClose: () => setOpen(false), open });
   return open ? (

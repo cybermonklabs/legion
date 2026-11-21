@@ -339,6 +339,13 @@ async function openMargin(
       </>
     );
   let view = render(tree(queryClient));
+  // A phone's shut sheet draws no card nothing has named or held (`MarginSheet`'s `covered`):
+  // with nothing held, the reader reaches the cards by opening the review panel, as a phone
+  // reader does, the shut sheet being 64 px of `Review (N)` with its cards out of sight. A held
+  // send opens its thread, or the panel on its compose, as the margin arrives.
+  if (phone && stopped === undefined) {
+    await user.click(await screen.findByRole("button", { name: /^Open review panel/ }));
+  }
   await marginDrawn();
   return {
     createComment,

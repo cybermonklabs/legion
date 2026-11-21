@@ -397,7 +397,10 @@ function MenuMark(): ReactNode {
 type OpenMenu = "presets" | undefined;
 
 /** The widths the row is one control at: below 1280 px, from which R2 has the views one row.
- *  1279 px, not `80rem`: the row's widths are the reader's pixels, as the header's are. */
+ *  1279 px, not `80rem`: the row's widths are the reader's pixels, as the header's are. It is
+ *  paired with neither the 44 px floor nor the shell's `xl`: the row's controls take the view
+ *  row's 24 px target below `xl` in either shape, and the one control's menu keeps the floor
+ *  below `xl` as every menu does (`styles.css`), so no floor changes with the shape. */
 const ONE_CONTROL_QUERY = "(max-width: 1279px)";
 
 /** Where a roving focus goes from `at` of `count` controls on `key`: `back` and `forward` step

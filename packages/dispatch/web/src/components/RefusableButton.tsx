@@ -6,6 +6,7 @@ import {
   pageMutedText,
   pagePaperBg,
   primaryButton,
+  secondaryButton,
   secondaryButtonCompact,
 } from "../theme/classes";
 import { useTooltips } from "./tooltips";
@@ -14,15 +15,17 @@ import { useTooltips } from "./tooltips";
  *  `aria-disabled` alike, so a look states its cannot-press state once. */
 const LOOKS = {
   primary: primaryButton,
+  secondary: secondaryButton,
   "secondary-compact": secondaryButtonCompact,
 } as const;
 
 /** Each look inside `NoTooltips`, in the new issue page's colours, on the same shape as
  *  `LOOKS`: the primary is filled with the page's ink, and refused is the page's own refused
- *  send, muted words on the hairline grey; the compact secondary is the page's header control,
- *  its rule and muted words on the paper, with quiet words while refused. */
+ *  send, muted words on the hairline grey; each secondary is the page's header control, its
+ *  rule and muted words on the paper, with quiet words while refused. */
 const PAGE_LOOKS: Record<keyof typeof LOOKS, string> = {
   primary: `rounded-lg px-3 py-2 text-sm font-semibold ${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
+  secondary: `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`,
   "secondary-compact": `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`,
 };
 
@@ -35,7 +38,7 @@ const PAGE_LOOKS: Record<keyof typeof LOOKS, string> = {
  * whatever the host's handler checks; a form's other ways to submit (Ctrl/Cmd+Enter) remain the
  * host's to refuse. A host that keeps its line blank until a person tries takes that press as
  * `onRefusedPress`. Only `busy` - a press already in flight, which its label names - disables it
- * outright.
+ * outright, except while `refusedWhileOut` holds it.
  */
 export function RefusableButton({
   busy,
@@ -47,6 +50,7 @@ export function RefusableButton({
   onRefusedPress,
   refusal,
   refusalShownBy,
+  refusedWhileOut = false,
   type = "button",
 }: {
   /** The label while a press is in flight; the one state that renders `disabled`. */
@@ -64,6 +68,11 @@ export function RefusableButton({
   readonly refusal: string | null;
   /** The id of the line on screen that already says `refusal`. */
   readonly refusalShownBy?: string;
+  /** Inside `NoTooltips` (`components/tooltips.tsx`), the host's own write is out, or the read
+   *  after it: the button keeps its focus, `aria-disabled` in place of the `disabled` that
+   *  `busy` renders, and a press of it does nothing. Only a host inside `NoTooltips` passes it,
+   *  so everywhere else `busy` disables the button as it always has. */
+  readonly refusedWhileOut?: boolean;
   readonly type?: "button" | "submit";
 }): ReactNode {
   const tooltips = useTooltips();
@@ -74,13 +83,17 @@ export function RefusableButton({
     <>
       <button
         aria-describedby={description === "" ? undefined : description}
-        aria-disabled={refusal === null ? undefined : true}
+        aria-disabled={refusal === null && !refusedWhileOut ? undefined : true}
         className={`${(tooltips ? LOOKS : PAGE_LOOKS)[look]} ${className}`}
-        disabled={busy !== undefined}
+        disabled={busy !== undefined && !refusedWhileOut}
         onClick={(event) => {
           if (refusal !== null) {
             event.preventDefault();
             onRefusedPress?.();
+            return;
+          }
+          if (refusedWhileOut) {
+            event.preventDefault();
             return;
           }
           onPress?.();

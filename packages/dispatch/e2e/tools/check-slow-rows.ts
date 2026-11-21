@@ -34,14 +34,21 @@
  *      --config e2e/playwright.config.ts --reporter=list,json
  *    bun e2e/tools/check-slow-rows.ts /tmp/report.json
  *
- *  That run names no project, which is the default selection, and the three wall-clock projects
+ *  That run names no project, which is the default selection, and the six `-alone` projects
  *  carry `default: false` (`clockProjectNames`, e2e/configurations.ts), so it runs neither
- *  `heavy-bodies.e2e.ts` nor `nested-directive.e2e.ts` and every marker those two hold lands in
- *  "a file the report never ran" above. Their rows are a second report and a second reading:
+ *  `heavy-bodies.e2e.ts` nor `nested-directive.e2e.ts`, nor the five rows of
+ *  `large-documents-measured.e2e.ts`, `large-documents-build-serves.e2e.ts`,
+ *  `large-documents-build-serves.the-decision.e2e.ts` and
+ *  `large-documents-desktop-build.e2e.ts`, which `iphone-measure-alone`, `iphone-alone` and
+ *  `chromium-alone` take whole, nor the phone half of `large-documents-long-build.e2e.ts`,
+ *  which `iphone-long-build-alone` takes, and every
+ *  marker those hold lands in "a file the report never ran" above. Their rows are a second
+ *  report and a second reading:
  *
  *    PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/clock-report.json bunx playwright test \
  *      --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone \
- *      --project=webkit-alone --workers=1 --reporter=list,json
+ *      --project=webkit-alone --project=iphone-alone --project=iphone-measure-alone \
+ *      --project=iphone-long-build-alone --workers=1 --reporter=list,json
  *    bun e2e/tools/check-slow-rows.ts /tmp/clock-report.json
  */
 import { readdirSync, readFileSync } from "node:fs";

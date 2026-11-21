@@ -1,6 +1,7 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the add form's Escape row below reads
+import { fireEvent, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -160,6 +161,33 @@ test("the control adds a priority, writing the issue's own set as advances", asy
       "CORE-9",
       { advances: ["evals-now", "rocq-lean"], advances_revision: REVISION },
       keyedAttempt
+    );
+  } finally {
+    view.unmountAll();
+  }
+});
+
+// A press that ends an IME composition gives up what the reader was composing, not the add form:
+// an Escape that is the input method's, marked `isComposing`, or sent unmarked with keyCode 229
+// after the composition's end, as Safari sends it (WebKit bug 165004), leaves the form open. A
+// plain Escape after it closes the form.
+test("an input method's Escape leaves the add form open, and a plain Escape closes it", async () => {
+  const user = userEvent.setup();
+  const view = renderLine([]);
+  try {
+    await user.click(view.q.getByRole("button", { name: "Add a priority to CORE-9" }));
+    const picker = await view.q.findByRole("combobox", { name: "Priority to advance" });
+    // user-event cannot mark a key as an input method's, so the two such Escapes are fired.
+    expect(fireEvent.keyDown(picker, { isComposing: true, key: "Escape" })).toBe(true);
+    expect(fireEvent.keyDown(picker, { isComposing: false, key: "Escape", keyCode: 229 })).toBe(
+      true
+    );
+    expect(view.q.queryByRole("combobox", { name: "Priority to advance" })).toBe(picker);
+
+    // The plain Escape goes the same way as the two above, so only the composition mark differs.
+    expect(fireEvent.keyDown(picker, { key: "Escape" })).toBe(false);
+    await waitFor(() =>
+      expect(view.q.queryByRole("combobox", { name: "Priority to advance" })).toBeNull()
     );
   } finally {
     view.unmountAll();

@@ -681,6 +681,13 @@ export function inputClasses(recessed: boolean): string {
  *  Sends strip share: a 44 px tap target through phone widths, 28 px from `sm`. */
 export const secondaryButtonCompact = `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;
 
+/** The full-size secondary button: the outline twin of `primaryButton`, which a dialog's Cancel
+ *  and a header's second action wear, with the same padding and text size as the filled button
+ *  beside it. It differs in two things: a 44 px tap target, which `primaryButton` sets no
+ *  minimum for, and a lighter label, `font-medium` to that button's `font-semibold`.
+ *  `secondaryButtonCompact` is the smaller one a dense strip wears. */
+export const secondaryButton = `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;
+
 // ---------------------------------------------------------------------------------------------
 // The navigation rail: a deliberately constant-dark surface (unlike everything else in this
 // file, it does not vary with `prefers-color-scheme` — it is a fixed brand rail, the same

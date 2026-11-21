@@ -26,6 +26,8 @@ export function useIssuePalette({
 }): void {
   useKeymap("issue", [
     {
+      // Each row writes the issue and moves no one's focus or place.
+      effect: "moves nothing",
       id: "close",
       keys: [],
       label: "Close issue",
@@ -33,6 +35,7 @@ export function useIssuePalette({
       when: () => !isClosed && !saving,
     },
     {
+      effect: "moves nothing",
       id: "reopen",
       keys: [],
       label: "Reopen issue",
@@ -40,6 +43,7 @@ export function useIssuePalette({
       when: () => isClosed && !saving,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
+      effect: "moves nothing" as const,
       id: `set-p${level}`,
       keys: [],
       label: `Set priority P${level}`,

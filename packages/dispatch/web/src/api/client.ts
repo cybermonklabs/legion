@@ -1,3 +1,4 @@
+import type { InboxThreadKind } from "@legion/contracts";
 import {
   AUTH_NO_IDENTITY,
   answerNotKept,
@@ -9,15 +10,14 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
-  type InboxThreadKind,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
   REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
   sleep,
-} from "@legion/contracts";
-
+} from "@legion/contracts/dispatch-constants";
+import { takeEarlyDocumentRead } from "./early-document-read";
 import {
   type Answer,
   type Body,
@@ -1586,7 +1586,10 @@ export class DispatchApiClient {
    *  document `owner` holds under `slug`, which may be its slug or its filename. `404
    *  ARTIFACT_NOT_FOUND` when the owner holds no such document, which is what the first upload
    *  of a name reads. A conversation holds files and pictures and no document at all, and
-   *  serves no such route, which is why its owner is not one this takes. */
+   *  serves no such route, which is why its owner is not one this takes. It is the markdown
+   *  `getArtifactText` reads, by the address a reader opens the document at rather than by the
+   *  id only the owner's own read names: a document route reads its document in one round trip
+   *  this way instead of two (`features/doc/open-document-early.ts`, dispatch://INFRA-341 R11). */
   ownerArtifactText(owner: { issue: string } | { project: string }, slug: string) {
     if ("issue" in owner) {
       return this.read("/api/v1/issues/{key}/artifacts/{slug}/text", { key: owner.issue, slug });
@@ -1989,14 +1992,22 @@ export class DispatchApiClient {
 
 /** A client over `fetchImpl`. The page's own (`api`) sends its uploads through `XMLHttpRequest`
  *  (`xhrUpload`), so their progress counts against the silence deadline; one given a `fetchImpl`
- *  of its own sends them through it unless it is given an `upload` too. */
+ *  of its own sends them through it unless it is given an `upload` too. The page's own also
+ *  takes the one read `web/index.html` started before this module existed
+ *  (`takeEarlyDocumentRead`), so that read is this client's in every other way: the same
+ *  deadline on Dispatch's silence, the same abort, the same refusals and the same reachability.
+ *  A client of a caller's own `fetchImpl` takes nothing: the early read is the page's. */
 export function createApiClient(
   fetchImpl?: FetchImplementation,
   upload?: UploadImplementation,
   wait: Sleep = sleep
 ): DispatchApiClient {
   return fetchImpl === undefined
-    ? new DispatchApiClient((...args) => fetch(...args), upload ?? xhrUpload(), wait)
+    ? new DispatchApiClient(
+        (input, init) => takeEarlyDocumentRead(input, init) ?? fetch(input, init),
+        upload ?? xhrUpload(),
+        wait
+      )
     : new DispatchApiClient(fetchImpl, upload, wait);
 }
 

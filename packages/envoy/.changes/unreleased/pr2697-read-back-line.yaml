@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The line that closes a document edit's read-back past its 2000-byte bound now says what the
+  read-back leaves unshown and that the document keeps it: `the read-back shows at most 2000
+  bytes; N characters of M blocks are not shown here, and the document holds them`. It read
+  `cut N characters in M blocks`, which an agent took for text its edit had lost from the
+  document, and reverted a correct edit over. The read-back is only the answer's echo of what the
+  edit wrote, and the line counts and claims only the markdown it leaves unshown, which the
+  document holds. The lines naming blocks the edit removed, left empty or moved that it leaves
+  unshown are counted apart, `; K lines naming blocks the edit removed, left empty or moved are
+  not shown either`, since the document holds no block the edit removed.
+time: 2026-11-20T07:00:00Z
+custom:
+    Issue: pr2697

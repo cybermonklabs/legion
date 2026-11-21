@@ -3,6 +3,7 @@ import { type KeyboardEvent, type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   backdrop40,
   card,
@@ -68,7 +69,9 @@ export function ReferencePicker({ issueKey, onClose, onSelect }: ReferencePicker
               className={`flex-1 rounded-lg border px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
               onChange={(event) => setFilter(event.target.value)}
               onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
-                if (event.key !== "Enter") {
+                // The Enter that confirms an input method's word is the input method's, not a
+                // pick.
+                if (event.key !== "Enter" || inputMethodKey(event)) {
                   return;
                 }
                 // The filter sits inside the composer's <form>; without this the implicit

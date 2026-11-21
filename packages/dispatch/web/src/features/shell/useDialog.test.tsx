@@ -2,9 +2,10 @@ import { expect, test } from "bun:test";
 import { render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import { KeymapProvider } from "./KeymapProvider";
+import { DIALOG_SCOPE, useKeymap } from "./keymap";
 import { useDialog } from "./useDialog";
 
 function Dialog({
@@ -81,6 +82,56 @@ test("Escape closes the most recently opened of two sibling (non-nested) open di
   try {
     await user.keyboard("{Escape}");
     expect(closed).toEqual({ drawer: 1, nav: 0 });
+  } finally {
+    view.unmount();
+  }
+});
+
+/** A part of a dialog that answers Escape itself, on the scope the dialog's own Escape is on, as
+ *  the drawer's Inbox list does (`InboxDrawer.tsx`'s `keymapScope={DIALOG_SCOPE}`). */
+function OwnEscape({ onEscape }: { onEscape: () => void }) {
+  useKeymap(DIALOG_SCOPE, [
+    {
+      effect: "moves nothing",
+      id: "part.escape",
+      inEditable: true,
+      keys: "Escape",
+      label: "The part's own Escape",
+      run: onEscape,
+    },
+  ]);
+  return <p>part</p>;
+}
+
+test("a part that mounts after its dialog opened takes Escape before the dialog closes", async () => {
+  // The drawer's Inbox list arrives in a chunk of its own after the drawer's frame the first
+  // time it opens, so its Escape registers after the dialog's. Here the part mounts in the
+  // commit after the dialog's, whichever row ran before this one.
+  const user = userEvent.setup();
+  let partsEscapes = 0;
+  function Drawer({ part }: { part: boolean }) {
+    const [open, setOpen] = useState(true);
+    return (
+      <Dialog label="Drawer" onClose={() => setOpen(false)} open={open}>
+        {part ? <OwnEscape onEscape={() => (partsEscapes += 1)} /> : null}
+      </Dialog>
+    );
+  }
+  const view = render(
+    <KeymapProvider>
+      <Drawer part={false} />
+    </KeymapProvider>
+  );
+  try {
+    view.rerender(
+      <KeymapProvider>
+        <Drawer part />
+      </KeymapProvider>
+    );
+    expect(view.getByText("part")).toBeDefined();
+    await user.keyboard("{Escape}");
+    expect(partsEscapes).toBe(1);
+    expect(view.queryByRole("dialog", { name: "Drawer" })).not.toBeNull();
   } finally {
     view.unmount();
   }

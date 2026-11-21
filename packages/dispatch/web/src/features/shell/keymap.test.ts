@@ -47,7 +47,14 @@ function harness(isMac = false): Harness {
 
 function binding(id: string, keys: KeyBinding["keys"], extra: Partial<KeyBinding> = {}) {
   let fired = 0;
-  const definition: KeyBinding = { id, keys, label: id, run: () => (fired += 1), ...extra };
+  const definition: KeyBinding = {
+    effect: "moves nothing",
+    id,
+    keys,
+    label: id,
+    run: () => (fired += 1),
+    ...extra,
+  };
   return { definition, fired: () => fired };
 }
 
@@ -162,6 +169,57 @@ test("a chord fires within the timeout, shows its pending prefix, and expires af
   expect(inbox.fired()).toBe(1);
 });
 
+// The page's watches over the reader's place read a key the registry acts on by what its binding
+// declares, before the registry's own listener answers it (`features/doc/readers-scroll.ts`):
+// so the reading has to be the registry's own resolution - the chord, the scope, `when()`, a
+// field - and has to run nothing and move no chord on.
+test("effectOf reads a press as the binding it would run declares, and runs nothing", () => {
+  const { keymap, press } = harness();
+  const status = binding("status", "s", { effect: "moves the reader" });
+  const priority = binding("set-priority", "1");
+  const tab = binding("tab-conversation", "t c", { effect: "moves the reader" });
+  const hidden = binding("hidden", "h", { effect: "moves the reader", when: () => false });
+  keymap.register("global", [
+    status.definition,
+    priority.definition,
+    tab.definition,
+    hidden.definition,
+  ]);
+  const effectOf = (key: string, init: KeyboardEventInit & { target?: Element } = {}) => {
+    const { target = document.body, ...held } = init;
+    const event = new KeyboardEvent("keydown", { key, ...held });
+    Object.defineProperty(event, "target", { value: target });
+    return keymap.effectOf(event);
+  };
+  const field = document.createElement("textarea");
+
+  expect({
+    "a binding moving nothing": effectOf("1"),
+    "a binding moving the reader": effectOf("s"),
+    "a binding whose when() is false": effectOf("h"),
+    "a chord's first key": effectOf("t"),
+    "a key typed into a field": effectOf("s", { target: field }),
+    "a key with no binding": effectOf("q"),
+    "a modifier": effectOf("Shift"),
+  }).toEqual({
+    "a binding moving nothing": "moves nothing",
+    "a binding moving the reader": "moves the reader",
+    "a binding whose when() is false": undefined,
+    "a chord's first key": "moves nothing",
+    "a key typed into a field": undefined,
+    "a key with no binding": undefined,
+    "a modifier": undefined,
+  });
+  expect(status.fired() + priority.fired() + tab.fired()).toBe(0);
+  expect(keymap.pending()).toBe("");
+
+  // With the chord's first key pressed, the key that completes it reads as the chord's binding.
+  press("t");
+  expect(effectOf("c")).toBe("moves the reader");
+  expect(tab.fired()).toBe(0);
+  expect(keymap.pending()).toBe("t");
+});
+
 test("a key that does not continue the chord is read afresh on its own", () => {
   const { keymap, press } = harness();
   const inbox = binding("go-inbox", "g i");
@@ -248,6 +306,25 @@ test("the innermost scope wins, and a binding whose when() is false lets lower s
   ]);
 });
 
+// The Inbox drawer's frame mounts, and registers its Close, before the list's chunk has arrived
+// the first time it opens; the list's Escape, registered after it, is still asked first.
+test("a binding asked last fires only where no other of its scope applies, though it was registered first", () => {
+  const { keymap, press } = harness();
+  const close = binding("close", "Escape", { askedLast: true });
+  let onRow = true;
+  const back = binding("back", "Escape", { when: () => onRow });
+  keymap.pushScope(DIALOG_SCOPE);
+  keymap.register(DIALOG_SCOPE, [close.definition]);
+  keymap.register(DIALOG_SCOPE, [back.definition]);
+
+  expect(press("Escape")).toBe(true);
+  expect([back.fired(), close.fired()]).toEqual([1, 0]);
+
+  onRow = false;
+  expect(press("Escape")).toBe(true);
+  expect([back.fired(), close.fired()]).toEqual([1, 1]);
+});
+
 test("only inEditable bindings fire while an input, textarea, select, or contentEditable has focus", () => {
   const { keymap, press } = harness();
   const next = binding("next", "j");
@@ -309,7 +386,10 @@ test("a checkbox, radio or button takes no text, so single keys still fire while
   }
 });
 
-test("an already-handled key (defaultPrevented) or one mid-IME-composition is left alone", () => {
+// An input method's key acts on nothing of the page's: one pressed in a composition, marked
+// `isComposing`, and the one that ends it, which Safari sends unmarked with keyCode 229 (WebKit bug
+// 165004). The registry leaves both alone, and the same key unmarked fires its binding.
+test("an already-handled key (defaultPrevented) or an input method's, marked composing or sent with keyCode 229, is left alone", () => {
   const { keymap, press } = harness();
   const next = binding("next", "j");
   keymap.register("global", [next.definition]);
@@ -323,7 +403,9 @@ test("an already-handled key (defaultPrevented) or one mid-IME-composition is le
   }
   expect(press("j", { isComposing: true })).toBe(false);
   expect(next.fired()).toBe(0);
-  press("j");
+  expect(press("j", { isComposing: false, keyCode: 229 })).toBe(false);
+  expect(next.fired()).toBe(0);
+  expect(press("j")).toBe(true);
   expect(next.fired()).toBe(1);
 });
 
@@ -476,8 +558,15 @@ test("running an action fires its binding once with a keydown carrying its first
   const { keymap } = harness();
   const fired: string[] = [];
   keymap.register("global", [
-    { id: "snooze", keys: "s", label: "Snooze", run: (event) => fired.push(`snooze:${event.key}`) },
     {
+      effect: "moves nothing",
+      id: "snooze",
+      keys: "s",
+      label: "Snooze",
+      run: (event) => fired.push(`snooze:${event.key}`),
+    },
+    {
+      effect: "moves nothing",
       id: "close",
       keys: [],
       label: "Close issue",

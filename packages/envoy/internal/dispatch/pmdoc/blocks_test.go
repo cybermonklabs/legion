@@ -75,6 +75,114 @@ func TestDeleteBlockReportsUnknownAndUnremovableBlocks(t *testing.T) {
 	}
 }
 
+// heldExcept is the ids blockID's block and the blocks inside it carry, but for except: the held
+// a caller passes DeleteBlockKeeping where an earlier write of its edit put the blocks except
+// names inside that block.
+func heldExcept(t *testing.T, doc *Node, blockID string, except ...string) map[string]struct{} {
+	t.Helper()
+	valid, err := ValidateDocument(doc, "BlockDescendantIDs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := valid.BlockDescendantIDs(blockID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		held[id] = struct{}{}
+	}
+	for _, id := range except {
+		delete(held, id)
+	}
+	return held
+}
+
+// A delete of a block keeps the blocks inside it that held does not name, where the block stood:
+// a list keeps them as a list of its own under a new id, a list item whose kept blocks open with
+// a paragraph stays an item under a new id, one whose kept blocks are lists gives way to their
+// items, and a typed block gives way to its kept blocks. Kept blocks that cannot stand there - a
+// table's row outside the table - refuse the delete. A nil held keeps nothing, as DeleteBlock does.
+func TestDeleteBlockKeepingKeepsTheBlocksHeldDoesNotName(t *testing.T) {
+	id := func(node *Node) string {
+		blockID, _ := storedBlockID(node)
+		return blockID
+	}
+	items := parseFixture(t, "Intro.\n\n- one\n- two\n- three\n")
+	list := items.Children[1]
+	nested := parseFixture(t, "- one\n  - nested\n")
+	item := nested.Children[0].Children[0]
+	nestedItem := item.Children[1].Children[0]
+	requirement := parseFixture(t, ":::requirement{#r1}\nThe read succeeds.\n\nIt answers within a second.\n:::\n\nAfter.\n")
+	for _, test := range []struct {
+		name, block string
+		doc         *Node
+		held        map[string]struct{}
+		want        string
+	}{
+		{
+			name: "a list keeps an item it did not hold as a list of its own", doc: items, block: id(list),
+			held: heldExcept(t, items, id(list), id(list.Children[2]), id(list.Children[2].Children[0])),
+			want: "Intro.\n\n- three\n",
+		},
+		{
+			name: "a nil held keeps nothing", doc: items, block: id(list),
+			want: "Intro.\n",
+		},
+		{
+			name: "a list item whose kept blocks are a list gives way to its items", doc: nested, block: id(item),
+			held: heldExcept(t, nested, id(item), id(nestedItem), id(nestedItem.Children[0])),
+			want: "- nested\n",
+		},
+		{
+			name: "a typed block gives way to its kept paragraph", doc: requirement, block: "r1",
+			held: heldExcept(t, requirement, "r1", id(requirement.Children[0].Children[1])),
+			want: "It answers within a second.\n\nAfter.\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			valid, err := ValidateDocument(test.doc, "DeleteBlockKeeping")
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := valid.DeleteBlockKeeping(test.block, test.held)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertRenderedMarkdown(t, out, test.want)
+			if _, _, found := findBlock(out, test.block); found {
+				t.Fatalf("the deleted block %q is still in %#v", test.block, out.Children)
+			}
+		})
+	}
+	// A list item holding a paragraph it did not hold keeps it as an item of its own, under a new
+	// id.
+	loose := parseFixture(t, "- one\n- two\n\n  Detail.\n")
+	second := loose.Children[0].Children[1]
+	valid, err := ValidateDocument(loose, "DeleteBlockKeeping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := valid.DeleteBlockKeeping(id(second), heldExcept(t, loose, id(second), id(second.Children[1])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := out.Children[0].Children
+	if len(kept) != 2 || kept[1].Type != "list_item" || id(kept[1]) == "" || id(kept[1]) == id(second) || TextContent(kept[1]) != "Detail." {
+		t.Fatalf("after deleting the item holding Detail. = %#v, want Detail. an item under a new id", kept)
+	}
+	// A row kept from a deleted table cannot stand outside it.
+	table := parseFixture(t, "| a |\n| --- |\n| b |\n| c |\n")
+	valid, err = ValidateDocument(table, "DeleteBlockKeeping")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = valid.DeleteBlockKeeping(id(table.Children[0]), heldExcept(t, table, id(table.Children[0]), id(table.Children[0].Children[2])))
+	if !errors.Is(err, ErrKeptBlocksDoNotFit) || !errors.Is(err, ErrSchema) {
+		t.Fatalf("a table's kept row = %v, want ErrKeptBlocksDoNotFit and ErrSchema", err)
+	}
+}
+
 func TestDeleteTextblockRemovesTheBlockWhoseWholeTextIsDeleted(t *testing.T) {
 	sequentialBlockIDs(t)
 	const fixture = "- first item\n- second item\n\nA paragraph.\n\n| Key | Value |\n| --- | --- |\n| A10 | old |\n"

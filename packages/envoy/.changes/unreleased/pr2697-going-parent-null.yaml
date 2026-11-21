@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The going catalogue takes a proposed `dispatch_issue_update` whose `parent` is `null`, which clears the issue's parent,
+  where it refused the null before; `PATCH /api/v1/issues/{key}` already accepted it, and the catalogue now shows `parent` as nullable.
+time: 2026-11-15T00:30:08Z
+custom:
+    Issue: pr2697

@@ -583,6 +583,7 @@ test("the rows of the listing files are read as waiting for their listings", () 
     "__tests__/pull-request-lane.test.ts",
     "__tests__/row-configurations.test.ts",
     "__tests__/row-configurations.test.ts",
+    "__tests__/row-configurations.test.ts",
   ]);
   for (const row of rows) {
     expect(row.kind).toBe("row");

@@ -461,6 +461,19 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   // (packages/contracts/src/dispatch-tools.ts).
   const written = edited.written;
   const writtenLines = written === undefined || written === "" ? [] : [written];
+  // The blocks the edit took that its block guard did not name - the rest of what a delete or a
+  // move removed, a typed block a replace rewrote - at the token the edit read each at. The guard
+  // may still have covered one, through a block it names that holds it, so the line says only that
+  // the guard did not name it, and gives its token to compare with the one the caller read. An
+  // edit under no block guard, or an older server, carries none, and the result reads as it always
+  // did.
+  const unguarded = edited.unguarded_blocks ?? [];
+  const unguardedLines =
+    unguarded.length === 0
+      ? []
+      : [
+          `Block guard: this edit also took ${unguarded.length === 1 ? "a block" : `${unguarded.length} blocks`} the guard did not name: ${unguarded.map((block) => `${block.id} (token ${block.token})`).join(", ")}; compare ${unguarded.length === 1 ? "its token with the one" : "their tokens with the ones"} you read.`,
+        ];
   // The token of the document this edit produced, rendered as dispatch_doc_read renders it:
   // the next guarded edit passes it as `precondition.document` with no read in between. A
   // Dispatch server predating it returns none, and the result reads as it always did.
@@ -470,6 +483,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
       `${applied}${await notSubscribed(resolvedTopic(resolved), input.subscriptions)}`,
       ...checkLines,
       ...declinedLines,
+      ...unguardedLines,
       ...writtenLines,
       ...tokenTrailer,
       ...adviceLines,
@@ -479,6 +493,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
       ...(edited.version === null ? {} : { version: edited.version.number }),
       ...(nothingChanged ? { changed: false } : {}),
       ...(lostOps === undefined ? {} : { lost_ops: lostOps }),
+      ...(unguarded.length === 0 ? {} : { unguarded_blocks: unguarded }),
       ...(edited.token === undefined ? {} : { token: edited.token }),
       ...(edited.advice === undefined ? {} : { advice: edited.advice }),
     }),

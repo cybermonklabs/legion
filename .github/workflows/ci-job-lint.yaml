@@ -103,6 +103,14 @@ jobs:
       - name: Check every fireEvent call of the Dispatch suite carries its own reason
         run: .github/scripts/check-fireevent-reasons.sh
 
+      # The other half of the same rule, for where a reader is. A surface that reads
+      # `window.scrollY` is right only while the page is the box that scrolls, and one that writes
+      # a scroll leaves no record for the landing correction to tell the page's own place-keeping
+      # from the reader, so both go through web/src/features/doc/readers-place.ts. Nothing in the
+      # type system says so: each is one plain line every element offers.
+      - name: Check every reading of a reader's place and every scroll write goes through one module
+        run: .github/scripts/check-readers-place.sh
+
       # Only on a pull request and a merge group, the two events that have a base to compare
       # with: this job also runs on the bypass check's dispatched run at main's tip, where the
       # change has already merged. The condition tests `github.event_name` and no output of the

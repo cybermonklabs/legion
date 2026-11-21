@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { render, screen, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the Enter row below reads
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -84,6 +85,38 @@ test("Enter does nothing while the input is empty", async () => {
     await user.click(input);
     await user.keyboard("{Enter}");
     expect(saved).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
+// method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's end, as
+// Safari sends it (WebKit bug 165004). It saves nothing; a plain Enter after it saves.
+test("the Enter that confirms an input method's word saves no version, and a plain Enter saves", async () => {
+  const user = userEvent.setup();
+  const saved: string[] = [];
+  const view = render(
+    <NameVersionDialog
+      error={null}
+      onClose={() => {}}
+      onSave={(summary) => saved.push(summary)}
+      open
+      saving={false}
+    />
+  );
+  try {
+    const input = screen.getByLabelText("What changed?");
+    await user.click(input);
+    await user.paste("Tightened the intro");
+    // user-event cannot mark a key as an input method's, so the two such Enters are fired.
+    expect(fireEvent.keyDown(input, { isComposing: true, key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
+    expect(saved).toEqual([]);
+
+    // The plain Enter goes the same way as the two above, so only the composition mark differs.
+    expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
+    expect(saved).toEqual(["Tightened the intro"]);
   } finally {
     view.unmount();
   }

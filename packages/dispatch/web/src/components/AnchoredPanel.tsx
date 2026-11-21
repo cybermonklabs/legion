@@ -8,6 +8,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { inputMethodKey } from "../hooks/inputMethodKey";
+
 /** The panel's widest, before the 8 px margin it keeps from each viewport edge. */
 const PANEL_WIDTH = 256;
 
@@ -108,7 +110,9 @@ export function AnchoredPanel({
       dismiss.current();
     };
     const dismissOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      // The Escape that ends an input method's composition in the panel's field - a picker's
+      // search box - is the input method's, not the panel's.
+      if (event.key !== "Escape" || inputMethodKey(event)) return;
       // Escape belongs to whatever the reader is in. This panel takes it only while the press
       // comes from inside the panel or from its anchor; a press in the command bar opened over
       // the panel, or in any other layer, travels on to whoever owns that layer. The listener

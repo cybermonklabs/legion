@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
@@ -12,6 +12,8 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { theFirstBatchIsAwaited } from "../doc/first-batch";
+import { currentAddress, takeFirstScreen } from "../doc/first-screen";
 import { type IssueRoute, parseIssuePath } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -29,8 +31,24 @@ import { ViewRowSlot } from "./slots/view-row";
  *  it draws, a refused address included, is inside the element that carries `data-issue-page`,
  *  so a row can tell from the first frame which page drew a state. */
 export function IssueOutlinePage(): ReactNode {
-  const { pathname, search } = useLocation();
+  const location = useLocation();
+  const { pathname, search } = location;
   const route = parseIssuePath(pathname, search);
+  // At an address that opens an issue's document, two things wait for today's page's document
+  // surface: the reads no reader waits for are held until the editor's first batch
+  // (`openDocumentEarly`, `features/doc/first-batch.ts`), and the server's draw of the
+  // document's opening blocks stands after `#root` until that surface adopts it
+  // (`features/doc/first-screen.ts`). The one document surface this page mounts is the editor of
+  // an edited row (`StagedDocument`), whose first batch no address on this page waits on, so the
+  // page ends both itself at each address it draws. Otherwise the shell's navigation, its counts
+  // and the margin's reads wait out `LONGEST_HOLD_MS` for a batch that never comes, and the
+  // blocks stay on the page below the shell. The shell's `OpenDocumentEarly` arms the hold again
+  // on each navigation, and its effect runs before this one, because it stands before the routes
+  // in `app.tsx`.
+  useEffect(() => {
+    theFirstBatchIsAwaited(false);
+    takeFirstScreen(currentAddress(location.pathname));
+  }, [location]);
   return (
     <div data-issue-page="">
       {route === undefined ? (

@@ -3,7 +3,7 @@ import {
   DELIVERY_DUPLICATE_WINDOW_MS,
   RECEIPT_TIMEOUT_CAUSE,
   STORE_UNCONFIRMED_CAUSE,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-constants";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 

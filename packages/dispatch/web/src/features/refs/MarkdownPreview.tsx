@@ -241,7 +241,14 @@ export function MarkdownPreview({
     markdown,
     tree,
     paintOneLine,
-    { pictures: "inline", decorate, references }
+    {
+      pictures: "inline",
+      decorate,
+      // A preview shows a body, so raw HTML in one reads as the text it shows: an HTML comment
+      // draws as nothing and any other raw HTML as its own characters (`MarkdownBody`).
+      rawHtml: "text",
+      references,
+    }
   );
   // A text with no tree is one Dispatch does not store, and its own source is all its hover
   // text can come from (`useMarkdownHeadline`).

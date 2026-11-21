@@ -91,6 +91,34 @@ export async function savesEnded(page: Page, held: HeldPatches): Promise<void> {
     .toBe(true);
 }
 
+/** The sign-in check, `GET /auth/whoami`, which sits outside `/api/v1`
+ *  (`DispatchApiClient.whoAmI`, `web/src/api/client.ts`). */
+export function isSignInCheck(url: URL): boolean {
+  return url.pathname === "/auth/whoami";
+}
+
+/**
+ * Holds each sign-in check (`isSignInCheck`) the page makes from now on until `until` holds, for
+ * at most `PICK_HOLD_MS`, then passes it on to the server. The page takes up the writes a reload
+ * kept only once that check has answered (`AuthenticatedApp`'s `resume`, `web/src/app.tsx`), while
+ * it asks for the address's issue before it (`bootThePage`, `web/src/features/shell/boot.ts`), so
+ * a row that holds the check until that read is answered has the read's answer in before the
+ * picks are taken up, every time rather than on a loaded machine alone.
+ */
+export async function holdSignInUntil(page: Page, until: () => boolean): Promise<void> {
+  await page.route(isSignInCheck, async (route) => {
+    const deadline = Date.now() + PICK_HOLD_MS;
+    // `until` reads a list the runner's response handler fills, which raises no event of its own
+    // to wait on, so the hold looks again every 10 ms until it holds or `PICK_HOLD_MS` passes.
+    while (!until() && Date.now() < deadline) await sleep(10);
+    try {
+      await route.fallback();
+    } catch {
+      // The page closed with the check held: it never left.
+    }
+  });
+}
+
 /** The saves of one issue a page makes while `refuseIssuePatches` answers them. */
 export interface RefusedPatches {
   /** When the route answered each attempt it refused, in order (`Date.now()` in the runner). */

@@ -57,11 +57,12 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { mentionOptions } from "../conversation/MentionComposer";
+import { mentionOptions } from "../conversation/MentionField";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
 import { UnsentReply } from "../inbox/AskThread";
+import { EMPTY_DRAFT_REFUSAL } from "../inbox/draft-store";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
 import { badgeSelectWrapper } from "../issue/badge-select";
@@ -1950,8 +1951,10 @@ test("the default shapes keep main's class strings", async () => {
       "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-dashed border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300",
     "ApprovalSteps Approve":
       "min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
+    // The header's second action in `secondaryButton`'s look (dispatch://INFRA-341), as the
+    // `RefusableButton` it was drew it.
     "ApprovalSteps Request changes":
-      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400",
+      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 refused:text-slate-400 dark:refused:text-slate-600 md:min-h-8 md:py-1",
     "ApprovalSteps reason":
       "min-w-0 text-xs [overflow-wrap:anywhere] text-slate-700 dark:text-slate-300",
 
@@ -1980,8 +1983,9 @@ test("the default shapes keep main's class strings", async () => {
     "ApprovalChip request refused": "text-sm text-rose-700 dark:text-rose-400",
     "ApprovalChip request Cancel":
       "rounded-lg border px-3 py-1.5 text-sm font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400",
+    // A `RefusableButton` in its primary look (dispatch://INFRA-341).
     "ApprovalChip request Request changes":
-      "rounded-lg px-3 py-1.5 text-sm font-medium bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
+      "rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300 ",
 
     "AssigneeControl wrapper":
       "relative inline-flex min-h-11 shrink-0 items-center rounded-sm md:min-h-8 has-focus-visible:ring-2 has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400 ",
@@ -2116,10 +2120,12 @@ test("the default shapes keep main's class strings", async () => {
       "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 gap-1.5 font-semibold tracking-wide uppercase",
     "StatusPill dot": "size-1.5 rounded-full bg-slate-500 dark:bg-slate-400",
 
+    // Both boxes from `components/copy-button-classes.ts` (dispatch://INFRA-341): the same
+    // tokens as `main`'s, `shrink-0` written after the base box both forms share.
     "CopyButton, icon":
-      "inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8 min-w-11 justify-center md:min-w-8 text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300 ",
+      "inline-flex min-h-11 items-center rounded-lg md:min-h-8 min-w-11 shrink-0 justify-center md:min-w-8 text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300 ",
     "CopyButton, labelled":
-      "inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8 max-w-full gap-1 px-1 font-mono text-xs font-medium select-text text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300 ",
+      "inline-flex min-h-11 items-center rounded-lg md:min-h-8 shrink-0 max-w-full gap-1 px-1 font-mono text-xs font-medium select-text text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300 ",
     "CopyButton copied": "ml-1 text-xs font-medium text-emerald-700 dark:text-emerald-400",
     "CopyButton failed": "ml-1 text-xs font-medium text-rose-700 dark:text-rose-400",
     // `main`'s components/CopyButton.tsx: the `<code>` a failed copy prints the value in.
@@ -2195,13 +2201,14 @@ test("the default shapes keep main's class strings", async () => {
       "text-[15px] leading-relaxed font-medium text-slate-900 dark:text-slate-100",
     "AskCard asker line":
       "@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500 dark:text-slate-400",
-    // `main`'s features/inbox/AskCard.tsx: the group of the turn and the asker.
+    // The group of the label, the turn and the asker as the card's header draws it
+    // (`features/inbox/AskHeader.tsx`, dispatch://INFRA-341).
     "AskCard turn and asker":
-      "flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap",
-    "AskCard turn": "shrink-0 font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
-    // `main`'s features/inbox/AskCard.tsx: the turn an agent holds.
+      "flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-ask-card-line:flex-wrap @max-ask-card-line:[&>[data-ask-state-label]]:py-0 @max-ask-card-two-lines:contents",
+    "AskCard turn": "shrink-0 font-semibold text-slate-700 dark:text-slate-300",
+    // The turn an agent holds, in the header.
     "AskCard turn, an agent's":
-      "min-w-0 truncate font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
+      "min-w-0 shrink-[1.5] truncate @max-ask-card-line:flex-1 font-semibold text-slate-700 dark:text-slate-300",
     "AskCard asker":
       "flex min-w-0 items-center gap-1 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300",
     // `main`'s features/inbox/AskCard.tsx: the asker's `AgentName`, its class after `main`'s
@@ -2215,17 +2222,21 @@ test("the default shapes keep main's class strings", async () => {
     // `main`'s features/inbox/AskCard.tsx: the span that says who handed the question on, which
     // has no class.
     "AskCard handed on": null,
-    "AskCard answer label": "sr-only",
+    // The answer box is the answer area's `MentionField` (dispatch://INFRA-341): its label wraps
+    // the box, and draws no words while they are hidden.
+    "AskCard answer label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard answer box":
-      "block w-full rounded-lg px-3 py-2 font-normal outline-none border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400",
+      "mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none min-h-24 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400 text-slate-900 dark:text-slate-100",
+    // Answer, Ask back and Answer with it anyway are `RefusableButton`s, and Cancel wears the same
+    // `secondaryButton` (dispatch://INFRA-341).
     "AskCard Answer":
-      "min-h-11 rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
+      "rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300 min-h-11",
     "AskCard Ask back":
-      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300",
+      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 refused:text-slate-400 dark:refused:text-slate-600 ",
     "AskCard Ask back instead":
       "min-h-11 rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
     "AskCard Answer with it anyway":
-      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300",
+      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 refused:text-slate-400 dark:refused:text-slate-600 ",
     "AskCard compact card":
       "relative rounded-xl border-l-4 shadow-sm px-3 pt-4 pb-3 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-amber-500 dark:border-l-amber-400",
     "AskCard compact urgency notch":
@@ -2235,7 +2246,7 @@ test("the default shapes keep main's class strings", async () => {
     "AskCard approval document":
       "mt-1 text-sm text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
     "AskCard own words": "min-h-11 text-sm font-medium text-slate-700 dark:text-slate-300",
-    "AskCard reason label": "mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300",
+    "AskCard reason label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard submit hint": "text-xs text-slate-500 dark:text-slate-400",
     // `main`'s features/inbox/UnsentText.tsx, as AskCard draws it: the unsent answer's box, its
     // note and its words.
@@ -2254,7 +2265,7 @@ test("the default shapes keep main's class strings", async () => {
       "mt-2 text-sm text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
     "AskCard question changed": "mt-3 text-sm font-medium text-amber-800 dark:text-amber-300",
     "AskCard Cancel, changing an answer":
-      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300",
+      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 refused:text-slate-400 dark:refused:text-slate-600",
   };
 
   const read: Record<string, string | null> = {};
@@ -3098,11 +3109,12 @@ test("the default shapes keep main's class strings", async () => {
     const card = within(questionCard.container);
     const article = card.getByRole("article");
     classAt("AskCard card", article);
-    classAt("AskCard urgency notch", article.querySelector(":scope > span[aria-hidden='true']"));
+    // The notch and the asker's line are the card's header's (`AskHeader`), found by its marks.
+    classAt("AskCard urgency notch", article.querySelector("[data-ask-urgency-notch]"));
     classAt("AskCard question", article.querySelector(".dispatch-markdown")?.parentElement);
     const turn = card.getByTestId("turn-ask-1");
     classAt("AskCard turn", turn);
-    classAt("AskCard asker line", turn.parentElement?.parentElement);
+    classAt("AskCard asker line", article.querySelector("[data-ask-card-row]"));
     classAt("AskCard turn and asker", turn.parentElement);
     const asker = card.getByRole("button", { expanded: false, name: /Implementer/ });
     classAt("AskCard asker", asker);
@@ -3115,7 +3127,7 @@ test("the default shapes keep main's class strings", async () => {
     );
     classAt("AskCard handed on", card.getByText(/^handed on by bob@example\.com/));
     const answerBox = card.getByRole("textbox", { name: "Your answer" });
-    classAt("AskCard answer label", answerBox.previousElementSibling);
+    classAt("AskCard answer label", answerBox.closest("label"));
     classAt("AskCard answer box", answerBox);
     classAt("AskCard Answer", card.getByRole("button", { name: "Answer" }));
     classAt("AskCard Ask back", card.getByRole("button", { name: "Ask back" }));
@@ -3222,10 +3234,7 @@ test("the default shapes keep main's class strings", async () => {
     const card = within(approvalCard.container);
     const article = card.getByRole("article");
     classAt("AskCard compact card", article);
-    classAt(
-      "AskCard compact urgency notch",
-      article.querySelector(":scope > span[aria-hidden='true']")
-    );
+    classAt("AskCard compact urgency notch", article.querySelector("[data-ask-urgency-notch]"));
     classAt("AskCard approval requested", card.getByText("Approval requested"));
     classAt("AskCard approval document", card.getByRole("link", { name: /spec\.md/ }).closest("p"));
     classAt(
@@ -6336,6 +6345,10 @@ interface AskCardControl {
   readonly changing?: boolean;
   /** The write the press sends. */
   readonly write: "answer" | "clarification";
+  /** Whether the control is still drawn, and drawn refusing with its reason, once its write has
+   *  landed: a `RefusableButton` refused stays in the tab order (dispatch://INFRA-341), so
+   *  inside `NoTooltips` it keeps the focus the press gave it. */
+  readonly keepsFocusOnLanding?: boolean;
   /** Brings the card to the press, sends the write by the keyboard, and answers the control,
    *  which inside `NoTooltips` holds the focus then. */
   readonly press: (scope: CardScope, user: UserEvent, surface: Surface) => Promise<HTMLElement>;
@@ -6447,6 +6460,8 @@ const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
   },
   {
     again: pressEnter,
+    // The clarification empties the box, and Ask back then refuses for want of text.
+    keepsFocusOnLanding: true,
     name: "Ask back",
     press: async (scope, user) => {
       await user.type(answerBoxOf(scope), "Stage it before the release");
@@ -6570,12 +6585,13 @@ function AskRow({
 // nothing. Once the write lands, and inside `NoTooltips` once the read of the ask that a
 // clarification starts is drawn as well, what it takes off the page - the form, which the answer
 // replaces with its record, or the choice a question-shaped answer offers - hands the focus on as
-// it goes, to the row the card is drawn in, and a clarification that empties the box leaves Ask
-// back `disabled`, which hands it on too; once the write fails, the pressed control is still drawn
-// and kept the focus all along. Outside `NoTooltips` each is `disabled` while the write is out, as
-// on `main`, and the card hands the focus to the row as it disables the control.
+// it goes, to the row the card is drawn in; a clarification that empties the box leaves Ask back
+// refusing with its reason, in the tab order (`keepsFocusOnLanding`); once the write fails, the
+// pressed control is still drawn and kept the focus all along. Outside `NoTooltips` each is
+// `disabled` while the write is out, and the card hands the focus to the row as it disables the
+// control.
 for (const control of ASK_CARD_CONTROLS) {
-  test(`inside NoTooltips AskCard's ${control.name} keeps the focus while its write is out, then the card hands it to the row`, async () => {
+  test(`inside NoTooltips AskCard's ${control.name} keeps the focus while its write is out, then the card hands it to the row unless the control stays drawn`, async () => {
     const user = userEvent.setup();
     for (const surface of ["inside", "outside"] as const) {
       for (const write of ["lands", "fails"] as const) {
@@ -6625,7 +6641,9 @@ for (const control of ASK_CARD_CONTROLS) {
             await waitFor(() => expect(answerBoxOf(scope).value).toBe(""));
           }
           await settleReads();
-          expect(document.activeElement).toBe(row);
+          expect(document.activeElement).toBe(
+            surface === "inside" && control.keepsFocusOnLanding === true ? pressed : row
+          );
           expect(sent).toHaveBeenCalledTimes(1);
         } finally {
           answerAsk.mockRestore();
@@ -6800,11 +6818,12 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
 
 // A clarification empties the box as it lands and reads the ask again. Inside `NoTooltips`, until
 // that read is drawn, Ask back is drawn as it stood at the press: refused with `aria-disabled`, and
-// not `disabled` for the text the landing took, which would drop the focus in a browser; it keeps
-// the focus, and a press of it sends nothing; the box stays read-only. Once the read is drawn Ask
-// back, with no text to send, is `disabled`, and the card hands the focus to the row, the one move
-// of the focus. Outside `NoTooltips` Ask back is `disabled` while the write is out, and the focus
-// goes to the row then, as on `main`.
+// not refused for the text the landing took; it keeps the focus, and a press of it sends nothing;
+// the box stays read-only. Once the read is drawn Ask back, with no text to send, refuses and says
+// why, as it does on both sides: a `RefusableButton` that stays in the tab order, never `disabled`
+// (dispatch://INFRA-341). So inside `NoTooltips` it keeps the focus the press gave it, and nothing
+// moves the focus at all. Outside `NoTooltips` Ask back is `disabled` while the write is out, and
+// the focus goes to the row then.
 test("inside NoTooltips Ask back keeps the focus until the ask is read again", async () => {
   const user = userEvent.setup();
   for (const surface of ["inside", "outside"] as const) {
@@ -6844,16 +6863,26 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
         expectRefusedHoldingFocus(askBack);
         expectAnswerBoxReadOnly(scope);
       } else {
-        expectAskControlDisabledAsOnMain(askBack);
+        // Outside the landing ends the write, and Ask back, with no text to send, refuses and
+        // says why at once, `aria-disabled` and not `disabled` (dispatch://INFRA-341).
+        expect(askBack.hasAttribute("disabled")).toBe(false);
+        expect(askBack.getAttribute("aria-disabled")).toBe("true");
+        expect(askBack.hasAttribute("readonly")).toBe(false);
+        expect(askBack.closest("fieldset")?.hasAttribute("aria-disabled") ?? false).toBe(false);
         expect(document.activeElement).toBe(row);
       }
       expect(focus.moved).toHaveLength(0);
 
       answerReread(threadOf(ask));
-      await waitFor(() => expect(askBack.hasAttribute("disabled")).toBe(true));
+      await waitFor(() => expect(askBack.getAttribute("aria-describedby")).not.toBeNull());
       await settleReads();
-      expect(askBack.hasAttribute("aria-disabled")).toBe(false);
-      expectOneMoveToRow(focus, row, surface);
+      expect(askBack.hasAttribute("disabled")).toBe(false);
+      expect(askBack.getAttribute("aria-disabled")).toBe("true");
+      expect(
+        document.getElementById(askBack.getAttribute("aria-describedby") ?? "")?.textContent
+      ).toBe(EMPTY_DRAFT_REFUSAL);
+      expect(document.activeElement).toBe(surface === "inside" ? askBack : row);
+      expect(focus.moved).toHaveLength(0);
       expect(createComment).toHaveBeenCalledTimes(1);
     } finally {
       createComment.mockRestore();

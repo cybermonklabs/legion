@@ -1,16 +1,20 @@
 import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 
+import { inputMethodKey } from "../../hooks/inputMethodKey";
+
 /**
  * One keyboard registry for the SPA. Components register bindings under a scope
  * (`useKeymap`), pages and dialogs push their scope onto the shell-owned stack
  * (`useKeymapScope`), and a single `window` keydown listener (`KeymapProvider`) resolves each
  * key top-down through the stack: the first scope holding a matching binding wins, and while
- * a `dialog` scope is on the stack it is the only scope consulted. `keys` follows tinykeys' string
- * syntax — `"g i"` is a chord, `"$mod+k"` matches Meta or Control, `"Shift+P"` a shifted
- * letter, `"?"` the character an unshifted or shifted key produces. A combo is matched by the
- * character its key types, so a reader on AZERTY or Dvorak presses the letter a shortcut names
- * wherever it sits; on a Mac, one that holds `Alt` also matches by the key's position (`KeyM` for
- * `m`), because Option changes the character: `$mod+Alt+m` types `µ` there.
+ * a `dialog` scope is on the stack it is the only scope consulted. Within a scope the binding
+ * registered first that matches wins, one that is `askedLast` only where no other matches.
+ * `keys` follows tinykeys' string syntax — `"g i"` is a chord, `"$mod+k"` matches Meta or
+ * Control, `"Shift+P"` a shifted letter, `"?"` the character an unshifted or shifted key
+ * produces. A combo is matched by the character its key types, so a reader on AZERTY or Dvorak
+ * presses the letter a shortcut names wherever it sits; on a Mac, one that holds `Alt` also
+ * matches by the key's position (`KeyM` for `m`), because Option changes the character:
+ * `$mod+Alt+m` types `µ` there.
  */
 
 export type KeymapScope =
@@ -24,6 +28,10 @@ export type KeymapScope =
   | "document"
   | "agents";
 
+/** What running a binding does to the reader: moves their place or their focus - a focus, a
+ *  tab, a dialog or palette that takes the focus, another page - or moves neither. */
+export type ShortcutEffect = "moves the reader" | "moves nothing";
+
 export interface KeyBinding {
   /** Stable identifier, unique within the registering component. */
   id: string;
@@ -34,6 +42,17 @@ export interface KeyBinding {
   keys: string | readonly string[];
   label: string;
   run: (event: KeyboardEvent) => void;
+  /**
+   * What `run` does to the reader, which every binding declares where it binds its key: the
+   * page's watches over the reader's place read a key the registry acts on by this and nothing
+   * else (`effectOf`, read by the table of the reader's inputs in
+   * `features/doc/readers-scroll.ts`). A binding that moves the focus, opens a dialog or a
+   * palette that takes it, switches a tab or goes to another page moves the reader, and the
+   * page lets go of their place for it; one that changes nothing their place or focus hangs on -
+   * a write, a toggle, a copy - moves nothing, and the page goes on keeping their place through
+   * it. Required, so a binding cannot be added without saying which.
+   */
+  effect: ShortcutEffect;
   /** Whether the binding applies right now; `false` neither fires nor shadows lower scopes. */
   when?: () => boolean;
   /** Fires while a control that takes typed text has focus: a `TEXTAREA`, a `SELECT`, a
@@ -51,6 +70,12 @@ export interface KeyBinding {
    *  is its own key. Keys that walk a list with the row in hand set `false`, as does a second key
    *  for an action that already has a row; any other binding that sets it says why beside it. */
   palette?: boolean;
+  /** Asked only where no other binding of its scope that applies matches the same press,
+   *  whichever was registered first. Registration order is mount order, and a part that mounts
+   *  after the component around it registers after it: a dialog's own Escape (`useDialog`) is
+   *  the last level out of it, and the drawer's Inbox (`InboxDrawer.tsx`), whose chunk arrives
+   *  after the drawer's frame the first time the drawer opens, takes Escape before it. */
+  askedLast?: boolean;
 }
 
 /** A binding as `?` describes it: keys as typed, its scope, and whether it applies right now. */
@@ -222,7 +247,11 @@ const TEXT_INPUT_TYPES: Record<string, true> = {
   week: true,
 };
 
-function isEditableTarget(target: EventTarget | null): boolean {
+/** Whether `target` is a control that takes typed text: a contentEditable element, a
+ *  `TEXTAREA`, a `SELECT`, or a text-entry `INPUT`. The registry suspends every binding not
+ *  marked `inEditable` there, and the table of the reader's inputs reads it as the field that
+ *  takes Space, the arrows, Home and End for itself (`features/doc/readers-scroll.ts`). */
+export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
@@ -265,6 +294,11 @@ export interface Keymap {
    *  mounted twice registers its bindings twice (an issue's hidden Spec beside another of its
    *  documents), and they are one row, enabled when either instance's `when()` holds. */
   describe(): KeyBindingDescription[];
+  /** What the binding a key press would run does to the reader (`KeyBinding.effect`), `moves
+   *  nothing` for the first key of a chord the registry would hold, and `undefined` for a key it
+   *  would leave to the browser. It runs nothing and moves no chord on, so a watch listening on
+   *  the capture phase can read the press before the registry's own listener answers it. */
+  effectOf(event: KeyboardEvent): ShortcutEffect | undefined;
   handleKeyDown(event: KeyboardEvent): void;
   /** The keys typed so far of an unfinished chord (`"g"`), or `""`. */
   pending(): string;
@@ -344,6 +378,7 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
     for (let depth = stack.length - 1; depth >= 0; depth -= 1) {
       const scope = stack[depth];
       let exact: Registration | undefined;
+      let askedLast: Registration | undefined;
       let partial = false;
       for (const registration of registrations) {
         const { binding } = registration;
@@ -359,16 +394,49 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
           }
           if (chord.length > presses.length) {
             partial = true;
+          } else if (binding.askedLast === true) {
+            if (askedLast === undefined && binding.when?.() !== false) {
+              askedLast = registration;
+            }
           } else if (exact === undefined && binding.when?.() !== false) {
             exact = registration;
           }
         }
       }
+      exact ??= askedLast;
       if (exact !== undefined || partial) {
         return { exact, partial };
       }
     }
     return { exact: undefined, partial: false };
+  };
+
+  /** The presses `event` completes and what the registry would do with them, or `undefined` for
+   *  a press it leaves alone: one already handled, an input method's (`inputMethodKey`), a
+   *  modifier on its own. It changes nothing, so `effectOf` reads a press exactly as
+   *  `handleKeyDown` then answers it. */
+  const readThePress = (
+    event: KeyboardEvent
+  ): { presses: KeyPress[]; resolution: Resolution } | undefined => {
+    if (event.defaultPrevented || inputMethodKey(event) || MODIFIER_KEYS[event.key] === true) {
+      return undefined;
+    }
+    const editable = isEditableTarget(event.target);
+    const press: KeyPress = {
+      altKey: event.altKey,
+      code: event.code,
+      ctrlKey: event.ctrlKey,
+      key: event.key,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+    };
+    const presses = [...pending, press];
+    const resolution = resolve(presses, editable);
+    if (resolution.exact === undefined && !resolution.partial && pending.length > 0) {
+      // A key that does not continue the chord is read afresh on its own.
+      return { presses: [press], resolution: resolve([press], editable) };
+    }
+    return { presses, resolution };
   };
 
   return {
@@ -443,26 +511,19 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
       }
       return [...described.values()];
     },
+    effectOf(event) {
+      const resolution = readThePress(event)?.resolution;
+      if (resolution?.exact !== undefined) {
+        return resolution.exact.binding.effect;
+      }
+      return resolution?.partial === true ? "moves nothing" : undefined;
+    },
     handleKeyDown(event) {
-      if (event.defaultPrevented || event.isComposing || MODIFIER_KEYS[event.key] === true) {
+      const read = readThePress(event);
+      if (read === undefined) {
         return;
       }
-      const editable = isEditableTarget(event.target);
-      const press: KeyPress = {
-        altKey: event.altKey,
-        code: event.code,
-        ctrlKey: event.ctrlKey,
-        key: event.key,
-        metaKey: event.metaKey,
-        shiftKey: event.shiftKey,
-      };
-      let presses = [...pending, press];
-      let resolution = resolve(presses, editable);
-      if (resolution.exact === undefined && !resolution.partial && pending.length > 0) {
-        // A key that does not continue the chord is read afresh on its own.
-        presses = [press];
-        resolution = resolve(presses, editable);
-      }
+      const { presses, resolution } = read;
       if (resolution.exact !== undefined) {
         event.preventDefault();
         clearPending();
@@ -522,8 +583,11 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
   };
 }
 
-/** The application's registry; `KeymapProvider` binds it to `window`. Unit tests build their own. */
-export const appKeymap = createKeymap({ strict: import.meta.env.DEV });
+/** The application's registry; `KeymapProvider` binds it to `window`. Unit tests build their own.
+ *  `import.meta.env` is read optionally because Playwright evaluates the e2e files under Node,
+ *  where it is undefined, and an e2e file that imports a constant of the issue page loads this
+ *  module through `readers-place.ts` (`e2e/issue-page-d.e2e.ts`'s `HEADER_SCROLLS_QUERY`). */
+export const appKeymap = createKeymap({ strict: import.meta.env?.DEV === true });
 
 /** Registers `bindings` under `scope` for the component's lifetime; closures stay current. */
 export function useKeymap(scope: KeymapScope, bindings: readonly KeyBinding[]): void {

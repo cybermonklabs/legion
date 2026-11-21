@@ -256,8 +256,15 @@ async function openMargin(phone: boolean, stopped: boolean, withReply = false): 
   const editComment = spyOn(api, "editComment").mockRejectedValue(REFUSAL);
   if (stopped) await stopTheEditSave(queryClient, editComment, threadA);
   const restoreViewport = stubViewport(phone ? PHONE_WIDTH : DESKTOP_WIDTH);
+  // A phone's shut sheet draws no card nothing has named (`MarginSheet`'s `covered`), and none
+  // of these rows names one: the reader reaches thread A by opening the review panel, as on a
+  // phone, where the shut sheet is 64 px of `Review (N)` and its cards are out of sight.
+  const cardDrawn = async () => {
+    if (phone) await user.click(await screen.findByRole("button", { name: /^Open review panel/ }));
+    await waitFor(() => expect(marginCard(threadA.id)).toBeInTheDocument());
+  };
   let view = render(marginPage(queryClient, <RegisterDocument />));
-  await waitFor(() => expect(marginCard(threadA.id)).toBeInTheDocument());
+  await cardDrawn();
   return {
     changeBody: (body) => {
       comments = [{ ...threadA, body, edited_at: "2026-09-21T00:00:00Z" }, threadB];
@@ -270,7 +277,7 @@ async function openMargin(phone: boolean, stopped: boolean, withReply = false): 
       endAsAReload(() => view.unmount());
       queryClient = signedInAsReader(marginClient(comments));
       view = render(marginPage(queryClient, <RegisterDocument />));
-      await waitFor(() => expect(marginCard(threadA.id)).toBeInTheDocument());
+      await cardDrawn();
     },
     restore: () => {
       view.unmount();

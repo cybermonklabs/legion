@@ -3,6 +3,7 @@ import { type ReactNode, useId, useState } from "react";
 import type { ArtifactOwner } from "../../api/client";
 import type { Ask } from "../../api/types";
 import { linkHoverText, linkText } from "../../theme/classes";
+import type { DocumentOwner } from "../refs/routes";
 import type { DwellRef } from "../shell/useDwell";
 import { composerFirst } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
@@ -28,6 +29,9 @@ interface AskThreadDisclosureProps {
   markNewest?: DwellRef;
   /** The reply a deep link named (`AskThread`); only the Conversation passes one. */
   currentReplyId?: string;
+  /** The project document that owns a document ask, so each reply names its own reference
+   *  (`AskThread`). */
+  owner?: DocumentOwner;
   /** The order the thread reads in (`AskThread`), which also places this control and the
    *  composer it reveals: under the question in Newest first, at the foot in Oldest first. */
   order: ThreadOrder;
@@ -43,6 +47,7 @@ export function AskThreadDisclosure({
   uploadOwner,
   markNewest,
   currentReplyId,
+  owner,
   order,
   unread,
 }: AskThreadDisclosureProps): ReactNode {
@@ -82,13 +87,15 @@ export function AskThreadDisclosure({
         embedded={embedded}
         markNewest={markNewest}
         order={order}
+        owner={owner}
         showComposer={false}
         thread={thread}
         unread={unread}
       />
     );
-  // An open ask takes no reply composer: a reply the reader typed before it opened again stands
-  // in the composer's place, read-only (`useUnsentReply`).
+  // An open ask takes no reply composer: a reply the reader typed while it was settled, before it
+  // opened again, stands in the composer's place, read-only (`useUnsentReply`). One typed while it
+  // was open, in the host that replies while it is open, is that host's and draws nothing here.
   const composer = !takesReply(ask) ? (
     unsentReply === "" ? null : (
       <UnsentReply className="mt-3" text={unsentReply} />

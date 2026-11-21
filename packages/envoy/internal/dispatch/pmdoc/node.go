@@ -194,7 +194,7 @@ func validateNode(n *Node, depth int) error {
 
 	switch n.Type {
 	case "doc", "blockquote", "footnote_definition":
-		if len(n.Children) == 0 || !childrenAreBlocks(n.Children) {
+		if contentBreak(BlockContentBlocks, n.Children) != "" {
 			return fmt.Errorf("%w: %s requires block children", ErrSchema, n.Type)
 		}
 	case "paragraph", "heading":
@@ -206,7 +206,7 @@ func validateNode(n *Node, depth int) error {
 			return fmt.Errorf("%w: %s requires list items", ErrSchema, n.Type)
 		}
 	case "list_item":
-		if len(n.Children) == 0 || n.Children[0].Type != "paragraph" || !childrenAreBlocks(n.Children[1:]) {
+		if contentBreak(listItemContentRule, n.Children) != "" {
 			return fmt.Errorf("%w: list item requires a paragraph followed by blocks", ErrSchema)
 		}
 	case "code_block":
@@ -278,11 +278,11 @@ func undeclaredAttributes(typeName string, attrs Attrs, declared BlockAttributes
 func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
 	switch typ.Content {
 	case BlockContentParagraphs:
-		if len(n.Children) == 0 || !childrenAre(n.Children, "paragraph") {
+		if contentBreak(typ.Content, n.Children) != "" {
 			return fmt.Errorf("%w: typed block %q content %q requires one or more paragraphs", ErrSchema, n.Type, typ.Content)
 		}
 	case BlockContentBlocks:
-		if len(n.Children) == 0 || !childrenAreBlocks(n.Children) {
+		if contentBreak(typ.Content, n.Children) != "" {
 			return fmt.Errorf("%w: typed block %q content %q requires one or more blocks", ErrSchema, n.Type, typ.Content)
 		}
 	case BlockContentParagraphsOptionalBulletList:
@@ -436,6 +436,58 @@ func askContentBreak(children []*Node) string {
 		case child.Type == "bullet_list" && index > 0 && children[index-1].Type == "bullet_list":
 			return "a second bullet list"
 		case child.Type != "paragraph" && child.Type != "bullet_list":
+			return blockName(child.Type)
+		}
+	}
+	return ""
+}
+
+// listItemContentRule is a list item's content rule, as the Proof schema writes it: a paragraph,
+// the item's text, then any blocks.
+const listItemContentRule BlockContentRule = "paragraph block*"
+
+// ContentBreak is the content rule of block, a block an insert lands inside (Boundary.Holder) - a
+// typed block's own, a list item's (paragraph block*) or a blockquote's (block+) - and what of
+// children breaks it were they block's children (contentBreak); broken is "" where children keep
+// the rule, and both are "" where block holds an insert by no such rule: a list, whose items list
+// content joins (ListBoundary), or a block of no other type.
+func ContentBreak(block *Node, children []*Node) (rule BlockContentRule, broken string) {
+	switch block.Type {
+	case "list_item":
+		rule = listItemContentRule
+	case "blockquote":
+		rule = BlockContentBlocks
+	default:
+		typ, typed := typedBlock(block.Type)
+		if !typed {
+			return "", ""
+		}
+		rule = typ.Content
+	}
+	return rule, contentBreak(rule, children)
+}
+
+// contentBreak names the first of children that breaks rule, or is "" where children keep it:
+// nothing at all where the rule asks for one block or more; the first that is no paragraph where
+// it is paragraph+ ("a heading"); the first that is no block where it is block+ or a list item's;
+// a first block that is no paragraph where it is a list item's ("a heading before its text"); and
+// what askContentBreak names where it is an ask's ("a paragraph after its options"). It is the one
+// statement of those rules, which Validate holds every tree to and an insert is weighed by
+// (ContentBreak).
+func contentBreak(rule BlockContentRule, children []*Node) string {
+	if rule == BlockContentParagraphsOptionalBulletList {
+		return askContentBreak(children)
+	}
+	if len(children) == 0 {
+		return "nothing"
+	}
+	for index, child := range children {
+		switch {
+		case child == nil:
+			return "a missing block"
+		case rule == listItemContentRule && index == 0 && child.Type != "paragraph":
+			return blockName(child.Type) + " before its text"
+		case rule == BlockContentParagraphs && child.Type != "paragraph", !isBlockNodeType(child.Type):
 			return blockName(child.Type)
 		}
 	}

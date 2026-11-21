@@ -2,14 +2,14 @@ import { type KeyboardEvent, type ReactNode, useEffect, useRef } from "react";
 
 import { observeStrip } from "../hooks/observe-strip";
 import { useScrollFadeTrailing } from "../hooks/useScrollFadeTrailing";
-import {
-  activeTabIndicatorBorder,
-  activeTabIndicatorText,
-  borderDefault,
-  scrollFadeTrailingPx,
-  textSecondaryOnCanvas,
-} from "../theme/classes";
+import { scrollFadeTrailingPx } from "../theme/classes";
 import { Pill } from "./Pill";
+import {
+  tabClassName,
+  tabCountClassName,
+  tabListClassName,
+  tabStripClassName,
+} from "./tab-classes";
 
 export interface TabDefinition<Id extends string> {
   id: Id;
@@ -124,34 +124,43 @@ export function Tabs<Id extends string>({
   // width. Each of these puts back a sideways scroll the reader made: the strip goes to where its
   // layout puts the selected tab. Any scroll alone - a wheel, a touch, a key, find-in-page or an
   // assistive-technology focus move - is none of them, so it stays until one comes.
+  //
+  // The settle on choosing is in a frame of its own, never in the commit that mounted or
+  // switched the tab: the two rectangles are the first thing on the page to ask for a layout, so
+  // inside the commit they force the whole page's style and layout to be computed there. On a
+  // phone at 4x CPU throttling that was 170-200 ms of the one task that mounts an issue page - a
+  // task already over the 500 ms a reader feels as a freeze (dispatch://INFRA-341, R11). An
+  // animation frame reads the layout the browser was about to compute anyway, and scrolls the
+  // tablist before that frame is painted, so nothing a reader sees moves later than it did. A
+  // tab the reader reached from the keyboard is still settled in their own keystroke
+  // (`onTabKeyDown`), where the measurement is all the task holds.
   useEffect(() => {
     const selected = tabRefs.current[activeTab];
     const settle = () => settleTab(selected);
-    settle();
+    const frame = requestAnimationFrame(settle);
     const list = selected?.parentElement;
     if (list === null || list === undefined) {
-      return;
+      return () => cancelAnimationFrame(frame);
     }
-    return observeStrip(list, settle, { childList: true });
+    const stop = observeStrip(list, settle, { childList: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      stop();
+    };
   }, [activeTab]);
 
-  const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";
-  // Compact tabs sit tighter on phones, which is what keeps the shorter tablists on one line. The
-  // issue's ten tabs, one carrying a count pill, no longer fit a 390 px viewport, nor the issue
-  // page at 1440 px beside its comment margin: there the tablist scrolls sideways, as it already
-  // did at 360 px, wears the trailing fade while tabs lie past its edge, and `settleTab` keeps the
-  // selected tab, and the one a keystroke focused, fully visible and clear of the fade. Every tab
-  // stays reachable and keeps its 44 px target.
-  const tabPadding = compact ? "px-1.5 md:px-2" : "px-3";
-  const tabGap = compact ? "gap-0 md:gap-1" : "gap-1";
-
+  // Compact tabs sit tighter on phones, which is what keeps the shorter tablists on one line.
+  // The issue's ten tabs, one carrying a count pill, no longer fit a 390 px viewport, nor the
+  // issue page at 1440 px beside its comment margin: there the tablist scrolls sideways, as it
+  // already did at 360 px, wears the trailing fade while tabs lie past its edge, and `settleTab`
+  // keeps the selected tab, and the one a keystroke focused, fully visible and clear of the fade.
+  // Every tab stays reachable and keeps its 44 px target. The classes themselves are
+  // `tab-classes.ts`, which the box the issue page keeps for this strip reads too.
   return (
-    <div
-      className={`${compact ? "mb-0" : "mb-3"} flex flex-wrap items-center gap-1 border-b ${borderDefault}`}
-    >
+    <div className={tabStripClassName(compact)}>
       <div
         aria-label={ariaLabel}
-        className={`flex min-w-0 ${tabGap} overflow-x-auto [scrollbar-width:thin] ${tablistFade.fade}`}
+        className={`${tabListClassName(compact)} ${tablistFade.fade}`}
         ref={tablistFade.ref}
         role="tablist"
       >
@@ -165,11 +174,7 @@ export function Tabs<Id extends string>({
             // the count plainly.
             aria-label={tab.count === undefined ? undefined : `${tab.label} ${tab.count}`}
             aria-selected={activeTab === tab.id}
-            className={
-              activeTab === tab.id
-                ? `${tabMinHeight} ${tabPadding} inline-flex shrink-0 items-center gap-1.5 border-b-2 py-2 text-sm font-semibold whitespace-nowrap ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
-                : `${tabMinHeight} ${tabPadding} inline-flex shrink-0 items-center gap-1.5 py-2 text-sm whitespace-nowrap ${textSecondaryOnCanvas}`
-            }
+            className={tabClassName(compact, activeTab === tab.id)}
             id={tabButtonId(idPrefix, tab.id)}
             key={tab.id}
             onClick={() => selectTab(tab.id)}
@@ -192,7 +197,7 @@ export function Tabs<Id extends string>({
             {tab.count === undefined ? null : (
               <>
                 {" "}
-                <Pill>{tab.count}</Pill>
+                <Pill className={tabCountClassName}>{tab.count}</Pill>
               </>
             )}
           </button>

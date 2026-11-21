@@ -59,6 +59,14 @@
 #
 # The image is the pinned CI copy, named once below as a digest, which
 # .github/scripts/check-ci-images.sh reads out of this file (its REACH list names it).
+#
+# WHY NOTHING HERE PULLS. The two images this run starts - the Playwright copy below and the
+# stack's Postgres image, DISPATCH_E2E_PG_IMAGE where the caller names one
+# (e2e/harness-postgres.ts) - are each a `docker run`, which pulls a digest the machine does not
+# hold before it starts it and pulls nothing where the machine holds it: a person's run after
+# their first, and CI's visual job, which pulls both in steps of their own before the step that
+# runs this script, so a cold pull is no part of that step's budget for its rows
+# (.github/workflows/dispatch-browser.yaml).
 set -eu
 
 # CDPATH is emptied for each `cd` so a value in the caller's environment cannot land this

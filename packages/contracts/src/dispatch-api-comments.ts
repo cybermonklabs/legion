@@ -8,18 +8,18 @@ import {
   InboundActorSchema,
 } from "./dispatch-api-core";
 import {
-  ASK_TURNS,
-  DELIVERY_ATTEMPT_STATES,
-  DELIVERY_CAPABILITIES,
-  SETTLED_DELIVERY_STATES,
-} from "./dispatch-api-limits";
-import {
   carriedBodyFields,
   ReplyBlockSchema,
   referenceChangesFields,
   threadLoginsFields,
   WrittenReplyBlockSchema,
 } from "./dispatch-api-refs";
+import {
+  ASK_TURNS,
+  DELIVERY_ATTEMPT_STATES,
+  DELIVERY_CAPABILITIES,
+  SETTLED_DELIVERY_STATES,
+} from "./dispatch-constants";
 
 /**
  * The comment: the row, who it mentions, how each mention was delivered, and the payloads of

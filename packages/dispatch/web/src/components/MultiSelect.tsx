@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
+import { inputMethodKey } from "../hooks/inputMethodKey";
 import {
   borderDefault,
   borderStrong,
@@ -202,7 +203,8 @@ export function MultiSelect({
       setActiveValue(rows[(index - 1 + rows.length) % rows.length]);
       return;
     }
-    if (event.key === "Enter" && activeRow !== undefined) {
+    // The Enter that confirms an input method's word is the input method's, not a pick.
+    if (event.key === "Enter" && activeRow !== undefined && !inputMethodKey(event)) {
       event.preventDefault();
       if (activeRow === createValue) {
         create(activeRow);

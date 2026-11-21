@@ -64,6 +64,7 @@ import {
 export function RowText({
   focused = false,
   markdown,
+  onLatePaint,
   source,
   tabStops = false,
   tree,
@@ -74,6 +75,9 @@ export function RowText({
   focused?: boolean;
   /** The text as stored: drawn as it is where `tree` is absent. */
   markdown: string;
+  /** Called in the task that the first paint of the reading of a text drawn from `tree` ends in,
+   *  where that task comes after the commit that drew the text (`DrawnText`). */
+  onLatePaint?: () => void;
   /** The record the text is (`MarkdownBody`'s `source`). */
   source?: TextSource;
   /** Whether the controls inside the text keep their place in the tab order: false in the
@@ -89,6 +93,7 @@ export function RowText({
     <DrawnText
       focused={focused}
       markdown={markdown}
+      onLatePaint={onLatePaint}
       source={source}
       tabStops={tabStops}
       tree={tree}
@@ -447,16 +452,30 @@ export function useOutOfTabOrder(
 
 /** A text drawn from its reading, with every control it holds taken out of the tab order unless
  *  `tabStops` holds: the ones it is drawn with, and the ones the reading puts in after - a
- *  reference's link once its target answers, a picture once it loads - as they arrive. */
+ *  reference's link once its target answers, a picture once it loads - as they arrive.
+ *
+ *  `MarkdownBody` paints the reading in the commit that draws the text where the page's Markdown
+ *  engine has loaded, and in the task the engine loads in otherwise (`renderWithEngine`). On a
+ *  fresh load of the issue page that task can come after the rows' own commit: at 1440 px the
+ *  conversation's rows mounted with no words, and their readings were painted 53 ms later
+ *  (dispatch://INFRA-341). A reading of more nodes than one task attaches (`ATTACH_BATCH`) is
+ *  painted a batch a task, and its paint ends in a later task than the commit even where the
+ *  engine has loaded (`useRenderedMarkdown`). The first paint that ends after the commit is the
+ *  one `onLatePaint` is told of, in the task it ends in, whether the text was drawn with no words
+ *  until then or with part of them. A paint that ends in the commit that drew the text is not,
+ *  and neither is any paint after the first: it paints a reading the text has drawn already, or
+ *  one its caller drew in a commit of its own. */
 function DrawnText({
   focused,
   markdown,
+  onLatePaint,
   source,
   tabStops,
   tree,
 }: {
   focused: boolean;
   markdown: string;
+  onLatePaint: (() => void) | undefined;
   source: TextSource | undefined;
   tabStops: boolean;
   tree: DisplayTree;
@@ -487,6 +506,20 @@ function DrawnText({
     }
   }, [ambiguous, names, tabStops]);
   useLayoutEffect(link, [link]);
+  // Whether the commit that mounted the text has run its layout effects - the body's own run
+  // before them, and paint the reading there where the engine has loaded - and whether the
+  // reading has been painted.
+  const mounted = useRef(false);
+  const painted = useRef(false);
+  useLayoutEffect(() => {
+    mounted.current = true;
+  }, []);
+  const rendered = (): void => {
+    link();
+    if (painted.current) return;
+    painted.current = true;
+    if (mounted.current) onLatePaint?.();
+  };
   useOutOfTabOrder(drawn, !tabStops, { keepScrollers: focused });
   const follow = useFollowInPlace();
   return (
@@ -498,7 +531,7 @@ function DrawnText({
             reads no target, and the row's pass links what the words cite (`linkRowReferences`). */}
         <MarkdownBody
           markdown={markdown}
-          onRendered={link}
+          onRendered={rendered}
           referenceText=""
           source={source}
           tree={tree}

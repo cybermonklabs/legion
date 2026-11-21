@@ -42,7 +42,7 @@ import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
-import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
+import { closeRefPreview, referenceTriggerProps } from "../refs/ref-preview-state";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
@@ -558,10 +558,32 @@ export function IssueBoard({
   useKeymapScope("board");
   useKeymap("board", [
     // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
-    { id: "next", keys: "j", label: "Next card", palette: false, run: () => rove("j") },
-    { id: "previous", keys: "k", label: "Previous card", palette: false, run: () => rove("k") },
-    { id: "column", keys: "l", label: "Next column", palette: false, run: () => rove("l") },
     {
+      effect: "moves the reader",
+      id: "next",
+      keys: "j",
+      label: "Next card",
+      palette: false,
+      run: () => rove("j"),
+    },
+    {
+      effect: "moves the reader",
+      id: "previous",
+      keys: "k",
+      label: "Previous card",
+      palette: false,
+      run: () => rove("k"),
+    },
+    {
+      effect: "moves the reader",
+      id: "column",
+      keys: "l",
+      label: "Next column",
+      palette: false,
+      run: () => rove("l"),
+    },
+    {
+      effect: "moves the reader",
       id: "previous-column",
       keys: "h",
       label: "Previous column",
@@ -569,6 +591,7 @@ export function IssueBoard({
       run: () => rove("h"),
     },
     {
+      effect: "moves the reader",
       id: "arrows-vertical",
       keys: ["ArrowDown", "ArrowUp"],
       label: "Next / previous card while one is focused",
@@ -576,6 +599,7 @@ export function IssueBoard({
       when: focusedBoardNode,
     },
     {
+      effect: "moves the reader",
       id: "arrows-horizontal",
       keys: ["ArrowRight", "ArrowLeft"],
       label: "Next / previous column while one is focused",
@@ -583,6 +607,8 @@ export function IssueBoard({
       when: focusedBoardNode,
     },
     {
+      // The card goes to its new place, and the focus on it with it.
+      effect: "moves the reader",
       id: "move-down",
       keys: "Shift+J",
       label: "Move card down",
@@ -590,6 +616,7 @@ export function IssueBoard({
       when: focusedCard,
     },
     {
+      effect: "moves the reader",
       id: "move-up",
       keys: "Shift+K",
       label: "Move card up",
@@ -597,6 +624,7 @@ export function IssueBoard({
       when: focusedCard,
     },
     {
+      effect: "moves the reader",
       id: "move-next",
       keys: "Shift+L",
       label: "Move card to the next status",
@@ -604,6 +632,7 @@ export function IssueBoard({
       when: focusedCard,
     },
     {
+      effect: "moves the reader",
       id: "move-previous",
       keys: "Shift+H",
       label: "Move card to the previous status",
@@ -611,6 +640,7 @@ export function IssueBoard({
       when: focusedCard,
     },
     {
+      effect: "moves the reader",
       id: "open",
       keys: "o",
       label: "Open issue",
@@ -621,6 +651,7 @@ export function IssueBoard({
     {
       // Only from the card itself: Enter on the title link is the browser's own navigation. Out of
       // the palette, where `open` above is already the row for the same action.
+      effect: "moves the reader",
       id: "open-enter",
       keys: "Enter",
       label: "Open the focused card's issue",
@@ -630,6 +661,7 @@ export function IssueBoard({
       when: () => document.activeElement?.matches(CARD_SELECTOR) === true,
     },
     {
+      effect: "moves the reader",
       id: "priority",
       keys: "p",
       label: "Focus the card's priority",
@@ -637,6 +669,8 @@ export function IssueBoard({
       when: focusedCard,
     },
     {
+      // Copies the reference and moves nobody, as `copy-key` copies the key.
+      effect: "moves nothing",
       id: "copy-ref",
       keys: "y",
       label: "Copy the card's issue reference",
@@ -644,6 +678,7 @@ export function IssueBoard({
       when: focusedCard,
     },
     {
+      effect: "moves nothing",
       id: "copy-key",
       keys: "Shift+Y",
       label: "Copy the card's issue key",
@@ -651,6 +686,7 @@ export function IssueBoard({
       when: focusedCard,
     },
     {
+      effect: "moves the reader",
       id: "back",
       inEditable: true,
       keys: "Escape",

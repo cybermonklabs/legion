@@ -40,14 +40,15 @@ jobs:
       # (every job of dispatch-browser.yaml that runs the suite needs contracts built for the
       # same reason and carries a `Build contracts for dispatch e2e` step of its own, which that
       # file's shard job explains).
-      # `build:dispatch` bundles only the contracts entries Dispatch imports - the package itself,
-      # ./repo, ./dispatch-snippet and ./dispatch-tools (web/vite.config.ts:117-126 aliases the
-      # same four) - so the build compiles no module outside the set the dashboard's tsc
-      # programs compile, which is what this job's filter lists, and not ./legion-api, which
-      # Dispatch never imports. package.json allows no comment, so this is where the list is
-      # explained: a new import of a contracts subpath by packages/dispatch adds its entry to
-      # that script, or Playwright's Node resolution fails on the missing dist/ file. The
-      # package's own `bun run test` below runs the same script again (build:contracts).
+      # `build:dispatch` bundles only the contracts entries Dispatch imports - the package itself
+      # and the twelve subpaths packages/dispatch/web/vite.config.ts names one alias each under
+      # `resolve.alias`, the dashboard's own list of them - so the build compiles no
+      # module outside the set the dashboard's tsc programs compile, which is what this job's
+      # filter lists, and not ./legion-api, which Dispatch never imports. package.json allows no
+      # comment, so this is where the list is explained: a new import of a contracts subpath by
+      # packages/dispatch adds its entry to that script, or Playwright's Node resolution fails on
+      # the missing dist/ file. The package's own `bun run test` below runs the same script again
+      # (build:contracts).
       - name: Build contracts for the suites that spawn Playwright
         run: bun run build:dispatch
         working-directory: packages/contracts
@@ -98,6 +99,17 @@ jobs:
       # asset to its database at boot), which would stall a roll; refuse the build here instead.
       - name: Check dispatch dashboard asset sizes
         run: bun run check:asset-sizes
+        working-directory: packages/dispatch
+      # The entry chunk is the first screen's download, and what it may hold is a list
+      # (web/src/entry-chunk-contents.ts): a deferred part pulled back into it, or a preload the
+      # page no longer writes, costs every first paint and nothing else fails. The second check
+      # holds the entry chunk to carrying no zod, the validator the SPA keeps out of its first
+      # download. Both read the build the step above produced, so they run here, after it.
+      - name: Check dispatch dashboard entry chunk
+        run: bun run check:entry-chunk
+        working-directory: packages/dispatch
+      - name: Check zod stays out of the dispatch dashboard entry chunk
+        run: bun run check:no-zod
         working-directory: packages/dispatch
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

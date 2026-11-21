@@ -14,6 +14,7 @@ import {
   railHoverBg,
   railText,
 } from "../../theme/classes";
+import { ReaderIsHere } from "../doc/first-batch";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, useMarginDrawer } from "../issue-page/margin-slot";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { routeHasMargin } from "../refs/routes";
@@ -32,6 +33,7 @@ import {
   DEFAULT_MARGIN_WIDTH,
   MARGIN_WIDTH_STEP,
   MIN_MARGIN_WIDTH,
+  marginColumnWidth,
   maxMarginWidth,
 } from "./margin-width";
 import { useMarginSheet } from "./useMarginSheet";
@@ -58,7 +60,7 @@ export function Margin({
   const resizePointer = useRef<
     { pointerId: number; startWidth: number; startX: number } | undefined
   >(undefined);
-  const marginWidth = clampMarginWidth(width ?? DEFAULT_MARGIN_WIDTH);
+  const marginWidth = marginColumnWidth(width);
   const maxWidth = maxMarginWidth();
   const setClampedMarginWidth = (nextWidth: number) => {
     onWidthChange?.(clampMarginWidth(nextWidth));
@@ -72,7 +74,7 @@ export function Margin({
   // or one held for the document the reader came back to - is the reader's to see, so the rail
   // opens for it; collapsing the rail with a compose open keeps it collapsed.
   // In the new issue page's frame a closed Details opens for it the same way.
-  const { shownCompose } = useMargin();
+  const { placesItems, shownCompose } = useMargin();
   const handledCompose = useRef(shownCompose);
   useEffect(() => {
     if (shownCompose === handledCompose.current) return;
@@ -123,12 +125,22 @@ export function Margin({
     return null;
   }
 
+  // Where the margin stands is CSS's, from the same `xl:` breakpoint the shell's `xl:flex` reads
+  // (`web/src/app.tsx`): the desktop column, the rail, and the compact sheet that the wrapper's
+  // `display: contents` hands to the shell. The browser applies those classes in the frame the
+  // window crosses 1280 px, and `isCompactViewport` follows a task or two later, so a layout this
+  // state chose drew a frame or two of the other layout's margin: crossing upward, the compact
+  // sheet was a full-width flex child of the desktop shell, `main` fell to almost nothing and the
+  // margin ran past the viewport (dispatch://INFRA-1630). So the state chooses what the margin
+  // holds - a column's controls, or a sheet's - and never where its box goes. A route with no
+  // margin, and a margin collapsed to its rail, draw no column; the shell pads the rail's gutter.
+  const columnShown = hasMargin && !collapsed;
   return (
     <>
       {railShown ? (
         <aside
           aria-label="Collapsed margin"
-          className={`fixed inset-y-0 right-0 z-10 flex w-14 justify-center border-l p-2 ${railBorder} ${railBg} ${railText}`}
+          className={`fixed inset-y-0 right-0 z-10 hidden w-14 justify-center border-l p-2 xl:flex ${railBorder} ${railBg} ${railText}`}
           data-testid="margin-rail"
         >
           <button
@@ -142,10 +154,9 @@ export function Margin({
         </aside>
       ) : null}
       <div
-        className={isCompactViewport ? "contents" : "relative order-3 shrink-0"}
+        className={`contents ${columnShown ? "xl:relative xl:order-3 xl:block xl:shrink-0" : "xl:hidden"}`}
         data-testid={isCompactViewport ? undefined : "desktop-margin-shell"}
-        hidden={railShown || (!isCompactViewport && !hasMargin)}
-        style={isCompactViewport ? undefined : { width: `${marginWidth}px` }}
+        style={{ width: `${marginWidth}px` }}
       >
         <hr
           aria-controls="review-margin"
@@ -154,11 +165,7 @@ export function Margin({
           aria-valuemax={maxWidth}
           aria-valuemin={MIN_MARGIN_WIDTH}
           aria-valuenow={marginWidth}
-          className={
-            isCompactViewport
-              ? "hidden"
-              : `absolute top-0 -left-1 z-20 h-full w-2 border-0 border-l cursor-col-resize focus-visible:outline-none focus-visible:ring-2 ${borderDefault} ${focusVisibleRing}`
-          }
+          className={`absolute top-0 -left-1 z-20 hidden h-full w-2 border-0 border-l cursor-col-resize focus-visible:outline-none focus-visible:ring-2 xl:block ${borderDefault} ${focusVisibleRing}`}
           onDoubleClick={() => setClampedMarginWidth(DEFAULT_MARGIN_WIDTH)}
           onKeyDown={(event) => {
             if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
@@ -202,22 +209,27 @@ export function Margin({
           }}
           tabIndex={0}
         />
-        <MarginSheet
-          collapsed={railShown}
-          desktopControl={
-            isCompactViewport || onCollapsedChange === undefined ? undefined : (
-              <button
-                aria-label="Hide margin"
-                className={`min-h-11 min-w-11 rounded-lg text-sm font-medium ${railHoverBg}`}
-                onClick={() => onCollapsedChange(true)}
-                type="button"
-              >
-                <span aria-hidden="true">›</span>
-              </button>
-            )
-          }
-          model={model}
-        />
+        {/* While the margin lays its cards out beside the document the reader is at them, so
+            every read inside it - an author's agent registry among them - goes out rather than
+            waiting for the editor's first batch (`features/doc/first-batch.ts`). */}
+        <ReaderIsHere value={placesItems}>
+          <MarginSheet
+            collapsed={railShown}
+            desktopControl={
+              isCompactViewport || onCollapsedChange === undefined ? undefined : (
+                <button
+                  aria-label="Hide margin"
+                  className={`min-h-11 min-w-11 rounded-lg text-sm font-medium ${railHoverBg}`}
+                  onClick={() => onCollapsedChange(true)}
+                  type="button"
+                >
+                  <span aria-hidden="true">›</span>
+                </button>
+              )
+            }
+            model={model}
+          />
+        </ReaderIsHere>
       </div>
     </>
   );
@@ -278,6 +290,8 @@ function DetailsDrawer({
     open && isPhoneViewport
       ? [
           {
+            // Closing Details gives the focus back to what opened it.
+            effect: "moves the reader",
             id: "details.close",
             keys: "Shift+M",
             label: "Open or close Details",

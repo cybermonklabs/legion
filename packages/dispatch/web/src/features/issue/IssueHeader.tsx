@@ -1,4 +1,4 @@
-import { ISSUE_TITLE_MAX } from "@legion/contracts";
+import { ISSUE_TITLE_MAX } from "@legion/contracts/dispatch-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type FormEvent,
@@ -6,6 +6,7 @@ import {
   type ReactNode,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -27,6 +28,7 @@ import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../ap
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
@@ -59,9 +61,10 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
+import { ReaderIsHere, useAfterTheFirstBatch } from "../doc/first-batch";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { statusLabel } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
@@ -76,6 +79,19 @@ import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
+import {
+  issueClosedCalloutClassName,
+  issueHeaderFrameClassName,
+  issueKeyBadgeClassName,
+  issueKeyTextClassName,
+  issueStateButtonClassName,
+  issueStatusPillClassName,
+  issueStatusPillDotClassName,
+  issueStatusSelectClassName,
+  issueTitleBoxClassName,
+  issueTitleTextClassName,
+} from "./issue-header-classes";
+import { closeIssueWords, releaseClaimWords, selectableStatuses } from "./issue-header-words";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
 import { stateForIssue } from "./pins";
@@ -85,6 +101,7 @@ import {
   UnreachableRouteMarker,
   UnresponsiveRouteMarker,
 } from "./RouteReach";
+import { theChromeIsHere } from "./reaching-the-chrome";
 import { SubscribedAgents } from "./SubscribedAgents";
 import { type IssueUpdateInput, useIssueDrafts } from "./useIssueDrafts";
 import type { IssuePriorityWrite } from "./useIssuePriority";
@@ -123,6 +140,10 @@ export function IssueHeader({
   state: UserIssueState;
 }): ReactNode {
   const queryClient = useQueryClient();
+  // A key the reader pressed while the page was still holding this header is done here, in the
+  // commit that mounts the controls it was reaching for (`reaching-the-chrome.ts`). The layout
+  // phase, so the control it focuses or presses is theirs before this header is painted.
+  useLayoutEffect(() => theChromeIsHere("header"), []);
   const [editingTitle, setEditingTitle] = useState(false);
   const [routeEditing, setRouteEditing] = useState(false);
   const routeInputRef = useRef<HTMLInputElement>(null);
@@ -146,7 +167,12 @@ export function IssueHeader({
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
+  // Who is subscribed is a panel of its own, shut until the reader opens it, and its count is
+  // a number beside that toggle: nothing the reader is waiting for while a document opens
+  // beneath it. So the read waits for the editor's first batch, and goes out at once for a
+  // reader who opens the panel first (`features/doc/first-batch.ts`).
   const subscribers = useQuery({
+    enabled: useAfterTheFirstBatch(subscribersOpen),
     queryKey: ["subscribers", issue.key],
     queryFn: () => api.getIssueSubscribers(issue.key),
   });
@@ -219,8 +245,10 @@ export function IssueHeader({
   // Palette-only: closing and reopening an issue are too consequential for a single key, so they
   // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
   // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.
+  // Each is a write of the issue and moves nobody: the palette that offers it took the focus.
   useKeymap("issue", [
     {
+      effect: "moves nothing",
       id: "close",
       keys: [],
       label: "Close issue",
@@ -230,6 +258,7 @@ export function IssueHeader({
       when: () => !isClosed && !updateIssue.isPending,
     },
     {
+      effect: "moves nothing",
       id: "reopen",
       keys: [],
       label: "Reopen issue",
@@ -237,6 +266,7 @@ export function IssueHeader({
       when: () => isClosed && !updateIssue.isPending,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
+      effect: "moves nothing" as const,
       id: `set-p${level}`,
       keys: [],
       label: `Set priority P${level}`,
@@ -247,7 +277,6 @@ export function IssueHeader({
   ]);
   const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
   const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
-  const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -321,7 +350,8 @@ export function IssueHeader({
     },
   });
   const saveTitleOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
+    // The Enter that confirms an input method's word is the input method's, not the save.
+    if (event.key === "Enter" && !inputMethodKey(event)) {
       event.currentTarget.blur();
     }
   };
@@ -394,13 +424,16 @@ export function IssueHeader({
     // what keeps a child issue's row in the Children tab, which carries the same accessible
     // names, out of their reach.
     <header
-      className={`mb-3 min-w-0 rounded-xl border p-3 ${card}`}
+      className={`${issueHeaderFrameClassName} ${card}`}
       data-issue-header=""
       data-testid="issue-header"
     >
+      {/* The closed block, from the one place the space the page keeps for this header builds
+          it too (`issue-header-classes.ts`, `issue-page-skeleton.tsx`), so what stood there and
+          what lands here are the same block. */}
       {isClosed ? (
         <div
-          className={`mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg p-3 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+          className={`${issueClosedCalloutClassName} ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
         >
           <span>This issue is closed.</span>
           <button
@@ -419,7 +452,7 @@ export function IssueHeader({
         <div className="flex min-w-0 grow basis-full flex-col gap-2 sm:flex-row sm:items-start 2xl:basis-auto">
           <div className="flex shrink-0 items-center gap-1 self-start">
             <p
-              className={`rounded-md px-2.5 py-1.5 font-mono text-sm font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
+              className={`${issueKeyBadgeClassName} ${issueKeyTextClassName} ${badgePrimary.bg} ${badgePrimary.text}`}
             >
               {issue.key}
             </p>
@@ -433,7 +466,7 @@ export function IssueHeader({
               <input
                 aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
                 aria-label="Issue title"
-                className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+                className={`${issueTitleBoxClassName} text-[22px] leading-7 font-semibold tracking-tight outline-none ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
                 disabled={isClosed}
                 maxLength={ISSUE_TITLE_MAX}
                 onBlur={() => {
@@ -442,7 +475,9 @@ export function IssueHeader({
                 }}
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Escape") {
+                  // The Escape that ends an input method's composition is the input method's,
+                  // not the reader dropping the title (`inputMethodKey`).
+                  if (event.key === "Escape" && !inputMethodKey(event)) {
                     drafts.discardTitle();
                     setEditingTitle(false);
                     return;
@@ -454,7 +489,7 @@ export function IssueHeader({
               />
             ) : (
               <h1
-                className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
+                className={`${issueTitleBoxClassName} ${issueTitleTextClassName} ${borderTransparent} ${textPrimaryOnSurface} ${
                   isClosed ? "" : `cursor-text ${borderStrongHover}`
                 }`}
                 onClick={() => {
@@ -491,20 +526,20 @@ export function IssueHeader({
           data-testid="issue-state-actions"
         >
           <label
-            className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+            className={`${issueStatusPillClassName} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
           >
             <span
               aria-hidden="true"
-              className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
+              className={`${issueStatusPillDotClassName} ${statusPillDot}`}
             />
             <select
               aria-label="Status"
-              className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
+              className={`${issueStatusSelectClassName} ${bgTransparent} ${statusPill.text}`}
               disabled={isClosed || updateIssue.isPending}
               onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
               value={pendingStatus ?? issue.status}
             >
-              {selectableStatuses.map((status) => (
+              {selectableStatuses(isClosed).map((status) => (
                 <option key={status} value={status}>
                   {statusLabel(status)}
                 </option>
@@ -572,32 +607,31 @@ export function IssueHeader({
               <ClaimChip claim={issue.claim} liveness={issue} />
               <button
                 aria-label={`Release the claim on ${issue.key}`}
-                className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+                className={`${issueStateButtonClassName} ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
                 disabled={releaseClaim.isPending}
                 onClick={() => releaseClaim.mutate()}
                 title="Release this claim so another agent can take the issue"
                 type="button"
               >
-                {releaseClaim.isPending ? "Releasing…" : "Release"}
+                {releaseClaim.isPending ? "Releasing…" : releaseClaimWords}
               </button>
             </>
           )}
           {isClosed ? null : (
             <button
               aria-label="Close issue"
-              className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+              className={`${issueStateButtonClassName} ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
               disabled={updateIssue.isPending}
               onClick={() => drafts.requestStatusSubmit("done")}
               type="button"
             >
-              {pendingStatus === "done" ? (
-                "Closing…"
-              ) : (
-                <>
-                  <span className="sm:hidden">Close</span>
-                  <span className="hidden sm:inline">Close issue</span>
-                </>
-              )}
+              {pendingStatus === "done"
+                ? "Closing…"
+                : closeIssueWords.map(({ className, words }) => (
+                    <span className={className} key={words}>
+                      {words}
+                    </span>
+                  ))}
             </button>
           )}
         </div>
@@ -718,11 +752,15 @@ export function IssueHeader({
           ))}
         </div>
         {referencesOpen ? (
-          <ReferencedBy
-            className="mt-1 w-full"
-            reference={issueReference}
-            toggle={{ id: referencesPanelId }}
-          />
+          // The reader opened this one, so its graph read goes out now rather than waiting for
+          // the editor's first batch (`features/doc/first-batch.ts`).
+          <ReaderIsHere value={true}>
+            <ReferencedBy
+              className="mt-1 w-full"
+              reference={issueReference}
+              toggle={{ id: referencesPanelId }}
+            />
+          </ReaderIsHere>
         ) : null}
       </div>
       <span className="sr-only" id="issue-route-hint">
@@ -746,7 +784,8 @@ export function IssueHeader({
             id="issue-route"
             onChange={(event) => drafts.writeRoute(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // The Escape that ends an input method's composition is the input method's.
+              if (event.key === "Escape" && !inputMethodKey(event)) {
                 drafts.discardRoute();
                 setRouteEditing(false);
               }
@@ -795,7 +834,8 @@ export function IssueHeader({
             id="issue-parent"
             onChange={(event) => drafts.writeParent(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // The Escape that ends an input method's composition is the input method's.
+              if (event.key === "Escape" && !inputMethodKey(event)) {
                 drafts.discardParent();
                 setParentEditing(false);
               }
@@ -841,11 +881,16 @@ export function IssueHeader({
         </span>
       ) : null}
       {subscribersOpen ? (
-        <SubscribedAgents
-          onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}
-          ownerLabel={issue.key}
-          subscribers={subscriberList}
-        />
+        // The reader is in this panel, so every read inside it - each chip's agent registry
+        // among them - goes out now rather than waiting for the editor's first batch
+        // (`features/doc/first-batch.ts`).
+        <ReaderIsHere value={true}>
+          <SubscribedAgents
+            onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}
+            ownerLabel={issue.key}
+            subscribers={subscriberList}
+          />
+        </ReaderIsHere>
       ) : null}
       {subscribers.isError ? (
         <QueryError

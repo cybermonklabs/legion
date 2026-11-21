@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 
+import { placeInView } from "../doc/readers-place";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 
 /** The attribute each row of Details carries, by the property it holds (`IssueMargin.tsx`), so
@@ -42,7 +43,7 @@ export function useOpenDetailsAt(): (row: DetailsRow, press?: boolean) => void {
             `${drawer === undefined ? "" : `aside[${DETAILS_ATTRIBUTE}] `}[${DETAILS_ROW_ATTRIBUTE}="${row}"]`
           );
           if (found === null) return;
-          found.scrollIntoView({ block: "nearest" });
+          placeInView(found, { block: "nearest" });
           const control = found.querySelector<HTMLElement>(
             "input, textarea, select, button:not(:disabled), a[href]"
           );

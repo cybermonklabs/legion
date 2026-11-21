@@ -100,11 +100,14 @@ func (p *syncedPeer) connection() *docstest.Peer {
 
 // barrier returns once the room holds everything the peer sent and has answered a request sent
 // now. It drops the answers already queued, then asks for the room's whole state until an answer
-// holds the peer's document. The room answers one connection in order, and each answer is applied
-// to the peer before barrier sees it, so the peer then holds everything the room sent before that
-// answer. The document check covers a sync step 2 that was already on its way when barrier
-// drained: another peer's that the room relays can arrive after the request and predate an update
-// this peer sent just before it.
+// holds the peer's document. An answer is a run of frames - the room cuts its state into updates
+// that each integrate on their own and ends the run with a sync step 2 - so it is the run
+// assembled, and no one frame of it, that is asked whether the room holds the peer's document.
+// The room answers one connection in order, and each answer is applied to the peer before barrier
+// sees it, so the peer then holds everything the room sent before that answer. The document check
+// covers an answer that was already on its way when barrier drained: another peer's update that
+// the room relays can arrive after the request and predate an update this peer sent just before
+// it.
 func (p *syncedPeer) barrier(t *testing.T) {
 	t.Helper()
 	conn := p.connection()
@@ -117,8 +120,8 @@ func (p *syncedPeer) barrier(t *testing.T) {
 			t.Fatalf("send browser peer sync step 1: %v", err)
 		}
 		select {
-		case state := <-conn.Answers:
-			if p.roomHolds(t, state) {
+		case answer := <-conn.Answers:
+			if p.roomHolds(t, answer) {
 				return
 			}
 		case <-conn.Ended:
@@ -129,13 +132,14 @@ func (p *syncedPeer) barrier(t *testing.T) {
 	}
 }
 
-// roomHolds reports whether state, the content of a sync step 2, holds everything in the peer's
-// document: applying the peer's document on top of it changes nothing.
-func (p *syncedPeer) roomHolds(t *testing.T, state []byte) bool {
+// roomHolds reports whether the state answer carried, its frames applied in order as a browser
+// applies them, holds everything in the peer's document: applying the peer's document on top of
+// it changes nothing.
+func (p *syncedPeer) roomHolds(t *testing.T, answer [][]byte) bool {
 	t.Helper()
-	room := crdt.New()
-	if err := crdt.ApplyUpdateV1(room, state, nil); err != nil {
-		t.Fatalf("decode the room's sync step 2: %v", err)
+	room, err := docstest.AnswerDoc(answer)
+	if err != nil {
+		t.Fatalf("decode the room's answer: %v", err)
 	}
 	before := crdt.EncodeStateAsUpdateV1(room, nil)
 	if err := crdt.ApplyUpdateV1(room, crdt.EncodeStateAsUpdateV1(p.doc, nil), nil); err != nil {

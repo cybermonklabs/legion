@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `dispatch doc-edit` under a block guard prints, under its first line, the blocks the edit took
+  that the guard did not name, each with the token the edit read it at, from the server's
+  `unguarded_blocks`: `Block guard: this edit also took a block the guard did not name: <id>
+  (token <token>); compare its token with the one you read.` The result's details carry the same
+  blocks as `unguarded_blocks`. An edit under no block guard, or a server that sends no such field,
+  prints as before.
+time: 2026-11-20T18:00:00Z
+custom:
+    Issue: pr2697

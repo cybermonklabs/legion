@@ -1,23 +1,28 @@
 import {
   answerAsk,
+  createComment,
   createIssue,
   createIssueArtifact,
   createProject,
   editArtifact,
   getArtifact,
+  getAsk,
   requestApproval,
   withOpenedAsk,
 } from "./api";
 import { holdFirstRequest } from "./editor";
-import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
-import { expect, test } from "./test";
+import { nextFrames } from "./frames";
+import { askCard, inboxPane, paneScroller, READING_PANE_WIDTH, selectedRow } from "./inbox-pane";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
  * The question an approval request asks, in the Inbox's reading column (INFRA-963): the
  * requester's own words, rendered as markdown above the document inside the column's one
  * scroller, and drawn by the question's own card instead wherever the column cannot open that
- * document - so the question is on screen once either way.
+ * document - so the question is on screen once either way. Under that question the column draws
+ * the replies on the request's own ask and the box a reply is written in, as every ask card does
+ * (dispatch://INFRA-341, R1).
  *
  * Every document here is made up: this repository is public, so nothing names a real person, host
  * or project. The seed is built from `e2e/api.ts`, `e2e/seed.ts` and `e2e/users.ts` alone, so this
@@ -95,6 +100,15 @@ const FALLBACK_SUMMARY = `The export window moves to Sunday.\n\n${FALLBACK_MARK}
 /** The question the two-document row asks. */
 const TWO_DOCUMENT_SUMMARY = "The live sync replaces the nightly export.";
 
+/** The question the replied-to row asks. */
+const REPLIED_SUMMARY = "The ledger hands its clock to the mirror at the next lease.";
+/** The two replies the request's ask carries before the reader opens it, one of each kind of
+ *  author: a person's question about the request, and the agent's answer to it. */
+const PERSON_REPLY = "Does the mirror keep the clock if the lease moves mid-replay?";
+const AGENT_REPLY = "It does: the lease carries the clock's last reading to whoever holds it next.";
+/** What the reader writes in the column's reply box. */
+const READER_REPLY = "Then name that reading in the rollout note before I approve.";
+
 const VERIFICATION = [
   "# Verification",
   "",
@@ -105,6 +119,8 @@ const VERIFICATION = [
 interface Seed {
   artifactId: string;
   askId: string;
+  /** The issue the request is on, where a reply on its ask is posted. */
+  issueKey: string;
   /** The question the server wrote: its own `Approve …?` prefix, then the summary. */
   question: string;
   specName: string;
@@ -122,6 +138,7 @@ async function seedApproval(summary: string): Promise<Seed> {
   return {
     artifactId,
     askId: opened.ask.id,
+    issueKey: issue.key,
     question: opened.ask.question,
     specName: spec.name,
   };
@@ -177,6 +194,7 @@ async function seedTwoDocuments(): Promise<Seed> {
   return {
     artifactId,
     askId: opened.ask.id,
+    issueKey: issue.key,
     question: opened.ask.question,
     specName: spec.name,
   };
@@ -318,6 +336,130 @@ test("a request naming the spec and the Verification document names both above t
     await expect(changed).toHaveCount(1);
     await expect(changed.locator(".dispatch-change-added")).toHaveText([ADDED_WORD]);
     await expect(changed.locator(".dispatch-change-removed-words")).toHaveText([REMOVED_WORD]);
+  } finally {
+    await alice.close();
+  }
+});
+
+/** Whether each of `selectors` names an element of the reading column, each one further down it
+ *  than the one before: what a reader scrolling the column meets first, then next. */
+function drawnInOrder(page: Page, selectors: readonly string[]): Promise<boolean> {
+  return inboxPane(page).evaluate((column, wanted) => {
+    let above: Element | null = null;
+    for (const selector of wanted) {
+      const node = column.querySelector(selector);
+      if (node === null) {
+        return false;
+      }
+      if (
+        above !== null &&
+        (above.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) === 0
+      ) {
+        return false;
+      }
+      above = node;
+    }
+    return true;
+  }, selectors);
+}
+
+// Verification c-a1 (version 22) names this row: at `main` the column draws the request's
+// question and the document's version and no reply on its ask, so the row fails at the first
+// reply it reads.
+test("the reading-pane row for an approval request with replies on its ask: each reply under the question, and a reply box that adds one", async ({
+  browser,
+}) => {
+  const seed = await seedApproval(REPLIED_SUMMARY);
+  // Oldest first: a person's question on the request, then the agent's answer to it.
+  await createComment(seed.issueKey, { ask_id: seed.askId, body: PERSON_REPLY }, { login: "bob" });
+  await createComment(seed.issueKey, { ask_id: seed.askId, body: AGENT_REPLY }, session);
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const pane = inboxPane(page);
+    await page.goto(inboxAt(seed.askId));
+    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.askId);
+
+    const question = pane.getByTestId("pane-approval-question");
+    await expect(question).toHaveText(seed.question);
+
+    // Each reply on the ask, in the column's one scroller, in the ask's own thread.
+    const thread = paneScroller(page).getByTestId(`thread-${seed.askId}`);
+    await expect(thread.getByText(PERSON_REPLY, { exact: true })).toBeVisible();
+    await expect(thread.getByText(AGENT_REPLY, { exact: true })).toBeVisible();
+
+    // The version the request asks about is still drawn, and the replies stand between the two:
+    // under the question, above the document.
+    const drawn = pane.getByRole("region", { name: "Document version 1" });
+    await expect(drawn).toBeVisible();
+    expect(
+      await drawnInOrder(page, [
+        '[data-testid="pane-approval-question"]',
+        `[data-testid="thread-${seed.askId}"]`,
+        '[aria-label="Document version 1"]',
+      ])
+    ).toBe(true);
+
+    // The reply box is there, and what it sends is a reply on the ask: the thread draws it, and
+    // the server holds it after the two that were there.
+    const box = thread.getByRole("textbox", { name: "Reply" });
+    await expect(box).toBeVisible();
+    await box.fill(READER_REPLY);
+    await thread.getByRole("button", { exact: true, name: "Reply" }).click();
+    await expect(thread.getByText(READER_REPLY, { exact: true })).toBeVisible();
+    await expect(box).toHaveValue("");
+    await expect
+      .poll(async () => ((await getAsk(seed.askId)).replies ?? []).map((reply) => reply.body))
+      .toEqual([PERSON_REPLY, AGENT_REPLY, READER_REPLY]);
+
+    // The head's controls and the version stand as they were.
+    await expect(
+      pane.locator("header").getByRole("button", { exact: true, name: "Approve" })
+    ).toBeVisible();
+    await expect(drawn).toBeVisible();
+  } finally {
+    await alice.close();
+  }
+});
+
+// A reply the reader types in the approval request's reply box, in the reading pane, and has not
+// sent is a draft of a reply on an open ask. Where the window narrows below the reading column the
+// same request is drawn as a card, and the card must not read that draft as a reply typed under a
+// settled ask that has since opened again: that note says the reply "was not sent" and stands in
+// the composer's place, though nothing settled and nothing was refused (INFRA-341, testing round
+// 17, at 1808df5f).
+test("a reply typed in the approval pane and not sent is not read as a reply to a question that opened again", async ({
+  browser,
+}) => {
+  const seed = await seedApproval(REPLIED_SUMMARY);
+  await createComment(seed.issueKey, { ask_id: seed.askId, body: PERSON_REPLY }, { login: "bob" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH });
+    await page.goto(inboxAt(seed.askId));
+    await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.askId);
+    const thread = paneScroller(page).getByTestId(`thread-${seed.askId}`);
+    await expect(thread.getByText(PERSON_REPLY, { exact: true })).toBeVisible();
+    const draft = "A reply I have not sent yet.";
+    const box = thread.getByRole("textbox", { name: "Reply" });
+    await box.fill(draft);
+    await expect(box).toHaveValue(draft);
+
+    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH - 1 });
+    const card = await askCard(page, seed.askId);
+    await expect(card).toBeVisible();
+    await expect(card.getByRole("radio", { name: /^Approve/ })).toBeVisible();
+    await nextFrames(page);
+    // The box a card draws a reply it reads as unsent in, by the id it gives that box
+    // (`UnsentReply`, web/src/features/inbox/AskThread.tsx), and the note that box says.
+    await expect(page.getByTestId("ask-unsent-reply")).toHaveCount(0);
+    await expect(page.getByText(/opened again before you sent your reply/)).toHaveCount(0);
+
+    // The draft is still the ask's, so the card had a draft to read: the pane drawn again
+    // holds it in its box.
+    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH });
+    await expect(box, "the pane's reply box keeps the draft").toHaveValue(draft);
   } finally {
     await alice.close();
   }

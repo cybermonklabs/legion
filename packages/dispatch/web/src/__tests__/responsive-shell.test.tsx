@@ -18,6 +18,10 @@ import { answerAgentStates } from "./send-answers";
 import "../features/agent-view/AgentConversationPage";
 import "../features/issue-page/IssuePage";
 import "../features/margin/Margin";
+import type { MarginProps } from "../features/margin/Margin";
+import { ReservedMarginColumn } from "../features/margin/MarginColumn";
+import { DEFAULT_MARGIN_WIDTH } from "../features/margin/margin-width";
+import { COMPACT_VIEWPORT_QUERY } from "../features/shell/useDialog";
 
 const issue: IssueDetails = {
   route_status: null,
@@ -103,7 +107,7 @@ function setViewport(width: number): void {
       addEventListener: () => {},
       addListener: () => {},
       dispatchEvent: () => true,
-      matches: query === "(max-width: 1279px)" && width <= 1279,
+      matches: query === COMPACT_VIEWPORT_QUERY && width < 1280,
       media: query,
       onchange: null,
       removeEventListener: () => {},
@@ -115,7 +119,8 @@ function renderShellAt(
   width: number,
   inbox: InboxRow[] = [],
   unreadThreads = 0,
-  listedAgents: Agent[] = []
+  listedAgents: Agent[] = [],
+  route = "/issues/CORE-1/children"
 ): QueryClient {
   setViewport(width);
   api.whoAmI = async () => ({ event_head: "0", kind: "user", login: "alice" });
@@ -194,7 +199,7 @@ function renderShellAt(
   });
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/issues/CORE-1/children"]}>
+      <MemoryRouter initialEntries={[route]}>
         <AuthGate />
       </MemoryRouter>
     </QueryClientProvider>
@@ -211,13 +216,15 @@ afterEach(() => {
 test("tablet uses the drawer and bottom-sheet controls instead of hidden desktop landmarks", async () => {
   renderShellAt(800);
 
-  await waitFor(() =>
-    expect(screen.queryByRole("button", { name: "Open navigation" })).not.toBeNull()
-  );
-  // The margin's own code is fetched after the first paint (`features/margin/MarginColumn.tsx`),
-  // so its control arrives on a later frame than the shell's.
-  await waitFor(() =>
-    expect(screen.queryByRole("button", { name: /Open review panel/ })).not.toBeNull()
+  // The margin's own code is fetched after the first paint
+  // (`features/margin/MarginColumn.tsx`), so both its controls arrive a module load after the
+  // shell's own first commit - longer than `waitFor`'s default second under a loaded machine.
+  await waitFor(
+    () => {
+      expect(screen.queryByRole("button", { name: "Open navigation" })).not.toBeNull();
+      expect(screen.queryByRole("button", { name: /Open review panel/ })).not.toBeNull();
+    },
+    { timeout: 5_000 }
   );
   expect(screen.queryByRole("navigation", { name: "Issues" })).not.toBeInTheDocument();
   expect(screen.queryByRole("complementary", { name: "Review margin" })).not.toBeInTheDocument();
@@ -226,16 +233,78 @@ test("tablet uses the drawer and bottom-sheet controls instead of hidden desktop
 test("desktop exposes the persistent sidebar navigation and review margin", async () => {
   renderShellAt(1280);
 
-  await waitFor(() =>
-    expect(screen.queryByRole("navigation", { name: "Navigation" })).not.toBeNull()
-  );
-  // As above: the margin lands once its chunk has.
-  await waitFor(() =>
-    expect(screen.queryByRole("complementary", { name: "Review margin" })).not.toBeNull()
+  await waitFor(
+    () => {
+      expect(screen.queryByRole("navigation", { name: "Navigation" })).not.toBeNull();
+      expect(screen.queryByRole("complementary", { name: "Review margin" })).not.toBeNull();
+    },
+    { timeout: 5_000 }
   );
   expect(screen.queryByRole("button", { name: "Open navigation" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /Open review panel/ })).not.toBeInTheDocument();
 });
+
+/** Renders what the shell holds the margin's column open with while the margin's own chunk is
+ *  on its way (`features/margin/MarginColumn.tsx`).
+ *
+ *  Rendered directly rather than through the shell, because React's `lazy` resolves once per
+ *  process: a shell render shows that fallback only when it is the first in its file to reach
+ *  the margin, and two rows that pass or fail on where they sit in a file are worth nothing.
+ *  What is checked here is the reservation's own rule - the column's real width wherever the
+ *  margin will draw one, and nothing anywhere else - which is the whole of what the shift was.
+ */
+function renderReservation(route: string, props: MarginProps = {}): void {
+  render(
+    <MemoryRouter initialEntries={[route]}>
+      <ReservedMarginColumn {...props} />
+    </MemoryRouter>
+  );
+}
+
+// The margin is 384 px of a 1,280 px viewport, and its code is fetched after the first paint:
+// a column that was not held open left the document laid out 912 px wide and re-wrapped every
+// line of it under the reader a third of a second later, when the margin landed beside it.
+test("the margin's column is reserved at the width the margin itself takes", () => {
+  setViewport(1280);
+  renderReservation("/issues/CORE-1/children");
+
+  const reservation = screen.getByTestId("margin-reservation");
+  expect(reservation.style.width).toBe(`${DEFAULT_MARGIN_WIDTH}px`);
+  // A reserved column is a page still settling, so the review and the accessibility layers
+  // wait it out and read the real margin rather than an empty box (`e2e/review-routes.ts`).
+  expect(reservation.hasAttribute("data-margin-pending")).toBe(true);
+});
+
+// The reader's own width, not the default: a margin dragged to 440 px reserves 440 px, or the
+// document would be laid out at one width and then settle at another all the same.
+test("a reader who widened their margin has that width reserved", () => {
+  setViewport(1280);
+  renderReservation("/projects/CORE/documents/design-language", { width: 440 });
+
+  expect(screen.getByTestId("margin-reservation").style.width).toBe("440px");
+});
+
+// And nothing is reserved where the margin will draw no column, or the shift would simply run
+// backwards: 384 px taken from the document at first paint and handed back once the margin
+// arrives with nothing to put there. The three places are the margin's own
+// (`features/margin/Margin.tsx`): a desktop route that has none, a margin collapsed to its
+// rail, where the column is hidden and the shell pads the gutter instead, and a compact
+// viewport, where the margin is a sheet over the document rather than a column beside it.
+test("nothing is reserved where the margin will draw no column", () => {
+  setViewport(1280);
+  renderReservation("/");
+  expect(screen.queryByTestId("margin-reservation")).toBeNull();
+
+  cleanup();
+  renderReservation("/issues/CORE-1", { collapsed: true });
+  expect(screen.queryByTestId("margin-reservation")).toBeNull();
+
+  cleanup();
+  setViewport(800);
+  renderReservation("/issues/CORE-1");
+  expect(screen.queryByTestId("margin-reservation")).toBeNull();
+});
+
 test("compact top bar shows only asks waiting on the viewer", async () => {
   renderShellAt(800, [
     {
@@ -466,6 +535,10 @@ test("the shell tells the live-view registry which agents the person pinned", as
   api.listAgentMessages = async () => [];
   const queryClient = renderShellAt(1280, [], 0, [agent("planner-session", "Planner")]);
   await screen.findByRole("button", { name: "Unpin Planner from the sidebar" });
+  // The issue page under the shell is a chunk of its own, drawn in the commit that chunk answers
+  // in (`chunkComponent`), and the pins can be on the rail before it has: the row waits for the
+  // page, so it lands while the row waits rather than after the row has moved on.
+  await screen.findByRole("heading", { level: 1, name: issue.title });
 
   const views = liveViewsOf(queryClient);
   act(() => {

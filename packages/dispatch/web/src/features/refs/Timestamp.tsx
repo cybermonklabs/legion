@@ -67,6 +67,24 @@ export function relativeTimeLabel(at: Date, now: number): string | undefined {
   }
 }
 
+/**
+ * Re-renders the caller on the one tick every `<Timestamp>` follows, so a surface that draws a
+ * relative time as text of its own - a `title` over a line a `<Timestamp>` is part of
+ * (`MentionField.tsx`) - says what the line says for as long as it is on the screen.
+ *
+ * `enabled` is false where that text is not drawn, so a surface subscribes only while it shows
+ * one.
+ */
+export function useRelativeTimeTick(enabled = true): void {
+  const [, forceUpdate] = useState(0);
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    return subscribe(() => forceUpdate((count) => count + 1));
+  }, [enabled]);
+}
+
 /** The instant as words, its date and its time in the reader's locale, for a surface with no
  *  tooltip to carry it (the new issue page). */
 export function exactTimeLabel(at: Date): string {
@@ -90,8 +108,7 @@ export interface TimestampProps {
 export function Timestamp({ at, className, exact = false }: TimestampProps): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
-  const [, forceUpdate] = useState(0);
-  useEffect(() => subscribe(() => forceUpdate((count) => count + 1)), []);
+  useRelativeTimeTick();
   // Inside `NoTooltips` an instant is a value the page draws whole, so it keeps `max-w-full` and
   // breaks anywhere, as every value there does; outside it keeps the host's class alone.
   const shownClassName =

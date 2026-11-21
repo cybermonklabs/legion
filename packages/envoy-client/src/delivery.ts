@@ -540,6 +540,7 @@ export function carriedItem(
         ? ("message" as const)
         : undefined;
   if (resource === undefined || !isObject(event.payload)) return undefined;
+  // biome-ignore lint/complexity/useLiteralKeys: isObject narrows the payload to a record keyed by an index signature, and claude-envoy's typecheck refuses dot access on such a key.
   const id = event.payload["id"];
   if (typeof id !== "string" || id === "") return undefined;
   return { resource, id, issueKey: event.issue_key };
@@ -549,6 +550,7 @@ export function carriedItem(
  *  with its long fields dropped, except the few it keeps whole (`payload_omitted`, whose doc in
  *  `@legion/contracts` names them). */
 function payloadWasOmitted(payload: unknown): boolean {
+  // biome-ignore lint/complexity/useLiteralKeys: isObject narrows payload to a record whose keys are all index-signature keys, and claude-envoy's typecheck refuses dot access on such a key.
   return isObject(payload) && payload["payload_omitted"] === true;
 }
 
@@ -557,7 +559,10 @@ function payloadWasOmitted(payload: unknown): boolean {
  *  bus refused the event and the outbox published a stand-in with its long fields dropped
  *  (`payload_omitted`). Either way the item itself answers the rest. */
 export function bodyWasCut(payload: unknown): boolean {
-  return (isObject(payload) && payload["body_truncated"] === true) || payloadWasOmitted(payload);
+  return (
+    // biome-ignore lint/complexity/useLiteralKeys: body_truncated is read off the same index signature, and dot access would fail claude-envoy's typecheck.
+    (isObject(payload) && payload["body_truncated"] === true) || payloadWasOmitted(payload)
+  );
 }
 
 /** The Dispatch route that answers the whole item an event names. */

@@ -100,7 +100,6 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · the column moves to another row, then back`)
   ),
   ...answers("Inbox | ThreadCardRow | form | if (paneShown) return …", { reason: REASONS[11] }),
-  ...answers("AppShell | InboxDrawer | form | open={inboxDrawerOpen}", { reason: REASONS[11] }),
   ...answers(
     "MessageThreadBody | MessageThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | lifetime | <MentionComposer mutationKey={threadSendKey(thread.thread_id)}>",
     cells(`${HOST} · the page reloaded, then back`)

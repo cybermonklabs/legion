@@ -1,5 +1,6 @@
 import { useLocation, useNavigate } from "react-router-dom";
 
+import { placeInView } from "../doc/readers-place";
 import { type IssueTab, parseIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { bringOnScreen } from "./identity-block";
@@ -42,7 +43,7 @@ const SETTLING_FRAMES = 20;
 function showPart(found: HTMLElement, takes: HTMLElement): HTMLElement {
   const whole = found.getBoundingClientRect().height <= window.innerHeight;
   const shown = whole ? found : takes;
-  shown.scrollIntoView({ block: whole ? "start" : "center" });
+  placeInView(shown, { block: whole ? "start" : "center" });
   bringOnScreen(shown);
   return shown;
 }
@@ -167,6 +168,8 @@ export function useIssueKeymap(issueKey: string): void {
   useKeymap(
     "issue",
     CHORDS.map(({ keys, label, part, path, tab }) => ({
+      // A chord opens an address and leaves the focus in what it drew.
+      effect: "moves the reader" as const,
       id: `tab-${tab}`,
       keys,
       label,

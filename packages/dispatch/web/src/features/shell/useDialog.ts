@@ -3,8 +3,23 @@ import { NavigationType, useLocation, useNavigationType } from "react-router-dom
 
 import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
 
-/** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. */
-export const COMPACT_VIEWPORT_QUERY = "(max-width: 1279px)";
+/** Tailwind's `xl`, `--breakpoint-xl` in its `theme.css`: the length every `xl:` class compiles
+ *  from, and every width `@media` of `styles.css` at `xl`, which names the token itself
+ *  (`theme(--breakpoint-xl)`). The sheet's other two width queries switch where another query of
+ *  the page does: the `narrow-or-short` variant at 767 px (`PHONE_VIEWPORT_QUERY` below), and
+ *  the new issue page's header at 760 px (`HEADER_SCROLLS_QUERY`,
+ *  `features/issue-page/identity-block.ts`). `COMPACT_VIEWPORT_QUERY` and `READING_PANE_QUERY`
+ *  below are built from it, so the shell's state, the classes and the stylesheet switch at one
+ *  width whatever the reader's default font size
+ *  (`features/margin/first-screen-reservation.test.ts` holds the token and the sheet to it). */
+export const XL_BREAKPOINT = "80rem";
+/** Below Tailwind's `xl`: the margin is a sheet and the sidebar a drawer. The exact inverse of the
+ *  `xl:` classes, which is how Tailwind writes `max-xl:`, and in `rem` for `MD_VIEWPORT_QUERY`'s
+ *  reason: this query chooses whether the shell renders the compact bar with its Menu or the
+ *  sidebar, and the `xl:` classes whether either is shown, so a pixel query here left a reader
+ *  whose default font is not 16 px a band of widths in which neither was drawn - from 1280 px to
+ *  1599 px at a 20 px default, and from 960 px to 1279 px at a 12 px one. */
+export const COMPACT_VIEWPORT_QUERY = `(width < ${XL_BREAKPOINT})`;
 /** Below Tailwind's `md`: a phone, where a margin thread opens full-screen. */
 export const PHONE_VIEWPORT_QUERY = "(max-width: 767px)";
 /** Tailwind's `md` itself: true exactly when the `md:` classes apply. A caller that pairs this
@@ -19,7 +34,7 @@ export const MD_VIEWPORT_QUERY = "(min-width: 48rem)";
 /** Tailwind's `xl`: from 1280 px the Inbox shows its reading pane beside the list. In `rem`, and
  *  for `MD_VIEWPORT_QUERY`'s reason: it is paired with `xl:` classes, which Tailwind declares at
  *  `80rem`, so only a `rem` query switches with them at any default font size. */
-export const READING_PANE_QUERY = "(min-width: 80rem)";
+export const READING_PANE_QUERY = `(min-width: ${XL_BREAKPOINT})`;
 
 const focusableSelector = [
   "a[href]",
@@ -116,8 +131,11 @@ export interface DialogHandle<T extends HTMLElement> {
  * (the search palette, the phone navigation drawer, the phone margin sheet, and the reference
  * picker all use this). While open it pushes the `dialog` keymap scope, which masks every page
  * and global binding, and registers Escape there for the innermost open dialog, whatever
- * element holds focus; a descendant that owns its Escape (the margin Composer dismissing its
- * picker) stops propagation before the dispatcher sees it. Tab trapping listens on the container.
+ * element holds focus; a descendant that owns its Escape stops propagation before the
+ * dispatcher sees it (the margin Composer dismissing its picker), or registers it on the same
+ * scope, where it is asked before this one however late it mounts (`askedLast`, which the
+ * Inbox drawer's list needs: its chunk arrives after the drawer's frame the first time it
+ * opens). Tab trapping listens on the container.
  */
 export function useDialog<T extends HTMLElement>({
   initialFocusRef,
@@ -133,6 +151,9 @@ export function useDialog<T extends HTMLElement>({
     open
       ? [
           {
+            // The focus goes back to whatever opened the dialog.
+            askedLast: true,
+            effect: "moves the reader",
             id: "dialog.close",
             inEditable: true,
             keys: "Escape",

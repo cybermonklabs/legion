@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"sort"
@@ -175,6 +176,13 @@ type QuoteFinder struct {
 	prepared bool
 	err      error
 	text     flattenedText
+	// inOneTextblock says the finder resolves a document edit's quotes (ValidDocument.EditQuoteFinder),
+	// where only a match inside one textblock is a match (cascade), and textblocks is the content
+	// range of each textblock of the document, in document order, which such a finder reads each
+	// match against, built at its first use (insideOneTextblock).
+	inOneTextblock bool
+	textblocks     []Range
+	textblocksDone bool
 }
 
 // NewQuoteFinder returns a finder over doc. It reads nothing of doc until its first Find.
@@ -189,37 +197,88 @@ func (d ValidDocument) QuoteFinder() *QuoteFinder {
 	return &QuoteFinder{doc: d.doc, valid: true}
 }
 
+// EditQuoteFinder is QuoteFinder for a document edit's quotes - a replace's or a delete's find,
+// an insert's or a move's anchor - which no edit can take across two textblocks: a match that
+// spans two or more counts toward neither the quote's matches nor its ambiguity (cascade), so a
+// quote with one match inside one textblock resolves to it whatever spans it also has, and one
+// with two or more there is ErrTargetAmbiguous naming those alone. A quote whose only matches span
+// textblocks resolves to the first of them, which the edit refuses as spanning blocks. A comment's
+// or an ask's anchor keeps QuoteFinder's count, spans included (dispatch://INFRA-4345, R1).
+func (d ValidDocument) EditQuoteFinder() *QuoteFinder {
+	return &QuoteFinder{doc: d.doc, valid: true, inOneTextblock: true}
+}
+
 // Find is FindQuote(doc, quote, occurrence, near): the same range or the same error.
 func (f *QuoteFinder) Find(quote string, occurrence, near *int) (Range, error) {
+	r, _, err := f.FindSpelling(quote, occurrence, near)
+	return r, err
+}
+
+// FindSpelling is Find, and the inline markup the quote spells over the range it matched
+// (Spelling): a document edit reads its find as markup only where the finder did.
+func (f *QuoteFinder) FindSpelling(quote string, occurrence, near *int) (Range, Spelling, error) {
 	matches, err := f.matches(quote)
+	if err != nil {
+		return Range{}, Spelling{}, err
+	}
+	match, err := f.choose(quote, matches, occurrence, near)
+	if err != nil {
+		return Range{}, Spelling{}, err
+	}
+	return match.Range, f.text.spelling(match), nil
+}
+
+// FindWritten is Find over the matchers that read a quote as written - exactly, then with its
+// whitespace normalized (writtenCascade) - and not as markdown: a quote that opens with a list
+// item's marker selects an item where it matches no text as written (FindListItem), and the
+// markdown reading, which takes the marker for list syntax and drops it, comes after that
+// selection. Only a document edit asks it; the range is Find's for a quote either matcher holds.
+func (f *QuoteFinder) FindWritten(quote string, occurrence *int) (Range, error) {
+	if err := f.prepare(); err != nil {
+		return Range{}, err
+	}
+	matches := f.cascade(writtenCascade, quote)
+	match, err := f.choose(quote, matches, occurrence, nil)
 	if err != nil {
 		return Range{}, err
 	}
-	return f.choose(quote, matches, occurrence, near)
+	return match.Range, nil
 }
 
 // FindListItem answers a quote that opens with a list item's marker (ParseListItemQuote) by the
 // items it selects (listItemQuoteMatches), choosing among them as Find chooses among a quote's
-// matches; a quote that selects no item is Find's miss. Only a document edit asks it, after Find
-// matched nothing: a quote a comment or an ask anchors is text the document held, whose marker
-// is text, so no anchor is ever read as a selector.
-func (f *QuoteFinder) FindListItem(quote string, occurrence *int) (Range, error) {
+// matches, and the markup the item's text spells over the range it matched, as FindSpelling
+// reports it; a quote that selects no item is Find's miss. Only a document edit asks it, after
+// Find matched nothing: a quote a comment or an ask anchors is text the document held, whose
+// marker is text, so no anchor is ever read as a selector.
+func (f *QuoteFinder) FindListItem(quote string, occurrence *int) (Range, Spelling, error) {
 	if err := f.prepare(); err != nil {
-		return Range{}, err
+		return Range{}, Spelling{}, err
 	}
 	item := ParseListItemQuote(quote)
 	if item.Text == "" {
-		return Range{}, quoteNotFound(f.doc, quote)
+		return Range{}, Spelling{}, quoteNotFound(f.doc, quote)
 	}
-	return f.choose(quote, listItemQuoteMatches(f.doc, f.text, item), occurrence, nil)
+	match, err := f.choose(quote, listItemQuoteMatches(f.doc, f.text, item), occurrence, nil)
+	if err != nil {
+		return Range{}, Spelling{}, err
+	}
+	return match.Range, f.text.spelling(match), nil
 }
 
-// choose is the range quote's matches resolve to: the one the occurrence names, the only one, or
+// choose is the match quote's matches resolve to: the one the occurrence names, the only one, or
 // the one nearest near; otherwise the miss or the ambiguity Find answers.
-func (f *QuoteFinder) choose(quote string, matches []quoteMatch, occurrence, near *int) (Range, error) {
+func (f *QuoteFinder) choose(quote string, matches []quoteMatch, occurrence, near *int) (quoteMatch, error) {
 	doc, text := f.doc, f.text
 	if len(matches) == 0 {
-		return Range{}, quoteNotFound(doc, quote)
+		return quoteMatch{}, quoteNotFound(doc, quote)
+	}
+	// An edit's finder answers matches inside one textblock alone, or, where the quote has none
+	// there, the spans of its first matcher that had any (cascade). Those resolve to the first,
+	// which the edit refuses as spanning blocks, and count toward neither an occurrence nor an
+	// ambiguity.
+	if f.inOneTextblock && !f.insideOneTextblock(matches[0].Range) {
+		return matches[0], nil
 	}
 	if occurrence != nil {
 		if *occurrence < 0 || *occurrence >= len(matches) {
@@ -228,17 +287,17 @@ func (f *QuoteFinder) choose(quote string, matches []quoteMatch, occurrence, nea
 			if errors.As(miss, &missing) {
 				missing.Matches = len(matches)
 			}
-			return Range{}, miss
+			return quoteMatch{}, miss
 		}
-		return matches[*occurrence].Range, nil
+		return matches[*occurrence], nil
 	}
 	if len(matches) == 1 {
-		return matches[0].Range, nil
+		return matches[0], nil
 	}
 	if near != nil {
 		// MinFunc returns the first least match, which nearerFirst's earlier-of-two-as-near tie
 		// makes the first NearestFirst lists.
-		return slices.MinFunc(matches, nearerFirst(*near)).Range, nil
+		return slices.MinFunc(matches, nearerFirst(*near)), nil
 	}
 
 	candidates := make([]Candidate, 0, len(matches))
@@ -248,7 +307,7 @@ func (f *QuoteFinder) choose(quote string, matches []quoteMatch, occurrence, nea
 			Context: context16(text.value, max(0, match.textFrom-40), min(len16(text.value), match.textTo+40)),
 		})
 	}
-	return Range{}, &ErrTargetAmbiguous{Target: quote, Candidates: candidates}
+	return quoteMatch{}, &ErrTargetAmbiguous{Target: quote, Candidates: candidates}
 }
 
 // NearestFirst is every range quote matches, as Find matches it, ordered as Find with near chooses
@@ -294,7 +353,71 @@ func (f *QuoteFinder) matches(quote string) ([]quoteMatch, error) {
 	if marker := atxHeadingMarker.FindString(quote); marker != "" && marker != quote {
 		return headingQuoteMatches(f.doc, f.text, quote[len(marker):]), nil
 	}
-	return quoteMatches(f.text, quote), nil
+	return f.cascade(quoteCascade[:], quote), nil
+}
+
+// cascade is the matches of quote's first matcher of matchers that has any, as quoteMatches takes
+// them. An edit's finder (EditQuoteFinder) counts only a match inside one textblock: a matcher
+// whose every match spans two or more gives way to the next, and where no matcher has a match
+// inside one, the matches are the spans of the first that had any, which choose resolves to the
+// first of. So what an edit's finder answers is matches all inside one textblock, or all spans. A
+// heading quote's matches and a list item's selection lie inside one textblock by their own rule
+// (headingQuoteMatches, listItemQuoteMatches), so they need no reading here.
+func (f *QuoteFinder) cascade(matchers []func(flattenedText, string) []quoteMatch, quote string) []quoteMatch {
+	var spans []quoteMatch
+	for _, matcher := range matchers {
+		matches := matcher(f.text, quote)
+		if len(matches) == 0 {
+			continue
+		}
+		if !f.inOneTextblock {
+			return matches
+		}
+		if inside := f.withinTextblocks(matches); len(inside) > 0 {
+			return inside
+		}
+		if spans == nil {
+			spans = matches
+		}
+	}
+	return spans
+}
+
+// withinTextblocks is matches without those that span two or more textblocks: matches itself
+// where none does, so the common quote allocates nothing here.
+func (f *QuoteFinder) withinTextblocks(matches []quoteMatch) []quoteMatch {
+	for index, match := range matches {
+		if f.insideOneTextblock(match.Range) {
+			continue
+		}
+		inside := slices.Clone(matches[:index])
+		for _, rest := range matches[index+1:] {
+			if f.insideOneTextblock(rest.Range) {
+				inside = append(inside, rest)
+			}
+		}
+		return inside
+	}
+	return matches
+}
+
+// insideOneTextblock reports whether r lies wholly inside one textblock, TargetSpansBlocks' answer
+// negated, read off the textblocks' content ranges rather than off a walk of the document for each
+// match: the walk that collects them runs once, at the finder's first such question.
+func (f *QuoteFinder) insideOneTextblock(r Range) bool {
+	if !f.textblocksDone {
+		f.textblocksDone = true
+		walk(f.doc, func(node *Node, _ []int, pos, end int) bool {
+			if isTextblock(node.Type) {
+				f.textblocks = append(f.textblocks, Range{From: pos + 1, To: end - 1})
+			}
+			return true
+		})
+	}
+	// The textblocks' contents are disjoint and in document order, since no textblock holds
+	// another, so the only one that can hold r is the last to start at or before r.From.
+	at := sort.Search(len(f.textblocks), func(index int) bool { return f.textblocks[index].From > r.From }) - 1
+	return at >= 0 && r.To <= f.textblocks[at].To
 }
 
 // prepare validates the finder's document and flattens its text at the first call, and answers
@@ -309,7 +432,7 @@ func (f *QuoteFinder) prepare() error {
 			f.err = f.doc.Validate()
 		}
 		if f.err == nil {
-			f.text = buildFlattenedText(f.doc)
+			f.text = buildFlattenedText(f.doc, false)
 		}
 	}
 	return f.err
@@ -350,8 +473,8 @@ func ParseListItemQuote(quote string) ListItemQuote {
 // renderer writes it before the item's first paragraph, so the text it is quoted with starts
 // there. The item's number is not matched, only its kind, and a task box only a task item whose
 // box is in that state. Each step of the matcher cascade is kept to those starts before the next
-// is tried, so an exact match elsewhere does not hide an item the text matches with its whitespace
-// normalized.
+// is tried, so an exact match elsewhere does not hide an item the text matches with its
+// whitespace normalized.
 func listItemQuoteMatches(doc *Node, text flattenedText, item ListItemQuote) []quoteMatch {
 	type start struct{ from, end int }
 	var starts []start
@@ -372,9 +495,9 @@ func listItemQuoteMatches(doc *Node, text flattenedText, item ListItemQuote) []q
 	if len(starts) == 0 {
 		return nil
 	}
-	atAStart := func(candidates []quoteMatch) []quoteMatch {
+	for _, matcher := range quoteCascade {
 		var matches []quoteMatch
-		for _, match := range candidates {
+		for _, match := range matcher(text, item.Text) {
 			for _, s := range starts {
 				if match.From == s.from && match.To <= s.end {
 					matches = append(matches, match)
@@ -382,10 +505,7 @@ func listItemQuoteMatches(doc *Node, text flattenedText, item ListItemQuote) []q
 				}
 			}
 		}
-		return matches
-	}
-	for _, step := range []func(flattenedText, string) []quoteMatch{exactQuoteMatches, normalizedQuoteMatches, markdownQuoteMatches} {
-		if matches := atAStart(step(text, item.Text)); len(matches) > 0 {
+		if len(matches) > 0 {
 			return matches
 		}
 	}
@@ -510,7 +630,41 @@ type flattenedText struct {
 	value     string
 	positions []int
 	marks     []inlineMarkup
-	forms     *textForms
+	// links is the link each run of linked units is under, in unit order, for a quote read as
+	// markdown alone (renderedMarkdownQuote): what a quote spells a link with is its markup, its
+	// URL and its title (Spelling), and a document's link carries its own on its mark.
+	links []linkedUnits
+	forms *textForms
+}
+
+// linkedUnits is a run of a flattened text's units, from from up to to, under link.
+type linkedUnits struct {
+	from, to int
+	link     linkTarget
+}
+
+// linkTarget is what a link mark carries beside its text: the URL it links to and its title, ""
+// for none. The renderer writes both (`[this](https://a.example/1 "Spec")`), so both are the
+// markup a find spells the link with.
+type linkTarget struct {
+	href, title string
+}
+
+// markLinkTarget is the URL and the title the link mark carries.
+func markLinkTarget(mark Mark) linkTarget {
+	href, _ := mark.Attrs["href"].(string)
+	title, _ := mark.Attrs["title"].(string)
+	return linkTarget{href: href, title: title}
+}
+
+// linkIn is the URL and title of the first link over a unit of span, and none where no link
+// covers one.
+func (t flattenedText) linkIn(span range16) linkTarget {
+	index := sort.Search(len(t.links), func(index int) bool { return t.links[index].to > span.from })
+	if index < len(t.links) && t.links[index].from < span.to {
+		return t.links[index].link
+	}
+	return linkTarget{}
 }
 
 type textForms struct {
@@ -580,13 +734,15 @@ func flattenedTextSize(doc *Node) (units, bytes int) {
 // through. The string and the index are allocated once, at the size the document measures
 // (flattenedTextSize), rather than grown: growing the index copied the whole of it at every
 // doubling, which on a document whose paragraph is a mebibyte long was most of what a cold
-// one-word edit allocated (sjawhar/legion#2522).
-func buildFlattenedText(doc *Node) flattenedText {
+// one-word edit allocated (sjawhar/legion#2522). links says to record the URL and title of each
+// link's units (flattenedText.links), which only a quote's reading needs.
+func buildFlattenedText(doc *Node, links bool) flattenedText {
 	units, bytes := flattenedTextSize(doc)
 	var out strings.Builder
 	out.Grow(bytes)
 	positions := make([]int, 0, units)
 	marks := make([]inlineMarkup, 0, units)
+	var linked []linkedUnits
 	lastEnd := -1
 	walk(doc, func(node *Node, _ []int, pos, end int) bool {
 		if node.Type != "text" {
@@ -598,6 +754,7 @@ func buildFlattenedText(doc *Node) flattenedText {
 			marks = append(marks, 0)
 		}
 		markup := nodeInlineMarkup(node)
+		from := len(positions)
 		// A quote is matched against the text every read serves, so a browser's U+0000 is U+FFFD
 		// here too; both are one UTF-16 unit, so no position moves.
 		for _, char := range nulAsReplacement(node.Text) {
@@ -612,46 +769,173 @@ func buildFlattenedText(doc *Node) flattenedText {
 			}
 			pos += width
 		}
+		if links && markup&inlineMarkupLink != 0 {
+			linked = append(linked, linkedUnits{from: from, to: len(positions), link: linkOf(node.Marks)})
+		}
 		lastEnd = end
 		return true
 	})
-	return flattenedText{value: out.String(), positions: positions, marks: marks, forms: &textForms{}}
+	return flattenedText{value: out.String(), positions: positions, marks: marks, links: linked, forms: &textForms{}}
+}
+
+// linkOf is the URL and the title of the link among marks, and none where none is a link.
+func linkOf(marks []Mark) linkTarget {
+	for _, mark := range marks {
+		if mark.Type == "link" {
+			return markLinkTarget(mark)
+		}
+	}
+	return linkTarget{}
 }
 
 func nodeInlineMarkup(node *Node) inlineMarkup {
 	var markup inlineMarkup
 	for _, mark := range node.Marks {
-		switch mark.Type {
-		case "inlineCode":
-			markup |= inlineMarkupCode
-		case "strong":
-			markup |= inlineMarkupStrong
-		case "emphasis":
-			markup |= inlineMarkupEmphasis
-		case "link":
-			markup |= inlineMarkupLink
-		}
+		markup |= markTypeMarkup(mark.Type)
 	}
 	return markup
+}
+
+// markTypeMarkup is the inline markup a mark of markType is read as by the markdown matcher, or 0
+// for a mark it does not read: strikethrough, and every anchor.
+func markTypeMarkup(markType string) inlineMarkup {
+	switch markType {
+	case "inlineCode":
+		return inlineMarkupCode
+	case "strong":
+		return inlineMarkupStrong
+	case "emphasis":
+		return inlineMarkupEmphasis
+	case "link":
+		return inlineMarkupLink
+	}
+	return 0
 }
 
 type quoteMatch struct {
 	Range
 	textFrom int
 	textTo   int
+	// quote is the quote read as markdown, for a match the markdown matcher made, and offset the
+	// rune of the text's normalized form the match starts at, where the matcher paired the
+	// quote's runes with the text's (normalizedMarkdownQuoteMatches); quote is nil for a match
+	// of the text as written.
+	quote  *flattenedText
+	offset int
 }
 
-// quoteMatches is the matcher cascade a plain quote runs through: exact text first, then
-// whitespace-normalized text, then the quote rendered as markdown against inline markup.
+// Spelling is the inline markup a quote spells over the range it matched, as the finder read it:
+// for a quote matched as markdown (markdownQuoteMatches), the markup the quote writes over each
+// UTF-16 unit of the match's text, as the matcher paired the quote's text with the document's,
+// and the URL and title of the link it writes there. A quote matched as written, exactly or with
+// its whitespace normalized, spells none: a `*`, `_` or backtick in it is text the document holds,
+// not markup. The zero Spelling spells nothing.
+type Spelling struct {
+	units []spelledUnit
+}
+
+// spelledUnit is one UTF-16 unit of a match's text: its ProseMirror position, the inline markup
+// the quote writes over it, and the URL and title of the link the quote writes over it, none for
+// no link.
+type spelledUnit struct {
+	pos    int
+	markup inlineMarkup
+	link   linkTarget
+}
+
+// spelling is how match's quote spells the text of t it matched: none for a match of the text as
+// written, and otherwise the markup of each quote rune over each unit of the text rune the
+// matcher paired it with, with the URL and title of the quote's link over that rune.
+func (t flattenedText) spelling(match quoteMatch) Spelling {
+	if match.quote == nil {
+		return Spelling{}
+	}
+	_, textSpans := t.normalizedForm()
+	_, quoteSpans := match.quote.normalizedForm()
+	units := make([]spelledUnit, 0, match.textTo-match.textFrom)
+	for index, quoteSpan := range quoteSpans {
+		markup := markupInRange(match.quote.marks, quoteSpan)
+		var link linkTarget
+		if markup&inlineMarkupLink != 0 {
+			link = match.quote.linkIn(quoteSpan)
+		}
+		textSpan := textSpans[match.offset+index]
+		for unit := textSpan.from; unit < textSpan.to; unit++ {
+			units = append(units, spelledUnit{pos: t.positions[unit], markup: markup, link: link})
+		}
+	}
+	return Spelling{units: units}
+}
+
+// spells reports whether s writes mark's markup over every unit of its match at a position from
+// from to to, and over one at least: the quote spells that markup over that stretch of the match,
+// not over another stretch of it. A link is spelled only with its own URL and its own title: a
+// find that writes the link's text under another URL, or with another title or none, copied from
+// an older read after another writer changed the link, spells another link (spellsAnotherLink),
+// and what the document holds would go with no word. A mark the markdown matcher does not read
+// (markTypeMarkup), strikethrough or an anchor, is never spelled.
+func (s Spelling) spells(mark Mark, from, to int) bool {
+	markup, own := s.writes(mark, from, to)
+	return markup && own
+}
+
+// spellsAnotherLink reports whether s writes the markup of mark, a link, over every unit of its
+// match at a position from from to to, and over one at least, and under a URL or a title other
+// than the link's own over one of them: the quote spells another link there. A mark that is no
+// link is never spelled as another.
+func (s Spelling) spellsAnotherLink(mark Mark, from, to int) bool {
+	markup, own := s.writes(mark, from, to)
+	return markup && !own
+}
+
+// writes reports whether s writes mark's markup over every unit of its match at a position from
+// from to to, and over one at least (markup), and whether it writes each of those units under
+// mark's own URL and title (own), as it does every unit for a mark that is no link.
+func (s Spelling) writes(mark Mark, from, to int) (markup, own bool) {
+	kind := markTypeMarkup(mark.Type)
+	if kind == 0 {
+		return false, false
+	}
+	link := kind == inlineMarkupLink
+	var target linkTarget
+	if link {
+		target = markLinkTarget(mark)
+	}
+	own = true
+	for _, unit := range s.units {
+		if unit.pos < from || unit.pos >= to {
+			continue
+		}
+		if unit.markup&kind == 0 {
+			return false, false
+		}
+		if link && unit.link != target {
+			own = false
+		}
+		markup = true
+	}
+	return markup, own
+}
+
+// quoteCascade is the matcher cascade a plain quote runs through, in its order: exact text first,
+// then whitespace-normalized text, then the quote read as markdown against inline markup. A quote
+// takes the matches of the first matcher that has any (quoteMatches), and a list item's quote the
+// first that has any at a start of an item it selects (listItemQuoteMatches). writtenCascade is
+// its first two, which read the quote as written (FindWritten).
+var (
+	quoteCascade   = [...]func(flattenedText, string) []quoteMatch{exactQuoteMatches, normalizedQuoteMatches, markdownQuoteMatches}
+	writtenCascade = quoteCascade[:2]
+)
+
+// quoteMatches is the matches of quote's first matcher in the cascade (quoteCascade) that has
+// any, and none where no matcher has any.
 func quoteMatches(text flattenedText, quote string) []quoteMatch {
-	matches := exactQuoteMatches(text, quote)
-	if len(matches) == 0 {
-		matches = normalizedQuoteMatches(text, quote)
+	for _, matcher := range quoteCascade {
+		if matches := matcher(text, quote); len(matches) > 0 {
+			return matches
+		}
 	}
-	if len(matches) == 0 {
-		matches = markdownQuoteMatches(text, quote)
-	}
-	return matches
+	return nil
 }
 
 func exactQuoteMatches(text flattenedText, quote string) []quoteMatch {
@@ -703,7 +987,7 @@ func markdownQuoteMatches(text flattenedText, quote string) []quoteMatch {
 	if !marked {
 		return nil
 	}
-	return normalizedMarkdownQuoteMatches(text, rendered)
+	return normalizedMarkdownQuoteMatches(text, &rendered)
 }
 
 // renderedMarkdownQuote is quote read as markdown, when its text and inline markup differ from
@@ -716,7 +1000,7 @@ func renderedMarkdownQuote(quote string) (flattenedText, bool) {
 	if err != nil {
 		return flattenedText{}, false
 	}
-	rendered := buildFlattenedText(parsed)
+	rendered := buildFlattenedText(parsed, true)
 	if rendered.value == quote || !hasInlineMarkup(rendered.marks) {
 		return flattenedText{}, false
 	}
@@ -732,7 +1016,11 @@ func hasInlineMarkup(marks []inlineMarkup) bool {
 	return false
 }
 
-func normalizedMarkdownQuoteMatches(text, quote flattenedText) []quoteMatch {
+// normalizedMarkdownQuoteMatches is every match of quote, read as markdown, in text with the
+// whitespace of both normalized, where text carries every inline markup the quote writes over
+// each rune the matcher pairs with the quote's. Each match keeps quote and the rune it starts at,
+// so the markup the quote spells over each part of it can be read back (flattenedText.spelling).
+func normalizedMarkdownQuoteMatches(text flattenedText, quote *flattenedText) []quoteMatch {
 	normalizedText, textSpans := text.normalizedForm()
 	needle, quoteSpans := quote.normalizedForm()
 	if len(needle) == 0 || len(textSpans) == 0 || len(quoteSpans) == 0 {
@@ -741,7 +1029,7 @@ func normalizedMarkdownQuoteMatches(text, quote flattenedText) []quoteMatch {
 
 	var matches []quoteMatch
 	for _, offset := range findAllRunes(normalizedText, needle) {
-		if !matchingInlineMarkup(text, quote, textSpans[offset:offset+len(needle)], quoteSpans) {
+		if !matchingInlineMarkup(text, *quote, textSpans[offset:offset+len(needle)], quoteSpans) {
 			continue
 		}
 		from := textSpans[offset].from
@@ -753,6 +1041,8 @@ func normalizedMarkdownQuoteMatches(text, quote flattenedText) []quoteMatch {
 			},
 			textFrom: from,
 			textTo:   to,
+			quote:    quote,
+			offset:   offset,
 		})
 	}
 	return matches
@@ -816,7 +1106,8 @@ func nearestBlocks(doc *Node, quote string, limit int) []string {
 }
 
 // headingQuoteMatches returns the text range of every heading whose rendered text equals
-// title, so a quote written with its ATX marker (`## Title`) selects headings only.
+// title, so a quote written with its ATX marker (`## Title`) selects headings only, each as the
+// matcher cascade matched title.
 func headingQuoteMatches(doc *Node, text flattenedText, title string) []quoteMatch {
 	if title == "" {
 		return nil
@@ -1153,73 +1444,23 @@ func (s *markSearch) close() {
 	s.pending = nil
 }
 
-// anchorMarkTypes are the marks an ask or comment row anchors to: its quote is the text they
-// cover (FindMark). They are exactly the marks whose schema declares an empty excludes (the fork's
-// proofComment and proofSuggestion, packages/proof-editor's dispatchAsk), so two of one type may
-// cover one character and each is stored under its own Y attribute key (markAttributeKey). The
-// set moves with those schemas.
-var anchorMarkTypes = map[string]bool{"proofComment": true, "proofSuggestion": true, "dispatchAsk": true}
-
-// AnchorMarksCovering returns each anchor mark that every text run inside r carries, which is
-// every anchor the range lies wholly inside. Text written over r belongs inside those anchors: a
-// replacement spliced in without them ends each one's run where it lands, and FindMark then reads
-// only the text before it. A range that runs past an anchor's edge has a run without it, so that
-// anchor keeps only the text the write leaves alone.
-func AnchorMarksCovering(doc *Node, r Range) []Mark {
-	var covering []Mark
-	first := true
-	walk(doc, func(node *Node, _ []int, pos, end int) bool {
-		if pos >= r.To {
-			return false
-		}
-		if node.Type != "text" || end <= r.From {
-			return true
-		}
-		if first {
-			first = false
-			for _, mark := range node.Marks {
-				if anchorMarkTypes[mark.Type] {
-					covering = append(covering, Mark{Type: mark.Type, Attrs: cloneAttrs(mark.Attrs)})
-				}
-			}
-			return len(covering) > 0
-		}
-		kept := covering[:0]
-		for _, mark := range covering {
-			if carriesMark(node, mark) {
-				kept = append(kept, mark)
-			}
-		}
-		covering = kept
-		return len(covering) > 0
+// WithoutQuotedMarkup is marks, each a span covering the whole of a match (MarksCovering), less
+// each mark whose markup spelled, the quote's spelling of that match (QuoteFinder.FindSpelling),
+// writes over the whole of it. A quote that spells a span's markup over the text it covers
+// (`**Sami bold**`) leaves that mark to the text written over the match, which keeps it by writing
+// it too or drops it by leaving it off; one that spells it over part of that text alone (`a **b**
+// c` over `**a b c**`) spells that part's markup, not the span's, so the span keeps it. A quote
+// matched as written spells nothing: its `*`, `_` or backtick is text the document holds (`2*3*4`
+// in `*a 2\*3\*4 b*`), and one that writes a link's text under another URL or another title spells
+// another link, so the link keeps its own. Strikethrough is never markup the finder reads, so it
+// is never taken off.
+func WithoutQuotedMarkup(marks []Mark, spelled Spelling) []Mark {
+	if len(spelled.units) == 0 {
+		return marks
+	}
+	return slices.DeleteFunc(marks, func(mark Mark) bool {
+		return spelled.spells(mark, math.MinInt, math.MaxInt)
 	})
-	return covering
-}
-
-func carriesMark(node *Node, want Mark) bool {
-	for _, mark := range node.Marks {
-		if mark.Type == want.Type && attrsEqual(mark.Attrs, want.Attrs) {
-			return true
-		}
-	}
-	return false
-}
-
-// AddMarks adds marks to every text node under node, in place.
-func AddMarks(node *Node, marks []Mark) {
-	if len(marks) == 0 {
-		return
-	}
-	if node.Type == "text" {
-		for _, mark := range marks {
-			node.Marks = append(node.Marks, Mark{Type: mark.Type, Attrs: cloneAttrs(mark.Attrs)})
-		}
-		sortMarks(node.Marks)
-		return
-	}
-	for _, child := range node.Children {
-		AddMarks(child, marks)
-	}
 }
 
 type MarkRef struct {

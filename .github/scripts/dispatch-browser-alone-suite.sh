@@ -8,7 +8,7 @@
 #   .github/scripts/dispatch-browser-alone-suite.sh <project> <connections>
 #
 # <project> is this leg's Playwright project, the alone job's `${{ matrix.project }}`, one of
-# the three `-alone` ones: it is the `--project` the run takes, and it names the blob report
+# the six `-alone` ones: it is the `--project` the run takes, and it names the blob report
 # this leg writes, the row count file beside it and the title of the sampler's readings.
 # <connections> is the connection limit the stack's Postgres must allow, which the binaries job
 # reads and hands on as `${{ needs.binaries.outputs.connections }}`, because this job's container

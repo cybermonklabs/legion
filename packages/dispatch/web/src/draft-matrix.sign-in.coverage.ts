@@ -12,6 +12,7 @@ const REASONS = {
   3: "3. Signed out (`signedOut`), the page takes the shell and every composer away, which `app-sign-out.test.tsx` holds to the same rule as (2).",
   4: "4. In `AppShell`, above every host, the layout draws the shell around the page: the compact header with its Menu and the Inbox's Peek (whose drawer is the Inbox files' reason), the navigation drawer and the focus it keeps (`useDialog`), the sidebar or its rail, the main column's classes, and the keyboard fit of a page that fills the screen (`useKeyboardFit`). Each draws or moves something beside the route element and the margin a host is in, never them, so no composer moves, and the rows above make their moves at the test page's width.",
   5: "5. On the new issue page, once its reader turns it on (`issueFrame`), the shell draws the frame's icon rail beside the page where the width allows it (`railFits`, `iconRailShown`) in place of the sidebar and its rail, its navigation sheet over the page at every width (`shellNavigation`: the rail's foot control and the header's `☰` open it), and no compact header of its own, and it draws the navigation's contents compact there (`NavigationContents`' `compact`). Each draws or moves something beside the route element and the margin a host is in, as (4) says, so no composer moves.",
+  6: "6. The shell draws the margin's column once the route it stands beside has drawn (`theRouteIsDrawn`, which the route's own `Suspense` content sets and nothing sets back), and holds the same box empty until then (`ReservedMarginColumn`). So the conditional starts the margin's mount, its compose and its cards with it, the first time a route draws, and never ends one; what ends them is the margin's own leaving of a document, the margin file's rows.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -73,6 +74,9 @@ export const coverage: readonly CoverageEntry[] = [
   ),
   ...answers("AppShell | InboxDrawer | form | <div className>", { reason: REASONS[4] }),
   ...answers("AppShell | MarginColumn | form | <div className>", { reason: REASONS[4] }),
+  ...answers("AppShell | MarginColumn | conditional | (theRouteIsDrawn) ? …", {
+    reason: REASONS[6],
+  }),
   ...answers("AppShell | - | form | (isCompactViewport && !issueFrame) ? …", {
     reason: REASONS[4],
   }),
@@ -87,8 +91,6 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("useDialog | - | form | if (!open) return …", { reason: REASONS[4] }),
   ...answers("AppShell | - | form | (issueFrame && !railFits) ? …", { reason: REASONS[5] }),
   ...answers("AppShell | - | form | isCompactViewport || …", { reason: REASONS[5] }),
-  ...answers("AppShell | - | form | (iconRailShown) ? …", { reason: REASONS[5] }),
-  ...answers("AppShell | - | form | (isCompactViewport || issueFrame) ? …", {
-    reason: REASONS[5],
-  }),
+  ...answers("AppShell | - | form | if (iconRailShown) return …", { reason: REASONS[5] }),
+  ...answers("AppShell | - | form | if (isCompactViewport) return …", { reason: REASONS[4] }),
 ];

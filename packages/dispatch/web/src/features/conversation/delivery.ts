@@ -6,7 +6,7 @@ import {
   type DeliveryAttemptState,
   type MessageDeliveryMode,
   POSSIBLY_DELIVERED_CAUSES,
-} from "@legion/contracts";
+} from "@legion/contracts/dispatch-constants";
 
 import type { AgentPart } from "../refs/AgentName";
 

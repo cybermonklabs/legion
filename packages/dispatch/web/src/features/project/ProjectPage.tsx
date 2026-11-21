@@ -80,6 +80,8 @@ export function ProjectPage(): ReactNode {
   useKeymapScope("project");
   useKeymap("project", [
     {
+      // Swaps the view under the reader for the other one, as a tab switch does.
+      effect: "moves the reader",
       id: "toggle-view",
       keys: "v",
       label: "Toggle List / Board",

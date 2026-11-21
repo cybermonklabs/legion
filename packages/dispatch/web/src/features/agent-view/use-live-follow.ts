@@ -21,6 +21,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { moveTheBox, putTheBoxAt } from "../doc/readers-place";
 import type { LivePlace } from "./live-views";
 
 /** assistant-ui's own tolerance: a sub-pixel remainder is still the end of the transcript. */
@@ -230,7 +231,7 @@ export function useLiveFollow({
     if (viewport === null) {
       return;
     }
-    viewport.scrollTop = viewport.scrollHeight;
+    putTheBoxAt(viewport, viewport.scrollHeight);
     record(viewport);
     follow();
   }, [follow, record, viewport]);
@@ -305,7 +306,7 @@ export function useLiveFollow({
       // The turn survived: put it back where the reader had it, the compensation
       // `features/shell/ViewportAnchor.tsx` performs for the issue list.
       const wanted = element.getBoundingClientRect().top + place.top;
-      element.scrollTop += turn.getBoundingClientRect().top - wanted;
+      moveTheBox(element, turn.getBoundingClientRect().top - wanted);
       record(element);
       countUnseen();
     },

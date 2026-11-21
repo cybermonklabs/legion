@@ -3,13 +3,18 @@
 // core, so a loaded machine stretches it on either side of a comparison without the call doing more
 // work; CPU time leaves that out. It is not immune to load: a busy machine still slows the
 // process's own CPU time through shared caches and clock frequency, so a comparison still samples
-// each side more than once. pmdoc's linear-time tests and the api's save ladders both time calls
-// this way, so it lives here once; it is an ordinary package rather than a _test.go file because
-// Go cannot share test-only code across packages (see internal/stacktest's identical reasoning).
+// each side more than once. pmdoc's linear-time tests, the api's save ladders and the docs
+// package's chained-clients row all time calls this way, and pmdoc's tests and the docs row time
+// them with the garbage collector stopped (TimedWithoutCollections), so both live here once; it is
+// an ordinary package rather than a _test.go file because Go cannot share test-only code across
+// packages (see internal/stacktest's identical reasoning).
 package cputest
 
 import (
 	"fmt"
+	"runtime"
+	"runtime/debug"
+	"runtime/metrics"
 	"sync"
 	"syscall"
 	"time"
@@ -79,4 +84,47 @@ func Measure(batch func(runs int) (time.Duration, error)) (time.Duration, error)
 		// average still lands the next window past it.
 		runs = max(runs*2, int(int64(runs)*int64(want)*5/(int64(took)*4))+1)
 	}
+}
+
+// TimedWithoutCollections is the CPU time this process spends running work (Process after less
+// Process before), with the garbage collector settled before work starts and stopped while it
+// runs, so the time is work's own.
+//
+// A collection inside the window adds CPU time that depends on when it lands rather than on work.
+// Whether one lands depends on the heap goal the untimed setup and the tests before it leave
+// behind, and how long it runs depends on everything the process holds, not on work: its mark
+// workers run on every processor work leaves idle, and Process counts them. Stopping the collector
+// hides nothing a growth test asks about: work that grows faster than its input does so on its own
+// goroutines, inside the window, and allocation that grows faster still pays inside the window
+// for the fresh memory it touches.
+//
+// limit is the most memory, in bytes, the runtime may hold while the collector is stopped, unless
+// the process already runs under a lower memory limit, which is kept. Work that allocates without
+// bound is then collected rather than killing the process, and its window comes back with an
+// error naming its collections, since their time is in its reading. The collector's settings are
+// restored when work returns.
+//
+// It reports through no *testing.T, so a caller may run it on a goroutine that outlives its test
+// (testing panics the whole binary on a Fail from such a goroutine) and report the error on the
+// test's own.
+func TimedWithoutCollections(limit int64, work func()) (time.Duration, error) {
+	runtime.GC()
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	limit = min(debug.SetMemoryLimit(-1), limit)
+	defer debug.SetMemoryLimit(debug.SetMemoryLimit(limit))
+	cycles := gcCycles()
+	before := Process()
+	work()
+	took := Process() - before
+	if collected := gcCycles() - cycles; collected != 0 {
+		return took, fmt.Errorf("%d collections ran inside a timed window, which grew the memory the runtime holds to the %d MiB limit; their CPU time is in its %s", collected, limit>>20, took.Round(time.Millisecond))
+	}
+	return took, nil
+}
+
+// gcCycles is how many collections this process has completed.
+func gcCycles() uint64 {
+	sample := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}}
+	metrics.Read(sample)
+	return sample[0].Value.Uint64()
 }

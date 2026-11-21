@@ -36,6 +36,8 @@ export const movedRowNotes: Record<string, string> = {
     "the bands are the table's status groups, collapsed through their heading buttons; what the row asserts - no rows, the keys doing nothing, the two shortcuts greyed, and both restored when one group opens - is main's",
   "keyboard-palette.stub.e2e.ts › a List row's own row runs on the row that opened the palette, and its movement keys are no rows @pr":
     "the row is read inside the issues table; everything the palette does in it is main's",
+  "keyboard-palette.stub.e2e.ts › the arrows scroll the palette's own list and leave the page behind it where it stood @pr":
+    "written on this branch rather than moved: it reads where the page under the open palette stands while the arrows place the highlighted row, which at 1024x300 rests inside the page's own bottom `scroll-padding` band, and holds the page still there (dispatch://INFRA-341)",
   "polish.stub.e2e.ts › project filters stay collapsed until needed and margin asks use the compact composer @pr":
     "the project list half is the table: there is no collapsed filter strip to open, so the row asserts the table is drawn with no popover open, picks a label in the column filter and reads the trigger's own name. The board, inbox, margin and agents halves, and every screenshot, are main's",
   "project.stub.e2e.ts › a 1,000-character table search stays inside the page @phone @pr":

@@ -18,7 +18,7 @@ const REASONS = {
   6: "6. The Comments tab's list is not drawn on the Pinned tab, under a phone margin thread, or while the comments read failed (`MarginSheet`, `CommentsTab`), which unmounts a thread's reply and its editor as opening another thread does (the second row, and the edit file's margin card).",
   7: "7. A thread's card is drawn per thread of the open document, keyed by it (`ThreadList`): a thread that leaves the list, by its resolution or another document's list, unmounts its card as opening another thread does, and a resolved thread folded away under Show resolved is the same; its reply is held by its thread's name.",
   8: "8. Which end of a margin thread its reply sits at (`composerFirst`, from `useThreadOrder` in `ThreadCard`) is read when the card is drawn and again only when who is signed in changes (`useUserPreference`), so it never moves a reply that is on screen.",
-  9: "9. The phone panel's being open or closed is the reader's own (its toggle, its backdrop and Escape, `toggleSheet`) and moves no address: closed, only the stylesheet hides what is in it (`hidden xl:block`), so the compose and every card, reply and editor stay mounted under it, and opening it shows them as they were. Closing it closes a phone thread as Back does (`closeThread`), the first row. The margin opens it for each compose it shows (`openCompactSheet`), which the first two phone rows assert.",
+  9: "9. The phone panel's being open or closed is the reader's own (its toggle, its backdrop and Escape, `toggleSheet`) and moves no address. Closed, the sheet draws the compose alone, still mounted at its address (`MarginComposerSlot`), and no card that nothing has named (`MarginSheet`'s `covered`, `unnamedShutSheet`): each card, its reply and its editor unmount there as opening another thread unmounts them, a reply's or an edit's draft being held under its thread's name, so opening the panel draws each card as it was, as the phone rows that open the panel show; a card the route names is drawn in the shut sheet. Closing it closes a phone thread as Back does (`closeThread`), the first row. The margin opens it for each compose it shows (`openCompactSheet`), which the first two phone rows assert.",
   10: "10. On a phone a card's tap and a mark's click open the thread full-screen in place of opening it in the list (`onToggleThread`, `selectMarginItem`), so the first row's Back is the way off a thread there, and another thread is opened after it; a comment or ask link only selects its card (`openPhoneThread` false), which moves no composer.",
   11: "11. Where the margin sits moves no composer: the desktop column's width, class and resize handle, the compact layout's `contents` class (`Margin`), and the panel's dialog role, its place at the foot of the screen and its backdrop (`MarginSheet`).",
   12: "12. The rest is focus and scrolling: the compose takes focus once it is on screen (`onScreen`, `autoFocus`), the margin scrolls the compose or a linked card into view only in an open panel (`useMarginListeners`, `useCardHold`), and an open panel or thread view keeps focus inside it and the page still under it (`useDialog`). None moves an address or ends a mount. The app shell's forms, above every host, are the sign-in file's.",
@@ -137,11 +137,6 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(
     'MarginSheet | MarginComposerSlot | address prop | hidden={tab.value !== "comments"}',
     { reason: REASONS[4] }
-  ),
-  ...answers(
-    "Margin | MarginSheet | conditional | <div hidden={railShown || (!isCompactViewport && !hasMargin)}>",
-    { reason: REASONS[4] },
-    { reason: REASONS[5] }
   ),
   ...answers(
     "Margin | MarginSheet | early return | if (!isCompactViewport && !hasMargin) return …",
@@ -286,10 +281,6 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[12] }
   ),
   ...answers("Margin | MarginSheet | form | <div className>", { reason: REASONS[11] }),
-  ...answers(
-    "Margin | MarginSheet | form | <div hidden={railShown || (!isCompactViewport && !hasMargin)}>",
-    { reason: REASONS[4] }
-  ),
   ...answers("Margin | MarginSheet | form | if (!isCompactViewport && !hasMargin) return …", {
     reason: REASONS[5],
   }),
@@ -315,7 +306,6 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[4],
   }),
   ...answers("Margin | - | form | (railShown) ? …", { reason: REASONS[4] }),
-  ...answers("Margin | - | form | railShown || …", { reason: REASONS[4] }),
   ...answers("useDialog | - | form | (open) ? …", { reason: REASONS[12] }),
   ...answers("useDialog | - | form | if (!open) return …", { reason: REASONS[12] }),
   ...answers(

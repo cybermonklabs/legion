@@ -22,7 +22,7 @@ import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { priorityPath } from "../priorities/priority-routes";
 import { AgentName } from "../refs/AgentName";
 import { ReferenceLink } from "../refs/ReferenceLink";
-import { referenceTriggerProps } from "../refs/RefPreview";
+import { referenceTriggerProps } from "../refs/ref-preview-state";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
