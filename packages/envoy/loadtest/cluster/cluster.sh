@@ -163,11 +163,12 @@
 #
 # Dispatch's identity at the copy's listener: the listener takes a send's role mark from
 # Dispatch's verified principal alone (ENVOY_DISPATCH_PRINCIPAL), and verifies Dispatch's token
-# against the issuer it discovers when it starts (ENVOY_OIDC_ISSUER); a listener that cannot read
-# that issuer's discovery document does not start. The namespace's NetworkPolicy lets the copy's
-# pods reach each other and DNS and nothing else, the cluster's own token issuer among the rest,
-# so up makes the copy's own issuer (mint_identity): loadgen oidc-mint generates a P-256 key and
-# signs Dispatch's token with it (iss http://oidc-issuer.<namespace>.svc:8080, sub
+# against the issuer it discovers (ENVOY_OIDC_ISSUER). A listener that cannot read that issuer's
+# discovery document takes no mark from Dispatch: an older one exits, and a newer one starts and
+# answers that issuer's tokens 503 until it can read it. The namespace's NetworkPolicy lets the
+# copy's pods reach each other and DNS and nothing else, the cluster's own token issuer among the
+# rest, so up makes the copy's own issuer (mint_identity): loadgen oidc-mint generates a P-256 key
+# and signs Dispatch's token with it (iss http://oidc-issuer.<namespace>.svc:8080, sub
 # system:serviceaccount:<namespace>:default, aud ACCOUNT_TOKEN_AUDIENCE, living
 # ACCOUNT_TOKEN_LIFETIME), and keeps the private key in its memory alone. state.json keeps the
 # issuer (oidc_issuer), the key's public half (oidc_key) and the token (secrets.account_token);
@@ -3711,7 +3712,7 @@ up_run() {
   kube_for 960 rollout status deployment/nats-box --timeout=900s >/dev/null || die "nats-box was not ready within 15 min"
   kube_for 960 wait --for=condition=Ready pod/runner --timeout=900s >/dev/null || die "the runner was not ready within 15 min"
   kube_for 960 rollout status deployment/oidc-issuer --timeout=900s >/dev/null ||
-    die "the copy's token issuer (deployment oidc-issuer) was not ready within 15 min, and the listener does not start without it"
+    die "the copy's token issuer (deployment oidc-issuer) was not ready within 15 min, and without it the listener takes no send's role mark from Dispatch (an older listener exits, a newer one answers Dispatch's token 503)"
   start_copy
   check_dispatch_identity
   put_loadgen

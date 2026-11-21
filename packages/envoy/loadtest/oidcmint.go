@@ -4,16 +4,18 @@ package main
 //
 // The copy's listener takes a send's role mark from Dispatch's verified principal alone
 // (ENVOY_DISPATCH_PRINCIPAL), and verifies every identity token against an issuer it discovers
-// when it starts (ENVOY_OIDC_ISSUER, internal/oidc): a listener that cannot read its issuer's
-// discovery document does not start. The copy's namespace lets its pods reach each other and DNS
-// and nothing else, the cluster's own token issuer among the rest, so the copy carries an issuer
-// of its own, inside the namespace. This command makes it: it generates one P-256 key, signs one
-// token with it for each -sub (ES256, one of the two algorithms the listener's verifier takes),
-// writes each token to the file its -sub names, and prints the key's public half. cluster.sh
-// serves the public half inside the namespace (manifests/oidc-issuer.yaml) and gives each pod its
-// token as a file, so the listener's verification is production's, against keys that never leave
-// the namespace. The private key lives in this process alone: once it exits, the tokens it wrote
-// are the only tokens that key ever verifies, so every subject a run needs is named in one call.
+// (ENVOY_OIDC_ISSUER, internal/oidc). A listener that cannot read its issuer's discovery document
+// takes no mark from Dispatch: an older one exits, and a newer one starts and answers that
+// issuer's tokens 503 until it can read it. The copy's namespace lets its pods reach each other
+// and DNS and nothing else, the cluster's own token issuer among the rest, so the copy carries an
+// issuer of its own, inside the namespace. This command makes it: it generates one P-256 key,
+// signs one token with it for each -sub (ES256, one of the two algorithms the listener's verifier
+// takes), writes each token to the file its -sub names, and prints the key's public half.
+// cluster.sh serves the public half inside the namespace (manifests/oidc-issuer.yaml) and gives
+// each pod its token as a file, so the listener's verification is production's, against keys that
+// never leave the namespace. The private key lives in this process alone: once it exits, the
+// tokens it wrote are the only tokens that key ever verifies, so every subject a run needs is
+// named in one call.
 
 import (
 	"crypto"

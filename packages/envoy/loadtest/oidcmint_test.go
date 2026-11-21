@@ -225,8 +225,10 @@ func TestTheCopysIssuerServesTheKeyEveryMintedSubjectVerifiesUnder(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	verifier, err := oidc.Discover(ctx, issuer, testMintAudience, oidc.DiscoveryTimeout)
-	if err != nil {
+	// Built as cmd/listener builds it from ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE
+	// (oidc.NewLazyVerifier), with the discovery its background run makes done here first.
+	verifier := oidc.NewLazyVerifier(issuer, testMintAudience)
+	if err := verifier.Discover(ctx); err != nil {
 		t.Fatalf("the listener's verifier could not discover the copy's issuer: %v", err)
 	}
 	for _, subject := range []string{testDispatchSubject, testRunnerSubject} {
@@ -243,8 +245,8 @@ func TestTheCopysIssuerServesTheKeyEveryMintedSubjectVerifiesUnder(t *testing.T)
 	if _, err := verifier.Verify(ctx, other.tokens[testDispatchSubject]); !errors.Is(err, oidc.ErrSignature) {
 		t.Errorf("a token of a key the issuer does not serve was answered %v, not a signature failure", err)
 	}
-	elsewhere, err := oidc.Discover(ctx, issuer, "another-audience", oidc.DiscoveryTimeout)
-	if err != nil {
+	elsewhere := oidc.NewLazyVerifier(issuer, "another-audience")
+	if err := elsewhere.Discover(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := elsewhere.Verify(ctx, run.tokens[testDispatchSubject]); !errors.Is(err, oidc.ErrAudience) {
@@ -296,7 +298,10 @@ func startCopysListener(t *testing.T, binary, issuer, accounts string) (*cmdtest
 // ENVOY_OIDC_ACCOUNTS does not list refused (401, logged not_listed). A token signed by the served
 // key with the right key id, subject and audience but another issuer is refused 401, logged
 // reason issuer: the key alone admits no token. The control is the copy's fault before the fix:
-// the same listener given an issuer it cannot reach does not start.
+// the same listener given an issuer it cannot reach takes no role mark from Dispatch's token. An
+// older listener exits when it cannot read its issuer; this one, built from this tree, starts,
+// reports "oidc": false on /healthz, answers that issuer's tokens 503 with Retry-After: 1 until it
+// can read it, and logs that it retries.
 func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRest(t *testing.T) {
 	binary := cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-listener", Target: "../cmd/listener"})
 	issuer, run := startCopyIssuer(t, testDispatchSubject, testRunnerSubject, testStrangerSubject)
@@ -364,19 +369,55 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	listener.WaitForOutput(t, `"reason":"issuer"`)
 
 	// The control: an issuer the listener cannot reach, as the cluster's own is from the fenced
-	// namespace (there a connection that never answers, here one refused), and the listener does
-	// not start.
+	// namespace (there a connection that never answers, here one refused). The listener starts and
+	// serves, but answers Dispatch's minted token 503, not the 400 that says it took the mark.
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	unreachable := "http://" + closed.Addr().String()
 	_ = closed.Close()
-	stranded, _ := startCopysListener(t, binary, unreachable, testDispatchSubject)
-	stranded.WaitExit(t, "it was given an issuer it cannot reach")
-	if stranded.Cmd.ProcessState.Success() || !strings.Contains(stranded.Output.String(), "discovering issuer "+unreachable) {
-		t.Errorf("the listener given an unreachable issuer did not stop on its discovery:\n%s", stranded.Output.String())
+	stranded, strandedPort := startCopysListener(t, binary, unreachable, testDispatchSubject)
+	strandedBase := "http://127.0.0.1:" + strconv.Itoa(strandedPort)
+	health := map[string]any{}
+	for deadline := time.Now().Add(90 * time.Second); ; {
+		if response, err := http.Get(strandedBase + "/healthz"); err == nil {
+			health = map[string]any{}
+			_ = json.NewDecoder(response.Body).Decode(&health)
+			_ = response.Body.Close()
+			if health["status"] == "healthy" {
+				break
+			}
+		}
+		select {
+		case <-stranded.Exited:
+			t.Fatalf("the listener given an unreachable issuer exited:\n%s", stranded.Output.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener given an unreachable issuer was not healthy within 90 s (%v):\n%s", health, stranded.Output.String())
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
+	if health["oidc"] != false {
+		t.Errorf("the listener given an unreachable issuer reports oidc %v on /healthz, not false", health["oidc"])
+	}
+	request, err := http.NewRequest(http.MethodPost, strandedBase+"/v1/messages/send", strings.NewReader(identityProbeBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+run.tokens[testDispatchSubject])
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != "1" {
+		t.Errorf("Dispatch's minted token at the listener given an unreachable issuer was answered %d %s (Retry-After %q), not 503 with Retry-After 1", response.StatusCode, body, response.Header.Get("Retry-After"))
+	}
+	stranded.WaitForOutput(t, "oidc: discover the issuer; retrying in the background", unreachable)
 }
 
 // TestOIDCMintWritesOneTokenPerSubjectUnderTheKeyItPrints: one run prints the key's public half

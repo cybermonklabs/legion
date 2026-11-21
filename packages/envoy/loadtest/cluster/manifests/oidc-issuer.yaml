@@ -2,12 +2,13 @@
 # (manifests/listener.yaml, ENVOY_OIDC_ISSUER), served inside the namespace. The namespace's
 # NetworkPolicy lets the copy's pods reach each other and DNS and nothing else, the cluster's own
 # token issuer among the rest, and a listener that cannot read its issuer's discovery document
-# does not start. So cluster.sh up mints the copy's own issuer (loadgen oidc-mint): a P-256 key,
-# whose public half this ConfigMap holds, and Dispatch's token of it, which manifests/dispatch.yaml
-# mounts from the run's Secret. The private key never leaves that loadgen process. The issuer is
-# http://oidc-issuer.<namespace>.svc:8080 (__OIDC_ISSUER__), the iss of that token; the listener
-# reads the discovery document under it when it starts, and the key set when it first verifies a
-# token and again every 15 minutes, keeping the last set it read.
+# takes no role mark from Dispatch: an older one exits, and a newer one starts and answers that
+# issuer's tokens 503 until it can read it. So cluster.sh up mints the copy's own issuer (loadgen
+# oidc-mint): a P-256 key, whose public half this ConfigMap holds, and Dispatch's token of it,
+# which manifests/dispatch.yaml mounts from the run's Secret. The private key never leaves that
+# loadgen process. The issuer is http://oidc-issuer.<namespace>.svc:8080 (__OIDC_ISSUER__), the
+# iss of that token; the listener reads the discovery document under it when it starts, and the
+# key set when it first verifies a token and again every 15 minutes, keeping the last set it read.
 #
 # socat, the pprof sidecar's image, serves the two documents through serve.sh, one shell per
 # connection. The Deployment starts at 1 replica; cluster.sh waits for it before it scales the

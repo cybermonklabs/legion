@@ -2883,8 +2883,9 @@ credential: every token and password is random and made for the run.
 
 The listener takes a send's role mark from Dispatch's verified principal alone
 (`ENVOY_DISPATCH_PRINCIPAL`), and the replay's role-routed issues need that mark. It verifies
-Dispatch's identity token against the issuer it discovers when it starts (`ENVOY_OIDC_ISSUER`),
-and a listener that cannot read that issuer's discovery document does not start. The
+Dispatch's identity token against the issuer it discovers (`ENVOY_OIDC_ISSUER`). A listener that
+cannot read that issuer's discovery document takes no mark from Dispatch: an older one exits, and
+a newer one starts and answers that issuer's tokens 503 until it can read it. The
 namespace's NetworkPolicy lets the copy's pods reach each other and DNS and nothing else, so the
 cluster's own token issuer is out of their reach. The copy has an issuer of its own instead:
 

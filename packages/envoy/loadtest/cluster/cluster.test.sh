@@ -71,10 +71,12 @@
 # applies its discovery document and key set inside the namespace before the listener and waits
 # for it before the listener starts, gives Dispatch the minted token from the run's Secret, and
 # checks from Dispatch's container that the listener takes a send's role mark from it; (d2) up
-# stops after one send, naming the answer, when the listener answers that check 403 or 401, checks
-# nothing at a listener that names no Dispatch principal, stops before any manifest when the mint
-# fails or answers a token of another shape, and refuses before the lock a loadgen that answers no
-# oidc-mint -sub; (e) every manifest renders with no placeholder left and every
+# stops after one send, naming the answer, when the listener answers that check 403 or 401, sends
+# again every 3 s while it answers 503 and stops once a 503 outlasts the check's bound, naming it
+# as an issuer the listener could not read, checks nothing at a listener that names no Dispatch
+# principal, stops before any manifest when the mint fails or answers a token of another shape,
+# and refuses before the lock a loadgen that answers no oidc-mint -sub; (e) every manifest renders
+# with no placeholder left and every
 # image by digest, and a value of the wrong shape is refused (an issuer outside the namespace or
 # of another namespace among them, and a token, redacted); (f) a container restart between the
 # before and after reads writes step-failed.json with kind restart; (g) the sampler writes an
@@ -458,6 +460,7 @@ case $verb in
       # identity-probes.
       'sh -c printf "Authorization: Bearer %s\n" "$(cat "$ENVOY_ACCOUNT_TOKEN_FILE")" |'*)
         printf '%s\n' "$ctr" >>"$FAKE_DIR/identity-probes"
+        printf '%s\n' "$EPOCHREALTIME" >>"$FAKE_DIR/identity-probe-times"
         # FAKE_DIR/identity-answers: answers used up first, one a line, "STATUS BODY".
         if [ -s "$FAKE_DIR/identity-answers" ]; then
           first=$(head -n1 "$FAKE_DIR/identity-answers")
@@ -1094,7 +1097,7 @@ reset_fake() {
     "$fake/sleep.log" "$fake/apply-errors" "$fake/replay-template" "$fake/restores" "$fake/pod-dump" \
     "$fake/stored-order.log" "$fake/go-dispatch.log" "$fake/go-browsertype.log" "$fake/git.log" \
     "$fake/go-dispatch-tree.log" "$fake/go-subcommands.go" "$fake/runner-exec-fail" "$fake/pg-df-started" "$fake/pg-df-go" \
-    "$fake/identity-probes" "$fake/identity-answers" "$fake/mint-help.log"
+    "$fake/identity-probes" "$fake/identity-probe-times" "$fake/identity-answers" "$fake/mint-help.log"
   rm -rf -- "$fake/runner" "$fake/bundle-fixture"
   write_pods
   echo '1600000 100000' >"$fake/cpu.max"
@@ -2266,6 +2269,39 @@ grep -q 'the copy is up' "$tmp/out" || fail "up did not finish once the listener
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down after the up with a starting listener exited $RC"
 pass "up sends Dispatch's role-marked send again 3 s after a starting listener's 503, and goes on once it is taken"
+
+# A listener that cannot read its issuer answers Dispatch's token 503 for as long as it cannot:
+# up sends again every 3 s until IDENTITY_CHECK_SECONDS (120 s) have passed, then stops, naming
+# the 503 as an issuer the listener could not read. The bound is set to 2 s here, as (dd) sets the
+# step's grace, and the fake sleep returns at once, so the case waits out that bound in real time
+# alone.
+grep -qx 'IDENTITY_CHECK_SECONDS=120' "$cluster" || fail "cluster.sh does not bound the identity check's retries at 120 s"
+cat >"$tmp/up-identity-bounded.sh" <<EOF
+source "$cluster"
+IDENTITY_CHECK_SECONDS=2
+main "\$@"
+EOF
+reset_fake
+set +e
+FAKE_IDENTITY_ANSWER=$'{"error":"this identity token could not be checked; try again in a minute"}\n503' \
+  bash "$tmp/up-identity-bounded.sh" up "${up_args[@]}" --dispatch-commit "$commit_ok" >"$tmp/out" 2>&1
+RC=$?
+set -e
+((RC == 1)) || fail "up whose listener answered Dispatch's role-marked send 503 past the check's bound exited $RC, not 1"
+grep -qF "the listener does not take a send's role mark from Dispatch's token" "$tmp/out" &&
+  grep -qF 'was answered 503 {"error":"this identity token could not be checked; try again in a minute"}' "$tmp/out" &&
+  grep -qF 'a 503 an issuer it could not read' "$tmp/out" ||
+  fail "up's refusal of a listener that answered 503 past the check's bound does not name the 503 as an issuer it could not read: $(cat "$tmp/out")"
+! grep -q 'the copy is up' "$tmp/out" || fail "up said the copy is up after the listener answered 503 past the check's bound"
+probes=$(wc -l <"$fake/identity-probes")
+((probes >= 2)) || fail "up sent Dispatch's role-marked send $probes time(s) to a listener that kept answering 503, so it did not send again"
+((${probes} - 1 <= $(grep -cx 3 "$fake/sleep.log" || true))) ||
+  fail "up did not wait 3 s between its $probes sends to a listener that kept answering 503: $(grep -cx 3 "$fake/sleep.log" || true) waits of 3 s"
+awk 'NR == 1 { first = $1 } { last = $1 } END { exit !(last - first >= 1) }' "$fake/identity-probe-times" ||
+  fail "up stopped sending to a listener that kept answering 503 before its 2 s bound: its sends spanned $(awk 'NR == 1 { f = $1 } { l = $1 } END { printf "%.2f", l - f }' "$fake/identity-probe-times") s"
+run_cluster down --namespace "$ns"
+((RC == 0)) || fail "down after the up whose listener kept answering 503 exited $RC"
+pass "up sends Dispatch's role-marked send again every 3 s while the listener answers 503, and once its bound has passed stops, naming the 503 as an issuer it could not read"
 
 # A listener built before role marks reads no mark and refuses the send's missing target: it
 # admitted Dispatch's token, and up goes on, saying so.
