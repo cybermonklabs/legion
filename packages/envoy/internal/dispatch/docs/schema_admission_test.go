@@ -754,7 +754,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	if closedAt.IsZero() {
 		t.Fatal("the server never closed its side of the revoked page's socket, though its ServeHTTP returned")
 	}
-	requireTheRevokesCloseFrame(t, writes, revokedAt)
+	requireTheRevokesCloseFrame(t, writes, revokedAt, closedAt)
 	requireNothingWrittenAfterTheRevoke(t, writes, revokedAt, closedAt)
 
 	// What the page reads, read off the bytes the server wrote to it: TCP delivers exactly these,
@@ -830,19 +830,60 @@ func waitForTheDocumentOnTheWire(t *testing.T, socket *serverSocket, dialed time
 	}
 }
 
-// requireTheRevokesCloseFrame fails unless a write that began after revokedAt asked to send the
-// admission-revoked close frame: the revoke's own close, which ygo's context watcher writes on
-// errSchemaRevoked whether or not the page's buffers then take its bytes. A socket whose end
-// carries no such write ended for another reason - ygo's own deadline on a write, or the page
-// going away - which this row must not take for the revoke's end.
-func requireTheRevokesCloseFrame(t *testing.T, writes []socketWrite, revokedAt time.Time) {
+// requireTheRevokesCloseFrame fails unless the socket's end is the revoke's own close
+// (revokesCloseBeganBeforeTheEnd).
+func requireTheRevokesCloseFrame(t *testing.T, writes []socketWrite, revokedAt, closedAt time.Time) {
 	t.Helper()
+	if !revokesCloseBeganBeforeTheEnd(writes, revokedAt, closedAt) {
+		t.Fatalf("the revoked page's socket ended with no write of the admission-revoked close frame begun after the revoke and before the server closed the socket, among the server's %d writes to it: it ended for another reason than the revoke", len(writes))
+	}
+}
+
+// revokesCloseBeganBeforeTheEnd is whether writes hold a write of the admission-revoked close
+// frame that began after revokedAt and before closedAt, when the server closed the socket: the
+// revoke's own close, which ygo's context watcher writes on errSchemaRevoked whether or not the
+// page's buffers then take its bytes, attempted while the socket was still open. A socket whose
+// end carries no such write ended for another reason - ygo's own deadline on a write, or the
+// page going away - which the slow-page row must not take for the revoke's end; and a close
+// frame attempted once the socket had already ended cannot explain that end.
+func revokesCloseBeganBeforeTheEnd(writes []socketWrite, revokedAt, closedAt time.Time) bool {
 	for _, write := range writes {
-		if code, isClose := closeFrameCode(write.asked); write.startedAt.After(revokedAt) && isClose && code == contracts.DocumentAdmissionRevokedCloseCode {
-			return
+		code, isClose := closeFrameCode(write.asked)
+		if isClose && code == contracts.DocumentAdmissionRevokedCloseCode &&
+			write.startedAt.After(revokedAt) && write.startedAt.Before(closedAt) {
+			return true
 		}
 	}
-	t.Fatalf("the revoked page's socket ended with no write of the admission-revoked close frame begun after the revoke, among the server's %d writes to it: it ended for another reason than the revoke", len(writes))
+	return false
+}
+
+// The slow-page row's attribution of a socket's end to the revoke, on traces of the server's
+// writes: only an admission-revoked close frame attempted after the revoke and while the socket
+// was still open explains its end. The times are a trace's own instants, a millisecond apart.
+func TestOnlyARevokedCloseAttemptedBeforeTheEndIsTheRevokesEnd(t *testing.T) {
+	at := func(ms int) time.Time { return time.Unix(0, 0).Add(time.Duration(ms) * time.Millisecond) }
+	revokedClose := serverFrame(opcodeClose, binary.BigEndian.AppendUint16(nil, uint16(contracts.DocumentAdmissionRevokedCloseCode)))
+	otherClose := serverFrame(opcodeClose, binary.BigEndian.AppendUint16(nil, 1001))
+	attempt := func(ms int, frame []byte) []socketWrite {
+		return []socketWrite{{startedAt: at(ms), asked: frame, returned: true}}
+	}
+	for _, c := range []struct {
+		name                string
+		writes              []socketWrite
+		revokedAt, closedAt int
+		want                bool
+	}{
+		{"the revoked close attempted after the revoke, before the end", attempt(2, revokedClose), 1, 3, true},
+		{"the revoked close attempted after an end that came before the revoke", attempt(3, revokedClose), 2, 1, false},
+		{"the revoked close attempted after the revoke and after the end", attempt(3, revokedClose), 1, 2, false},
+		{"the revoked close attempted before the revoke", attempt(1, revokedClose), 2, 3, false},
+		{"another close code attempted between the revoke and the end", attempt(2, otherClose), 1, 3, false},
+		{"no write at all", nil, 1, 3, false},
+	} {
+		if got := revokesCloseBeganBeforeTheEnd(c.writes, at(c.revokedAt), at(c.closedAt)); got != c.want {
+			t.Errorf("%s: read as the revoke's end = %t, want %t", c.name, got, c.want)
+		}
+	}
 }
 
 // requireRevokedSocketEnded waits, until rowDeadline, for the server's side of admission's socket
