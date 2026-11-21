@@ -13,6 +13,7 @@ import {
   type IssueComponents,
   overCapMessage,
   PROJECT_KEY_RULE,
+  type ReferenceLink,
   type ReferenceVia,
   SEARCH_QUERY_MAX,
   type SearchResult,
@@ -112,18 +113,13 @@ function emptyGraph(kind: string): { node: { kind: string; id: string }; edges: 
 type FixtureNode = Pick<GraphNode, "kind" | "id"> & Partial<GraphNode>;
 
 /**
- * One row of `links` or `linked_from` in an issue's references answer (dispatch://INFRA-4704):
- * the node at the other end of a link, as `GET /api/v1/references` names a node; the words the
+ * One row of `links` or `linked_from` in an issue's references answer (dispatch://INFRA-4704),
+ * the contract's `ReferenceLink`: the node at the other end of a link, as
+ * `GET /api/v1/references` names a node, written as a fixture writes a graph node; the words the
  * graph read shows for it; the distinct kinds of its links; and its via, the issue's node at the
- * near end. The contract's types gain the two fields when the route's schema is generated again,
- * so until then the cases write them with these types.
+ * near end.
  */
-interface ReferenceLinkRow {
-  readonly node: FixtureNode;
-  readonly name: string;
-  readonly kinds: readonly string[];
-  readonly via: ReferenceVia;
-}
+type ReferenceLinkRow = Omit<ReferenceLink, "node"> & { readonly node: FixtureNode };
 
 /** `GET /api/v1/issues/{key}/references` as a fixture answers it: `links` and `linked_from` are
  *  absent from the answer of a Dispatch from before INFRA-4704. */
@@ -15045,7 +15041,7 @@ describe("executeDispatchTool", () => {
     const row = (
       node: FixtureNode,
       name: string,
-      kinds: readonly string[],
+      kinds: string[],
       via: ReferenceVia
     ): ReferenceLinkRow => ({ node, name, kinds, via });
     const member = (project: string, slug: string, depth: number, via: ReferenceVia) => ({

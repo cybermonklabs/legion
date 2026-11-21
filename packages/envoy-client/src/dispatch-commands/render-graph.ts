@@ -6,11 +6,10 @@ import type {
   GraphNode,
   GraphReferences,
   IssueCoverage,
-  IssueReferences,
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { textHead } from "../ask-answer";
-import type { DispatchClient, GraphReferencesQuery } from "../dispatch-http";
+import type { DispatchClient, GraphReferencesQuery, IssueReferencesAnswer } from "../dispatch-http";
 import { ITEM_KINDS, type ItemKind, type ParsedDispatchRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { dispatchAnswered } from "./failures";
@@ -76,7 +75,7 @@ export async function graphReferences(
 export async function issueReferencesOrUnavailable(
   client: DispatchClient,
   key: string
-): Promise<IssueReferences | string> {
+): Promise<IssueReferencesAnswer | string> {
   try {
     return await client.getIssueReferences(key);
   } catch (error) {
@@ -116,14 +115,19 @@ export async function graphSections(client: DispatchClient, ref: string): Promis
   return graphSectionLines(incoming, outgoing);
 }
 
+/** The `Node:` line, `Referenced by:` and `Links:` of a node's graph read in both directions.
+ *  `Referenced by:` lists every edge into the node unless the read gives the section's lines
+ *  (`referencedBy`): an issue's read lists there the rows of its references read's `linked_from`
+ *  with the issue node's structural edges (`issueSummary`). */
 export function graphSectionLines(
   incoming: GraphReferences | string,
-  outgoing: GraphReferences | string
+  outgoing: GraphReferences | string,
+  referencedBy: readonly string[] = referenceLines(incoming)
 ): string[] {
   return [
     ...(typeof incoming === "string" ? [] : nodeLine(incoming.node)),
     "Referenced by:",
-    ...referenceLines(incoming),
+    ...referencedBy,
     "Links:",
     ...referenceLines(outgoing),
   ];

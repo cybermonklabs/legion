@@ -418,6 +418,12 @@ export type GraphReferencesQuery = ({ readonly to: string } | { readonly from: s
   readonly since?: number;
 };
 
+/** `GET /api/v1/issues/{key}/references` as either build of Dispatch answers it. A build from
+ *  before the one-hop read answers `members` and `truncated` alone, so a missing `links` is that
+ *  build's answer; a `null` list, which no build writes, holds no row. */
+export type IssueReferencesAnswer = Omit<IssueReferences, "links" | "linked_from"> &
+  Partial<Pick<IssueReferences, "links" | "linked_from">>;
+
 /** Which of an issue's events `read` returns, oldest first: the newest `events`, or every one. */
 export interface IssueReadOptions {
   /** `DEFAULT_ISSUE_READ_EVENTS` when absent or undefined. */
@@ -2041,7 +2047,7 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "projects", project, "plans"], undefined, window);
   }
 
-  async getIssueReferences(issue: string): Promise<IssueReferences> {
+  async getIssueReferences(issue: string): Promise<IssueReferencesAnswer> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "references"],
