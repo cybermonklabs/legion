@@ -101,9 +101,10 @@ func TestRequireAudiences(t *testing.T) {
 	require.NoError(t, RequireAudiences(nil, "", ""))
 }
 
-// An edge listener's entry asks for no NATS audience: the auth service refuses its connection by
-// name and verifies no token of it, so neither kind of edge entry, with neither audience set, is a
-// reason to refuse the start, beside a service that needs its own audience.
+// An edge listener's entry asks for no NATS audience: no edge listener's connection is admitted
+// whatever its token, so an audience would admit nothing, and without one its connection is
+// refused at the token check. Neither kind of edge entry, with neither audience set, is a reason
+// to refuse the start, beside a service that needs its own audience.
 func TestRequireAudiencesAsksAnEdgeListenerForNone(t *testing.T) {
 	services, err := config.ParseNATSServices("edge-listener/edge-a/PRIV=" + edgeAccount +
 		" edge-listener/edge-g/OTHER=google:example-edge@example-project.iam.gserviceaccount.com daemon/-/*=" + daemonAccount)

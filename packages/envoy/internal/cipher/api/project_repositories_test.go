@@ -39,12 +39,14 @@ const (
 )
 
 // repositoriesDispatch is the stand-in of Dispatch every test here starts from: PRIV's issues
-// resolve to acme/pub and acme/two, OTHER's to acme/other.
+// resolve to acme/pub and acme/two, OTHER's to acme/other. Each also has a mapped list, which the
+// membership answer carries and the repository answer must not, so a broker that relayed it would
+// answer acme/mapped.
 func repositoriesDispatch(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
 	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
-		"PRIV":  {Visibility: "private", Repositories: []string{"acme/pub", "acme/two"}},
-		"OTHER": {Visibility: "private", Repositories: []string{"acme/other"}},
+		"PRIV":  {Visibility: "private", Repositories: []string{"acme/mapped"}, Resolved: []string{"acme/pub", "acme/two"}},
+		"OTHER": {Visibility: "private", Repositories: []string{"acme/mapped"}, Resolved: []string{"acme/other"}},
 	}, nil)
 }
 
@@ -353,27 +355,7 @@ func TestTheSeventeenthRepositoryCallInFlightIsBusy(t *testing.T) {
 // Google identity token is looked up by the account its email claim names, as a listed caller of
 // that kind is, and held to its entry's projects the same way.
 func TestAGoogleEdgeListenerIsAnsweredItsProjectsRepositories(t *testing.T) {
-	const edgeGoogleAccount = "example-edge@example-project.iam.gserviceaccount.com"
-	google := oidctest.New(t)
-	key := google.PublishKey(t, "google-key")
-	verifier, err := oidc.New(context.Background(), google.URL(), machineAudience)
-	if err != nil {
-		t.Fatal(err)
-	}
-	edges := edgeListeners(t, "edge-listener/edge-g/PRIV=google:"+edgeGoogleAccount)
-	dispatch := repositoriesDispatch(t)
-	ts := newTestServerWith(t, func(d *api.Deps) {
-		d.GoogleAccountTokens = api.GoogleTokens{Verifier: verifier}
-		d.EdgeListeners = edges
-		d.ProjectRepositories = projectrepos.New(dispatch.URL, dispatch.Account, nil)
-	})
-	token := func(account string) string {
-		now := time.Now()
-		claims := google.Claims(account, machineAudience)
-		claims["email"], claims["email_verified"] = account, true
-		claims["iat"], claims["nbf"], claims["exp"] = now.Add(-5*time.Second).Unix(), now.Add(-5*time.Second).Unix(), now.Add(time.Hour).Unix()
-		return google.Mint(t, key, claims)
-	}
+	ts, _, token := googleEdgeServer(t, "edge-listener/edge-g/PRIV=google:"+edgeGoogleAccount)
 	for _, row := range []struct {
 		account, project string
 		status           int
@@ -395,4 +377,36 @@ func TestAGoogleEdgeListenerIsAnsweredItsProjectsRepositories(t *testing.T) {
 			requireRefused(t, status, body, row.status, row.code)
 		})
 	}
+}
+
+// edgeGoogleAccount is the Google service account the Google edge listener's entry names.
+const edgeGoogleAccount = "example-edge@example-project.iam.gserviceaccount.com"
+
+// googleEdgeServer is a broker whose edge listeners are those of services, a BROKER_NATS_SERVICES
+// value, which takes Google identity tokens for machineAudience from a stand-in Google issuer and
+// reads Dispatch's answers from repositoriesDispatch's stand-in; googleToken mints that issuer's
+// live identity token, with a verified email, for an account.
+func googleEdgeServer(t *testing.T, services string) (ts *testServer, dispatch *projectaccesstest.Server, googleToken func(account string) string) {
+	t.Helper()
+	google := oidctest.New(t)
+	key := google.PublishKey(t, "google-key")
+	verifier, err := oidc.New(context.Background(), google.URL(), machineAudience)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edges := edgeListeners(t, services)
+	dispatch = repositoriesDispatch(t)
+	ts = newTestServerWith(t, func(d *api.Deps) {
+		d.GoogleAccountTokens = api.GoogleTokens{Verifier: verifier}
+		d.EdgeListeners = edges
+		d.ProjectRepositories = projectrepos.New(dispatch.URL, dispatch.Account, nil)
+	})
+	googleToken = func(account string) string {
+		now := time.Now()
+		claims := google.Claims(account, machineAudience)
+		claims["email"], claims["email_verified"] = account, true
+		claims["iat"], claims["nbf"], claims["exp"] = now.Add(-5*time.Second).Unix(), now.Add(-5*time.Second).Unix(), now.Add(time.Hour).Unix()
+		return google.Mint(t, key, claims)
+	}
+	return ts, dispatch, googleToken
 }

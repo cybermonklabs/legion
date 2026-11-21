@@ -24,12 +24,9 @@ body: |-
   own connection: this release holds no edge listener's NATS grant, so where the service runs an
   edge-listener entry needs no NATS audience either. Every `BROKER_NATS_SERVICES` entry is now read
   once, when the configuration loads, and every check reads that one reading: an entry of no form
-  refuses the start for its form, before any check of its kind or account, where a malformed
-  edge-listener entry used to be refused as one needing `BROKER_K8S_OIDC_ISSUER`. The token
-  exchange's project check and this route read Dispatch through one read of it, so a token
-  Dispatch refuses, or a token file the broker cannot read, is the same error to both, and the
-  route's error log says so. The broker reads Dispatch's answer strictly: its two keys in their own
-  case, each once, and the list sorted, each repository once.
+  refuses the start for its form, before any check of its kind or account. The broker reads
+  Dispatch's answer strictly: its two keys in their own case, each once, and the list sorted, each
+  repository once.
 time: 2026-11-20T09:52:45Z
 custom:
     Issue: broker-project-repositories

@@ -12,16 +12,16 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/projectrepos"
-	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
 // standIn serves PRIV, whose issues resolve to acme/pub and acme/two, and EMPTY, whose issues
-// resolve to none.
+// resolve to none. Each also has a mapped list of its own, which the membership answer carries and
+// the repository answer must not: a client that read it would answer acme/mapped.
 func standIn(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
 	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
-		"PRIV":  {Visibility: "private", Repositories: []string{"acme/pub", "acme/two"}},
-		"EMPTY": {Visibility: "private"},
+		"PRIV":  {Visibility: "private", Repositories: []string{"acme/mapped"}, Resolved: []string{"acme/pub", "acme/two"}},
+		"EMPTY": {Visibility: "private", Repositories: []string{"acme/mapped"}},
 	}, nil)
 }
 
@@ -143,14 +143,15 @@ func TestProjectRepositoriesClientGivesUpAfterTwoSeconds(t *testing.T) {
 }
 
 // TestProjectRepositoriesClientAsksNothingWithoutItsToken: an account token the broker cannot read
-// is an error before Dispatch is asked.
+// is dispatchread.ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE, as it is to the
+// membership client, and Dispatch is asked nothing.
 func TestProjectRepositoriesClientAsksNothingWithoutItsToken(t *testing.T) {
 	server := standIn(t)
 	broken := errors.New("open /var/run/secrets/dispatch-access/token: no such file or directory")
 	client := projectrepos.New(server.URL, failingAccount{broken}, nil)
 	got, err := client.Repositories(t.Context(), "PRIV")
-	if !errors.Is(err, broken) || got != nil {
-		t.Fatalf("Repositories with an unreadable token = %q, %v; want an error wrapping the read's", got, err)
+	if !errors.Is(err, broken) || !errors.Is(err, dispatchread.ErrBrokerRefused) || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_TOKEN_FILE") || got != nil {
+		t.Fatalf("Repositories with an unreadable token = %q, %v; want ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE and wrapping the read's", got, err)
 	}
 	if calls := server.Calls(); calls != 0 {
 		t.Fatalf("Dispatch was asked %d times, want none", calls)
@@ -158,26 +159,17 @@ func TestProjectRepositoriesClientAsksNothingWithoutItsToken(t *testing.T) {
 }
 
 // TestProjectRepositoriesClientCallsARefusedTokenTheBrokersOwn: Dispatch answering 401 or 403 to
-// the broker's own account token, and a token file the broker cannot read, are
-// dispatchread.ErrBrokerRefused, as they are to the membership client: the broker's own credential
-// is broken, a misconfiguration and not Dispatch out of reach. A 503 is not.
+// the broker's own account token is dispatchread.ErrBrokerRefused naming the code, as it is to the
+// membership client: the broker's own credential is broken, a misconfiguration and not Dispatch
+// out of reach. A 503 is not.
 func TestProjectRepositoriesClientCallsARefusedTokenTheBrokersOwn(t *testing.T) {
+	server := standIn(t)
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
-		server := standIn(t)
 		server.SetAnswer(status, `{"code":"ACCESS_ACCOUNT_REQUIRED","error":"not an access account"}`)
 		got, err := clientOf(server).Repositories(t.Context(), "PRIV")
 		if !errors.Is(err, dispatchread.ErrBrokerRefused) || !strings.Contains(err.Error(), "ACCESS_ACCOUNT_REQUIRED") || got != nil {
 			t.Fatalf("Repositories answered %d = %q, %v; want ErrBrokerRefused naming the code, and no list", status, got, err)
 		}
-	}
-	server := standIn(t)
-	broken := errors.New("open /var/run/secrets/dispatch-access/token: no such file or directory")
-	_, err := projectrepos.New(server.URL, failingAccount{broken}, nil).Repositories(t.Context(), "PRIV")
-	if !errors.Is(err, dispatchread.ErrBrokerRefused) || !errors.Is(err, broken) || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_TOKEN_FILE") {
-		t.Fatalf("Repositories with an unreadable token = %v; want ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE and wrapping the read's", err)
-	}
-	if calls := server.Calls(); calls != 0 {
-		t.Fatalf("Dispatch was asked %d times with no token, want none", calls)
 	}
 	server.SetAnswer(http.StatusServiceUnavailable, `{"code":"REPOSITORIES_UNRESOLVED","error":"too deep"}`)
 	if _, err := clientOf(server).Repositories(t.Context(), "PRIV"); err == nil || errors.Is(err, dispatchread.ErrBrokerRefused) {
@@ -185,29 +177,41 @@ func TestProjectRepositoriesClientCallsARefusedTokenTheBrokersOwn(t *testing.T) 
 	}
 }
 
-// TestBothClientsOfOneDispatchReadItAlike: the broker's two clients of the Dispatch at
-// BROKER_PROJECT_ACCESS_URL, pointed at one Dispatch with one account as cmd/cipherd wires them,
-// read it through the one read (dispatchread): each is answered, and a bearer Dispatch refuses and
-// a token file the broker cannot read are dispatchread.ErrBrokerRefused to both alike.
-func TestBothClientsOfOneDispatchReadItAlike(t *testing.T) {
+// TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne: one Dispatch, read by both of the broker's
+// clients with one account as cmd/cipherd wires them, keeps two lists of a project's repositories
+// apart. The repository client answers the list the project's issues resolve to, and never the
+// list Dispatch maps to the project, which the membership client is answered on the same Dispatch;
+// a project none of whose issues resolves to a repository is [], whatever is mapped to it.
+func TestTheRepositoryAnswerIsTheIssuesListNotTheMappedOne(t *testing.T) {
 	server := standIn(t)
-	repositories, err := clientOf(server).Repositories(t.Context(), "PRIV")
-	if want := []string{"acme/pub", "acme/two"}; err != nil || !reflect.DeepEqual(repositories, want) {
-		t.Fatalf("Repositories(PRIV) = %q, %v; want %q", repositories, err, want)
+	for project, want := range map[string][]string{"PRIV": {"acme/pub", "acme/two"}, "EMPTY": {}} {
+		got, err := clientOf(server).Repositories(t.Context(), project)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("Repositories(%s) = %q, %v; want the issues' list %q, not the mapped one", project, got, err, want)
+		}
+		answer, err := projectaccess.New(server.URL, server.Account, nil).Access(t.Context(), project, "")
+		if err != nil || !reflect.DeepEqual(answer.Repositories, []string{"acme/mapped"}) {
+			t.Fatalf("Access(%s) from the same Dispatch with the same account = %q, %v; want its mapped list acme/mapped", project, answer.Repositories, err)
+		}
 	}
-	if _, err := projectaccess.New(server.URL, server.Account, nil).Access(t.Context(), "PRIV", ""); err != nil {
-		t.Fatalf("Access(PRIV) from the same Dispatch with the same account = %v, want an answer", err)
-	}
-	broken := errors.New("open /var/run/secrets/dispatch-access/token: no such file or directory")
-	for name, account := range map[string]ciphertoken.Account{
-		"a bearer Dispatch refuses":   projectaccesstest.StaticAccount("not-the-stand-ins-token"),
-		"a token file it cannot read": failingAccount{broken},
+}
+
+// TestARefusedAnswerIsQuotedAtMostSixtyFourBytes: a key or a value of Dispatch's answer that an
+// error quotes is cut to its first 64 bytes, so a key as long as the answer is never logged whole.
+func TestARefusedAnswerIsQuotedAtMostSixtyFourBytes(t *testing.T) {
+	long := strings.Repeat("k", 1000)
+	for name, body := range map[string]string{
+		"a long key":               `{"project":"PRIV","repositories":[],"` + long + `":1}`,
+		"a long project":           `{"project":"` + long + `","repositories":[]}`,
+		"a long repository":        `{"project":"PRIV","repositories":["` + long + `"]}`,
+		"a long repository, twice": `{"project":"PRIV","repositories":["a/` + long + `","a/` + long + `"]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, repositoriesErr := projectrepos.New(server.URL, account, nil).Repositories(t.Context(), "PRIV")
-			_, accessErr := projectaccess.New(server.URL, account, nil).Access(t.Context(), "PRIV", "")
-			if !errors.Is(repositoriesErr, dispatchread.ErrBrokerRefused) || !errors.Is(accessErr, dispatchread.ErrBrokerRefused) {
-				t.Fatalf("Repositories = %v and Access = %v; want both dispatchread.ErrBrokerRefused", repositoriesErr, accessErr)
+			server := standIn(t)
+			server.SetAnswer(http.StatusOK, body)
+			_, err := clientOf(server).Repositories(t.Context(), "PRIV")
+			if err == nil || !strings.Contains(err.Error(), strings.Repeat("k", 60)) || strings.Contains(err.Error(), strings.Repeat("k", 65)) {
+				t.Fatalf("the refusal = %v; want it to quote the first 64 bytes and no more", err)
 			}
 		})
 	}

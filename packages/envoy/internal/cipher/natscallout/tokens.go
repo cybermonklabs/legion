@@ -81,8 +81,10 @@ func unverifiedIssuer(raw string) (string, error) {
 // RequireAudiences refuses a list naming a service whose kind of platform token has no NATS
 // audience (k8sAudience for a Kubernetes account, googleAudience for a Google one): such a
 // service could never connect, so the broker's start refuses it naming the entry. An edge
-// listener's entry needs neither: the auth service refuses its connection by name (scopeGrant),
-// so no token of it is ever verified for a NATS audience.
+// listener's entry needs neither: no edge listener's connection is admitted whatever its token
+// (scopeGrant), so an audience would admit nothing; without one, decideService refuses its
+// connection at the token check (labelServiceToken) instead. Once natsgrant holds an edge
+// listener's grant, its audience decides whether it connects, and this exemption goes.
 func RequireAudiences(services []config.NATSService, k8sAudience, googleAudience string) error {
 	for _, entry := range services {
 		switch {

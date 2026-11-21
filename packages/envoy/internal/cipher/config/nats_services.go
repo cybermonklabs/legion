@@ -20,8 +20,8 @@ type NATSServiceKind string
 // The kinds of entry. Dispatch, a listener, a Legion daemon and the measurement job are services
 // the NATS auth service admits by their platform identity, each answered with its kind's grant of
 // natsgrant. An edge listener's entry is read for the projects it serves (NATSCallout.EdgeListeners),
-// whether or not the broker runs the auth service, and the auth service refuses its connection by
-// name: natsgrant holds no edge listener's grant yet.
+// whether or not the broker runs the auth service, and the auth service admits no connection of
+// it: natsgrant holds no edge listener's grant yet.
 const (
 	NATSDispatch     NATSServiceKind = "dispatch"
 	NATSListener     NATSServiceKind = "listener"
@@ -37,8 +37,9 @@ type NATSService struct {
 	Kind NATSServiceKind
 	// MachineID is the machine id the grant is built for, which Dispatch's and a listener's
 	// name their durable and queue group by. An edge listener's entry names one too, the machine
-	// it runs on: this build holds no edge listener's grant, and the auth service's refusal of its
-	// connection names that machine. Required for those three kinds and refused for the others.
+	// it runs on: this build holds no edge listener's grant, and the auth service's refusal by
+	// grant (natscallout's scopeGrant) names that machine. Required for those three kinds and
+	// refused for the others.
 	MachineID string
 	// Account is the platform account whose token the service presents: a ServiceAccount
 	// subject, or a Google account address.
@@ -120,7 +121,7 @@ func parseNATSService(text string) (NATSService, error) {
 		if machineID == noMachineID {
 			reason := "a " + string(entry.Kind) + "'s grant names its durable and its queue group by one"
 			if entry.Kind == NATSEdgeListener {
-				reason = "an edge listener's entry names the machine it runs on, which the auth service's refusal of its connection names"
+				reason = "an edge listener's entry names the machine it runs on, which the auth service's refusal of its connection by grant names"
 			}
 			return NATSService{}, fmt.Errorf("%s entry %q names no machine id: %s", NATSServicesVariable, text, reason)
 		}

@@ -1,15 +1,9 @@
 package api_test
 
 import (
-	"context"
 	"net/http"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/cipher/api"
-	"github.com/sjawhar/envoy/internal/cipher/projectrepos"
-	"github.com/sjawhar/envoy/internal/oidc"
-	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
 // TestAnEdgeListenerIsKnownByItsAccountsKindToo: an edge listener's entry names a Kubernetes
@@ -19,27 +13,7 @@ import (
 // neither reaches Dispatch; each edge listener's own token is answered its list, so the refusal is
 // the kind's and not the caller's.
 func TestAnEdgeListenerIsKnownByItsAccountsKindToo(t *testing.T) {
-	const edgeGoogleAccount = "example-edge@example-project.iam.gserviceaccount.com"
-	google := oidctest.New(t)
-	key := google.PublishKey(t, "google-key")
-	verifier, err := oidc.New(context.Background(), google.URL(), machineAudience)
-	if err != nil {
-		t.Fatal(err)
-	}
-	edges := edgeListeners(t, "edge-listener/edge-a/PRIV="+edgeAccount+" edge-listener/edge-g/OTHER=google:"+edgeGoogleAccount)
-	dispatch := repositoriesDispatch(t)
-	ts := newTestServerWith(t, func(d *api.Deps) {
-		d.GoogleAccountTokens = api.GoogleTokens{Verifier: verifier}
-		d.EdgeListeners = edges
-		d.ProjectRepositories = projectrepos.New(dispatch.URL, dispatch.Account, nil)
-	})
-	googleToken := func(account string) string {
-		now := time.Now()
-		claims := google.Claims(account, machineAudience)
-		claims["email"], claims["email_verified"] = account, true
-		claims["iat"], claims["nbf"], claims["exp"] = now.Add(-5*time.Second).Unix(), now.Add(-5*time.Second).Unix(), now.Add(time.Hour).Unix()
-		return google.Mint(t, key, claims)
-	}
+	ts, dispatch, googleToken := googleEdgeServer(t, "edge-listener/edge-a/PRIV="+edgeAccount+" edge-listener/edge-g/OTHER=google:"+edgeGoogleAccount)
 	for _, row := range []struct {
 		name, bearer, project string
 	}{

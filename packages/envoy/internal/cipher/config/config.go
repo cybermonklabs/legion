@@ -760,11 +760,12 @@ type Config struct {
 	// carry, verified against BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE
 	// the audience a service's Google identity token must carry, verified against
 	// BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a service entry whose kind of token
-	// has no audience is refused at start naming it, and an edge listener's entry, whose token the
-	// service never verifies, needs neither. A session presents its broker access token and needs
-	// neither. All unset, or BROKER_NATS_SERVICES alone holding only edge listeners'
-	// entries, the broker runs no auth service; any other set needs the URLs and the three seed
-	// files.
+	// has no audience is refused at start naming it. An edge listener's entry needs neither: no
+	// edge listener's connection is admitted whatever its token, so an audience would admit
+	// nothing, and without one its connection is refused at the token check. A session presents
+	// its broker access token and needs neither. All unset, or BROKER_NATS_SERVICES alone holding
+	// only edge listeners' entries, the broker runs no auth service; any other set needs the URLs
+	// and the three seed files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was
@@ -1525,10 +1526,7 @@ func mappedAccountRefusal(cfg *Config) error {
 	}
 	natsEntries := make(map[string]string)
 	for _, entry := range cfg.NATS.Services {
-		// A mapped account is a Kubernetes service account, which a Google entry never names.
-		if !entry.Google {
-			natsEntries[entry.Account] = entry.Text
-		}
+		natsEntries[entry.Account] = entry.Text
 	}
 	pairs := make(map[string]string)
 	for _, pair := range cfg.SessionAccountPairs {

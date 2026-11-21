@@ -17,7 +17,7 @@ const (
 
 // Each entry is read as <kind>/<machine id or ->/<* or ->=<account>, the account written as
 // BROKER_API_ACCOUNTS writes one, and keeps its own text for the refusals that name it.
-func TestParseServicesReadsEachEntry(t *testing.T) {
+func TestParseNATSServicesReadsEachEntry(t *testing.T) {
 	listener, daemon := "listener/dev-stack/*="+listenerAccount, "daemon/-/-="+daemonAccount
 	measure, dispatch := "measure/-/*=google:"+measureAccount, "dispatch/example-dispatch/*=system:serviceaccount:dispatch:dispatch"
 	services, err := ParseNATSServices(listener + "\n " + daemon + " " + measure + " " + dispatch)
@@ -36,7 +36,7 @@ func TestParseServicesReadsEachEntry(t *testing.T) {
 // An edge listener's entry names its machine id and, in place of a scope, the projects it serves,
 // comma separated: edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>. The projects are read
 // sorted, each once, and no other kind's entry carries any.
-func TestParseServicesReadsAnEdgeListenersProjects(t *testing.T) {
+func TestParseNATSServicesReadsAnEdgeListenersProjects(t *testing.T) {
 	edge, listener := "edge-listener/edge-a/PRIV,OTHER="+edgeAccount, "listener/host-a/*="+listenerAccount
 	services, err := ParseNATSServices(edge + " " + listener)
 	require.NoError(t, err)
@@ -63,7 +63,7 @@ func TestEdgeListenersAreTheEdgeListenerEntries(t *testing.T) {
 // The measurement job's grant holds a KV read, which no project scope can hold, and it reads no
 // project's messages, so its entry takes the whole grant and is refused at the broker's start
 // naming the entry when it asks for its exchange projects.
-func TestParseServicesRefusesProjectsForMeasure(t *testing.T) {
+func TestParseNATSServicesRefusesProjectsForMeasure(t *testing.T) {
 	_, err := ParseNATSServices("measure/-/-=google:" + measureAccount)
 	require.ErrorContains(t, err, `"measure/-/-=google:`+measureAccount+`"`)
 	require.ErrorContains(t, err, "measure")
@@ -73,7 +73,7 @@ func TestParseServicesRefusesProjectsForMeasure(t *testing.T) {
 }
 
 // Every entry the broker could not serve is refused at start, naming the entry.
-func TestParseServicesRefusals(t *testing.T) {
+func TestParseNATSServicesRefusals(t *testing.T) {
 	for name, raw := range map[string]string{
 		"an unknown kind":                            "relay/-/*=" + daemonAccount,
 		"a dispatch entry with no machine id":        "dispatch/-/*=" + daemonAccount,

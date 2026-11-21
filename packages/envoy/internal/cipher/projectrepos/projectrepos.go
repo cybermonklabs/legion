@@ -1,13 +1,8 @@
 // Package projectrepos is the broker's read of Dispatch's answer to "which repositories do a
 // project's issues resolve to" (GET /api/v1/access/projects/{key}/repositories), which the broker
 // relays to an edge listener (GET /v1/project-repositories, internal/cipher/api). That route is
-// Dispatch's (#4635) and is not in this tree yet. Dispatch computes the answer from the project's
-// issues (refs.ProjectRepositories). The rule by which its GitHub proxy hides a repository walks
-// the same terms, and still differs from the answer where refs.ProjectRepositories says it does:
-// a repository the project maps that no issue resolves to, an issue whose parent chain the walk
-// cannot finish, and a rename. The answer reads the same rule text the GitHub proxy reads once
-// #4177's rule is the route's; until then an edge listener's set and the proxy's can differ in
-// those three cases.
+// Dispatch's (#4635) and is not in this tree yet. Its answer and Dispatch's GitHub proxy read one
+// rule of which repositories a project owns: the ones the project's issues resolve to.
 //
 // Nothing here is kept: every read asks Dispatch, so an answer is never older than the call that
 // relays it, and anything but a whole answer about the project asked is an error, never a list, a
@@ -111,20 +106,17 @@ func readAnswer(body []byte, project string) ([]string, error) {
 				return nil, refused("names no project: " + err.Error())
 			}
 		case key == "repositories" && repositories == nil:
+			// null leaves list nil, and [] makes it an empty list that is not nil.
 			var list []string
-			raw := json.RawMessage{}
-			if err := decoder.Decode(&raw); err != nil {
-				return nil, refused("does not decode: " + err.Error())
-			}
-			if string(raw) == "null" {
-				return nil, refused("carries no list of repositories")
-			}
-			if err := json.Unmarshal(raw, &list); err != nil {
+			if err := decoder.Decode(&list); err != nil {
 				return nil, refused("carries no list of repository names: " + err.Error())
+			}
+			if list == nil {
+				return nil, refused("carries no list of repositories")
 			}
 			repositories = &list
 		default:
-			return nil, refused(fmt.Sprintf("holds the key %q, which is neither project nor repositories or is written twice", key))
+			return nil, refused(fmt.Sprintf("holds the key %q, which is neither project nor repositories or is written twice", clip(key)))
 		}
 	}
 	if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
@@ -137,17 +129,17 @@ func readAnswer(body []byte, project string) ([]string, error) {
 	case answered == nil:
 		return nil, refused("names no project")
 	case *answered != project:
-		return nil, fmt.Errorf("projectrepos: dispatch answered about %q, asked about %s", *answered, project)
+		return nil, fmt.Errorf("projectrepos: dispatch answered about %q, asked about %s", clip(*answered), project)
 	case repositories == nil:
 		return nil, refused("carries no list of repositories")
 	}
 	list := *repositories
 	for index, repository := range list {
 		if !ownerName(repository) {
-			return nil, refused(fmt.Sprintf("lists %q, which is no owner/name", repository))
+			return nil, refused(fmt.Sprintf("lists %q, which is no owner/name", clip(repository)))
 		}
 		if index > 0 && list[index-1] >= repository {
-			return nil, refused(fmt.Sprintf("lists %q after %q: the list is sorted byte-wise and names each repository once", repository, list[index-1]))
+			return nil, refused(fmt.Sprintf("lists %q after %q: the list is sorted byte-wise and names each repository once", clip(repository), clip(list[index-1])))
 		}
 	}
 	return list, nil
@@ -161,4 +153,16 @@ func ownerName(repository string) bool {
 		return false
 	}
 	return !strings.ContainsFunc(repository, func(r rune) bool { return r <= ' ' || r == 0x7f })
+}
+
+// maxQuoted bounds how much of a string from Dispatch's answer an error quotes, so that a key or a
+// value as long as the answer itself is never logged whole.
+const maxQuoted = 64
+
+// clip is text, or its first maxQuoted bytes when it is longer.
+func clip(text string) string {
+	if len(text) > maxQuoted {
+		return text[:maxQuoted]
+	}
+	return text
 }

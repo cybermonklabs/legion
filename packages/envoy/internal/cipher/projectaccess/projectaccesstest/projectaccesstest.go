@@ -34,8 +34,9 @@ const (
 )
 
 // Row is one project as Dispatch holds it: whether it is public or private, its owner, the
-// people its access list names, and its repositories: the ones Dispatch's membership answer maps
-// to it, which are also the ones its repository answer says its issues resolve to.
+// people its access list names, and two lists of repositories Dispatch keeps apart: the ones its
+// membership answer maps to the project, and the ones its repository answer says the project's
+// issues resolve to.
 type Row struct {
 	// Visibility is "public" or "private".
 	Visibility string
@@ -43,8 +44,12 @@ type Row struct {
 	Owner string
 	// Listed are the lowercase logins the project's access list names.
 	Listed []string
-	// Repositories are the "owner/name" repositories of the project, answered by both routes.
+	// Repositories are the "owner/name" repositories Dispatch maps to the project, which the
+	// membership answer carries.
 	Repositories []string
+	// Resolved are the "owner/name" repositories the project's issues resolve to, which the
+	// repository answer carries, sorted.
+	Resolved []string
 }
 
 // Server is the stand-in: URL is its base, Token the one bearer it takes, and Account that bearer
@@ -89,7 +94,7 @@ func NewServer(t testing.TB, rows map[string]Row, people map[string]string) *Ser
 	}
 	s := &Server{Token: "dispatch-access-" + hex.EncodeToString(bearer[:]), rows: map[string]Row{}, people: map[string]string{}}
 	for key, row := range rows {
-		row.Listed, row.Repositories = slices.Clone(row.Listed), slices.Clone(row.Repositories)
+		row.Listed, row.Repositories, row.Resolved = slices.Clone(row.Listed), slices.Clone(row.Repositories), slices.Clone(row.Resolved)
 		s.rows[key] = row
 	}
 	for login, kind := range people {
@@ -118,16 +123,14 @@ func (s *Server) SetDown(down bool) {
 	s.down = down
 }
 
-// SetRepositories makes project's repositories list from now on, a copy of it, which both routes
-// answer; an empty list is answered as []. A project the stand-in does not hold is added, private.
+// SetRepositories makes the list project's issues resolve to, which the repository route answers,
+// a copy of list from now on; an empty list is answered as []. The project's mapped list, which
+// the membership answer carries, does not change.
 func (s *Server) SetRepositories(project string, list []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	row, held := s.rows[project]
-	if !held {
-		row.Visibility = "private"
-	}
-	row.Repositories = slices.Clone(list)
+	row := s.rows[project]
+	row.Resolved = slices.Clone(list)
 	s.rows[project] = row
 }
 
@@ -192,16 +195,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"code": "PROJECT_NOT_FOUND", "error": "no such project"})
 			return
 		}
+		if repositories {
+			// Dispatch's repository answer: the project and the list its issues resolve to,
+			// sorted byte-wise, [] for none. The mapped list is the membership answer's alone.
+			resolved := append([]string{}, row.Resolved...)
+			slices.Sort(resolved)
+			writeJSON(w, http.StatusOK, map[string]any{"project": key, "repositories": resolved})
+			return
+		}
 		list := row.Repositories
 		if list == nil {
 			list = []string{}
-		}
-		if repositories {
-			// Dispatch's repository answer: the project and its list, sorted byte-wise.
-			list = slices.Clone(list)
-			slices.Sort(list)
-			writeJSON(w, http.StatusOK, map[string]any{"project": key, "repositories": list})
-			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"project":      key,
