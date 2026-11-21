@@ -7,6 +7,7 @@ import {
   realpathSync,
   writeFileSync,
 } from "node:fs";
+import { endianness } from "node:os";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -339,6 +340,94 @@ if (!otherLoopback) {
     `Skipped the same-port row of ${import.meta.path}: this host lets no socket listen on 127.0.0.2.`
   );
 }
+// A python3 that listens on 1.0.0.127 at a port the kernel chooses, prints the port, and stays: an
+// address no interface holds, which IP_FREEBIND (15 on Linux) lets a socket bind.
+const freeBound = `import socket, time
+s = socket.socket()
+s.setsockopt(socket.SOL_IP, getattr(socket, "IP_FREEBIND", 15), 1)
+s.bind(("1.0.0.127", 0))
+s.listen()
+print(s.getsockname()[1], flush=True)
+time.sleep(60)`;
+// freeBind says whether this host lets that socket listen; a host that does not (no python3, or a
+// kernel that refuses IP_FREEBIND) skips the row that needs it, by this name.
+const freeBind =
+  !withoutPython &&
+  Bun.spawnSync(["python3", "-c", freeBound.replace("time.sleep(60)", "")], {
+    stdout: "ignore",
+    stderr: "ignore",
+  }).exitCode === 0;
+if (!freeBind) {
+  console.warn(
+    `Skipped the byte-order row of ${import.meta.path}: this host lets no python3 socket listen on 1.0.0.127 (IP_FREEBIND).`
+  );
+}
+// spelled is how /proc/net/tcp writes the IPv4 address ADDRESS: the hexadecimal of its 32 bits in
+// this host's byte order, so 127.0.0.1 is 0100007F on a little-endian host.
+function spelled(address: string): string {
+  const bytes = address
+    .split(".")
+    .map((b) => Number(b).toString(16).toUpperCase().padStart(2, "0"));
+  return (endianness() === "LE" ? bytes.reverse() : bytes).join("");
+}
+// onlyTheLoopbackHolder is a row's whole check that listening_holders counts only the socket on
+// 127.0.0.1:PORT: PROGRAM, another process, listens on OTHER at a port the kernel chooses and
+// prints it, and this test process then listens on 127.0.0.1 with that port. That order cannot
+// itself collide: the other order, 127.0.0.1 first, failed when a third process already held OTHER
+// at the port the kernel then gave 127.0.0.1. A port some process already holds on 127.0.0.1, or
+// on every address, refuses this listen, and the row takes another from a new process, up to five
+// times. Both LISTEN rows are read from /proc/net/tcp before the walk, which must name this test
+// process alone.
+async function onlyTheLoopbackHolder(name: string, program: string[], other: string) {
+  const work = join(dir, name);
+  mkdirSync(work);
+  let listener: { port: number; stop(closeActiveConnections?: boolean): void } | undefined;
+  const refused: string[] = [];
+  try {
+    for (let attempt = 0; attempt < 5 && listener === undefined; attempt++) {
+      const holder = Bun.spawn(ownGroup(program), {
+        cwd: dir,
+        env: { PATH: process.env.PATH ?? "" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      started.push(holder.pid);
+      const said = new TextDecoder().decode((await holder.stdout.getReader().read()).value);
+      const port = Number(said.trim());
+      if (!Number.isInteger(port) || port <= 0) {
+        holder.kill("SIGKILL");
+        throw new Error(
+          `the process listening on ${other} printed ${JSON.stringify(said)}, not its port: ${await new Response(holder.stderr).text()}`
+        );
+      }
+      try {
+        listener = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
+      } catch (error) {
+        refused.push(`127.0.0.1:${port}: ${(error as Error).message}`);
+        holder.kill("SIGKILL");
+      }
+    }
+    expect({ refused, listening: listener !== undefined }).toEqual({ refused, listening: true });
+    const port = listener?.port ?? 0;
+    const hex = port.toString(16).toUpperCase().padStart(4, "0");
+    const listening = readFileSync("/proc/net/tcp", "utf8")
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .filter((fields) => fields[3] === "0A" && fields[1]?.endsWith(`:${hex}`))
+      .map((fields) => fields[1]);
+    expect(listening).toEqual(
+      expect.arrayContaining([`${spelled("127.0.0.1")}:${hex}`, `${spelled(other)}:${hex}`])
+    );
+    const r = harness(work, `listening_holders ${port}`);
+    expect({ code: r.code, out: r.out, err: r.err }).toEqual({
+      code: 0,
+      out: `${process.pid}\n`,
+      err: "",
+    });
+  } finally {
+    listener?.stop(true);
+  }
+}
 
 test.skipIf(skip || !otherLoopback)(
   "listening_holders counts only the socket on 127.0.0.1:PORT: one another process listens with on the same port of another loopback address is none of it",
@@ -347,61 +436,26 @@ test.skipIf(skip || !otherLoopback)(
     // on at another loopback address. On a devbox a Go test (buckets.test) listened on
     // 127.162.56.110:41869 while the killed-reader row's own listener had 127.0.0.1:41869, and a
     // count of every LISTEN row with that port read "2 sockets listen" and failed the row. Here the
-    // collision is made every time, in the order that cannot itself collide: another process (a bun
-    // of its own) listens on 127.0.0.2 with a port the kernel chooses and prints it, and this test
-    // process then listens on 127.0.0.1 with that port. The other order, 127.0.0.1 first, failed
-    // when a third process already held 127.0.0.2 at the port the kernel then gave 127.0.0.1. A port
-    // some process already holds on 127.0.0.1, or on every address, refuses this listen; the row
-    // then takes another from a new process, up to five times. Both LISTEN rows are read from
-    // /proc/net/tcp before the walk.
-    const work = join(dir, "same-port");
-    mkdirSync(work);
-    let listener: { port: number; stop(closeActiveConnections?: boolean): void } | undefined;
-    const refused: string[] = [];
-    try {
-      for (let attempt = 0; attempt < 5 && listener === undefined; attempt++) {
-        const other = Bun.spawn(
-          ownGroup([
-            process.execPath,
-            "-e",
-            'console.log(Bun.listen({ hostname: "127.0.0.2", port: 0, socket: { data() {} } }).port); setTimeout(() => {}, 60000);',
-          ]),
-          { cwd: dir, env: { PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" }
-        );
-        started.push(other.pid);
-        const said = new TextDecoder().decode((await other.stdout.getReader().read()).value);
-        const port = Number(said.trim());
-        if (!Number.isInteger(port) || port <= 0) {
-          other.kill("SIGKILL");
-          throw new Error(
-            `the process listening on 127.0.0.2 printed ${JSON.stringify(said)}, not its port: ${await new Response(other.stderr).text()}`
-          );
-        }
-        try {
-          listener = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
-        } catch (error) {
-          refused.push(`127.0.0.1:${port}: ${(error as Error).message}`);
-          other.kill("SIGKILL");
-        }
-      }
-      expect({ refused, listening: listener !== undefined }).toEqual({ refused, listening: true });
-      const port = listener?.port ?? 0;
-      const hex = port.toString(16).toUpperCase().padStart(4, "0");
-      const listening = readFileSync("/proc/net/tcp", "utf8")
-        .split("\n")
-        .map((line) => line.trim().split(/\s+/))
-        .filter((fields) => fields[3] === "0A" && fields[1]?.endsWith(`:${hex}`))
-        .map((fields) => fields[1]);
-      expect(listening).toEqual(expect.arrayContaining([`0100007F:${hex}`, `0200007F:${hex}`]));
-      const r = harness(work, `listening_holders ${port}`);
-      expect({ code: r.code, out: r.out, err: r.err }).toEqual({
-        code: 0,
-        out: `${process.pid}\n`,
-        err: "",
-      });
-    } finally {
-      listener?.stop(true);
-    }
+    // other address is 127.0.0.2, held by a bun of its own.
+    await onlyTheLoopbackHolder(
+      "same-port",
+      [
+        process.execPath,
+        "-e",
+        'console.log(Bun.listen({ hostname: "127.0.0.2", port: 0, socket: { data() {} } }).port); setTimeout(() => {}, 60000);',
+      ],
+      "127.0.0.2"
+    );
+  }
+);
+
+test.skipIf(skip || !freeBind)(
+  "listening_holders reads 127.0.0.1 in this host's byte order: a socket on 1.0.0.127, the other order's spelling of it, is none of it",
+  async () => {
+    // /proc/net/tcp writes 127.0.0.1 as 0100007F on a little-endian host, and 7F000001 there is
+    // 1.0.0.127; a read that took both spellings counted a socket on 1.0.0.127:PORT beside the one
+    // on 127.0.0.1:PORT and read "2 sockets listen".
+    await onlyTheLoopbackHolder("byte-order", ["python3", "-c", freeBound], "1.0.0.127");
   }
 );
 

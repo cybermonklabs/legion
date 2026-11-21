@@ -190,25 +190,37 @@ port_answers() {
 # root of its own, scripts/e2e/lib/proc-root.ts). A socket on the same port of another address is
 # none of it: the kernel's bind of port 0 on 127.0.0.1 hands out a port another process already
 # listens on at another loopback address, as a Go test of this box does on a random 127.x.y.z, and
-# a count of every row with that port read two sockets and failed. The address is the table's
-# hexadecimal of the address in host byte order, 0100007F on a little-endian host and 7F000001 on
-# a big-endian one. It fails with 1 when no socket listens on 127.0.0.1:PORT, or more than one
-# does, and with 2, saying why, when /proc/net/tcp cannot be read, so an unread table is never
-# read as a port nothing listens on, and when the proc root lists no process at all.
+# a count of every row with that port read two sockets and failed. The table writes an address as
+# the hexadecimal of its 32 bits in the host's byte order: 127.0.0.1 is 0100007F on a little-endian
+# host and 7F000001 on a big-endian one, and the other spelling is 1.0.0.127 there, an address a
+# socket can hold too (IP_FREEBIND), so each call reads the order (od of the bytes 01 00 as one
+# 16-bit word) and takes the one spelling. It fails with 1 when no socket listens on
+# 127.0.0.1:PORT, or more than one does, and with 2, saying why, when /proc/net/tcp cannot be read,
+# so an unread table is never read as a port nothing listens on, when od does not tell the byte
+# order, and when the proc root lists no process at all.
 # The shell's glob hands the <pid>/fd entries to find on stdin (-files0-from -), never as its
 # arguments: as arguments, past ARG_MAX (about 80,000 processes), find could not start, and the
 # `|| true` this had turned that E2BIG into no holder at all. An fd directory this user may not read
 # (another user's process) or whose process ended during the walk is none of the answer; any other
 # complaint of the walk's (proc_walk_complaint) prints and fails with 2.
 listening_holders() {
-  local proc=${proc_root:-/proc} inodes err status=0 complaint holder
+  local proc=${proc_root:-/proc} inodes err status=0 complaint holder order loopback
   local -a holders=() entries=()
   [ -r /proc/net/tcp ] || {
     echo "listening_holders: /proc/net/tcp cannot be read, so the socket listening on 127.0.0.1:$1 was not looked for" >&2
     return 2
   }
-  inodes=$(awk -v port="$(printf '%04X' "$1")" \
-    '$4 == "0A" && ($2 == "0100007F:" port || $2 == "7F000001:" port) { print $10 }' /proc/net/tcp) || {
+  order=$(printf '\1\0' | od -An -tx2)
+  case "$order" in
+    *0001*) loopback=0100007F ;;
+    *0100*) loopback=7F000001 ;;
+    *)
+      echo "listening_holders: od read the bytes 01 00 as '$order', not this host's byte order, so the socket listening on 127.0.0.1:$1 was not looked for" >&2
+      return 2
+      ;;
+  esac
+  inodes=$(awk -v address="$loopback:$(printf '%04X' "$1")" \
+    '$4 == "0A" && $2 == address { print $10 }' /proc/net/tcp) || {
     echo "listening_holders: awk could not read /proc/net/tcp, so the socket listening on 127.0.0.1:$1 was not looked for" >&2
     return 2
   }
