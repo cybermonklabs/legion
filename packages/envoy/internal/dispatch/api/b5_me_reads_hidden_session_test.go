@@ -17,14 +17,17 @@ import (
 // browser sees both projects, so GET /api/v1/me/replies?kind=agent holds both replies, GET
 // /api/v1/me/agents/state counts each unread and names each pin, and her event log holds the
 // user_agent_state.updated of each pin. Her token that lists no project and her token that lists
-// PUB see PUB alone, so each of those reads holds session-pub alone: no row, total, unread count,
-// pin or state event of session-priv's conversation, which the thread read answers as missing
-// too. With PRIV public again, carol's browser and her token that lists no project see every
-// object and read both, as every caller did before a project could be private (R9).
+// PUB see PUB alone, so each of those reads holds session-pub alone, whose listener lists PUB:
+// no row, total, unread count, pin or state event of session-priv's conversation, which the
+// thread read answers as missing too. With PRIV public again, carol's browser and her token that
+// lists no project see every object and read both, as every caller did before a project could be
+// private (R9).
 func TestTheMeReadsHoldNoConversationOfAHiddenSession(t *testing.T) {
-	listener, _ := newBroadcastListener(t, privateRoster)
+	listener, _ := newBroadcastListener(t, privateRosterListed)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)
+	// A list of the agents stores the listener's list, whose projects the content rule reads.
+	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
 	const callerCarolPubToken privateCaller = "carol's token that lists PUB"
 	mintListingToken(t, seed, callerCarolPubToken, seedCarol, []string{seedPublic})
 

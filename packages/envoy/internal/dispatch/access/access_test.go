@@ -243,7 +243,7 @@ func TestARestrictedMemberIsNeverAdmittedByAGroup(t *testing.T) {
 			t.Errorf("%s sees OTHER = %t, want %t: OTHER lists only the group crew, and %s is a member of it", test.person, got, test.sees, test.person)
 		}
 		var listed bool
-		if err := database.Pool.QueryRow(ctx, `select `+PersonSeesProjectSQL("$1", "(select member_kind from people where email = $1)", "p")+` from projects p where p.key = 'OTHER'`,
+		if err := database.Pool.QueryRow(ctx, `select `+store.PersonSeesProjectSQL("$1", "(select member_kind from people where email = $1)", "p")+` from projects p where p.key = 'OTHER'`,
 			test.person).Scan(&listed); err != nil {
 			t.Fatalf("PersonSeesProjectSQL(%s): %v", test.person, err)
 		}
@@ -257,7 +257,7 @@ func TestARestrictedMemberIsNeverAdmittedByAGroup(t *testing.T) {
 // statement that binds one says so in pg_stat_statements and in every census that reads SQL.
 func TestEverySQLFragmentStartsWithTheMarker(t *testing.T) {
 	for name, fragment := range map[string]string{
-		"PersonSeesProjectSQL":       PersonSeesProjectSQL("$1", "$2", "p"),
+		"PersonSeesProjectSQL":       store.PersonSeesProjectSQL("$1", "$2", "p"),
 		"VisibleProjectsSQL":         VisibleProjectsSQL(),
 		"ProjectClause":              ProjectClause("p.key", "$1"),
 		"OpenClause":                 OpenClause("$1"),
@@ -356,11 +356,21 @@ func passes(callers ...string) map[string]bool {
 // A conversation that names no party (null parties, an empty list, a direct message whose
 // node Dispatch does not hold) passes no viewer but the server's while a project is private.
 //
+// A conversation is its sessions' content, so every session party must pass SessionContentClause
+// too, the agent view's rule. ses_pub, tied to alice, who sees no private project, and ses_priv,
+// tied to bob alone and listed with PRIV, pass it wherever they pass SessionClause. ses_pub_carol
+// wrote in PUB alone, so every open viewer reads it in the agents list (SessionClause), but carol
+// proved it and carol sees PRIV: its conversations reach only the viewers that see PRIV too, carol
+// and her token that lists PRIV. That holds for a conversation whose party the viewer is: alice
+// does not read her own conversation with ses_pub_carol.
+//
 // With no private project every session, role and conversation reads as before a project could be
-// private (R9): an open viewer reads each one, and a viewer that is not open reads a session only
-// for a pair in a project it sees and a role only through such a session holding it. The one
-// exception is the conversation rule above, which holds a restricted member to the sessions of its
-// projects whatever is private: bob does not read his conversation with ses_pub.
+// private for an open viewer (R9): an open viewer reads each one, and a viewer that is not open
+// reads a session only for a pair in a project it sees and a role only through such a session
+// holding it. A restricted member is outside R9 (it holds where each person is a full member), and
+// the conversation rule above holds it to the sessions of its projects whatever is private: bob
+// does not read his conversation with ses_pub, and reads his conversation with ses_priv because
+// his own person proved ses_priv and its listener lists PRIV alone (SessionContentClause).
 func TestTheClausesOverTheSeededCallers(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
@@ -370,13 +380,18 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 	// token that lists PRIV, ses_new_pub with one that lists PUB, ses_new_mixed with one that lists
 	// PRIV and PUB, ses_new_empty with one that lists no project ([]), and ses_new_none with no
 	// projects key, which a listener that does not record a session's projects sends. ses_neither
-	// has neither a pair nor a record.
+	// has neither a pair nor a record. It lists ses_priv's token too, which lists PRIV: SessionClause
+	// reads a record only for a session with no pair, and the content rule reads it for every one.
+	// The ties (session_owners) are the people whose credentials proved a session: ses_pub alice's,
+	// ses_priv bob's and ses_pub_carol carol's.
 	if _, err := database.Pool.Exec(ctx, `
 		insert into session_projects_filled default values;
 		insert into session_projects (session_id, project_key) values ('ses_priv', 'PRIV'), ('ses_pub', 'PUB'), ('ses_both', 'PUB'), ('ses_both', 'PRIV'),
-			('ses_priv_other', 'PRIV'), ('ses_priv_other', 'OTHER');
+			('ses_priv_other', 'PRIV'), ('ses_priv_other', 'OTHER'), ('ses_pub_carol', 'PUB');
+		insert into session_owners (session_id, login) values ('ses_pub', 'alice@example.com'), ('ses_priv', 'bob@other.example'),
+			('ses_pub_carol', 'carol@example.com');
 		insert into route_roster (answered, sessions, sent_at, expires_at) values (true,
-			'[{"session_id":"ses_new_priv","projects":["PRIV"]},{"session_id":"ses_new_pub","projects":["PUB"]},{"session_id":"ses_new_mixed","projects":["PRIV","PUB"]},{"session_id":"ses_new_empty","projects":[]},{"session_id":"ses_new_none"}]',
+			'[{"session_id":"ses_new_priv","projects":["PRIV"]},{"session_id":"ses_new_pub","projects":["PUB"]},{"session_id":"ses_new_mixed","projects":["PRIV","PUB"]},{"session_id":"ses_new_empty","projects":[]},{"session_id":"ses_new_none"},{"session_id":"ses_priv","projects":["PRIV"]}]',
 			now(), now() + interval '1 hour');
 		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event) values
 			('role', 'priv-architect', 'held_by', 'session', 'ses_priv', now(), '{}', 0),
@@ -438,6 +453,11 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 		{"PartyClause bob and ses_pub", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_pub"}, passes(byAlice, byCarol, byCarolPriv, byCarolUnlisted, byShared), openAnd()},
 		{"PartyClause bob and ses_priv", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_priv"}, passes(byBob, byBobPriv, byCarol, byCarolPriv), openAnd(byBob, byBobPriv)},
 		{"PartyClause carol and ses_priv", PartyClause("$2", "$1"), []string{"person:" + carol, "session:ses_priv"}, passes(byCarol, byCarolPriv), openAnd()},
+		// The content rule: ses_pub_carol is in the agents list of every open viewer, and its
+		// conversations reach only those who see PRIV, which its person, carol, sees; a party too.
+		{"SessionClause ses_pub_carol", SessionClause("$2", "$1"), "ses_pub_carol", passes(byAlice, byCarol, byCarolPriv, byCarolUnlisted, byShared), openAnd()},
+		{"PartyClause carol and ses_pub_carol", PartyClause("$2", "$1"), []string{"person:" + carol, "session:ses_pub_carol"}, passes(byCarol, byCarolPriv), openAnd()},
+		{"PartyClause alice and ses_pub_carol", PartyClause("$2", "$1"), []string{"person:" + alice, "session:ses_pub_carol"}, passes(byCarol, byCarolPriv), openAnd()},
 		{"PartyClause of no stated parties", PartyClause("$2::text[]", "$1"), []string(nil), passes(), openAnd()},
 		{"PartyClause of an empty list of parties", PartyClause("$2::text[]", "$1"), []string{}, passes(), openAnd()},
 		{"PartyClause of a direct message whose node Dispatch does not hold", PartyClause(MessagePartiesSQL("$2::text"), "$1"),

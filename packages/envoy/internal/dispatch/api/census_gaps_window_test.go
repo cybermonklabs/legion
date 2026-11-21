@@ -123,10 +123,12 @@ func sqlHolding(fragments ...string) func(string) bool {
 	}
 }
 
-// gapSeed is verification v16's seed with a conversation of an agent of carol's: the session
-// gapSession, placed in PUB alone, so alice reads it; alice's direct message to it; a file of its
-// conversation; and, citing that file, a comment on PUB's issue and a document of PUB, whose
-// mention stores an excerpt.
+// gapSeed is verification v16's seed with a conversation of an agent of alice's: the session
+// gapSession, placed in PUB alone and tied to alice (session_owners, as a proved write of her
+// credential ties it), who sees no private project, so alice reads it and its content
+// (access.SessionContentClause); alice's direct message to it; a file of its conversation; and,
+// citing that file, a comment on PUB's issue and a document of PUB, whose mention stores an
+// excerpt.
 type gapSeed struct {
 	privateSeed
 	window          *gapWindow
@@ -149,6 +151,10 @@ func seedGapWindow(t *testing.T) *gapSeed {
 	if _, err := seed.database.Pool.Exec(ctx, `insert into session_projects (session_id, project_key) values ($1, $3), ($2, $3)`,
 		gapSession, gapPeer, seedPublic); err != nil {
 		t.Fatalf("place the sessions in PUB: %v", err)
+	}
+	if _, err := seed.database.Pool.Exec(ctx, `insert into session_owners (session_id, login) values ($1, $3), ($2, $3)`,
+		gapSession, gapPeer, seedAlice); err != nil {
+		t.Fatalf("tie the sessions to alice: %v", err)
 	}
 	seed.direct = createdID(t, seed.mustRequest(t, callerAlice, http.MethodPost, "/api/v1/agents/"+gapSession+"/messages", map[string]any{
 		"body": "Are you still on the build?", "delivery": "btw",

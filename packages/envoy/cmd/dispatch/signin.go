@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/weborigin"
@@ -348,8 +349,10 @@ func parseOutsideOrigin(raw string, testHooks bool) (string, error) {
 // checkOutsideOrigin refuses an outside origin that is not a second origin beside serverURL, the
 // canonical one (DISPATCH_SERVER_URL, or dispatch.serverUrl in envoy.json): one with no canonical
 // origin, and one on the canonical origin's host, whatever the port, since a browser keeps one
-// host's cookies for every port of it and a request's Host decides which origin answers. Main
-// checks it once the canonical origin resolves; an empty outsideOrigin passes.
+// host's cookies for every port of it and a request's Host decides which origin answers. The hosts
+// are compared as the router compares them (routes.HostName: no case, no trailing dots), so a
+// canonical host written with a trailing dot is the outside origin's too. Main checks it once the
+// canonical origin resolves; an empty outsideOrigin passes.
 func checkOutsideOrigin(outsideOrigin, serverURL string) error {
 	if outsideOrigin == "" {
 		return nil
@@ -362,7 +365,7 @@ func checkOutsideOrigin(outsideOrigin, serverURL string) error {
 	if err != nil {
 		return fmt.Errorf("DISPATCH_OUTSIDE_ORIGIN: %w", err)
 	}
-	if strings.EqualFold(outside.Hostname(), canonical.Hostname()) {
+	if routes.HostName(outside.Hostname()) == routes.HostName(canonical.Hostname()) {
 		return fmt.Errorf("DISPATCH_OUTSIDE_ORIGIN: its host %s is DISPATCH_SERVER_URL's; the outside origin must be on another host", outside.Hostname())
 	}
 	return nil

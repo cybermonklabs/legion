@@ -260,7 +260,9 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 		bus := &recordingBus{}
 		handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: provisioned}, bus)
 		// A deferred trigger refuses the commit of any write that makes a project private, after
-		// every statement of it, the record's included, has run.
+		// every statement of it, the record's included, has run. The route answers that refused
+		// commit 500, so the request log line `PATCH /api/v1/projects/PRIV/access ... status=500`
+		// this subtest prints is the fault it plants here, not a defect.
 		if _, err := database.Pool.Exec(context.Background(), `
 			create function refuse_private_commit() returns trigger language plpgsql as $$
 			begin

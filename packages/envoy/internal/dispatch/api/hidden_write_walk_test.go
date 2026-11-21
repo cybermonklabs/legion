@@ -529,6 +529,13 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 		map[string]any{"actor": map[string]string{"kind": "session", "id": "s1"}}, http.StatusOK)
 	mintListingToken(t, seed, callerAlicePubToken, seedAlice, []string{seedPublic})
 	sayBrokered(seed, callerAliceNamedToken, "s-alice-named", seedPublic)
+	// Dispatch ties a broker-issued token's session to its person on the first request it verifies
+	// (tieBrokerSession), whatever the request names, and the walk compares two calls of one
+	// caller by the work each does: one read ties s-alice-named to alice before the walk, so
+	// neither call of a pair is the first.
+	if response := seed.request(t, callerAliceNamedToken, http.MethodGet, "/api/v1/issues/"+seed.issue[seedPublic], nil); response.Code != http.StatusOK {
+		t.Fatalf("alice's broker token's first read: %d %s", response.Code, response.Body.String())
+	}
 	// s-pub acts in PUB alone, through the shared token, which sees PUB: a session hidden from
 	// every caller that sees PRIV alone.
 	createdID(t, seed.request(t, callerSharedToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",

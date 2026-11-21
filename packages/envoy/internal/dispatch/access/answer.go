@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Answer is the membership answer for one project and one person (K3), which the secrets broker
@@ -29,7 +30,7 @@ func Answer(ctx context.Context, q Querier, key, person string) (model.AccessAns
 		)
 		select p.key, p.visibility, coalesce(p.owner, ''), coalesce(person.member_kind, 'none'),
 			case when $2 = '' then p.visibility = 'public'
-			else coalesce(`+PersonSeesProjectSQL("$2", "coalesce(person.member_kind, 'full')", "p")+`, false) end,
+			else coalesce(`+store.PersonSeesProjectSQL("$2", "coalesce(person.member_kind, 'full')", "p")+`, false) end,
 			p.slack_channels, p.slack_channels_changed_at
 		from projects p, person
 		where p.key = $1

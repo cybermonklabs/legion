@@ -9,8 +9,10 @@ These procedures belong to [Signing people in](/legion/dispatch/running-dispatch
 on Running Dispatch, which says why Dispatch's database and the secrets broker's are reset or
 restored together, never one alone. Two things that section gives are used here:
 
-- `$BROKER_PSQL_URL`, the libpq URL of the broker's database, which every block below that reads
-  the broker's database names: make it first, as that section shows.
+- `$DISPATCH_PSQL_URL` and `$BROKER_PSQL_URL`, the libpq URLs of Dispatch's database and the
+  broker's, which hold no password, and `$DISPATCH_PGPASSWORD` and `$BROKER_PGPASSWORD`, each
+  database's password, which every `psql` below reads from `PGPASSWORD`, so no password is an
+  argument of a command: make them first, as that section shows.
 - **The broker clear**, the one transaction that lifts one refusal on the broker's database, which
   the steps below name as the broker clear above.
 
@@ -79,11 +81,11 @@ generation first, and prints `UNKNOWN` and changes nothing when it cannot:
 ```sh
 (
 set -o pipefail
-greatest=$(psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At <<'SQL'
+greatest=$(PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At <<'SQL'
 select coalesce(max(session_generation), 0) from person_replacement_generations;
 SQL
 ) || { echo 'UNKNOWN: the broker database could not be read, so nothing was reset'; exit 1; }
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v broker_greatest="$greatest" <<'SQL'
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v broker_greatest="$greatest" <<'SQL'
 begin;
 lock table session_generation_floors, user_sessions, agent_tokens, broker_revocations, deployment_resets in exclusive mode;
 create temp table reset_generation on commit drop as select greatest((extract(epoch from clock_timestamp()) * 1000000)::bigint, :'broker_greatest'::bigint + 1, coalesce((select max(generation) from user_sessions), 0) + 1, coalesce((select max(generation) from session_generation_floors), 0) + 1) as generation;
@@ -130,9 +132,9 @@ broker_url='<the URL in DISPATCH_AGENT_SECRETS_URL>'
 broker_run() { '<the command that runs its arguments where your deployment runs a broker subcommand>' "$@"; }
 token=$(kubectl -n '<the namespace Dispatch runs in>' create token '<the ServiceAccount Dispatch runs as>' --audience '<the audience in BROKER_K8S_OIDC_AUDIENCE>' --duration 1h) || { echo 'no token was minted'; exit 1; }
 printf 'Authorization: Bearer %s\n' "$token" >"$header"
-signins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select id, person from person_signins where revoked_at is null order by id"; }
-logins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select c.id, r.approver from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null order by c.id"; }
-pages() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct login from browser_sessions where expires_at > now() order by login"; }
+signins() { PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select id, person from person_signins where revoked_at is null order by id"; }
+logins() { PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select c.id, r.approver from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null order by c.id"; }
+pages() { PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct login from browser_sessions where expires_at > now() order by login"; }
 signins | while read -r id person; do
   curl -sS --fail-with-body -w '\n' -X POST -H @"$header" -d "{\"person\":\"$person\"}" "$broker_url/v1/person-signins/$id/revoke" || echo "NOT REVOKED $id"
 done
@@ -183,7 +185,7 @@ set -o pipefail
 header=$(mktemp) || exit 1
 trap 'rm -f "$header"' EXIT
 printf 'Authorization: Bearer %s\n' "$DIRECTORY_TOKEN" >"$header"
-people=$(psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct person from replaced_person_subjects order by person") || {
+people=$(PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct person from replaced_person_subjects order by person") || {
   echo 'UNKNOWN: the broker database could not be read, so no refusal was cleared'
   exit 1
 }
@@ -201,7 +203,7 @@ while read -r person; do
   id=$(printf '%s' "$answer" | jq -r '.id') && email=$(printf '%s' "$answer" | jq -r '.primaryEmail' | tr '[:upper:]' '[:lower:]') || { echo "UNKNOWN $person: the directory's 200 answer did not parse"; unknown=1; continue; }
   if [ "$email" != "$person" ]; then echo "NO ACCOUNT $person: the directory names $email"; continue; fi
   echo "HOLDER $person $id"
-  psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person="$person" -v issuer='https://accounts.google.com' -v subject="$id" <<'SQL' || { echo "NOT CLEARED $person: the broker database refused the clear"; unknown=1; }
+  PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person="$person" -v issuer='https://accounts.google.com' -v subject="$id" <<'SQL' || { echo "NOT CLEARED $person: the broker database refused the clear"; unknown=1; }
 begin;
 select set_config('broker.replaced_subject_delete', jsonb_build_array(pg_current_xact_id()::text, :'person', :'issuer', :'subject')::text, true);
 delete from replaced_person_subjects where person = :'person' and issuer = :'issuer' and subject = :'subject';
@@ -236,7 +238,7 @@ a database cannot be read, and changes nothing for any of them:
 ```sh
 (
 set -o pipefail
-cutoff=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -qAt <<'SQL'
+cutoff=$(PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -qAt <<'SQL'
 select case when m.mark is distinct from 'start' then 'none' when now() < m.at + interval '1 hour 10 minutes' then 'early' else to_char((m.at + interval '1 hour 10 minutes') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') end from (select 1) one left join lateral (select mark, at from deployment_resets order by id desc limit 1) m on true;
 SQL
 ) || { echo "UNKNOWN: Dispatch's database could not be read or written, so the reset is not closed"; exit 1; }
@@ -246,12 +248,12 @@ early) echo 'NOT CLOSED: an hour and ten minutes have not passed since step 1; r
 [0-9][0-9][0-9][0-9]-*Z) ;;
 *) echo "UNKNOWN: Dispatch's database answered '$cutoff' for the reset's wait, so the reset is not closed"; exit 1 ;;
 esac
-signins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select id, person from person_signins where revoked_at is null and created_at < '$cutoff' order by id"; }
-logins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select c.id, r.approver from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null and c.created_at < '$cutoff' order by c.id"; }
-pages() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct login from browser_sessions where expires_at > now() and created_at < '$cutoff' order by login"; }
+signins() { PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select id, person from person_signins where revoked_at is null and created_at < '$cutoff' order by id"; }
+logins() { PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select c.id, r.approver from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null and c.created_at < '$cutoff' order by c.id"; }
+pages() { PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct login from browser_sessions where expires_at > now() and created_at < '$cutoff' order by login"; }
 left=$( { signins && logins && pages; } ) || { echo 'UNKNOWN: the broker database could not be read, so the reset is not closed'; exit 1; }
 if [ -n "$left" ]; then printf 'STILL LIVE, so the reset is not closed: run the credentials block again, then this one\n%s\n' "$left"; exit 1; fi
-ended=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -qAt <<'SQL'
+ended=$(PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -qAt <<'SQL'
 begin;
 lock table deployment_resets in exclusive mode;
 insert into deployment_resets (mark) select 'end' from (select mark, at from deployment_resets order by id desc limit 1) m where m.mark = 'start' and now() >= m.at + interval '1 hour 10 minutes' returning at;
@@ -346,7 +348,7 @@ settles it only once the broker could have committed an approve it took before t
 a minute), and its write of `generation` wakes the loop, as a removal's does:
 
 ```sh
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v backup='<the moment the broker''s backup was taken>' <<'SQL'
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v backup='<the moment the broker''s backup was taken>' <<'SQL'
 begin;
 select u.generation from user_sessions u where u.login in (select r.email from broker_revocations r where r.done_at >= :'backup'::timestamptz - interval '1 hour' and r.done_at > coalesce((select d.at from deployment_resets d where d.mark = 'start' order by d.id desc limit 1), '-infinity'::timestamptz)) order by u.login for update;
 update broker_revocations set generation = generation + 1, holder_subject = (select sub from people where people.email = broker_revocations.email), session_generation = (select generation from user_sessions where user_sessions.login = broker_revocations.email), done_at = null, recorded_at = clock_timestamp() where done_at >= :'backup'::timestamptz - interval '1 hour' and done_at > coalesce((select d.at from deployment_resets d where d.mark = 'start' order by d.id desc limit 1), '-infinity'::timestamptz) and (select sub from people where people.email = broker_revocations.email) is not null and (select sub from people where people.email = broker_revocations.email) <> broker_revocations.subject;
@@ -373,7 +375,7 @@ block, ask Dispatch's database whether it may, with the backup's moment (`-infin
 made again):
 
 ```sh
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -At -v backup='<the moment the broker''s backup was taken>' <<'SQL'
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -At -v backup='<the moment the broker''s backup was taken>' <<'SQL'
 select case when not exists (select 1 from deployment_resets) then 'no reset ran' when :'backup'::timestamptz - interval '1 hour' < coalesce((select e.at from deployment_resets e where e.mark = 'end' and e.id > (select s.id from deployment_resets s where s.mark = 'start' order by s.id desc limit 1) order by e.id desc limit 1), 'infinity'::timestamptz) then 'run the reset''s blocks again' else 'the backup holds the last reset' end;
 SQL
 ```
@@ -411,8 +413,8 @@ cannot be read:
 ```sh
 (
 set -o pipefail
-recorded=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select email, sub from people where sub is not null order by 1, 2") || { echo "UNKNOWN: Dispatch's database could not be read, so no refusal was compared"; exit 1; }
-refused=$(psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select person, subject from replaced_person_subjects where issuer = 'https://accounts.google.com' order by 1, 2") || { echo 'UNKNOWN: the broker database could not be read, so no refusal was compared'; exit 1; }
+recorded=$(PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select email, sub from people where sub is not null order by 1, 2") || { echo "UNKNOWN: Dispatch's database could not be read, so no refusal was compared"; exit 1; }
+refused=$(PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select person, subject from replaced_person_subjects where issuer = 'https://accounts.google.com' order by 1, 2") || { echo 'UNKNOWN: the broker database could not be read, so no refusal was compared'; exit 1; }
 held=$(comm -12 <(printf '%s\n' "$recorded" | LC_ALL=C sort) <(printf '%s\n' "$refused" | LC_ALL=C sort) | sed '/^$/d')
 if [ -z "$held" ]; then echo 'the broker refuses no account Dispatch records'; exit 0; fi
 while read -r person sub; do echo "REFUSES ITS HOLDER $person $sub"; done <<< "$held"
@@ -533,7 +535,7 @@ trap 'rm -f "$header"' EXIT
 broker_url='<the URL in DISPATCH_AGENT_SECRETS_URL>'
 token=$(kubectl -n '<the namespace Dispatch runs in>' create token '<the ServiceAccount Dispatch runs as>' --audience '<the audience in BROKER_K8S_OIDC_AUDIENCE>' --duration 1h) || { echo 'no token was minted'; exit 1; }
 printf 'Authorization: Bearer %s\n' "$token" >"$header"
-unended() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select c.id, r.approver from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null and c.approver_subject is null"; }
+unended() { PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select c.id, r.approver from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null and c.approver_subject is null"; }
 unended | while read -r id approver; do
   curl -sS --fail-with-body -w '\n' -X POST -H @"$header" -d "{\"approver\":\"$approver\"}" "$broker_url/v1/launcher-credentials/$id/revoke-by-approver" || echo "NOT REVOKED $id"
 done

@@ -100,7 +100,7 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		for index, statement := range read.statements {
 			statementMarks := strings.Count(statement, VisibilityMarker)
 			// A project's own visibility, the public arm of the access rule a person's scope
-			// binds (access.PersonSeesProjectSQL, `<project>.visibility = 'public'`), and the
+			// binds (store.PersonSeesProjectSQL, `<project>.visibility = 'public'`), and the
 			// private-project SessionClause and RoleClause gates (`<project>.visibility =
 			// 'private'`), are tests of a project and not of a node, so neither is a registry
 			// predicate of the statement's own.
@@ -164,14 +164,17 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 // Why each exported read of the store that takes no acting person binds no visibility
 // predicate. Each reason is one of the few that hold: the read is the server's own work and
 // answers no reader, or it answers no node at all, or it reads one node its caller has already
-// read through a read that binds that node's predicate and answers nothing of any other node. A
-// read whose answer reaches a reader and names a node is none of these: it takes the acting
-// person instead, and the census above holds it to the registry.
+// read through a read that binds that node's predicate and answers nothing of any other node, or
+// only an access account reads its answer, never a person or a session. A read whose answer
+// reaches a person and names a node is none of these: it takes the acting person instead, and the
+// census above holds it to the registry.
 const (
 	serverWork = "the server's own work: a pass or a write calls it, and its answer reaches no reader"
 	noNode     = "it answers no node: a fact about one row the caller names, never a node's id or text"
 	nodeDetail = "it reads a detail of one node its caller has already read through a read that binds that node's predicate " +
 		"(Node, RemovedItemBlockNode, or the caller's own registry predicate), and answers nothing of any other node"
+	accessAccountOnly = "only a service account DISPATCH_ACCESS_ACCOUNTS names reads its answer, through a route of the read class " +
+		"accessAccount, never a person or a session"
 )
 
 // readsWithoutAViewer names each exported read of the store that takes no acting person, with
@@ -206,8 +209,9 @@ var readsWithoutAViewer = map[string]string{
 	"PlanBlocks":     serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
 	"PlanItemIfOwed": serverWork + " - a write's read phase plans the index an item it writes beside is owed",
 	"PlanReplace":    serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
-	"ProjectRepositories": noNode + " - the repository names the issues of one project the caller names resolve to; a route that " +
-		"answers them holds that project to its caller first, as the GitHub proxy holds each repository to RepositoryClause",
+	"ProjectRepositories": accessAccountOnly + " - the repository answer, the repository names the issues of one project resolve " +
+		"to, or the key of the one issue whose chain it could not resolve; the GitHub proxy reads the same rule only through " +
+		"RepositoryClause, which binds the viewer",
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
 	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",

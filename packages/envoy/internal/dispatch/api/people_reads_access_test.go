@@ -45,6 +45,20 @@ const privateRoster = `[
 	{"session_id":"session-idle","title":"Idle","capabilities":["btw","steer"],"projects":[],"last_seen":100}
 ]`
 
+// privateRosterListed is privateRoster with the listener listing the projects of session-pub's
+// and session-priv's credentials, as a listener that knows them does: each is carol's, its broker
+// token scoped to one project (asSession). A session's conversations and files are its content
+// (access.SessionContentClause), and carol sees PRIV, so with no list a caller that does not see
+// PRIV reads no conversation of either; the list bounds what session-pub's credential reads to PUB.
+// A read stores the list where the content rule reads it only once Dispatch has read the
+// listener's sessions, as a list of the agents does.
+const privateRosterListed = `[
+	{"session_id":"session-both","title":"Both","capabilities":["btw","steer"],"last_seen":400},
+	{"session_id":"session-priv","title":"Private","capabilities":["btw","steer"],"projects":["PRIV"],"last_seen":300},
+	{"session_id":"session-pub","title":"Public","capabilities":["btw","steer"],"projects":["PUB"],"last_seen":200},
+	{"session_id":"session-idle","title":"Idle","capabilities":["btw","steer"],"projects":[],"last_seen":100}
+]`
+
 // seedSessionWork has the roster's sessions act in the seed's projects, each under a credential
 // that proves the session (asSession): what a proven session writes in a project is what makes it
 // one of the project's agents (session_projects).
@@ -368,30 +382,38 @@ func TestASessionsLastActivityCountsOnlyWhatTheCallerSees(t *testing.T) {
 
 // TestALastActivityCountsTheConversationItsReaderReads: a session's last_activity counts every
 // event of the session its reader may read in the event log, under the log's one rule
-// (eventReadableSQL), so a restricted member's row for a session it talks to counts the session's
-// answer in their conversation, which bob reads in the log as one of its parties. bob, restricted,
-// sends session-priv a direct message and session-priv answers it after its comment on PRIV: bob's
-// row for session-priv is the answer's time, as carol's is.
+// (eventReadableSQL). bob, restricted, sends session-priv a direct message and session-priv
+// answers it after its comment on PRIV. The conversation is session-priv's content
+// (access.SessionContentClause, through access.PartyClause), and session-priv is carol's: her
+// credential proved it, and it can read what bob does not see. So bob's row is the comment's time,
+// the newest event of the session he reads, and carol's, an open viewer that sees every project
+// carol sees, is the answer's.
 func TestALastActivityCountsTheConversationItsReaderReads(t *testing.T) {
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)
+	newestOf := func(what string) time.Time {
+		t.Helper()
+		var newest time.Time
+		if err := seed.database.Pool.QueryRow(t.Context(),
+			`select max(created_at) from events where actor->>'kind' = 'session' and actor->>'id' = $1`, sessionOfPrivate).Scan(&newest); err != nil {
+			t.Fatalf("read session-priv's newest event %s: %v", what, err)
+		}
+		return newest
+	}
+	commented := newestOf("before the conversation")
 	sent := postAgentMessage(t, seed.handler, sessionOfPrivate, map[string]any{"body": "Status?", "delivery": "btw"}, seedBob)
 	if sent.Code != http.StatusCreated {
 		t.Fatalf("bob messages session-priv: %d %s", sent.Code, sent.Body.String())
 	}
 	answer := decodeBody[model.Message](t, seed.asSession(t, sessionOfPrivate, seedPrivate, http.MethodPost,
 		"/api/v1/messages/"+decodeBody[model.Message](t, sent).ID+"/reply", map[string]any{"attempt": 1, "body": "Green."}, http.StatusCreated))
-	answered := seed.database.Pool.QueryRow(t.Context(),
-		`select max(created_at) from events where actor->>'kind' = 'session' and actor->>'id' = $1`, sessionOfPrivate)
-	var newest time.Time
-	if err := answered.Scan(&newest); err != nil {
-		t.Fatalf("read session-priv's newest event: %v", err)
+	newest := newestOf("after its answer")
+	if !newest.After(answer.CreatedAt.Add(-time.Second)) || !newest.After(commented) {
+		t.Fatalf("session-priv's newest event is at %s, its comment's at %s, before its answer at %s: the answer appended no event of its own",
+			newest, commented, answer.CreatedAt)
 	}
-	if !newest.After(answer.CreatedAt.Add(-time.Second)) {
-		t.Fatalf("session-priv's newest event is at %s, before its answer at %s: the answer appended no event of its own", newest, answer.CreatedAt)
-	}
-	for _, caller := range []privateCaller{callerBob, callerCarol} {
+	for caller, want := range map[privateCaller]time.Time{callerBob: commented, callerCarol: newest} {
 		var row *time.Time
 		for _, agent := range decodeBody[[]struct {
 			SessionID    string     `json:"session_id"`
@@ -401,8 +423,8 @@ func TestALastActivityCountsTheConversationItsReaderReads(t *testing.T) {
 				row = agent.LastActivity
 			}
 		}
-		if row == nil || !row.Equal(newest) {
-			t.Errorf("%s reads session-priv's last activity as %v, want %s: its answer in the conversation %s reads", caller, row, newest, caller)
+		if row == nil || !row.Equal(want) {
+			t.Errorf("%s reads session-priv's last activity as %v, want %s: the newest event of the session %s reads", caller, row, want, caller)
 		}
 	}
 }

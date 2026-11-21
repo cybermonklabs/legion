@@ -17,23 +17,30 @@ import (
 // repository an issue of the project resolves to, open or done, through its own repository, its
 // parent's or its project's default, lower-cased, once each and sorted, and nothing a mapping or a
 // recorded rename gives the project. Over seedRepositoryIssues' and seedHiddenRepositories' rows,
-// PRIV answers the eight its issues resolve to (acme/pubwalk through PRIV-8's PUB parent, and not
-// acme/privmapped or acme/privonlymapped, which it only maps, nor acme/newname, its mapping's
-// rename); PUB and PRIV2 answer theirs; a project with no issue answers [] and an unknown project
-// access.ErrProjectNotFound. Once PRIV holds a looped chain (PRIV-9 and PRIV-10, each the other's
-// parent), it answers an *UnresolvedChainError naming PRIV-9, the first by number.
+// and PRIV-20, which stores Acme/Upper (a name only a direct write stores in capitals: the API
+// lower-cases, api/issue_repo.go), PRIV answers the nine its issues resolve to (acme/pubwalk through
+// PRIV-8's PUB parent, acme/upper for PRIV-20, and not acme/privmapped or acme/privonlymapped,
+// which it only maps, nor acme/newname, its mapping's rename); PUB and PRIV2 answer theirs; a
+// project with no issue answers [] and an unknown project access.ErrProjectNotFound. Once PRIV
+// holds a looped chain (PRIV-9 and PRIV-10, each the other's parent), it answers an
+// *UnresolvedChainError naming PRIV-9, the first by number.
 //
-// Control: drop the unresolved chain's refusal from ProjectRepositories, and PRIV answers its
-// list with the loop in it; the test fails naming PRIV.
+// Controls: drop the unresolved chain's refusal from ProjectRepositories, and PRIV answers its
+// list with the loop in it; drop lower() from ProjectRepositoriesSQL, and PRIV answers Acme/Upper
+// in place of acme/upper. The test fails naming PRIV either way.
 func TestProjectRepositoriesAnswersTheRepositoriesItsIssuesResolveTo(t *testing.T) {
 	database := seedRepositoryIssues(t)
 	seedHiddenRepositories(t, database)
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('EMPTY', 'No issues', 'alice')`); err != nil {
-		t.Fatalf("seed EMPTY: %v", err)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('EMPTY', 'No issues', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank, parent_key, repo, status) values
+			('PRIV-20', 'PRIV', 20, 'Names Acme/Upper', '{"kind":"user","id":"alice"}', 'u', null, 'Acme/Upper', 'triage');
+	`); err != nil {
+		t.Fatalf("seed EMPTY and PRIV-20: %v", err)
 	}
 	for project, want := range map[string][]string{
-		"PRIV":  {"acme/both", "acme/movednew", "acme/oldname", "acme/priv", "acme/privdefault", "acme/privdone", "acme/privparent", "acme/pubwalk"},
+		"PRIV":  {"acme/both", "acme/movednew", "acme/oldname", "acme/priv", "acme/privdefault", "acme/privdone", "acme/privparent", "acme/pubwalk", "acme/upper"},
 		"PRIV2": {"acme/privparent"},
 		"PUB":   {"acme/both", "acme/privmapped", "acme/pub", "acme/pubwalk"},
 		"EMPTY": {},

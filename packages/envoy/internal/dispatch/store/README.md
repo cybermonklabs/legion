@@ -67,7 +67,7 @@ the last item is the broker's own clear, which recovers neither:
   The block locks the address's `user_sessions` row first, so a sign-out at the same moment waits for it, rather than moving the generation between the statement's read of it and the guard's own check, which would refuse the statement:
 
   ```sh
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the sub the statement overwrote>' <<'SQL'
+  PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the sub the statement overwrote>' <<'SQL'
   begin;
   select generation from user_sessions where login = :'email' for update;
   update broker_revocations set done_at = now() where email = :'email' and issuer = :'issuer' and subject = (select sub from people where people.email = :'email') and done_at is null;
@@ -85,7 +85,7 @@ the last item is the broker's own clear, which recovers neither:
   To have the server's loop pay it, which recovers both, record it again, naming the account the address records now as its holder, with the address's `user_sessions` row locked first, as above:
 
   ```sh
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the replaced sub>' <<'SQL'
+  PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the replaced sub>' <<'SQL'
   begin;
   select generation from user_sessions where login = :'email' for update;
   update broker_revocations set generation = generation + 1, holder_subject = (select sub from people where people.email = broker_revocations.email), session_generation = (select generation from user_sessions where user_sessions.login = broker_revocations.email), done_at = null, recorded_at = clock_timestamp() where email = :'email' and issuer = :'issuer' and subject = :'subject';
@@ -98,10 +98,10 @@ the last item is the broker's own clear, which recovers neither:
 - **A refusal at the broker that the operator chooses to lift**, of an account the broker was told no longer holds the address, is cleared on the broker's database, after checking that `people.sub` records the account;
   it lifts that refusal and ends nothing, so it recovers neither write above.
   The broker refuses a delete from that table unless the deleting transaction first names the one row it deletes, by its own transaction id, in `broker.replaced_subject_delete`, as a JSON array of the transaction id, the address, the issuer and the `sub`, so the clear is one transaction that sets that marker for the row the operator chose to clear and then deletes it; a delete without the marker is refused.
-  `$BROKER_PSQL_URL` is the broker's database URL with the pgx-only parameters a deployment sets on it (`pool_max_conns`) taken out, which libpq refuses; the runbook's "Signing people in" gives the one command that makes it from `BROKER_DATABASE_URL`:
+  `$BROKER_PSQL_URL` is the broker's database URL with the pgx-only parameters a deployment sets on it (`pool_max_conns`) and its password taken out, and `$BROKER_PGPASSWORD` that password, which `psql` reads from `PGPASSWORD` so it is never an argument of a command; the runbook's "Signing people in" gives the one block that makes them, and Dispatch's `$DISPATCH_PSQL_URL` and `$DISPATCH_PGPASSWORD` the blocks above use, from `BROKER_DATABASE_URL` and `DATABASE_URL`:
 
   ```sh
-  psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person='<address>' -v issuer='https://accounts.google.com' -v subject='<sub>' <<'SQL'
+  PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person='<address>' -v issuer='https://accounts.google.com' -v subject='<sub>' <<'SQL'
   begin;
   select set_config('broker.replaced_subject_delete', jsonb_build_array(pg_current_xact_id()::text, :'person', :'issuer', :'subject')::text, true);
   delete from replaced_person_subjects where person = :'person' and issuer = :'issuer' and subject = :'subject';

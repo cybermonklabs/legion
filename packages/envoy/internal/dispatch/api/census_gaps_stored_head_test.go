@@ -16,7 +16,9 @@ import (
 )
 
 // headWindowSession is the agent whose conversation the stored-head row's documents are of. It
-// acted in PUB alone, so alice, who sees PUB, reads it and its conversation.
+// acted in PUB alone, and a proved write of alice's credential tied it to her (session_owners), who
+// sees no private project, so alice, who sees PUB, reads it and its conversation, the session's
+// content (access.SessionContentClause).
 const headWindowSession = "session-head-window"
 
 // headWindow is a tracer that, armed, places headWindowSession in PRIV right after the first
@@ -123,13 +125,14 @@ func historyLoad(sql string) bool {
 // readStoredHead); with none, the stored state's stamp the cold read is keyed by
 // (readDocumentStamp), and, when no rendering of that stamp is cached, the load of the stored
 // history (LoadDocument), in a transaction of its own that every read missing the stamp shares. A
-// document of an agent's conversation is read by the session's rule (access.SessionClause, the
-// live session_projects pairs), the one rule a statement after the route's first can find
-// changed: the session placed in a project alice does not see hides the conversation from her
-// from that pair's commit. No route writes a markdown document into a conversation (400
-// ARTIFACT_INPUT), so the row moves three PUB project documents there in SQL, the shape migration
-// 0071 stores and a release can keep: one read with a room of it resident, one with none and its
-// rendering cached, and one with none and its stamp new, so the read loads its history.
+// document of an agent's conversation is read by the session's rules (access.SessionClause and
+// access.SessionContentClause, both reading the live session_projects pairs), the one rule a
+// statement after the route's first can find changed: the session placed in a project alice does
+// not see hides the conversation from her from that pair's commit. No route writes a markdown
+// document into a conversation (400 ARTIFACT_INPUT), so the row moves three PUB project documents
+// there in SQL, the shape migration 0071 stores and a release can keep: one read with a room of it
+// resident, one with none and its rendering cached, and one with none and its stamp new, so the
+// read loads its history.
 //
 // Each window is placed right after the check the read stands on: the route's read of the row,
 // and for the load, the cold read's stamp. alice must then read each document as an id no
@@ -148,6 +151,10 @@ func TestADocumentMadeHiddenAfterItsReadAnswersNoBlocks(t *testing.T) {
 	if _, err := seed.database.Pool.Exec(ctx, `insert into session_projects (session_id, project_key) values ($1, $2)`,
 		headWindowSession, seedPublic); err != nil {
 		t.Fatalf("place %s in PUB: %v", headWindowSession, err)
+	}
+	if _, err := seed.database.Pool.Exec(ctx, `insert into session_owners (session_id, login) values ($1, $2)`,
+		headWindowSession, seedAlice); err != nil {
+		t.Fatalf("tie %s to alice: %v", headWindowSession, err)
 	}
 	// Two texts of one length, so an edit between them moves the document's stamp and leaves
 	// every block's range where it was.

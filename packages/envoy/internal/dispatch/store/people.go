@@ -149,6 +149,25 @@ func announceMemberKindChange(ctx context.Context, tx pgx.Tx, stored string, wri
 	return AnnounceAccessChange(ctx, tx)
 }
 
+// projectsSeenAs answers, in tx, every project email sees as a person of the member kind stored
+// (PersonSeesProjectSQL), in key order, when written is another kind, and none when it is the
+// same. A write that changes the member kind a people row holds reads it under the row's lock and
+// before its update, and then hands it to RecordReachedProjects with email, after its update, so
+// every session tied to email keeps each of those projects the kind written no longer sees: a full
+// member the sign-in rule restricts loses every public project and every one a group admitted
+// them to, unless it names them, and their sessions' transcripts keep what they read of each.
+func projectsSeenAs(ctx context.Context, tx pgx.Tx, email, stored string, written model.MemberKind) ([]string, error) {
+	if stored == string(written) {
+		return nil, nil
+	}
+	var seen []string
+	if err := tx.QueryRow(ctx, `select array(select p.key from projects p where `+
+		PersonSeesProjectSQL("$1::text", "$2::text", "p")+` order by p.key collate "C")`, email, stored).Scan(&seen); err != nil {
+		return nil, fmt.Errorf("read the projects %q sees before its member kind changes: %w", email, err)
+	}
+	return seen, nil
+}
+
 // signInMemberKind refuses a member kind a sign-in cannot record: only model.MemberFull and
 // model.MemberRestricted name a person who signed in.
 func signInMemberKind(email string, kind model.MemberKind) error {
@@ -202,9 +221,13 @@ func signInMemberKind(email string, kind model.MemberKind) error {
 // subject itself (settleReclaimedBrokerRevocationsSQL): an account that takes the address back is
 // owed nothing, so no pass ends what it makes once it holds the address again. When kind is not the
 // member kind the row held under its lock, it announces the change in the same transaction
-// (announceMemberKindChange). A revoke that fails rolls the sign-in back, leaving the old subject
-// for the next sign-in to revoke again; one that commits is logged at WARN with the address, and
-// with how many tokens it revoked when it replaced an account or revoked another account's tokens.
+// (announceMemberKindChange), and keeps on every session tied to email each project the kind the
+// row held saw and kind does not (projectsSeenAs, RecordReachedProjects): a session of a full
+// member it restricts may have read such a project, and neither that member nor any other viewer
+// who does not see the project watches it after (access.SessionContentClause). A revoke that fails
+// rolls the sign-in back, leaving the old subject for the next sign-in to revoke again; one that
+// commits is logged at WARN with the address, and with how many tokens it revoked when it replaced
+// an account or revoked another account's tokens.
 //
 // A restricted sign-in (a person from outside the domain) never takes a full member's address
 // (takesAMembersAddress): it writes nothing and returns auth.ErrAddressHeldByMember, read once
@@ -312,6 +335,10 @@ func (s *PgPeopleStore) signInAccountTx(ctx context.Context, tx pgx.Tx, email st
 		}
 	}
 	recorded.owed = len(owed)
+	seen, err := projectsSeenAs(ctx, tx, email, storedKind, kind)
+	if err != nil {
+		return signInRecorded{}, err
+	}
 	// Changing sub stamps people.sub_recorded_at from the database's own clock, the address's first
 	// recording included, and ends every session of the address (the triggers of migrations
 	// 20261117175133 and 20261118041916, which no statement can bypass): a credential recording no
@@ -326,6 +353,10 @@ func (s *PgPeopleStore) signInAccountTx(ctx context.Context, tx pgx.Tx, email st
 		return signInRecorded{}, fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
 	if err := announceMemberKindChange(ctx, tx, storedKind, kind); err != nil {
+		return signInRecorded{}, fmt.Errorf("record sign-in of %q: %w", email, err)
+	}
+	// After the address's lock and the row's, as the access package's writes take it after theirs.
+	if err := RecordReachedProjects(ctx, tx, seen, []string{email}); err != nil {
 		return signInRecorded{}, fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
 	if len(owed) > 0 && s.brokerRevocationIssuer != "" {
@@ -534,7 +565,9 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 // confirmed by its own refresh. When kind is not the member kind the row held under its lock (the
 // rule restricts a member whose account left the Workspace, or admits a restricted one as full), it
 // announces the change in the same transaction (announceMemberKindChange), so a person the
-// confirmation restricts keeps no open socket or live view of a project that does not name them.
+// confirmation restricts keeps no open socket or live view of a project that does not name them,
+// and keeps on every session tied to email each project the kind the row held saw and kind does
+// not (projectsSeenAs, RecordReachedProjects), as SignInSubject does.
 func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, readToken, refreshToken string, kind model.MemberKind) error {
 	if err := signInMemberKind(email, kind); err != nil {
 		return err
@@ -556,10 +589,18 @@ func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, read
 	if stored != subject || !s.holds(email, sealed, readToken) {
 		return nil
 	}
+	seen, err := projectsSeenAs(ctx, tx, email, storedKind, kind)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `update people set refresh_token = $2, confirmed_at = now(), member_kind = $3 where email = $1`, email, s.seal.seal(email, refreshToken), string(kind)); err != nil {
 		return fmt.Errorf("confirm membership of %q: %w", email, err)
 	}
 	if err := announceMemberKindChange(ctx, tx, storedKind, kind); err != nil {
+		return fmt.Errorf("confirm membership of %q: %w", email, err)
+	}
+	// After the row's lock, as the access package's writes take it after theirs.
+	if err := RecordReachedProjects(ctx, tx, seen, []string{email}); err != nil {
 		return fmt.Errorf("confirm membership of %q: %w", email, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

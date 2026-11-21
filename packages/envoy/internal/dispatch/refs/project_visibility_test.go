@@ -235,13 +235,16 @@ type scopedNode struct {
 // and credentials that see PRIV, a node of PUB only to those that see PUB, a person, a session, a
 // role, a page and a conversation as the access package's clauses decide, the block schema's nodes
 // to everyone, and a node of a project kind the store holds no row of to no caller while a project
-// is private.
+// is private. A conversation's node and a node of a file of a session's conversation are that
+// session's content (access.SessionContentClause): ses_carol wrote in PUB alone, but carol proved
+// it and carol sees PRIV, so they reach only the callers that see PRIV too, while ses_pub's, which
+// alice proved, reach every open viewer.
 func TestTheProjectClauseHidesAPrivateNode(t *testing.T) {
 	tx := beginSeed(t)
 	seedVerificationProjects(t, tx)
 	seeded := seedScopedNodes(t, tx)
 	ask, comment, message, conversation := seeded.ask, seeded.comment, seeded.message, seeded.conversation
-	pubAsk, pubComment, pubMessage := seeded.pubAsk, seeded.pubComment, seeded.pubMessage
+	pubAsk, pubComment, pubMessage, carolConversation := seeded.pubAsk, seeded.pubComment, seeded.pubMessage, seeded.carolConversation
 
 	// Who sees what, by the caller names seededCallers gives. The server sees every node.
 	var (
@@ -275,8 +278,15 @@ func TestTheProjectClauseHidesAPrivateNode(t *testing.T) {
 		{kind: "component", id: "PUB/storage", sees: seesPublic},
 		// A conversation of no project: an open viewer, which sees every session party, and a
 		// party or a credential of a person party only when it sees each session party too
-		// (access.PartyClause): bob's token that lists PRIV does not see ses_pub, of PUB.
+		// (access.PartyClause): bob's token that lists PRIV does not see ses_pub, of PUB. A file of
+		// ses_pub's conversation is read by the same rule, its one party the session.
 		{kind: "message", id: conversation, held: true, sees: open},
+		{kind: "artifact", id: "agent/ses_pub/shot-png", held: true, sees: open},
+		// ses_carol's conversation with alice and a file of its conversation: carol, who proved the
+		// session, sees PRIV, so only the callers that see PRIV read either, alice, a party, not
+		// included (access.SessionContentClause).
+		{kind: "message", id: carolConversation, held: true, sees: []string{"carol", "carol's token that lists PRIV"}},
+		{kind: "artifact", id: "agent/ses_carol/shot-png", held: true, sees: []string{"carol", "carol's token that lists PRIV"}},
 		// Nothing wrote these: a node of a project kind the store holds no row of is visible
 		// only to an open viewer while no project is private.
 		{kind: "issue", id: "PRIV-404"},
@@ -326,22 +336,25 @@ func TestTheProjectClauseHidesAPrivateNode(t *testing.T) {
 }
 
 // scopedSeed is the ids of the nodes seedScopedNodes writes under fresh uuids: an ask, a comment
-// and a message of each project, and a conversation of no project.
+// and a message of each project, and two conversations of no project.
 type scopedSeed struct {
 	ask, comment, message, conversation string
 	pubAsk, pubComment, pubMessage      string
+	carolConversation                   string
 }
 
 // seedScopedNodes writes, in tx, a node of every scope the registry states, in PRIV and in PUB
 // where the scope has a project: an issue, a document and its block, an ask, a comment and a
 // message, a block of each of the three items, a conversation of no project between carol and the
-// session ses_pub, the people bob and alice, the sessions ses_priv and ses_pub with the roles each
-// holds (r_priv and r_pub) and the page of each, and the projects each session acted in.
+// session ses_pub and one between alice and the session ses_carol, a file of each session's
+// conversation, the people bob and alice, the sessions ses_priv and ses_pub with the roles each
+// holds (r_priv and r_pub) and the page of each, the projects each session acted in, and the
+// person whose credential proved each of ses_pub (alice) and ses_carol (carol).
 func seedScopedNodes(t *testing.T, tx pgx.Tx) scopedSeed {
 	t.Helper()
 	seeded := scopedSeed{
 		ask: uuid.NewString(), comment: uuid.NewString(), message: uuid.NewString(), conversation: uuid.NewString(),
-		pubAsk: uuid.NewString(), pubComment: uuid.NewString(), pubMessage: uuid.NewString(),
+		pubAsk: uuid.NewString(), pubComment: uuid.NewString(), pubMessage: uuid.NewString(), carolConversation: uuid.NewString(),
 	}
 	nodes := []graphstore.Node{
 		{Kind: "issue", ID: "PRIV-1", Project: seededPrivate},
@@ -363,6 +376,9 @@ func seedScopedNodes(t *testing.T, tx pgx.Tx) scopedSeed {
 		{Kind: "comment_block", ID: "comment/" + seeded.pubComment + "#b1"},
 		{Kind: "message_block", ID: "message/" + seeded.pubMessage + "#b1"},
 		{Kind: "message", ID: seeded.conversation, Parties: []string{"person:" + seededCarol, "session:ses_pub"}},
+		{Kind: "artifact", ID: "agent/ses_pub/shot-png", Parties: []string{"session:ses_pub"}},
+		{Kind: "message", ID: seeded.carolConversation, Parties: []string{"person:" + seededAlice, "session:ses_carol"}},
+		{Kind: "artifact", ID: "agent/ses_carol/shot-png", Parties: []string{"session:ses_carol"}},
 		{Kind: graphstore.KindPerson, ID: seededBob},
 		{Kind: graphstore.KindPerson, ID: seededAlice},
 		{Kind: graphstore.KindSession, ID: "ses_priv"},
@@ -381,12 +397,18 @@ func seedScopedNodes(t *testing.T, tx pgx.Tx) scopedSeed {
 	writeSeedNodes(t, tx, nodes, []graphstore.Tuple{held("r_priv", "ses_priv"), held("r_pub", "ses_pub")})
 	// The pairs of a filled deployment: session_projects_filled holds its row, so an open viewer's
 	// session arm reads the pairs (access.TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished).
-	if _, err := tx.Exec(context.Background(), `insert into session_projects (session_id, project_key) values ('ses_priv', $1), ('ses_pub', $2)`,
+	if _, err := tx.Exec(context.Background(), `insert into session_projects (session_id, project_key) values ('ses_priv', $1), ('ses_pub', $2), ('ses_carol', $2)`,
 		seededPrivate, seededPublic); err != nil {
 		t.Fatalf("record the projects each session acted in: %v", err)
 	}
 	if _, err := tx.Exec(context.Background(), `insert into session_projects_filled default values`); err != nil {
 		t.Fatalf("record that the sessions' projects are filled: %v", err)
+	}
+	// The ties a proved write records (session_owners): a session's conversation is its content,
+	// read by the people its credential's person sees (access.SessionContentClause).
+	if _, err := tx.Exec(context.Background(), `insert into session_owners (session_id, login) values ('ses_pub', $1), ('ses_carol', $2)`,
+		seededAlice, seededCarol); err != nil {
+		t.Fatalf("record the person each session acts for: %v", err)
 	}
 	return seeded
 }

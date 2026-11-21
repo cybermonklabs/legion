@@ -738,7 +738,7 @@ func eventSubscriptionCheck(ctx context.Context, q queryer, reader model.Actor, 
 // page never held and would not be sent, so it is no gap: a resume across a project the caller
 // never saw is complete. A write of a group is read by every open viewer, a full member's
 // credential whatever it lists, and by no restricted member, whom no group admits to a project
-// (access.PersonSeesProjectSQL), so a group write a viewer may not read moves nothing it sees.
+// (store.PersonSeesProjectSQL), so a group write a viewer may not read moves nothing it sees.
 func eventGapSQL(eventAlias, viewerParam string) string {
 	return `(` + eventReadableSQL(eventAlias, viewerParam) + ` or ` + lostSightSQL(eventAlias, viewerParam) + `)`
 }
@@ -771,7 +771,7 @@ func madePublicSQL(eventAlias string) string {
 //   - the removal of the viewer's own person from the project's list;
 //   - the removal from the list of a group that holds the viewer's person as a full member, which
 //     the person saw the project through: a group admits only its full members
-//     (access.PersonSeesProjectSQL), so its removal takes nothing from a restricted member in it;
+//     (store.PersonSeesProjectSQL), so its removal takes nothing from a restricted member in it;
 //   - an owner change that took the project from the viewer's person (its principal, SetOwner);
 //   - the project turned private, to a viewer that read it while it was public: an open viewer,
 //     which reads every public project, and a credential whose own list names it (Viewer.Lists).

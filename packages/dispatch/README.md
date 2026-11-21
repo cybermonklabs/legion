@@ -144,8 +144,8 @@ DISPATCH_E2E_EMBEDDER=fake bun run e2e -- --project=chromium --project=iphone se
 ```
 
 `DISPATCH_E2E_ACCESS_ISSUER=1` gives a run the secrets broker's service-account token, so a
-driver can read the membership answer (`GET /api/v1/access/projects/{key}`,
-`GET /api/v1/access/person` and `GET /api/v1/access/private-projects`), which a harness without it
+driver can read the routes `DISPATCH_ACCESS_ACCOUNTS` gates (the membership answer and the
+repository answer, listed in `packages/envoy/cmd/dispatch/README.md`), which a harness without it
 refuses to every caller. The harness then starts one row more before the server,
 `e2e/run-access-issuer.sh`: `packages/envoy/cmd/dev-oidc-issuer`, which keeps the broker
 account's token in a file in the harness's own directory and reports its port as

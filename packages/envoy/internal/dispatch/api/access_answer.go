@@ -24,8 +24,8 @@ import (
 // anything is read, a caller with no credential, or one whose credential does not verify, is
 // refused as every route refuses it (401 NO_IDENTITY for none: optionalActor's error,
 // writeAuthenticationError), and every other caller, a person included, is 403
-// ACCESS_ACCOUNT_REQUIRED (the read class accessAccount, which withinReadScope holds the three
-// routes to). A deployment that names no such account answers every caller so.
+// ACCESS_ACCOUNT_REQUIRED (the read class accessAccount, which withinReadScope holds its routes
+// to). A deployment that names no such account answers every caller so.
 //
 // A question that names a person may also say which Google account the credential being checked
 // records, and the answer then says whether that credential's account holds the person's address
@@ -52,8 +52,9 @@ func accessAccountOf(actor model.Actor) (string, bool) {
 }
 
 // requireAccessAccount admits a request only from a service account DISPATCH_ACCESS_ACCOUNTS names:
-// withinReadScope's check of every row of the read class accessAccount.
-func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bool {
+// withinReadScope's check of every row of the read class accessAccount. Its refusal names the row,
+// method and pattern, as deploymentReadRefusal's does.
+func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request, method, pattern string) bool {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
@@ -62,8 +63,8 @@ func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bo
 	if subject, ok := accessAccountOf(actor); ok && slices.Contains(s.deps.AccessAccounts, subject) {
 		return true
 	}
-	writeError(w, "ACCESS_ACCOUNT_REQUIRED", http.StatusForbidden,
-		"the membership answer is read only by a service account this deployment names in DISPATCH_ACCESS_ACCOUNTS")
+	writeError(w, "ACCESS_ACCOUNT_REQUIRED", http.StatusForbidden, fmt.Sprintf(
+		"%s %s is read only by a service account this deployment names in DISPATCH_ACCESS_ACCOUNTS", method, pattern))
 	return false
 }
 

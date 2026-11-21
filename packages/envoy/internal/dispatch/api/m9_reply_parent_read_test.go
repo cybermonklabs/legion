@@ -11,7 +11,9 @@ import (
 )
 
 // replySession is the session the direct conversations of these rows are with. It acts in PUB under
-// a credential that proves it (asSession), so a caller that sees PUB may read it and send to it.
+// alice's broker-issued token, which proves it (asSessionOf) and ties it to alice, who sees no
+// private project: so a caller that sees PUB may read it, its conversations included
+// (access.SessionContentClause), and send to it.
 const replySession = "s-reply"
 
 // carolsWords is the body of carol's own direct message to replySession, which no reply of
@@ -24,7 +26,7 @@ func replySeed(t *testing.T) (privateSeed, string) {
 	t.Helper()
 	seed := seedPrivateProject(t)
 	mintListingToken(t, seed, callerAlicePubToken, seedAlice, []string{seedPublic})
-	seed.asSession(t, replySession, seedPublic, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
+	seed.asSessionOf(t, seedAlice, replySession, seedPublic, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
 		map[string]any{"body": "s-reply works on PUB."}, http.StatusCreated)
 	carols := createdID(t, seed.request(t, callerCarol, http.MethodPost, "/api/v1/agents/"+replySession+"/messages",
 		map[string]any{"body": carolsWords, "delivery": "btw"}))

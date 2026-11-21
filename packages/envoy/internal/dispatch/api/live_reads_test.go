@@ -29,10 +29,14 @@ const liveReadsQuiet = 300 * time.Millisecond
 // each caller of verification v16 as that row answers the caller: refused with the row's own code
 // where the row refuses, and served where it serves. A Legion board view is of PRIV's board, so a
 // caller that may not see PRIV is refused the view as the board's GET answers it, as a project
-// nobody holds. An agent view keeps its row's session rule as well (access.SessionClause, which
-// GET /api/v1/agents lists sessions by): of a session the caller's roster lists, the view relays
-// the session; of any other, it answers exactly what a session nobody answers for answers, and
-// never tells the session a viewer is attached.
+// nobody holds. An agent view keeps its row's session rule (access.SessionClause, which GET
+// /api/v1/agents lists sessions by) and is narrower still, since it relays the session's whole
+// transcript (access.SessionContentClause): of a session the caller's roster does not list, it
+// answers exactly what a session nobody answers for answers and never tells the session a viewer
+// is attached; of a listed one it relays the session only where the content rule passes, and
+// otherwise answers the same as for one nobody answers for. Both sessions here are carol's (she
+// proved them) and no listener lists their projects, so only carol and carol's token that lists
+// PRIV, open viewers that see every private project carol sees, are relayed them.
 //
 // Control: today's views (no read rule on the live socket). bob's timeline is served where its
 // GET row refuses him, and alice's agent view relays PRIV's session, and the test fails naming each.
@@ -155,24 +159,28 @@ func TestEveryLiveViewKeepsTheRuleOfItsHTTPRead(t *testing.T) {
 			listed[agent.SessionID] = true
 		}
 		absent.quiet(t, liveReadsQuiet, fmt.Sprintf("%s's agent view of a session nobody answers for", caller))
+		relayedTo := caller == callerCarol || caller == callerCarolPrivToken
 		for _, session := range []string{liveReadsPrivSession, liveReadsPubSession} {
 			watched := source.Watches(session)
 			client, frame := first(caller, liveAgentView, session)
 			got, _ := json.Marshal(frame)
-			if listed[session] {
+			if listed[session] && relayedTo {
 				if agent, ok := frame.(LiveAgentFrame); !ok || string(agent.Data) != `{"v":1,"responding":true}` {
-					t.Errorf("%s: GET /api/v1/agents lists %s, and its agent view answers %s, want the session's responder", caller, session, got)
+					t.Errorf("%s: GET /api/v1/agents lists %s, carol's, and its agent view answers %s, want the session's responder", caller, session, got)
 				}
 				continue
 			}
+			if !listed[session] && relayedTo {
+				t.Errorf("%s: GET /api/v1/agents does not list %s, which carol proved", caller, session)
+			}
 			want, _ := json.Marshal(absentFrame)
 			if string(got) != string(want) {
-				t.Errorf("%s: GET /api/v1/agents does not list %s, and its agent view answers %s, want what a session nobody answers for answers, %s", caller, session, got, want)
+				t.Errorf("%s: its agent view of %s (listed %v) answers %s, want what a session nobody answers for answers, %s", caller, session, listed[session], got, want)
 				continue
 			}
-			client.quiet(t, liveReadsQuiet, fmt.Sprintf("%s's agent view of %s, which its roster does not list", caller, session))
+			client.quiet(t, liveReadsQuiet, fmt.Sprintf("%s's agent view of %s, which it may not watch", caller, session))
 			if now := source.Watches(session); now != watched {
-				t.Errorf("%s: its agent view of %s, which its roster does not list, told the session a viewer is attached (%d times)", caller, session, now-watched)
+				t.Errorf("%s: its agent view of %s, which it may not watch, told the session a viewer is attached (%d times)", caller, session, now-watched)
 			}
 		}
 	}

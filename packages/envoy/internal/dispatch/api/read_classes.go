@@ -225,10 +225,12 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/access-groups":           reads("the deployment's access groups, which no project owns", nil, readclass.Deployment),
 	"GET /metrics":                        reads("the process's counters of the whole deployment's work, which name no project, issue, person or session (readclass's TestMetricsNameNoProject)", nil, readclass.Deployment),
 
-	// The membership answer the secrets broker reads.
-	"GET /api/v1/access/projects/{key}":   reads("the membership answer for one project and person, read by the broker's service account alone", byProject, readclass.AccessAccount),
-	"GET /api/v1/access/person":           reads("one person's member kind, read by the broker's service account alone", nil, readclass.AccessAccount),
-	"GET /api/v1/access/private-projects": reads("every private project's Slack channels and when each list changed, read by the broker's service account alone", nil, readclass.AccessAccount),
+	// The membership answer the secrets broker reads, and the repository answer it relays to the
+	// edge listener.
+	"GET /api/v1/access/projects/{key}":              reads("the membership answer for one project and person, read by the broker's service account alone", byProject, readclass.AccessAccount),
+	"GET /api/v1/access/person":                      reads("one person's member kind, read by the broker's service account alone", nil, readclass.AccessAccount),
+	"GET /api/v1/access/private-projects":            reads("every private project's Slack channels and when each list changed, read by the broker's service account alone", nil, readclass.AccessAccount),
+	"GET /api/v1/access/projects/{key}/repositories": reads("the repositories one project's issues resolve to, read by the broker's service account alone", byProject, readclass.AccessAccount),
 
 	// The test hooks, mounted only where a deployment turns them on.
 	"GET /api/v1/artifacts/_test/rooms":              reads("the document rooms this process holds", nil, readclass.TestHook),
@@ -265,7 +267,7 @@ var readClasses = map[string]readEntry{
 func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if slices.Contains(route.Reads, readclass.AccessAccount) {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if s.requireAccessAccount(w, r) {
+			if s.requireAccessAccount(w, r, route.Method, route.Pattern) {
 				handler(w, r)
 			}
 		}

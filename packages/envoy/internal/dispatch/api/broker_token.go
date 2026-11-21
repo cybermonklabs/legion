@@ -16,9 +16,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -366,6 +368,45 @@ func errNoBrokerConfigured() *apiError {
 
 var brokerPersonScopes = []string{model.ScopePerson}
 
+// maxTiedSessions bounds tiedSessions: once it holds this many pairs it starts again empty, which
+// costs a later request of each pair one statement that finds its row and writes nothing.
+const maxTiedSessions = 1 << 16
+
+// tiedSessions is each (session, person) pair this process has recorded in session_owners
+// (tieBrokerSession). A row there is never removed, so a pair held here is one the table holds.
+type tiedSessions struct {
+	mu   sync.Mutex
+	held map[string]struct{}
+}
+
+// tieBrokerSession records that session acts for person, whom a broker-issued token proved
+// (access.TieSession), unless this process recorded the pair already. A server with no database
+// records nothing: it relays no agent view either.
+func (s *server) tieBrokerSession(ctx context.Context, session, person string) error {
+	login := model.CanonicalLogin(person)
+	if session == "" || login == "" || s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return nil
+	}
+	pair := session + "\x00" + login
+	ties := &s.sessionTies
+	ties.mu.Lock()
+	_, held := ties.held[pair]
+	ties.mu.Unlock()
+	if held {
+		return nil
+	}
+	if err := access.TieSession(ctx, s.deps.Store.Pool, session, login); err != nil {
+		return err
+	}
+	ties.mu.Lock()
+	defer ties.mu.Unlock()
+	if ties.held == nil || len(ties.held) >= maxTiedSessions {
+		ties.held = make(map[string]struct{})
+	}
+	ties.held[pair] = struct{}{}
+	return nil
+}
+
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to
 // the key that token is bound to (internal/ciphertoken). A verified caller is the session the
@@ -500,6 +541,14 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// and the two fields are set from the token alone, never from a body. whoami reports both.
 	if caller.Person != "" {
 		actor.Owner = &caller.Person
+		// The token proved this session acts for its person, on a read as on a write, so the tie
+		// the live agent view reads (session_owners, access.SessionContentClause) is recorded
+		// here, before the request reads anything: a session that only reads is tied too.
+		if err := s.tieBrokerSession(r.Context(), caller.Session, caller.Person); err != nil {
+			slog.Warn("dispatch: a broker-issued token's session could not be tied to its person", "error", err)
+			return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE",
+				"this session's person could not be recorded; try again in a minute")
+		}
 	}
 	if caller.Service != "" {
 		actor.Service = &caller.Service

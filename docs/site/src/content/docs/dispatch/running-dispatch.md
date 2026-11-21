@@ -164,6 +164,34 @@ broker never confirms shows on `/metrics`
 `superseded` on `envoy_dispatch_broker_revocations_superseded_total` (below), and
 `envoy-dispatch clear-broker-revocation <email>` lists what is owed and, given the names it lists,
 settles those without the broker, so revoke the old account's machine logins at the broker first.
+
+Every block below reaches its database with `psql`, given a URL that holds no password and the
+password in `PGPASSWORD`, so no password is ever an argument of a command, which every user of the
+box can read from `/proc/<pid>/cmdline` while it runs. The URLs are libpq's, while
+`BROKER_DATABASE_URL` is the broker's own, pgx's: a deployment sets `pool_max_conns` on it to size
+the broker's pool, and libpq refuses a URI parameter it does not know (`invalid URI query
+parameter`), so `psql` given that URL reads nothing and the reset
+([After a restore](/legion/dispatch/after-a-restore/)) would print `UNKNOWN: the broker database
+could not be read` for a reason that has nothing to do with the broker. So make each URL once, from
+the server's own with its `pool_` parameters and its password taken out, and read each database's
+password from the terminal (Enter alone for a database that asks none), as the blocks name them,
+`$DISPATCH_PSQL_URL` with `$DISPATCH_PGPASSWORD` and `$BROKER_PSQL_URL` with `$BROKER_PGPASSWORD`:
+
+```sh
+psql_url() { printf '%s' "$1" | sed -E 's/(\?|&)(pool_[a-z_]+|password)=[^&]*/\1/g; s/&&+/\&/g; s/\?&/?/; s/[?&]$//; s|^([a-z]+://[^:/?@]*):[^@/?]*@|\1@|'; }
+DISPATCH_PSQL_URL=$(psql_url "$DATABASE_URL")
+BROKER_PSQL_URL=$(psql_url "$BROKER_DATABASE_URL")
+[ -n "${DISPATCH_PGPASSWORD+set}" ] || { read -rsp "Dispatch's database password: " DISPATCH_PGPASSWORD; echo >&2; }
+[ -n "${BROKER_PGPASSWORD+set}" ] || { read -rsp "The broker's database password: " BROKER_PGPASSWORD; echo >&2; }
+export DISPATCH_PSQL_URL BROKER_PSQL_URL DISPATCH_PGPASSWORD BROKER_PGPASSWORD
+```
+
+Those `pool_` parameters are the only ones the broker's deployment adds that libpq does not take; a
+URL without them and without a password is left as it is. A password the environment already holds
+in `DISPATCH_PGPASSWORD` or `BROKER_PGPASSWORD`, from wherever the deployment keeps it, is used as it
+is, and nothing asks for it. `printf` is the shell's own, so the URL reaches `sed` on its input and
+is never an argument either.
+
 A revocation settled without the broker, by that command or by a statement written by hand, tells
 the broker nothing, and the old account's credentials go on reading secrets there. It also leaves
 the broker refusing the account the address came back to, when the broker had recorded that
@@ -173,7 +201,7 @@ it after all, which recovers both, record it again, naming the account the addre
 as its holder, with the address as Dispatch holds it, the issuer and the replaced account's `sub`:
 
 ```sh
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the replaced sub>' <<'SQL'
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the replaced sub>' <<'SQL'
 begin;
 select generation from user_sessions where login = :'email' for update;
 update broker_revocations set generation = generation + 1, holder_subject = (select sub from people where people.email = broker_revocations.email), session_generation = (select generation from user_sessions where user_sessions.login = broker_revocations.email), done_at = null, recorded_at = clock_timestamp() where email = :'email' and issuer = :'issuer' and subject = :'subject';
@@ -215,7 +243,7 @@ holder, exactly as a sign-in records one. The block locks the address's `user_se
 first, as the one above does:
 
 ```sh
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the sub the statement overwrote>' <<'SQL'
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the sub the statement overwrote>' <<'SQL'
 begin;
 select generation from user_sessions where login = :'email' for update;
 update broker_revocations set done_at = now() where email = :'email' and issuer = :'issuer' and subject = (select sub from people where people.email = :'email') and done_at is null;
@@ -232,22 +260,6 @@ block). A statement that records an account where the address recorded none over
 personal tokens that recorded another account or none, and recorded a revocation of each other
 account, which nothing then records.
 
-Every block below that reads the broker's database reaches it with `psql`, which takes libpq's
-URL, while `BROKER_DATABASE_URL` is the broker's own, pgx's: a deployment sets `pool_max_conns`
-on it to size the broker's pool, and libpq refuses a URI parameter it does not know
-(`invalid URI query parameter`), so `psql "$BROKER_DATABASE_URL"` reads nothing and the reset
-([After a restore](/legion/dispatch/after-a-restore/)) would print `UNKNOWN: the broker database
-could not be read` for a reason that has nothing to do with the broker. So make a libpq URL once,
-from the broker's own, and use it where a block names `$BROKER_PSQL_URL`:
-
-```sh
-BROKER_PSQL_URL=$(printf '%s' "$BROKER_DATABASE_URL" | sed -E 's/(\?|&)pool_[a-z_]+=[^&]*/\1/g; s/&&+/\&/g; s/\?&/?/; s/[?&]$//')
-export BROKER_PSQL_URL
-```
-
-Those `pool_` parameters are the only ones the broker's deployment adds that libpq does not take;
-a URL without them is left as it is.
-
 A refusal the operator chooses to lift by itself, of an account the address records again, is
 cleared on the broker's database instead; it lifts that refusal and ends nothing, so it is no
 recovery from the write above. First check on Dispatch's database that the address records the
@@ -260,7 +272,7 @@ issuer and the `sub`, so the clear is one transaction that sets that marker for 
 operator chose to clear and then deletes it; a delete without the marker is refused:
 
 ```sh
-psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person='<address>' -v issuer='https://accounts.google.com' -v subject='<sub>' <<'SQL'
+PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person='<address>' -v issuer='https://accounts.google.com' -v subject='<sub>' <<'SQL'
 begin;
 select set_config('broker.replaced_subject_delete', jsonb_build_array(pg_current_xact_id()::text, :'person', :'issuer', :'subject')::text, true);
 delete from replaced_person_subjects where person = :'person' and issuer = :'issuer' and subject = :'subject';

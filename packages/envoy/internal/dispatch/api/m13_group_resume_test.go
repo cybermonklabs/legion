@@ -52,7 +52,7 @@ func TestAResumeAcrossAGroupTakenOffAListOwesARefreshToItsMembers(t *testing.T) 
 // TestAResumeAcrossAGroupTakenOffAListOwesNothingToARestrictedMemberInIt: erin's address was put in
 // group team, which PRIV's list names, before anybody signed in as her, and she then signed in
 // from outside, a restricted member; dave, a full member, is in team too. A group admits only its
-// full members (access.PersonSeesProjectSQL), so erin never saw PRIV. carol takes team off PRIV's
+// full members (store.PersonSeesProjectSQL), so erin never saw PRIV. carol takes team off PRIV's
 // list: dave's resume across the change owes his page a refresh, and erin's is complete, since
 // the change took nothing from her and tells her nothing of a project she never read.
 //

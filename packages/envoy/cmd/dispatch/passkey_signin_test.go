@@ -509,6 +509,32 @@ func TestTheOutsideOriginIsItsHostHoweverSpelled(t *testing.T) {
 	}
 }
 
+// TestBootRefusesAnOutsideOriginOnTheServerURLsHostHoweverSpelled (R5): the router reads a host
+// without regard to case or trailing dots (routes' sameHost), so a canonical origin
+// (DISPATCH_SERVER_URL) written with a trailing dot names the outside origin's host to it. Boot
+// refuses that pair, however the canonical origin spells its host and whatever its port: were it
+// to boot, every request to the canonical host would be answered as the outside origin's, and
+// Google sign-in would be unavailable everywhere. An outside origin on another host still boots.
+//
+// Control: compare the two hosts by strings.EqualFold alone (checkOutsideOrigin before its fix),
+// and each pair below boots and the row fails.
+func TestBootRefusesAnOutsideOriginOnTheServerURLsHostHoweverSpelled(t *testing.T) {
+	for _, pair := range []struct{ outside, server string }{
+		{"https://canon.example.com", "https://canon.example.com."},
+		{"https://canon.example.com", "https://CANON.Example.com.."},
+		{"https://canon.example.com", "https://canon.example.com.:8443"},
+		// The pair #4854's review found: a local server on another port, its host written with a dot.
+		{"https://localhost", "http://localhost.:8080"},
+	} {
+		if err := checkOutsideOrigin(pair.outside, pair.server); err == nil || !strings.HasPrefix(err.Error(), "DISPATCH_OUTSIDE_ORIGIN: ") {
+			t.Errorf("checkOutsideOrigin(%s, %s) = %v, want a refusal naming DISPATCH_OUTSIDE_ORIGIN", pair.outside, pair.server, err)
+		}
+	}
+	if err := checkOutsideOrigin("https://outside.example.com", "https://canon.example.com."); err != nil {
+		t.Errorf("an outside origin on another host than the canonical origin's: %v", err)
+	}
+}
+
 // TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff (R5): with DISPATCH_SIGNIN_PASSKEY unset
 // and DISPATCH_OUTSIDE_ORIGIN still set on the same database (a rollback, or an outside origin
 // kept for agents), GET /auth/start and GET /auth/callback still answer 404 at the outside origin:

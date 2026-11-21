@@ -140,11 +140,11 @@ type Deps struct {
 	// handler reads a row (serviceTokenActor). Empty admits every verified subject of the issuer
 	// and audience, as a deployment that names none always did.
 	OIDCAccounts []string
-	// AccessAccounts are the service-account subjects that may read the membership answer (GET
-	// /api/v1/access/projects/{key}, GET /api/v1/access/person and GET
-	// /api/v1/access/private-projects; cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS). A caller with no
-	// credential, or one whose credential does not verify, is refused there as every route refuses
-	// it (401 NO_IDENTITY for none), and every other caller is 403 ACCESS_ACCOUNT_REQUIRED.
+	// AccessAccounts are the service-account subjects that may read the routes of the read class
+	// accessAccount (cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS, whose README paragraph lists them). A
+	// caller with no credential, or one whose credential does not verify, is refused there as
+	// every route refuses it (401 NO_IDENTITY for none), and every other caller is 403
+	// ACCESS_ACCOUNT_REQUIRED.
 	AccessAccounts []string
 	// RestrictedAdmission is the sign-in rule's own answer to whether a restricted member would
 	// be signed in now (identity.SignInRule's AdmitsRestricted; cmd/dispatch hands the router its
@@ -429,10 +429,13 @@ func NewDeps(input DepsInput) (Deps, error) {
 		envoyClient = envoy.New(envoyURL, options...)
 	}
 	// The GitHub client obeys and records the rate limits every process shares (github_rate_limits):
-	// GitHub budgets the App and each installation, not this process.
+	// GitHub budgets the App and each installation, not this process. While a project is private it
+	// holds every request that names a repository to that repository (githubapp.WithPrivateProjects).
 	var githubOptions []githubapp.Option
 	if input.Store != nil {
-		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(input.Store.Pool)))
+		pool := input.Store.Pool
+		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(pool)),
+			githubapp.WithPrivateProjects(func(ctx context.Context) (bool, error) { return access.AnyProjectPrivate(ctx, pool) }))
 	}
 	github, err := githubapp.New(input.App, input.GitHubAPIBase, githubOptions...)
 	if err != nil {
@@ -638,6 +641,10 @@ type server struct {
 	// on every server register mounts: it starts its listening connection on the first of them to
 	// subscribe and stops it with the last.
 	eventRelay *eventStreamRelay
+	// sessionTies is each (session, person) pair a broker-issued token proved that this process
+	// has recorded in session_owners (tieBrokerSession), so a session's every request does not
+	// write it again.
+	sessionTies tiedSessions
 	// testHooks carries every test hook to every process serving the database
 	// (test_hooks_fanout.go); nil without Deps.TestHooksEnabled, and on a server with no Store,
 	// which shares nothing with another process and runs a hook on itself.

@@ -104,6 +104,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/access/projects/{key}/repositories": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The repositories the secrets broker relays to an edge listener for the GitHub events of a project: {project, repositories}, the repository each issue of the project resolves to, open or done (its own, else its nearest parent's, else the project's default), lower-cased, each once and sorted byte-wise, and [] when no issue resolves to one. It is read by the one rule of which repositories a project owns, which the GitHub proxy reads too: a repository the project maps and no issue of it resolves to is not in it, and no rename is read. An unknown key is 404 PROJECT_NOT_FOUND; an issue whose parent chain is deeper than 32 links, or loops, is 503 REPOSITORIES_UNRESOLVED naming it, never a shorter list. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    get: operations["getApiV1AccessProjectsByKeyRepositories"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/agents": {
     parameters: {
       query?: never;
@@ -2347,7 +2364,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read the conversation a message belongs to by any message id in it, issue-less or not: the thread root with its deliveries and every reply, oldest first. An issue thread follows the issue's rule. A direct (issue-less) thread is read whole by a credential holding the person scope, since the conversation is that person's own; every other credential names its session in ?session= and reads only one whose root targets that session or that it replied in (403 THREAD_FORBIDDEN), a guard against reading another session's conversation by mistake, not an authorization boundary. A direct conversation is read by its parties and by an open viewer, each only when it may see every session in it, so a restricted member or a credential acting for one reads only its own, and only with sessions of its projects. A thread the caller may not read answers as an id nobody holds, and the live socket sends its text by the same rule. */
+    /** @description Read the conversation a message belongs to by any message id in it, issue-less or not: the thread root with its deliveries and every reply, oldest first. An issue thread follows the issue's rule. A direct (issue-less) thread is read whole by a credential holding the person scope, since the conversation is that person's own; every other credential names its session in ?session= and reads only one whose root targets that session or that it replied in (403 THREAD_FORBIDDEN), a guard against reading another session's conversation by mistake, not an authorization boundary. A direct conversation is read by its parties and by an open viewer, each only when it may see every session in it and read each one's content as its live agent view does, since what a session writes can hold whatever it read, so a restricted member or a credential acting for one reads only its own, and only with sessions its own person proved. A thread the caller may not read answers as an id nobody holds, and the live socket sends its text by the same rule. */
     get: operations["getApiV1MessagesById"];
     put?: never;
     post?: never;
@@ -6424,6 +6441,10 @@ export interface components {
       issues: components["schemas"]["FinishedIssue"][] | null;
       project: string;
     };
+    ProjectRepositoriesAnswer: {
+      project: string;
+      repositories: string[];
+    };
     PutArchitectureSourceInput: {
       actor?: components["schemas"]["Actor"] | null;
       branch: string;
@@ -7337,6 +7358,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AccessAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AccessProjectsByKeyRepositories: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectRepositoriesAnswer"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -16035,6 +16090,7 @@ export type ProjectDefaultAssigneeInput = components["schemas"]["ProjectDefaultA
 export type ProjectGatedSteps = components["schemas"]["ProjectGatedSteps"];
 export type ProjectGatedStepsInput = components["schemas"]["ProjectGatedStepsInput"];
 export type ProjectPlans = components["schemas"]["ProjectPlans"];
+export type ProjectRepositoriesAnswer = components["schemas"]["ProjectRepositoriesAnswer"];
 export type PutArchitectureSourceInput = components["schemas"]["PutArchitectureSourceInput"];
 export type PutLegionSettingInput = components["schemas"]["PutLegionSettingInput"];
 export type PutRepoProjectInput = components["schemas"]["PutRepoProjectInput"];

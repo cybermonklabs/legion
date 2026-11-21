@@ -63,10 +63,12 @@ var (
 	// CommitOnBranch, DefaultBranch and delivery's own pull-request reads all classify their
 	// answers by).
 	ErrRepositoryUnreadable = errors.New("the GitHub App cannot read the repository")
-	// ErrRedirectedOffRepository is a request held to one repository (HoldToRepository) that GitHub
-	// redirected anywhere but that same repository: GitHub answers an old name of a renamed or
-	// transferred repository with a redirect to the repository as it is now, which another
-	// repository's name, or none, may name. The redirect is not followed.
+	// ErrRedirectedOffRepository is a request held to one repository (HoldToRepository, or the
+	// client's own rule while a project is private) that GitHub redirected anywhere but that same
+	// repository: GitHub answers an old name of a renamed or transferred repository with a redirect
+	// to the repository as it is now, which another repository's name, or none, may name. The
+	// redirect is not followed, and the error wraps ErrNoInstallation too, so every caller answers
+	// it as it answers a repository the App is not installed on.
 	ErrRedirectedOffRepository = errors.New("GitHub redirected the request away from the repository it named")
 )
 
@@ -81,23 +83,58 @@ type heldRepository struct{ owner, repo string }
 // and name compared without case under the request's own API origin and prefix, and any other
 // redirect fails the request with ErrRedirectedOffRepository before the redirected request is sent.
 // The GitHub proxy holds its reads to the repository its gate passed (githubapi.ProxyREST), so an
-// old name the gate shows never reads the repository GitHub moved it to. A context not held follows
-// GitHub's redirects as the standard client does.
+// old name the gate shows never reads the repository GitHub moved it to. A context not held is held
+// by the client's own rule (WithPrivateProjects) where it has one, and otherwise follows GitHub's
+// redirects as the standard client does.
 func HoldToRepository(ctx context.Context, owner, repo string) context.Context {
 	return context.WithValue(ctx, heldRepositoryKey{}, heldRepository{owner: owner, repo: repo})
 }
 
 // checkRedirect is the client's redirect policy: the standard client's (at most ten redirects),
-// and for a request held to a repository (HoldToRepository) a redirect to that repository alone.
-// via[0] is the request the client sent, whose context every redirect carries.
-func checkRedirect(request *http.Request, via []*http.Request) error {
-	if held, ok := request.Context().Value(heldRepositoryKey{}).(heldRepository); ok && !sameRepository(via[0].URL, request.URL, held) {
-		return fmt.Errorf("%w %s/%s", ErrRedirectedOffRepository, held.owner, held.repo)
+// and for a request held to a repository a redirect to that repository alone. A request is held
+// by its context (HoldToRepository), or, while any project is private (WithPrivateProjects), to the
+// repository its own path names (/repos/<owner>/<repo>, under the client's API origin): GitHub
+// answers an old name of a renamed or transferred repository with a redirect to the repository as
+// it is now, which the repository rule never judged, so every read Dispatch makes under a
+// repository's name - an issue's, a source's, a pull request's - reads that repository or nothing.
+// A read whose answer to the private-projects question failed is held too. via[0] is the request
+// the client sent, whose context every redirect carries.
+func (c *Client) checkRedirect(request *http.Request, via []*http.Request) error {
+	held, ok := request.Context().Value(heldRepositoryKey{}).(heldRepository)
+	if !ok && c.anyPrivate != nil {
+		if named, names := c.repositoryOf(via[0].URL); names {
+			if private, err := c.anyPrivate(request.Context()); err != nil || private {
+				held, ok = named, true
+			}
+		}
+	}
+	if ok && !sameRepository(via[0].URL, request.URL, held) {
+		return fmt.Errorf("%w %s/%s: %w", ErrRedirectedOffRepository, held.owner, held.repo, ErrNoInstallation)
 	}
 	if len(via) >= 10 {
 		return errors.New("stopped after 10 redirects")
 	}
 	return nil
+}
+
+// repositoryOf is the repository a request to sent names: the owner and name after the client's
+// API origin's own path and /repos/, as every repository read GitHub's REST API serves names it.
+// A request of the client's origin that names no repository (an App or installation call,
+// GraphQL) names none.
+func (c *Client) repositoryOf(sent *url.URL) (heldRepository, bool) {
+	prefix := "/"
+	if base, err := url.Parse(c.base); err == nil {
+		prefix = strings.TrimSuffix(base.Path, "/") + "/"
+	}
+	rest, under := strings.CutPrefix(sent.Path, prefix+"repos/")
+	if !under {
+		return heldRepository{}, false
+	}
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return heldRepository{}, false
+	}
+	return heldRepository{owner: parts[0], repo: parts[1]}, true
 }
 
 // sameRepository reports whether target, a redirect of sent, names the repository held: the same
@@ -361,6 +398,14 @@ func WithLimits(limits Limits) Option {
 	return func(c *Client) { c.limits = limits }
 }
 
+// WithPrivateProjects makes the client hold every request that names a repository to that
+// repository while anyPrivate answers that a project is private, or fails to answer
+// (checkRedirect). It is asked only when GitHub answers a request with a redirect. Without it, and
+// while no project is private, the client follows GitHub's redirects as before (R9).
+func WithPrivateProjects(anyPrivate func(context.Context) (bool, error)) Option {
+	return func(c *Client) { c.anyPrivate = anyPrivate }
+}
+
 // Client calls the GitHub App API as the configured App. A nil *Client is the
 // valid "no app credentials yet" state: every method returns ErrNoAppKey.
 type Client struct {
@@ -371,6 +416,9 @@ type Client struct {
 	now  func() time.Time
 	// limits is the shared rate limits request obeys and records; nil is no shared limit.
 	limits Limits
+	// anyPrivate answers whether any project is private, which holds every request that names a
+	// repository to it (checkRedirect, WithPrivateProjects); nil holds only a held context's.
+	anyPrivate func(context.Context) (bool, error)
 
 	mu sync.Mutex
 	// tokens holds each installation's token in this process alone. GitHub budgets an
@@ -429,7 +477,7 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 		base: strings.TrimSuffix(base, "/"),
 		// No Timeout here: request applies RequestTimeout to each call's own context instead,
 		// so a caller that needs a shorter one sets it on the context it passes.
-		http:           &http.Client{CheckRedirect: checkRedirect},
+		http:           &http.Client{},
 		now:            time.Now,
 		tokens:         map[int64]cachedToken{},
 		installationOf: map[string]mintedToken{},
@@ -437,6 +485,7 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 	for _, option := range options {
 		option(c)
 	}
+	c.http.CheckRedirect = c.checkRedirect
 	nowFunc := func() time.Time { return c.now() }
 	c.repositories = newTTLCache[string, int64](installationsCacheTTL, nowFunc)
 	c.installations = newTTLCache[string, []Installation](installationsCacheTTL, nowFunc)

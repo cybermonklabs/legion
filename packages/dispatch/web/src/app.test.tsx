@@ -1117,7 +1117,8 @@ test("a live socket refused once the person is signed out takes the page to sign
 
 /** The shell signed in as alice until its live socket is refused and whoami answers `signedOut`:
  *  the way a page already open meets the hourly confirmation that ended its sign-in. Returns the
- *  sign-in page's text, once it shows. */
+ *  sign-in page's text, once it shows. The shell opens its live socket after its first render, so
+ *  the helper waits for it as the test above does. */
 async function signInPageAfter(signedOut: ApiError): Promise<string> {
   const sockets = installFakeLiveSockets();
   let signedIn = true;
@@ -1126,6 +1127,7 @@ async function signInPageAfter(signedOut: ApiError): Promise<string> {
     return { event_head: "0", kind: "user", login: "alice" };
   });
   try {
+    await waitFor(() => expect(sockets.sockets).toHaveLength(1));
     act(() => sockets.latest().open());
     signedIn = false;
     act(() => sockets.latest().drop(1008));

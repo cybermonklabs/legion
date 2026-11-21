@@ -38,7 +38,7 @@ const (
 
 // brokerList is a shell function of the runbook's credentials block: a read of the broker's
 // database that lists, by id and person or by login, one kind of person credential still live.
-var brokerList = regexp.MustCompile(`^(signins|logins|pages)\(\) \{ psql "\$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At (?:-F ' ' )?-c "([^"]+)"; \}$`)
+var brokerList = regexp.MustCompile(`^(signins|logins|pages)\(\) \{ PGPASSWORD="\$BROKER_PGPASSWORD" psql "\$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At (?:-F ' ' )?-c "([^"]+)"; \}$`)
 
 // resetSessions runs the reset's first block from the runbook: its read of the broker's greatest
 // recorded generation on the broker's database, then its one transaction on Dispatch's database.
@@ -269,6 +269,8 @@ exit 22
 	command.Env = append(append(os.Environ(),
 		"PATH="+stubs+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"BROKER_DATABASE_URL="+psqlURL(t, r.rig.Store.Pool),
+		"BROKER_PGPASSWORD="+psqlPassword(r.rig.Store.Pool),
+		"DISPATCH_PGPASSWORD="+psqlPassword(r.dispatch.Pool),
 		"DIRECTORY_TOKEN=not-a-secret",
 		"DIRECTORY_ANSWERS="+answers,
 		"DIRECTORY_STATUSES="+statuses), env...)
@@ -761,7 +763,9 @@ func (r *recoveryRig) resetBlockCommand(t *testing.T, lead string, env ...string
 	command.Env = append(append(os.Environ(),
 		"PATH="+stubs+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"BROKER_DATABASE_URL="+psqlURL(t, r.rig.Store.Pool),
-		"DATABASE_URL="+psqlURL(t, r.dispatch.Pool)), env...)
+		"DATABASE_URL="+psqlURL(t, r.dispatch.Pool),
+		"BROKER_PGPASSWORD="+psqlPassword(r.rig.Store.Pool),
+		"DISPATCH_PGPASSWORD="+psqlPassword(r.dispatch.Pool)), env...)
 	return command
 }
 

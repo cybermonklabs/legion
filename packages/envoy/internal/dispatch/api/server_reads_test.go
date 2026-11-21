@@ -133,6 +133,8 @@ var serverReads = map[string]string{
 	"envoy_resolve.go:resolveDeliveryTarget": "a session route resolved with no request's reader in its context - the delivery " +
 		"sweep's resume, a mention send queued with none - was held to its author's reader when it was written, so its " +
 		"session is read as the server's; a resolve with a reader reads it as that reader, and a role is never read so",
+	"results_ci.go:deriveCIResults": "the line of a result CI proves is the server's own, from CI's run, written with no request: it " +
+		"drops the words of every project's keys (readLineWords), as every line did before projects could be private",
 }
 
 // TestAServerWithNoStoreResolvesTheClosedViewer: a server built with no store - a router test's,

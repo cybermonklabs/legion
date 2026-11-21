@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -267,5 +269,86 @@ func TestTwoRemovalsFromTheLastTwoListsEndThePasskeySignIn(t *testing.T) {
 	}
 	if n := countRows(t, database, `select count(*) from passkeys where email = '`+accessErin+`'`); n != 0 {
 		t.Fatalf("after both removals erin holds %d passkey(s), want every one deleted", n)
+	}
+}
+
+// TestARemovalTakesTheLinksThenTheAddressBeforeItEndsTheSignIn (R5): a removal from the last list
+// that names a person ends their passkey sign-in only under the address's lock, which it takes
+// after their unused links of the project, the order Enroll takes them in (the link, then the
+// address). While an enrollment holds erin's address, the removal from ACC waits for it holding
+// her link of ACC and ends nothing; once the enrollment commits, the removal deletes her passkey.
+// The end itself takes no lock (store's endPasskeySignInTx): it runs under the one its caller took.
+//
+// Controls: take the address's lock before the links (endUnlistedPasskeySignIn calling
+// store.LockAddressTx before store.DeleteInvitationsTx), and the removal waits with the link free,
+// and the row fails naming it. Taking out store.LockAddressTx and EndAccountTx's own lock is not
+// enough to break it, since the new account's binding (signInAccountTx) takes the address's lock
+// too. Take out all three (no store.LockAddressTx, no lock in EndAccountTx, and EndAccountTx
+// ending the sign-in alone with endPasskeySignInTx), and the removal finishes while the enrollment
+// holds the address, and the row fails.
+func TestARemovalTakesTheLinksThenTheAddressBeforeItEndsTheSignIn(t *testing.T) {
+	served, database, s := newRegisteredAccessServer(t, testServerOptions{passkeyIssuer: passkeyOutsideOrigin, signInIssuer: "https://accounts.google.com"})
+	ctx := t.Context()
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC: %d %s", listed.Code, listed.Body.String())
+	}
+	const subject = "bG9jay1vcmRlci1lcmluIQ"
+	recordPasskeyAccount(t, database, accessErin, subject)
+	if _, err := database.Pool.Exec(ctx, `insert into passkeys (credential_id, email, user_handle, public_key, aaguid, flags, project_key, made_by)
+		values ('\x01'::bytea, $1, convert_to($2, 'UTF8'), '\x02'::bytea, ''::bytea, 0, 'ACC', 'alice')`, accessErin, subject); err != nil {
+		t.Fatalf("store erin's passkey: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `insert into outside_invitations (token_sha256, email, project_key, made_by, expires_at)
+		values (sha256('erin''s link of ACC'::bytea), $1, 'ACC', 'alice', now() + interval '1 hour')`, accessErin); err != nil {
+		t.Fatalf("store erin's unused link of ACC: %v", err)
+	}
+
+	begin := func() pgx.Tx {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+		return tx
+	}
+	enrollment, removal := begin(), begin()
+	if err := store.LockAddressTx(ctx, enrollment, accessErin); err != nil {
+		t.Fatalf("the enrollment takes erin's address: %v", err)
+	}
+	if _, err := removal.Exec(ctx, `delete from project_access where project_key = 'ACC' and principal_kind = 'person' and principal = $1`, accessErin); err != nil {
+		t.Fatalf("take erin off ACC: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.endUnlistedPasskeySignIn(ctx, removal, "ACC", accessErin) }()
+	for deadline := time.Now().Add(time.Minute); ; {
+		select {
+		case err := <-done:
+			t.Fatalf("the removal from ACC finished (%v) while the enrollment held erin's address, want it to wait for the address's lock", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+		waiting := countRows(t, database, `select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`)
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the removal from ACC neither finished nor waited on the address's lock within a minute")
+		}
+	}
+	var held *pgconn.PgError
+	if _, err := begin().Exec(ctx, `select 1 from outside_invitations where email = $1 for update nowait`, accessErin); !errors.As(err, &held) || held.Code != "55P03" {
+		t.Fatalf("erin's link of ACC, read while the removal waits for her address, answered %v, want it held by the removal (55P03): the links are taken before the address", err)
+	}
+	if err := enrollment.Commit(ctx); err != nil {
+		t.Fatalf("commit the enrollment: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("the removal from ACC: %v", err)
+	}
+	if err := removal.Commit(ctx); err != nil {
+		t.Fatalf("commit the removal from ACC: %v", err)
+	}
+	if n := countRows(t, database, `select count(*) from passkeys where email = $1`, accessErin); n != 0 {
+		t.Fatalf("after the removal from her last list erin holds %d passkey(s), want every one deleted", n)
 	}
 }

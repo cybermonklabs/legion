@@ -491,7 +491,9 @@ var (
 )
 
 // projectRule is a project kind's rule over its row: the project the row names, else the parties
-// of the conversation it is, else unscoped.
+// of the conversation it is (access.PartyClause, which holds each session party to the session
+// content rule as well as to its metadata rule: a file's node, a message's and a block of either
+// show what the session wrote, which can hold what it read), else unscoped.
 func projectRule(row, param string) string {
 	return `(case when ` + row + `.project_key is not null then ` + access.ProjectClause(row+`.project_key`, param) +
 		` when ` + row + `.parties is not null then ` + access.PartyClause(row+`.parties`, param) +

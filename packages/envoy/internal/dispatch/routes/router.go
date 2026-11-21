@@ -169,8 +169,8 @@ type AppContextOptions struct {
 	GitHubAPIBase string
 	OIDC          api.ServiceTokenVerifier
 	// OIDCAccounts are the service-account subjects the API admits, and AccessAccounts those that
-	// read the membership answer (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS, DISPATCH_ACCESS_ACCOUNTS).
-	// See api.DepsInput.
+	// read the routes of the read class accessAccount (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS,
+	// DISPATCH_ACCESS_ACCOUNTS). See api.DepsInput.
 	OIDCAccounts   []string
 	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
@@ -1169,15 +1169,15 @@ func sameHost(origin, host string) bool {
 }
 
 // hostKey is host, a Host header or an origin's host under scheme, as sameHost compares it: its
-// name lower case, with an IPv6 literal's brackets and every trailing dot taken off, then its port
-// as a decimal number with no leading zeros, none for the scheme's default; a port that is no
-// string of digits is kept as written, which no origin's port equals.
+// name as HostName reads it, then its port as a decimal number with no leading zeros, none for the
+// scheme's default; a port that is no string of digits is kept as written, which no origin's port
+// equals.
 func hostKey(scheme, host string) string {
 	name, port := host, ""
 	if split, splitPort, err := net.SplitHostPort(host); err == nil {
 		name, port = split, splitPort
 	}
-	name = strings.TrimRight(strings.Trim(strings.ToLower(name), "[]"), ".")
+	name = HostName(name)
 	if port != "" && strings.Trim(port, "0123456789") == "" {
 		if number, err := strconv.ParseUint(port, 10, 16); err == nil {
 			port = strconv.FormatUint(number, 10)
@@ -1187,6 +1187,14 @@ func hostKey(scheme, host string) string {
 		port = ""
 	}
 	return name + " " + port
+}
+
+// HostName is a host's name as the router compares it (sameHost): lower case, with an IPv6
+// literal's brackets and every trailing dot taken off. Boot compares the outside origin's host with
+// the canonical origin's by it (cmd/dispatch's checkOutsideOrigin), so it refuses every pair the
+// router would read as one host.
+func HostName(name string) string {
+	return strings.TrimRight(strings.Trim(strings.ToLower(name), "[]"), ".")
 }
 
 // enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session

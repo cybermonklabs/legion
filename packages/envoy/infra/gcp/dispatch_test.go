@@ -71,7 +71,7 @@ const (
 
 // dispatchBrokerAccount is the secrets broker's Kubernetes service account, the one subject the
 // production stack lists in both oidcAccounts and accessAccounts, and dispatchReaderAccount
-// another workload's, which Dispatch admits without letting it read the membership answer.
+// another workload's, which Dispatch admits without making it an access account.
 const (
 	dispatchBrokerAccount = "system:serviceaccount:dispatch:envoy-broker"
 	dispatchReaderAccount = "system:serviceaccount:example-agents:example-reader"

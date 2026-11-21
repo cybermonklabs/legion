@@ -137,7 +137,7 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	previous, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, repo, actor, input.Project)
+	previous, hidden, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, repo, actor, &who, input.Project)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -161,12 +161,17 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// A mapping of a project the writer does not see is one the write cannot move: it is answered
-	// exactly as a project no row holds, as the target above is (projectSeenBy).
-	if moved {
-		seen, err := projectSeenBy(r.Context(), tx, who, previous.Project)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+	// exactly as a project no row holds, as the target above is (projectSeenBy). lockRepoProjectWrite
+	// answered it hidden before it took that project's locks, and a hidden mapping is refused
+	// whatever the write asks, since none of its locks is held; a project it saw is asked again under
+	// them, since an access change it waited behind may have taken it from the writer.
+	if hidden || moved {
+		seen := !hidden
+		if seen {
+			if seen, err = projectSeenBy(r.Context(), tx, who, previous.Project); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 		if !seen {
 			s.writeHandlerError(w, pgx.ErrNoRows)
@@ -280,13 +285,18 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	previous, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, spelled, actor)
+	previous, hidden, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, spelled, actor, &who)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// A mapping of a project the writer does not see is one no row holds (projectSeenBy): it is
-	// answered as a path that names no stored mapping, and nothing is removed.
+	// answered as a path that names no stored mapping, and nothing is removed. lockRepoProjectWrite
+	// answered it hidden before it took that project's locks; a project it saw is asked again under
+	// them.
+	if hidden {
+		previous = nil
+	}
 	if previous != nil {
 		seen, err := projectSeenBy(r.Context(), tx, who, previous.Project)
 		if err != nil {
@@ -348,42 +358,79 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 //     change under it. No issue write takes a lock on this row: an issue names any owner/name as
 //     its repository, mapped or not, so nothing an issue write does depends on this row.
 //
+// That is the one order: no other writer takes repo's lock, and none takes it after a project's
+// owner lock (an access write takes a group's name, then the project's owner lock, then the
+// sessions' people, access.LockForAccessWrite and store.RecordReachedProjects), so no two writes
+// wait on each other in a cycle.
+//
+// A mapping whose current project who does not see (projectSeenBy) is answered hidden before any
+// lock is taken: the mapping as read with no lock, hidden true. A write of such a mapping is
+// refused as one of a project no row holds, and a refusal that waited behind the mapping's or the
+// hidden project's writers would tell its writer that someone writes them. A mapping who sees, or
+// none, is read again under repo's lock and asked again there, since it may have moved meanwhile;
+// a project who sees is then locked and asked again by the caller under the lock. A nil who sees
+// every project.
+//
 // Every writer of a mapping goes through here: the PUT, the DELETE and the boot seed
 // (SeedRepoProjects).
-func lockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker, repo string, actor model.Actor, projects ...string) (*model.RepoProject, error) {
+func lockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker, repo string, actor model.Actor, who *model.Actor, projects ...string) (*model.RepoProject, bool, error) {
+	// hiddenFrom reads repo's mapping and answers it hidden when who does not see its project.
+	hiddenFrom := func() (*model.RepoProject, bool, error) {
+		current, err := scanRepoProject(tx.QueryRow(ctx, `select `+repoProjectColumns+` from repo_projects where repo = $1`, repo))
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil, false, nil
+		case err != nil:
+			return nil, false, err
+		}
+		if who != nil {
+			seen, err := projectSeenBy(ctx, tx, *who, current.Project)
+			if err != nil {
+				return nil, false, err
+			}
+			if !seen {
+				return &current, true, nil
+			}
+		}
+		return &current, false, nil
+	}
+	if who != nil {
+		if current, hidden, err := hiddenFrom(); err != nil || hidden {
+			return current, hidden, err
+		}
+	}
 	if _, err := tx.Exec(ctx, `
 		select pg_advisory_xact_lock(hashtext('dispatch-repo-project'), hashtext($1))
 	`, repo); err != nil {
-		return nil, fmt.Errorf("lock repository mapping %s: %w", repo, err)
+		return nil, false, fmt.Errorf("lock repository mapping %s: %w", repo, err)
 	}
-	var current string
-	err := tx.QueryRow(ctx, `select project from repo_projects where repo = $1`, repo).Scan(&current)
-	switch {
-	case err == nil:
-		projects = append(projects, current)
-	case !errors.Is(err, pgx.ErrNoRows):
-		return nil, err
+	current, hidden, err := hiddenFrom()
+	if err != nil || hidden {
+		return current, hidden, err
+	}
+	if current != nil {
+		projects = append(projects, current.Project)
 	}
 	if len(projects) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	owners := make([]model.Event, 0, len(projects))
 	for _, project := range projects {
 		owners = append(owners, projectOwner(project).event("", actor, nil))
 	}
 	if err := broker.LockOwners(ctx, tx, owners...); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	mapping, err := scanRepoProject(tx.QueryRow(ctx, `
 		select `+repoProjectColumns+` from repo_projects where repo = $1 for update
 	`, repo))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &mapping, nil
+	return &mapping, false, nil
 }
 
 // SeedRepoProjects adds the DISPATCH_REPO_PROJECTS mappings (`owner/repo=KEY,...`) whose
@@ -430,7 +477,7 @@ func seedRepoProject(ctx context.Context, database *store.Store, broker *events.
 	if !exists {
 		return fmt.Errorf("project %s does not exist", project)
 	}
-	previous, err := lockRepoProjectWrite(ctx, tx, broker, repo, actor, project)
+	previous, _, err := lockRepoProjectWrite(ctx, tx, broker, repo, actor, nil, project)
 	if err != nil || previous != nil {
 		return err
 	}

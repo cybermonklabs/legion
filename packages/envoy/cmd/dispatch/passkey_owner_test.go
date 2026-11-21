@@ -297,9 +297,9 @@ func TestATransferRefusesAProjectNamingAnotherOwnersPasskey(t *testing.T) {
 // reads nothing of MAL, since the removal gave the address a new passkey account. The address's
 // next enrollment joins that new account, not the old one.
 //
-// Control: end the sign-in alone on the removal (endUnlistedPasskeySignIn calling
-// store.EndPasskeySignInTx, as before), and the old token reads MAL's access, 200, and the row
-// fails.
+// Control: end the sign-in alone (store.PgPasskeys.EndAccountTx calling endPasskeySignInTx in
+// place of endAccountTx, as the removal did before), and the old token reads MAL's access, 200,
+// and the row fails.
 func TestRemovingTheLastListingRevokesThePersonsPersonalTokens(t *testing.T) {
 	r := newPasskeyRig(t, nil)
 	cookie := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
@@ -335,8 +335,9 @@ func TestRemovingTheLastListingRevokesThePersonsPersonalTokens(t *testing.T) {
 // made, as at a removal from their last list: once Mallory names the address on MAL, their old
 // personal token still reads nothing of MAL.
 //
-// Control: end the sign-in alone at the hourly check (settle calling store.EndPasskeySignInTx for
-// an unlisted person), and the old token reads MAL's access, 200, and the row fails.
+// Control: end the sign-in alone at the hourly check (settle calling endPasskeySignInTx in place of
+// endAccountTx for an unlisted person), and the old token reads MAL's access, 200, and the row
+// fails.
 func TestTheHourlyEndRevokesTheUnlistedPersonsPersonalTokens(t *testing.T) {
 	r := newPasskeyRig(t, nil)
 	cookie := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
@@ -506,8 +507,8 @@ func TestTheOwnersAnswerListsTheProjectsOpenLinks(t *testing.T) {
 // new link enrolls them again. Reset is the owner's browser's alone: a full member's address is
 // 409 FULL_MEMBER.
 //
-// Control: skip the end in the Reset (store.EndPasskeySignInTx not called), and the row fails
-// naming the passkey still stored.
+// Control: skip the end in the Reset (resetProjectAccessPerson not calling
+// store.PgPasskeys.EndAccountTx), and the row fails naming the passkey still stored.
 func TestTheOwnersResetEndsSignInAndDeletesPasskeys(t *testing.T) {
 	r := newPasskeyRig(t, nil)
 	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)

@@ -126,6 +126,11 @@ func TestTheBlockEraseLeavesASiblingThatRepeatsItsWords(t *testing.T) {
 	if held := versionsOf(t, database, document); len(held) != 2 {
 		t.Fatalf("the document holds the versions %v before the erase, want the sibling's and the erased block's", held)
 	}
+	// The uploads owe the document a settlement (doc_settlements_pending), which runs after the
+	// settle delay. Run after the erase, it would write a version of its own from the live text the
+	// erase left - a version 2 holding the marker, with its event - so the erase is read against
+	// the settled document, which nothing writes to again.
+	waitForSettlementOwed(t, database, document, false)
 	events := documentEvents(t, database, document)
 	if len(events) == 0 {
 		t.Fatalf("no event about %s holds its versions, so the event check proves nothing", document)
@@ -135,6 +140,9 @@ func TestTheBlockEraseLeavesASiblingThatRepeatsItsWords(t *testing.T) {
 	if err != nil || !erasure.Applied {
 		t.Fatalf("erase %s: applied %t, %v", block, erasure != nil && erasure.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, document, false)
 	text := eraseDocumentText(t, server, document)
 	if !strings.Contains(text, sibling) {
 		t.Errorf("the sibling's line is not in the live text after the erase, which reads %q", text)
@@ -148,17 +156,17 @@ func TestTheBlockEraseLeavesASiblingThatRepeatsItsWords(t *testing.T) {
 	if !listed(erasure, "version 2", "the erased block stands in that version holding the text") {
 		t.Errorf("the listing does not say why version 2 goes:\n%s", strings.Join(erasure.Listing, "\n"))
 	}
-	for id, before := range documentEvents(t, database, document) {
-		after := events[id]
-		if after == "" {
-			t.Errorf("event %d about the document is one the erase wrote: %s", id, before)
+	for id, after := range documentEvents(t, database, document) {
+		before := events[id]
+		if before == "" {
+			t.Errorf("event %d about the document is one the erase wrote: %s", id, after)
 			continue
 		}
 		if !strings.Contains(before, sibling) && !strings.Contains(after, sibling) {
 			continue
 		}
-		if !strings.Contains(before, sibling) {
-			t.Errorf("event %d lost the sibling's line, which no erase of another node may take:\nbefore %s\nafter  %s", id, after, before)
+		if !strings.Contains(after, sibling) {
+			t.Errorf("event %d lost the sibling's line, which no erase of another node may take:\nbefore %s\nafter  %s", id, before, after)
 		}
 	}
 	var siblingText int
@@ -238,6 +246,12 @@ func TestTheCommentEraseTakesItsBodyOutOfTheMarginOfItsDocument(t *testing.T) {
 	comment := writeAnchoredComment(t, server, issue, alone, anchored, remark)
 	root := writeAnchoredComment(t, server, issue, thread, anchored, "A remark with nothing secret in it.")
 	reply := writeCommentReply(t, server, issue, root, answer)
+	// The uploads and the comments owe both documents a settlement (doc_settlements_pending), which
+	// runs after the settle delay. Run after an erase, it would settle the history the erase wrote
+	// and could write a version of its own, with its event, so each erase is read against the
+	// settled document, which nothing writes to again.
+	waitForSettlementOwed(t, database, alone, false)
+	waitForSettlementOwed(t, database, thread, false)
 	aloneText, threadText := eraseDocumentText(t, server, alone), eraseDocumentText(t, server, thread)
 
 	// The controls: each document's stored history holds the body of the comment of it, read by
@@ -253,6 +267,9 @@ func TestTheCommentEraseTakesItsBodyOutOfTheMarginOfItsDocument(t *testing.T) {
 	if err != nil || !erased.Applied {
 		t.Fatalf("erase the anchored comment: applied %t, %v", erased != nil && erased.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, alone, false)
 	if held := updatesHolding(t, database, alone, remark); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of the anchored document still hold the comment's body", held)
 	}
@@ -271,6 +288,9 @@ func TestTheCommentEraseTakesItsBodyOutOfTheMarginOfItsDocument(t *testing.T) {
 	if err != nil || !answered.Applied {
 		t.Fatalf("erase the reply: applied %t, %v", answered != nil && answered.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, thread, false)
 	if held := updatesHolding(t, database, thread, answer); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of the thread's document still hold the reply's body", held)
 	}
@@ -316,11 +336,19 @@ func TestTheBlockEraseTakesAVersionThatCarriedTheBlockUnchanged(t *testing.T) {
 		t.Fatalf("before the erase the document holds the versions %v and the block %d stored text(s), want two versions and one text, so the carried version proves nothing",
 			held, stored)
 	}
+	// The uploads owe the document a settlement (doc_settlements_pending), which runs after the
+	// settle delay. Run after the erase, it would write a version of its own from the live text the
+	// erase left - a version holding the marker, with its event - so the erase is read against the
+	// settled document, which nothing writes to again.
+	waitForSettlementOwed(t, database, document, false)
 
 	erasure, err := confirmErase(ctx, databaseURL, "block", block, time.Millisecond)
 	if err != nil || !erasure.Applied {
 		t.Fatalf("erase %s: applied %t, %v", block, erasure != nil && erasure.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, document, false)
 	if held := versionsOf(t, database, document); len(held) != 0 {
 		t.Errorf("the document holds the versions %v after the erase, want none: the erased block stands in both", held)
 	}
@@ -370,6 +398,11 @@ func TestTheCommentEraseKeepsTheOtherCommentsOfItsDocument(t *testing.T) {
 	if err := json.Unmarshal(created, &suggestion); err != nil || suggestion.ID == "" {
 		t.Fatalf("read the suggestion back: %v: %s", err, created)
 	}
+	// The upload and the comments owe the document a settlement (doc_settlements_pending), which
+	// runs after the settle delay. Run after the erase, it would settle the history the erase wrote
+	// and could write a version of its own, with its event, so the erase is read against the
+	// settled document, which nothing writes to again.
+	waitForSettlementOwed(t, database, marked, false)
 	if held := updatesHolding(t, database, marked, remark); held == 0 {
 		t.Fatalf("no stored update of the document holds the first comment's body, so the erase proves nothing")
 	}
@@ -378,6 +411,9 @@ func TestTheCommentEraseKeepsTheOtherCommentsOfItsDocument(t *testing.T) {
 	if err != nil || !erasure.Applied {
 		t.Fatalf("erase the first comment: applied %t, %v", erasure != nil && erasure.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, marked, false)
 	if held := updatesHolding(t, database, marked, remark); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of the document still hold the first comment's body", held)
 	}
@@ -422,6 +458,11 @@ func TestTheCommentEraseTakesAnEditedReplyOutOfItsRootsMargin(t *testing.T) {
 	if edited := server.send(t, http.MethodPatch, "/api/v1/comments/"+reply, string(body), asUser(dispatchTestLogin)); edited.status != http.StatusOK {
 		t.Fatalf("edit the reply: %s", edited)
 	}
+	// The upload and the comments owe the document a settlement (doc_settlements_pending), which
+	// runs after the settle delay. Run after the erase, it would settle the history the erase wrote
+	// and could write a version of its own, with its event, so the erase is read against the
+	// settled document, which nothing writes to again.
+	waitForSettlementOwed(t, database, thread, false)
 	// The control: after the edit the root's record still holds both secrets.
 	for _, secret := range []string{first, second} {
 		if held := updatesHolding(t, database, thread, secret); held == 0 {
@@ -433,6 +474,9 @@ func TestTheCommentEraseTakesAnEditedReplyOutOfItsRootsMargin(t *testing.T) {
 	if err != nil || !erasure.Applied {
 		t.Fatalf("erase the edited reply: applied %t, %v", erasure != nil && erasure.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, thread, false)
 	for _, secret := range []string{first, second} {
 		if places, searched := columnsHolding(t, database, secret); len(places) > 0 {
 			t.Errorf("after the erase %q is still in %s (%d columns searched)", secret, strings.Join(places, ", "), searched)
@@ -465,6 +509,11 @@ func TestTheBlockEraseListsAMarginRecordThatQuotesItAsLeft(t *testing.T) {
 	document := uploadEraseDocument(t, server, issue, "quoted.md", "# Quoted\n\n"+secret+"\n\n"+anchored+"\n")
 	block := blockWhoseTextIs(t, database, document, secret)
 	quoting := writeAnchoredComment(t, server, issue, document, anchored, quote)
+	// The upload and the comment owe the document a settlement (doc_settlements_pending), which
+	// runs after the settle delay. Run after the erase, it would write a version of its own from
+	// the live text the erase left - a version holding the marker, with its event - so the erase is
+	// read against the settled document, which nothing writes to again.
+	waitForSettlementOwed(t, database, document, false)
 
 	listing, err := grapherase.Erase(ctx, databaseURL, "block", block, "", 0)
 	if err != nil {
@@ -478,6 +527,9 @@ func TestTheBlockEraseListsAMarginRecordThatQuotesItAsLeft(t *testing.T) {
 	if err != nil || !erasure.Applied {
 		t.Fatalf("erase %s: applied %t, %v", block, erasure != nil && erasure.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, document, false)
 	if held := updatesHolding(t, database, document, quote); held == 0 {
 		t.Errorf("after the erase no stored update of the document holds the quoting comment's body, which the listing said stays")
 	}

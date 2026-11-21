@@ -31,12 +31,15 @@ func TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing.T) {
 	database := seedAccess(t)
 	// ses_pub acted in PUB and its pair is recorded; ses_unrecorded acted in PRIV before the fill
 	// reached its event, so no row places it anywhere yet, and the listener lists it with a
-	// credential that names no project ("projects":[]: a record with no projects key names no list,
-	// and passes no open viewer while a project is private, filled or not).
+	// credential that names PUB ("projects":["PUB"]: a record with no projects key names no list,
+	// and passes no open viewer while a project is private, filled or not). The record names a
+	// project because PartyClause holds a session party to the content rule too
+	// (SessionContentClause), which passes a listed session only when its list names a project or
+	// it wrote in one; [] would pass SessionClause and fail the conversation for that reason alone.
 	if _, err := database.Pool.Exec(ctx, `
 		insert into session_projects (session_id, project_key) values ('ses_pub', 'PUB');
 		insert into route_roster (answered, sessions, sent_at, expires_at)
-		values (true, '[{"session_id":"ses_unrecorded","projects":[]}]', now(), now() + interval '1 hour');
+		values (true, '[{"session_id":"ses_unrecorded","projects":["PUB"]}]', now(), now() + interval '1 hour');
 	`); err != nil {
 		t.Fatalf("seed ses_pub's pair and ses_unrecorded's listener record: %v", err)
 	}
@@ -167,7 +170,7 @@ func planLoops(t *testing.T, q Querier, relation, sql string, args ...any) (scan
 // TestTheListenerRecordUsesItsPrimaryKey: SessionClause asks session_clause_visible about every row
 // its own SQL does not answer, and Postgres plans and runs that function's statement once a call,
 // never in the plan of the statement that binds the clause, so what a call reads is read as it
-// runs (sessionClauseCalls, auto_explain's plans of nested statements). For a read over fifty
+// runs (functionCalls, auto_explain's plans of nested statements). For a read over fifty
 // sessions none of which has a pair, by an open viewer and by one that is not open, of a
 // deployment that holds a private project and has filled session_projects, the clause calls it
 // once a session, and each call reads route_roster_session_projects through its primary key,
@@ -215,7 +218,7 @@ func TestTheListenerRecordUsesItsPrimaryKey(t *testing.T) {
 		if !viewer.AnyPrivate {
 			t.Fatalf("%s resolves as %+v, want a deployment that holds a private project", person, viewer)
 		}
-		calls := sessionClauseCalls(t, database, read, viewerArg(t, viewer))
+		calls := functionCalls(t, database, "route_roster_session_projects", read, viewerArg(t, viewer))
 		if len(calls) != 50 {
 			t.Errorf("%s's read over fifty sessions made %d calls of session_clause_visible, want one a session", person, len(calls))
 		}
@@ -234,18 +237,18 @@ func TestTheListenerRecordUsesItsPrimaryKey(t *testing.T) {
 	}
 	if viewer := resolve(alice); viewer.AnyPrivate || !viewer.Open {
 		t.Fatalf("alice resolves as %+v with every project public, want an open viewer of no private project", viewer)
-	} else if calls := sessionClauseCalls(t, database, read, viewerArg(t, viewer)); len(calls) != 0 {
+	} else if calls := functionCalls(t, database, "route_roster_session_projects", read, viewerArg(t, viewer)); len(calls) != 0 {
 		t.Errorf("with no private project, alice's read over fifty sessions made %d calls of session_clause_visible, want none (R9)", len(calls))
 	}
 }
 
-// sessionClauseCalls runs sql with args on a connection of its own, with sequential scans off, on
-// which auto_explain sends the client, as a notice, the analyzed plan of every statement the
-// connection runs, those a function runs included, and answers the plan of each statement
-// session_clause_visible ran: each one whose query text reads route_roster_session_projects. A
-// connection that sent no plan of sql itself fails the test, since its silence about the calls
-// would then say nothing.
-func sessionClauseCalls(t *testing.T, database *store.Store, sql string, args ...any) []json.RawMessage {
+// functionCalls runs sql with args on a connection of its own, with sequential scans off, on which
+// auto_explain sends the client, as a notice, the analyzed plan of every statement the connection
+// runs, those a function runs included, and answers the plan of each statement whose query text
+// names reads: each call of session_clause_visible for route_roster_session_projects, which only a
+// clause's function reads. A connection that sent no plan of sql itself fails the test, since its
+// silence about the calls would then say nothing.
+func functionCalls(t *testing.T, database *store.Store, reads, sql string, args ...any) []json.RawMessage {
 	t.Helper()
 	ctx := context.Background()
 	config := database.Pool.Config().ConnConfig.Copy()
@@ -291,7 +294,7 @@ func sessionClauseCalls(t *testing.T, database *store.Store, sql string, args ..
 		switch {
 		case entry.Query == sql:
 			ranItself = true
-		case strings.Contains(entry.Query, "route_roster_session_projects"):
+		case strings.Contains(entry.Query, reads):
 			calls = append(calls, entry.Plan)
 		}
 	}

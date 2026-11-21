@@ -83,6 +83,7 @@ func testerR26RunSweep(t *testing.T, r *recoveryRig, dropRevoke bool) (string, e
 	command.Env = append(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"BROKER_PSQL_URL="+psqlURL(t, r.rig.Store.Pool),
+		"BROKER_PGPASSWORD="+psqlPassword(r.rig.Store.Pool),
 		"TESTER_BROKER_URL="+r.rig.URL,
 		"TESTER_ACCOUNT_TOKEN="+r.rig.UIToken)
 	output, err := command.CombinedOutput()

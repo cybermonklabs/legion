@@ -185,16 +185,12 @@ func DeleteInvitationsTx(ctx context.Context, tx pgx.Tx, project, email string) 
 	return nil
 }
 
-// EndPasskeySignInTx ends, in tx, email's sign-in and deletes their passkeys (endAccountTx, which
-// also ends the account, and the hourly check of a listed person with no passkey left). It
-// advances the address's session generation, so no cookie of theirs acts again, forgets the row's
-// refresh token and confirmation, and answers how many passkeys it deleted. An address no row
-// holds has neither.
-func EndPasskeySignInTx(ctx context.Context, tx pgx.Tx, email string) (int64, error) {
-	login := model.CanonicalLogin(email)
-	if _, err := tx.Exec(ctx, addressLockSQL, login); err != nil {
-		return 0, fmt.Errorf("end the sign-in: lock the address: %w", err)
-	}
+// endPasskeySignInTx ends, in tx, login's sign-in and deletes their passkeys, under the address's
+// lock tx holds: endAccountTx, which also ends the account, and the hourly check of a listed
+// person with no passkey left (settle) call it, each after taking that lock. It advances the
+// address's session generation, so no cookie of theirs acts again, forgets the row's refresh token
+// and confirmation, and answers how many passkeys it deleted. An address no row holds has neither.
+func endPasskeySignInTx(ctx context.Context, tx pgx.Tx, login string) (int64, error) {
 	if err := tx.QueryRow(ctx, `select 1 from people where email = $1 for update`, login).Scan(new(int)); errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	} else if err != nil {
@@ -268,7 +264,7 @@ func (p *PgPasskeys) EndAccountTx(ctx context.Context, tx pgx.Tx, email string) 
 // machine login and sign-in the old account approved at the broker and refuses every later
 // approve that names it or an older generation. An address that records no passkey's account has
 // its personal tokens revoked alone. Last it ends the sign-in and deletes the passkeys
-// (EndPasskeySignInTx), and answers how many it deleted.
+// (endPasskeySignInTx), and answers how many it deleted.
 func (p *PgPasskeys) endAccountTx(ctx context.Context, tx pgx.Tx, login string) (int64, error) {
 	var recorded bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from people where email = $1 and sub_issuer = $2)`, login, p.issuer).Scan(&recorded); err != nil {
@@ -285,7 +281,7 @@ func (p *PgPasskeys) endAccountTx(ctx context.Context, tx pgx.Tx, login string) 
 	} else if _, err := tx.Exec(ctx, revokeAddressTokensSQL, login); err != nil {
 		return 0, fmt.Errorf("end the person's account: revoke their personal tokens: %w", err)
 	}
-	return EndPasskeySignInTx(ctx, tx, login)
+	return endPasskeySignInTx(ctx, tx, login)
 }
 
 // passkeySubjectBytes is how many random bytes a passkey's subject holds (R5's design paragraph:
@@ -626,7 +622,7 @@ func readPasskey(ctx context.Context, q PasskeyReader, credentialID []byte, lock
 // SignIn records a sign-in with the passkey read, which WebAuthn verified with signature counter
 // signCount and flags under ceremony, which it records used first (useCeremonyTx: the same answer
 // again is ErrPasskeyCeremonyUsed), in one transaction under the address's lock, which every write
-// that ends a passkey's sign-in or deletes its passkeys takes first (EndPasskeySignInTx, settle),
+// that ends a passkey's sign-in or deletes its passkeys takes first (EndAccountTx, settle),
 // so none of them waits on another in a cycle: the passkey, locked, must still exist (else
 // ErrPasskeyUnknown) with the counter read held (else ErrPasskeySignCount: another sign-in with it
 // finished first), and the address must still record the passkey's user handle under the outside
@@ -735,7 +731,7 @@ func (p *PgPasskeys) settle(ctx context.Context, email, subject string, end bool
 	default:
 		// Still listed, with no passkey left: the sign-in ends, and the account stands for the
 		// person's next enrollment.
-		if _, err := EndPasskeySignInTx(ctx, tx, login); err != nil {
+		if _, err := endPasskeySignInTx(ctx, tx, login); err != nil {
 			return false, err
 		}
 		if err := tx.Commit(ctx); err != nil {

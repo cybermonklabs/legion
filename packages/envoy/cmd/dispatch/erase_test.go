@@ -101,6 +101,13 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if text := eraseDocumentText(t, server, notes); strings.Contains(text, secret) {
 		t.Fatalf("the edit left the secret in the live text of the notes: %q", text)
 	}
+	// The uploads owe the notes a settlement (doc_settlements_pending), and the issue's creation
+	// owes the spec one, each run after the settle delay. Run after an erase, it would write a
+	// version of its own from the live text the erase left - for the spec a version holding the
+	// marker, with its event - so each erase is read against the settled document, which nothing
+	// writes to again.
+	waitForSettlementOwed(t, database, notes, false)
+	waitForSettlementOwed(t, database, spec, false)
 
 	// The controls: each store holds the secret before the erase, read by the very statement
 	// that must read none of it afterwards.
@@ -117,6 +124,9 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if err != nil || !erased.Applied {
 		t.Fatalf("erase %s: applied %t, %v", notesBlock, erased != nil && erased.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, notes, false)
 	if held := updatesHolding(t, database, notes, secret); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of the notes still hold the secret's bytes", held)
 	}
@@ -177,6 +187,9 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	if !erasure.Applied {
 		t.Fatalf("the erase of %s removed nothing", specBlock)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, spec, false)
 	var report bytes.Buffer
 	erasure.Write(&report)
 	t.Logf("the erase reported:\n%s", report.String())
@@ -288,11 +301,19 @@ func TestTheBlockEraseTakesATextPastItsExcerpt(t *testing.T) {
 	if held := updatesHolding(t, database, document, secret); held == 0 {
 		t.Fatalf("no stored update of %s holds the secret, so the history check proves nothing", document)
 	}
+	// The upload owes the document a settlement (doc_settlements_pending), which runs after the
+	// settle delay. Run after the erase, it would write a version of its own from the live text the
+	// erase left - a version holding the marker, with its event - so the erase is read against the
+	// settled document, which nothing writes to again.
+	waitForSettlementOwed(t, database, document, false)
 
 	erasure, err := confirmErase(ctx, databaseURL, "block", block, time.Millisecond)
 	if err != nil || !erasure.Applied {
 		t.Fatalf("erase %s: applied %t, %v", block, erasure != nil && erasure.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, document, false)
 	if held := updatesHolding(t, database, document, secret); held != 0 {
 		t.Errorf("after the erase %d stored update(s) of %s still hold the secret past the excerpt", held, document)
 	}

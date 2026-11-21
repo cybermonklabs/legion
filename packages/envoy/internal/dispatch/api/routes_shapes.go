@@ -644,6 +644,7 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/access-groups/{name}":                    {Status: http.StatusOK, Response: model.AccessGroup{}, Request: accessGroupInput{}},
 	"DELETE /api/v1/access-groups/{name}":                 {Status: http.StatusNoContent},
 	"GET /api/v1/access/projects/{key}":                   {Status: http.StatusOK, Response: model.AccessAnswer{}, Params: accessPersonQuery{}},
+	"GET /api/v1/access/projects/{key}/repositories":      {Status: http.StatusOK, Response: projectRepositoriesAnswer{}},
 	"GET /api/v1/access/person":                           {Status: http.StatusOK, Response: model.PersonAnswer{}, Params: accessPersonQuery{}},
 	"GET /api/v1/access/private-projects":                 {Status: http.StatusOK, Response: privateProjectsAnswer{}},
 	// The owner's link for a person from outside, and the owner's Reset of one.

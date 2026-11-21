@@ -17,7 +17,7 @@ import (
 // alone whose heredoc ends every browser session and revokes every personal token on Dispatch's
 // database ("After a Dispatch database restored or made again alone"); the heredoc before it reads
 // the broker's greatest recorded generation, which runReset is handed.
-const resetLead = `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v broker_greatest=`
+const resetLead = `PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v broker_greatest=`
 
 // runReset runs that heredoc on database, as psql sends it, with brokerGreatest as the broker's
 // greatest recorded generation, and answers the number it raised every session to.

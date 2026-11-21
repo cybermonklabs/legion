@@ -397,7 +397,10 @@ func seedFragmentCensus(t *testing.T, census *fragmentCensus) fragmentCensusFixt
 		}
 		return true
 	}
-	listener, _ := newBroadcastListener(t, privateRoster, interests)
+	// The listener lists session-pub's and session-priv's credentials' projects, so alice reads
+	// PUB's session's conversation file and her direct message to it, which are its content
+	// (access.SessionContentClause), and no conversation of PRIV's session.
+	listener, _ := newBroadcastListener(t, privateRosterListed, interests)
 	github := &fakeGitHubApp{installations: map[string]string{}, repos: map[string]*fakeArchitectureRepo{}}
 	for _, project := range []string{seedPublic, seedPrivate} {
 		github.installations[architectureRepo(project)] = "read"
@@ -410,6 +413,8 @@ func seedFragmentCensus(t *testing.T, census *fragmentCensus) fragmentCensusFixt
 		app: fakeGitHubAppConfig(t), githubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: github.handler(t).ServeHTTP}),
 	})
 	seedSessionWork(t, seed)
+	// A list of the agents stores the listener's list, whose projects the content rule reads.
+	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
 	fixture := fragmentCensusFixture{privateSeed: seed}
 	// Each project names a Legion daemon, so its board and its daemon setting read their rows.
 	for _, project := range []string{seedPublic, seedPrivate} {

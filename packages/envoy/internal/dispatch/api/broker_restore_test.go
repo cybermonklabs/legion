@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -26,7 +28,7 @@ var runbookPaths = []string{
 
 // The leads of the runbook's paragraphs whose first ```sh block the tests here run.
 const (
-	brokerURLLead      = "Every block below that reads the broker's database reaches it with `psql`"
+	brokerURLLead      = "Every block below reaches its database with `psql`, given a URL that holds no password"
 	madeAgainLead      = "A broker database **made again**, rather than restored, has no such moment"
 	brokerRestoredLead = "The other way round, when it is **the broker's database that was restored alone**"
 	// repeatResetLead opens the read of whether a broker backup may predate the last reset's end.
@@ -46,6 +48,93 @@ func TestTheRunbookPassesNoBearerTokenOnACommandLine(t *testing.T) {
 	directory := strings.Join(runbookBlockAfter(t, resetDirectoryLead).lines, "\n")
 	if !strings.Contains(directory, `-H @"$header"`) || !strings.Contains(directory, `printf 'Authorization: Bearer %s\n' "$DIRECTORY_TOKEN" >"$header"`) {
 		t.Errorf("the runbook's directory read is %q; want its token written to a file and read with -H @\"$header\"", directory)
+	}
+}
+
+// runbookPsqlCall is a psql call of a runbook page, and the password variable a PGPASSWORD before
+// it names, if any, and the URL variable it is given.
+var runbookPsqlCall = regexp.MustCompile(`(PGPASSWORD="\$([A-Z]+)_PGPASSWORD" )?psql "\$([A-Z_]+)"`)
+
+// TestTheRunbookPassesNoDatabasePasswordOnACommandLine: a database URL that holds its password,
+// given to psql as an argument, sits in /proc/<pid>/cmdline while the call runs, which every user
+// of the box can read. So every psql call of the runbook's two pages and of the store README is
+// given its database's password-free URL, DISPATCH_PSQL_URL or BROKER_PSQL_URL, and that
+// database's password in PGPASSWORD, which the environment carries rather than the command line;
+// and the step that makes them (Signing people in) takes the password out of each server's URL,
+// in its user info and in a password parameter, with the pool_ parameters libpq refuses, keeps
+// every other parameter, and reads a password the environment does not already hold from its
+// input.
+//
+// Controls: the pages as they stood at 697b987b46 (psql "$DATABASE_URL" with the password in the
+// URL); the step's sed without its user-info arm (the URL keeps the password).
+func TestTheRunbookPassesNoDatabasePasswordOnACommandLine(t *testing.T) {
+	calls := 0
+	for _, path := range append(append([]string{}, runbookPaths...), "../store/README.md") {
+		text, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for n, line := range strings.Split(string(text), "\n") {
+			for _, call := range runbookPsqlCall.FindAllStringSubmatch(line, -1) {
+				calls++
+				if call[1] == "" || call[3] != call[2]+"_PSQL_URL" {
+					t.Errorf("%s:%d gives psql %q; want $DISPATCH_PSQL_URL with PGPASSWORD=\"$DISPATCH_PGPASSWORD\" or $BROKER_PSQL_URL with PGPASSWORD=\"$BROKER_PGPASSWORD\"", path, n+1, call[0])
+				}
+			}
+		}
+	}
+	if calls == 0 {
+		t.Fatal("UNKNOWN: the runbook's pages and the store README hold no psql call, so nothing was checked")
+	}
+
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skipf("bash is not installed, so the runbook's URL step cannot be run here: %v", err)
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "urls.sh")
+	out := filepath.Join(dir, "urls")
+	step := strings.Join(runbookBlockAfter(t, brokerURLLead).lines, "\n")
+	if err := os.WriteFile(script, []byte(step+"\nprintf '%s\\n' \"$DISPATCH_PSQL_URL\" \"$BROKER_PSQL_URL\" \"$DISPATCH_PGPASSWORD\" \"$BROKER_PGPASSWORD\" >\"$OUT\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Each server URL carries a password in its user part, and Dispatch's in a password= parameter
+	// too, as an operator's URL can; url.UserPassword writes the user part.
+	dispatchURL := url.URL{Scheme: "postgres", User: url.UserPassword("dispatch", "d-secret"), Host: "db.example:5432",
+		Path: "/dispatch", RawQuery: "sslmode=require&password=q-secret"}
+	brokerURL := url.URL{Scheme: "postgres", User: url.UserPassword("broker", "b-secret"), Host: "db.example:5432",
+		Path: "/broker", RawQuery: "pool_max_conns=8&sslmode=disable"}
+	urls := []string{
+		"DATABASE_URL=" + dispatchURL.String(),
+		"BROKER_DATABASE_URL=" + brokerURL.String(),
+		"OUT=" + out,
+	}
+	for _, test := range []struct {
+		name, input string
+		env         []string
+		want        []string
+	}{
+		{"both passwords read from the terminal", "typed-d\ntyped-b\n", nil,
+			[]string{"postgres://dispatch@db.example:5432/dispatch?sslmode=require", "postgres://broker@db.example:5432/broker?sslmode=disable", "typed-d", "typed-b"}},
+		{"a password the environment holds, even empty, read from it", "typed-d\ntyped-b\n", []string{"DISPATCH_PGPASSWORD=from-the-environment", "BROKER_PGPASSWORD="},
+			[]string{"postgres://dispatch@db.example:5432/dispatch?sslmode=require", "postgres://broker@db.example:5432/broker?sslmode=disable", "from-the-environment", ""}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := exec.Command("bash", script)
+			command.Env = append(append(slices.DeleteFunc(os.Environ(), func(v string) bool {
+				return strings.HasPrefix(v, "DISPATCH_PGPASSWORD=") || strings.HasPrefix(v, "BROKER_PGPASSWORD=")
+			}), urls...), test.env...)
+			command.Stdin = strings.NewReader(test.input)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("the URL step: %v\n%s", err, output)
+			}
+			got, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n"); !slices.Equal(lines, test.want) {
+				t.Errorf("the URL step made %q; want %q, no URL holding a password", lines, test.want)
+			}
+		})
 	}
 }
 
@@ -217,4 +306,11 @@ func psqlURL(t *testing.T, pool interface{ Config() *pgxpool.Config }) string {
 	}
 	parsed.RawQuery = query.Encode()
 	return parsed.String()
+}
+
+// psqlPassword is the password pool signs in with, which the runbook's blocks take from
+// DISPATCH_PGPASSWORD or BROKER_PGPASSWORD rather than from their URL; "" for none. Handed to a
+// block in its environment, it also keeps the runbook's URL step from asking the terminal for it.
+func psqlPassword(pool interface{ Config() *pgxpool.Config }) string {
+	return pool.Config().ConnConfig.Password
 }

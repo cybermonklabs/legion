@@ -81,8 +81,8 @@ type testServerOptions struct {
 	// deployment, whose bearer handling is untouched by that feature.
 	oidc ServiceTokenVerifier
 	// oidcAccounts and accessAccounts are Deps.OIDCAccounts and Deps.AccessAccounts: the
-	// service-account subjects the deployment admits, and those that read the membership answer.
-	// Nil is the deployment that names none.
+	// service-account subjects the deployment admits, and those that read the routes of the read
+	// class accessAccount. Nil is the deployment that names none.
 	oidcAccounts   []string
 	accessAccounts []string
 	// signInIssuer is Deps.SignInIssuer: the issuer people sign in through, the issuer of every

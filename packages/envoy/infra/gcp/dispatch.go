@@ -305,12 +305,12 @@ type DispatchArgs struct {
 	// on, so it is refused without oidcAudience, as oidcIssuer is.
 	OidcAccounts []string `pulumi:"oidcAccounts,optional"`
 	// AccessAccounts is DISPATCH_ACCESS_ACCOUNTS, comma-joined: the service-account subjects that
-	// may read Dispatch's membership answer (GET /api/v1/access/projects/{key}, GET
-	// /api/v1/access/person and GET /api/v1/access/private-projects), the secrets broker's
-	// system:serviceaccount:dispatch:envoy-broker in production. Where oidcAccounts is set,
-	// Dispatch refuses to boot with an access account it leaves out; with oidcAccounts unset, every
-	// account is admitted and any may be an access account. Unset or empty renders nothing, and no
-	// account reads the answer. It is refused without oidcAudience, as oidcIssuer is.
+	// may read the routes of Dispatch's read class accessAccount (cmd/dispatch's README lists
+	// them), the secrets broker's system:serviceaccount:dispatch:envoy-broker in production. Where
+	// oidcAccounts is set, Dispatch refuses to boot with an access account it leaves out; with
+	// oidcAccounts unset, every account is admitted and any may be an access account. Unset or
+	// empty renders nothing, and no account reads those routes. It is refused without
+	// oidcAudience, as oidcIssuer is.
 	AccessAccounts []string `pulumi:"accessAccounts,optional"`
 
 	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK: the lowercase email of a full
@@ -1499,7 +1499,7 @@ func refuseDispatchAccessValues(args *DispatchArgs) error {
 	if len(args.OidcAccounts) > 0 {
 		for i, account := range args.AccessAccounts {
 			if !slices.Contains(args.OidcAccounts, account) {
-				return core.InputErrorf("accessAccounts", "accessAccounts[%d] %q is not among oidcAccounts: an account that reads the membership answer must be one the deployment admits", i, account)
+				return core.InputErrorf("accessAccounts", "accessAccounts[%d] %q is not among oidcAccounts: an access account must be one the deployment admits", i, account)
 			}
 		}
 	}
@@ -1807,11 +1807,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	}
 	// The service-account verifier is one required input, one override and two allow-lists, not
 	// a group: the audience turns it on, the issuer defaults to the cluster's own, and the two
-	// lists narrow which accounts it admits and which of them read the membership answer, so any
-	// of the three sent without an audience would configure nothing and is refused rather than
-	// dropped. Dispatch itself refuses half the issuer-audience pair (oidc.ConfigFromEnv), which
-	// is why the component renders DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not
-	// at all. The refusal names oidcAudience, the input the operator has to set.
+	// lists narrow which accounts it admits and which of them are access accounts, so any of the
+	// three sent without an audience would configure nothing and is refused rather than dropped.
+	// Dispatch itself refuses half the issuer-audience pair (oidc.ConfigFromEnv), which is why the
+	// component renders DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
+	// The refusal names oidcAudience, the input the operator has to set.
 	if args.OidcAudience == "" {
 		if err := refuseDispatchInputsWithout("oidcAudience", "the audience turns on Dispatch's service-account verifier, which oidcIssuer, oidcAccounts and accessAccounts only configure", []dispatchInput{
 			{"oidcIssuer", args.OidcIssuer != ""},

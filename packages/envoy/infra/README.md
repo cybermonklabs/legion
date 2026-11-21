@@ -1486,12 +1486,12 @@ renders and Dispatch admits every account of the issuer and the audience, as it 
 input existed. It is refused without `oidcAudience`, as `oidcIssuer` is.
 
 `accessAccounts` (plain, a list) names the service-account subjects that may read Dispatch's
-membership answer, `GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and
-`GET /api/v1/access/private-projects`: it renders `DISPATCH_ACCESS_ACCOUNTS`, comma-joined.
-Production sets `system:serviceaccount:dispatch:envoy-broker`, the secrets broker. Where
-`oidcAccounts` is set, Dispatch refuses to boot with an access account it leaves out; with
+membership answer and repository answer, whose routes the `DISPATCH_ACCESS_ACCOUNTS` paragraph of
+`packages/envoy/cmd/dispatch/README.md` lists: it renders `DISPATCH_ACCESS_ACCOUNTS`,
+comma-joined. Production sets `system:serviceaccount:dispatch:envoy-broker`, the secrets broker.
+Where `oidcAccounts` is set, Dispatch refuses to boot with an access account it leaves out; with
 `oidcAccounts` unset, every account is admitted and any may be an access account. Unset or empty,
-nothing renders and no account reads the answer. It is refused without `oidcAudience`, as
+nothing renders and no account reads those routes. It is refused without `oidcAudience`, as
 `oidcIssuer` is.
 
 `projectOwnerFallback` (plain) renders `DISPATCH_PROJECT_OWNER_FALLBACK`: the lowercase email of a

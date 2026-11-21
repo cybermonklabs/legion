@@ -171,7 +171,7 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	if refusal != nil {
 		err = refusal
 	} else {
-		installationID, err = s.checkArchitectureSource(r.Context(), owner, name, branch)
+		installationID, err = s.checkArchitectureSource(r.Context(), who, owner, name, branch)
 	}
 	if err != nil {
 		s.writeSourceRefusal(w, err)
@@ -228,7 +228,25 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 // reads the branch's exact ref (githubapp.Client.Branch), not the commit the sync's Ref resolves:
 // GitHub's commits read takes any commit-ish, so a SHA or main~1 would pass it and be stored as
 // the source's branch.
-func (s *server) checkArchitectureSource(ctx context.Context, owner, name, branch string) (int64, error) {
+//
+// While a project is private every read is held to owner/name (githubapp.HoldToRepository), as
+// the GitHub proxy holds its reads: GitHub answers an old name of a renamed or transferred
+// repository with a redirect to it as it is now, which the repository rule never judged, so such
+// a redirect answers as a repository the App is not installed on. With no private project the check
+// follows GitHub's redirects, as before (R9).
+func (s *server) checkArchitectureSource(ctx context.Context, who model.Actor, owner, name, branch string) (int64, error) {
+	if who.Viewer != nil && who.Viewer.AnyPrivate {
+		ctx = githubapp.HoldToRepository(ctx, owner, name)
+	}
+	installation, err := s.checkHeldSource(ctx, owner, name, branch)
+	if errors.Is(err, githubapp.ErrRedirectedOffRepository) {
+		return 0, fmt.Errorf("%w on %s/%s", githubapp.ErrNoInstallation, owner, name)
+	}
+	return installation, err
+}
+
+// checkHeldSource is checkArchitectureSource's three GitHub reads, on ctx as it is held.
+func (s *server) checkHeldSource(ctx context.Context, owner, name, branch string) (int64, error) {
 	check, err := s.deps.GitHub.CheckSource(ctx, owner, name)
 	if err != nil {
 		return 0, err

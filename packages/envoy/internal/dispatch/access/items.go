@@ -18,7 +18,8 @@ func IssueProjectClause(keyExpr, viewerParam string) string {
 // ItemOwnerClause passes an ask or a comment, a row that an issue (issueExpr) or a document
 // (artifactExpr) owns: when the viewer sees the project that owner is in - the issue's, else the
 // document's - or, for a file of an agent's conversation, which no project owns, when the viewer
-// may read that conversation, whose one party is the conversation's session.
+// may read that conversation, whose one party is the conversation's session (PartyClause, which
+// holds that session to the content rule as well, SessionContentClause).
 func ItemOwnerClause(issueExpr, artifactExpr, viewerParam string) string {
 	project := `coalesce(` + issueProjectSQL(issueExpr) + `,
 		(select item_document.project_key from artifacts item_document where item_document.id = ` + artifactExpr + `))`
@@ -34,10 +35,12 @@ func ItemOwnerClause(issueExpr, artifactExpr, viewerParam string) string {
 // the viewer sees that project (ProjectClause over the row's own project_key, which is its issue's
 // project for an issue's document), and a file of an agent's conversation, which no project owns,
 // when the viewer may read that conversation, whose one party is the file's session (PartyClause,
-// the parties graphstore.ArtifactNode states on the document's node). It reads the row's own
-// columns, so a statement that holds the row binds it rather than ItemOwnerClause, which reads the
-// document again by its id. A document its reader may not read is a row the statement does not
-// find, and answers exactly as an id nobody holds.
+// the parties graphstore.ArtifactNode states on the document's node). A file can hold whatever its
+// session read, so PartyClause holds that session to the content rule the live agent view keeps
+// (SessionContentClause) as well as to SessionClause. It reads the row's own columns, so a
+// statement that holds the row binds it rather than ItemOwnerClause, which reads the document again
+// by its id. A document its reader may not read is a row the statement does not find, and answers
+// exactly as an id nobody holds.
 func DocumentClause(alias, viewerParam string) string {
 	return clause("DocumentClause", `(case when `+alias+`.project_key is not null then `+ProjectClause(alias+`.project_key`, viewerParam)+
 		` else `+PartyClause(`array['session:' || `+alias+`.session_id]`, viewerParam)+` end)`)
@@ -53,10 +56,11 @@ func MessagePartiesSQL(idExpr string) string {
 
 // MessageClause passes the messages row alias names: one on an issue when the viewer sees the
 // issue's project, and one on no issue when the viewer may read its conversation (PartyClause
-// over MessagePartiesSQL). A conversation whose parties were never stated, a message whose node
-// Dispatch does not hold or whose node names no party, passes an open viewer alone while no
-// project is private, as every conversation did before a project could be, and no viewer but the
-// server's once one is.
+// over MessagePartiesSQL, which holds each session party to SessionContentClause too, since a
+// session's messages can hold what it read). A conversation whose parties were never stated, a
+// message whose node Dispatch does not hold or whose node names no party, passes an open viewer
+// alone while no project is private, as every conversation did before a project could be, and no
+// viewer but the server's once one is.
 func MessageClause(alias, viewerParam string) string {
 	return clause("MessageClause", `(case when `+alias+`.issue_key is not null then `+IssueProjectClause(alias+`.issue_key`, viewerParam)+`
 		else `+PartyClause(MessagePartiesSQL(alias+`.id::text`), viewerParam)+` end)`)

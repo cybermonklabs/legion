@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A sign-in or an hourly confirmation that makes a full member restricted now keeps, against every
+  session tied to that person, each project they saw as a full member and no longer see
+  (`session_reached_projects`), in the same transaction, as an access change that takes a project
+  from a person does. Before, such a session's transcript, which can hold what it read of those
+  projects, was still relayed by the live agent view to the person, now restricted, and to an open
+  viewer who does not see the projects.
+time: 2026-11-21T16:59:31.000000000Z
+custom:
+    Issue: pr4199
