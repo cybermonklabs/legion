@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
+	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
@@ -128,10 +129,18 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		// Run waits for the work it started before it returns, and a loaded machine can be slow
+		// over that, so the wait has no fixed span; a Run that has already returned is read
+		// first, so a cleanup whose bound is spent never reports a launcher that left.
 		select {
 		case <-g.result:
-		case <-time.After(5 * time.Second):
-			t.Error("the launcher did not leave after its context ended")
+			return
+		default:
+		}
+		select {
+		case <-g.result:
+		case <-time.After(cleanupBeforeDeadline(t)):
+			t.Error("the launcher did not leave after its context ended, to 10 s before the test binary's deadline")
 		}
 	})
 	g.accept()
@@ -157,20 +166,20 @@ func (g *rig) accept() shimwire.LauncherState {
 }
 
 // acceptRole takes one launcher connection up to its hello: the daemon end of the role that
-// hello names, which has not been acknowledged yet. The accept waits under the hang guard alone
-// (hangGuard): a launcher that dials late on a loaded machine is merely slow, and one that never
-// dials fails here, the guard named beside the accept's error.
+// hello names, which has not been acknowledged yet. The accept waits until beforeDeadline runs
+// out: a launcher that dials late on a loaded machine is merely slow, and one that never dials
+// fails here, the bound named beside the accept's error.
 func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 	t.Helper()
-	guard := hangGuard(t)
+	bound := beforeDeadline(t)
 	if tcp, ok := listener.(*net.TCPListener); ok {
-		if err := tcp.SetDeadline(time.Now().Add(guard)); err != nil {
+		if err := tcp.SetDeadline(time.Now().Add(bound)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	conn, err := listener.Accept()
 	if err != nil {
-		t.Fatalf("the launcher's connection: %v (an accept waits up to %s, the hang guard)", err, guard)
+		t.Fatalf("the launcher's connection: %v (the accept waited %s, to 30 s before the test binary's deadline)", err, bound.Round(time.Second))
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	c := &roleConn{t: t, conn: conn, reader: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
@@ -203,40 +212,20 @@ func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.Launc
 	return state
 }
 
-// hangMargin is how long before the test binary's deadline a hang guard (hangGuard) gives up. It
-// is the time a failing case's cleanups have to run in before Go's alarm panics the binary, the
-// fleet's wait for its launcher among them, which gives up cleanupMargin before the deadline:
-// without -v that panic prints no running test's log, so a failure whose cleanups ran past the
-// deadline would lose its own message.
-const hangMargin = 30 * time.Second
-
-// cleanupMargin is how long before the test binary's deadline a case's cleanup gives up its wait
-// for what it started to leave: less than hangMargin, so a case whose hang guard gave up still
-// runs the rest of its cleanups, and prints its failure, before the alarm.
-const cleanupMargin = 10 * time.Second
-
-// hangGuard bounds a wait that only a hang ends: the test binary's own deadline less hangMargin,
-// three minutes at most. A wait for something the launcher does (its dial, its next frame, a
-// role's file) keeps no fixed span: on a loaded machine a step that is merely slow is not a
-// failure, and a launcher that never does the thing still fails, at the guard.
-func hangGuard(t *testing.T) time.Duration {
-	return testwait.Bounded(t, 3*time.Minute, hangMargin)
-}
-
-// next reads the launcher's next frame under the hang guard alone (hangGuard): a generation that
+// next reads the launcher's next frame, waiting until beforeDeadline runs out: a generation that
 // runs a while sends no frame until it ends (a role start that restores a released workspace with
 // git and jj first, say), so a deadline of a fixed few seconds failed such a case on a loaded
-// machine with nothing wrong. A launcher that never sends the frame fails here, the guard named
+// machine with nothing wrong. A launcher that never sends the frame fails here, the bound named
 // beside the read's error.
 func (g *roleConn) next() shimwire.Frame {
 	g.t.Helper()
-	guard := hangGuard(g.t)
-	if err := g.conn.SetReadDeadline(time.Now().Add(guard)); err != nil {
+	bound := beforeDeadline(g.t)
+	if err := g.conn.SetReadDeadline(time.Now().Add(bound)); err != nil {
 		g.t.Fatal(err)
 	}
 	line, err := g.reader.ReadBytes('\n')
 	if err != nil {
-		g.t.Fatalf("the launcher's next frame: %v (a read waits up to %s, the hang guard)", err, guard)
+		g.t.Fatalf("the launcher's next frame: %v (the read waited %s, to 30 s before the test binary's deadline)", err, bound.Round(time.Second))
 	}
 	frame, err := shimwire.Decode(line)
 	if err != nil {
@@ -338,12 +327,13 @@ type observed struct {
 }
 
 // published waits for a marker of the form `<pid> <rest>` and returns the pid and the rest,
-// verbatim. The stand-in child and the namespace tests' shell scripts both write such markers.
+// verbatim. The stand-in child and the namespace tests' shell scripts both write such markers. A
+// child is slow to start on a loaded machine, so the wait runs until beforeDeadline runs out.
 func published(t *testing.T, marker string) (int, string) {
 	t.Helper()
 	var pid int
 	var rest string
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool {
 		body, err := os.ReadFile(marker)
 		if err != nil {
 			return false
@@ -370,12 +360,13 @@ func publishedAll(t *testing.T, marker string) observed {
 	return observed{descendant: descendant, socket: socket, credential: credential}
 }
 
-// gone says whether a process has ended. A process whose parent never reaps it stays a zombie,
-// which still takes a signal, so the state its /proc entry reports decides: in a container whose
-// PID 1 is the test's own stand-in rather than a reaping init — the probe pod runs `sleep` —
-// every ended descendant the launcher killed is a zombie until the container exits.
-func gone(pid int) bool {
-	return testwait.Holds(5*time.Second, testwait.Poll, func() bool {
+// gone says whether a process has ended, waiting until beforeDeadline runs out for one still
+// ending. A process whose parent never reaps it stays a zombie, which still takes a signal, so the
+// state its /proc entry reports decides: in a container whose PID 1 is the test's own stand-in
+// rather than a reaping init — the probe pod runs `sleep` — every ended descendant the launcher
+// killed is a zombie until the container exits.
+func gone(t *testing.T, pid int) bool {
+	return testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool {
 		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) || zombie(pid)
 	})
 }
@@ -429,7 +420,7 @@ func TestAGenerationsCredentialsLiveExactlyAsLongAsItsChild(t *testing.T) {
 	}
 
 	g.stop(7)
-	if !gone(descendant) {
+	if !gone(t, descendant) {
 		t.Fatalf("the launcher left descendant %d running", descendant)
 	}
 	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
@@ -731,15 +722,18 @@ func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	go func() {
 		f.result <- Run(ctx, cfg)
 	}()
-	// The launcher's stop gives each role its grace, so a case that fails with its roles still
-	// running waits out what the stop needs: the bound is the test binary's deadline less
-	// cleanupMargin, three minutes at most, and a launcher that never leaves fails the case.
 	t.Cleanup(func() {
 		cancel()
+		// Bounded as newSessionRig's cleanup is, for the reason it gives.
 		select {
 		case <-f.result:
-		case <-time.After(testwait.Bounded(t, 3*time.Minute, cleanupMargin)):
-			t.Errorf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
+			return
+		default:
+		}
+		select {
+		case <-f.result:
+		case <-time.After(cleanupBeforeDeadline(t)):
+			t.Errorf("the launcher did not leave after its context ended, to 10 s before the test binary's deadline; its log: %s", f.stderr.String())
 		}
 	})
 	for range roles {
@@ -794,12 +788,12 @@ func (g *roleConn) awaitExit(generation uint64) shimwire.LauncherExit {
 }
 
 // waitForRoleFile is path's content once the role writes it, naming the launcher's log — every
-// role's output, role-init's refusals among it — when it never does. It waits under the hang
-// guard alone (hangGuard).
+// role's output, role-init's refusals among it — when it never does. It waits until
+// beforeDeadline runs out.
 func (f *fleet) waitForRoleFile(path string) string {
 	f.t.Helper()
 	var said string
-	if !testwait.Holds(hangGuard(f.t), testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(f.t), testwait.Poll, func() bool {
 		body, err := os.ReadFile(path)
 		if err != nil || len(body) == 0 {
 			return false
@@ -925,20 +919,21 @@ func TestARolesExitIsReportedWithTheShimsOwnStatus(t *testing.T) {
 // fails here. A case that fails before it lets the handlers finish lets them in its cleanup,
 // before the fleet's cleanup stops the container, so no role's process outlives the case.
 //
-// Each bound is the hang guard (hangGuard) or half of it: the wait for both handlers is the
-// guard, the grace is half of it, and the wait for the launcher to leave is one grace from the
-// release, or the guard's end if that is sooner. The case once gave the fleet a grace of 6 s: the
-// roles' teardown after their handlers end is all that is left, but on a loaded dev box under the
-// race detector it took longer than 6 s with nothing wrong (2026-11-21), and before that a stop
-// held to 2.5 s for two handlers of 1.5 s each broke the same way (3.4 s in all on a loaded dev
-// box).
+// No bound decides the verdict on a loaded machine. The wait for both handlers runs until
+// beforeDeadline runs out. The grace is half of that, three minutes at most before the halving:
+// it is how long a serial stop takes to fail here, and how long a launcher may wait past its
+// roles unseen (the gap below). The wait for the launcher to leave is one grace from the release,
+// or beforeDeadline if that is sooner. The case once gave the fleet a grace of 6 s: the roles'
+// teardown after their handlers end is all that is left, but on a loaded dev box under the race
+// detector it took longer than 6 s with nothing wrong (2026-11-21), and before that a stop held
+// to 2.5 s for two handlers of 1.5 s each broke the same way (3.4 s in all on a loaded dev box).
 //
 // The gap this leaves: a launcher that waits less than one grace (90 s at most) past its roles
 // and then leaves passes, as one that waits 30 s does. No order of events shows such a wait, only
 // a bound does, and any bound short enough to see a few seconds is one a loaded machine reaches.
 func TestTheContainersStopEndsEveryRoleWithinOneStopGrace(t *testing.T) {
 	requireRoleNamespaces(t)
-	grace := hangGuard(t) / 2
+	grace := min(beforeDeadline(t), 3*time.Minute) / 2
 	f := newFleet(t, grace, "tester", "reviewer")
 	const handler = `trap 'printf termed > /tmp/termed; while [ ! -e /tmp/go ]; do /bin/sleep 0.01; done; printf done > /tmp/finished; exit 0' TERM
 printf ready > /tmp/ready
@@ -963,7 +958,7 @@ while :; do /bin/sleep 600 & wait; done
 	}
 
 	f.cancel()
-	testwait.WithinPolling(t, hangGuard(t), testwait.Poll, "both roles to be in their SIGTERM handlers at the same time", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "both roles to be in their SIGTERM handlers at the same time", func() bool {
 		for _, role := range roles {
 			if _, err := os.Stat(f.roleTmp(role, "termed")); err != nil {
 				return false
@@ -976,7 +971,7 @@ while :; do /bin/sleep 600 & wait; done
 			t.Fatal(err)
 		}
 	}
-	leave := testwait.Bounded(t, grace, hangMargin)
+	leave := min(grace, beforeDeadline(t))
 	var err error
 	select {
 	case err = <-f.result:
@@ -1133,7 +1128,13 @@ func TestARoleInitThatFailsBeforeItsShimIsReportedAsASetupFailure(t *testing.T) 
 // A stop that reaches a generation its wait has already reaped signals nothing: the launcher
 // signals the role-init it started through that process's own handle, never by a number the
 // kernel may have handed to another role's role-init since. The reaped generation's number here
-// names a live process, as a reused one would: a stop sent by number would end it.
+// names a live process, as a reused one would: a stop sent by number would reach it.
+//
+// What reached it is read from the process, not from a window of time. It writes a line for each
+// SIGTERM and SIGWINCH it takes, and once the stop has returned the case sends it a SIGWINCH of
+// its own. The kernel hands a process its pending signals lowest number first, and its shell runs
+// the traps of those it took in that order too; SIGTERM's number is the lower, so a SIGTERM the
+// stop sent is written before the case's SIGWINCH however slow the machine is.
 func TestAStopOfAReapedGenerationSignalsNothing(t *testing.T) {
 	reaped := exec.Command("/bin/true")
 	if err := reaped.Start(); err != nil {
@@ -1142,22 +1143,48 @@ func TestAStopOfAReapedGenerationSignalsNothing(t *testing.T) {
 	if err := reaped.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	reuser := exec.Command("/bin/sleep", "60")
+	reuser := exec.Command("/bin/sh", "-c", `trap 'echo TERM' TERM; trap 'echo WINCH; exit 0' WINCH; echo ready; while :; do /bin/sleep 1 & wait $!; done`)
+	reuser.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := reuser.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := reuser.Start(); err != nil {
 		t.Fatal(err)
 	}
-	ended := make(chan error, 1)
-	go func() { ended <- reuser.Wait() }()
-	t.Cleanup(func() { _ = reuser.Process.Kill(); <-ended })
+	t.Cleanup(func() { _ = syscall.Kill(-reuser.Process.Pid, syscall.SIGKILL); _ = reuser.Wait() })
+	took := make(chan string, 8)
+	go func() {
+		defer close(took)
+		for lines := bufio.NewScanner(stdout); lines.Scan(); {
+			took <- lines.Text()
+		}
+	}()
+	next := func(what string) string {
+		t.Helper()
+		select {
+		case line, ok := <-took:
+			if !ok {
+				t.Fatalf("the process holding the reaped generation's number ended before it wrote %s", what)
+			}
+			return line
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("the process holding the reaped generation's number never wrote %s, to 30 s before the test binary's deadline", what)
+		}
+		return ""
+	}
+	if line := next("that it is ready"); line != "ready" {
+		t.Fatalf("the process holding the reaped generation's number wrote %q, want ready", line)
+	}
 	m := &manager{role: "tester", namespaced: true}
 	if err := m.signalChild(&child{pid: reuser.Process.Pid, process: reaped.Process}, syscall.SIGTERM); err != nil {
 		t.Fatalf("signal a reaped generation = %v, want nothing to signal and no error", err)
 	}
-	select {
-	case err := <-ended:
-		ended <- err
-		t.Fatalf("the process now holding the reaped generation's number ended (%v): the stop was sent by number", err)
-	case <-time.After(200 * time.Millisecond):
+	if err := reuser.Process.Signal(syscall.SIGWINCH); err != nil {
+		t.Fatal(err)
+	}
+	if line := next("the case's own SIGWINCH"); line != "WINCH" {
+		t.Fatalf("the process now holding the reaped generation's number took %q before the case's own SIGWINCH: the stop was sent by number", line)
 	}
 }
 
@@ -1646,10 +1673,15 @@ func TestAGenerationWhoseSessionDatabaseRefusesIsNotStarted(t *testing.T) {
 func TestAGenerationWhoseSessionDatabaseNeverAnswersIsRefusedWhileTheDaemonWaits(t *testing.T) {
 	dialer := &sessionDialer{addr: idleUpstream(t)}
 	dialer.stallAt(silentUpstream(t))
-	// Generation 1's bound is read from its dial's deadline, so the grace sets no race there; it is
-	// generation 2's real proof dial to a local listener that has half of it, which a host starved of
-	// CPU (six busy loops on two cores, under -race) once took more than 200ms to make.
-	const grace = 2 * time.Second
+	// The grace is the one a pod's launcher gets at the daemon's default worker_stop_timeout_seconds
+	// (shim.DefaultStopGrace), so each half is the budget the daemon's wait leaves a start in
+	// production: the row holds the launcher to that budget, not to a tighter one of the row's own.
+	// It was 2 s, whose half of 1 s is tighter than any budget the product gives a start, so a
+	// loaded machine could fail the row with nothing wrong: generation 2's real proof dial to a
+	// local listener once took more than 200ms on a host starved of CPU (six busy loops on two
+	// cores, under -race). Generation 1's dial stalls to its deadline, so the row takes half the
+	// grace.
+	grace := shim.DefaultStopGrace
 	g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build, StopGrace: grace})
 	marker := filepath.Join(t.TempDir(), "marker")
 
@@ -1758,69 +1790,137 @@ func TestASessionDatabaseIsHeldForItsGenerationAndNothingBetween(t *testing.T) {
 // and only then is its proxy closed and its directory removed, before Run returns. The proxy's
 // lifetime is the child's plus the generation's own cleanup, bounded by the grace, never the
 // container's context.
+//
+// Each half reads events, never a race against the grace. The first gives the child a grace no
+// machine runs out (beforeDeadline) and a child that takes its SIGTERM and lives on until the case
+// lets it go: once it has its SIGTERM the case dials its session socket and sees the proxy dial the
+// upstream for that connection, with the child still alive and Run not yet returned, and only then
+// lets it end. The second gives a child that ignores SIGTERM a short grace and reads only what a
+// slow machine cannot change: Run returns no sooner than the grace after the shutdown, with the
+// child gone, the socket no longer served and the directory removed. The row once dialed the
+// socket inside a grace of 500 ms and waited 5 s for the proxy's upstream dial and 10 s for Run, so
+// a loaded machine could fail it with nothing wrong.
 func TestOnTheContainersShutdownASessionDatabaseEndsOnceItsWedgedChildIsKilled(t *testing.T) {
-	dialer := &sessionDialer{addr: idleUpstream(t)}
-	const grace = 500 * time.Millisecond
-	g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build, StopGrace: grace})
-	ready := filepath.Join(t.TempDir(), "ready")
-	// An ignored signal stays ignored across fork and exec, so neither the shell nor its sleeps
-	// answer SIGTERM: only the SIGKILL at the grace ends the generation.
-	start := shimwire.LauncherStart{
-		ID: "start-1", Generation: 1,
-		Argv: []string{"/bin/sh", "-c", `trap '' TERM; printf '%s ' "$$" > "$READY.tmp" && mv "$READY.tmp" "$READY"; while :; do sleep 0.05; done`},
-		Env:  []string{"READY=" + ready},
-	}
-	if got := g.start(start); !got.OK {
-		t.Fatalf("start result = %#v", got)
-	}
-	pid, _ := published(t, ready)
-	dir := g.generationDir(1)
-	socket := filepath.Join(dir, ompsessions.SocketName)
-	upstreamDials := func() int {
-		dialer.mu.Lock()
-		defer dialer.mu.Unlock()
-		return len(dialer.bounds)
-	}
-	before := upstreamDials()
-
-	g.cancel()
-	stopped := time.Now()
-	conn, err := net.Dial("unix", socket)
-	if err != nil {
-		t.Fatalf("the session socket refused a dial during the wedged child's stop grace: %v", err)
-	}
-	_ = conn.Close()
-	deadline := time.Now().Add(5 * time.Second)
-	for upstreamDials() == before {
-		if time.Now().After(deadline) {
-			t.Fatal("the proxy accepted a connection during the stop grace but never dialed the upstream for it")
+	t.Run("its child is served for as long as it lives through the stop", func(t *testing.T) {
+		// The directory comes first, so its removal is the last of the case's cleanups: the release
+		// below is still there when the rig's cleanup stops the container.
+		marks := t.TempDir()
+		ready, termed, release := filepath.Join(marks, "ready"), filepath.Join(marks, "termed"), filepath.Join(marks, "go")
+		dialer := &sessionDialer{addr: idleUpstream(t)}
+		g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build, StopGrace: beforeDeadline(t)})
+		// Registered after the rig, so it runs before the rig's cleanup stops the container: a case
+		// that fails before it lets the child go still ends it, and no process outlives the case.
+		t.Cleanup(func() { _ = os.WriteFile(release, nil, 0o644) })
+		// The shell takes its SIGTERM and carries on; the sleep it runs ends on the group's SIGTERM,
+		// and the loop starts another until the case lets the child go.
+		start := shimwire.LauncherStart{
+			ID: "start-1", Generation: 1,
+			Argv: []string{"/bin/sh", "-c", `trap ': > "$TERMED"' TERM; printf '%s ' "$$" > "$READY.tmp" && mv "$READY.tmp" "$READY"; while [ ! -e "$RELEASE" ]; do sleep 0.05; done; exit 0`},
+			Env:  []string{"READY=" + ready, "TERMED=" + termed, "RELEASE=" + release},
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	select {
-	case err := <-g.result:
-		// The rig's cleanup reads the result too.
-		g.result <- err
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Run = %v, want the container's shutdown", err)
+		if got := g.start(start); !got.OK {
+			t.Fatalf("start result = %#v", got)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Run did not return after the wedged child's stop grace")
-	}
-	if waited := time.Since(stopped); waited < grace {
-		t.Fatalf("Run returned %s after the shutdown, inside the %s grace a child ignoring SIGTERM is owed", waited, grace)
-	}
-	if !gone(pid) {
-		t.Fatalf("the wedged child %d outlived its stop grace", pid)
-	}
-	if conn, err := net.Dial("unix", socket); err == nil {
+		pid, _ := published(t, ready)
+		dir := g.generationDir(1)
+		socket := filepath.Join(dir, ompsessions.SocketName)
+		upstreamDials := func() int {
+			dialer.mu.Lock()
+			defer dialer.mu.Unlock()
+			return len(dialer.bounds)
+		}
+		before := upstreamDials()
+
+		g.cancel()
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the child to take the container's SIGTERM", func() bool {
+			_, err := os.Stat(termed)
+			return err == nil
+		})
+		conn, err := net.Dial("unix", socket)
+		if err != nil {
+			t.Fatalf("the session socket refused a dial while its child lived through the stop: %v", err)
+		}
+		defer conn.Close()
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the proxy to dial the upstream for the connection made during the stop", func() bool {
+			return upstreamDials() > before
+		})
+		if err := syscall.Kill(pid, 0); err != nil {
+			t.Fatalf("the child %d was gone before the case let it go: %v", pid, err)
+		}
+		select {
+		case err := <-g.result:
+			g.result <- err
+			t.Fatalf("Run returned %v while the generation's child still lived", err)
+		default:
+		}
 		_ = conn.Close()
-		t.Fatal("the session socket is still served after Run returned")
-	}
-	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the generation's directory outlived Run: %v", err)
-	}
+		if err := os.WriteFile(release, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-g.result:
+			// The rig's cleanup reads the result too.
+			g.result <- err
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Run = %v, want the container's shutdown", err)
+			}
+		case <-time.After(beforeDeadline(t)):
+			t.Fatal("Run did not return after the generation's child ended, to 30 s before the test binary's deadline")
+		}
+		if conn, err := net.Dial("unix", socket); err == nil {
+			_ = conn.Close()
+			t.Fatal("the session socket is still served after Run returned")
+		}
+		if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the generation's directory outlived Run: %v", err)
+		}
+	})
+
+	t.Run("a child that ignores SIGTERM is killed at the grace, and only then is the proxy closed", func(t *testing.T) {
+		dialer := &sessionDialer{addr: idleUpstream(t)}
+		const grace = 500 * time.Millisecond
+		g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build, StopGrace: grace})
+		ready := filepath.Join(t.TempDir(), "ready")
+		// An ignored signal stays ignored across fork and exec, so neither the shell nor its sleeps
+		// answer SIGTERM: only the SIGKILL at the grace ends the generation.
+		start := shimwire.LauncherStart{
+			ID: "start-1", Generation: 1,
+			Argv: []string{"/bin/sh", "-c", `trap '' TERM; printf '%s ' "$$" > "$READY.tmp" && mv "$READY.tmp" "$READY"; while :; do sleep 0.05; done`},
+			Env:  []string{"READY=" + ready},
+		}
+		if got := g.start(start); !got.OK {
+			t.Fatalf("start result = %#v", got)
+		}
+		pid, _ := published(t, ready)
+		dir := g.generationDir(1)
+		socket := filepath.Join(dir, ompsessions.SocketName)
+
+		g.cancel()
+		stopped := time.Now()
+		select {
+		case err := <-g.result:
+			// The rig's cleanup reads the result too.
+			g.result <- err
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Run = %v, want the container's shutdown", err)
+			}
+		case <-time.After(beforeDeadline(t)):
+			t.Fatal("Run did not return after the wedged child's stop grace, to 30 s before the test binary's deadline")
+		}
+		if waited := time.Since(stopped); waited < grace {
+			t.Fatalf("Run returned %s after the shutdown, inside the %s grace a child ignoring SIGTERM is owed", waited, grace)
+		}
+		if !gone(t, pid) {
+			t.Fatalf("the wedged child %d outlived its stop grace", pid)
+		}
+		if conn, err := net.Dial("unix", socket); err == nil {
+			_ = conn.Close()
+			t.Fatal("the session socket is still served after Run returned")
+		}
+		if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the generation's directory outlived Run: %v", err)
+		}
+	})
 }
 
 // echoUpstream is an instance that answers every connection by echoing it back, and holds it open
@@ -1861,7 +1961,8 @@ func echoUpstream(t *testing.T) string {
 
 // holdSessionSocket connects the test process itself to a generation's session socket, a holder
 // outside the generation's process group as a setsid'd psql would be, shows by a round trip that
-// the connection reaches the upstream, and returns it held open.
+// the connection reaches the upstream, and returns it held open. The round trip waits until
+// beforeDeadline runs out.
 func holdSessionSocket(t *testing.T, socket string) net.Conn {
 	t.Helper()
 	conn, err := net.Dial("unix", socket)
@@ -1869,7 +1970,7 @@ func holdSessionSocket(t *testing.T, socket string) net.Conn {
 		t.Fatalf("dial the generation's session socket: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(beforeDeadline(t))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Write([]byte("ping")); err != nil {
@@ -1885,26 +1986,39 @@ func holdSessionSocket(t *testing.T, socket string) net.Conn {
 	return conn
 }
 
-// expectHeldClosed fails unless the proxy has closed a held connection: a read on it ends with no
-// bytes, within a bound and not for want of time.
+// expectHeldClosed fails unless the proxy had already closed a held connection when the case reads
+// it: the proxy's Close returns only once it has closed every connection it still held, and Run
+// and a stop's answer each wait for that Close, so the end of file is there by then. The read takes
+// what the socket holds at once, through its own non-blocking descriptor, and never waits: a
+// connection still open reads nothing (EAGAIN), however slow the machine.
 func expectHeldClosed(t *testing.T, conn net.Conn) {
 	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	raw, err := conn.(syscall.Conn).SyscallConn()
+	if err != nil {
 		t.Fatal(err)
 	}
 	buf := make([]byte, 16)
-	n, err := conn.Read(buf)
-	var timeout net.Error
-	if n != 0 || err == nil || errors.As(err, &timeout) && timeout.Timeout() {
-		t.Fatalf("the held connection read %q, %v; want it closed", buf[:n], err)
+	n, readErr := -1, error(nil)
+	if err := raw.Read(func(fd uintptr) bool {
+		n, readErr = syscall.Read(int(fd), buf)
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || readErr != nil {
+		t.Fatalf("the held connection read %q, %v; want it closed, its end of file already there", buf[:max(n, 0)], readErr)
 	}
 }
 
 // A socket holder outside the generation's process group cannot hold the generation open on the
 // container's shutdown. Off PID 1 the launcher's signals reach only the child's process group and
 // nothing reaps the rest, so the holder outlives the child; the proxy closes its connection once
-// sessionDrain is over, and Run returns within the stop grace and the drain, with the socket no
-// longer served, the generation's directory gone and the holder's connection closed under it.
+// sessionDrain is over, and Run returns, with the socket no longer served, the generation's
+// directory gone and the holder's connection closed under it. Each is read from an event: Run's
+// return while the holder never hangs up, waited for until beforeDeadline runs out, and the
+// proxy's own line that it closed the connection at the end of the drain. The row once wanted Run
+// back within the grace, the drain and 3 s more, a span a loaded machine reaches with nothing
+// wrong; a launcher that waits a few seconds past the drain and then returns passes now.
 func TestASocketHolderOutsideTheGenerationCannotHoldItOpenOnTheContainersShutdown(t *testing.T) {
 	dialer := &sessionDialer{addr: echoUpstream(t)}
 	const grace = 300 * time.Millisecond
@@ -1919,7 +2033,6 @@ func TestASocketHolderOutsideTheGenerationCannotHoldItOpenOnTheContainersShutdow
 	held := holdSessionSocket(t, socket)
 
 	g.cancel()
-	bound := grace + sessionDrain + 3*time.Second
 	select {
 	case err := <-g.result:
 		// The rig's cleanup reads the result too.
@@ -1927,8 +2040,8 @@ func TestASocketHolderOutsideTheGenerationCannotHoldItOpenOnTheContainersShutdow
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run = %v, want the container's shutdown", err)
 		}
-	case <-time.After(bound):
-		t.Fatalf("Run did not return within %s of the shutdown while a holder outside the generation kept its session socket open", bound)
+	case <-time.After(beforeDeadline(t)):
+		t.Fatal("Run did not return while a holder outside the generation kept its session socket open, to 30 s before the test binary's deadline")
 	}
 	if conn, err := net.Dial("unix", socket); err == nil {
 		_ = conn.Close()
@@ -1944,8 +2057,10 @@ func TestASocketHolderOutsideTheGenerationCannotHoldItOpenOnTheContainersShutdow
 }
 
 // A socket holder outside the generation's process group cannot hold up the daemon's stop either:
-// the stop is answered within its grace and the drain, the holder's connection is closed under it,
-// and the next generation starts and is served.
+// the stop is answered while the holder still holds its connection, which the proxy closes at the
+// end of its drain, and the next generation starts and is served. The answer is read as an event,
+// waited for until beforeDeadline runs out (roleConn.next): the row once wanted it within the
+// stop's grace, the drain and 3 s more, a span a loaded machine reaches with nothing wrong.
 func TestASocketHolderOutsideTheGenerationCannotHoldUpTheDaemonsStop(t *testing.T) {
 	dialer := &sessionDialer{addr: echoUpstream(t)}
 	g := newSessionRig(t, Config{SessionDatabase: testDatabase, SessionDialer: dialer.build, StopGrace: 300 * time.Millisecond})
@@ -1957,11 +2072,10 @@ func TestASocketHolderOutsideTheGenerationCannotHoldUpTheDaemonsStop(t *testing.
 	dir := g.generationDir(1)
 	held := holdSessionSocket(t, filepath.Join(dir, ompsessions.SocketName))
 
-	began := time.Now()
 	// g.stop sends the stop with a one-second grace.
 	g.stop(1)
-	if waited, bound := time.Since(began), time.Second+sessionDrain+3*time.Second; waited > bound {
-		t.Fatalf("the stop was answered %s after it was sent, past %s", waited, bound)
+	if logged := g.stderr.String(); !strings.Contains(logged, "still open after "+sessionDrain.String()) {
+		t.Fatalf("the launcher logged %q, want the held connection closed after the drain named", logged)
 	}
 	expectHeldClosed(t, held)
 	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
