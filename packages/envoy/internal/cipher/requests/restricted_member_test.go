@@ -30,6 +30,15 @@ import (
 // proxy already read a full member's values for is refused, and ended, at the next connection
 // once Dispatch calls the person a restricted member, and refused uncheckable while Dispatch
 // cannot be asked.
+//
+// A Google group that owns a secret, or that a secret's requesters list names, gives a restricted
+// member of it nothing either (groupSecrets, over a group reader that lists the person, fresh):
+// once the machine asks, an ask for the group's agent-tier secret is denied and the grant of it
+// the session got as a member ended, the release of its grant of a secret listed by the group is
+// refused and that grant ended, a fresh ask for that secret is denied, a human-tier secret listed
+// by the group is not put to its owner, and another member's approval of the group's human-tier
+// secret the session left pending is the policy's denial. The control is a full member of the
+// same group, which reuses, is released, is put to the owner and is granted what it was.
 func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 	const (
 		outsider = "outsider@outside.example"
@@ -177,6 +186,108 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 		requireGrantEnded(t, airlocked, grantID)
 		if _, err := airlocked.Values(ctx, grantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 			t.Fatalf("Values of the ended grant = %v; want ErrGrantNotLive", err)
+		}
+	})
+
+	t.Run("a group that owns or lists a secret gives a restricted member of it none of it", func(t *testing.T) {
+		const groupApprover = "approver@example.com"
+		for _, who := range []struct {
+			name       string
+			person     string
+			restricted bool
+		}{
+			{"a restricted member of the group", groupMember, true},
+			{"a full member of the group", secondMember, false},
+		} {
+			t.Run(who.name, func(t *testing.T) {
+				f := newGroupFixture(t)
+				f.directory.Set(approversGroup, groupMember, secondMember, groupApprover)
+				session, key := newEnrollment(t, f.m.Store, "session", "group-box-"+t.Name(), new(who.person), nil)
+				// What the session holds was given as a member of the group, before the machine
+				// asked Dispatch anything.
+				heldTeam := f.ask(t, session, key, "TEAM_TOKEN")
+				heldListed := f.ask(t, session, key, "LISTED_TOKEN")
+				for _, held := range []Request{heldTeam, heldListed} {
+					if held.State != "granted" || held.GrantID == nil {
+						t.Fatalf("Create(%s) as a member = %+v; want it granted at once", held.Secrets[0].Name, held)
+					}
+				}
+				pendingTeamKey := f.ask(t, session, key, "TEAM_KEY")
+				if pendingTeamKey.State != "pending" || pendingTeamKey.RecordID == nil {
+					t.Fatalf("Create(TEAM_KEY) as a member = %+v; want it pending with a record", pendingTeamKey)
+				}
+				stand := projectaccesstest.NewServer(t, nil, map[string]string{
+					groupMember:   projectaccess.MemberRestricted,
+					secondMember:  projectaccess.MemberFull,
+					groupApprover: projectaccess.MemberFull,
+				})
+				f.m.Projects = projectaccess.New(stand.URL, stand.Account, nil)
+				deniedRestricted := func(t *testing.T, name string, req Request) {
+					t.Helper()
+					if req.State != "denied" || req.GrantID != nil || req.RecordID != nil || req.Detail == nil ||
+						!strings.Contains(*req.Detail, name+": "+policy.ReasonRestrictedMember) {
+						t.Fatalf("Create(%s) = %+v; want it denied naming %s, with no grant and no record", name, req, policy.ReasonRestrictedMember)
+					}
+				}
+
+				t.Run("an ask for the group's agent-tier secret it holds a grant of", func(t *testing.T) {
+					req := f.ask(t, session, key, "TEAM_TOKEN")
+					if !who.restricted {
+						if req.GrantID == nil || *req.GrantID != *heldTeam.GrantID {
+							t.Fatalf("Create(TEAM_TOKEN) = %+v; want grant %s reused", req, *heldTeam.GrantID)
+						}
+						return
+					}
+					deniedRestricted(t, "TEAM_TOKEN", req)
+					requireGrantEnded(t, f.m, *heldTeam.GrantID)
+				})
+
+				t.Run("the release of its grant of a secret the group lists", func(t *testing.T) {
+					released, err := f.m.Values(ctx, *heldListed.GrantID, session, nil, ReleaseCall{})
+					if !who.restricted {
+						if err != nil || released.Values["LISTED_TOKEN"] != "listed-v1" {
+							t.Fatalf("Values(LISTED_TOKEN) = %v, %v; want listed-v1", released.Values, err)
+						}
+						return
+					}
+					if !errors.Is(err, ErrGrantNotLive) || !errors.Is(err, errRestrictedMember) || len(released.Values) != 0 {
+						t.Fatalf("Values(LISTED_TOKEN) = %v, %v; want ErrGrantNotLive for a restricted member and no value", released.Values, err)
+					}
+					requireGrantEnded(t, f.m, *heldListed.GrantID)
+				})
+
+				t.Run("a fresh ask for the secret the group lists", func(t *testing.T) {
+					req := f.ask(t, session, key, "LISTED_TOKEN")
+					if !who.restricted {
+						if req.GrantID == nil || *req.GrantID != *heldListed.GrantID {
+							t.Fatalf("Create(LISTED_TOKEN) = %+v; want grant %s reused", req, *heldListed.GrantID)
+						}
+						return
+					}
+					deniedRestricted(t, "LISTED_TOKEN", req)
+				})
+
+				t.Run("an ask for a human-tier secret the group lists", func(t *testing.T) {
+					req := f.ask(t, session, key, "OWNER_KEY")
+					if !who.restricted {
+						if req.State != "pending" || req.RecordID == nil {
+							t.Fatalf("Create(OWNER_KEY) = %+v; want it pending with a record", req)
+						}
+						return
+					}
+					deniedRestricted(t, "OWNER_KEY", req)
+				})
+
+				t.Run("another member's approval of the group's secret it left pending", func(t *testing.T) {
+					dec, err := f.m.ApplyDecision(ctx, *pendingTeamKey.RecordID, true, groupApprover)
+					switch {
+					case who.restricted && (err != nil || dec.State != "denied" || dec.GrantID != "" || !strings.Contains(dec.Detail, "TEAM_KEY: "+policy.ReasonRestrictedMember)):
+						t.Fatalf("ApplyDecision(approve TEAM_KEY) by %s = %+v, %v; want it denied naming %s and no grant", groupApprover, dec, err, policy.ReasonRestrictedMember)
+					case !who.restricted && (err != nil || dec.State != "granted" || dec.GrantID == ""):
+						t.Fatalf("ApplyDecision(approve TEAM_KEY) by %s = %+v, %v; want it granted", groupApprover, dec, err)
+					}
+				})
+			})
 		}
 	})
 }
