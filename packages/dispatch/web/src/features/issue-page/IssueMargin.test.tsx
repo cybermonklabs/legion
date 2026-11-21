@@ -166,6 +166,12 @@ function readFailure(): ApiError {
   return new ApiError(500, { code: "INTERNAL", error: "read failed" });
 }
 
+/** The refusal a priority write meets in the cases below where another session moved the issue's
+ *  set of priorities meanwhile (409 ADVANCES_REVISION). */
+function advancesRefusal(): ApiError {
+  return new ApiError(409, { code: "ADVANCES_REVISION", error: "the priorities moved meanwhile" });
+}
+
 /** The keys CORE-2, CORE-3 and on, `count` of them. */
 function keysFrom2(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `CORE-${index + 2}`);
@@ -186,21 +192,26 @@ const SHUT_DRAWER: MarginDrawer = { ...OPEN_DRAWER, open: false };
  *  `repoTextControlName`). */
 const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
 
+/** The client every read of Details goes through by default (`renderDetails`): one whose answered
+ *  reads are never stale, so none of those is read again by its age or a window focus; a read that
+ *  holds no answer, as one whose first read failed does, is stale all the same. */
+function detailsQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+}
+
 /** Details as the details slot draws it (`slots/details.tsx`), alone and inside `NoTooltips`:
  *  the panel over its own set of the issue's writes, on the cached issue, so a write's landing
  *  is what the panel draws next. `beside` is drawn above it, over writes of its own. `drawer` is
  *  the Details drawer it is drawn in; with none, Details makes none of the reads it makes only
  *  while open. `redraw` draws the same Details in the drawer it is handed, as a drawer that
- *  opens or closes does. `queryClient` is the client every read goes through: by default one
- *  whose answered reads are never stale, so none of those is read again by its age or a window
- *  focus; a read that holds no answer, as one whose first read failed does, is stale all the
- *  same. */
+ *  opens or closes does. `queryClient` is the client every read goes through, by default a new
+ *  `detailsQueryClient()`. */
 function renderDetails(
   beside?: (issue: IssueDetails) => ReactNode,
   drawer?: MarginDrawer,
-  queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
-  })
+  queryClient = detailsQueryClient()
 ) {
   const tree = (inDrawer: MarginDrawer | undefined) => (
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
@@ -3928,9 +3939,7 @@ test("the line moved into the Advances row elsewhere after the reader's own add 
   patchIssue.mockImplementationOnce(async (_key, input) =>
     patchAnswer({ ...advancingEvals(5), key: "CORE-9" }, input)
   );
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
-  });
+  const queryClient = detailsQueryClient();
   // The other issue's page, whose priority line is the one the page draws.
   const otherPage = render(
     <MemoryRouter>
@@ -4002,11 +4011,7 @@ test("a refused first priority whose read draws another session's priority leave
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
   getIssue.mockResolvedValue(advancesOnly);
-  patchIssue.mockImplementationOnce(() =>
-    Promise.reject(
-      new ApiError(409, { code: "ADVANCES_REVISION", error: "the priorities moved meanwhile" })
-    )
-  );
+  patchIssue.mockImplementationOnce(() => Promise.reject(advancesRefusal()));
   const view = renderDetails();
   try {
     await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
@@ -4085,11 +4090,7 @@ test("a refused first priority whose set an event's read draws after the write e
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
   getIssue.mockResolvedValue(advancesOnly);
-  patchIssue.mockImplementationOnce(() =>
-    Promise.reject(
-      new ApiError(409, { code: "ADVANCES_REVISION", error: "the priorities moved meanwhile" })
-    )
-  );
+  patchIssue.mockImplementationOnce(() => Promise.reject(advancesRefusal()));
   const { queryClient, unmount } = renderDetails();
   try {
     await addFirstPriority(user);

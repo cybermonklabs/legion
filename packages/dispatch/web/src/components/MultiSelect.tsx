@@ -192,19 +192,23 @@ export function MultiSelect({
 
   // Every row, the Create row and Clear are buttons, so the focus can reach one, as a screen
   // reader's cursor puts it there, and a press of each can take that focus to the body, where
-  // Escape no longer reaches the popover. Clear goes as the pick empties, and the Create row as its
-  // value is made and the search empties, each in its press, so a press of one that holds the
-  // focus gives it to the search box first. A row's press can move the row, since a host can order
-  // the rows by the pick (`IssueLabels`, `ComponentPicker`), but a row the press only moves keeps
-  // its focus: as React ends a commit that took the focus away, it focuses again the element that
-  // held it before, where that element is still on the page (react-dom's `flushMutationEffects`).
-  // A row the press takes off the page, as a host that lists only the values not yet picked does,
-  // loses the focus to the body. So a press of a row that holds the focus only notes it, and the
-  // commit that answers the press gives the search box the focus where the row lost it. A pointer
-  // press focuses none of them (`onMouseDown` below), and leaves the focus where it is. A row or a
-  // Create row the options take away holds no press, and its focus stays on the page's body, as
-  // for every change the reader did not make. A popover that closes takes the search box along,
-  // and the close above gives the focus back to the trigger instead.
+  // Escape no longer reaches the popover. Clear and the Create row always leave with their own
+  // press, Clear as the pick empties and the Create row as its value is made and the search
+  // empties, so a press of one that holds the focus gives it to the search box at the press
+  // itself, and the move does not depend on when the host applies the pick. A row's press need not
+  // take the row away. It can move the row, since a host can order the rows by the pick
+  // (`IssueLabels`, `ComponentPicker`), but a row the press only moves keeps its focus: as React
+  // ends a commit that took the focus away, it focuses again the element that held it before,
+  // where that element is still on the page (react-dom's `flushMutationEffects`). A row the press
+  // takes off the page loses the focus to the body, as in Details a label only the open draft
+  // holds does as the reader unpicks it: `IssueLabels` lists the draft's labels with the issue's
+  // and the project's, so that label is listed only while the draft holds it. So a press of a row
+  // that holds the focus only notes it, and the commit that answers the press gives the search box
+  // the focus only where that commit took the row off the page. A pointer press focuses none of
+  // them (`onMouseDown` below), and leaves the focus where it is. A row or a Create row the
+  // options take away holds no press, and its focus stays on the page's body, as for every change
+  // the reader did not make. A popover that closes takes the search box along, and the close above
+  // gives the focus back to the trigger instead.
   const focusSearchFirst = (event: { readonly currentTarget: EventTarget }) => {
     if (event.currentTarget === document.activeElement) inputRef.current?.focus();
   };

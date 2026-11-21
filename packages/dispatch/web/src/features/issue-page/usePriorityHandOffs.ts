@@ -22,6 +22,11 @@ function advancesSent(press: unknown): readonly string[] | undefined {
     : undefined;
 }
 
+/** Whether `a` and `b` hold the same members, each matched by `same`, in any order. */
+function sameMembers<T>(a: readonly T[], b: readonly T[], same: (x: T, y: T) => boolean): boolean {
+  return a.length === b.length && a.every((x) => b.some((y) => same(x, y)));
+}
+
 /**
  * The hand-offs of the priority's line in Details (`IssueMargin.tsx`), which draws that line in
  * one of two places: beside Add while the issue advances none, and in the Advances row once it
@@ -86,7 +91,7 @@ export function usePriorityHandOffs(
     const drawn = issue.advances ?? [];
     const own = drawn.filter((entry) => !entry.inherited).map((entry) => entry.id);
     // Compared in any order: the read need not answer the set in the order the write sent it.
-    const sameSet = sent?.length === own.length && sent.every((id) => own.includes(id));
+    const sameSet = sent !== undefined && sameMembers(sent, own, (x, y) => x === y);
     if (newest === undefined || !sameSet) return false;
     if (newest.state.status === "pending") return true;
     // Dispatch answers the PATCH with the issue it wrote, named by its key, whose revision is that
@@ -103,10 +108,7 @@ export function usePriorityHandOffs(
         (answer.key === issue.key &&
           answer.advances_revision === issue.advances_revision &&
           // Each by its id and whether it is inherited, in any order, as the own set above.
-          answered.length === drawn.length &&
-          answered.every((entry) =>
-            drawn.some((other) => other.id === entry.id && other.inherited === entry.inherited)
-          )))
+          sameMembers(answered, drawn, (x, y) => x.id === y.id && x.inherited === y.inherited)))
     );
   };
   const besideAddLeft = useFocusHandOff(() =>

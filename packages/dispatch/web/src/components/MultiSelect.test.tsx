@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+// fireEvent also gives one row's press below a click with no pointer press before it, which
+// user-event has no form for either.
 // biome-ignore lint/style/noRestrictedImports: the two outside-press sites below are a pointerdown with no release, which user-event has no form for.
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -224,7 +226,9 @@ test("a row's detail reads after its label and a comma, spoken with its own word
  *  from the search box to the rows, the Create row and Clear: buttons, which a screen reader's
  *  cursor focuses too. With `pickedFirst` it orders the rows as the labels' and the components'
  *  hosts do (`IssueLabels`, `ComponentPicker`): the picked ones first, each part by its name. With
- *  `dropPicked` it lists only the values not yet picked, so a row goes as it is picked. */
+ *  `dropPicked` it lists only the values not yet picked, so a row goes as it is picked. It stands
+ *  for the row a press takes off the page in Details: a label only the open draft holds, which
+ *  `IssueLabels` lists only while the draft holds it, goes as the reader unpicks it. */
 function OpenHost({
   dropPicked = false,
   onCreate,
@@ -445,8 +449,9 @@ test("a focused row that stays in its place as it is pressed keeps the focus", a
   }
 });
 
-// A host that lists only the values not yet picked takes a row off the page as the reader picks
-// it, and the focus on that row falls to the page's body, where Escape no longer reaches the
+// A press can take a row off the page, as `IssueLabels` does in Details with a label only its open
+// draft holds, as the reader unpicks it; `dropPicked` stands for that, taking the row off as it is
+// picked. The focus on that row falls to the page's body, where Escape no longer reaches the
 // popover: React has no row to give it back to. A row that held the focus as it was pressed has
 // that focus given to the search box once the press is drawn.
 test("a focused row that its pick takes off the page gives the focus to the search box", async () => {
@@ -462,6 +467,81 @@ test("a focused row that its pick takes off the page gives the focus to the sear
     expect(
       search,
       "the pick took the row off the page, and the focus did not go to the search box"
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// Only a press of the row that holds the focus is noted, so a press of a row the focus is not on
+// moves no focus, though its pick takes the row off the page. A pointer press focuses nothing
+// (`onMouseDown`) and leaves the focus in the search box. A click with no pointer press, which the
+// panel's taking of the focus on a pointer press inside it (`AnchoredPanel`) does not see, leaves
+// the focus on the page's body, where a focused row that new options took away left it.
+test("a press of a row the focus is not on, which its pick takes off the page, leaves the focus where it is", async () => {
+  const user = userEvent.setup();
+  const view = render(<OpenHost dropPicked options={["api", "bug", "docs"]} />);
+  try {
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    expect(search).toHaveFocus();
+    const bug = screen.getByRole("option", { name: "bug" });
+    await user.click(bug);
+    expect(screen.getByTestId("selected").textContent).toBe("bug");
+    expect(bug.isConnected, "the picked row is still on the page").toBe(false);
+    expect(search, "a pointer press of a row took the focus out of the search box").toHaveFocus();
+
+    screen.getByRole("option", { name: "api" }).focus();
+    view.rerender(<OpenHost dropPicked options={["bug", "docs"]} />);
+    expect(
+      document.body,
+      "new options took the focused row away, and its focus did not fall to the page's body"
+    ).toHaveFocus();
+    const docs = screen.getByRole("option", { name: "docs" });
+    // A click with no pointer press before it: user-event has no form for it.
+    fireEvent.click(docs);
+    expect(screen.getByTestId("selected").textContent).toBe("bug,docs");
+    expect(docs.isConnected, "the picked row is still on the page").toBe(false);
+    expect(
+      document.body,
+      "a press of a row the focus was not on moved the focus off the page's body"
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A host can keep the pick as a row is pressed, so the press changes nothing it draws. The press
+// of a focused row still asks for a commit of its own, which forgets the press, so the press
+// answers no later loss: new options that then take that row away are no press of the reader's,
+// and its focus stays on the page's body.
+test("a focused row's press that changes nothing drawn answers no later loss: new options that drop the row leave the focus on the page's body", async () => {
+  const user = userEvent.setup();
+  const picker = (options: string[]) => (
+    <MultiSelect
+      emptyMessage="Nothing here."
+      label="Labels"
+      onChange={() => undefined}
+      onOpenChange={() => undefined}
+      open
+      options={options}
+      searchLabel="Search labels"
+      selected={[]}
+    />
+  );
+  const view = render(picker(["api", "bug"]));
+  try {
+    const bug = screen.getByRole("option", { name: "bug" });
+    bug.focus();
+    // The first press makes the row the active one, which the picker draws; the second changes
+    // nothing drawn.
+    await user.keyboard("{Enter}");
+    await user.keyboard("{Enter}");
+    expect(bug, "a press of a row that stays on the page took its focus").toHaveFocus();
+    view.rerender(picker(["api"]));
+    expect(bug.isConnected, "new options did not take the row away").toBe(false);
+    expect(
+      document.body,
+      "new options took the row away, and the focus left the page's body though the reader's press took nothing away"
     ).toHaveFocus();
   } finally {
     view.unmount();

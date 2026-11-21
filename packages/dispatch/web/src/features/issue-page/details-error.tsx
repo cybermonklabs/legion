@@ -105,15 +105,18 @@ export function DetailsErrorLine({
   );
 }
 
+/** What the hand-off of a Retry of Details spreads on its line (`useRetryHandOff`). */
+export interface RetryHandOff {
+  readonly retried: RefObject<boolean>;
+  readonly retryRef: RefCallback<HTMLElement>;
+}
+
 /** The hand-off of a Retry of Details, spread on its line (`DetailsErrorLine`), and on Referenced
  *  by's list (`ReferencedBy`), which takes them as its own props: the press of Retry the line notes
  *  (`retried`), and the ref that takes Retry (`retryRef`), which, as Retry leaves the page with the
  *  focus after that press, hands the focus on to what `to` returns (`useFocusHandOff`, with the
  *  press as its `pressed`). */
-export function useRetryHandOff(to: Parameters<typeof useFocusHandOff>[0]): {
-  readonly retried: RefObject<boolean>;
-  readonly retryRef: RefCallback<HTMLElement>;
-} {
+export function useRetryHandOff(to: Parameters<typeof useFocusHandOff>[0]): RetryHandOff {
   const retried = useRef(false);
   return { retried, retryRef: useFocusHandOff(to, retried) };
 }
@@ -124,21 +127,21 @@ export function useRetryHandOff(to: Parameters<typeof useFocusHandOff>[0]): {
  *  leaves the page with the focus after that press (`useRetryHandOff`), it hands the focus on to
  *  what `to` returns only where the read now drawn is that read and has answered after it failed
  *  (`isSuccess`, with an `errorUpdateCount` above 0). The counts alone would not tell: the cache
- *  keeps them for each set and never resets them, so a set whose read failed once and answered
- *  later, then changed away and back in another session while Retry's read of another set is
- *  out, holds them though nothing answered the press. */
+ *  keeps them for each set while that set stays cached, so a set whose read failed once and
+ *  answered later, then changed away and back in another session while Retry's read of another
+ *  set is out, holds them though nothing answered the press. */
 export function useTitlesRetry(
   read: Parameters<typeof retryRead>[0] & {
     readonly errorUpdateCount: number;
     readonly isSuccess: boolean;
   },
   queryKey: QueryKey,
-  to: () => HTMLElement | null | undefined
-) {
+  to: Parameters<typeof useRetryHandOff>[0]
+): RetryHandOff & { readonly onRetry: () => void } {
   const pressedFor = useRef<string | null>(null);
-  const handOff = useRetryHandOff(() =>
+  const handOff = useRetryHandOff((left) =>
     read.isSuccess && read.errorUpdateCount > 0 && pressedFor.current === hashKey(queryKey)
-      ? to()
+      ? to(left)
       : null
   );
   const onRetry = () => {
