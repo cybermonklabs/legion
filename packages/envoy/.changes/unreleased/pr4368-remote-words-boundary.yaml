@@ -32,8 +32,12 @@ body: |-
   many installations the release holds, and whether they are one login in several cases or
   several logins. The helper keeps, renews and revokes with, hands out and logs a session's
   enrollment id only where the rule prints the id the broker answered as it came; an enrolment
-  answer that names any other is one the helper could not read, and the session enrols again. The
-  broker's token client reads its answer only through the box, with four
+  answer that names any other is one the helper could not read, and the session enrols again.
+  `agent-secrets`' refusal of an AWS sign-in in another account than the broker's, and the lines
+  a GCP `secret create` prints of the secret it made, name the broker's account, and the secret's
+  whole name, id and project, as the broker's address lets its answer print: beside an address
+  that is not clean, none of them. The broker's token client reads its answer only through the
+  box, with four
   changes a caller can see: a `token_type` of `dpop` in any case is `Token.TokenType` `DPoP`
   rather than the spelling the broker wrote; an `expires_in` that is a JSON string holding no
   number is refused without quoting the string; a lapsed role refusal whose holder the rule would

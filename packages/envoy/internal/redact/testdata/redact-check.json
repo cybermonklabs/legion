@@ -4821,6 +4821,27 @@
       "production": "helper Broker.enrollUnder: the enrollment id held as redact.RemoteText (leaseReply) with the enrolment's record and taken only as RemoteText.SendBack answers it, so Server.enrollLoop's and revoke's lines log no id that echoes the launcher proof"
     },
     {
+      "id": "agentsecrets-settings-words-account",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestTheBrokersAccountPrintsOnlyAsItsAddressLetsIt/beside_a_credentialed_address",
+      "production": "agent-secrets requireAccount: the broker's aws_account_id printed as the broker's address lets its answer print (Settings.words)"
+    },
+    {
+      "id": "agentsecrets-settings-words-gcp-create-undeleted",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAGCPCreatesSecretPrintsOnlyAsTheBrokersAddressLetsIt/gcp-create-undeleted_beside_a_credentialed_address",
+      "production": "agent-secrets gcpNewSecret.discardRead and clearCommand: the secret's whole name, id and project, which open with the broker's secrets_prefix and name its gcp_project, printed as the broker's address lets its answer print (gcpNewSecret.shown, secretCommand)"
+    },
+    {
+      "id": "agentsecrets-settings-words-gcp-create-lost",
+      "requirement": "r3-each-site",
+      "package": "./cmd/cipher",
+      "test": "TestAGCPCreatesSecretPrintsOnlyAsTheBrokersAddressLetsIt/gcp-create-lost_beside_a_credentialed_address",
+      "production": "agent-secrets gcpNewSecret.settleLostCreate: the secret's whole name and the describe and delete commands' id and project printed as the broker's address lets its answer print (gcpNewSecret.shown, secretCommand)"
+    },
+    {
       "id": "print-devrelay.apiError",
       "requirement": "r2-held",
       "package": "./cmd/cipher-devrelay",
@@ -7995,6 +8016,16 @@
       "site": "the helper's session enrollment id, decoded into a plain string, then kept, renewed and revoked with, handed to the socket's callers and logged (enrollLoop, revokeOnce, revoke) without the enrolment's record",
       "source": "the class search of round 5's deep review",
       "guard": "helper-answer-words-enrollment-id"
+    },
+    {
+      "site": "agent-secrets requireAccount's refusal: the broker's aws_account_id, which twelve digits of a credential AGENT_SECRETS_URL carries can be, printed as the settings answer wrote it",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-settings-words-account"
+    },
+    {
+      "site": "agent-secrets secret create on GCP: the secret's whole name, and the gcloud commands' id and project, built from the broker's secrets_prefix and gcp_project and printed as the settings answer wrote them",
+      "source": "the class search of round 5's deep review",
+      "guard": "agentsecrets-settings-words-gcp-create-undeleted"
     },
     {
       "site": "an answer's status line printed as the answering party wrote it (net/http Response.Status), at 33 sites of both modules",
