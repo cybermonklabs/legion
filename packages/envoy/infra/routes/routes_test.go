@@ -372,6 +372,9 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 		{"an IPv6 route connection since authorization", func(h *fakeHub) {
 			h.logs["envoy-nats-0"] += created("[fd00::9]:6222") + "\n" + formed("[fd00::9]:6222", "9") + "\n"
 		}, routes.PasswordRead, "envoy-nats-0", `with "fd00::9"`},
+		{"a route connection whose address is no host and port", func(h *fakeHub) {
+			h.logs["envoy-nats-0"] += createdAs("10.9.9.9", "31") + "\n"
+		}, routes.Unknown, "envoy-nats-0", `its log names a route connection with "10.9.9.9", which is no host and port`},
 		{"a route connection still open when the log is read", func(h *fakeHub) {
 			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n"
 		}, routes.Unknown, "envoy-nats-1", `1 route connection(s) with "10.9.9.7" since it loaded authorization that were still open when the log was read`},
@@ -487,6 +490,8 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 			routes.Unknown, "envoy-nats-2", "left the StatefulSet during the check"},
 		{"a pod that joined during the check", func(h *fakeHub) { h.onLog["envoy-nats-2"] = func() { h.pods = append(slices.Clone(h.pods), newPod) } },
 			routes.Unknown, "envoy-nats-3", "joined the StatefulSet during the check"},
+		{"the pods unreadable after the pass", func(h *fakeHub) { h.onLog["envoy-nats-2"] = func() { h.podsErr = errors.New("forbidden") } },
+			routes.Unknown, "", "the pods could not be read again after the pass, so a restart during it cannot be ruled out: forbidden"},
 		{"authorization never loaded", func(h *fakeHub) {
 			h.withoutAuthorizationReload("envoy-nats-0")
 			h.infos["envoy-nats-0"] = authInfo("NSERVER0", false)
