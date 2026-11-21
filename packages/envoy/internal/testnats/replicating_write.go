@@ -68,12 +68,14 @@ func (c *Cluster) MoveStreamLeader(t testing.TB, stream string, i int) {
 //
 // The held write is the subject's last message written again over that message's sequence, so the
 // record it leaves is the one that was there, at a new revision, as a writer that rewrote the same
-// value leaves it; the subject must hold a message. The cluster's routes are frozen while it is
-// held, so nothing a test sends may need a route meanwhile: its client connects to the leader's
-// member (MoveStreamLeader), and a read waits too, since any copy may be the one that answers a
-// direct get (a Create that lost reads the key back, and that read can wait out its JetStream
-// MaxWait). The hold returns only once the leader answers a write of subject with 10164, so the
-// next write meets the held one.
+// record leaves it: the same data and the headers that make the record what it is
+// (heldRecordHeaders), so a delete marker is rewritten as a delete marker and a purge as a purge.
+// The subject must hold a message. The cluster's routes are frozen while it is held, so nothing a
+// test sends may need a route meanwhile: its client connects to the leader's member
+// (MoveStreamLeader), and a read waits too, since any copy may be the one that answers a direct get
+// (a Create that lost reads the key back, and that read can wait out its JetStream MaxWait). The
+// hold returns only once the leader answers a write of subject with 10164, so the next write meets
+// the held one.
 func (c *Cluster) HoldReplicatingWrite(t testing.TB, stream, subject string) func() {
 	t.Helper()
 	info := AwaitSettledStream(t, c.JetStream(t), stream)
@@ -106,6 +108,11 @@ func (c *Cluster) HoldReplicatingWrite(t testing.TB, stream, subject string) fun
 	}
 	held := natsgo.NewMsg(subject)
 	held.Data = last.Data
+	for _, name := range heldRecordHeaders {
+		if values := last.Header.Values(name); len(values) > 0 {
+			held.Header[name] = values
+		}
+	}
 	held.Header.Set(natsgo.ExpectedLastSubjSeqHdr, strconv.FormatUint(last.Sequence, 10))
 	ack, err := js.PublishMsgAsync(held)
 	if err != nil {
@@ -142,6 +149,16 @@ func (c *Cluster) HoldReplicatingWrite(t testing.TB, stream, subject string) fun
 		time.Sleep(retryInterval)
 	}
 }
+
+// heldRecordHeaders are the headers of a stored KV record that make it the record it is, which
+// HoldReplicatingWrite copies onto its rewrite. nats.go v1.55.0's KV stores none on a Put, and
+// Nats-Expected-Last-Subject-Sequence alone on a Create or an Update; a Delete stores
+// KV-Operation: DEL, and a Purge KV-Operation: PURGE and Nats-Rollup: sub (kv.go:842-847), with
+// Nats-Expected-Last-Subject-Sequence beside either when it names a revision. KV-Operation makes a
+// record a marker, which a read answers as no key, and Nats-Rollup makes a purge drop the subject's
+// earlier records, as the purge it rewrites did. Nats-Expected-Last-Subject-Sequence is no part of
+// the record but the condition its writer sent it under; the rewrite carries its own.
+var heldRecordHeaders = []string{"KV-Operation", natsgo.MsgRollup}
 
 // AwaitReplicated waits until every copy of stream, a stream of more than one copy on the cluster,
 // has applied every write its leader has committed (awaitApplied), and fails the test after

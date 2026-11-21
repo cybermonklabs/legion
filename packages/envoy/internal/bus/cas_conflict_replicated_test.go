@@ -149,6 +149,18 @@ func TestACreateOverADeleteMarkerThatLosesToAReplicatingWriteIsACASConflict(t *t
 	if !IsCASConflict(err) {
 		t.Fatalf("IsCASConflict(%v) = false, want a conflict", err)
 	}
+	// The write the Create lost to rewrote the delete marker, so the key is still deleted: a read
+	// answers no key, and the record it stands at is a delete marker.
+	if entry, err := kv.Get("marked"); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("read the key after the race = %v, %v; want nats.ErrKeyNotFound, the key still deleted", entry, err)
+	}
+	last, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+".marked")
+	if err != nil {
+		t.Fatalf("read the key's last record: %v", err)
+	}
+	if op := last.Header.Get("KV-Operation"); op != "DEL" {
+		t.Fatalf("the key's last record (revision %d) has KV-Operation %q, want DEL, a delete marker", last.Sequence, op)
+	}
 }
 
 // IsCASConflict answers for nothing but a lost conditional write: no error, a key that is not
