@@ -241,8 +241,9 @@ done
 
 # A link whose target is gone, or that never resolves, is something there that cannot be read, never
 # nothing there: not a record that is the dotfiles' own, and not a profiles directory with no
-# profile in it. ~/.omp, the profiles directory's parent, is read through ~/.omp/plugins.
-for shape in package outside-record outside-record-loop outside-record-to-dotfiles dotfiles-record profiles profiles-newline omp omp-not-utf8; do
+# profile in it. ~/.omp, the profiles directory's parent, is read through ~/.omp/plugins. A link to
+# a link whose target is gone is named as one that does not resolve: its own target is there.
+for shape in package package-chain outside-record outside-record-loop outside-record-to-dotfiles dotfiles-record profiles profiles-chain profiles-newline omp omp-chain omp-not-utf8; do
   echo "case: --clients, a link that does not resolve (${shape})"
   box_case "box-dangling-${shape}"
   assign=()
@@ -251,6 +252,11 @@ for shape in package outside-record outside-record-loop outside-record-to-dotfil
       at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
       rm -r "$at" && ln -s ../gone "$at"
       want="UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.dotfiles/omp/plugins, a link to ../gone, which does not exist"
+      ;;
+    package-chain)
+      at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
+      rm -r "$at" && ln -s ../gone-link "$at" && ln -s gone "$(dirname "$at")/../gone-link"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.dotfiles/omp/plugins, a link to ../gone-link, which does not resolve"
       ;;
     outside-record)
       mkdir -p "${case_root}/home/.claude/plugins" && ln -s gone.json "${case_root}/home/.claude/plugins/installed_plugins.json"
@@ -277,6 +283,10 @@ for shape in package outside-record outside-record-loop outside-record-to-dotfil
       ln -s missing-profile-volume "${case_root}/home/.omp/profiles"
       want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp/profiles is a link to missing-profile-volume, which does not exist"
       ;;
+    profiles-chain)
+      ln -s profiles-volume "${case_root}/home/.omp/profiles" && ln -s gone "${case_root}/home/.omp/profiles-volume"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp/profiles is a link to profiles-volume, which does not resolve"
+      ;;
     profiles-newline)
       # The gate prints the last line of what it could not read, so the target is one line.
       ln -s "$(printf 'missing\nvolume')" "${case_root}/home/.omp/profiles"
@@ -285,6 +295,11 @@ for shape in package outside-record outside-record-loop outside-record-to-dotfil
     omp)
       rm "${case_root}/home/.omp/plugins" && rmdir "${case_root}/home/.omp" && ln -s gone "${case_root}/home/.omp"
       want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp is a link to gone, which does not exist"
+      ;;
+    omp-chain)
+      rm "${case_root}/home/.omp/plugins" && rmdir "${case_root}/home/.omp" &&
+        ln -s omp-volume "${case_root}/home/.omp" && ln -s gone "${case_root}/home/omp-volume"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp is a link to omp-volume, which does not resolve"
       ;;
     omp-not-utf8)
       # A target name that is no UTF-8, read where Python writes UTF-8 strictly, as it does in a

@@ -2,12 +2,13 @@ kind: Fixed
 body: |-
   `scripts/daemon-release-gate.sh --clients` prints `UNKNOWN` (exit 3), never `GATE OPEN`, for a
   client location on the developer box that it cannot read. It printed `GATE OPEN` for a Claude
-  Code plugin record outside the dotfiles that is a link that loops, or a link to the dotfiles'
-  own record path where no record is, and for a `~/.omp/profiles` that is a link whose target is
-  gone. A link whose target name is not UTF-8 stopped the gate with exit 1 and no verdict. A
-  profile, `HOME`, dotfiles directory or `CLAUDE_CONFIG_DIR` whose name is not UTF-8 is now
-  `UNKNOWN` by name: a `python3` that reads its arguments as text, such as a mise shim, hands such
-  a name on changed, and the gate read the changed path as one with nothing there.
+  Code plugin record outside the dotfiles that is a link that loops when the dotfiles hold no
+  `.claude/plugins/`, or a link to the dotfiles' own record path where no record is, and for a
+  `~/.omp/profiles` that is a link whose target is gone. A link whose target name is not UTF-8
+  stopped the gate with exit 1 and no verdict. A profile, `HOME`, dotfiles directory or
+  `CLAUDE_CONFIG_DIR` whose name is not UTF-8 is now `UNKNOWN` by name: a `python3` that reads its
+  arguments as text, such as a mise shim, hands such a name on changed, and the gate read the
+  changed path as one with nothing there.
 time: 2026-11-21T12:10:48Z
 custom:
     Issue: pr4818

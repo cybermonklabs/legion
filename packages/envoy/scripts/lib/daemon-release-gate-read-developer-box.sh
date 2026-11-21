@@ -153,8 +153,12 @@ while True:
         print(f"unknown {parent}: {error.strerror}")
         sys.exit(0)
     break
+# Its target, read from the link's own directory, is gone, or is there and does not resolve (a link
+# whose target is gone, or a loop).
 if stat.S_ISLNK(mode) and not os.path.exists(parent):
-    print(f"unknown {parent} is a link to {os.readlink(parent)}, which does not exist")
+    target = os.readlink(parent)
+    why = "resolve" if os.path.lexists(os.path.join(os.path.dirname(parent), target)) else "exist"
+    print(f"unknown {parent} is a link to {target}, which does not {why}")
 else:
     print("absent")
 PY
@@ -186,8 +190,10 @@ except FileNotFoundError:
     # reports it there; a link that loops fails the listing, as any other error does. The caller
     # prints the last line of the failure, so a newline in the target is written as printable does.
     if os.path.islink(profiles):
-        target = os.readlink(profiles).replace("\n", "\\x0a")
-        sys.exit(f"{profiles} is a link to {target}, which does not exist")
+        target = os.readlink(profiles)
+        why = "resolve" if os.path.lexists(os.path.join(omp, target)) else "exist"
+        shown = target.replace("\n", "\\x0a")
+        sys.exit(f"{profiles} is a link to {shown}, which does not {why}")
     entries = []
 except OSError as error:
     sys.exit(f"{profiles} cannot be listed: {error.strerror}")
@@ -213,7 +219,7 @@ dotfiles_clients() {
     unknown=$((unknown + 1))
     return
   fi
-  local root=$dotfiles tree state own home outside="" unread="" pin installed label problem name path
+  local root=$dotfiles tree state own home outside="" unread="" pin installed label problem name path target why
   # python3 and jq get each path read here as an argument, and a launcher that reads its arguments
   # as text (a mise shim) hands on each byte that is no UTF-8 as U+FFFD: the changed path is one
   # where nothing is, which reads as absent. So a directory these paths start from whose name is no
@@ -239,7 +245,11 @@ dotfiles_clients() {
   own=$(readlink -f "$package" || true)
   state=$(entry_state "$package")
   if [ "$state" = present ] && [ ! -e "$package" ]; then
-    outside="$root/omp/plugins, a link to $(readlink "$package"), which does not exist"
+    # Its target, read from the link's own directory, is gone, or is there and does not resolve.
+    target=$(readlink "$package")
+    case "$target" in /*) path=$target ;; *) path=${package%/*}/$target ;; esac
+    if [ -L "$path" ] || [ -e "$path" ]; then why=resolve; else why=exist; fi
+    outside="$root/omp/plugins, a link to $target, which does not $why"
   elif [ "$state" = present ] && [[ $own != "$home"/* ]]; then
     outside="$root/omp/plugins, a link to ${own:-a path that does not resolve}"
   elif [ "$state" != present ] && [ "$state" != absent ]; then
