@@ -64,8 +64,9 @@ The hub refuses these before it registers anything. Each refusal of an input is 
 `core.InputError` naming it: an entry of a list of strings by the list's own name, with its index
 in the message (`tags` for `tags[1] "…" must match …`); a user of `users` as `users`, or by the
 field's own path for its machine id (`users[0].machineId`); and the authorization's refusals of
-the listener's user and the session user as `listener` and `sessionUser`. A seed in the hub's own
-name and a missing provider refuse no input, so neither is one:
+the listener's user as `listener`, with an empty `listener.nkey` as `listener.nkey`, and of the
+session user as `sessionUser`. A seed in the hub's own name and a missing provider refuse no
+input, so neither is one:
 
 - an nkey seed, found as `envoy-infra seed` finds one (`bus.HoldsSeed`: any type, either case,
   whole, inside a longer value, split by `.`, `-`, `_` or whitespace, or percent-encoded), in the
