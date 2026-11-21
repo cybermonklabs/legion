@@ -14,6 +14,7 @@ import { agentMessagesQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { pastDeadlineKey } from "../../hooks/useSending";
 import { newSendKey } from "../../lib/send-key";
+import { partyMention } from "../refs/party-references";
 import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/tab-storage";
 import {
@@ -38,11 +39,16 @@ import {
   sendAttempt,
 } from "./send-request";
 
-/** A held send's draft as its composer restores it: the text, its accepted mentions and a
- *  suggestion's replacement, and an ask's fields. */
+/** A held send's draft as its composer restores it: the text, a suggestion's replacement, and
+ *  an ask's fields. */
 export interface HeldDraft {
   readonly ask: SentRequest["ask"];
   readonly draft: SentDraft;
+  /** For a keep by the issue page's box (`HeldSends.keep`), the mentions it wrote in front of the
+   *  reply's draft that still open it as the reader left it (`openingSeeds`), which the keep
+   *  writes into the send's request (`SentRequest.seeds`) rather than into its draft; absent from
+   *  every other composer's keep, and from the draft a send holds. */
+  readonly seeds?: SentRequest["seeds"];
 }
 
 /** A composer's send as the write store holds it (`composerSend`): its name, which names its
@@ -69,12 +75,17 @@ type KeptEdit =
   | string
   | { readonly base?: string; readonly carried?: CarriedBlockIds; readonly id: string };
 
-/** A send's request as it is kept across a reload: an edit by what it saves, not how. */
-type KeptSentRequest = Omit<SentRequest, "edit"> & { readonly edit: KeptEdit | null };
+/** A send's request as it is kept across a reload: an edit by what it saves, not how, and its
+ *  draft as the shape an older record may still hold (`KeptDraft`). */
+type KeptSentRequest = Omit<SentRequest, "draft" | "edit"> & {
+  readonly draft: KeptDraft;
+  readonly edit: KeptEdit | null;
+};
 
-/** A composer's send as it is kept across a reload. */
+/** A composer's send as it is kept across a reload: each draft as the shape an older record may
+ *  still hold (`KeptDraft`). */
 interface KeptComposerSend {
-  readonly draft: HeldDraft;
+  readonly draft: { readonly ask: SentRequest["ask"]; readonly draft: KeptDraft };
   readonly mutationKey: readonly string[];
   readonly request: KeptSentRequest;
   readonly stoppedSend?: KeptSentRequest;
@@ -149,8 +160,9 @@ function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void
 }
 
 /** An ask's fields (`SentRequest.ask`). This shape and the draft's, the anchor's, the kind's, the
- *  owner's and the reply's below are what a composer's draft and its address are kept by: here,
- *  and in the drafts a composer keeps for a reload (`unsent-drafts.ts`). */
+ *  owner's, the reply's, the box's mentions' and the statement's below are what a composer's
+ *  draft and its address are kept by: here, and in the drafts a composer keeps for a reload
+ *  (`unsent-drafts.ts`). */
 export const keptAsk = shape.record({
   multiple: shape.boolean,
   options: shape.array(
@@ -159,19 +171,40 @@ export const keptAsk = shape.record({
   urgency: shape.oneOf(...ASK_URGENCIES),
 });
 
-/** The text of a draft, its accepted mentions and a suggestion's replacement (`SentDraft`). */
+/** A mention as the build before this one kept it beside the draft: where its cosmetic words
+ *  stand in the body, the delivery address they stood for, and those words. */
+interface KeptMention {
+  readonly end: number;
+  readonly start: number;
+  readonly target: string;
+  readonly text: string;
+}
+
+/** A kept draft: its text, a suggestion's replacement, and the mentions a record the build
+ *  before this one kept holds beside them. */
+export interface KeptDraft extends SentDraft {
+  readonly mentions?: readonly KeptMention[];
+}
+
+/** The text of a draft and a suggestion's replacement (`SentDraft`), as it is read back. Who it
+ *  addresses is in its text (R4), so this build keeps nothing of the kind beside it; an older
+ *  record's `mentions` are read all the same, because its body holds only the cosmetic
+ *  `@Planner` its composer drew and the targets stood in that array, so dropping them would
+ *  resend the draft to nobody with nothing said about it (`restoredDraft`). */
 export const keptDraft = shape.record({
   body: shape.string,
-  mentions: shape.array(
-    shape.record({
-      end: shape.number,
-      start: shape.number,
-      target: shape.string,
-      text: shape.string,
-    })
+  mentions: shape.optional(
+    shape.array(
+      shape.record({
+        end: shape.number,
+        start: shape.number,
+        target: shape.string,
+        text: shape.string,
+      })
+    )
   ),
   replacement: shape.string,
-}) satisfies Shape<SentDraft>;
+}) satisfies Shape<KeptDraft>;
 
 const keptDelivery = shape.oneOf(...DELIVERY_CAPABILITIES);
 
@@ -264,6 +297,18 @@ export const keptReplyTo = shape.record({
   to: shape.optional(shape.string),
 });
 
+/** The mentions the issue page's box wrote in front of a reply's draft (`SentRequest.seeds`),
+ *  each the party and the link written for it. */
+export const keptSeeds = shape.array(shape.record({ target: shape.string, text: shape.string }));
+
+/** The statement the issue page's box aims a comment at (`StatementAnchor`), with the row the
+ *  comment lands under once it is sent. */
+export const keptStatement = shape.record({
+  artifact: shape.string,
+  quote: shape.string,
+  row: shape.string,
+});
+
 const keptRequest = shape.record({
   anchor: shape.optional(keptAnchor),
   ask: keptAsk,
@@ -274,7 +319,16 @@ const keptRequest = shape.record({
   pickedDelivery: shape.optional(keptDelivery),
   plainDelivery: keptDelivery,
   replyTo: shape.nullable(keptReplyTo),
+  // The mentions the issue page's box wrote for the reply (`SentRequest.seeds`), so a box that
+  // mounts again over the send after a reload takes out what the box that wrote them would, and
+  // no link the reader wrote. A record kept before they were holds none and reads as none; one
+  // whose mentions are not mentions is dropped.
+  seeds: shape.optional(keptSeeds),
   sendKey: shape.string,
+  // The statement the issue page's box aimed a comment at, with the row the comment lands
+  // under once it is sent (`StatementAnchor.row`), so a box that mounts again over the send
+  // after a reload lands on that row; a record whose statement is not one is dropped.
+  statement: shape.optional(keptStatement),
 }) satisfies Shape<KeptSentRequest>;
 
 const keptComposerSend = shape.record({
@@ -321,9 +375,52 @@ function keptRequestOf({ edit, ...request }: SentRequest): KeptSentRequest {
   };
 }
 
-/** A kept request as the send it belongs to makes it again (`restoredEdit`). */
-function restoredRequest({ edit, ...request }: KeptSentRequest): SentRequest {
-  return { ...request, edit: edit === null ? undefined : restoredEdit(edit) };
+/** A kept request as the send it belongs to makes it again (`restoredEdit`, `restoredDraft`). */
+function restoredRequest({ draft, edit, ...request }: KeptSentRequest): SentRequest {
+  return {
+    ...request,
+    draft: restoredDraft(draft),
+    edit: edit === null ? undefined : restoredEdit(edit),
+  };
+}
+
+/** A kept draft as its composer takes it up again. A record the build before this one kept
+ *  holds a `mentions` array and a body carrying only the cosmetic `@Name` that build drew, so
+ *  each of those is written back as the party's mention (`[@Name](address)`, R4), its name
+ *  written as literal words as a pick writes one (`partyLink`), which reads as the party's
+ *  current name: the draft then reads as who it addresses and resends to them, where
+ *  dropping the array would have delivered it to nobody with nothing said about it. A span is
+ *  rewritten only while it still reads as the `@Name` that build accepted - the rule that build
+ *  read its own mentions by (`survivingMentions`) - and the spans are written from the last to
+ *  the first, so each is still the one its offsets named.
+ *
+ *  What is read back is a record, not a draft this build wrote: a target is written into the
+ *  body only as the link `partyMention` makes of a delivery address (`party-references.ts`),
+ *  so a target of no route's form keeps the words it stood as rather than becoming Markdown of
+ *  its own, and offsets are rewritten only where they are a span of this text - `slice` counts
+ *  a negative one from the end, and a resumed send whose `wire` is null sends the body this
+ *  writes. Every store that keeps a draft across a reload reads it back through this: a held
+ *  send's, and the drafts a composer keeps for an address (`unsent-drafts.ts`). */
+export function restoredDraft({ body, mentions, replacement }: KeptDraft): SentDraft {
+  if (mentions === undefined) {
+    return { body, replacement };
+  }
+  const written = [...mentions]
+    .sort((one, other) => other.start - one.start)
+    .reduce((text, mention) => {
+      const { end, start } = mention;
+      // The words a mention was typed as, matched against the draft and drawn nowhere.
+      const words = `@${mention.text}`;
+      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > text.length) {
+        return text;
+      }
+      if (text.slice(start, end) !== words) {
+        return text;
+      }
+      const link = partyMention(mention.target, mention.text) ?? words;
+      return `${text.slice(0, start)}${link}${text.slice(end)}`;
+    }, body);
+  return { body: written, replacement };
 }
 
 /**
@@ -347,7 +444,7 @@ export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
   landed: (client, write) => refreshAfter(client, write.detail.request),
   name: "composer",
   restore: ({ draft, mutationKey, request, stoppedSend }) => ({
-    draft,
+    draft: { ask: draft.ask, draft: restoredDraft(draft.draft) },
     mutationKey,
     request: restoredRequest(request),
     stoppedSend: stoppedSend === undefined ? undefined : restoredRequest(stoppedSend),
@@ -438,15 +535,17 @@ function heldUnder(rows: readonly Write[], mutationKey: MutationKey): HeldSend |
 
 /** `detail`, the record of a refused send whose refusal is `refusal`, carried to `to` by the
  *  reader's own move (`HeldSends.carry`): the request goes there, unless the send was stopped,
- *  whose key is used only at its own address. `at` is the words and kind of a margin compose the
- *  reader takes the draft into (`carryInto`), which is another address of the same owner. */
+ *  whose key is used only at its own address. The statement it is on is `to`'s, so a send the
+ *  issue page's box carries off a statement is on none. `at` is the words and kind of a margin
+ *  compose the reader takes the draft into (`carryInto`), which is another address of the same
+ *  owner. */
 function carriedTo(
   { stoppedSend, ...detail }: ComposerSend,
   refusal: Error,
   to: CarriedAddress,
   at?: Pick<SentRequest, "anchor" | "kind">
 ): ComposerSend {
-  const carried = { ...detail.request, ...to, ...at };
+  const carried = { ...detail.request, ...to, statement: to.statement, ...at };
   const stopped = stoppedSend ?? (refusal instanceof SendStoppedError ? detail.request : undefined);
   if (stopped === undefined) return { ...detail, request: carried };
   if (sameAddress(stopped, carried)) return { ...detail, request: stopped };
@@ -543,12 +642,19 @@ export class HeldSends {
     return held !== undefined && this.#writes.discard(held.id);
   }
 
-  /** Keeps what the reader wrote over a refusal, as its composer unmounts. */
-  keep(mutationKey: MutationKey, draft: HeldDraft): void {
+  /** Keeps what the reader wrote over a refusal, as its composer unmounts. The issue page's box
+   *  keeps its mentions as it holds them with it (`HeldDraft.seeds`): they replace the request's
+   *  (`SentRequest.seeds`), none where it holds none, so a box that mounts again over the send
+   *  takes out those and no link the reader wrote. A keep that carries no mentions - every other
+   *  composer's - leaves the request as it was. */
+  keep(mutationKey: MutationKey, { seeds, ...draft }: HeldDraft): void {
     const held = this.get(mutationKey);
-    if (held?.status === "refused") {
-      this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, draft }));
-    }
+    if (held?.status !== "refused") return;
+    this.#writes.amend(held.id, composerSend, (detail) => {
+      if (seeds === undefined) return { ...detail, draft };
+      const { seeds: _held, ...request } = detail.request;
+      return { ...detail, draft, request: seeds.length === 0 ? request : { ...request, seeds } };
+    });
   }
 
   /** Re-addresses the refused send under `mutationKey`: a margin compose's kind switch after a

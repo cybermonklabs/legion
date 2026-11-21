@@ -47,9 +47,10 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // as it is; this read names no edges at all.
 //
 // A reference the grammar cannot read is refused by name (parseRequestRef, as the per-reference
-// route refuses its own), and so is a set past referenceTargetsMax, which is refused before
-// anything is parsed. A reference that reads but names nothing is answered, gone: a chip whose
-// target was deleted still has to draw.
+// route refuses its own), and so is a reference to a party - a person, an agent's session or a
+// role - which the grammar reads and the graph holds no node for (refs.TargetOf), and a set past
+// referenceTargetsMax, which is refused before anything is parsed. A reference that reads but
+// names nothing is answered, gone: a chip whose target was deleted still has to draw.
 //
 // A reference whose item id or block id is written short is read as GET /api/v1/references reads
 // its ?to= (wholeReferences): as the one item that carries the prefix among the items of the
@@ -125,12 +126,12 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 			answers[index].Ambiguous = true
 			continue
 		}
-		// Every kind parseRequestRef admits has a target; only an external URL has none, and
-		// that is no reference.
+		// Every reference parseRequestRef answers has a target: it refuses a party, and the
+		// grammar reads no external URL as one.
 		target, _ := refs.TargetOf(ref)
 		named[index] = target
 	}
-	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, named)
+	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, named, s.deps.ServerURL)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +173,7 @@ func (s *server) wholeReferences(ctx context.Context, references []text.Ref) (am
 	if len(asked) == 0 {
 		return nil, nil
 	}
-	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, asked)
+	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, asked, s.deps.ServerURL)
 	if err != nil {
 		return nil, err
 	}

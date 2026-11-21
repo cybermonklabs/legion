@@ -1,21 +1,41 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
 import {
   bgTransparent,
   borderStrongHover,
   borderTransparent,
   focusBorder,
+  focusVisibleRing,
   pageInkText,
 } from "../../theme/classes";
 import type { IssueDrafts } from "../issue/useIssueDrafts";
+import { isCompositionKey } from "../refs/ref-picker";
 import { hearPresses } from "./focus-keeper";
 import { authorText } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
+
+/** Edit title, the button laid over the title's heading (`IssueTitleRow`), as the header finds
+ *  it: the control its keeper falls back on and the one its `e` key clicks. */
+export const EDIT_TITLE_BUTTON = `button[aria-label="${CONTROL_LABELS.edit_title}"]`;
 
 /**
  * Row two of the header: the issue's title, which is the issue as a person names it, and the
- * editor it becomes when the reader presses it: a click, Enter or Space on the heading, or the
- * header's `e` key, which clicks it (`useHeaderKeys.ts`).
+ * editor it becomes when the reader asks for it: Edit title, a button laid over the heading,
+ * pressed by a click, Enter or Space, or the header's `e` key, which clicks that button
+ * (`useHeaderKeys.ts`).
+ *
+ * The heading holds the title and takes no Tab stop and no press. The button laid over its box
+ * is the control, and a screen reader reads it as "Edit title, button", with the title as its
+ * description. A heading that took a Tab stop and opened the editor would be a control with no
+ * role and no name (WCAG 2.2, 4.1.2), so the heading takes neither. The button shows no text of
+ * its own, since a button that showed the title under the name "Edit title" would leave its
+ * visible words out of its name (WCAG 2.5.3, Label in Name). It stands beside the heading in the
+ * row's one cell and not inside it, since a heading's name is computed from what it holds, a
+ * button's `aria-label` included. It takes the heading's whole box and draws what the heading
+ * drew there - the hover rule and the text cursor - and the page's focus ring, so the row looks
+ * as the prototype draws it and the heading keeps its box and its type to the pixel. A closed
+ * issue's title edits nothing, so it is the heading alone.
  *
  * The type is the prototype's `.title`: 600 weight, 22 px on 29 px from 761 px up, held to two
  * lines there, and 20 px on 26 px at 760 px and below, where nothing clamps it. It keeps that
@@ -32,11 +52,12 @@ import { authorText } from "./page-structure";
  * the read view keeps that height until the press that ended the edit has been delivered, and
  * only then clamps it again.
  *
- * Escape and Enter end the edit from the keyboard, and give the focus back to the heading the
- * reader opened the editor from, so the keyboard reader is where they were. A focus alone
- * never opens the editor: the page gives the focus back to the heading on its own - Details
- * closing onto the control that opened it, a return to the window - and an editor opened then
- * would take the next shortcut key as text of the title.
+ * Escape and Enter end the edit from the keyboard, and give the focus back to Edit title, the
+ * button the reader opened the editor from, so the keyboard reader is where they were. A focus
+ * alone never opens the editor, only the button's own activation does: the page gives the focus
+ * back to the button on its own - Details closing onto the control that opened it, a return to
+ * the window - and an editor opened then would change the page on a focus (WCAG 2.2, 3.2.1 On
+ * Focus) and take the next shortcut key as text of the title.
  */
 export function IssueTitleRow({
   drafts,
@@ -65,8 +86,12 @@ export function IssueTitleRow({
   // as that press ends.
   const heldForPress = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
+  // The heading's `id`, which Edit title is described by.
+  const headingId = useId();
+  // Edit title, while it is drawn: the issue is open and its title is not being edited.
+  const editButton = useRef<HTMLButtonElement>(null);
   const editor = useRef<HTMLTextAreaElement | null>(null);
-  // Set by a key that ends the edit, and read once the heading is drawn again: the focus goes
+  // Set by a key that ends the edit, and read once Edit title is drawn again: the focus goes
   // back to it.
   const returning = useRef(false);
   // The draft a switch or a hide of this edit sent or queued since the reader last changed it,
@@ -96,7 +121,7 @@ export function IssueTitleRow({
   };
   useEffect(() => {
     if (editing || !returning.current) return;
-    heading.current?.focus({ preventScroll: true });
+    editButton.current?.focus({ preventScroll: true });
     returning.current = false;
   }, [editing]);
   // The editor takes the focus once, as the edit opens. Focused at every render, it took the
@@ -194,10 +219,11 @@ export function IssueTitleRow({
 
   const type = "text-xl leading-[26px] min-[761px]:text-[22px] min-[761px]:leading-[29px]";
   // The box both views share, to the pixel: the font, the wrapping and the rule the editor
-  // draws on focus, which the heading keeps transparent. The rule and the padding inside it
-  // are 5 px on each side and 1 px above and below, which the wrapper's negative margins take
-  // back, so the words have the header's whole column - 362 px at 390 px, the prototype's own -
-  // and the row is the prototype's height: 2 px above the words and none below.
+  // draws on focus, which the heading keeps transparent and Edit title, laid over the heading's
+  // box, draws on hover. The rule and the padding inside it are 5 px on each side and 1 px above
+  // and below, which the wrapper's negative margins take back, so the words have the header's
+  // whole column - 362 px at 390 px, the prototype's own - and the row is the prototype's
+  // height: 2 px above the words and none below.
   const box = `[grid-area:1/1] min-w-0 rounded-md border px-1 font-semibold tracking-[-0.012em] whitespace-pre-wrap [overflow-wrap:anywhere] ${type} ${pageInkText}`;
   const whole = editing || held;
 
@@ -206,25 +232,31 @@ export function IssueTitleRow({
       <h1
         aria-hidden={editing ? true : undefined}
         className={`${box} ${borderTransparent} ${whole ? "" : "min-[761px]:line-clamp-2"} ${
-          editing ? "invisible" : isClosed ? "" : `cursor-text ${borderStrongHover}`
+          editing ? "invisible" : ""
         }`}
-        onClick={() => {
-          if (!isClosed) openEdit();
-        }}
-        onKeyDown={(event) => {
-          if (!isClosed && (event.key === "Enter" || event.key === " ")) {
-            event.preventDefault();
-            openEdit();
-          }
-        }}
+        id={headingId}
         ref={heading}
-        tabIndex={isClosed || editing ? -1 : 0}
         {...authorText}
       >
         {/* A trailing space or an empty draft still holds a line, as the editor does. */}
         {shown === "" || shown.endsWith(" ") ? `${shown}\u200b` : shown}
       </h1>
+      {isClosed || editing ? null : (
+        // Edit title, in the heading's cell after it, so it takes the heading's whole box and a
+        // press anywhere on the title lands on it. It holds no words: its name is its label and
+        // the heading's words are its description.
+        <button
+          aria-describedby={headingId}
+          aria-label={CONTROL_LABELS.edit_title}
+          className={`[grid-area:1/1] min-w-0 cursor-text rounded-md border outline-none focus-visible:ring-2 ${borderTransparent} ${borderStrongHover} ${focusVisibleRing}`}
+          onClick={openEdit}
+          ref={editButton}
+          type="button"
+        />
+      )}
       {editing ? (
+        // One line of text that holds no markup, so this box takes no reference picker:
+        // `issue-title` in `DISPATCH_WRITING_BOXES` says why.
         <textarea
           aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
           aria-label="Issue title"
@@ -253,7 +285,7 @@ export function IssueTitleRow({
             // The Escape that cancels an IME composition and the Enter that confirms one are the
             // input method's keys, not the reader ending the edit. Safari sends them after its
             // compositionend, with `isComposing` false and keyCode 229 (WebKit bug 165004).
-            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (isCompositionKey(event.nativeEvent)) return;
             if (event.key === "Escape") {
               // Puts back the issue's title, or while a write is out the title it carries, which
               // the issue is about to hold (decision 316).

@@ -25,7 +25,9 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   // with the checks that serve it and each check beside its newest result.
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
-  const { root } = useIssueTree(issue);
+  // What the page publishes of its batched names read, which the body hands its rows in the
+  // render that draws them (`published`), so none of them reads a reference the page asks for.
+  const { published, root } = useIssueTree(issue);
   const { checks, reads } = useVerificationReads(issue.key);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the view holds no row for still draws it, as the outline resolves
@@ -50,6 +52,7 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
         <VerificationFilterBody
           checks={checks}
           context={view.context}
+          published={published}
           reads={reads}
           view={view.root}
           whole={whole}

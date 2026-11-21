@@ -34,3 +34,15 @@ export function documentOfNode(
   const artifact = bySlug.get(nodeId.slice(0, cut));
   return artifact === undefined ? undefined : { artifact, blockId: nodeId.slice(cut + 3) };
 }
+
+/** The slug and the block id a block node's id names, `<slug>#b-<block id>`, read as
+ *  `documentOfNode` reads them, with no artifact list: what a node's own id says of where it is,
+ *  for a caller that names the document by its slug. `undefined` for a node that is no block, and
+ *  for an id whose slug or block id is empty. */
+export function blockOfNodeId(
+  nodeId: string
+): { readonly blockId: string; readonly slug: string } | undefined {
+  const cut = nodeId.indexOf("#b-");
+  if (cut <= 0 || cut + 3 === nodeId.length) return undefined;
+  return { blockId: nodeId.slice(cut + 3), slug: nodeId.slice(0, cut) };
+}

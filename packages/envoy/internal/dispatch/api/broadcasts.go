@@ -484,7 +484,7 @@ func (s *server) writeBroadcast(
 		// its blocks hold none either and the write moves nothing. The copy is inserted above,
 		// so its body is read here rather than planned before the insert, as every other
 		// message write plans it (api.planItemWrite).
-		if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, message.CreatedAt, nil, nil); err != nil {
+		if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, s.deps.ServerURL, message.CreatedAt, nil, nil); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		// A broadcast message is a thread root that answers nothing, so its event says what

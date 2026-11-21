@@ -39,10 +39,10 @@ import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { ReferenceHostIs } from "../refs/reference-host";
 import { buildIssuePath, buildProjectPath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import { threadLayout } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { useMarkThreadRead } from "../threads/useMarkThreadRead";
@@ -65,7 +65,12 @@ const suggestionActionButton =
   "min-h-11 rounded-lg border px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed xl:min-h-8 xl:py-1";
 
 /** The replacement a suggestion proposes: the anchored text struck through, the new text
- *  beneath. `clamp` keeps a collapsed card's preview to two lines of each. */
+ *  beneath. `clamp` keeps a collapsed card's preview to two lines of each.
+ *
+ *  A diff is one of the four shapes a host can have (`ReferenceHostIs`): what it swaps is the
+ *  exact characters of each side, so a `dispatch://` address in either reads as those
+ *  characters and no title is drawn over it. Accepting the suggestion writes those characters
+ *  into the document, and a reader has to see what they would be. */
 function SuggestionDiff({
   clamp,
   quote,
@@ -81,18 +86,24 @@ function SuggestionDiff({
   // inner span (leaving the padding on the outer element) avoids that.
   const clampClass = clamp ? "line-clamp-2" : "";
   return (
-    <>
+    // No `source` on either side: why a suggestion's two sides are no record is the reading
+    // list's `margin-suggestion-diff` (`DISPATCH_READING_SURFACES`).
+    <ReferenceHostIs host="diff">
       <del
         className={`block rounded px-2 py-1 ${clampClass} ${suggestionRemovedBg} ${suggestionRemovedText}`}
       >
-        {quote}
+        <MarkdownBody markdown={quote} surface="margin-suggestion-diff" variant="inline" />
       </del>
       <ins
         className={`block rounded px-2 py-1 ${clampClass} ${suggestionAddedBg} ${suggestionAddedText}`}
       >
-        {suggestion.replace_with}
+        <MarkdownBody
+          markdown={suggestion.replace_with}
+          surface="margin-suggestion-diff"
+          variant="inline"
+        />
       </ins>
-    </>
+    </ReferenceHostIs>
   );
 }
 
@@ -200,6 +211,7 @@ function CommentBody({
     <>
       {anchor === null ? null : (
         <blockquote className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}>
+          {/* The document's own words, as they are: the reading list's `anchor-quote`. */}
           {anchor.quote}
         </blockquote>
       )}
@@ -207,7 +219,8 @@ function CommentBody({
       {suggestion === null ? (
         <MarkdownBody
           markdown={comment.body}
-          source={textSourceOf("comment", comment.id)}
+          source={textSourceOf("comment", comment.id, comment.issue_key)}
+          surface="margin-comment-body"
           tree={comment.body_tree}
         />
       ) : null}
@@ -218,14 +231,14 @@ function CommentBody({
             <div className={`font-sans ${textSecondaryOnSurface}`}>
               <MarkdownBody
                 markdown={comment.body}
-                source={textSourceOf("comment", comment.id)}
+                source={textSourceOf("comment", comment.id, comment.issue_key)}
+                surface="margin-comment-body"
                 tree={comment.body_tree}
               />
             </div>
           )}
         </div>
       ) : null}
-      <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
       <p className={`mt-2 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
           <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
@@ -308,6 +321,7 @@ export function ThreadCard({
     editingId === comment.id || heldEdits.some((held) => held.request.edit?.id === comment.id);
   const renderEditor = (comment: ThreadComment) => (
     <MentionComposer
+      box="margin-comment-edit"
       edit={{ body: comment.body, id: comment.id }}
       kind="comment"
       mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}
@@ -345,6 +359,7 @@ export function ThreadCard({
   const replyComposer = expanded ? (
     <div className="contents" hidden={hideReplyComposer}>
       <MentionComposer
+        box="margin-thread-reply"
         closed={isClosed}
         finishing={terminalSuggestion}
         frame={composerClassName}
@@ -513,48 +528,60 @@ export function ThreadCard({
             {composerFirst ? replyComposer : null}
             {shown.length === 0 ? null : (
               <ol aria-label="Replies" className={`mt-3 space-y-2 border-t pt-3 ${borderDefault}`}>
-                {shown.map((reply) => (
-                  <li
-                    aria-current={reply.id === currentReplyId ? "true" : undefined}
-                    className={`rounded-lg p-2 ${card}`}
-                    data-reply=""
-                    key={reply.id}
-                    ref={reply === newestReply ? markRead : undefined}
-                    style={{ marginLeft: "0px" }}
-                  >
-                    {editing(reply) ? (
-                      renderEditor(reply)
-                    ) : (
-                      <>
-                        {reply.reply_block == null ? null : (
-                          <ReplyQuote
-                            author={
-                              passageItem(reply.reply_block, [root, ...thread.replies])?.author
-                            }
-                            block={reply.reply_block}
-                            className="mb-2"
-                            excerpt=""
+                {shown.map((reply) => {
+                  // The comment the reply quotes, found once in the thread's own items: the
+                  // quote's author and the record its text is both name it.
+                  const quoted =
+                    reply.reply_block == null
+                      ? undefined
+                      : passageItem(reply.reply_block, [root, ...thread.replies]);
+                  return (
+                    <li
+                      aria-current={reply.id === currentReplyId ? "true" : undefined}
+                      className={`rounded-lg p-2 ${card}`}
+                      data-reply=""
+                      key={reply.id}
+                      ref={reply === newestReply ? markRead : undefined}
+                      style={{ marginLeft: "0px" }}
+                    >
+                      {editing(reply) ? (
+                        renderEditor(reply)
+                      ) : (
+                        <>
+                          {reply.reply_block == null ? null : (
+                            <ReplyQuote
+                              author={quoted?.author}
+                              block={reply.reply_block}
+                              className="mb-2"
+                              excerpt=""
+                              source={textSourceOf("comment", quoted?.id, quoted?.issue_key)}
+                            />
+                          )}
+                          <CommentBody
+                            artifactSlug={artifactSlug}
+                            comment={reply}
+                            owner={owner}
+                            showOrphan={false}
+                            showReference={showReference}
                           />
-                        )}
-                        <CommentBody
-                          artifactSlug={artifactSlug}
-                          comment={reply}
-                          owner={owner}
-                          showOrphan={false}
-                          showReference={showReference}
-                        />
-                        {renderDeliveries?.(reply)}
-                      </>
-                    )}
-                    {editing(reply) ? null : (
-                      <div className="mt-2 flex gap-3 text-sm">{editButton(reply)}</div>
-                    )}
-                  </li>
-                ))}
+                          {renderDeliveries?.(reply)}
+                        </>
+                      )}
+                      {editing(reply) ? null : (
+                        <div className="mt-2 flex gap-3 text-sm">{editButton(reply)}</div>
+                      )}
+                    </li>
+                  );
+                })}
               </ol>
             )}
           </>
         ) : (
+          // The collapsed card is a record a reader reads - it is the Conversation tab's whole
+          // default view of a turn - so its references are links, as they were before the host
+          // decided it (`links="live"` at both previews below). The button around it opens the
+          // thread; it is not the link-or-button shape R6 names, which is a reference drawn
+          // inside a control that navigates somewhere else.
           <button
             aria-expanded={false}
             className={`block w-full text-left ${textPrimaryOnSurface}`}
@@ -585,9 +612,9 @@ export function ThreadCard({
                     <MarkdownPreview
                       className={`mt-2 text-xs ${textSecondaryOnSurface}`}
                       lines={1}
-                      links="live"
                       markdown={root.body}
-                      source={textSourceOf("comment", root.id)}
+                      source={textSourceOf("comment", root.id, root.issue_key)}
+                      surface="margin-thread-preview"
                       tree={root.body_tree}
                     />
                   )}
@@ -598,17 +625,17 @@ export function ThreadCard({
                     <blockquote
                       className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}
                     >
+                      {/* The document's own words: the reading list's `anchor-quote`. */}
                       {root.anchor.quote}
                     </blockquote>
                   )}
                   <MarkdownPreview
                     lines={2}
-                    links="live"
                     markdown={root.body}
-                    source={textSourceOf("comment", root.id)}
+                    source={textSourceOf("comment", root.id, root.issue_key)}
+                    surface="margin-thread-preview"
                     tree={root.body_tree}
                   />
-                  <Unfurl body={root.body} source={textSourceOf("comment", root.id)} />
                 </>
               )}
               {thread.replies.length === 0 ? null : (

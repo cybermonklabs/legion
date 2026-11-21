@@ -1,11 +1,25 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { api } from "../../api/client";
-import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { answerRoute } from "../../__tests__/send-answers";
+import { api, type WriteBounds } from "../../api/client";
+import type {
+  IssueSummary,
+  PatchPriorityInput,
+  Priorities,
+  Priority,
+  PriorityRow,
+} from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PriorityPage } from "./PriorityPage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
   return {
@@ -119,7 +133,11 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
     ? { event_head: "0", kind: "user" as const, login: "alice" }
     : ({ event_head: "0", kind: "token", login: "ci" } as never);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
-  const patch = spyOn(api, "patchPriority").mockImplementation(async (key) => saved(key));
+  // A change to a priority is a write on its line (`priority:<id>`), made from its request alone,
+  // so it is answered on its route.
+  const patch = answerRoute<
+    (id: string, input: PatchPriorityInput, bounds: WriteBounds) => Promise<Priority>
+  >("PATCH", "/api/v1/priorities/*").mockImplementation(async (key) => saved(key));
   // The margin reads the priority's own history as soon as it opens on Everything.
   const history = spyOn(api, "getPriorityHistory").mockResolvedValue([]);
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
@@ -274,11 +292,34 @@ test("the owner is a control beside the title and writes the owner", async () =>
   expect(patch.mock.calls[0]?.[1]).toEqual({ owner: "LINUX controller" });
 });
 
+// The changes to one priority go out in press order (`priority:<id>`): a change made while an
+// earlier one is out waits for it, so an older write never lands after a newer one.
+test("a change made while an earlier change to the priority is out waits for it", async () => {
+  const user = userEvent.setup();
+  const { patch } = page();
+  const first = Promise.withResolvers<Priority>();
+  patch.mockImplementationOnce(() => first.promise);
+  const owner = await screen.findByRole("combobox", { name: "Owner" });
+  await user.clear(owner);
+  await user.type(owner, "LINUX controller");
+  await user.tab();
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  const title = screen.getByRole("textbox", { name: "Title" });
+  await user.click(title);
+  await user.type(title, " again");
+  await user.tab();
+  await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+  expect(patch).toHaveBeenCalledTimes(1);
+  await act(async () => first.resolve(saved("rocq-lean")));
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+  expect(patch.mock.calls[1]?.[1]).toEqual({ title: "Rocq and Lean speed work restarted again" });
+});
+
 test("the page carries no tab strip, no version control and no delete", async () => {
   page();
   await screen.findByRole("textbox", { name: "Title" });
   expect(screen.queryByRole("tablist")).toBeNull();
-  expect(screen.queryAllByRole("tab").length).toBe(0);
+  expect(screen.queryAllByRole("tab")).toHaveLength(0);
   expect(screen.queryByRole("button", { name: /delete|retire|remove/i })).toBeNull();
   expect(screen.queryByRole("button", { name: /version|history of this|restore/i })).toBeNull();
   const text = document.body.textContent ?? "";
@@ -307,7 +348,7 @@ test("the margin stands beside the page, with no tabs of its own", async () => {
   page();
   const margin = await screen.findByRole("complementary", { name: "Margin" });
   expect(within(margin).getByRole("combobox", { name: /Margin/ })).toBeDefined();
-  expect(within(margin).queryAllByRole("tab").length).toBe(0);
+  expect(within(margin).queryAllByRole("tab")).toHaveLength(0);
 });
 
 test("an id no priority carries says so and gives the way back", async () => {

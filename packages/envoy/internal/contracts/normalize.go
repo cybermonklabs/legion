@@ -1041,7 +1041,7 @@ func githubPayload(event string, body map[string]any) string {
 			"pusher": nestedString(body, "pusher", "name"),
 			// sender is the account that pushed, as a pull request's synchronize names it.
 			"sender":       nestedString(body, "sender", "login"),
-			"head_subject": firstNonEmptyLine(nestedString(body, "head_commit", "message")),
+			"head_subject": FirstNonEmptyLine(nestedString(body, "head_commit", "message")),
 			"commit_count": strconv.Itoa(len(sliceValue(body["commits"]))),
 			"compare_url":  stringValue(body["compare"]),
 		}
@@ -1632,10 +1632,13 @@ func stringValue(value any) string {
 }
 
 func first(s string, maxRunes int) string {
-	return truncateWithEllipsis(firstNonEmptyLine(s), maxRunes)
+	return truncateWithEllipsis(FirstNonEmptyLine(s), maxRunes)
 }
 
-func firstNonEmptyLine(s string) string {
+// FirstNonEmptyLine is the first line of s that holds more than whitespace, without its leading
+// spaces, tabs and carriage returns: the line OneLineSummary cuts, and the line Dispatch cuts
+// where no reference crosses the cut (refs.FirstLine).
+func FirstNonEmptyLine(s string) string {
 	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimLeft(line, " \t\r")
 		if strings.TrimSpace(line) != "" {
@@ -1649,7 +1652,7 @@ func firstNonEmptyLine(s string) string {
 // including its ellipsis. It is the common human-facing summary contract for
 // normalized webhooks, listener API messages, and settled CI notifications.
 func OneLineSummary(s string) string {
-	line := firstNonEmptyLine(s)
+	line := FirstNonEmptyLine(s)
 	runes := []rune(line)
 	if len(runes) <= 160 {
 		return line

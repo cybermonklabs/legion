@@ -149,7 +149,7 @@ func resolvedPrefix(t *testing.T, tx pgx.Tx, kind string, scope Scope, prefix st
 	if !bothResolve(id) {
 		return candidate
 	}
-	whole, ambiguous := shortIDAnswers(t, tx, id)
+	whole, ambiguous := shortIDAnswers(t, tx, id, viewer.ServerURL)
 	if got, ok := whole[id]; !ok || !reflect.DeepEqual(got, candidate) || len(ambiguous) != 0 {
 		t.Fatalf("ResolvePrefixes answers the %s prefix %q in %#v with %#v, ambiguous %v; ResolvePrefix names %#v", kind, prefix, scope, whole, ambiguous, candidate)
 	}
@@ -169,7 +169,7 @@ func requireNoPrefixMatch(t *testing.T, q Queryer, kind string, scope Scope, pre
 	if !bothResolve(id) {
 		return
 	}
-	if whole, ambiguous := shortIDAnswers(t, q, id); len(whole) != 0 || len(ambiguous) != 0 {
+	if whole, ambiguous := shortIDAnswers(t, q, id, viewer.ServerURL); len(whole) != 0 || len(ambiguous) != 0 {
 		t.Fatalf("ResolvePrefixes answers the %s prefix %q in %#v with %#v, ambiguous %v; ResolvePrefix names nothing", kind, prefix, scope, whole, ambiguous)
 	}
 }
@@ -180,16 +180,16 @@ func requireNoPrefixMatch(t *testing.T, q Queryer, kind string, scope Scope, pre
 func requireShortIDAmbiguous(t *testing.T, q Queryer, kind string, scope Scope, prefix string) {
 	t.Helper()
 	id := ShortID{Kind: kind, Scope: scope, Prefix: prefix}
-	if whole, ambiguous := shortIDAnswers(t, q, id); len(whole) != 0 || len(ambiguous) != 1 || !ambiguous[id] {
+	if whole, ambiguous := shortIDAnswers(t, q, id, ""); len(whole) != 0 || len(ambiguous) != 1 || !ambiguous[id] {
 		t.Fatalf("ResolvePrefixes answers the %s prefix %q in %#v with %#v, ambiguous %v; want the id ambiguous alone", kind, prefix, scope, whole, ambiguous)
 	}
 }
 
-// shortIDAnswers is the two answers of ResolvePrefixes asked id alone, failing the test on an
-// error.
-func shortIDAnswers(t *testing.T, q Queryer, id ShortID) (map[ShortID]Candidate, map[ShortID]bool) {
+// shortIDAnswers is the two answers of ResolvePrefixes asked id alone, with serverURL the
+// deployment its first lines cut around, failing the test on an error.
+func shortIDAnswers(t *testing.T, q Queryer, id ShortID, serverURL string) (map[ShortID]Candidate, map[ShortID]bool) {
 	t.Helper()
-	whole, ambiguous, err := ResolvePrefixes(context.Background(), q, []ShortID{id})
+	whole, ambiguous, err := ResolvePrefixes(context.Background(), q, []ShortID{id}, serverURL)
 	if err != nil {
 		t.Fatalf("ResolvePrefixes of the %s prefix %q in %#v: %v", id.Kind, id.Prefix, id.Scope, err)
 	}

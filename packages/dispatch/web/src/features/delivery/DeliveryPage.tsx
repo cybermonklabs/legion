@@ -7,6 +7,7 @@ import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries"
 import type { DeliverySessionGroup } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
+import { useSettled } from "../../hooks/useSettled";
 import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-array-params";
 import {
   borderStrong,
@@ -184,16 +185,6 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   );
 
   return [{ window: windowChoice, filters, view, brush }, setState];
-}
-
-/** `value`, once it has held still for `delayMs`. */
-function useSettled<T>(value: T, delayMs: number): T {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setSettled(value), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [value, delayMs]);
-  return settled;
 }
 
 /** The Timeline | List segmented toggle. */

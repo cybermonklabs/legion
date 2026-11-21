@@ -10,6 +10,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { PlainText } from "../refs/plain-text";
 import { Timestamp } from "../refs/Timestamp";
 import { InPlaceField } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
@@ -33,8 +34,10 @@ export interface PriorityRowActions {
   /** The priority whose row is open, which shows its whole description and its work. */
   readonly openId: string | undefined;
   readonly onOpen: (item: PriorityItem) => void;
-  readonly onRename: (item: PriorityItem, title: string) => void;
-  readonly onDescribe: (item: PriorityItem, description: string) => void;
+  /** Each writes the row's title or description, answering with the write's promise, which the
+   *  field reads a refusal from (`useInPlaceDraft`). */
+  readonly onRename: (item: PriorityItem, title: string) => Promise<unknown>;
+  readonly onDescribe: (item: PriorityItem, description: string) => Promise<unknown>;
   /** The row the reader is dragging, and the two ends of that drag. */
   readonly dragging: string | undefined;
   readonly onDragStart: (id: string) => void;
@@ -75,7 +78,7 @@ function OrderCell({ actions, item }: { actions: PriorityRowActions; item: Prior
 
 function TitleCell({ actions, item }: { actions: PriorityRowActions; item: PriorityItem }) {
   const open = actions.openId === item.priority.id;
-  const { description, title } = item.priority;
+  const { description, description_tree: descriptionTree, title } = item.priority;
   return (
     <div className="flex min-w-0 items-start gap-1">
       <button
@@ -101,12 +104,29 @@ function TitleCell({ actions, item }: { actions: PriorityRowActions; item: Prior
           <PriorityDescription
             canWrite={actions.canWrite}
             description={description}
+            descriptionTree={descriptionTree}
             label={`Description of ${item.order}`}
             onSave={(next) => actions.onDescribe(item, next)}
             rows={6}
           />
-        ) : item.summary === "" ? null : (
-          <p className={`truncate text-sm ${textSecondaryOnCanvas}`}>{item.summary}</p>
+        ) : (
+          // A closed row shows the description's first line and no more of it, in plain words
+          // (`PlainText`'s `firstLine`), read from the tree the server read of the description
+          // once the engine has answered. It is markdown, so its markers are not read out, and a
+          // reference in it reads as its target's name, as every other one-line projection of
+          // stored text reads it.
+          <PlainText
+            firstLine
+            markdown={description}
+            surface="priority-description"
+            tree={descriptionTree}
+          >
+            {(summary) =>
+              summary === undefined || summary === "" ? null : (
+                <p className={`truncate text-sm ${textSecondaryOnCanvas}`}>{summary}</p>
+              )
+            }
+          </PlainText>
         )}
       </div>
     </div>

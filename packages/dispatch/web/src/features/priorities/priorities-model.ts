@@ -1,5 +1,4 @@
 import type { PriorityRow } from "../../api/types";
-import { questionLine } from "../inbox/question-line";
 import type { IssueStatus } from "../project/board-model";
 import { ageOf, AGES as ISSUE_AGES, runningIssueStatuses } from "../project/issues-table-model";
 import { columnsById, type TableColumn, tableLayout } from "./priority-table-model";
@@ -23,9 +22,6 @@ export interface PriorityItem {
   /** The priority's place in the order, from 1: what `P7` reads from. */
   readonly place: number;
   readonly order: string;
-  /** The first line of the description, in plain words, which the row shows while it is
-   *  closed: a description is markdown, so the markers it opens with are not read out. */
-  readonly summary: string;
   readonly inFlight: number;
   readonly waiting: number;
   readonly parked: number;
@@ -48,7 +44,6 @@ export function buildPriorityItems(rows: readonly PriorityRow[]): PriorityItem[]
     priority,
     place: index + 1,
     order: orderLabel(index),
-    summary: questionLine(priority.description),
     inFlight: countOf(priority.work.by_status, runningIssueStatuses),
     waiting: countOf(priority.work.by_status, WAITING_STATUSES),
     parked: countOf(priority.work.by_status, PARKED_STATUSES),

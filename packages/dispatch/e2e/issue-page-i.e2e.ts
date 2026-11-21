@@ -123,6 +123,7 @@ import {
   treeActiveDescendant,
   treeText,
 } from "./issue-page-i";
+import { composerField } from "./issue-page-l";
 import { withIssuePage } from "./issue-page-option";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -1067,8 +1068,10 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
 // What waits on another issue, and is not read here: a criterion under the words that raised
 // it, a requirement under its criterion, and the left arrow walking up from a requirement to
 // them; a lens under its node and a finding under its lens; a reading under its decision; and a
-// comment anchored to a node under that node, an edge the model does not store, so the anchored
-// comment sits under the issue as any node with no stored parent does.
+// comment anchored to a node other than a statement under that node, an edge the model does not
+// store, so the anchored comment sits under the issue as any node with no stored parent does. A
+// comment anchored inside a statement is read under that statement, which the page finds by the
+// anchor's block.
 // SLOW(>=2s): three seeds, each loaded cold with its branches unfolded press by press, and the
 // first seed's parents read off the page one whole read at a time.
 test("each node sits under the parent the model stores", async ({ browser }) => {
@@ -1228,6 +1231,11 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
         seeded.comments.threads[index % seeded.comments.threads.length]
       );
     });
+    // The comment anchored to the second requirement sits under that requirement (part L's R11).
+    expect(
+      parentOf(seeded.comments.anchored),
+      "the comment anchored to a statement is not drawn under it"
+    ).toBe(blockNodeId(specSlug, seeded.comments.anchoredBlock));
 
     // Every typed block the model gives no parent sits under the issue - the open question's
     // block and every requirement - and no row sits under a document. The summary callout is
@@ -1907,13 +1915,24 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
       "the table is no wider than what it shows, so it does not scroll inside itself"
     ).toBeGreaterThan(before.table.client);
     expect(before.lastShown, "the table shows its last column before it is scrolled").toBe(false);
-    // A reader's sideways scroll over the table, as a trackpad makes it.
+    // A reader's sideways scroll over the table, as a trackpad makes it, with the table in the
+    // middle of the screen: the box to write in stands over the screen's last lines, and a wheel
+    // over it is the box's, not the table's.
+    await table.evaluate((drawn) => drawn.scrollIntoView({ block: "center" }));
     const at = await table.boundingBox();
     expect(at, "the table has no box on the page").not.toBeNull();
-    await page.mouse.move(
-      (at?.x ?? 0) + (at?.width ?? 0) / 2,
-      (at?.y ?? 0) + (at?.height ?? 0) / 2
-    );
+    const point = {
+      x: (at?.x ?? 0) + (at?.width ?? 0) / 2,
+      y: (at?.y ?? 0) + (at?.height ?? 0) / 2,
+    };
+    expect(
+      await page.evaluate(
+        ({ x, y }) => document.elementFromPoint(x, y)?.closest("table") != null,
+        point
+      ),
+      "the middle of the table is under something else the page draws"
+    ).toBe(true);
+    await page.mouse.move(point.x, point.y);
     await page.mouse.wheel(before.table.scroll, 0);
     await expect
       .poll(async () => (await widths()).lastShown, {
@@ -4468,22 +4487,17 @@ test("a statement of a document the server admits read-only shows no cue that it
   });
 });
 
-/** Whether the element that holds the focus is a row of the outline's tree. */
-function focusOnATreeRow(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
-    const active = document.activeElement;
-    return active?.matches("[data-node-row]") === true && active.closest('[role="tree"]') !== null;
-  });
-}
-
-// The tester's finding at #4205's 2ff6850a: when a read of the issue's comments no longer holds
-// the comment whose row has the focus, that row leaves the tree and the focus falls to the page's
-// body, so the reader's place in the outline is lost and no row of the tree holds the focus. The
-// comments read is answered without that comment as the server's answer reaches the page, and a
-// real event of the issue - another comment resolved - makes the page read the comments again.
+// When a read of the issue's comments no longer holds the comment whose row has the focus, that
+// row leaves the tree and the focus falls to the page's body. The reader caused no loss - another
+// session resolved a comment, which made the page read the comments again, and the row had the
+// focus by a script's hand, no act of theirs - so the focus stays on the body, where the page's
+// keys work, no row of the tree takes it, and the page does not scroll: the page, and not the
+// reader, would have chosen what stands near the lost place. The comments read is answered
+// without that comment as the server's answer reaches the page. The half the reader causes is
+// the last row of `issue-page-l.e2e.ts`.
 // SLOW(>=2s): the whole issue seeded and loaded, then waited on until the read after the event
 // has drawn the outline without the comment.
-test("a read that drops the focused comment's row leaves the focus on a row of the tree", async ({
+test("a read that drops the focused row with no act of the reader's leaves the focus on the page's body and scrolls nothing", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -4510,17 +4524,25 @@ test("a read that drops the focused comment's row leaves the focus on a row of t
       }
       await route.fulfill({ json, response: answer });
     });
+    // Where the page stands once the row holds the focus, before the event.
+    await nextFrames(page);
+    const scrolled = await page.evaluate(() => window.scrollY);
     await resolveComment(other);
     await expect(
       nodeRow(page, gone),
       "the read after the event still draws the comment its answer no longer holds"
     ).toHaveCount(0);
-    await expect
-      .poll(() => focusOnATreeRow(page), {
-        message: "the focus left the tree when a read dropped the focused comment's row",
-      })
-      .toBe(true);
-    await expectFocusedRowClear(page, "a read that dropped the focused comment's row");
+    // The frames a move of the focus, and the scroll a row makes as it takes the focus, would
+    // take to come.
+    await nextFrames(page);
+    expect(
+      await page.evaluate(() => document.activeElement === document.body),
+      "a read that dropped the focused row, with no act of the reader's, took the focus off the page's body"
+    ).toBe(true);
+    expect(
+      await page.evaluate(() => window.scrollY),
+      "a read that dropped the focused row, with no act of the reader's, scrolled the page"
+    ).toBe(scrolled);
   });
 });
 
@@ -4770,9 +4792,8 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
 // after its statements, and the ask's card draws controls of its own inside the editor. The
 // statement is the third, which no comment or ask is on, so the editor draws no references
 // button of its own block (the next row reads one), and the second's, which the seed's anchored
-// comment draws, is another block's, passed over too. Nothing of the page's own takes the focus
-// after the outline at this head, so a stand-in control under it is the tab stop Tab goes to
-// (`standInControlBelow`).
+// comment draws, is another block's, passed over too. The first tab stop after the outline is the
+// field of the box at the foot, so Tab goes there.
 // SLOW(>=2s): the whole issue seeded and loaded, then the row's editor opened twice, each waited
 // on until it takes the caret and the ask's card is drawn in it, and until it closes again.
 test("Tab from a row's editor passes over the controls of an ask another block draws, Shift+Tab goes to the row, and each ends the editing", async ({
@@ -4788,7 +4809,6 @@ test("Tab from a row's editor passes over the controls of an ask another block d
     const before = await storedMarkdown(seeded.specArtifactId);
     const row = nodeRow(page, statement).first();
     const editable = row.locator('[contenteditable="true"]');
-    const below = await standInControlBelow(page);
     // The tab stops the ask's card draws in the row's editor.
     const askControls = row
       .locator(`[data-block-id="${OPEN_QUESTION_BLOCK_ID}"]`)
@@ -4836,7 +4856,7 @@ test("Tab from a row's editor passes over the controls of an ask another block d
     ).toBe(false);
     expect(afterTab.inAsk, `Tab stopped on the ask's ${afterTab.name}`).toBe(false);
     await expect(
-      below.control,
+      composerField(page),
       `Tab from the row's editor went to ${afterTab.name}, not the first tab stop after its box`
     ).toBeFocused();
     await expect(editable, "Tab from the row's editor did not end the editing").toHaveCount(0);
@@ -4898,7 +4918,6 @@ test("Tab from a row's editor stops at the references button of the node's own b
       const references = row
         .locator("[data-editor-box]")
         .getByRole("button", { name: /references on block$/ });
-      const below = await standInControlBelow(page);
 
       await focusRow(page, statement);
       await page.keyboard.press("Enter");
@@ -4936,7 +4955,7 @@ test("Tab from a row's editor stops at the references button of the node's own b
       );
       await page.keyboard.press("Tab");
       await expect(
-        below.control,
+        composerField(page),
         "Tab from the statement's references button did not go past every other block's to the first tab stop after the editor's box"
       ).toBeFocused();
       await expect(editable, "Tab out of the editor's box did not end the editing").toHaveCount(0);

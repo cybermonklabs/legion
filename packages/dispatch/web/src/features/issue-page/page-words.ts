@@ -640,12 +640,19 @@ export const STATE_LINES = freeze({
   decisions_document_unreadable: "Could not load the decisions document.",
 } as const);
 
+/** The words of two controls the box at the foot of the outline names as the way back to a draft
+ *  it keeps (`ANSWER_LINES.kept_on_issue`, `kept_on_statement`), declared once here, ahead of
+ *  both tables, for those lines and `CONTROL_LABELS` alike: a row's Reply, and the box's control
+ *  that writes on the issue instead. */
+const REPLY_WORD = "Reply";
+const WRITE_ON_ISSUE_WORDS = "Write on the issue instead";
+
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
  * a list they opened still being read, and a write of theirs still out (dispatch://INFRA-1196
- * R22). The page's other answers are tables of their own -
- * `BLOCKED_BY_REFUSALS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
- * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
+ * R22). The page's other answers are tables of their own - `BLOCKED_BY_REFUSALS` and
+ * `ADDRESS_FALLBACK_WORDS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
+ * `ANSWER_SOURCES` gathers all five, so a test can tell what the page says unasked from what it
  * says when asked. Each is at most one sentence and names no schema token.
  */
 export const ANSWER_LINES = freeze({
@@ -680,6 +687,28 @@ export const ANSWER_LINES = freeze({
   saving_labels: "Saving labels…",
   saving_release: "Releasing…",
   saving_reopen: "Reopening…",
+  /** What Send says while the send is out, on the answer line and on the write line of the box
+   *  at the foot of the outline, beside the busy words above. */
+  sending: "Sending…",
+  /** What the write line says while a file pasted or dropped into its draft uploads: on its Send,
+   *  and on the status line under the field. */
+  uploading: "Uploading file…",
+  /** What the write line says when Dispatch stored a file pasted or dropped into its draft and
+   *  lost its answer, so the file's reference could not be written into the draft. */
+  uploaded_unanswered:
+    "The file was uploaded, but Dispatch lost its answer, so its reference is not in the draft.",
+  /** What the box says when Dispatch refused a comment on a statement whose words its document
+   *  holds twice (`TARGET_AMBIGUOUS`): the box places a statement's comment by the statement's
+   *  whole words alone, so the same words are refused again whatever is sent, and the draft
+   *  stays in the box. */
+  statement_twice:
+    "The statement's words stand twice in its document, so the comment cannot be placed under it.",
+  /** What the box says, once a row's Reply moved it on, of what the reader wrote on the issue,
+   *  or on a statement, and the box keeps there, with the control that goes back to it: the
+   *  box's own that writes on the issue, or the statement's Reply. A reply kept for a row is said
+   *  in the composer's own words, which name the author of what it answers. */
+  kept_on_issue: `What you wrote on the issue is kept: press ${WRITE_ON_ISSUE_WORDS} to go on with it.`,
+  kept_on_statement: `What you wrote on a statement is kept: press ${REPLY_WORD} on that statement to go on with it.`,
 } as const);
 
 /**
@@ -757,6 +786,68 @@ export const BLOCKED_BY_REFUSALS = freeze({
 
 /** One refusal of a blocked-by list the page has a sentence for. */
 export type BlockedByRefusalWords = keyof typeof BLOCKED_BY_REFUSALS;
+
+/**
+ * What the page says in the outline's place where the address the reader followed names nothing
+ * the outline draws a row for (`slots/body.tsx`): an ask, a comment or a message the issue holds
+ * none of, or whose read failed, by the kind of item the address names; a block of a document no
+ * row is drawn for; the child issues of an issue with none; and the link back to the issue's own
+ * address under each. Each is drawn in answer to an address followed, which is the reader's own
+ * act, as `KEY_REPORTS.agents_thread` is (`page-structure.ts`), so this is one of the page's
+ * answers (`ANSWER_SOURCES`). They are the words of today's page for the same states
+ * (`issue/IssuePage.tsx`'s `ItemLandingFailure`), which `slots/body.tsx` copies until that page
+ * is removed. A line that names the issue is cut where the issue's key goes, as
+ * `BLOCKED_BY_REFUSALS` cuts its sentences: the key is drawn between `before` and `after`.
+ */
+export const ADDRESS_FALLBACK_WORDS = freeze({
+  /** The link under each line that takes the reader to the issue's own address. */
+  back: { after: "", before: "Back to " },
+  /** A block of a document the outline draws no row for - a paragraph, a heading, a table - is
+   *  no node of the tree as much as a block id no document holds, so the words fit both. */
+  block: {
+    heading: "No row for this block",
+    line: { after: "'s outline.", before: "That link names no row of " },
+  },
+  children: {
+    heading: "No child issues",
+    line: { after: ", which has none.", before: "That link names the child issues of " },
+  },
+  /** An item the issue holds none of (`missing`), and one whose read failed (`unreadable`): the
+   *  heading over each, the line under a missing one, and the alert beside a failed read's
+   *  Retry (`FailedReadLine`). */
+  items: {
+    ask: {
+      missing: {
+        heading: "Ask not found",
+        line: {
+          after: " — it may have been deleted.",
+          before: "That link doesn't name an ask on ",
+        },
+      },
+      unreadable: { heading: "Couldn't load this ask", message: "Couldn't load this ask." },
+    },
+    comment: {
+      missing: {
+        heading: "Comment not found",
+        line: {
+          after: " — it may have been deleted.",
+          before: "That link doesn't name a comment on ",
+        },
+      },
+      unreadable: { heading: "Couldn't load this comment", message: "Couldn't load this comment." },
+    },
+    message: {
+      missing: {
+        heading: "Message not found",
+        line: {
+          after: " — it may have been deleted.",
+          before: "That link doesn't name a message on ",
+        },
+      },
+      unreadable: { heading: "Couldn't load this message", message: "Couldn't load this message." },
+    },
+  },
+} as const);
 
 /**
  * How a document of the issue stands with its reviewers, in words (R5): the head's "How it gets
@@ -922,6 +1013,10 @@ export const CONTROL_LABELS = freeze({
   editing: "Editing:",
   /** Gives an issue that has a parent a different one (R11, row one). */
   edit_parent: "Edit parent issue",
+  /** Opens the editor of the issue's title: the button laid over the title's heading in the
+   *  header's second row (`IssueTitleRow.tsx`), which draws no words of its own and has the
+   *  title as its description. */
+  edit_title: "Edit title",
   /** What an external link says of an address the browser will not open. */
   external_link_unsafe: "unsafe external link",
   /** The box that narrows the outline to the rows whose words hold what is typed, which is
@@ -1029,7 +1124,7 @@ export const CONTROL_LABELS = freeze({
    *  message and an ask whatever its state, an answered or a resolved one included (R16,
    *  dispatch://INFRA-3677); it sets the line at the foot of the outline to answer it, as `r`
    *  does. */
-  reply: "Reply",
+  reply: REPLY_WORD,
   /** What the line at the foot of the outline says of the row it replies to, before that row's
    *  author and first line (the prototype's `.tgt`). */
   replying_to: "Replying to:",
@@ -1121,7 +1216,18 @@ export const CONTROL_LABELS = freeze({
   edit_placeholder: "Your comment, as it should read…  (Enter saves)",
   /** Sets the line back from the row it replies to, or the question it answers, to a new comment
    *  on the issue (the prototype's `.tgt .x`). */
-  write_on_issue: "Write on the issue instead",
+  write_on_issue: WRITE_ON_ISSUE_WORDS,
+  /** What the box at the foot of the outline says while it is empty and writes a comment or a
+   *  question on the issue itself: where the words go, as the reply's
+   *  and the answer's placeholders say where theirs go. */
+  issue_placeholder: "Write on the issue…  (Enter sends)",
+  /** Each placeholder of that box in the shorter words it says at 760 px and below, where its
+   *  line is about 240 px wide and a placeholder is one line, cut by the line's edge: each fits
+   *  that width whole. */
+  issue_placeholder_phone: "Write on the issue…",
+  reply_placeholder_phone: "Your reply, under the row…",
+  answer_placeholder_phone: "Answer in your own words…",
+  edit_placeholder_phone: "Your comment, rewritten…",
   /** What a decision the model marks unsure says of itself, in one word on its own row (R9):
    *  the decisions read's `unsure`, which the server sets for a decision holding a paragraph
    *  that opens `Unsure:`. */
@@ -1415,6 +1521,14 @@ function glyphNames(): Readonly<Record<string, string>> {
 export const GLYPH_NAMES: Readonly<Record<string, string>> = freeze(glyphNames());
 
 /**
+ * The value of `aria-current` on the row of the conversation's current point, the node the
+ * reader's next turn answers (`current-point.ts`). A screen reader says it in its own words for
+ * the current location, so the page adds no hidden text and every row keeps its accessible name.
+ * It is no word the page draws, so no list of the page's words below holds it.
+ */
+export const CURRENT_POINT = "location" as const;
+
+/**
  * The words of `text`, as the page's vocabulary counts them: lowercase, each run of letters and
  * digits a word, an apostrophe inside a word kept, and every other character a break. A reader
  * of the page splits drawn text the same way, so the two sides compare word for word.
@@ -1476,6 +1590,7 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
 export const ANSWER_SOURCES: readonly unknown[] = freeze([
   ANSWER_LINES,
   BLOCKED_BY_REFUSALS,
+  ADDRESS_FALLBACK_WORDS,
   HELP_LINES,
   KEY_REPORTS,
 ]);

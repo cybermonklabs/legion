@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
 import {
@@ -18,17 +19,18 @@ import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import {
+  type PublishedReferences,
+  type ReferenceNameReading,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../../refs/reference-names";
+import { firstWordedBlock } from "../../refs/tree-fragment";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
-import {
-  firstLineOf,
-  type NodeChip,
-  nodeWords,
-  type ParentLine,
-  type TreeNode,
-} from "../issue-tree";
+import { firstLineOf, type NodeChip, type ParentLine, type TreeNode } from "../issue-tree";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   CONTROL_LABELS,
@@ -38,6 +40,7 @@ import {
   PLAN_WORDS,
   STATE_LINES,
 } from "../page-words";
+import { publishedChips, publishedNames } from "../projection-fixture";
 import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
@@ -53,8 +56,10 @@ import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody"
  *
  * The nodes are built as `presets.ts`'s `filterView` leaves them for the Plan filter: each task
  * a row of its own, the statement it serves its parent line, and any further statement a chip
- * naming what it is also under; and each `needs` chip is named as the tree names it, from the
- * task it points at (`issue`), since the view draws the tree's names and names no edge itself.
+ * naming what it is also under; and each `needs` chip carries the reading the tree names its
+ * target by, from the task it points at (`issue`). The body is drawn under the names store, with
+ * what the page publishes for those tasks, their statements and their chips (`publishedPlan`):
+ * the view draws the names the store projects from it and names no edge itself.
  *
  * Two cases draw the Plan view's slot itself (`slots/view-plan.tsx`), over a query client that
  * holds the reads the issue's tree is built from, for what the slot hands the body as the reads
@@ -110,27 +115,39 @@ function need(blockId: string): NodeChip {
     answered: true,
     gone: false,
     label: BLOCK_ATTRIBUTE_LABELS.needs,
-    name: "",
     ref: taskRef(blockId),
   };
 }
 
-/** `chip` named as the tree names a `needs` chip: by the needed task's first line, by the page's
- *  word for its kind where that task holds no words ("plan task"), and as gone where the plan
- *  holds no such task, which is how the reference read answers for a block a write removed
- *  (`tree-drafts.ts`'s `chipOf`). */
-function namedBy(chip: NodeChip, needed: TreeNode | undefined): NodeChip {
-  if (needed === undefined) return { ...chip, gone: true, name: "" };
-  const line = firstLineOf(nodeWords(needed)).line;
-  return { ...chip, name: line === "" ? NODE_TYPE_NAMES[needed.type] : line };
+/** How the page names a block of the issue by its words (`tree-drafts.ts`'s `treeContext`): by
+ *  the reading of its whole text, with the page's word for its kind beside it, and by that word
+ *  alone where no block of the reading holds a word. */
+function blockReading(text: string, type: NodeType): ReferenceNameReading {
+  const tree = displayTree(text);
+  const word = NODE_TYPE_NAMES[type];
+  return tree === undefined || firstWordedBlock(tree) === undefined
+    ? { words: word }
+    : { fallback: word, tree };
 }
 
-/** One statement, as the line a task's row draws for the parent the filter draws as no row. */
-function serves(blockId: string, line: string): ParentLine {
+/** `chip` named as the tree names a `needs` chip: by the reading of the needed task's words, by
+ *  the page's word for its kind where that task holds no words ("plan task"), and as gone where
+ *  the plan holds no such task, which is how the reference read answers for a block a write
+ *  removed (`tree-drafts.ts`'s `chipOf`). */
+function namedBy(chip: NodeChip, needed: TreeNode | undefined): NodeChip {
+  if (needed === undefined) return { ...chip, gone: true };
+  return { ...chip, reading: blockReading(needed.text, needed.type) };
+}
+
+/** One statement, as a task's row holds the parent the filter draws as no row: its words, and
+ *  the server's reading of them, which a line under Steps is projected from. */
+function serves(blockId: string, words: string): ParentLine {
+  const tree = displayTree(words);
   return {
     id: blockNodeId(SPEC, blockId),
-    line,
     reference: `dispatch://${KEY}/spec#b-${blockId}`,
+    text: words,
+    ...(tree === undefined ? {} : { tree }),
     type: "requirement",
   };
 }
@@ -204,14 +221,50 @@ function Place(): ReactNode {
   return <output data-focused={focused?.id ?? ""} data-path={`${pathname}${hash}`} data-place="" />;
 }
 
+/** What the page publishes for `tasks`, as its batched read names a block of the issue
+ *  (`issue-tree.ts`'s `chipNaming`, `tree-drafts.ts`'s `treeContext`): each task, and each
+ *  statement a task serves as its parent, by the reading of its words (`blockReading`), which the
+ *  names store projects the line the chart names it by from (`KnownReferences.lines`); each chip
+ *  the tasks hold, a `needs` chip and one of a statement a task is also under, by the reading it
+ *  carries; and every one of their addresses as one the page asks for. */
+function publishedPlan(tasks: readonly TreeNode[]): PublishedReferences {
+  const named = (ref: string, text: string, type: NodeType): NodeChip => ({
+    answered: true,
+    gone: false,
+    reading: blockReading(text, type),
+    ref,
+  });
+  return publishedChips(
+    tasks.flatMap((one) => [
+      ...(one.reference === undefined ? [] : [named(one.reference, one.text, one.type)]),
+      ...(one.parentLine?.reference === undefined
+        ? []
+        : [named(one.parentLine.reference, one.parentLine.text, one.parentLine.type)]),
+      ...one.chips,
+      ...one.alsoUnder,
+    ])
+  );
+}
+
+/** Publishes `published` to the names store, as the page publishes its batched read beside the
+ *  view it draws (`slots/view-plan.tsx`, `useIssueTree.ts`): in the layout phase of the commit
+ *  that draws the body, after its rows have rendered. */
+function Publisher({ published }: { published: PublishedReferences }): ReactNode {
+  usePublishReferenceNames(published);
+  return null;
+}
+
 /** The plan document, as the issue's read names it. */
 const PLAN_ARTIFACT = "artifact-plan";
 
 /** Both reads answered, which every case draws under unless it gives another. */
 const ANSWERED: PlanReads = { state: "answered" };
 
-/** A body `renderBody` drew, with `redraw`, which draws it again over another `root` and `reads`. */
-type DrawnBody = RenderResult & { readonly redraw: (root: TreeNode, reads: PlanReads) => void };
+/** A body `renderBody` drew, with `redraw`, which draws it again over another `root` and `reads`,
+ *  and where a case gives it, another `published`. */
+type DrawnBody = RenderResult & {
+  readonly redraw: (root: TreeNode, reads: PlanReads, published?: PublishedReferences) => void;
+};
 
 /** Draws the body over `root`, the view's tasks, in the stage the page draws a view in
  *  (`slots/stage.tsx`), which keeps the focus in the view. `plan` is the whole plan's tasks, which the
@@ -221,16 +274,21 @@ type DrawnBody = RenderResult & { readonly redraw: (root: TreeNode, reads: PlanR
  *  are written, as the page's own blocks read holds them (`useIssueTree.ts`); where a case gives
  *  none the page holds no document, as on a tree drawn before that read answered. `reads` is
  *  how the plan's and the spec's blocks reads stand, as the slot hands them on
- *  (`slots/view-plan.tsx`): answered unless a case gives another. `client` is the query client,
- *  by default one whose reads never go stale. `container` is the element the body is drawn in,
- *  by default one the test adds to the page. `redraw` draws the same body again where it is
- *  mounted, over another `root` and `reads`, as the slot does when the issue's reads change. */
+ *  (`slots/view-plan.tsx`): answered unless a case gives another. `published` is what the page
+ *  publishes of its batched names read, which is published to the names store the body is drawn
+ *  under and handed to the body, as the slot hands it: what it publishes for the whole plan
+ *  (`publishedPlan`) where a case gives nothing else, one value for as long as the tree it is
+ *  drawn over is the same, as the page's is. `client` is the query client, by default one whose
+ *  reads never go stale. `container` is the element the body is drawn in, by default one the
+ *  test adds to the page. `redraw` draws the same body again where it is mounted, over another
+ *  `root` and `reads`, as the slot does when the issue's reads change. */
 function renderBody(
   root: TreeNode,
   {
     client: given,
     container,
     plan,
+    published,
     reads = ANSWERED,
     reveal,
     written,
@@ -238,6 +296,7 @@ function renderBody(
     client?: QueryClient;
     container?: HTMLElement;
     plan?: readonly TreeNode[];
+    published?: PublishedReferences;
     reads?: PlanReads;
     reveal?: readonly TreeNode[];
     written?: readonly string[];
@@ -256,39 +315,55 @@ function renderBody(
       written.map((id) => ({ id }))
     );
   }
-  const draw = (shown: TreeNode, held: PlanReads): ReactNode => (
-    <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <FocusedNodeProvider>
-              <IssueScope />
-              <Place />
-              <ViewStage>
-                <PlanFilterBody
-                  artifacts={artifacts}
-                  context={new Set()}
-                  emptyLine={EMPTY_STATE_LINES.plan}
-                  filtering
-                  focusReveal
-                  holdsEscape={false}
-                  isClosed={false}
-                  onEditing={() => {}}
-                  plan={plan ?? shown.children}
-                  reads={held}
-                  reveal={reveal}
-                  root={shown}
-                  rootRow={false}
-                />
-              </ViewStage>
-            </FocusedNodeProvider>
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
+  const publications = new WeakMap<TreeNode, PublishedReferences>();
+  const publishedFor = (shown: TreeNode): PublishedReferences => {
+    const held = publications.get(shown) ?? publishedPlan(plan ?? shown.children);
+    publications.set(shown, held);
+    return held;
+  };
+  const draw = (shown: TreeNode, held: PlanReads, names: PublishedReferences): ReactNode => (
+    <ReferenceNamesProvider>
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <KeymapProvider>
+            <MarginProvider>
+              <FocusedNodeProvider>
+                <IssueScope />
+                <Place />
+                <Publisher published={names} />
+                <ViewStage>
+                  <PlanFilterBody
+                    artifacts={artifacts}
+                    context={new Set()}
+                    emptyLine={EMPTY_STATE_LINES.plan}
+                    filtering
+                    focusReveal
+                    holdsEscape={false}
+                    isClosed={false}
+                    onEditing={() => {}}
+                    plan={plan ?? shown.children}
+                    published={names}
+                    reads={held}
+                    reveal={reveal}
+                    root={shown}
+                    rootRow={false}
+                  />
+                </ViewStage>
+              </FocusedNodeProvider>
+            </MarginProvider>
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    </ReferenceNamesProvider>
   );
-  const view = render(draw(root, reads), container === undefined ? {} : { container });
-  return { ...view, redraw: (shown, held) => view.rerender(draw(shown, held)) };
+  const view = render(
+    draw(root, reads, published ?? publishedFor(root)),
+    container === undefined ? {} : { container }
+  );
+  return {
+    ...view,
+    redraw: (shown, held, names) => view.rerender(draw(shown, held, names ?? publishedFor(shown))),
+  };
 }
 
 const D = (blockId: string): string => blockNodeId(PLAN, blockId);
@@ -407,14 +482,14 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
   } finally {
     filtered.unmount();
   }
-  // A need whose chip the tree's names read has not answered yet (`answered: false`, no name):
-  // the row names no need and draws no "needs" with nothing after it, and the curves still join
-  // the bars, whatever the names.
+  // A need whose chip the tree's names read has not answered yet (`answered: false`, no
+  // reading): the row names no need and draws no "needs" with nothing after it, and the curves
+  // still join the bars, whatever the names.
   const unanswered = renderBody({
     ...whole,
     children: whole.children.map((one) => ({
       ...one,
-      chips: one.chips.map((chip) => ({ ...chip, answered: false, name: "" })),
+      chips: one.chips.map((chip) => ({ ...chip, answered: false, reading: undefined })),
     })),
   });
   try {
@@ -457,13 +532,17 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
 // A task's serves chips can repeat: two chips of one task can carry the same words, or the same
 // reference, since the server refuses a pointer named twice only by its raw value. The row draws
 // each of them, and React is never handed two chips under one key, which would drop or reorder
-// one of them as the row is drawn again.
+// one of them as the row is drawn again. A chip's words are the line the names store projects
+// for its statement (`KnownReferences.lines`), so two chips carry the same words where two
+// statements read the same.
 test("a bar draws every serves chip, two with the same words or the same reference included", () => {
   setViewport(1440);
-  const chip = (name: string, ref: string): NodeChip => ({
+  // A chip of a statement the task is also under, carrying the reading the tree names the
+  // statement by (`NodeChip.reading`), which the page publishes for it (`publishedPlan`).
+  const chip = (words: string, ref: string): NodeChip => ({
     answered: true,
     gone: false,
-    name,
+    reading: blockReading(words, "requirement"),
     ref,
   });
   const statement = `dispatch://${KEY}/spec#b-r3`;
@@ -473,8 +552,8 @@ test("a bar draws every serves chip, two with the same words or the same referen
       {
         ...task("t1"),
         alsoUnder: [
-          chip("Same words", "not a reference"),
-          chip("Same words", "not a reference"),
+          chip("Same words", `dispatch://${KEY}/spec#b-r4`),
+          chip("Same words", `dispatch://${KEY}/spec#b-r5`),
           chip("The same statement", statement),
           chip("The same statement", statement),
         ],
@@ -488,8 +567,8 @@ test("a bar draws every serves chip, two with the same words or the same referen
         one.querySelector("a")?.getAttribute("href"),
       ])
     ).toEqual([
-      ["Same words", undefined],
-      ["Same words", undefined],
+      ["Same words", `/issues/${KEY}/spec#b-r4`],
+      ["Same words", `/issues/${KEY}/spec#b-r5`],
       ["The same statement", `/issues/${KEY}/spec#b-r3`],
       ["The same statement", `/issues/${KEY}/spec#b-r3`],
     ]);
@@ -667,6 +746,79 @@ test("the control switches to the ordered steps, which are the outline's own row
     expect(view.container.querySelectorAll("[data-plan-chart]")).toHaveLength(1);
     expect(document.activeElement).toBe(view.getByRole("button", { name: PLAN_WORDS.chart }));
   } finally {
+    view.unmount();
+  }
+});
+
+// A step's serves chips name each statement it serves as every chip of the page names a block
+// (`chipName`), the statement its parent is (`parentLine`) as the statements it is also under: by
+// the line the names store projects from the reading the page published for it, its first block
+// that holds words (`KnownReferences.lines`), with no mark the author typed and no markdown pass
+// over the words, so words that open on "1." keep it. A statement the store holds no line for yet
+// is named by nothing, and draws no chip, until it does.
+test("a step's serves chips name each statement by the line the store projects for it, and nothing before", async () => {
+  setViewport(1440);
+  const other = `dispatch://${KEY}/spec#b-r2`;
+  const root = issue([
+    {
+      ...task("t1", { parentLine: serves("r1", "**Stand** the page up first.\n\nThen the rest.") }),
+      alsoUnder: [
+        {
+          answered: true,
+          gone: false,
+          reading: blockReading("1\\. Number the steps.", "requirement"),
+          ref: other,
+        },
+      ],
+    },
+  ]);
+  const asked = [taskRef("t1"), `dispatch://${KEY}/spec#b-r1`, other];
+  const view = renderBody(root, { published: publishedNames(new Map(), { asked }) });
+  const chips = () =>
+    [...rowOf(view, "t1").querySelectorAll("[data-plan-serve]")].map((one) => [
+      one.textContent,
+      one.querySelector("a")?.getAttribute("href"),
+    ]);
+  try {
+    expect(chips(), "a serves chip was drawn before the store held its statement's line").toEqual(
+      []
+    );
+    view.redraw(root, ANSWERED);
+    await waitFor(() =>
+      expect(chips()).toEqual([
+        ["Stand the page up first.", `/issues/${KEY}/spec#b-r1`],
+        ["1. Number the steps.", `/issues/${KEY}/spec#b-r2`],
+      ])
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// The body hands its rows what the page publishes of its batched names read in the render that
+// draws them (`published`), the steps' rows through the outline's tree (`IssueTree`'s
+// `published`), and the page publishes to the names store only after the rows have rendered
+// (`Publisher`): so a reference the page asks for waits on the page's answer from a row's first
+// render, drawn as its author wrote it meanwhile, and is never read by the row; a row that read
+// the store alone read it itself first.
+test("a step's row waits on the page's read for a reference the page asks for", async () => {
+  setViewport(1440);
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const words = `See ${address} first.`;
+  const name = "the queue's drain";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const root = issue([{ ...task("t1"), text: words }]);
+  const view = renderBody(root, { published: publishedNames(new Map(), { asked: [address] }) });
+  const rowWords = () => rowOf(view, "t1").querySelector("[data-node-words]")?.textContent ?? "";
+  try {
+    await showSteps(view);
+    await waitFor(() => expect(rowWords()).toContain(words));
+    expect(getReferences, "a row read the reference the page asks for").not.toHaveBeenCalled();
+    view.redraw(root, ANSWERED, publishedNames(new Map([[address, name]])));
+    await waitFor(() => expect(rowWords()).toContain(`See ${name} first.`));
+    expect(getReferences, "a row read the reference the page named").not.toHaveBeenCalled();
+  } finally {
+    getReferences.mockRestore();
     view.unmount();
   }
 });
@@ -1671,11 +1823,12 @@ test("a task with no words is named by its kind, never by its id", async () => {
   }
 });
 
-// The view names no need from its own node. The tree hands a `needs` chip over with no name while
-// the names read is out, and where the server's name of the target ends inside its directive's
-// opening line, as for a task whose `needs` holds eleven pointers on one line. While a chip has
-// no name the row draws no need for it, and "· needs" only when it draws a need: an empty need
-// after "· needs" names no task at all.
+// The view names no need from its own node. The tree hands a `needs` chip over with no reading
+// while the names read is out, and where the server's name of the target ends inside its
+// directive's opening line, as for a task whose `needs` holds eleven pointers on one line. While
+// a chip has no reading the row draws no need for it, whatever the names store holds for the
+// task it points at, and "· needs" only when it draws a need: an empty need after "· needs"
+// names no task at all.
 test("a need the tree has not named draws no empty need and no '· needs' with nothing after it", () => {
   setViewport(1440);
   // The third task needs the first two, the fourth the first alone; the tree names the second
@@ -1690,7 +1843,9 @@ test("a need the tree has not named draws no empty need and no '· needs' with n
     ...root,
     children: root.children.map((one) => ({
       ...one,
-      chips: one.chips.map((chip) => (chip.ref.endsWith("#b-t1") ? { ...chip, name: "" } : chip)),
+      chips: one.chips.map((chip) =>
+        chip.ref.endsWith("#b-t1") ? { ...chip, reading: undefined } : chip
+      ),
     })),
   };
   const view = renderBody(unnamed);

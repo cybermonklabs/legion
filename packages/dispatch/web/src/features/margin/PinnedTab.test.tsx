@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,7 +6,14 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { DispatchEvent } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { PinnedTab } from "./PinnedTab";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const messageEvent: DispatchEvent = {
   actor: { id: "alice", kind: "user" },
@@ -132,7 +139,9 @@ test("a pinned card's agent byline links to its live conversation", () => {
               author: agent,
               body: "Pinned question",
               id: "ask:ask-1",
+              issue: "CORE-1",
               kind: "ask",
+              recordId: "ask-1",
             },
           ]}
           events={[{ ...messageEvent, actor: agent }]}

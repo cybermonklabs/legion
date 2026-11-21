@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -37,17 +37,23 @@ var prefixLimit = strconv.Itoa(prefixCandidateLimit)
 // takes its document's owner, and a document candidate of a project sets neither, its own Ref
 // being that document. An item with no owner of either kind - a direct message - sets neither.
 //
-// FirstLine is the head of what a person reads to tell two candidates apart, as
-// contracts.OneLineSummary cuts it: an ask's question, a comment's or a message's body, a
-// document's name, a block's text. A direct message's is left out for a caller that may not read
-// the conversation (Viewer).
+// FirstLine is the head of what a person reads to tell two candidates apart, as the function
+// FirstLine cuts it: an ask's question, a comment's or a message's body, a document's name, a
+// block's text. A direct message's is left out for a caller that may not read the conversation
+// (Viewer).
+//
+// FirstLineTree is the display tree of FirstLine, which this package never fills: the API fills
+// it for a caller that sends `Dispatch-Trees: 1`, beside the first line of every candidate but a
+// document's, whose first line is its file's name (api.writeAmbiguousID). It is absent wherever
+// FirstLine is.
 type Candidate struct {
-	Kind      string `json:"kind"`
-	ID        string `json:"id"`
-	Ref       string `json:"ref"`
-	IssueKey  string `json:"issue_key,omitempty"`
-	Document  string `json:"document,omitempty"`
-	FirstLine string `json:"first_line,omitempty"`
+	Kind          string            `json:"kind"`
+	ID            string            `json:"id"`
+	Ref           string            `json:"ref"`
+	IssueKey      string            `json:"issue_key,omitempty"`
+	Document      string            `json:"document,omitempty"`
+	FirstLine     string            `json:"first_line,omitempty"`
+	FirstLineTree model.DisplayTree `json:"first_line_tree,omitempty"`
 }
 
 // ErrPrefixAmbiguous is the refusal of an id prefix two items or more carry, with the matches for
@@ -73,9 +79,14 @@ func (e *ErrPrefixAmbiguous) Error() string {
 // root targets it, or it authored a reply in the thread. It is the caller's own claim, like
 // `actor`, not an authorization boundary: nothing in Dispatch keeps a direct conversation's text
 // from an authenticated caller, and this keeps one session from reading another's by mistake.
+//
+// ServerURL is the deployment the caller reads, whose dashboard URLs a candidate's first line is
+// cut around as references (FirstLine); an index-time resolver, which keeps no first line, has
+// none.
 type Viewer struct {
-	Human   bool
-	Session string
+	Human     bool
+	Session   string
+	ServerURL string
 }
 
 // Scope is where ResolvePrefix looks.
@@ -140,13 +151,13 @@ func ResolvePrefix(ctx context.Context, q Queryer, kind string, scope Scope, pre
 	var err error
 	switch kind {
 	case "ask", "comment":
-		found, err = itemPrefixCandidates(ctx, q, kind, scope, prefix)
+		found, err = itemPrefixCandidates(ctx, q, kind, scope, prefix, viewer.ServerURL)
 	case "message":
 		found, err = messagePrefixCandidates(ctx, q, scope, prefix, viewer)
 	case "artifact":
-		found, err = artifactPrefixCandidates(ctx, q, scope, prefix)
+		found, err = artifactPrefixCandidates(ctx, q, scope, prefix, viewer.ServerURL)
 	case "block":
-		found, err = blockPrefixCandidates(ctx, q, scope, prefix)
+		found, err = blockPrefixCandidates(ctx, q, scope, prefix, viewer.ServerURL)
 	}
 	if err != nil {
 		return Candidate{}, err
@@ -186,7 +197,7 @@ func choosePrefixCandidate(kind, prefix string, found []Candidate) (Candidate, e
 // itemPrefixCandidates is the asks or comments prefix names, oldest id first. An ask and a
 // comment are owned by an issue or by a document (asks_one_owner, comments_one_owner), so either
 // scope narrows the uuid range by the column that owns the row.
-func itemPrefixCandidates(ctx context.Context, q Queryer, kind string, scope Scope, prefix string) ([]Candidate, error) {
+func itemPrefixCandidates(ctx context.Context, q Queryer, kind string, scope Scope, prefix, serverURL string) ([]Candidate, error) {
 	lower, upper, ok := uuidRange(prefix)
 	if !ok || scope.Version != 0 || scope.IssueKey != "" && scope.Document != "" {
 		return nil, nil
@@ -220,7 +231,7 @@ func itemPrefixCandidates(ctx context.Context, q Queryer, kind string, scope Sco
 		if err := rows.Scan(&id, &issueKey, &project, &slug, &body); err != nil {
 			return nil, fmt.Errorf("scan the %ss %q names: %w", kind, prefix, err)
 		}
-		found = append(found, itemCandidate(kind, id, issueKey, project, slug, body))
+		found = append(found, itemCandidate(kind, id, issueKey, project, slug, body, serverURL))
 	}
 	return found, rows.Err()
 }
@@ -287,9 +298,9 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefix
 		if err := rows.Scan(&id, &issueKey, &project, &body, &inThread); err != nil {
 			return nil, fmt.Errorf("scan the messages %q names: %w", prefix, err)
 		}
-		candidate := itemCandidate("message", id, issueKey, project, "", body)
+		candidate := itemCandidate("message", id, issueKey, project, "", body, viewer.ServerURL)
 		if issueKey == nil && !viewer.Human && !inThread {
-			candidate.FirstLine = ""
+			candidate.FirstLine, candidate.FirstLineTree = "", nil
 		}
 		found = append(found, candidate)
 	}
@@ -298,12 +309,12 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefix
 
 // itemCandidate is one ask, comment or message row as a candidate, addressed as the graph
 // addresses it (itemRef) and owned by its issue, or by the project document it is written on.
-func itemCandidate(kind, id string, issueKey *string, project, slug, body string) Candidate {
+func itemCandidate(kind, id string, issueKey *string, project, slug, body, serverURL string) Candidate {
 	candidate := Candidate{
 		Kind:      kind,
 		ID:        id,
 		Ref:       itemRef(kind, issueKey, project, slug, id),
-		FirstLine: contracts.OneLineSummary(body),
+		FirstLine: FirstLine(body, serverURL),
 	}
 	switch {
 	case issueKey != nil:
@@ -316,7 +327,7 @@ func itemCandidate(kind, id string, issueKey *string, project, slug, body string
 
 // artifactPrefixCandidates is the documents and files prefix names, oldest id first. A document
 // is owned by an issue or by a project, never by a document, so a document scope names nothing.
-func artifactPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefix string) ([]Candidate, error) {
+func artifactPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefix, serverURL string) ([]Candidate, error) {
 	lower, upper, ok := uuidRange(prefix)
 	if !ok || scope.Version != 0 || scope.Document != "" {
 		return nil, nil
@@ -341,15 +352,16 @@ func artifactPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefi
 		if err := rows.Scan(append(document.targets(), &name)...); err != nil {
 			return nil, fmt.Errorf("scan the documents %q names: %w", prefix, err)
 		}
-		found = append(found, artifactCandidate(document, name))
+		found = append(found, artifactCandidate(document, name, serverURL))
 	}
 	return found, rows.Err()
 }
 
 // artifactCandidate is one document row as a candidate: addressed as the graph addresses it
-// (documentParent.parent) and owned by its issue, where an issue owns it.
-func artifactCandidate(document documentParent, name string) Candidate {
-	candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: contracts.OneLineSummary(name)}
+// (documentParent.parent) and owned by its issue, where an issue owns it. serverURL is the
+// deployment whose dashboard URLs in name are references (FirstLine).
+func artifactCandidate(document documentParent, name, serverURL string) Candidate {
+	candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: FirstLine(name, serverURL)}
 	if parent := document.parent(); parent != nil {
 		candidate.Ref = parent.Ref
 	}
@@ -366,7 +378,7 @@ func artifactCandidate(document documentParent, name string) Candidate {
 // it, the latest of those texts each, and none at all unless a block-aware build indexed that
 // version (BlockTextAt reads one block the same way). A block id is text, not a uuid, so the
 // prefix is matched on it, which is a read of the one document's blocks and not a scan.
-func blockPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefix string) ([]Candidate, error) {
+func blockPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefix, serverURL string) ([]Candidate, error) {
 	if scope.Document == "" || scope.IssueKey != "" || scope.Version < 0 || scope.Version > math.MaxInt32 {
 		return nil, nil
 	}
@@ -402,16 +414,17 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefix s
 		if err := rows.Scan(append([]any{&blockID, &body}, document.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan the blocks of %s %q names: %w", scope.Document, prefix, err)
 		}
-		found = append(found, blockCandidate(blockID, body, document))
+		found = append(found, blockCandidate(blockID, body, document, serverURL))
 	}
 	return found, rows.Err()
 }
 
 // blockCandidate is one block of document as a candidate, body being its text: addressed under
 // its document's reference and owned by its document's owner, the issue, or else the project
-// document itself.
-func blockCandidate(blockID, body string, document documentParent) Candidate {
-	candidate := Candidate{Kind: "block", ID: blockID, FirstLine: contracts.OneLineSummary(body)}
+// document itself. serverURL is the deployment whose dashboard URLs in body are references
+// (FirstLine).
+func blockCandidate(blockID, body string, document documentParent, serverURL string) Candidate {
+	candidate := Candidate{Kind: "block", ID: blockID, FirstLine: FirstLine(body, serverURL)}
 	if parent := document.parent(); parent != nil {
 		candidate.Ref = BlockRef(parent.Ref, blockID)
 		if document.issueKey != nil {

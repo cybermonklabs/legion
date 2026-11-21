@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -16,8 +16,15 @@ import { titleWrittenElsewhere } from "../issue-page/title-elsewhere-fixture";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
 import { projectIssuesQueryKey } from "../project/issue-filters";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { IssuePage } from "./IssuePage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const issue: IssueDetails = {
   route_status: null,

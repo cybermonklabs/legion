@@ -8,6 +8,11 @@ import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import {
+  type PublishedReferences,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../refs/reference-names";
 import { CutWords } from "./CutWords";
 import { measureNearWords } from "./clamp-fixtures";
 import type { NodeFact } from "./issue-tree";
@@ -15,7 +20,6 @@ import { NodeFacts } from "./NodeFacts";
 import { NoTooltips } from "./NoTooltips";
 import { CONTROL_LABELS } from "./page-words";
 import { RowText, useOutOfTabOrder } from "./RowText";
-import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { overflowing, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
@@ -205,8 +209,17 @@ test("NodeFacts keeps its copy controls out of the tab order, and in it with tab
 
 /** The names the page's one batched read brought, published as the page publishes them. */
 function Named({ children }: { children: ReactNode }): ReactNode {
-  const names = useMemo(() => new Map([["dispatch://CORE-2", "Draw the children"]]), []);
-  usePublishReferenceNames(names);
+  const published = useMemo<PublishedReferences>(
+    () => ({
+      ambiguous: new Set(),
+      asked: new Set(["dispatch://CORE-2"]),
+      gone: new Set(),
+      readings: new Map([["dispatch://CORE-2", { words: "Draw the children" }]]),
+      unnamed: new Set(),
+    }),
+    []
+  );
+  usePublishReferenceNames(published);
   return children;
 }
 
