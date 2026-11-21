@@ -30,13 +30,14 @@ import (
 //
 // The protocol is consumernames.Names: every call is refused until the operator's convert has
 // written the cutover marker "done" into the database's sentinel, and a missing table, sentinel or
-// record is a refusal, never a fall back to the fixed names. The daemon adds three rules of its
-// own. A logical name with a checkpoint (consumer_positions) and no record stops, since a lost
-// record is not a new project (missingRecord). A new project starts at the next message, DeliverNew
-// as today, with the stream's end saved as the start a recovery creates at (first). And the daemon
-// deletes nothing: its NATS grant has no consumer delete, so a name it retires after a create
-// nobody answered stays on the server until the operator's `envoy-infra consumer-names cleanup`
-// deletes it (durableServer.Delete).
+// record is a refusal, never a fall back to the fixed names. The daemon adds rules of its own. A
+// logical name with a checkpoint (consumer_positions) and no record stops, since a lost record is
+// not a new project (missingRecord). A durable whose name never existed starts at the next message,
+// DeliverNew as today, and once its create lands the record saves its own delivered sequence + 1 as
+// the start a recovery creates at (first). Nothing here reads the stream: a last floor carries the
+// stream identity the sentinel records (streamID). And the daemon deletes nothing: its NATS grant
+// has no consumer delete, so a name it retires after a create nobody answered stays on the server
+// until the operator's `envoy-infra consumer-names cleanup` deletes it (durableServer.Delete).
 
 // nameNotSettledLine is the message of the ERROR line a failed name step writes (durableNames.failed).
 const nameNotSettledLine = "intake: a durable consumer's physical name could not be settled"
@@ -78,8 +79,9 @@ var errStoreConverted = errors.New("intake_consumers says this database's durabl
 // (insufficient_privilege: a login that may not read the table is a deployment that never ran the
 // cutover on it), a sentinel before any cutover, and one a rollback wrote ("rolled_back", which
 // restored the fixed names). A read that says nothing either way, no connection or a timeout, is
-// made again, from a quarter second doubling to five, until it answers or ctx ends, and then the
-// caller ends on its error: the fixed names never run on a marker the daemon did not read.
+// made again, from a quarter second doubling to five, until it answers or ctx ends, and then its
+// error is returned: the boot ends on it, and the watch beside Run reads again at its next look
+// (Consumers.watchMarker). The fixed names never open on a marker the daemon did not read.
 func refuseConvertedStore(ctx context.Context, pool Pool) error {
 	store := consumernames.NewPGStore(pool)
 	wait := markerReadWait
@@ -100,7 +102,7 @@ func refuseConvertedStore(ctx context.Context, pool Pool) error {
 	}
 }
 
-// The waits between the boot's reads of the cutover marker (refuseConvertedStore).
+// The waits between reads of the cutover marker that did not answer (refuseConvertedStore).
 const (
 	markerReadWait     = 250 * time.Millisecond
 	markerReadWaitMost = 5 * time.Second
@@ -206,26 +208,28 @@ func (d *durableNames) on(ctx context.Context, physical string) (jetstream.JetSt
 
 // dial opens the connection named name with ConsumerSpec.Connect, and stops waiting for it when
 // ctx ends, since a dialer may ignore its context (natsauth's connect is bounded only by nats.go's
-// own timeout): a connection that arrives after that is closed, never kept.
+// own timeout): a connection that arrives after that is closed by the dial's own goroutine, never
+// kept. The handoff is unbuffered, so a connection is either taken by the caller or closed.
 func (d *durableNames) dial(ctx context.Context, name string) (*nats.Conn, error) {
 	type dialled struct {
 		conn *nats.Conn
 		err  error
 	}
-	done := make(chan dialled, 1)
+	done := make(chan dialled)
 	go func() {
 		conn, err := d.connect(ctx, name)
-		done <- dialled{conn, err}
+		select {
+		case done <- dialled{conn, err}:
+		case <-ctx.Done():
+			if conn != nil {
+				conn.Close()
+			}
+		}
 	}()
 	select {
 	case got := <-done:
 		return got.conn, got.err
 	case <-ctx.Done():
-		go func() {
-			if late := <-done; late.conn != nil {
-				late.conn.Close()
-			}
-		}()
 		return nil, ctx.Err()
 	}
 }

@@ -247,6 +247,44 @@ func TestFixedNamesStopAtTheFirstReconnectAfterTheCutover(t *testing.T) {
 	}
 }
 
+// The watch beside Run alone ends a fixed daemon at a reconnect past the cutover: the marker reads
+// done, the fixed consumers stay on the stream (so no consumer of Run's ends), no repositories
+// change comes, and Run still ends with the refusal naming consumer_names. The control is Run with
+// no watch, which goes on consuming.
+func TestAFixedRunEndsAtAReconnectPastTheCutoverWithNoOtherCause(t *testing.T) {
+	pool := migratedPool(t)
+	js, _ := testJetStream(t)
+	spec := consumerSpec(&lockedBuffer{})
+	spec.Names = consumernames.ModeFixed
+	consumers := openIntake(t, js, pool, spec)
+	ran := make(chan error, 1)
+	running, stopRun := context.WithCancel(context.Background())
+	defer stopRun()
+	go func() { ran <- consumers.Run(running, factMarks()) }()
+
+	cutover(t, pool, consumernames.CutoverDone)
+	select {
+	case err := <-ran:
+		t.Fatalf("Run ended before any reconnect: %v", err)
+	case <-time.After(2 * markerCheckEvery):
+	}
+	before := js.Conn().Stats().Reconnects
+	if err := js.Conn().ForceReconnect(); err != nil {
+		t.Fatalf("force the daemon's connection to reconnect: %v", err)
+	}
+	testwait.Eventually(t, "the daemon's connection reconnected", func() bool {
+		return js.Conn().Stats().Reconnects > before && js.Conn().IsConnected()
+	})
+	select {
+	case err := <-ran:
+		if !errors.Is(err, errStoreConverted) || !strings.Contains(err.Error(), "consumer_names") {
+			t.Fatalf("Run after a reconnect past the cutover = %v, want the refusal naming consumer_names", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run goes on after a reconnect past the cutover, want it ended by the marker's refusal")
+	}
+}
+
 // On fresh names the daemon refuses every consumer call until the operator's convert has written
 // the cutover marker "done" into its database: with the table missing, the sentinel missing, the
 // cutover not run and after a rollback, the boot stops with the ERROR line, before any consumer is
