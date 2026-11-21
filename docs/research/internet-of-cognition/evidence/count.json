@@ -1,0 +1,393 @@
+{
+ "window": {
+  "from": "2026-10-29T00:00:00Z",
+  "to": "2026-11-12T00:00:00Z",
+  "from_event_id": 103048,
+  "to_event_id": 402993,
+  "project": "INFRA"
+ },
+ "feed": {
+  "events_read": 822602,
+  "first_event_id_in_window": 103048,
+  "last_event_id_in_window": 402993
+ },
+ "event_types_in_window": {
+  "architecture.sync_failed": 1,
+  "architecture.synced": 149,
+  "artifact.approved": 2052,
+  "artifact.changes_requested": 215,
+  "artifact.created": 7191,
+  "artifact.human_edited": 72,
+  "artifact.version": 30660,
+  "ask.answered": 1198,
+  "ask.edited": 1128,
+  "ask.follower_added": 4,
+  "ask.follower_removed": 2,
+  "ask.handed_back": 249,
+  "ask.opened": 1930,
+  "ask.resolved": 744,
+  "block.repaired": 62,
+  "child.added": 59,
+  "child.removed": 23,
+  "child.status": 20336,
+  "comment.anchor_refreshed": 171,
+  "comment.created": 22130,
+  "comment.delivery": 48,
+  "comment.edited": 2,
+  "comment.reopened": 2,
+  "comment.resolved": 35,
+  "handoff.recorded": 16568,
+  "issue.claimed": 618,
+  "issue.closed": 1536,
+  "issue.created": 2441,
+  "issue.released": 514,
+  "issue.updated": 28541,
+  "message.answered": 736,
+  "message.created": 8056,
+  "message.delivery": 84,
+  "project.updated": 1,
+  "result.recorded": 40291,
+  "settings.architecture_source.updated": 3,
+  "settings.repo_project.updated": 13,
+  "user_state.updated": 899,
+  "user_thread_state.updated": 2171
+ },
+ "reviews_in_window": {
+  "artifact.approved plan.md session": 1323,
+  "artifact.approved spec.md user": 410,
+  "artifact.approved vendor-commitment-pages.md user": 1,
+  "artifact.approved verification.md user": 318,
+  "artifact.changes_requested design.md user": 1,
+  "artifact.changes_requested spec.md user": 124,
+  "artifact.changes_requested vendor-commitment-pages.md user": 2,
+  "artifact.changes_requested verification.md user": 88
+ },
+ "results_in_window": {
+  "architect session": 18,
+  "cli session": 1,
+  "implementer session": 22333,
+  "merger session": 1,
+  "reviewer session": 328,
+  "tester session": 17610
+ },
+ "denominator_records_read": 30186,
+ "instances": 11702,
+ "by_pattern": {
+  "attributed_quote": 63,
+  "commit_sha": 5463,
+  "dispatch_reference": 10013
+ },
+ "classes": {
+  "between_an_agent_and_a_person": 138,
+  "inside_one_tree": 6307,
+  "across_sessions": 3477
+ },
+ "unclassed": {
+  "no_cited_record": 1702,
+  "cited_record_not_held": 15,
+  "cited_author_unknown": 63,
+  "other": 0
+ },
+ "by_cited_author": {
+  "session_cites_another_session": 5987,
+  "session_cites_its_own": 3797,
+  "session_cites_a_person": 136,
+  "person_cites_a_session": 2,
+  "person_cites_a_person": 0,
+  "other": 0
+ },
+ "issues_resolved": 2469,
+ "handoff_sample": {
+  "issues": [
+   "INFRA-1192",
+   "INFRA-1077",
+   "INFRA-714",
+   "INFRA-771",
+   "INFRA-941",
+   "INFRA-2464",
+   "INFRA-1441",
+   "INFRA-558",
+   "INFRA-956",
+   "INFRA-1519"
+  ],
+  "chosen": "the ten issues of the project with the most handoff.recorded rows inside the window, by that count then by key",
+  "denominator_handoffs_read": 3143,
+  "instances": 3006,
+  "by_pattern": {
+   "dispatch_reference": 2402,
+   "commit_sha": 2288,
+   "attributed_quote": 0
+  }
+ },
+ "written_acts_r4": {
+  "types": {
+   "message.answered": {
+    "records_with_text": 736,
+    "denominator_records_read": 736,
+    "instances": 115,
+    "by_pattern": {
+     "dispatch_reference": 112,
+     "commit_sha": 1,
+     "attributed_quote": 3
+    },
+    "classes": {
+     "between_an_agent_and_a_person": 2,
+     "inside_one_tree": 4,
+     "across_sessions": 89
+    },
+    "unclassed": {
+     "no_cited_record": 3,
+     "cited_record_not_held": 0,
+     "cited_author_unknown": 17,
+     "other": 0
+    },
+    "by_cited_author": {
+     "session_cites_another_session": 47,
+     "session_cites_its_own": 46,
+     "session_cites_a_person": 2,
+     "person_cites_a_session": 0,
+     "person_cites_a_person": 0,
+     "other": 0
+    }
+   },
+   "ask.opened": {
+    "records_with_text": 1930,
+    "denominator_records_read": 1930,
+    "instances": 557,
+    "by_pattern": {
+     "dispatch_reference": 544,
+     "commit_sha": 29,
+     "attributed_quote": 4
+    },
+    "classes": {
+     "between_an_agent_and_a_person": 23,
+     "inside_one_tree": 267,
+     "across_sessions": 244
+    },
+    "unclassed": {
+     "no_cited_record": 17,
+     "cited_record_not_held": 1,
+     "cited_author_unknown": 5,
+     "other": 0
+    },
+    "by_cited_author": {
+     "session_cites_another_session": 314,
+     "session_cites_its_own": 197,
+     "session_cites_a_person": 23,
+     "person_cites_a_session": 0,
+     "person_cites_a_person": 0,
+     "other": 0
+    }
+   },
+   "ask.answered": {
+    "records_with_text": 664,
+    "denominator_records_read": 1198,
+    "instances": 0,
+    "by_pattern": {
+     "dispatch_reference": 0,
+     "commit_sha": 0,
+     "attributed_quote": 0
+    },
+    "classes": {
+     "between_an_agent_and_a_person": 0,
+     "inside_one_tree": 0,
+     "across_sessions": 0
+    },
+    "unclassed": {
+     "no_cited_record": 0,
+     "cited_record_not_held": 0,
+     "cited_author_unknown": 0,
+     "other": 0
+    },
+    "by_cited_author": {
+     "session_cites_another_session": 0,
+     "session_cites_its_own": 0,
+     "session_cites_a_person": 0,
+     "person_cites_a_session": 0,
+     "person_cites_a_person": 0,
+     "other": 0
+    }
+   },
+   "ask.resolved": {
+    "records_with_text": 744,
+    "denominator_records_read": 744,
+    "instances": 173,
+    "by_pattern": {
+     "dispatch_reference": 172,
+     "commit_sha": 5,
+     "attributed_quote": 1
+    },
+    "classes": {
+     "between_an_agent_and_a_person": 29,
+     "inside_one_tree": 51,
+     "across_sessions": 90
+    },
+    "unclassed": {
+     "no_cited_record": 1,
+     "cited_record_not_held": 0,
+     "cited_author_unknown": 2,
+     "other": 0
+    },
+    "by_cited_author": {
+     "session_cites_another_session": 93,
+     "session_cites_its_own": 48,
+     "session_cites_a_person": 29,
+     "person_cites_a_session": 0,
+     "person_cites_a_person": 0,
+     "other": 0
+    }
+   },
+   "ask.edited": {
+    "records_with_text": 1128,
+    "denominator_records_read": 1128,
+    "instances": 70,
+    "by_pattern": {
+     "dispatch_reference": 68,
+     "commit_sha": 3,
+     "attributed_quote": 0
+    },
+    "classes": {
+     "between_an_agent_and_a_person": 9,
+     "inside_one_tree": 10,
+     "across_sessions": 45
+    },
+    "unclassed": {
+     "no_cited_record": 4,
+     "cited_record_not_held": 0,
+     "cited_author_unknown": 2,
+     "other": 0
+    },
+    "by_cited_author": {
+     "session_cites_another_session": 44,
+     "session_cites_its_own": 11,
+     "session_cites_a_person": 9,
+     "person_cites_a_session": 0,
+     "person_cites_a_person": 0,
+     "other": 0
+    }
+   }
+  },
+  "all_bodied_records": {
+   "denominator_records_read": 35922,
+   "instances": 12617,
+   "by_pattern": {
+    "dispatch_reference": 10909,
+    "commit_sha": 5501,
+    "attributed_quote": 71
+   },
+   "classes": {
+    "between_an_agent_and_a_person": 201,
+    "inside_one_tree": 6639,
+    "across_sessions": 3945
+   },
+   "unclassed": {
+    "no_cited_record": 1727,
+    "cited_record_not_held": 16,
+    "cited_author_unknown": 89,
+    "other": 0
+   },
+   "by_cited_author": {
+    "session_cites_another_session": 6485,
+    "session_cites_its_own": 4099,
+    "session_cites_a_person": 199,
+    "person_cites_a_session": 2,
+    "person_cites_a_person": 0,
+    "other": 0
+   },
+   "types": [
+    "comment.created",
+    "message.created",
+    "message.answered",
+    "ask.opened",
+    "ask.answered",
+    "ask.resolved",
+    "ask.edited"
+   ]
+  }
+ },
+ "artifact_versions": {
+  "rows_in_window": 30660,
+  "document_versions": 29709,
+  "file_versions_not_read": {
+   "binary": 824,
+   "text": 127
+  },
+  "denominator_records_read": 29709,
+  "instances": 6920,
+  "by_pattern": {
+   "dispatch_reference": 6063,
+   "commit_sha": 818,
+   "attributed_quote": 425
+  },
+  "classes": {
+   "between_an_agent_and_a_person": 330,
+   "inside_one_tree": 2770,
+   "across_sessions": 2847
+  },
+  "unclassed": {
+   "no_cited_record": 885,
+   "cited_record_not_held": 0,
+   "cited_author_unknown": 88,
+   "other": 0
+  },
+  "by_cited_author": {
+   "session_cites_another_session": 3732,
+   "session_cites_its_own": 1885,
+   "session_cites_a_person": 330,
+   "person_cites_a_session": 0,
+   "person_cites_a_person": 0,
+   "other": 0
+  },
+  "new_items": {
+   "dispatch_reference": 14231,
+   "commit_sha": 1039,
+   "attributed_quote": 546
+  },
+  "reads": {
+   "read_beside_previous": 29709
+  }
+ },
+ "artifact_first_versions": {
+  "rows_in_window": 7191,
+  "document_first_versions": 5467,
+  "files_not_read": {
+   "file binary": 1238,
+   "file text": 240,
+   "image binary": 246
+  },
+  "denominator_records_read": 5467,
+  "instances": 4235,
+  "by_pattern": {
+   "dispatch_reference": 3540,
+   "commit_sha": 1623,
+   "attributed_quote": 193
+  },
+  "classes": {
+   "between_an_agent_and_a_person": 54,
+   "inside_one_tree": 3013,
+   "across_sessions": 385
+  },
+  "unclassed": {
+   "no_cited_record": 743,
+   "cited_record_not_held": 0,
+   "cited_author_unknown": 40,
+   "other": 0
+  },
+  "by_cited_author": {
+   "session_cites_another_session": 2582,
+   "session_cites_its_own": 816,
+   "session_cites_a_person": 54,
+   "person_cites_a_session": 0,
+   "person_cites_a_person": 0,
+   "other": 0
+  },
+  "new_items": {
+   "dispatch_reference": 22192,
+   "commit_sha": 4276,
+   "attributed_quote": 567
+  },
+  "reads": {
+   "read_first": 5467
+  }
+ }
+}

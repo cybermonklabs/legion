@@ -1,0 +1,250 @@
+{
+  "comment": [
+    "Every source this reading rests on, pinned. check.sh reads this file, clones what is",
+    "missing under the directory IOC_CLONES names (default $TMPDIR/ioc-clones) and resolves",
+    "every citation from the clone at the commit below, never from a live branch and never",
+    "through gh, which in a Legion pod is scoped to this project's owners and refuses",
+    "ioc-project. A published document is read from the committed copy this file names, and",
+    "the live address is read only to report whether it still carries the sentence quoted."
+  ],
+  "clone_root_env": "IOC_CLONES",
+  "default_clone_root": "$TMPDIR/ioc-clones",
+  "repositories": [
+    {
+      "name": "mas-lab",
+      "url": "https://github.com/ioc-project/mas-lab",
+      "commit": "477441ddb82d1b07c76c36f1426d8a5be0b6194b",
+      "licence": "Apache-2.0",
+      "read": "2026-11-12"
+    },
+    {
+      "name": "scope",
+      "url": "https://github.com/ioc-project/scope",
+      "commit": "6f3e758623da6b4a3ae462813001c545bb15a9e6",
+      "licence": "Apache-2.0",
+      "read": "2026-11-12"
+    },
+    {
+      "name": "cognition-protocols",
+      "url": "https://github.com/ioc-project/cognition-protocols",
+      "commit": "e3c7bf10f676de37ac08d2fe97e7de982f74629a",
+      "licence": "Apache-2.0",
+      "read": "2026-11-12"
+    }
+  ],
+  "private_repositories": [
+    {
+      "name": "agent-infra",
+      "url": "https://github.com/theorem-labs/agent-infra",
+      "commits": [
+        "99537cbcba7bb2894f8f3359a8f27c42d48cb26b",
+        "bc2d618f6e5c2392c9a15a6105b917d9ea97d978",
+        "6908f07257629dfb202b91c35c2fc2c70753b3a7",
+        "5a856e9cb46d8ad3a4e81fb5ae4cccdd79b30a3f",
+        "a0ccd32ea96b24555efe7fe54cc8ce8963835a07"
+      ],
+      "paths": ["spend"],
+      "read": "2026-11-19",
+      "comment": "The private repository rows of claims.jsonl read: most with git, and a few its pull requests through the REST API. env.sh clones it under IOC_CLONES/agent-infra blobless, with no checkout, at exactly these commits, and then fetches the blobs under paths at each of them, every file those rows read, through the machine's git credential helper, which in a Legion pod answers for the repository's path. a0ccd32ea96b24555efe7fe54cc8ce8963835a07 is the head of pull request 3176 as read on 2026-11-19, which GitHub serves by its id. --replay reads the repository with git ls-remote before it builds anything, and a machine whose git cannot read it cannot run --replay."
+    }
+  ],
+  "python_environment": {
+    "exclude_newer": "2026-11-12T07:55:56Z",
+    "requirements": "evidence/ioc-venv.in",
+    "compile_input": "evidence/ioc-venv/pyproject.toml",
+    "lock": "evidence/ioc-venv.lock",
+    "torch_links": "https://download.pytorch.org/whl/cpu/torch/",
+    "comment": "The instant every package index read is held to: uv resolved the lock, the mas-lab constraints and the build constraints as the indexes stood then. It is the time of commit 17a8ca1d, which recorded the outputs of the model rows. The lock is compiled from compile_input, which holds the five requirements of requirements and reads torch from the PyTorch CPU index alone and every other package from PyPI; env.sh installs IOC_VENV from the hashed lock with uv pip sync --require-hashes, finding torch's file, the CPU build 2.15.0+cpu, on the page torch_links names, which lists torch's files alone. The fifth requirement, pypdf 5.1.0, was added on 2026-11-18 for the rows that print the words of their study PDF."
+  },
+  "our_repository": {
+    "name": "legion",
+    "url": "https://github.com/cybermonklabs/legion",
+    "commit": "9542c6fbbecd184ccee73523ab3defa39d6cf23a",
+    "comment": "The commit this issue's branch starts from, and the commit every our-code claim was read at."
+  },
+  "records_under_check": [
+    {
+      "ref": "dispatch://INFRA-3134/artifact/ioc-design-2026-11-12-md",
+      "label": "d",
+      "comment": "The answer already on the issue. citations.py labels its citations d-1, d-2 and so on."
+    },
+    {
+      "ref": "dispatch://INFRA-3134/comment/326a044a-db33-4779-a98e-8271e29e710f",
+      "label": "r",
+      "comment": "The reconciliation of that answer with the authors' own public account."
+    }
+  ],
+  "published": [
+    {
+      "id": "interview",
+      "address": "https://www.cognitiverevolution.ai/agents-that-think-together-cisco-s-vijoy-pandey-on-semantic-alignment-scope-accord-concord/",
+      "fetched": "2026-11-12",
+      "copy": "interview/transcript.md",
+      "comment": "The authors' own account of 2026-11-11. The copy is committed because a page served from a content system changes its bytes between any two fetches.",
+      "sha256": "78be9603cde0fd372ced573900c8f9a022a88ddefc56b408f35c94f8bdc055c7"
+    },
+    {
+      "id": "interview-page",
+      "address": "https://www.cognitiverevolution.ai/agents-that-think-together-cisco-s-vijoy-pandey-on-semantic-alignment-scope-accord-concord/",
+      "fetched": "2026-11-12",
+      "copy": "published/interview.html",
+      "comment": "The page as it was fetched, 157355 bytes. interview/transcript.md is the readable transcript taken out of it, and two rows checksum this copy.",
+      "sha256": "f4143bb7a8547cbf1dddae55e1185aa53f8b643bada10ee9212af7301c3a92c4"
+    },
+    {
+      "id": "cisco-blog-cognitive-challenges",
+      "address": "https://outshift.cisco.com/blog/ai-ml/cognitive-challenges-in-multi-agent-systems",
+      "fetched": "2026-11-12",
+      "copy": "published/cognitive-challenges-in-multi-agent-systems.html",
+      "comment": "The authors' own study, which repeats two of the measurements the interview states and gives a different source for a third.",
+      "sha256": "e9c9b7181ad62da2e0fc0973f8743e465979fedc6887b3371837a44fc1162812"
+    },
+    {
+      "id": "cisco-blog-internet-of-cognition",
+      "address": "https://outshift.cisco.com/blog/ai-ml/the-internet-of-cognition-is-here",
+      "fetched": "2026-11-12",
+      "copy": "published/the-internet-of-cognition-is-here.html",
+      "comment": "The authors' own account of the stack, which repeats the trip-planning measurement the interview states.",
+      "sha256": "ed1947c3c67ade5d98b0def04c4b8ade41ddfb654ab0cc51e3a6690db20de1c7"
+    },
+    {
+      "id": "ioc-site-licence",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/main/LICENSE",
+      "fetched": "2026-11-12",
+      "copy": "published/ioc-site-LICENSE.txt",
+      "comment": "The licence of the documentation site, read in the triage.",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "id": "ioc-site-blog-impact-vs-challenges",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/assets/diagrams/blog-impact-vs-challenges.svg",
+      "fetched": "2026-11-18",
+      "copy": "published/blog-impact-vs-challenges.svg",
+      "comment": "The site's copy of the chart of Figure 3 of the blog post of 2026-09-15, at the commit the tree copy names, 10761 bytes, git blob d03b3846a7b00c8e2d201e1e5073ff71faf8a307. It gives the number of debates behind each point of the debate series, which the post's text does not.",
+      "sha256": "067f3ace9a370b656b7fb5d1cd71fbde761bd491e15434172526aff07ef59344"
+    },
+    {
+      "id": "ioc-site-docs-index",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/index.md",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-docs-index.md",
+      "comment": "The home page of the documentation site at the commit the tree copy names, 8350 bytes, git blob ed2752cd64d54ab64820a3f34176c3cff65acd51. i-measure-config-absence and i-measure-travel-absence search it.",
+      "sha256": "358de2ddc6df059f36974e5442e9194505d2e0a32b539fd25f22d2c7a292c90a"
+    },
+    {
+      "id": "ioc-site-docs-how-to-index",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/how-to/index.md",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-docs-how-to-index.md",
+      "comment": "The how-to page of the documentation site at the commit the tree copy names, 4228 bytes, git blob 1d1053ed983566a641b86b1eed10289d07e548b8. i-measure-config-absence and i-measure-travel-absence search it.",
+      "sha256": "9c8eb42569b7d1e4235521b1e20d810f29b332c07fc7ba5ac2e2ba9bf714a917"
+    },
+    {
+      "id": "ioc-site-docs-overview-architecture",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/overview/architecture.md",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-docs-overview-architecture.md",
+      "comment": "The architecture page of the documentation site at the commit the tree copy names, 8850 bytes, git blob 463c719b83d33bd0eb455c3515998952af7fb0cb. i-measure-config-absence and i-measure-travel-absence search it.",
+      "sha256": "8d67d394626368886e7dfecf228564941c3d14bc8ee0448f8af9058e2db1a08e"
+    },
+    {
+      "id": "ioc-site-docs-overview-motivation",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/overview/motivation.md",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-docs-overview-motivation.md",
+      "comment": "The motivation page of the documentation site at the commit the tree copy names, 3419 bytes, git blob b06e471fe480178ff12ef653102b7e1f085eba2a. i-measure-config-absence and i-measure-travel-absence search it.",
+      "sha256": "f5b00e3f6b71cbc5c3d376c155914819861d94ad08a0611a18253e384d41241c"
+    },
+    {
+      "id": "ioc-site-docs-publications-index",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/publications/index.md",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-docs-publications-index.md",
+      "comment": "The publications page of the documentation site at the commit the tree copy names, 699 bytes, git blob 7a94037617db5ac1017bf4330db869c3a3d79b6a. i-measure-config-absence and i-measure-travel-absence search it.",
+      "sha256": "05e4d6b020ec0af59699d84ae5d1de26651d307ddf37b92a773168fc14268111"
+    },
+    {
+      "id": "ioc-site-whitepaper",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/publications/whitepapers/cognition-protocols-concord-accord.pdf",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-cognition-protocols-concord-accord.pdf",
+      "comment": "The whitepaper of the documentation site, Agreeing on Purpose, Deciding Under Conflict: Two Cognitive Protocols for the Agent Cognitive Layer, 27 pages, created 2026-10-28, at the commit the tree copy names, 780170 bytes, git blob 3be75a1abca46bee94e4b67455d2bab875873c5f. It is another document than the study PDF of the cognition-protocols clone, docs/protocols/blogs/accord-concord-extended.pdf at e3c7bf10, whose sha256 is f6d491f3185cefc8f036f606fa4f552008ed2dc68a49405af9101298d39bdd30. i-measure-config-absence and i-measure-travel-absence search its text.",
+      "sha256": "e9620d834dffdb3f9871fb0ddac76965c85289a4b0008430fa84c0ceb2f587d3"
+    },
+    {
+      "id": "pypi-mas-lab",
+      "address": "https://pypi.org/pypi/mas-lab/json",
+      "fetched": "2026-11-12",
+      "copy": "published/pypi-mas-lab.json",
+      "comment": "The index's answer for mas-lab, which holds version 0.2.0 with a wheel and an sdist. The plan recorded that mas-lab is not on PyPI, measured before this fetch, and this copy is the correction.",
+      "sha256": "6d5179f8e6a16ce467347acfe5fe1a48ce530695fa914dba90c9a2e76470bd66"
+    },
+    {
+      "id": "otel-gen-ai-registry",
+      "address": "https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/",
+      "fetched": "2026-11-12",
+      "copy": "published/otel-gen-ai-registry.html",
+      "comment": "The OpenTelemetry generative-AI attribute registry, which the judgement names as the vocabulary to emit under. The copy is committed because a claim rests on which names it holds.",
+      "sha256": "e538ea9d87b78c4623f1a7d34466f0fa03c922e935cc3ea8769e8f1f4694f0da"
+    },
+    {
+      "id": "github-api-answers",
+      "address": "https://api.github.com/repos/ioc-project/",
+      "fetched": "2026-11-12",
+      "copy": "published/github-api/",
+      "comment": "The answers GitHub's REST API gave for the five repositories of the organisation: the repository, its tags, its releases, its commit-count header and, for the two repositories with no clone, its tree. An unauthenticated address is allowed sixty requests an hour, so the triage rows read these copies rather than the API."
+    }
+  ],
+  "landed": [
+    {
+      "title": "Each review round's shortfall recorded as two grader rows",
+      "state": "landed",
+      "merged_in": "cybermonklabs/legion#4636",
+      "commit": "fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69",
+      "command": "git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e '**Thermo:** simplify-settled-diff once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e '- thermonuclear-deep-review: <APPROVE | CHANGES>, <n> findings stand' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e '- thermonuclear-code-quality: <APPROVE | CHANGES>, <n> findings stand' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e '- The reviewer'\\''s pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code; the Thermo line records the range it read and a row per half, and earlier rounds'\\'' rows stay beside them.'",
+      "published": [
+        {
+          "path": "skills/legion-worker/references/pr-body.md",
+          "sentence": "**Thermo:** `simplify-settled-diff` once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:"
+        },
+        {
+          "path": "skills/legion-worker/references/pr-body.md",
+          "sentence": "- `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand"
+        },
+        {
+          "path": "skills/legion-worker/references/pr-body.md",
+          "sentence": "- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand"
+        },
+        {
+          "path": "skills/legion-worker/references/pr-body.md",
+          "sentence": "- The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code; the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them."
+        }
+      ],
+      "record": ["dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760"],
+      "comment": "A step of R12 that lands outside this pull request: cybermonklabs/legion#4636, from main, makes it, and merged to main as fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69, the squash of its head 8111f001f386abbcd67644dc55c9dab7e92973c1, so the step lives in skills/legion-worker/references/pr-body.md on main and not in this tree, which changes no skill file. The gate fetches that commit into a scratch git directory and names it IOC_MERGED_REPO; the proof reads the file there at that commit and holds each sentence published lists, so it exits 0 only when every sentence stands. A page's Proven by is a code span, which holds no backtick, so the proof takes the backticks out of the file with tr -d '\\140' and greps each sentence as written, its backticks taken out; published holds each sentence whole, backticks and all. The record is this tree's reading of how a step landed this way satisfies c-landed-steps (verification.md version 4). The guard test of the step ran in #4636's CI at 8111f001, the job pi-legion / pi-legion, with success (https://github.com/cybermonklabs/legion/actions/runs/44760760061/job/136376541199); it is a run of the step, not its proof. check.sh --landed holds the page to name this commit and this command."
+    },
+    {
+      "title": "The rule that combines the reviewer's two graders",
+      "state": "landed",
+      "merged_in": "cybermonklabs/legion#4636",
+      "commit": "fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69",
+      "command": "git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/merge-gate.md | tr -d '\\140' | grep -qF -e 'A CHANGES from either half is answered in the review: its findings are carried into a REQUEST_CHANGES, or each finding is recorded with why it does not stand.' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/merge-gate.md | tr -d '\\140' | grep -qF -e 'Your APPROVE needs both halves run at the reviewed head, or both Thermo rows reading not run because the diff the round reads touches no runtime code (the whole change, or the difference from the last reviewed commit to the head).' && git -C \"$IOC_MERGED_REPO\" show fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69:skills/legion-worker/references/pr-body.md | tr -d '\\140' | grep -qF -e 'Where the diff the round reads touches no runtime code, each row reads not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code), and the two rows of the last round the pair ran in stay beside them.'",
+      "published": [
+        {
+          "path": "skills/legion-worker/references/merge-gate.md",
+          "sentence": "A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand."
+        },
+        {
+          "path": "skills/legion-worker/references/merge-gate.md",
+          "sentence": "Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code (the whole change, or the difference from the last reviewed commit to the head)."
+        },
+        {
+          "path": "skills/legion-worker/references/pr-body.md",
+          "sentence": "Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them."
+        }
+      ],
+      "record": ["dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760"],
+      "comment": "A step of R12 that lands outside this pull request: cybermonklabs/legion#4636, from main, makes it, and merged to main as fcc746a38394a56aa9f3b7a49d91a2d0c8e0ad69, the squash of its head 8111f001f386abbcd67644dc55c9dab7e92973c1, so the step lives in skills/legion-worker/references/merge-gate.md, with one sentence in skills/legion-worker/references/pr-body.md, on main and not in this tree, which changes no skill file. The gate fetches that commit into a scratch git directory and names it IOC_MERGED_REPO; the proof reads the file there at that commit and holds each sentence published lists, so it exits 0 only when every sentence stands. A page's Proven by is a code span, which holds no backtick, so the proof takes the backticks out of the file with tr -d '\\140' and greps each sentence as written, its backticks taken out; published holds each sentence whole, backticks and all. The record is this tree's reading of how a step landed this way satisfies c-landed-steps (verification.md version 4). The guard test of the step ran in #4636's CI at 8111f001, the job pi-legion / pi-legion, with success (https://github.com/cybermonklabs/legion/actions/runs/44760760061/job/136376541199); it is a run of the step, not its proof. check.sh --landed holds the page to name this commit and this command."
+    }
+  ]
+}
