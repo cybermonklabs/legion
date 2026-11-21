@@ -167,11 +167,12 @@ func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (plug
 	}, &logged
 }
 
-// The two attempt budgets of the rig. answerBudget is one no attempt of the fake that answers
-// comes near, however loaded the machine: a pass that ran past a budget of a second or two was
-// cut off and asked again, and the probe ran once more than its case said. hangBudget is the
-// budget of a case whose plan hangs (hangsUnder), short so that each attempt it cuts off costs
-// the suite little; such a case holds no step that must answer in time.
+// The two attempt budgets of the gate rigs, the boot gate's (gateUnder) and the image probe's
+// (imageGateUnder). answerBudget is one no attempt of a fake that answers comes near, however
+// loaded the machine: a pass that ran past a budget of a second or two was cut off and asked
+// again, and the probe ran once more than its case said. hangBudget is the budget of a case whose
+// plan hangs (hangsUnder), short so that each attempt it cuts off costs the suite little; such a
+// case holds no step that must answer in time.
 const (
 	answerBudget = time.Minute
 	hangBudget   = 500 * time.Millisecond
