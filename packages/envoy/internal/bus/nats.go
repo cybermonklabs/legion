@@ -122,9 +122,12 @@ func WithReplicas(n int) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.replicas = n })
 }
 
-// withStreamSubjectsRefresh replaces streamSubjectsRefresh for one client, so a test can see the
-// client read the deployed subjects again without waiting a minute.
-func withStreamSubjectsRefresh(every time.Duration) ConnectOption {
+// WithStreamSubjectsRefresh replaces streamSubjectsRefresh for one client, so a test can see the
+// client read the deployed subjects again without waiting a minute, or hold that read off for the
+// whole of a window in which it counts what the client's connection sends. It is exported for the
+// tests of the programs that connect through this package, as WithKeepInterval is: no deployment
+// sets it, and no caller outside a test may.
+func WithStreamSubjectsRefresh(every time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.streamSubjectsRefresh = every })
 }
 

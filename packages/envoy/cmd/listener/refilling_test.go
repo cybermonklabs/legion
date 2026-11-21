@@ -120,19 +120,14 @@ func (w *heldScanWatcher) Updates() <-chan jetstream.KeyValueEntry { return w.up
 // wrap makes of the old one's, feeding the same cache, built with options, and started: its first
 // read is the copy's first. It runs before anything else reads owner. The stores take no clock or
 // watch option for their watchers, so this is how a test injects one, as stallSessionReads swaps
-// the session handle. A *session.KnownSessions installs its watcher under its openMu, which every
-// read of the field takes, so the swap holds that lock too; the other owners install theirs once,
-// at their open, and read the field with no lock.
+// the session handle. The field is read and written under the lock owner's other readers of it
+// hold (watcherGuard), and the old watcher is ended outside that lock, as the session package's
+// own swap does (useKV).
 func replaceWatcher(t *testing.T, owner any, field, name string, wrap func(jetstream.KeyValue) jetstream.KeyValue, options ...kvwatch.Option) {
 	t.Helper()
-	value := reflect.ValueOf(owner).Elem()
-	slotField := value.FieldByName(field)
+	slotField := reflect.ValueOf(owner).Elem().FieldByName(field)
 	slot := reflect.NewAt(slotField.Type(), unsafe.Pointer(slotField.UnsafeAddr())).Elem()
-	var guard sync.Locker = noLock{}
-	if _, known := owner.(*session.KnownSessions); known {
-		openMu := value.FieldByName("openMu")
-		guard = reflect.NewAt(openMu.Type(), unsafe.Pointer(openMu.UnsafeAddr())).Interface().(*sync.RWMutex)
-	}
+	guard := watcherGuard(t, owner)
 	guard.Lock()
 	old := slot.Interface().(*kvwatch.Watcher)
 	guard.Unlock()
@@ -148,11 +143,37 @@ func replaceWatcher(t *testing.T, owner any, field, name string, wrap func(jetst
 	replacement.Start()
 }
 
-// noLock is the sync.Locker of a field no lock guards (replaceWatcher).
+// watcherGuard is the lock owner's own readers of its watcher fields hold on other goroutines: a
+// *session.KnownSessions's openMu, which every read of its watcher takes, and a
+// *session.SessionRegistry's mu, under which its consumes' deliveries, its expiry timers and its
+// reaper read the watcher (following). A *store.Registry reads its two fields with no lock, since
+// production writes them once, at its open, so the swap there takes none.
+func watcherGuard(t *testing.T, owner any) sync.Locker {
+	t.Helper()
+	var lock string
+	switch owner.(type) {
+	case *session.KnownSessions:
+		lock = "openMu"
+	case *session.SessionRegistry:
+		lock = "mu"
+	case *store.Registry:
+		return noLock{}
+	default:
+		t.Fatalf("replaceWatcher does not know which lock guards the watcher of a %T", owner)
+	}
+	field := reflect.ValueOf(owner).Elem().FieldByName(lock)
+	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Interface().(*sync.RWMutex)
+}
+
+// noLock is the sync.Locker of a field no lock guards (watcherGuard).
 type noLock struct{}
 
 func (noLock) Lock()   {}
 func (noLock) Unlock() {}
+
+// unwrappedKV is the wrap of a replaced watcher that watches through the old one's own jetstream
+// handle (replaceWatcher).
+func unwrappedKV(kv jetstream.KeyValue) jetstream.KeyValue { return kv }
 
 // listRig is an in-process listener over its own NATS server: the interest and session stores, the
 // /v1 routes behind the start gate main opens, the list gauges on /metrics, and the connection
@@ -209,7 +230,7 @@ func newListRig(t *testing.T, options listRigOptions) *listRig {
 		if err := owner.WaitForCacheReady(ctx); err != nil {
 			t.Fatalf("warm the %s cache: %v", name, err)
 		}
-		wrap := func(kv jetstream.KeyValue) jetstream.KeyValue { return kv }
+		wrap := unwrappedKV
 		if release, ok := options.release[name]; ok {
 			wrap = func(kv jetstream.KeyValue) jetstream.KeyValue { return heldScanKV{KeyValue: kv, release: release} }
 		}

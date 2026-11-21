@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -184,9 +185,8 @@ type countedCopy interface {
 // before any route has read either store.
 func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[string]countedCopy {
 	t.Helper()
-	unwrapped := func(kv jetstream.KeyValue) jetstream.KeyValue { return kv }
-	replaceWatcher(t, rig.harness.registry, "watcher", "interest registry", unwrapped, kvwatch.WithNow(clock.Now))
-	replaceWatcher(t, rig.harness.sessions, "watcher", "session registry", unwrapped, kvwatch.WithNow(clock.Now))
+	replaceWatcher(t, rig.harness.registry, "watcher", "interest registry", unwrappedKV, kvwatch.WithNow(clock.Now))
+	replaceWatcher(t, rig.harness.sessions, "watcher", "session registry", unwrappedKV, kvwatch.WithNow(clock.Now))
 	copies := map[string]countedCopy{"interest": rig.harness.registry, "session": rig.harness.sessions}
 	awaitCopiesServable(t, copies, "the interest and session copies to complete their first reads")
 	return copies
@@ -386,14 +386,11 @@ func TestAPublishCountsOnlyFromCopiesThatCanBeServed(t *testing.T) {
 }
 
 // The counts cost no JetStream API request: 100 publishes over warm caches send none, and the
-// probe proves it is watching by seeing the one call the test makes itself. The probe counts every
-// request the listener's connection sends, and the cache watchers on that connection read their
-// buckets' streams on their own, each every 2 s, which 100 publishes outlast on a loaded machine.
-// So the row holds those reads off (holdWatcherReads), and what it counts is the publish path's
-// alone, however long the publishes take.
+// probe proves it is watching by seeing the one call the test makes itself. The rig's connection
+// sends nothing else in the window (newQuietKnownSessionRig), so what the probe counts is the
+// publish path's, however long the publishes take.
 func TestAHundredPublishesSendNoJetStreamAPIRequest(t *testing.T) {
-	rig := newRecipientRig(t)
-	rig.holdWatcherReads(t)
+	rig := &recipientRig{knownSessionRig: newQuietKnownSessionRig(t)}
 	const topic = "notifications.team.recipient-count-api-free"
 	rig.register(t, recipientSender, []string{topic})
 	// One session the known-session records alone name, stopped so that it is counted and not
@@ -412,11 +409,7 @@ func TestAHundredPublishesSendNoJetStreamAPIRequest(t *testing.T) {
 		assertCounts(t, rig.publish(t, topic, "api-free-"+strconv.Itoa(i)), 2, 1)
 	}
 
-	control := "$JS.API.STREAM.INFO." + bus.Stream
-	if _, err := rig.harness.client.JS().StreamInfo(bus.Stream); err != nil {
-		t.Fatalf("the probe's control call: %v", err)
-	}
-	if calls := probe.awaitCall(t, control); len(calls) > 0 {
+	if calls := probe.callsBeforeControl(t, rig.harness.client.JS()); len(calls) > 0 {
 		t.Fatalf("100 publishes sent %d JetStream API requests: %v", len(calls), calls)
 	}
 }
@@ -424,49 +417,22 @@ func TestAHundredPublishesSendNoJetStreamAPIRequest(t *testing.T) {
 // jetStreamAPIProbe watches the JetStream API requests one connection sends. A second connection
 // to the same server subscribes to the API subjects given, and each request is attributed to its
 // sender by the response inbox it carries, which is one connection's alone
-// (jetStreamInboxPrefix): a NATS message says nothing else about who sent it. A route that must
-// answer from memory asserts the probe took none of its calls while it ran. The listener's
-// connection also carries what runs beside the routes, and the probe takes that as well: the cache
-// watchers' reads, which a row holds off for its window (holdWatcherReads), and the bus client's own
-// reads of the event stream (its keeper's and its read of the deployed subjects, 30 s and 60 s
-// apart), whose subject is the control's, so one in the window ends the count there as the control
-// does.
+// (jetStreamInboxPrefix): a NATS message says nothing else about who sent it, so the probe also
+// takes what runs beside the routes on that connection, which a row's rig holds off
+// (newQuietKnownSessionRig). A route that must answer from memory asserts the probe took none of
+// its calls while it ran (callsBeforeControl).
 type jetStreamAPIProbe struct {
 	mu       sync.Mutex
 	observed []string
 	prefix   string
 }
 
-// watcherReadsHeld is the stream probe interval of the watchers holdWatcherReads puts in: longer
-// than any run of a row, which every lane that runs the package bounds by its -timeout (30m in
-// envoy-go-race).
-const watcherReadsHeld = time.Hour
-
-// holdWatcherReads replaces each cache watcher on the listener's connection - the interest
-// registry's, its role claims', the session registry's and the known-session store's - with one
-// that reads the same bucket into the same cache (replaceWatcher) and, once that first read has
-// completed, sends no request of its own within watcherReadsHeld: its stream probe is armed that
-// long after each read (kvwatch.WithStreamProbeInterval), which also spaces by as much the reads
-// the gate on delivered records may send (the completed read's own check is the last), and the
-// role claim watcher's scheduled read of its bucket, a minute after each read in production, is
-// left out. In production each watcher reads its bucket's stream every 2 s, so a row's window
-// longer than that, as a loaded machine makes 100 requests take, would count those reads against
-// the route; production's interval itself is unchanged. It runs right after the rig is built,
-// before any route has read a store, and waits until every copy can be served, as the listener's
-// start does.
-func (rig *knownSessionRig) holdWatcherReads(t *testing.T) {
-	t.Helper()
-	unwrapped := func(kv jetstream.KeyValue) jetstream.KeyValue { return kv }
-	held := kvwatch.WithStreamProbeInterval(watcherReadsHeld)
-	replaceWatcher(t, rig.harness.registry, "watcher", "interest registry", unwrapped, held)
-	replaceWatcher(t, rig.harness.registry, "roleWatcher", "role claims", unwrapped, held)
-	replaceWatcher(t, rig.harness.sessions, "watcher", "session registry", unwrapped, held)
-	replaceWatcher(t, rig.known, "watcher", "known session store", unwrapped, held)
-	waitFor(t, 10*time.Second, "every cache on the listener's connection to complete its first read", func() bool {
-		return rig.harness.registry.Servable() == nil && rig.harness.registry.RoleViewErr() == nil &&
-			rig.harness.sessions.Servable() == nil && rig.known.Opened()
-	})
-}
+// jetStreamAPIControlStream is the stream the probe's control call asks about
+// (callsBeforeControl). No server holds it and nothing else names it, so the call is answered
+// "stream not found" and only that call ends a count. A control on a stream the listener reads
+// would end the count at the first read of it the connection made on its own, and hide every
+// request the route sent after that.
+const jetStreamAPIControlStream = "JETSTREAM_API_PROBE_CONTROL"
 
 // watchJetStreamAPI starts a probe of the JetStream API calls conn sends on subjects, over a
 // connection of its own to uri, and returns it ready: its subscriptions are flushed, so every call
@@ -496,29 +462,28 @@ func watchJetStreamAPI(t *testing.T, uri string, conn *natsgo.Conn, subjects ...
 	return probe
 }
 
-// awaitCall waits for a call on subject, the control call its caller makes to show the probe is
-// watching, and returns every call the probe took before it. The server hands one connection's
-// messages on in the order it took them, so once the control call has arrived every call that
-// connection sent before it has arrived too.
-func (p *jetStreamAPIProbe) awaitCall(t *testing.T, subject string) []string {
+// callsBeforeControl sends the probe's control call through js, the watched connection's
+// JetStream context, waits for the probe to see it, and returns every call the probe took before
+// it. The server hands one connection's messages on in the order it took them, so once the control
+// call has arrived every call that connection sent before it has arrived too.
+func (p *jetStreamAPIProbe) callsBeforeControl(t *testing.T, js natsgo.JetStreamContext) []string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		p.mu.Lock()
-		index := slices.Index(p.observed, subject)
-		var before []string
-		if index >= 0 {
-			before = slices.Clone(p.observed[:index])
-		}
-		p.mu.Unlock()
-		if index >= 0 {
-			return before
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the probe did not see the control call on %s within 5s, so it is watching nothing", subject)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if _, err := js.StreamInfo(jetStreamAPIControlStream); !errors.Is(err, natsgo.ErrStreamNotFound) {
+		t.Fatalf("the probe's control call answered %v, want %v", err, natsgo.ErrStreamNotFound)
 	}
+	subject := "$JS.API.STREAM.INFO." + jetStreamAPIControlStream
+	var before []string
+	testwait.Eventually(t, "the probe to see the control call on "+subject+", without which it watches nothing", func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		index := slices.Index(p.observed, subject)
+		if index < 0 {
+			return false
+		}
+		before = slices.Clone(p.observed[:index])
+		return true
+	})
+	return before
 }
 
 // jetStreamInboxPrefix is the prefix every response inbox conn puts on a request carries, which no
