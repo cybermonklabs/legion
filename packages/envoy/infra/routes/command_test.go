@@ -43,6 +43,8 @@ func TestRecordThenCheck(t *testing.T) {
 		"--context", "example-context", "--kubectl", "/usr/local/bin/kubectl")
 	require.Equal(t, 0, code, "stderr %q", stderr)
 	require.Contains(t, stdout, `recorded the 3 pods of envoy/envoy-nats through context "example-context" of the cluster at "https://example-context.example.invalid" at `)
+	require.Contains(t, stdout, "the record is valid only for a secretKey that has never been under authorization: after a rollback below "+
+		"authorization, or any exit 1 of routes check, rotate to a new secretKey")
 	require.Equal(t, routes.Target{Namespace: "envoy", StatefulSet: "envoy-nats", Kubectl: "/usr/local/bin/kubectl", Context: "example-context", RoutePort: 6222}, opened)
 	require.True(t, h.closed, "record closed the hub it opened")
 	body, err := os.ReadFile(out)

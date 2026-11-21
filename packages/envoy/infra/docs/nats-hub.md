@@ -1210,6 +1210,17 @@ an address from a log line, so no peer can write a line of its own on the operat
 anything that can reach a pod's port 6222 can keep the check from reaching 0, though not make it
 pass.
 
+Exit 0 says that no process but the hub's servers held a route, or was handed the password, since
+the record was taken, from the logs that reach back to it; it says nothing of any time before the
+record. So a record is valid only for a `secretKey` that has never been under `authorization`: a
+record of a hub whose current `secretKey` was under `authorization` before, after a rollback below
+`authorization` and a restart of every pod, vouches for logs that lost the connections made under
+that first `authorization`, and the check against it can exit 0 of a hub whose password a peer
+read. After a rollback below `authorization`, or any exit 1, rotate to a new `secretKey` first
+(below), and record at its `env`. `routes record` prints this condition with each record; it
+cannot check it, since a pod that restarted keeps no log of the reload before, and nothing else in
+the cluster records which keys were under `authorization`.
+
 Every log rule reads only lines in the form nats-server's logger writes (`logger/log.go`: the
 process id, the date and time to the microsecond, the level), at one level, and matches their
 message: whole for the start line and `Reloaded: cluster`; whole, or by the prefix

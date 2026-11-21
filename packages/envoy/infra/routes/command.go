@@ -15,10 +15,13 @@ import (
 const usageText = `usage: envoy-infra routes record --namespace <ns> --statefulset <name> --out <file> [--context <kubeconfig context>] [--kubectl <path>] [--route-port <port>]
        envoy-infra routes check --namespace <ns> --statefulset <name> --record <file> [--context <kubeconfig context>] [--kubectl <path>] [--monitor-port <port>] [--route-port <port>]
   record, once routeAuthorization's env stage has rolled every pod, before routes: saves each pod's
-    uid and its nats container's restart count and start; exit 0 when recorded, 2 otherwise, and
-    while any pod's route port already requires authorization.
-  check, once authorization is on every pod: exit 0 when authorization is in force with a password
-    and every route since it loaded joined two of the hub's servers; 1 when another process held one
+    uid and its nats container's restart count and start, and the context and cluster it read
+    through; exit 0 when recorded, 2 otherwise, and while any pod's route port already requires
+    authorization. A record is valid only for a secretKey that has never been under authorization:
+    after a rollback below authorization, or any exit 1 of check, rotate to a new secretKey first.
+  check, once authorization is on every pod, through the record's context and cluster: exit 0 when
+    authorization is in force with a password and every route since it loaded joined two of the
+    hub's servers, which says nothing of any time before the record; 1 when another process held one
     or may have been handed the password, or a log line may hold it (treat the route password as
     read, cut its reach, rotate the password, then record and check again); 2 when it could not read
     all it needs, when authorization is not in force, left no line of the reload that loaded it, or
@@ -140,6 +143,8 @@ func record(ctx context.Context, target Target, out string, stdout, stderr io.Wr
 	}
 	fmt.Fprintf(stdout, "recorded the %d pods of %s/%s through context %q of the cluster at %q at %s in %s\n", len(rec.Pods), rec.Namespace,
 		rec.StatefulSet, rec.Cluster.Context, rec.Cluster.Server, rec.RecordedAt.Format(time.RFC3339), out)
+	fmt.Fprintln(stdout, "the record is valid only for a secretKey that has never been under authorization: after a rollback below authorization, "+
+		"or any exit 1 of routes check, rotate to a new secretKey and record at its env stage (docs/nats-hub.md, Route authorization)")
 	return 0
 }
 
