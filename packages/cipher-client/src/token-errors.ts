@@ -39,8 +39,9 @@ const MEMBERSHIP_HELD = "membership_held";
  *  honours: one revoked, or one past its expiry. */
 const TOKEN_NOT_VALID = "Token is not valid or has expired.";
 
-/** The broker's `invalid_grant` to a trade of a machine login's access token once that login
- *  has ended (`oauth/exchange.go`). */
+/** The hint that ends the broker's `invalid_grant` to a trade of a machine login's access token
+ *  once that login has ended (`oauth/exchange.go`); the broker's library writes its own sentence
+ *  before it (`oauth/testdata/refusal-descriptions.json`). */
 const MACHINE_LOGIN_ENDED = "The machine login the subject token belongs to has ended.";
 
 /**
@@ -66,10 +67,11 @@ export class BrokerRefusedError extends Error {
    *  Read from the description as the broker sent it, which is then kept nowhere. */
   readonly podSessionUnregistered: boolean;
   /** Whether this is the broker's refusal of a subject token it no longer honours, and of nothing
-   *  else: the library's `400 invalid_request` ending "Token is not valid or has expired." (a
-   *  revoked or lapsed token), or `400 invalid_grant` "The machine login the subject token belongs
-   *  to has ended.". A refusal of the trade's session or projects uses the same codes and is not
-   *  one. Read from the description as the broker sent it, which is then kept nowhere. */
+   *  else: `400 invalid_request` ending "Token is not valid or has expired." (a revoked or lapsed
+   *  token), or `400 invalid_grant` ending "The machine login the subject token belongs to has
+   *  ended.", each after the library's own sentence. A refusal of the trade's session or projects
+   *  uses the same codes and is not one. Read from the description as the broker sent it, which is
+   *  then kept nowhere. */
   readonly subjectNotHonoured: boolean;
 
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
@@ -103,7 +105,7 @@ export class BrokerRefusedError extends Error {
     this.subjectNotHonoured =
       status === 400 &&
       ((code === "invalid_request" && description.endsWith(TOKEN_NOT_VALID)) ||
-        (code === INVALID_GRANT && description === MACHINE_LOGIN_ENDED));
+        (code === INVALID_GRANT && description.endsWith(MACHINE_LOGIN_ENDED)));
   }
 
   /**

@@ -10,6 +10,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { createPrivateKey, createPublicKey } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
@@ -79,6 +80,27 @@ function loginPath(): string {
 
 /** A sleep that waits for nothing, so a poll's interval costs a test no time. */
 const noSleep = async (): Promise<void> => {};
+
+/** The broker's refusals as its OAuth library writes them on the wire, the library's sentence
+ *  first: the Go broker's refusal corpus. */
+const refusalCorpus: string[] = JSON.parse(
+  readFileSync(
+    join(
+      import.meta.dir,
+      "../../../envoy/internal/cipher/oauth/testdata/refusal-descriptions.json"
+    ),
+    "utf8"
+  )
+);
+
+/** The one refusal of the corpus that ends with `hint`, as the broker sends it. */
+function sentAs(hint: string): string {
+  const found = refusalCorpus.filter((one) => one.endsWith(hint));
+  if (found.length !== 1) {
+    throw new Error(`the refusal corpus holds ${found.length} refusals ending "${hint}"`);
+  }
+  return found[0] as string;
+}
 
 test("the device authorization signs the request object the broker's verifyPersonLogin verifies", async () => {
   const stub = broker();
@@ -727,11 +749,15 @@ test("a trade refused for its session or its projects is not refreshed and trade
   for (const [code, description] of [
     [
       "invalid_grant",
-      "The session name 'ses-laptop-1' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last 30 days. Ask under a name of your own.",
+      sentAs(
+        "belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last 30 days. Ask under a name of your own."
+      ),
     ],
     [
       "invalid_request",
-      "ada@example.com is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.",
+      sentAs(
+        "is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on."
+      ),
     ],
     // A pod session no registration names yet, which a later trade cures, not a refresh.
     ["invalid_grant", `${POD_SESSION_NOT_REGISTERED}: no registration names ses-laptop-1 yet`],
@@ -777,7 +803,7 @@ test("a trade refused because the login ended is refreshed, and the refresh's re
       throw new BrokerRefusedError(
         400,
         "invalid_grant",
-        "The machine login the subject token belongs to has ended.",
+        sentAs("The machine login the subject token belongs to has ended."),
         "this machine's device login"
       );
     })

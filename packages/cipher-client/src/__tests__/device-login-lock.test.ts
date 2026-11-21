@@ -6,13 +6,14 @@
 // broker. Each row holds a caller at one step of the protocol (`at`, `sleep`, `beats`), so no row
 // is decided by a clock.
 
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { writeDeviceLoginFile } from "../../test/device-logins";
 import { withDeviceLoginLock } from "../device-login";
 import { DEVICE_LOGIN_STALE_LOCK_MS, LOCK_HEARTBEAT_MS } from "../device-login-lock";
+import { TRADE_ATTEMPT_MS } from "../token-client";
 import { LockHeldError } from "../token-errors";
 
 const makeDirectory = temporaryDirectories("device-login-lock");
@@ -26,6 +27,34 @@ function loginPath(): string {
 function staleTime(): Date {
   return new Date(Date.now() - DEVICE_LOGIN_STALE_LOCK_MS - 1_000);
 }
+
+test("a dead holder's lock costs a trade at most half its attempt", () => {
+  // A trade waits out a lock its holder touched just before it died for the whole stale bound;
+  // the refresh and the exchange must still fit in what is left of the trade's one attempt.
+  expect(DEVICE_LOGIN_STALE_LOCK_MS * 2).toBeLessThanOrEqual(TRADE_ATTEMPT_MS);
+});
+
+test("the holder's beat is a timer every LOCK_HEARTBEAT_MS that touches its lock", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  // The real beat, with no `beats` option: the timer it sets is read, and its callback run here
+  // instead of after LOCK_HEARTBEAT_MS.
+  const timers = spyOn(globalThis, "setInterval");
+  try {
+    await withDeviceLoginLock(path, async () => {
+      expect(timers.mock.calls).toHaveLength(1);
+      const [beat, every] = timers.mock.calls[0] as unknown as [() => Promise<void>, number];
+      expect(every).toBe(LOCK_HEARTBEAT_MS);
+      const old = staleTime();
+      await utimes(lock, old, old);
+      await beat();
+      expect((await stat(lock)).mtimeMs).toBeGreaterThan(old.getTime() + 1_000);
+    });
+  } finally {
+    timers.mockRestore();
+  }
+});
 
 test("the login's lock waits for a live holder and takes a stale one", async () => {
   const path = loginPath();

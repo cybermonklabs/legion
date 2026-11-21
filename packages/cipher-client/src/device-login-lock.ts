@@ -73,7 +73,7 @@ export interface DeviceLoginLockOptions {
 /** The holder's beats: `touch` every {@link LOCK_HEARTBEAT_MS}, on a timer that holds no process
  *  open. */
 function everyHeartbeat(touch: () => Promise<void>): () => void {
-  const timer = setInterval(() => void touch(), LOCK_HEARTBEAT_MS);
+  const timer = setInterval(touch, LOCK_HEARTBEAT_MS);
   timer.unref();
   return () => clearInterval(timer);
 }
