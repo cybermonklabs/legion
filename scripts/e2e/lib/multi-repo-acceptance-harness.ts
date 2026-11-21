@@ -300,11 +300,16 @@ export function makeStateBody(overrides: Record<string, unknown> = {}): string {
     pendingStatusWrites: [],
     strandedClaims: [],
     capabilities: [],
-    repositories: { owners: [], mapped: [], refused: [], caches: [] },
+    repositories: { live: [], withoutWebhookApp: [], caches: [] },
     ...overrides,
   });
 }
 export const stateBody = makeStateBody();
+
+// healthBody is what the daemon's `GET /healthz` answers from contract 193 on (`api.Health`):
+// its status and the project it serves. The stub answers the whole typed body, so the script's
+// own health check is exercised against a body that carries more than `status`.
+const healthBody = { project: "legion", status: "ok" };
 
 export function daemonStub(body: string = stateBody): Server {
   return servers.track(
@@ -312,7 +317,7 @@ export function daemonStub(body: string = stateBody): Server {
       port: 0,
       fetch(req) {
         const url = new URL(req.url);
-        if (url.pathname === "/healthz") return Response.json({ status: "ok" });
+        if (url.pathname === "/healthz") return Response.json(healthBody);
         if (url.pathname === "/legion/v1/state") {
           return new Response(body, { headers: { "content-type": "application/json" } });
         }
@@ -336,7 +341,7 @@ export function mutableDaemonStub(initial: string): {
       port: 0,
       fetch(req) {
         const url = new URL(req.url);
-        if (url.pathname === "/healthz") return Response.json({ status: "ok" });
+        if (url.pathname === "/healthz") return Response.json(healthBody);
         if (url.pathname === "/legion/v1/state") {
           return new Response(body, { headers: { "content-type": "application/json" } });
         }
@@ -437,5 +442,6 @@ export function issueUpdatedEvent(
   };
 }
 
+// noneNote is the daemon's note on an issue of project ACME whose repository resolves to none.
 export const noneNote =
-  "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.";
+  "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project ACME, in Dispatch, and move it to todo again.";

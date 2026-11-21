@@ -1,6 +1,7 @@
 package sessionproxy
 
 import (
+	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,7 +26,6 @@ import (
 	"time"
 
 	"cloud.google.com/go/cloudsqlconn"
-	"google.golang.org/api/option"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
 
@@ -38,6 +39,9 @@ const (
 	// the account: one for the Admin API's scopes and one for the login scope.
 	impersonatedAPIToken   = "impersonated-api-token"
 	impersonatedLoginToken = "impersonated-login-token"
+	// federatedToken is the security token service fake's token: the federated token it gives
+	// for the writer token.
+	federatedToken = "federated-token"
 )
 
 // The scopes each source asks IAM Credentials for, as cloudsqlconn.WithIAMAuthNTokenSources names
@@ -47,6 +51,12 @@ var (
 	apiScopes   = []string{"https://www.googleapis.com/auth/sqlservice.admin", "https://www.googleapis.com/auth/cloud-platform"}
 	loginScopes = []string{"https://www.googleapis.com/auth/sqlservice.login"}
 )
+
+// impersonatedSources are the two impersonated sources, each with the scopes it asks for.
+var impersonatedSources = []struct {
+	name   string
+	scopes []string
+}{{"the API source", apiScopes}, {"the login source", loginScopes}}
 
 // The paths of the two Admin API calls the connector makes for testInstance.
 const (
@@ -59,19 +69,16 @@ const (
 // no account, both are the pod's own credentials. The real connector and the real
 // impersonation library run against fakes of the pod's credentials, of the IAM Service Account
 // Credentials API and of the Cloud SQL Admin API, so the test sees which token reaches which Admin
-// API call. The impersonation library takes the test's own IAM Credentials client
-// (option.WithHTTPClient) and uses it as it is, so the credential that the generateAccessToken call
-// itself carries is not under test: the fake pod credentials sign only the calls of the row with no
-// account. The instance has no private address, so each dial ends with the connector's refusal,
-// which shows that the private-IP option still applies. Every request stays on loopback or in an
-// in-process transport. The test sets an environment variable, so it is not parallel.
+// API call. connectorOptions gives the impersonation library a client over the test's own IAM
+// Credentials transport, which the library uses as it is, so the credential that the
+// generateAccessToken call itself carries is not under test: the fake pod credentials sign only
+// the calls of the row with no account. The instance has no private address, so each dial ends
+// with the connector's refusal, which shows that the private-IP option still applies. Every
+// request stays on loopback or in an in-process transport. The test sets an environment variable,
+// so it is not parallel.
 func TestTheConnectorSignsInAsTheServiceAccountItImpersonates(t *testing.T) {
 	usePodCredentials(t)
 	const noPrivateIP = `instance does not have IP of type "PRIVATE"`
-	sources := []struct {
-		name   string
-		scopes []string
-	}{{"the API source", apiScopes}, {"the login source", loginScopes}}
 
 	for _, tc := range []struct {
 		name    string
@@ -91,7 +98,7 @@ func TestTheConnectorSignsInAsTheServiceAccountItImpersonates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			iam := &iamCredentialsFake{t: t}
 			admin := newAdminAPIFake(t)
-			err := dialThroughConnector(t, tc.account, iam, admin.url)
+			err := dialThroughConnector(t, Signer{Account: tc.account}, googleEndpoints{iam: handlerTransport{iam}}, admin.url)
 
 			asked := iam.requests()
 			if tc.account == "" {
@@ -99,20 +106,7 @@ func TestTheConnectorSignsInAsTheServiceAccountItImpersonates(t *testing.T) {
 					t.Errorf("the IAM Credentials fake saw %+v, want no request: with no account, no source impersonates", asked)
 				}
 			} else {
-				for _, s := range sources {
-					n := 0
-					for _, r := range asked {
-						if r.account == tc.account && slices.Equal(r.scopes, s.scopes) {
-							n++
-						}
-					}
-					if n != 1 {
-						t.Errorf("%s asked IAM Credentials for a token as %s with the scopes %v %d times, want once; the fake saw %+v", s.name, tc.account, s.scopes, n, asked)
-					}
-				}
-				if len(asked) != len(sources) {
-					t.Errorf("the IAM Credentials fake saw %d requests, want %d, one for each source: %+v", len(asked), len(sources), asked)
-				}
+				checkEachSourceMintedOnce(t, asked, tc.account)
 			}
 
 			// Every Admin API call must carry the expected tokens, so when the proxy impersonates,
@@ -141,7 +135,7 @@ func TestTheImpersonatedTokensAreMintedAgainOnceTheyExpire(t *testing.T) {
 	// and IAM's expireTime has whole seconds, so each token lasts between one and two seconds.
 	iam := &iamCredentialsFake{t: t, lifetime: 12 * time.Second}
 	admin := newAdminAPIFake(t)
-	opts, err := connectorOptions(context.Background(), account, option.WithHTTPClient(&http.Client{Transport: handlerTransport{iam}}))
+	opts, err := connectorOptions(context.Background(), Signer{Account: account}, googleEndpoints{iam: handlerTransport{iam}})
 	if err != nil {
 		t.Fatalf("connectorOptions: %v", err)
 	}
@@ -179,6 +173,215 @@ func TestTheImpersonatedTokensAreMintedAgainOnceTheyExpire(t *testing.T) {
 	checkAdminCalls(t, admin, impersonatedAPIToken, impersonatedLoginToken, " after its token expired")
 }
 
+// With a writer token, the connector impersonates the account with the federated token that the
+// security token service gives for the token file's contents, and never with the pod's own
+// credentials: nothing asks the pod's credential file or the metadata server. The real connector,
+// the real impersonation library and the real exchange run against fakes of the security token
+// service, of IAM Credentials and of the Cloud SQL Admin API. The IAM Credentials fake is the base
+// transport under the proxy's own client, so it sees the Authorization that the client puts on
+// each generateAccessToken call. One exchange serves both impersonated sources. The test sets
+// environment variables, so it is not parallel.
+func TestTheConnectorImpersonatesWithTheWriterTokenAndNeverThePodsCredentials(t *testing.T) {
+	neverAskThePodsCredentials(t)
+	const account = "legion-sessions@example-project.iam.gserviceaccount.com"
+	const noPrivateIP = `instance does not have IP of type "PRIVATE"`
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	writeWriterToken(t, tokenFile, "writer-token-1")
+	sts := newSTSFake(t, 3600)
+	iam := &iamCredentialsFake{t: t}
+	admin := newAdminAPIFake(t)
+	err := dialThroughConnector(t, Signer{Account: account, WriterAudience: testWriterAudience, WriterTokenFile: tokenFile},
+		googleEndpoints{iam: handlerTransport{iam}, stsURL: sts.url}, admin.url)
+
+	if got := sts.exchanged(); !slices.Equal(got, []string{"writer-token-1"}) {
+		t.Errorf("the security token service was sent the subject tokens %q, want the token file's contents once: one federated source serves both impersonated sources", got)
+	}
+	asked := iam.requests()
+	checkEachSourceMintedOnce(t, asked, account)
+	checkSignedWithTheFederatedToken(t, asked)
+	checkAdminCalls(t, admin, impersonatedAPIToken, impersonatedLoginToken, "")
+	if err == nil || !strings.Contains(err.Error(), noPrivateIP) {
+		t.Errorf("Dial = %v, want the connector's refusal %q: the instance has only a public address, and the connector dials the private one", err, noPrivateIP)
+	}
+}
+
+// The kubelet rewrites the writer token before it expires, and a proxy serves its generation for
+// days, so each exchange reads the token file again: a source that kept what it read first would
+// send an expired token once that one ran out, and every connection after it would be refused.
+// Here the federated token and the impersonated ones each last two seconds at most, so dials a
+// second apart exchange again. Once the file is rewritten, the exchanges send its new contents,
+// and none sends the old contents again.
+func TestTheWriterTokenFileIsReadAgainAtEachExchange(t *testing.T) {
+	neverAskThePodsCredentials(t)
+	const account = "legion-sessions@example-project.iam.gserviceaccount.com"
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	writeWriterToken(t, tokenFile, "writer-token-1")
+	// The proxy exchanges again writerTokenEarlyRefresh before the federated token's expiry, so a
+	// token with two seconds more than that lasts two seconds.
+	sts := newSTSFake(t, int((writerTokenEarlyRefresh+2*time.Second)/time.Second))
+	// As in TestTheImpersonatedTokensAreMintedAgainOnceTheyExpire, each impersonated token lasts
+	// between one and two seconds.
+	iam := &iamCredentialsFake{t: t, lifetime: 12 * time.Second}
+	admin := newAdminAPIFake(t)
+	opts, err := connectorOptions(context.Background(), Signer{Account: account, WriterAudience: testWriterAudience, WriterTokenFile: tokenFile},
+		googleEndpoints{iam: handlerTransport{iam}, stsURL: sts.url})
+	if err != nil {
+		t.Fatalf("connectorOptions: %v", err)
+	}
+	dialer, err := cloudsqlconn.NewDialer(context.Background(), append(opts, cloudsqlconn.WithAdminAPIEndpoint(admin.url+"/"))...)
+	if err != nil {
+		t.Fatalf("NewDialer: %v", err)
+	}
+	defer func() { _ = dialer.Close() }()
+	dial := func() {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if conn, err := dialer.Dial(ctx, testInstance); conn != nil {
+			_ = conn.Close()
+		} else if err == nil {
+			t.Fatal("Dial returned neither a connection nor an error")
+		}
+	}
+
+	dial()
+	if len(sts.exchanged()) == 0 {
+		t.Fatal("the first dial made no exchange of the writer token")
+	}
+	writeWriterToken(t, tokenFile, "writer-token-2")
+	deadline := time.Now().Add(20 * time.Second)
+	for !slices.Contains(sts.exchanged(), "writer-token-2") {
+		if time.Now().After(deadline) {
+			t.Fatalf("after 20 s of dials, the exchanges sent the subject tokens %q, want the token file's new contents: a source that keeps what it read first sends an expired token", sts.exchanged())
+		}
+		time.Sleep(time.Second)
+		dial()
+	}
+
+	// The exchanges are serialized and the file is replaced whole, so every exchange before the
+	// first one with the new contents sent the old ones, and every exchange after it the new ones.
+	subjects := sts.exchanged()
+	rewritten := slices.Index(subjects, "writer-token-2")
+	for i, subject := range subjects {
+		want := "writer-token-1"
+		if i >= rewritten {
+			want = "writer-token-2"
+		}
+		if subject != want {
+			t.Errorf("exchange %d of %q sent %q, want %q", i+1, subjects, subject, want)
+		}
+	}
+	checkSignedWithTheFederatedToken(t, iam.requests())
+	checkAdminCalls(t, admin, impersonatedAPIToken, impersonatedLoginToken, " after the writer token was rewritten")
+}
+
+// A fake's handler reads each request it is sent and fails the test on a body it cannot read,
+// so stopping a fake at the end of its test must never run a handler on a connection the stop
+// closed (stopServing says how it does not). The connector does leave such a request: when a
+// login token expires within four minutes, as the tokens of the rows above do, it starts a
+// refresh as soon as one completes, and a dial that then fails drops the instance from its cache
+// and abandons that refresh's requests without waiting for the fake. The row holds a request whose
+// headers the server has read and whose handler has not started (headersHeldListener), on a new
+// connection and on an idle one that has served a request before: forced reproductions of the
+// connector rows' failure held it on both kinds, most often on an idle one. stopServing must close
+// the connection and run no handler on it.
+func TestStopServingRunsNoHandlerOnAConnectionItCloses(t *testing.T) {
+	const served = "GET /served HTTP/1.1\r\nHost: fake.example\r\n\r\n"
+	const held = "POST /held HTTP/1.1\r\nHost: fake.example\r\nContent-Length: 5\r\n\r\n"
+	for _, tc := range []struct {
+		name string
+		// before is what the connection serves before the held request.
+		before string
+	}{
+		{name: "on a new connection"},
+		{name: "on an idle connection", before: served},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ran := make(chan error, 1)
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/held" {
+					return
+				}
+				_, err := io.ReadAll(r.Body)
+				ran <- err
+			}))
+			listener := &headersHeldListener{Listener: server.Listener, conns: make(chan *headersHeldConn, 1), before: len(tc.before), headers: len(held)}
+			server.Listener = listener
+			server.Start()
+			t.Cleanup(func() { stopServing(server) })
+			client, err := net.Dial("tcp", listener.Addr().String())
+			if err != nil {
+				t.Fatalf("dial the server: %v", err)
+			}
+			defer func() { _ = client.Close() }()
+			if tc.before != "" {
+				if _, err := io.WriteString(client, tc.before); err != nil {
+					t.Fatalf("send the request served first: %v", err)
+				}
+				answer, err := http.ReadResponse(bufio.NewReader(client), nil)
+				if err != nil {
+					t.Fatalf("read the answer to the request served first: %v", err)
+				}
+				_ = answer.Body.Close()
+			}
+			if _, err := io.WriteString(client, held); err != nil {
+				t.Fatalf("send the held request's headers: %v", err)
+			}
+			conn := <-listener.conns
+			if err := <-conn.arrived; err != nil {
+				t.Fatalf("read the held request's complete headers: %v", err)
+			}
+
+			stopServing(server)
+			select {
+			case <-conn.closed:
+			default:
+				t.Errorf("stopServing left the held request's connection open")
+			}
+			select {
+			case err := <-ran:
+				t.Errorf("the handler ran on the connection stopServing closed, and read the body as %v", err)
+			default:
+			}
+		})
+	}
+}
+
+// checkEachSourceMintedOnce fails the test unless asked, the generateAccessToken requests that
+// the IAM Credentials fake saw, are one for each impersonated source: as account, with the
+// source's scopes.
+func checkEachSourceMintedOnce(t *testing.T, asked []tokenRequest, account string) {
+	t.Helper()
+	for _, s := range impersonatedSources {
+		n := 0
+		for _, r := range asked {
+			if r.account == account && slices.Equal(r.scopes, s.scopes) {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%s asked IAM Credentials for a token as %s with the scopes %v %d times, want once; the fake saw %+v", s.name, account, s.scopes, n, asked)
+		}
+	}
+	if len(asked) != len(impersonatedSources) {
+		t.Errorf("the IAM Credentials fake saw %d requests, want %d, one for each source: %+v", len(asked), len(impersonatedSources), asked)
+	}
+}
+
+// checkSignedWithTheFederatedToken fails the test unless every generateAccessToken request in
+// asked carries the federated token, which the proxy's IAM Credentials client puts on each call.
+func checkSignedWithTheFederatedToken(t *testing.T, asked []tokenRequest) {
+	t.Helper()
+	if len(asked) == 0 {
+		t.Error("the IAM Credentials fake saw no generateAccessToken request")
+	}
+	for _, r := range asked {
+		if want := "Bearer " + federatedToken; r.authorization != want {
+			t.Errorf("generateAccessToken as %s with the scopes %v carried the Authorization %q, want the federated token's %q", r.account, r.scopes, r.authorization, want)
+		}
+	}
+}
+
 // checkAdminCalls fails the test unless admin saw at least one complete connectSettings call and
 // one complete generateEphemeralCert call, every call carries the bearer token apiToken, and every
 // complete generateEphemeralCert call has the access_token loginToken. It checks the Authorization
@@ -204,16 +407,43 @@ func checkAdminCalls(t *testing.T, admin *adminAPIFake, apiToken, loginToken, wh
 }
 
 // usePodCredentials makes a credential file of the test's own the pod's credentials
-// (GOOGLE_APPLICATION_CREDENTIALS). The file names a service account with a key the test generates
-// and a token_uri at a server of the test's own, which answers every token request with podToken.
-// Any use of the pod's own credentials then shows as podToken, and no read reaches a metadata
-// server.
+// (podCredentialsServedBy), whose token server answers every token request with podToken. Any
+// use of the pod's own credentials then shows as podToken, and no read reaches a metadata server.
 func usePodCredentials(t *testing.T) {
 	t.Helper()
-	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	podCredentialsServedBy(t, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, map[string]any{"access_token": podToken, "token_type": "Bearer", "expires_in": 3600})
-	}))
-	t.Cleanup(tokens.Close)
+	})
+}
+
+// neverAskThePodsCredentials makes the pod's credentials fail the test on any use: the credential
+// file (GOOGLE_APPLICATION_CREDENTIALS) names a token server that fails the test on any request,
+// and the metadata server (GCE_METADATA_HOST) is a server that does the same. A test of the
+// writer token then shows that nothing asks either of them.
+func neverAskThePodsCredentials(t *testing.T) {
+	t.Helper()
+	podCredentialsServedBy(t, refuseEveryRequest(t, "the token server of the pod's credential file"))
+	metadata := httptest.NewServer(refuseEveryRequest(t, "the metadata server"))
+	t.Cleanup(metadata.Close)
+	t.Setenv("GCE_METADATA_HOST", strings.TrimPrefix(metadata.URL, "http://"))
+}
+
+// refuseEveryRequest is a handler that fails the test on every request it gets. who names the
+// server it stands for in the failure.
+func refuseEveryRequest(t *testing.T, who string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("%s was asked %s %s, and nothing may ask it", who, r.Method, r.URL)
+		http.Error(w, "nothing may ask this server", http.StatusForbidden)
+	}
+}
+
+// podCredentialsServedBy makes a credential file of the test's own the pod's credentials
+// (GOOGLE_APPLICATION_CREDENTIALS). The file names a service account with a key the test generates
+// and a token_uri at a server of the test's own, which tokens answers.
+func podCredentialsServedBy(t *testing.T, tokens http.HandlerFunc) {
+	t.Helper()
+	server := httptest.NewServer(tokens)
+	t.Cleanup(server.Close)
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -229,7 +459,7 @@ func usePodCredentials(t *testing.T) {
 		"private_key_id": "pod-key",
 		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
 		"client_email":   "legion-pod@example-project.iam.gserviceaccount.com",
-		"token_uri":      tokens.URL + "/token",
+		"token_uri":      server.URL + "/token",
 	})
 	if err != nil {
 		t.Fatalf("encode the pod's credentials: %v", err)
@@ -241,11 +471,12 @@ func usePodCredentials(t *testing.T) {
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", file)
 }
 
-// tokenRequest is one generateAccessToken request: the account it impersonates and the scopes it
-// asks for.
+// tokenRequest is one generateAccessToken request: the account it impersonates, the scopes it
+// asks for and the Authorization header it carries.
 type tokenRequest struct {
-	account string
-	scopes  []string
+	account       string
+	scopes        []string
+	authorization string
 }
 
 // iamCredentialsFake is the IAM Service Account Credentials API, served in process through
@@ -280,7 +511,7 @@ func (f *iamCredentialsFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.mu.Lock()
-	f.asked = append(f.asked, tokenRequest{account: account, scopes: body.Scope})
+	f.asked = append(f.asked, tokenRequest{account: account, scopes: body.Scope, authorization: r.Header.Get("Authorization")})
 	f.mu.Unlock()
 
 	var token string
@@ -307,6 +538,80 @@ func (f *iamCredentialsFake) requests() []tokenRequest {
 	return slices.Clone(f.asked)
 }
 
+// stsFake is Google's security token service, on loopback. It answers the writer token's exchange
+// and fails the test on any other request. Each exchange must use the token-exchange grant and ask
+// for an access token, for testWriterAudience and the cloud-platform scope, with a JWT subject
+// token. The fake records the subject token of each exchange and answers federatedToken, which
+// expires expiresIn seconds later.
+type stsFake struct {
+	t         *testing.T
+	url       string
+	expiresIn int
+
+	mu       sync.Mutex
+	subjects []string
+}
+
+func newSTSFake(t *testing.T, expiresIn int) *stsFake {
+	t.Helper()
+	f := &stsFake{t: t, expiresIn: expiresIn}
+	server := httptest.NewServer(f)
+	t.Cleanup(func() { stopServing(server) })
+	f.url = server.URL + "/v1/token"
+	return f
+}
+
+func (f *stsFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || r.URL.Path != "/v1/token" {
+		f.t.Errorf("the security token service fake was asked %s %s, which is no token exchange", r.Method, r.URL)
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		f.t.Errorf("read the exchange's form: %v", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for name, want := range map[string]string{
+		"grant_type":           "urn:ietf:params:oauth:grant-type:token-exchange",
+		"requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
+		"audience":             testWriterAudience,
+		"subject_token_type":   "urn:ietf:params:oauth:token-type:jwt",
+		"scope":                "https://www.googleapis.com/auth/cloud-platform",
+	} {
+		if got := r.PostForm.Get(name); got != want {
+			f.t.Errorf("the exchange sent %s=%q, want %q", name, got, want)
+		}
+	}
+	f.mu.Lock()
+	f.subjects = append(f.subjects, r.PostForm.Get("subject_token"))
+	f.mu.Unlock()
+	writeJSON(f.t, w, map[string]any{
+		"access_token": federatedToken, "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+		"token_type": "Bearer", "expires_in": f.expiresIn,
+	})
+}
+
+// exchanged is the subject token of every exchange the fake answered, in order.
+func (f *stsFake) exchanged() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.subjects)
+}
+
+// writeWriterToken makes token the contents of the writer token file at path. It replaces the
+// file whole, by a rename, as the kubelet replaces a projected token, so no exchange reads it half
+// written.
+func writeWriterToken(t *testing.T, path, token string) {
+	t.Helper()
+	if err := os.WriteFile(path+".new", []byte(token), 0o600); err != nil {
+		t.Fatalf("write the writer token: %v", err)
+	}
+	if err := os.Rename(path+".new", path); err != nil {
+		t.Fatalf("replace the writer token: %v", err)
+	}
+}
+
 // handlerTransport serves every request with its handler in process, so a client that uses it
 // sends nothing out of the test.
 type handlerTransport struct {
@@ -320,6 +625,99 @@ func (h handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		_ = r.Body.Close()
 	}
 	return w.Result(), nil
+}
+
+// stopServing stops the loopback server of a fake whose handler reads each request and fails the
+// test on what it cannot read, as a cleanup at the end of its test (docs/testing.md, "A fake HTTP
+// server whose client gives up on requests").
+//
+// httptest.Server.Close alone closes each connection that is new or idle: the idle ones through
+// net/http's closeIdleConns, the new ones in a loop of its own. net/http marks a connection active
+// only after it has read a request's headers, so a connection on which it has read them but not
+// yet started the request's handler can still be new or idle. The handler then runs on the
+// closed connection and reads its body as "use of closed network connection", which fails the
+// test for no defect of the code under test (TestStopServingRunsNoHandlerOnAConnectionItCloses).
+// Shutdown first marks the server as shutting down, and net/http checks that mark after it marks
+// a connection active and before it starts the handler, so no handler starts on a connection the
+// stop closes. Its context has already ended, so Shutdown closes the idle connections and
+// returns. Close then closes the new and idle connections left and waits for the active handlers,
+// whose connections it leaves open: their clients must finish or cancel those requests for the
+// cleanup to return. A server whose handler fails the test on every request (refuseEveryRequest)
+// keeps Close alone, so a request whose headers the server has read by then still fails the test.
+func stopServing(server *httptest.Server) {
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = server.Config.Shutdown(ended)
+	server.Close()
+}
+
+// headersHeldListener serves TestStopServingRunsNoHandlerOnAConnectionItCloses's connection and
+// sends it on conns. The connection passes its first before bytes through: the requests it serves
+// first, whose answers the client reads before it sends more. Then it returns the held request's
+// headers bytes one at a time, and holds the last one until the connection is closed, so the
+// server has the whole headers only once the stop has closed the connection. A hold of a whole
+// socket read instead could hold part of the headers alone, and Close alone would then end the
+// connection on the unparsed request and pass the row.
+type headersHeldListener struct {
+	net.Listener
+	conns           chan *headersHeldConn
+	before, headers int
+}
+
+func (l *headersHeldListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	conn := &headersHeldConn{Conn: c, arrived: make(chan error, 1), closed: make(chan struct{}), beforeLeft: l.before, headersLeft: l.headers}
+	select {
+	case l.conns <- conn:
+	default:
+	}
+	return conn, nil
+}
+
+// headersHeldConn is one connection headersHeldListener accepted. arrived receives nil once the
+// held request's headers have all arrived, or the error that ended them first. closed is closed
+// with the connection.
+type headersHeldConn struct {
+	net.Conn
+	arrived                 chan error
+	closed                  chan struct{}
+	beforeLeft, headersLeft int
+	closeOnce               sync.Once
+}
+
+// Read holds only the read that takes the held request's last header byte. A read that times
+// out passes through: while a handler runs, net/http reads one byte in the background and ends
+// that read with a deadline once the handler has returned.
+func (c *headersHeldConn) Read(p []byte) (int, error) {
+	switch {
+	case c.beforeLeft > 0:
+		n, err := c.Conn.Read(p[:min(len(p), c.beforeLeft)])
+		c.beforeLeft -= n
+		return n, err
+	case c.headersLeft > 0:
+		n, err := c.Conn.Read(p[:1])
+		c.headersLeft -= n
+		var timeout net.Error
+		if c.headersLeft == 0 || err != nil && !(errors.As(err, &timeout) && timeout.Timeout()) {
+			select {
+			case c.arrived <- err:
+			default:
+			}
+		}
+		if c.headersLeft == 0 {
+			<-c.closed
+		}
+		return n, err
+	}
+	return c.Conn.Read(p)
+}
+
+func (c *headersHeldConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return c.Conn.Close()
 }
 
 // adminCall is one Admin API request: its path, its Authorization header and, for
@@ -374,7 +772,7 @@ func newAdminAPIFake(t *testing.T) *adminAPIFake {
 	}
 	f := &adminAPIFake{t: t, ca: ca, caKey: key, caPEM: certificatePEM(der)}
 	server := httptest.NewServer(f)
-	t.Cleanup(server.Close)
+	t.Cleanup(func() { stopServing(server) })
 	f.url = server.URL
 	return f
 }
@@ -477,12 +875,12 @@ func (f *adminAPIFake) requests() []adminCall {
 	return slices.Clone(f.calls)
 }
 
-// dialThroughConnector builds a real connector with connectorOptions for account. Its IAM
-// Credentials client is served by iam, and its Admin API is at admin. It dials testInstance once
-// within 10 s, closes the connector and returns the dial's error.
-func dialThroughConnector(t *testing.T, account string, iam http.Handler, admin string) error {
+// dialThroughConnector builds a real connector with connectorOptions for signer, which reaches
+// the token services at google, and its Admin API at admin. It dials testInstance once within
+// 10 s, closes the connector and returns the dial's error.
+func dialThroughConnector(t *testing.T, signer Signer, google googleEndpoints, admin string) error {
 	t.Helper()
-	opts, err := connectorOptions(context.Background(), account, option.WithHTTPClient(&http.Client{Transport: handlerTransport{iam}}))
+	opts, err := connectorOptions(context.Background(), signer, google)
 	if err != nil {
 		t.Fatalf("connectorOptions: %v", err)
 	}

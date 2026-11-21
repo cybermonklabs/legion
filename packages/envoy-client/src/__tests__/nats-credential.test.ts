@@ -18,8 +18,8 @@ import { createHash, createPublicKey, verify } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
-import { RETRY_FIRST_WAIT_MS, RETRY_MAX_WAIT_MS } from "@legion/broker-client/token-client";
+import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
+import { RETRY_FIRST_WAIT_MS, RETRY_MAX_WAIT_MS } from "@legion/cipher-client/token-client";
 import type { Subprocess } from "bun";
 import { connect, Events, type NatsConnection } from "nats";
 import {
@@ -32,7 +32,12 @@ import {
 import { brokerCredential } from "../broker-credential";
 import { readEnvoyConfig } from "../envoy-config";
 import { type EnvoyEnvironment, envoySettings } from "../envoy-settings";
-import { natsConnectionOptions } from "../nats-connection";
+import {
+  BROKER_REDIAL_CAP_MS,
+  BROKER_REDIAL_POLL_MS,
+  brokerRedialWaitBounds,
+  natsConnectionOptions,
+} from "../nats-connection";
 import {
   brokerNatsCredential,
   followNatsCredential,
@@ -79,7 +84,9 @@ function resolved(
     session: "ses_a",
   });
   if (!settings.enabled) throw new Error(`Envoy is off: ${settings.error ?? settings.notice}`);
-  return "off" in settings.inbound ? settings.inbound : settings.inbound.natsCredential;
+  if ("off" in settings.inbound) return settings.inbound;
+  if (!("natsCredential" in settings.inbound)) throw new Error("inbound is the relay socket");
+  return settings.inbound.natsCredential;
 }
 
 describe("which credential a session connects to NATS with", () => {
@@ -336,6 +343,10 @@ describe("natsConnectionOptions with the broker token", () => {
       credential: { kind: "broker", broker: credential },
     });
     expect(options.ignoreAuthErrorAbort).toBe(true);
+    // It redials on its own backoff, and sets no `reconnectTimeWait`, which nats.js reads only in
+    // the default handler this one replaces.
+    expect(options.reconnectDelayHandler).toBeFunction();
+    expect(options.reconnectTimeWait).toBeUndefined();
   });
 
   test("the option it sets is the one nats.js reads", () => {
@@ -556,16 +567,18 @@ describe.skipIf(!envoyStackEnabled)(
         // How long the connection may take to come back, from the token client's schedule: only a
         // token landing starts it over (`BrokerTokenClient.#run`), so the next trade is due at most
         // RETRY_FIRST_WAIT_MS doubled once for each trade that failed while the broker was away,
-        // capped at RETRY_MAX_WAIT_MS, after the last of them. The connection then presents the
-        // token it took at its next reconnect but one (the authenticator's renewal lands it for the
-        // next CONNECT), each after `reconnectTimeWait` (2 s, nats-connection.ts), and 5 s more for
-        // the handshake on a loaded machine.
+        // capped at RETRY_MAX_WAIT_MS, after the last of them. The credential holds the traded
+        // token only once something takes it: unless the keeper's retry takes it first, the next
+        // dial due, at most BROKER_REDIAL_CAP_MS on, finds nothing live to present, is refused,
+        // and starts the trade that takes it; the token then goes out the next time the redial
+        // loop asks (`brokerRedialDelays`), within BROKER_REDIAL_POLL_MS; and 5 s more for the
+        // handshakes on a loaded machine.
         const failedTrades = Math.max(broker.state.trades - broker.state.minted.length, 1);
         const nextTradeMs = Math.min(
           RETRY_FIRST_WAIT_MS * 2 ** (failedTrades - 1),
           RETRY_MAX_WAIT_MS
         );
-        const backBy = back + nextTradeMs + 2 * 2_000 + 5_000;
+        const backBy = back + nextTradeMs + BROKER_REDIAL_CAP_MS + BROKER_REDIAL_POLL_MS + 5_000;
         broker.state.seconds = 900;
         broker.state.down = false;
         while (!reconnected.some((at) => at > back) && Date.now() < backBy) await Bun.sleep(100);
@@ -581,8 +594,9 @@ describe.skipIf(!envoyStackEnabled)(
 
     test("a token revoked before it lapses is dropped at the second refusal, and the connection comes back", async () => {
       // The broker revokes the session's token: the auth service, which asks it about each
-      // token, refuses every CONNECT that presents it, and nats.js redials every 2 s. Tokens
-      // live ten minutes, so only the keeper's drop gets the connection a token it admits.
+      // token, refuses every CONNECT that presents it, and nats.js redials on its backoff
+      // (`brokerRedialDelays`). Tokens live ten minutes, so only the keeper's drop gets the
+      // connection a token it admits.
       const broker = stubBroker(600);
       const hub = await startCalloutHub("revoked", broker.url);
       let connection: NatsConnection | undefined;
@@ -620,9 +634,18 @@ describe.skipIf(!envoyStackEnabled)(
         broker.state.revoked.add(revoked);
         const at = Date.now();
         await opened.reconnect();
-        // Two refusals 2 s apart, the trade, and the redial after it, with 10 s for the
-        // handshakes on a loaded machine.
-        const backBy = at + 3 * 2_000 + 10_000;
+        // Two refusals on the backoff, then the token traded at the second, which goes out the
+        // next time the redial loop asks: the connection is under a minute old, so it keeps its
+        // place in the backoff, and the two refusals are its first two redials, the first due at
+        // most `brokerRedialWaitBounds(1)` after it opened and the second at most
+        // `brokerRedialWaitBounds(2)` after that; then BROKER_REDIAL_POLL_MS, and 10 s for the
+        // trade and the handshakes on a loaded machine.
+        const backBy =
+          at +
+          brokerRedialWaitBounds(1).highestMs +
+          brokerRedialWaitBounds(2).highestMs +
+          BROKER_REDIAL_POLL_MS +
+          10_000;
         while (!reconnected.some((when) => when > at) && Date.now() < backBy) await Bun.sleep(100);
         if (!reconnected.some((when) => when > at))
           throw new Error(

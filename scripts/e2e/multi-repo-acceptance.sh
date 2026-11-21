@@ -191,7 +191,11 @@ healthz_file=$(mktemp "$MULTIREPO_EVIDENCE_DIR/healthz.XXXXXX")
 healthz_status=$(curl -sS -o "$healthz_file" -w '%{http_code}' --max-time 15 "$LEGION_E2E_DAEMON_URL/healthz" 2>/dev/null) || healthz_status=000
 healthz_body=$(cat "$healthz_file" 2>/dev/null || true)
 rm -f "$healthz_file"
-[ "$healthz_status" = 200 ] && [ "$healthz_body" = '{"status":"ok"}' ] ||
+# The body is typed (`api.Health`: `status` and `project`), and the daemon adds a key to it as the
+# contract grows, so the check reads `.status` alone and not the whole body. `jq -e` exits non-zero
+# for a body that is not JSON, for an object that holds no `status`, and for any `status` but `ok`,
+# so a URL that answers something which is not a health body still fails the run.
+[ "$healthz_status" = 200 ] && printf '%s' "$healthz_body" | jq -e '.status == "ok"' >/dev/null 2>&1 ||
   fail "LEGION_E2E_DAEMON_URL $LEGION_E2E_DAEMON_URL is not a Legion daemon: GET /healthz answered $healthz_status $healthz_body"
 
 dispatch_token=$(cat "$DISPATCH_TOKEN_FILE") || fail "could not read DISPATCH_TOKEN_FILE"
@@ -556,11 +560,10 @@ as_role_probe() {
 # with (`GET <repo>.git/info/refs?service=git-receive-pack`): 200 and a receive-pack
 # advertisement for O, the issue's own repository, and the same for T, a repository of another
 # owner. What a role reaches is the accounts its App is installed on, whichever owner's
-# repository its issue names, which is the property. The observation reads no repository
-# mapping, so it shows reach across owners and says nothing of whether a mapping names T. O's
-# answer stays the control that the network, the helper and the token are sound, so T's 200 is
-# reach and not a rig that answers anything. The request writes nothing: it is the read a push
-# opens with, where a push would leave
+# repository its issue names, which is the property, so the observation shows reach across
+# owners. O's answer stays the control that the network, the helper and the token are sound, so
+# T's 200 is reach and not a rig that answers anything. The request writes nothing: it is the
+# read a push opens with, where a push would leave
 # a branch on a repository every run shares. The prober runs no git (git reads
 # ~/.netrc, config files and the GIT_* variables, all of which the agent's uid can write) and takes
 # no executable, search path or credential directory from the agent's environment, which its own
@@ -667,7 +670,7 @@ cache_check() {
   state_file=$(state_raw cache)
   repo=$(jq -r --arg k "$key" '.issues[$k].repo // "none"' "$state_file")
   [ "$repo" != "none" ] || ok=0
-  ready=$(jq -r --arg r "$repo" '.repositories.mapped[] | select((.repo|ascii_downcase)==($r|ascii_downcase)) | .cache.ready' "$state_file")
+  ready=$(jq -r --arg r "$repo" '.repositories.live[] | select((.repo|ascii_downcase)==($r|ascii_downcase)) | .cache.ready' "$state_file")
   [ "$ready" = true ] || ok=0
   summary cache "issue: $key
 pod: $pod ($container)
@@ -860,7 +863,7 @@ negative_no_repo() {
   events_file=$(dispatch_events_raw negative-no-repo "$key")
   project=$(issue_project "$key")
   daemon_actor="legion-daemon:$project"
-  local none_note="Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again."
+  local none_note="Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project $project, in Dispatch, and move it to todo again."
   local latest_is_none
   latest_is_none=$(jq --arg actor "$daemon_actor" --arg none "$none_note" '
     [.[] | select(.type=="message.created" and .actor.kind=="session" and .actor.id==$actor

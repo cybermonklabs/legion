@@ -19,11 +19,11 @@ import {
   RegistrationPendingError,
   TradeRetryingError,
   TradeUnansweredError,
-} from "@legion/broker-client/token-errors";
+} from "@legion/cipher-client/token-errors";
 import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { brokerCredential } from "../broker-credential";
-import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchClient } from "../dispatch-http";
 import { brokerStandIns } from "./broker-stand-ins";
 
 const { podEnvironment, servers, stubDispatch } = brokerStandIns("dispatch-credential-deadline");
@@ -145,7 +145,6 @@ test.each([
 ] as const)(
   "a write whose credential meets %s ends with the credential's error inside a deadline shorter than its pacing",
   async (_, mode, failure, endsAt) => {
-    forgetKeyedLayerMemory();
     // The token client says what a trade came to at the wait after it, and the broker that never
     // answers has the trade: past either, only timers are left to happen.
     let read = false;

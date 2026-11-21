@@ -14,8 +14,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/broker/natscallout"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -51,7 +52,7 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var presented []string
-	services, err := natscallout.ParseServices("listener/example-hub/*=" + serviceTokenAccount)
+	services, err := config.ParseNATSServices("listener/example-hub/*=" + serviceTokenAccount)
 	require.NoError(t, err)
 	service, err := natscallout.Start(t.Context(), natscallout.Settings{
 		URLs: []string{url}, SeedFile: write("service.seed", keys.ServiceSeed),

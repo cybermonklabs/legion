@@ -539,8 +539,9 @@ describe("renderInbound dispatch events", () => {
         const key = request.headers.get("Idempotency-Key");
         keys.push(key);
         answers += 1;
-        // Dispatch's keyed layer echoes the key on every answer to a keyed request, which is what
-        // tells the client a repeat is answered from the key rather than run again.
+        // The stand-in sends the key back as Dispatch's keyed layer does. The client asks again
+        // under the same key whatever the answer carries, and reads the echo only to settle a
+        // fresh 4xx refusal that echoes exactly its key.
         const headers: Record<string, string> = key === null ? {} : { "Idempotency-Key": key };
         if (answers === 1)
           return Response.json({ code: "UNAVAILABLE", error: "down" }, { status: 503, headers });
