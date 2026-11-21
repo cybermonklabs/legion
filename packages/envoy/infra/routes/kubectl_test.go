@@ -302,6 +302,33 @@ func TestKubectlForwardWritesItsPIDBeforeItListens(t *testing.T) {
 	}
 }
 
+// Right after an apply changes the pod template, before the StatefulSet's controller observes the
+// new generation, its status still shows the last finished roll, and every pod reads as on its
+// update revision: routes record refuses until status.observedGeneration is metadata.generation.
+// Control: the same StatefulSet once its controller has observed the generation.
+func TestKubectlRecordRefusesARollItsControllerHasNotSeen(t *testing.T) {
+	h := cleanHub()
+	src, dir := fakeKubeHub(t, h)
+	defer src.Close()
+	back := h.atEnv()
+	defer back()
+	write := func(observed int) {
+		t.Helper()
+		sts, err := json.Marshal(map[string]any{"kind": "StatefulSet", "metadata": map[string]any{"name": "envoy-nats", "generation": 2},
+			"spec": map[string]any{"replicas": len(h.pods)},
+			"status": map[string]any{"observedGeneration": observed, "replicas": len(h.pods), "updatedReplicas": len(h.pods),
+				"currentRevision": "envoy-nats-new", "updateRevision": "envoy-nats-new"}})
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "statefulset.json"), sts, 0o600))
+	}
+	write(2)
+	_, err := routes.Take(context.Background(), src, "envoy", "envoy-nats", started.Add(time.Minute))
+	require.NoError(t, err, "control: the controller has observed the generation")
+	write(1)
+	_, err = routes.Take(context.Background(), src, "envoy", "envoy-nats", started.Add(time.Minute))
+	require.ErrorContains(t, err, "envoy-nats-0, envoy-nats-1, envoy-nats-2 not on the update revision of a finished roll of the StatefulSet")
+}
+
 // In a pod that runs as a ServiceAccount with no kubeconfig, as the operator's Job does, kubectl
 // reads the cluster through its in-cluster configuration, and `kubectl config view --minify` fails
 // ("current-context must exist in order to minify", kubectl v1.36.4). With no --context given and

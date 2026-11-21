@@ -1191,8 +1191,8 @@ context and cluster of its own, exit 2 otherwise, since a hub of the same names 
 another cluster has other pods, which the check would read as a new container on every pod. It
 refuses until the `env` roll has finished: while any pod is not Ready with a running
 nats container, is not on the update revision of a finished roll of the StatefulSet (its
-`controller-revision-hash`, and the StatefulSet's `updatedReplicas`, `currentRevision` and
-`updateRevision`), or names no route variables in its nats container, since between two pods of a
+`controller-revision-hash`, and the StatefulSet's `observedGeneration`, `updatedReplicas`, `currentRevision`
+and `updateRevision`), or names no route variables in its nats container, since between two pods of a
 roll every pod can be Ready while one still runs the revision before, and a pod the roll replaces
 after the record has a log the record does not cover. It refuses as well while any pod's route
 port already requires authorization: the record vouches that each log reaches back

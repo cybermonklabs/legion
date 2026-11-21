@@ -123,21 +123,27 @@ func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 
 // Pods reads the StatefulSet's replica count and the state of its latest roll, and then each of its
 // pods by name, <statefulset>-<i>, as a Role that names the pods allows; a list of the namespace's
-// pods would need more. A pod is Updated when the roll has finished, every replica updated and the
-// current revision the update revision, and the pod's controller-revision-hash is that revision.
+// pods would need more. A pod is Updated when the roll has finished, the StatefulSet's controller
+// having observed its spec's generation, every replica updated and the current revision the update
+// revision, and the pod's controller-revision-hash is that revision. Until the controller observes
+// a new generation, the status is the last roll's, finished as it may be.
 func (k *kubectlSource) Pods(ctx context.Context) ([]Pod, error) {
 	out, err := k.kubectl(ctx, "get", "statefulset", k.StatefulSet, "--output", "json")
 	if err != nil {
 		return nil, err
 	}
 	var sts struct {
+		Metadata struct {
+			Generation int64 `json:"generation"`
+		} `json:"metadata"`
 		Spec struct {
 			Replicas *int `json:"replicas"`
 		} `json:"spec"`
 		Status struct {
-			UpdatedReplicas int    `json:"updatedReplicas"`
-			CurrentRevision string `json:"currentRevision"`
-			UpdateRevision  string `json:"updateRevision"`
+			ObservedGeneration int64  `json:"observedGeneration"`
+			UpdatedReplicas    int    `json:"updatedReplicas"`
+			CurrentRevision    string `json:"currentRevision"`
+			UpdateRevision     string `json:"updateRevision"`
 		} `json:"status"`
 	}
 	if err := json.Unmarshal(out, &sts); err != nil {
@@ -147,7 +153,8 @@ func (k *kubectlSource) Pods(ctx context.Context) ([]Pod, error) {
 	if sts.Spec.Replicas != nil {
 		replicas = *sts.Spec.Replicas
 	}
-	rolled := sts.Status.UpdateRevision != "" && sts.Status.CurrentRevision == sts.Status.UpdateRevision && sts.Status.UpdatedReplicas == replicas
+	rolled := sts.Status.ObservedGeneration == sts.Metadata.Generation && sts.Status.UpdateRevision != "" &&
+		sts.Status.CurrentRevision == sts.Status.UpdateRevision && sts.Status.UpdatedReplicas == replicas
 	pods := make([]Pod, 0, replicas)
 	for i := range replicas {
 		name := fmt.Sprintf("%s-%d", k.StatefulSet, i)
