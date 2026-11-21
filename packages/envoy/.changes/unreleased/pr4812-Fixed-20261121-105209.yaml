@@ -17,4 +17,4 @@ body: |-
   `bus.IsCASConflict`, which matches both codes by error class rather than by the error's text.
 time: 2026-11-21T10:52:09Z
 custom:
-    Issue: envoy-cas-conflict-replicated
+    Issue: pr4812
