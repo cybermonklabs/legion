@@ -8,8 +8,10 @@ body: |-
   failure) and when a token needs it, and a request waits for the discovery document and then the
   key set at most 4 seconds together, inside its write deadline and below Dispatch's 5-second call
   window; a read it started carries on and is kept for the next request. Until the issuer is read,
-  and past that wait, a projected service-account token or a Google identity token is answered
-  `503` with `Retry-After: 1`, never `401`; everything else is served. A
+  a projected service-account token or a Google identity token is answered `503` with
+  `Retry-After: 1`, never `401`, and so is one with sound claims past that wait (a token its own
+  claims refuse, such as one for another audience or expired, still gets `401`); everything else is
+  served. A
   failed round is logged `oidc: discover the issuer; retrying in the background` at ERROR at most
   once a minute per issuer, and the first success `oidc: discovered the issuer` once. The trade:
   a roll now completes while an issuer cannot be read (a wrong value, an issuer that is down, a

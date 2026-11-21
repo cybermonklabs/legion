@@ -181,6 +181,170 @@ func TestKeyReadsTheSetOnceForConcurrentCallers(t *testing.T) {
 	}
 }
 
+// A key set that fails at once, read while no set has ever been read, is read once per
+// FailureSpacing however many tokens arrive: every other caller in that time is answered the
+// failure with no read. Once the spacing has passed, the next caller reads again, and a set that
+// answers is kept. A key source starts with DefaultKeysFailureSpacing.
+func TestAKeySetThatFailsAtOnceIsReadOncePerSpacing(t *testing.T) {
+	if got := NewKeysAt("http://127.0.0.1:1/keys").FailureSpacing; got != DefaultKeysFailureSpacing {
+		t.Fatalf("NewKeysAt's FailureSpacing = %s, want DefaultKeysFailureSpacing (%s)", got, DefaultKeysFailureSpacing)
+	}
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	keys.FailureSpacing = 300 * time.Millisecond
+	issuer.FailKeys(http.StatusInternalServerError)
+
+	const callers = 200
+	for i := range callers {
+		if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) {
+			t.Fatalf("caller %d while the key set answers 500: err = %v, want ErrKeySet", i, err)
+		}
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 1 {
+		t.Fatalf("key set read %d times for %d callers within FailureSpacing, want 1", fetches, callers)
+	}
+
+	issuer.FailKeys(0)
+	time.Sleep(keys.FailureSpacing + 100*time.Millisecond)
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key once the spacing has passed and the key set answers: %v", err)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Fatalf("key set read %d times, want 2: one more read once the spacing passed", fetches)
+	}
+}
+
+// During a key rotation the cached set lacks the new key id until a read finds it. A second token
+// naming that id while the read that would settle it has not (it failed, within MinRefresh) is
+// ErrKeySet, the issuer being unavailable, not ErrNoKey, a signature no published key makes: the
+// key may well be published.
+func TestANewKeyIDWhoseReadFailedIsNoForgery(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "key-a")
+	if _, err := keys.Key(context.Background(), "key-a", testAlgorithm); err != nil {
+		t.Fatalf("Key(the cached key): %v", err)
+	}
+	issuer.PublishKey(t, "key-b")
+	issuer.FailKeys(http.StatusInternalServerError)
+
+	if _, err := keys.Key(context.Background(), "key-b", testAlgorithm); !errors.Is(err, ErrKeySet) {
+		t.Fatalf("the first token naming key-b, whose read fails: err = %v, want ErrKeySet", err)
+	}
+	_, err := keys.Key(context.Background(), "key-b", testAlgorithm)
+	if !errors.Is(err, ErrKeySet) || errors.Is(err, ErrNoKey) {
+		t.Fatalf("the second token naming key-b within MinRefresh of the failed read: err = %v, want ErrKeySet and not ErrNoKey", err)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Fatalf("key set read %d times, want 2: the cached read and the one key-b prompted", fetches)
+	}
+}
+
+// A second token naming a new key id, arriving while the read its first token prompted is still
+// under way, joins that read and is answered from the set it reads: it never gets ErrNoKey, a
+// signature no published key makes, for a key the issuer does publish.
+func TestASecondTokenForANewKeyJoinsTheReadUnderWay(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "key-a")
+	if _, err := keys.Key(context.Background(), "key-a", testAlgorithm); err != nil {
+		t.Fatalf("Key(the cached key): %v", err)
+	}
+	issuer.PublishKey(t, "key-b")
+	issuer.DelayKeys(500 * time.Millisecond)
+	first := make(chan error, 1)
+	go func() {
+		_, err := keys.Key(context.Background(), "key-b", testAlgorithm)
+		first <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for issuer.JWKSFetches() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the first token naming key-b never prompted a read within 5 s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := keys.Key(context.Background(), "key-b", testAlgorithm); err != nil {
+		t.Fatalf("a second token naming key-b while the read it needs is under way: %v, want key-b from that read", err)
+	}
+	if err := <-first; err != nil {
+		t.Fatalf("the first token naming key-b: %v", err)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 2 {
+		t.Fatalf("key set read %d times, want 2: the second token joined the first one's read", fetches)
+	}
+}
+
+// Callers that each carry a keys deadline (WithKeysDeadline) shorter than a slow key set share one
+// read: each leaves at its deadline with ErrKeySet, the read goes on in the background, and the set
+// it reads is kept, so a caller after it is answered with no read of its own.
+func TestCallersWithAKeysDeadlineShareOneReadThatIsKept(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	issuer.DelayKeys(500 * time.Millisecond)
+	const callers = 50
+	var wg sync.WaitGroup
+	errs := make([]error, callers)
+	start := make(chan struct{})
+	for i := range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			ctx := WithKeysDeadline(context.Background(), time.Now().Add(100*time.Millisecond))
+			_, errs[i] = keys.Key(ctx, "exchange-key", testAlgorithm)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if !errors.Is(err, ErrKeySet) {
+			t.Fatalf("caller %d past its keys deadline: err = %v, want ErrKeySet", i, err)
+		}
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 1 {
+		t.Fatalf("key set read %d times for %d callers, want 1", fetches, callers)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := keys.Key(WithKeysDeadline(context.Background(), time.Now().Add(100*time.Millisecond)), "exchange-key", testAlgorithm)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Key once the background read has landed: %v, want the kept set", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 1 {
+		t.Fatalf("key set read %d times, want 1: the background read's set was kept", fetches)
+	}
+}
+
+// A verification whose keys deadline (WithKeysDeadline) passes before a slow key set answers is
+// ErrIssuerUnavailable, the issuer being unavailable, at that deadline: never ErrCancelled, the
+// end of the caller's own context, nor a verification failure, and never a wait to the read's own
+// FetchTimeout.
+func TestAKeysDeadlineEndsTheWaitAsUnavailable(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, signing := keysFor(t, issuer, "signing-key")
+	verifier := NewWithKeys(issuer.URL(), testAudience, keys)
+	sound := issuer.Mint(t, signing, issuer.Claims(testSubject, testAudience))
+	issuer.DelayKeys(3 * time.Second)
+
+	ctx := WithKeysDeadline(context.Background(), time.Now().Add(200*time.Millisecond))
+	start := time.Now()
+	_, err := verifier.Verify(ctx, sound)
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrIssuerUnavailable) || errors.Is(err, ErrCancelled) || errors.Is(err, ErrSignature) {
+		t.Fatalf("Verify past its keys deadline = %v, want ErrIssuerUnavailable and neither ErrCancelled nor ErrSignature", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("the keys deadline ended the caller's context: %v", ctx.Err())
+	}
+	if elapsed > time.Second {
+		t.Fatalf("Verify answered after %s, want it at its 200 ms keys deadline, not the read's end", elapsed.Round(time.Millisecond))
+	}
+}
+
 func TestNewKeysRefusesAnIssuerThatDoesNotDiscover(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.FailDiscovery(http.StatusInternalServerError)

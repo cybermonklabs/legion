@@ -134,6 +134,45 @@ func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing
 	}
 }
 
+// During a key rotation: key A is cached, the issuer publishes key B, and its key set has become
+// slow (9 s, more than two budgets and under the read's own 10 s limit). The first token signed by
+// B opens the miss window and starts the read that would find B, and is answered 503 within
+// identityBudget. A second B token while that read is still under way joins it, and is answered
+// 503 at its own budget too, never the 401 of a signature no published key makes: no read has said
+// whether B is published. Once the read lands, a B token is admitted.
+func TestANewKeyIDDuringASlowReadIsAnswered503(t *testing.T) {
+	issuer := oidctest.New(t)
+	keyA := issuer.PublishKey(t, "rotation-key-a")
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
+	auth := listenerAPIAuth{token: "example-shared-token", verifier: verifier, logger: logging.NewWithWriter("rotation", &bytes.Buffer{})}
+	claims := issuer.Claims(listenerTestSubject, listenerTestAudience)
+	if status, _, _, err := sendThroughTheServer(t, auth, issuer.Mint(t, keyA, claims)); err != nil || status != http.StatusNoContent {
+		t.Fatalf("a token signed by the cached key A: status %d, err %v; want 204", status, err)
+	}
+	keyB := issuer.PublishKey(t, "rotation-key-b")
+	issuer.DelayKeys(9 * time.Second)
+	tokenB := issuer.Mint(t, keyB, claims)
+
+	for _, which := range []string{"the first token signed by B", "a second token signed by B, the read still under way"} {
+		status, retryAfter, elapsed, err := sendThroughTheServer(t, auth, tokenB)
+		if err != nil || status != http.StatusServiceUnavailable || retryAfter != "1" {
+			t.Fatalf("%s: status %d, Retry-After %q after %s, err %v; want 503 with Retry-After: 1, not 401",
+				which, status, retryAfter, elapsed.Round(time.Millisecond), err)
+		}
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		status, _, elapsed, err := sendThroughTheServer(t, auth, tokenB)
+		if err == nil && status == http.StatusNoContent {
+			break
+		}
+		if err != nil || status != http.StatusServiceUnavailable || time.Now().After(deadline) {
+			t.Fatalf("a token signed by B once the read has landed: status %d after %s, err %v; want 204 within 15 s", status, elapsed.Round(time.Millisecond), err)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 // sendThroughTheServer sends GET /v1/sessions with bearer to the listener's real server over
 // apiAuth with auth, and answers the status and Retry-After it got and how long it took, or the
 // error of a request that got no answer.
