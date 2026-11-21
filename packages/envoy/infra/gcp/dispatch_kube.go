@@ -778,6 +778,23 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		}
 		appEnv = append(appEnv, corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_OIDC_ISSUER"), Value: issuer},
 			valueEnv("DISPATCH_OIDC_AUDIENCE", s.oidcAudience))
+		// The two allow-lists narrow that verifier, so they render inside it, each only when set:
+		// unset, Dispatch admits every account of the issuer and the audience, and no account
+		// reads the membership answer.
+		if len(s.oidcAccounts) > 0 {
+			appEnv = append(appEnv, valueEnv("DISPATCH_OIDC_ACCOUNTS", strings.Join(s.oidcAccounts, ",")))
+		}
+		if len(s.accessAccounts) > 0 {
+			appEnv = append(appEnv, valueEnv("DISPATCH_ACCESS_ACCOUNTS", strings.Join(s.accessAccounts, ",")))
+		}
+	}
+	if s.projectOwnerFallback != "" {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PROJECT_OWNER_FALLBACK", s.projectOwnerFallback))
+	}
+	// Only true renders: false and unset leave the pod as it always was, so a stack that never
+	// turns private projects on renders no setting a binary that predates it would have to know.
+	if s.privateProjects {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_PROJECTS", "1"))
 	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at
@@ -915,6 +932,12 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// policies add up.
 	if len(args.LoadBalancerSourceRanges) > 0 {
 		appIngress = append(appIngress, ingressFrom(8766, ipBlockPeers(args.LoadBalancerSourceRanges)))
+	}
+	// Each allowed app is a rule of its own, admitting the pods of this namespace that wear its
+	// app label: a workload such as the secrets broker runs in Dispatch's own namespace, which an
+	// allowedNamespaces entry would open to every pod.
+	for _, app := range args.AllowedApps {
+		appIngress = append(appIngress, ingressFrom(8766, networkingv1.NetworkPolicyPeerArray{podPeer(app)}))
 	}
 	// The front door is a pod of this namespace, which no namespace selector covers, so without
 	// this rule Serve reaches the app at no port at all. Without a front door there is no such pod

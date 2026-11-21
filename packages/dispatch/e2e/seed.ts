@@ -64,6 +64,15 @@ const tables = [
   // by its state and its node row stays.
   "priority_tuples",
   "priority_nodes",
+  // The groups an access list names (migration 20261116015736_project_access). No foreign key
+  // reaches them either - a group belongs to no project, and its owner is an email rather than a
+  // people row - so the closure does not find them: a group one row made would stand in the next
+  // row's Settings and its name would be taken. Its members follow it through their own key.
+  "access_groups",
+  // The projects a session acted in (the same migration), which names its project by key with no
+  // foreign key, so a session's write takes no lock on projects: the closure does not reach it,
+  // and a row one row wrote would make the next row's session one of a project's agents.
+  "session_projects",
   // The step records Legion's daemon writes of an issue, and their tuple log (the
   // `workflow_nodes` migration). No foreign key reaches either table, so the closure below does
   // not find them: a step a row wrote would otherwise stand in the next row's Steps tab, under

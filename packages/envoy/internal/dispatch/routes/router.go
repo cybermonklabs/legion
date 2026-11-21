@@ -33,6 +33,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -45,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -138,6 +140,11 @@ type AppContextOptions struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          api.ServiceTokenVerifier
+	// OIDCAccounts are the service-account subjects the API admits, and AccessAccounts those that
+	// read the membership answer (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS, DISPATCH_ACCESS_ACCOUNTS).
+	// See api.DepsInput.
+	OIDCAccounts   []string
+	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
@@ -230,6 +237,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,
 		OIDC:                   opts.OIDC,
+		OIDCAccounts:           opts.OIDCAccounts,
+		AccessAccounts:         opts.AccessAccounts,
 		BrokerTokens:           opts.BrokerTokens,
 		AgentStream:            opts.AgentStream,
 		AgentPublisher:         opts.AgentPublisher,
@@ -520,11 +529,14 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 
 // whoamiAnswer is what GET /auth/whoami answers a signed-in person, the Go mirror of
 // packages/contracts' AuthenticatedUser. Its fields are in their keys' order, which is the order the
-// answer's JSON has always carried them in.
+// answer's JSON has always carried them in. MemberKind is "restricted" for a restricted member and
+// absent for everyone else, so a full member's answer is byte for byte what it was before member
+// kinds existed.
 type whoamiAnswer struct {
-	EventHead string `json:"event_head"`
-	Kind      string `json:"kind"`
-	Login     string `json:"login"`
+	EventHead  string `json:"event_head"`
+	Kind       string `json:"kind"`
+	Login      string `json:"login"`
+	MemberKind string `json:"member_kind,omitempty"`
 }
 
 // authWhoami answers the signed-in person and event_head, the decimal id at or below which every
@@ -538,7 +550,10 @@ type whoamiAnswer struct {
 // (api.ErrEventHeadUnproven: an event insert open since before every mark, with no horizon proven
 // or persisted), which ends on its own and which the page asks again for as long as it lasts.
 // Every other failure (the database or the horizon's pool not answering) is
-// EVENT_HEAD_READ_FAILED, which the page retries a few times and then shows as an error.
+// EVENT_HEAD_READ_FAILED, which the page retries a few times and then shows as an error. The
+// person's member kind is read last (access.MemberKind): one it cannot read is a 503
+// IDENTITY_UNAVAILABLE, never a whoami without it, so a restricted member is never shown a full
+// member's rail. A router with no Store, a test's, reads none.
 func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 	email, ok := r.login(w, req)
 	if !ok {
@@ -557,7 +572,23 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 		writeCodeError(w, http.StatusServiceUnavailable, "the event log's head could not be read", "EVENT_HEAD_READ_FAILED")
 		return
 	}
-	api.WriteJSON(w, http.StatusOK, whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email})
+	answer := whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email}
+	if r.ctx.Store != nil {
+		kind, err := access.MemberKind(req.Context(), r.ctx.Store.Pool, email)
+		if err != nil {
+			if req.Context().Err() == nil {
+				slog.Warn("dispatch: whoami could not read the person's member kind", "error", err)
+			}
+			writeCodeError(w, http.StatusServiceUnavailable, "the person's member kind could not be read", "IDENTITY_UNAVAILABLE")
+			return
+		}
+		// Only the restricted kind is written, never string(kind), which would add "full" to
+		// every full member's answer.
+		if kind == model.MemberRestricted {
+			answer.MemberKind = model.MemberAnswerRestricted
+		}
+	}
+	api.WriteJSON(w, http.StatusOK, answer)
 }
 
 // apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App.

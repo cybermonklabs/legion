@@ -38,6 +38,7 @@ import {
   settingsTableRow,
   settingsTableWrapper,
 } from "./classes";
+import { GroupsSection } from "./GroupsSection";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
 import { ProjectSelect } from "./ProjectSelect";
 import { ProjectsSection } from "./ProjectsSection";
@@ -211,6 +212,7 @@ export function SettingsPage(): ReactNode {
       </header>
       <div className={settingsSectionGap}>
         <ProjectsSection />
+        <GroupsSection />
         <AgentTokensSection />
         {credentialsAvailable.isPending || credentialsAvailable.data === null ? null : (
           <>

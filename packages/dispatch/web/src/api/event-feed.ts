@@ -27,6 +27,8 @@ const knownEventTypes: Record<EventType, true> = {
   "user_thread_state.updated": true,
   "decision.kept": true,
   "priority.updated": true,
+  "project.access_changed": true,
+  "access_group.changed": true,
   "issue.created": true,
   "issue.updated": true,
   "issue.closed": true,

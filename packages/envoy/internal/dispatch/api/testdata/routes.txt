@@ -1,4 +1,9 @@
 GET /api/v1 public
+GET /api/v1/access-groups any
+DELETE /api/v1/access-groups/{name} any
+PUT /api/v1/access-groups/{name} any
+GET /api/v1/access/person any
+GET /api/v1/access/projects/{key} any
 GET /api/v1/agents any
 GET /api/v1/agents/{session_id}/answers any
 POST /api/v1/agents/{session_id}/artifacts any
@@ -157,6 +162,12 @@ PATCH /api/v1/priorities/{id} any
 GET /api/v1/priorities/{id}/history any
 GET /api/v1/projects any
 POST /api/v1/projects any
+GET /api/v1/projects/{key}/access any
+PATCH /api/v1/projects/{key}/access any
+DELETE /api/v1/projects/{key}/access/groups/{name} any
+PUT /api/v1/projects/{key}/access/groups/{name} any
+DELETE /api/v1/projects/{key}/access/people/{email} any
+PUT /api/v1/projects/{key}/access/people/{email} any
 GET /api/v1/projects/{key}/architecture any
 GET /api/v1/projects/{key}/architecture-source any
 POST /api/v1/projects/{key}/architecture-source/sync any

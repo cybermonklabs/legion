@@ -259,18 +259,55 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 			return nil
 		})
 	}
+	queueSessionProject(batch, e)
 	return nil
 }
 
+// queueSessionProject queues the record that e's session acted in the project e belongs to
+// (session_projects), which is how a session is one of a project's agents (access.SessionClause):
+// a read model of the event log, not a node, so it is written here, where every event is appended,
+// rather than by each route. The project is the owner row's, read in the statement's own snapshot,
+// as the insert before it reads last_seq. An event of a person, of a credential that names no
+// session (a personal token's actor has an empty id) or of no owner records nothing.
+//
+// A pair is written only where no row of the transaction's snapshot holds it, and session_projects
+// has no unique key, so the write never waits for another transaction: with a unique key, a
+// second open write of the same pair would wait for the first to end, and the two writers hold
+// their issues' locks while they append, so a first writer that then takes the second's issue
+// would wait for it in turn, a deadlock (TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit).
+// Two writes open at once may therefore both record a pair; every reader asks only whether a row
+// exists, and the rows a pair can gain this way are bounded by how many of its writers are open at
+// one moment. A later event of the same pair in the same transaction sees the earlier one's row and
+// writes none.
+func queueSessionProject(batch *store.WriteBatch, e model.Event) {
+	if e.Actor.Kind != "session" || e.Actor.ID == "" || (e.IssueKey == nil && e.ArtifactID == nil && e.ProjectKey == nil) {
+		return
+	}
+	batch.Queue("record the session's project", `
+		insert into session_projects (session_id, project_key)
+		select $1, owner.project_key
+		from (
+			select project_key from issues where key = $2
+			union all select project_key from artifacts where id = $3
+			union all select key from projects where key = $4
+		) owner
+		where owner.project_key is not null
+			and not exists (
+				select 1 from session_projects recorded
+				where recorded.session_id = $1 and recorded.project_key = owner.project_key)
+	`, e.Actor.ID, e.IssueKey, e.ArtifactID, e.ProjectKey)
+}
+
 // eventOwnerKey requires at most one of IssueKey/ArtifactID/ProjectKey, and an event naming none
-// of them is one of exactly two kinds, each told by its payload: a session-addressed message or
-// viewer state (agentEventSessionID), keyed "agent:<session>", and a priority's write
-// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>". Any other ownerless
-// event is refused, so there is still no ownerless event for a plain configuration change: a
-// cross-project singleton settings table (no project, issue, or artifact of its own) has
-// nothing valid to pass here. See api/settings_delivery.go's putDeliverySettings doc comment for
-// a worked example of a route that checked this directly and deliberately skips appending an
-// event rather than inventing an owner.
+// of them is one of exactly three kinds, each told by its payload: a session-addressed message or
+// viewer state (agentEventSessionID), keyed "agent:<session>"; a priority's write
+// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>"; and a group's write
+// (model.AccessGroupEventPayload, `access_group.changed`), keyed "access_group:<name>", since a
+// group belongs to no project. Any other ownerless event is refused, so there is still no
+// ownerless event for a plain configuration change: a cross-project singleton settings table (no
+// project, issue, or artifact of its own) has nothing valid to pass here. See
+// api/settings_delivery.go's putDeliverySettings doc comment for a worked example of a route that
+// checked this directly and deliberately skips appending an event rather than inventing an owner.
 //
 // The key of an ownerless event locks nothing: eventOwnerLock names no owner lock for it, so
 // LockOwners takes none and lockEventOwner takes only the transaction id, and QueueAppend's
@@ -291,11 +328,17 @@ func eventOwnerKey(e model.Event) (string, error) {
 		owners++
 	}
 	if owners == 0 {
-		if payload, ok := e.Payload.(model.PriorityEventPayload); ok {
+		switch payload := e.Payload.(type) {
+		case model.PriorityEventPayload:
 			if e.Type != "priority.updated" || payload.ID == "" {
 				return "", fmt.Errorf("ownerless priority event requires type priority.updated and a priority id")
 			}
 			return "priority:" + payload.ID, nil
+		case model.AccessGroupEventPayload:
+			if e.Type != "access_group.changed" || payload.Name == "" {
+				return "", fmt.Errorf("ownerless group event requires type access_group.changed and a group name")
+			}
+			return "access_group:" + payload.Name, nil
 		}
 		sessionID, err := agentEventSessionID(e)
 		if err != nil {
@@ -426,12 +469,15 @@ func Quiet(e model.Event) bool {
 	case "project.created", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",
-		"user_thread_state.updated", "decision.kept", "priority.updated":
+		"user_thread_state.updated", "decision.kept", "priority.updated",
+		"project.access_changed", "access_group.changed":
 		// Settings, importer and per-viewer bookkeeping: retained on their log and carried by
 		// the event feed, but nobody is woken by them. A Keep records that a person read a
 		// decision and agreed with it, which asks its agent for nothing. A priority's write is
 		// the deployment's own configuration of what work advances, which open pages refetch on
-		// and nobody is asked anything by.
+		// and nobody is asked anything by. A change of a project's access list, owner or
+		// visibility, or of a group, is who may see what: every reader resolves its viewer again
+		// on it, and nobody is asked anything by it.
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was

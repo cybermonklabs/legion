@@ -43,7 +43,7 @@ type setting struct {
 // server generates text with, the dashboard, and local and test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
-		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused."},
+		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-session-projects`, `backfill-files`, `rebuild-refs`, `stored-order` and `project-owner` read it too. A `pool_max_conns` parameter is refused."},
 	{Name: "DISPATCH_FILE_STORE_BUCKET", Required: "no",
 		Description: "Bucket uploaded files (images, attachments) are stored in, keyed by their SHA-256. `gs://<bucket>` is a Google Cloud Storage bucket, reached with Application Default Credentials (on GKE the pod's Workload Identity principal), which needs `storage.objects.create` and `storage.objects.get` on it and nothing more; any other value is an S3 bucket's name, and the AWS SDK finds its region and credentials itself (`AWS_*`, the shared config files, the task role). `backfill-files` reads it too and opens the same store. Unset, every upload's bytes stay in Postgres, as before the bucket existed."},
 	{Name: "DISPATCH_AGENT_TOKEN", Required: "yes",
@@ -114,6 +114,8 @@ var settings = []setting{
 		Description: "Comma-separated `owner/repo=KEY` mappings seeded at startup; a mapping saved in the dashboard wins."},
 	{Name: "DISPATCH_DEFAULT_PROJECT", Required: "no",
 		Description: "Project an external issue from an unmapped repository is created in; it must already exist."},
+	{Name: "DISPATCH_PROJECT_OWNER_FALLBACK", Required: "when a project has no owner: the boot refuses to serve while one has none",
+		Description: "The lowercase email of a full member who has signed in, whom the boot makes the owner of every project with no owner: a project whose default assignee had never signed in when migration `20261116015736_project_access` gave each project its default assignee as owner. Unset, or naming nobody who is a full member, the boot refuses to start naming each such project and both repairs, this setting and `envoy-dispatch project-owner <KEY> <email>`. A value that is not a lowercase email refuses startup."},
 	{Name: "DISPATCH_NEW_ISSUE_LABEL", Default: "the issue carries no label", Required: "no",
 		Description: "Label an issue carries that the search bar files from the words a person typed, when those words match nothing the bar found; it is added to that issue alone."},
 	{Name: "DISPATCH_NEW_ISSUE_SESSION", Default: "the issue is made and no conversation is started on it", Required: "no",
@@ -140,6 +142,10 @@ var settings = []setting{
 		Description: "OIDC issuer whose projected service-account tokens authenticate as agents."},
 	{Name: "DISPATCH_OIDC_AUDIENCE", Required: "when `DISPATCH_OIDC_ISSUER` is set",
 		Description: "Audience those service-account tokens must carry."},
+	{Name: "DISPATCH_OIDC_ACCOUNTS", Default: "every service account whose token the issuer signs for the audience is admitted, and the boot logs a warning saying so", Required: "no",
+		Description: "Comma-separated Kubernetes service-account subjects, each `system:serviceaccount:<namespace>:<name>`, whose projected tokens Dispatch admits: a verified token of any other account is refused `401 SERVICE_ACCOUNT_NOT_ADMITTED` before anything is read or written. It narrows the verifier `DISPATCH_OIDC_AUDIENCE` turns on, so it is refused without that; an entry that is empty or not such a subject refuses startup."},
+	{Name: "DISPATCH_ACCESS_ACCOUNTS", Default: "no account reads the membership answer", Required: "no",
+		Description: "Comma-separated service-account subjects, in the form `DISPATCH_OIDC_ACCOUNTS` takes, that may read the membership answer (`GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person`), the secrets broker's in production; every other caller is refused `403 ACCESS_ACCOUNT_REQUIRED` there. Refused without `DISPATCH_OIDC_AUDIENCE`, and an account that a set `DISPATCH_OIDC_ACCOUNTS` does not list refuses startup."},
 	{Name: "DISPATCH_AGENT_SECRETS_URL", Required: "no",
 		Description: "Base URL of the secrets broker's API, an absolute http(s) URL with no path; set, the credential-request pages are on."},
 	{Name: "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", Required: "when `DISPATCH_AGENT_SECRETS_URL` is set",

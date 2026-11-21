@@ -78,6 +78,11 @@ type testServerOptions struct {
 	// oidc is the service-account token verifier; nil is the unconfigured
 	// deployment, whose bearer handling is untouched by that feature.
 	oidc ServiceTokenVerifier
+	// oidcAccounts and accessAccounts are Deps.OIDCAccounts and Deps.AccessAccounts: the
+	// service-account subjects the deployment admits, and those that read the membership answer.
+	// Nil is the deployment that names none.
+	oidcAccounts   []string
+	accessAccounts []string
 	// brokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme. It is built from the test's own database, as the persistence seam below
 	// is, because the verifier's DPoP replay store is a table of it (store.NewDPoPProofs); nil
@@ -324,6 +329,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		HorizonStallAfter:     horizontest.StallWarning,
 		HorizonWarnEvery:      horizontest.StallWarning,
 		OIDC:                  options.oidc,
+		OIDCAccounts:          options.oidcAccounts,
+		AccessAccounts:        options.accessAccounts,
 		BrokerTokens:          brokerTokens,
 		AgentSecretsURL:       options.agentSecretsURL,
 		AgentSecretsTokenFile: agentSecretsTokenFile,
@@ -2042,8 +2049,9 @@ func newCookieServer(t *testing.T) (http.Handler, *store.PgSessionStore, *http.C
 }
 
 // newCookieServerOn is newCookieServer on database, with heartbeat as the API's StreamHeartbeat
-// (zero leaves it unset), also returning the server's document service.
-func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Duration) (http.Handler, *store.PgSessionStore, *http.Cookie, cookieRequest, *docs.Service) {
+// (zero leaves it unset), also returning the server's document service. Each of with edits the
+// dependencies before the server is built.
+func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Duration, with ...func(*DepsInput)) (http.Handler, *store.PgSessionStore, *http.Cookie, cookieRequest, *docs.Service) {
 	t.Helper()
 	sessions := store.NewPgSessionStore(database.Pool)
 	cookieIdentity := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions}
@@ -2052,10 +2060,14 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 		Store: database, Events: broker, Identity: cookieIdentity, Settle: time.Hour,
 	})
 	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
-	deps, err := NewDeps(DepsInput{
+	input := DepsInput{
 		Store: database, Identity: cookieIdentity, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs: documentService, Events: broker, StreamHeartbeat: heartbeat,
-	})
+	}
+	for _, edit := range with {
+		edit(&input)
+	}
+	deps, err := NewDeps(input)
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}

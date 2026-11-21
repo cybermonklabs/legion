@@ -17,8 +17,9 @@ import (
 
 // The OAuth scopes a credential can hold. ScopePerson is "this credential acts as its person",
 // which every route a person reaches through the dashboard requires; ScopeApprove is the right to
-// settle what a person settles — an approval, an ask's answer — which no credential holds without
-// ScopePerson, since a credential that does not act as its person has nobody to approve for.
+// settle what a person settles — an approval, an ask's answer, who may see a project — which no
+// credential holds without ScopePerson, since a credential that does not act as its person has
+// nobody to approve for.
 const (
 	ScopePerson  = "person"
 	ScopeApprove = "approve"
@@ -72,6 +73,12 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
+	// Projects are the projects the credential may use, sorted: a personal token's
+	// agent_tokens.projects, a broker token's list. Empty is a credential that names none, which
+	// sees only the public projects its person sees (internal/dispatch/access, the rule). No token
+	// read fills it yet, and no read resolves a viewer yet: the two come together, so until then
+	// every credential names no list.
+	Projects []string
 	// ReadOnly is a broker-issued token that holds only the scope read (ciphertoken.ScopeRead):
 	// one the secrets broker minted from a read entry, naming a service and a session and no
 	// person and no project. Dispatch serves it on the routes its read list names
@@ -96,6 +103,8 @@ func (c *Credential) Holds(scope string) bool {
 // one project key a broker-issued access token lets its session write, set by
 // the server from that token and never from a request body; it is nil for
 // every other credential and for a token whose scope names no single project.
+// Project is deprecated: Credential.Projects is the list a credential carries,
+// and Project stays only until every reader of it reads the list.
 type Actor struct {
 	Kind    string       `json:"kind"`
 	ID      string       `json:"id"`
@@ -125,10 +134,14 @@ type Actor struct {
 	// serialised; the scope gate and actingPerson read it, actingPerson copies what it needs
 	// onto Act, and Recorded drops it from the actor a handler writes and compares.
 	Credential *Credential `json:"-"`
+	// Viewer is what the caller may see, as access.Resolve answered it for this request: a
+	// fact of the request, like Credential, so it is never serialised. Recorded drops it and
+	// Reader keeps it.
+	Viewer *Viewer `json:"-"`
 }
 
-// Recorded is the actor as a write records it: the request's credential dropped. A stored actor
-// is decoded from JSON, which carries no credential, so the credential never reaches a row.
+// Recorded is the actor as a write records it: the request's credential and viewer dropped. A
+// stored actor is decoded from JSON, which carries neither, so neither ever reaches a row.
 // Dispatch decides "the same writer" by kind and id (SameAs) and "the same credential" by those
 // and the names a credential carries (SameCredential); the one == left that decides anything is
 // the document rooms' lost-write notice (docs/lostedit.go), so an actor handed to the document
@@ -142,8 +155,45 @@ type Actor struct {
 // optionalActor (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
+	a.Viewer = nil
 	return a
 }
+
+// Reader is the actor as a read binds it: the request's credential dropped, as Recorded drops
+// it, and its viewer kept, because what a read may answer is the viewer's to decide.
+func (a Actor) Reader() Actor {
+	a.Credential = nil
+	return a
+}
+
+// MemberKind is how a person belongs to the deployment: a full member signed in under the
+// sign-in domain, and a restricted member signed in because a project's access list names them.
+// MemberNone is a login no `people` row holds.
+type MemberKind string
+
+const (
+	MemberNone       MemberKind = ""
+	MemberFull       MemberKind = "full"
+	MemberRestricted MemberKind = "restricted"
+)
+
+// Viewer is what one caller may see, resolved once a request (access.Resolve). Sees is every
+// project it sees, sorted. Open is a viewer that is neither restricted nor holds a list of
+// projects: it reads every row that belongs to no project, as every caller did before projects
+// could be private. All is ServerViewer alone. AnyPrivate is whether the deployment holds a
+// private project at all.
+type Viewer struct {
+	Person, Session    string
+	Restricted, Listed bool
+	Open               bool
+	All                bool
+	Sees               []string
+	AnyPrivate         bool
+}
+
+// ServerViewer is the server's own read of content that belongs to one owner, which each of its
+// uses gates per viewer where it leaves the server: it sees every project and every party.
+var ServerViewer = &Viewer{Open: true, All: true}
 
 // SameAs reports whether two actors are the same writer: one session id, or one human login.
 // Dispatch compares actors in this way wherever it has to decide "is this the same session" — a
@@ -312,7 +362,118 @@ type Project struct {
 	// waiting for a person, so a reader need not tell them apart.
 	GatedSteps []string  `json:"gated_steps"`
 	CreatedAt  time.Time `json:"created_at"`
+	// Visibility is ProjectPrivate for a private project and absent for a public one, so a
+	// deployment where every project is public answers every project as it did before projects
+	// could be private.
+	Visibility string `json:"visibility,omitempty"`
 }
+
+// The two visibilities a project has (projects.visibility). Every full member sees a public
+// project; a private one is seen only by its owner and the people and groups its access list
+// names.
+const (
+	ProjectPublic  = "public"
+	ProjectPrivate = "private"
+)
+
+// ProjectAccess is who may see one project and who changes that: its owner, its visibility, and
+// the people (lowercase emails) and groups its access list names, each list sorted and never
+// null (GET /api/v1/projects/{key}/access).
+type ProjectAccess struct {
+	Project    string   `json:"project"`
+	Owner      string   `json:"owner"`
+	Visibility string   `json:"visibility" enum:"public,private"`
+	People     []string `json:"people"`
+	Groups     []string `json:"groups"`
+	// SlackChannels are the Slack channel ids the project's credentials may post to, at most 16,
+	// sorted, always present and [] for none. Its owner names them. The secrets broker is to
+	// release the Legion Slack bot token to a private project's credentials for these channels
+	// alone (R14); no broker reads them yet.
+	SlackChannels []string `json:"slack_channels"`
+	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
+	// rule admits each of them once they sign in.
+	NotSignedIn []string `json:"not_signed_in"`
+}
+
+// AccessGroup is a named list of full members that an access list can name: its one owner, the
+// full member who made it or was given it, and its members, sorted and never null.
+type AccessGroup struct {
+	Name    string   `json:"name"`
+	Owner   string   `json:"owner"`
+	Members []string `json:"members"`
+	// NotSignedIn are the members nobody has signed in as yet, sorted and never null. A group
+	// admits only its full members, so each of them is admitted once they sign in as one.
+	NotSignedIn []string `json:"not_signed_in"`
+}
+
+// AccessAnswer is the membership answer the secrets broker reads (GET
+// /api/v1/access/projects/{key}?person=): one project's owner and visibility, the person's member
+// kind (MemberAnswerFull, MemberAnswerRestricted or MemberAnswerNone), whether the read rule lets
+// that person see the project at a browser, and the project's Slack channels. It names no
+// repositories: GitHub events carry no project, so no reader needs a project's repositories.
+type AccessAnswer struct {
+	Project    string `json:"project"`
+	Visibility string `json:"visibility" enum:"public,private"`
+	Owner      string `json:"owner"`
+	Person     string `json:"person"`
+	MemberKind string `json:"member_kind" enum:"full,restricted,none"`
+	Visible    bool   `json:"visible"`
+	// SlackChannels is the project's own list, as ProjectAccess carries it: [] for none.
+	SlackChannels []string `json:"slack_channels"`
+}
+
+// PersonAnswer is one person's member kind as the membership answer spells it (GET
+// /api/v1/access/person?person=).
+type PersonAnswer struct {
+	Person     string `json:"person"`
+	MemberKind string `json:"member_kind" enum:"full,restricted,none"`
+}
+
+// The member kinds the membership answer spells: MemberKind's two, and MemberAnswerNone for a
+// login no `people` row holds, which MemberKind leaves empty.
+const (
+	MemberAnswerFull       = string(MemberFull)
+	MemberAnswerRestricted = string(MemberRestricted)
+	MemberAnswerNone       = "none"
+)
+
+// ProjectAccessEventPayload is `project.access_changed`: one write of a project's owner,
+// visibility or access list committed. It carries the project's access as that write left it,
+// which change it was, and the person or group it added or removed, so every reader that
+// resolved a viewer before it resolves again. It is owned by the project and never notifies.
+type ProjectAccessEventPayload struct {
+	ProjectAccess
+	Change    string `json:"change"`
+	Principal string `json:"principal,omitempty"`
+}
+
+// The Change of a ProjectAccessEventPayload.
+const (
+	AccessOwnerChanged      = "owner"
+	AccessVisibilityChanged = "visibility"
+	AccessPersonAdded       = "person_added"
+	AccessPersonRemoved     = "person_removed"
+	AccessGroupAdded        = "group_added"
+	AccessGroupRemoved      = "group_removed"
+	// AccessSlackChannelsChanged is a write of the project's Slack channels.
+	AccessSlackChannelsChanged = "slack_channels"
+)
+
+// AccessGroupEventPayload is `access_group.changed`: one group was made, had its members or owner
+// written, or was deleted. A group belongs to no project, so it names no owner: the outbox
+// publishes it nowhere and it never notifies (events.Quiet), as a priority's write.
+type AccessGroupEventPayload struct {
+	Name string `json:"name"`
+	// Change is AccessGroupCreated, AccessGroupUpdated or AccessGroupDeleted.
+	Change string `json:"change"`
+}
+
+// The Change of an AccessGroupEventPayload.
+const (
+	AccessGroupCreated = "created"
+	AccessGroupUpdated = "updated"
+	AccessGroupDeleted = "deleted"
+)
 
 // GatedStepDecisions, GatedStepCriteria and GatedStepSpec are the three design-gate steps
 // Project.GatedSteps names, each one a document of the root issue: the issue's decisions

@@ -1,4 +1,6 @@
 export type {
+  AccessGroup,
+  AccessGroupInput,
   Actor,
   ActorAct,
   ActorOrigin,
@@ -241,6 +243,8 @@ export type {
   PriorityWorkParked,
   ProgressCount,
   Project,
+  ProjectAccess,
+  ProjectAccessInput,
   ProjectDefaultAssignee,
   RecordResponse,
   ReferenceQuestion,

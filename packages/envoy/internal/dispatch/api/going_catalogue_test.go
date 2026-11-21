@@ -27,6 +27,10 @@ import (
 // TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a write added later is
 // named here or in goingToolRoutes and never silently missing.
 var goingMutatingRoutesWithNoTool = []string{
+	// Who may see a project, and the groups an access list names (INFRA-3862): each acts as the
+	// project's or the group's owner, whom the proposing loop never stands in for, so no tool
+	// performs one.
+	"DELETE /api/v1/access-groups/{name}",
 	"DELETE /api/v1/artifacts/{id}",
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
 	"DELETE /api/v1/delivery/session-groups/{id}",
@@ -34,6 +38,8 @@ var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/me/agent-tokens/{id}",
 	"DELETE /api/v1/me/asks/{id}/snooze",
 	"DELETE /api/v1/priorities/{id}",
+	"DELETE /api/v1/projects/{key}/access/groups/{name}",
+	"DELETE /api/v1/projects/{key}/access/people/{email}",
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"DELETE /api/v1/projects/{key}/legion/daemon",
 	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}",
@@ -42,6 +48,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PATCH /api/v1/delivery/session-groups/{id}",
 	"PATCH /api/v1/me/agent-tokens/{id}",
 	"PATCH /api/v1/priorities/{id}",
+	"PATCH /api/v1/projects/{key}/access",
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",
 	"POST /api/v1/artifacts/{id}/rebuild",
 	// The two review routes: this one, the document header's, and the one dispatch_review
@@ -83,6 +90,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions",
 	"POST /api/v1/projects/{key}/related",
 	"POST /api/v1/signins/{id}/revoke",
+	"PUT /api/v1/access-groups/{name}",
 	"PUT /api/v1/asks/{id}/asked-of",
 	"PUT /api/v1/issues/{key}/design-gates",
 	"PUT /api/v1/issues/{key}/plans/{id}",
@@ -94,6 +102,8 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/me/documents/{id}/read",
 	"PUT /api/v1/me/issues/{key}/state",
 	"PUT /api/v1/me/threads/{id}/read",
+	"PUT /api/v1/projects/{key}/access/groups/{name}",
+	"PUT /api/v1/projects/{key}/access/people/{email}",
 	"PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"PUT /api/v1/projects/{key}/default-assignee",
 	"PUT /api/v1/projects/{key}/gated-steps",

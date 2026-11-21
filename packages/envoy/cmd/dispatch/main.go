@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -59,6 +60,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
@@ -86,6 +88,17 @@ type bootConfig struct {
 	AgentTokens    *auth.SharedAgentTokens
 	RepoProjects   string
 	DefaultProject string
+	// OIDCAccounts and AccessAccounts are DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS: the
+	// Kubernetes service-account subjects whose tokens the API admits (none named admits every
+	// account of the issuer and audience), and those of them that read the membership answer.
+	// resolveBootConfig has held each to the subject's form, refused either without
+	// DISPATCH_OIDC_AUDIENCE, and refused an access account a non-empty admitted list leaves out.
+	OIDCAccounts   []string
+	AccessAccounts []string
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK, a lowercase email: the full member
+	// the boot makes the owner of every project with no owner (store.EnsureProjectOwners); empty
+	// gives none, and the boot then refuses to serve while a project has no owner.
+	ProjectOwnerFallback string
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
 	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
 	// words carries, and the session that issue is routed to and its first message is sent to.
@@ -449,6 +462,13 @@ func main() {
 		slog.Error("dispatch: validate default project", "error", err)
 		os.Exit(1)
 	}
+	// Every project has an owner (INFRA-3862): a project the access migration left with none is
+	// given to DISPATCH_PROJECT_OWNER_FALLBACK's full member, and while one still has none the boot
+	// refuses, naming each and both repairs, as an unknown default project refuses it.
+	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback); err != nil {
+		slog.Error("dispatch: give every project an owner", "error", err)
+		os.Exit(1)
+	}
 
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
 	if err != nil {
@@ -530,6 +550,7 @@ func main() {
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
 		slog.Info("dispatch: verifying service-account tokens", "issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
+		warnEveryServiceAccountAdmitted(boot)
 		go serviceTokens.Run(ctx)
 	}
 
@@ -1343,9 +1364,15 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot := bootConfig{
-		DatabaseURL:           strings.TrimSpace(env.get("DATABASE_URL")),
-		RepoProjects:          strings.TrimSpace(env.get("DISPATCH_REPO_PROJECTS")),
-		DefaultProject:        strings.TrimSpace(env.get("DISPATCH_DEFAULT_PROJECT")),
+		DatabaseURL:    strings.TrimSpace(env.get("DATABASE_URL")),
+		RepoProjects:   strings.TrimSpace(env.get("DISPATCH_REPO_PROJECTS")),
+		DefaultProject: strings.TrimSpace(env.get("DISPATCH_DEFAULT_PROJECT")),
+
+		// Checked once the issuer and audience are read (checkAccessSettings).
+		OIDCAccounts:         commaList(env, "DISPATCH_OIDC_ACCOUNTS"),
+		AccessAccounts:       commaList(env, "DISPATCH_ACCESS_ACCOUNTS"),
+		ProjectOwnerFallback: strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
+
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
 		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
@@ -1511,6 +1538,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if err != nil {
 		return bootConfig{}, err
 	}
+	if err := checkAccessSettings(boot); err != nil {
+		return bootConfig{}, err
+	}
 
 	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
 	if agentSecretsURL != "" {
@@ -1545,6 +1575,73 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		boot.DevSignIn = true
 	}
 	return boot, nil
+}
+
+// warnEveryServiceAccountAdmitted logs one WARN when the deployment verifies service-account tokens
+// and names no account: every account whose token the issuer signs for the audience is then
+// admitted, as before DISPATCH_OIDC_ACCOUNTS existed. main calls it beside the line that says the
+// tokens are verified; resolveBootConfig only reads the environment.
+func warnEveryServiceAccountAdmitted(boot bootConfig) {
+	if boot.OIDCAudience != "" && len(boot.OIDCAccounts) == 0 {
+		slog.Warn("dispatch: DISPATCH_OIDC_ACCOUNTS is unset, so every service account whose token the issuer signs for the audience is admitted; list the accounts that call Dispatch to admit only them",
+			"issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
+	}
+}
+
+// commaList is the comma-separated list the setting name holds, each entry trimmed; a value blank
+// once trimmed is no list at all. An empty entry stays in the list for its reader to refuse by
+// position, as NATS_URLS and DISPATCH_REPO_PROJECTS refuse one.
+func commaList(env settingValues, name string) []string {
+	value := strings.TrimSpace(env.get(name))
+	if value == "" {
+		return nil
+	}
+	entries := strings.Split(value, ",")
+	for index, entry := range entries {
+		entries[index] = strings.TrimSpace(entry)
+	}
+	return entries
+}
+
+// checkAccessSettings refuses what boot's access settings cannot mean. Each list of service
+// accounts names accounts of the verifier DISPATCH_OIDC_AUDIENCE turns on, so either set without it
+// would configure nothing, and each entry is a service account's subject. An account that reads
+// the membership answer must be one the deployment admits, which every account is while
+// DISPATCH_OIDC_ACCOUNTS names none. The owner fallback is a person as Dispatch stores one, a
+// lowercase email; the refusal does not repeat it, as DISPATCH_SIGNIN_DOMAIN's does not.
+func checkAccessSettings(boot bootConfig) error {
+	for _, list := range []struct {
+		name     string
+		accounts []string
+	}{
+		{"DISPATCH_OIDC_ACCOUNTS", boot.OIDCAccounts},
+		{"DISPATCH_ACCESS_ACCOUNTS", boot.AccessAccounts},
+	} {
+		if len(list.accounts) > 0 && boot.OIDCAudience == "" {
+			return fmt.Errorf("%s is set but DISPATCH_OIDC_AUDIENCE is not: it names accounts of the service-account verifier the audience turns on, so without one it would configure nothing", list.name)
+		}
+		for index, account := range list.accounts {
+			if account == "" {
+				return fmt.Errorf("%s entry %d of %d is empty", list.name, index+1, len(list.accounts))
+			}
+			if !principal.ServiceAccountSubject.MatchString(account) {
+				return fmt.Errorf("%s entry %d of %d is not a Kubernetes service account's subject, system:serviceaccount:<namespace>:<name>", list.name, index+1, len(list.accounts))
+			}
+		}
+	}
+	if len(boot.OIDCAccounts) > 0 {
+		for _, account := range boot.AccessAccounts {
+			if !slices.Contains(boot.OIDCAccounts, account) {
+				return fmt.Errorf("DISPATCH_ACCESS_ACCOUNTS names %s, which DISPATCH_OIDC_ACCOUNTS does not admit: an account that reads the membership answer must be one the deployment admits", account)
+			}
+		}
+	}
+	if fallback := boot.ProjectOwnerFallback; fallback != "" {
+		if err := principal.CheckPersonLogin(fallback); err != nil {
+			return fmt.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email, the one a full member signed in with; got a value of %d characters", len(fallback))
+		}
+	}
+	return nil
 }
 
 // devSignInFence is the dev sign-in fence over the environment; devSignInLoadedFence covers what
@@ -1856,6 +1953,8 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.SignInRule = signInRule(boot)
 	built.AgentTokens = boot.AgentTokens
 	built.DefaultProject = boot.DefaultProject
+	built.OIDCAccounts = boot.OIDCAccounts
+	built.AccessAccounts = boot.AccessAccounts
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
 	built.InsecureCookie = boot.InsecureCookie

@@ -1076,6 +1076,83 @@ export class DispatchApiClient {
     return this.put("/api/v1/projects/{key}/default-assignee", { key: project }, input, bounds);
   }
 
+  /** Who may see `project` and who changes that: its owner, its visibility, and the people (by
+   *  email) and groups (by name) its access list names, each sorted. Needs the `person` scope. */
+  getProjectAccess(project: string) {
+    return this.read("/api/v1/projects/{key}/access", { key: project });
+  }
+
+  /** Gives the project to another full member (`owner`) or sets its visibility; only its owner
+   *  calls it (`403 PROJECT_OWNER_REQUIRED`). Answers the project's access as the write left it.
+   *  This and the four access-list writes below need the `person` and `approve` scopes. */
+  patchProjectAccess(
+    project: string,
+    input: Body<"/api/v1/projects/{key}/access", "patch">,
+    bounds: WriteBounds
+  ) {
+    return this.patch("/api/v1/projects/{key}/access", { key: project }, input, bounds);
+  }
+
+  /** Names a person on the project's access list by email; the owner's alone. */
+  putProjectAccessPerson(project: string, email: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/projects/{key}/access/people/{email}",
+      { email, key: project },
+      undefined,
+      bounds
+    );
+  }
+
+  /** Takes a person off the project's access list; the owner's alone. */
+  deleteProjectAccessPerson(project: string, email: string, bounds: WriteBounds) {
+    return this.remove(
+      "/api/v1/projects/{key}/access/people/{email}",
+      { email, key: project },
+      bounds
+    );
+  }
+
+  /** Names a group on the project's access list (`404 GROUP_NOT_FOUND` for none of that name);
+   *  the owner's alone. */
+  putProjectAccessGroup(project: string, name: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/projects/{key}/access/groups/{name}",
+      { key: project, name },
+      undefined,
+      bounds
+    );
+  }
+
+  /** Takes a group off the project's access list; the owner's alone. */
+  deleteProjectAccessGroup(project: string, name: string, bounds: WriteBounds) {
+    return this.remove(
+      "/api/v1/projects/{key}/access/groups/{name}",
+      { key: project, name },
+      bounds
+    );
+  }
+
+  /** Every group an access list can name, by name, each with its owner and its members' emails. */
+  listAccessGroups() {
+    return this.read("/api/v1/access-groups", {});
+  }
+
+  /** Makes group `name` with its writer as owner, or writes its members again for its owner
+   *  (`403 GROUP_OWNER_REQUIRED` for anyone else). This and the delete below need the `person`
+   *  and `approve` scopes, as the access-list writes do. */
+  putAccessGroup(
+    name: string,
+    input: Body<"/api/v1/access-groups/{name}", "put">,
+    bounds: WriteBounds
+  ) {
+    return this.put("/api/v1/access-groups/{name}", { name }, input, bounds);
+  }
+
+  /** Deletes group `name`, which takes it off every access list; its owner's alone. */
+  async deleteAccessGroup(name: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/access-groups/{name}", { name }, bounds);
+  }
+
   /** Every project's architecture sources, by project and then in the order each was added. */
   listArchitectureSources() {
     return this.read("/api/v1/settings/architecture-sources", {});

@@ -1,0 +1,11 @@
+---
+title: Project access rule
+parent: dispatch-server
+depends_on: [dispatch-model, dispatch-events]
+paths: [packages/envoy/internal/dispatch/access]
+---
+Who may see a project, written once (`access`): each project's one owner and its public or private setting, its access list of people and groups, the groups with their one owner each, and each person's member kind, full or restricted (migration `20261116015736_project_access`). A person sees a project they own, one that lists them or lists a group they are a full member of, or one that is public while they are a full member; a restricted member is admitted only by being named directly, never by a group. An agent credential sees the part of its list of projects its person sees, or with no list the public part; a credential that names no person sees the public projects, within its list when it holds one. A viewer that is neither restricted nor holds a list is open, and reads every row that belongs to no project as every caller did before.
+
+`VisibleProjectsSQL` resolves one caller's viewer in one read (`Resolve`), and the clauses (`ProjectClause`, `PersonClause`, `SessionClause`, `RoleClause`, `PartyClause`) test one row against a viewer a statement binds as jsonb; every fragment opens with `access.Marker` and its own name. `Credential.Sees` is the same rule in Go over a person already resolved, held equal to the SQL over every seeded caller, and `BrokerTokenAdmits` is the bus's rule for a broker token, valid only because the broker checks each listed project against the person at every trade. The writes (`SetOwner`, `SetVisibility`, `AddPrincipal`, `RemovePrincipal`, `PutGroup`, `DeleteGroup`) run in their caller's transaction and append `project.access_changed` on the project or the ownerless `access_group.changed` through the `events.Broker` they are handed, answering what they appended so the caller publishes it after commit. `Answer` and `PersonAnswer` are the membership answer the secrets broker reads outside any transaction.
+
+`listed.go` is the outside sign-in's question, whether some project names an email directly as its owner or on its access list (`PersonDirectlyListedSQL`, `Listed`): the rule's direct arm read from the other side, with no group arm, so no group ever admits a person from outside the sign-in domain.

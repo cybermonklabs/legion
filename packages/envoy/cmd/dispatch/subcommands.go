@@ -45,6 +45,9 @@ var subcommands = []subcommand{
 	{"backfill-graph-store", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
 	}},
+	{"backfill-session-projects", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {
+		return backfillSessionProjects(ctx, env.get("DATABASE_URL"), stdout, stderr)
+	}},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
 	}},
@@ -65,6 +68,9 @@ var subcommands = []subcommand{
 	}},
 	{"stored-order", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return storedOrder(ctx, args, env.get("DATABASE_URL"), stdout)
+	}},
+	{"project-owner", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return giveProject(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"settings", func(_ context.Context, _ []string, _ settingValues, stdout, stderr io.Writer) int {
 		if err := writeSettings(stdout); err != nil {

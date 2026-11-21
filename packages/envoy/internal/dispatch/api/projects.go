@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -88,6 +89,37 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The person the call acts for, if any, owns what it creates, and a restricted member creates
+	// no project: the refusal comes before anything is checked or written.
+	creator, acts := actorPerson(actor)
+	// owns says whether the creator owns what they create: an owner is a full member who has
+	// signed in, as access.SetOwner holds every later owner to. A person no people row holds, whom
+	// only a broker token can act for, owns nothing; the create then reads as one by a credential
+	// acting for nobody, below, and the project goes to its default assignee.
+	owns := false
+	if acts {
+		pool, err := s.readyPool()
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		kind, err := access.MemberKind(r.Context(), pool, creator)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if kind == model.MemberRestricted {
+			writeError(w, "RESTRICTED_MEMBER", http.StatusForbidden, "a restricted member cannot create a project")
+			return
+		}
+		owns = kind == model.MemberFull
+	}
+	// Otherwise the owner is left to the insert, which gives a project with none its default
+	// assignee (projects_owner_from_default).
+	var owner *string
+	if owns {
+		owner = new(model.CanonicalLogin(creator))
+	}
 	input.Key = strings.TrimSpace(input.Key)
 	input.Name = strings.TrimSpace(input.Name)
 	if !projectKeyPattern.MatchString(input.Key) {
@@ -140,6 +172,27 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A create the creator does not own leaves the owner to the insert, which makes the project
+	// its default assignee's (projects_owner_from_default). An owner is a full member, as access
+	// SetOwner holds every later owner to, so a default the insert would make a restricted member's
+	// owner is refused before anything is written.
+	if !owns {
+		pool, err := s.readyPool()
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		kind, err := access.MemberKind(r.Context(), pool, projectDefault)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if kind != model.MemberFull {
+			writeError(w, "OWNER_NOT_ALLOWED", http.StatusBadRequest,
+				"the project's owner is its default_assignee, since this credential acts for no full member who has signed in, and an owner is a full member")
+			return
+		}
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -148,9 +201,9 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var created createdProject
 	if err := tx.QueryRow(r.Context(), `
-		insert into projects (key, name, default_assignee) values ($1, $2, $3)
+		insert into projects (key, name, default_assignee, owner) values ($1, $2, $3, $4)
 		returning key, name, gated_steps, default_assignee, created_at
-	`, input.Key, input.Name, projectDefault).Scan(
+	`, input.Key, input.Name, projectDefault, owner).Scan(
 		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultAssignee, &created.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, "PROJECT_EXISTS", http.StatusConflict, "a project with this key already exists")

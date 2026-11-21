@@ -79,7 +79,7 @@ const TOKEN_SCOPES: readonly TokenScope[] = [
   },
   {
     allows:
-      "Reviews documents, answers approvals and keeps decisions for you, and approves the credentials agents ask you for.",
+      "Reviews documents, answers approvals and keeps decisions for you, approves the credentials agents ask you for, and changes who may see your projects and the Slack channels they post to.",
     id: "approve",
     label: "Approve and control credentials",
   },

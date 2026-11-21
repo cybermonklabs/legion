@@ -27,6 +27,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
+import { dropSettledWrites } from "../writes/settled-writes";
 import { type KeyedPress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsFieldLabel,
@@ -428,16 +429,9 @@ function useDefaultAssigneeWrite(project: string): {
       });
     },
     onSettled: (saved) => {
-      // With gcTime Infinity nothing else clears this project's saves. A save settles in pick
-      // order and is still pending while this runs, so every settled save left is older than it
-      // and no longer the one a row reports: drop them, keeping at most the newest settled save
-      // and the pending ones.
-      const cache = queryClient.getMutationCache();
-      for (const older of cache.findAll({ exact: true, mutationKey })) {
-        if (older.state.status !== "pending") {
-          cache.remove(older);
-        }
-      }
+      // With gcTime Infinity nothing else clears this project's saves: keep at most the newest
+      // settled save and the pending ones.
+      dropSettledWrites(queryClient, mutationKey);
       // A superseded save changed nothing on the server. Not awaited: the next pick in the scope
       // need not wait for this refetch.
       if (saved == null || !("superseded" in saved)) {

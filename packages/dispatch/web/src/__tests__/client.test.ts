@@ -723,6 +723,41 @@ test("API client sends project default assignee requests to their routes", async
   expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ assignee: "alice@example.com" });
 });
 
+test("API client sends project access and group requests to their routes", async () => {
+  const stub = stubFetch(() =>
+    Response.json({ groups: [], owner: "alice", people: [], project: "CORE", visibility: "public" })
+  );
+  const accessApi = createApiClient(stub.fetch);
+
+  await accessApi.getProjectAccess("CORE");
+  await accessApi.patchProjectAccess("CORE", { owner: "bob@example.com" }, keyed("patch-1"));
+  await accessApi.putProjectAccessPerson("CORE", "carol+x@example.com", keyed("put-1"));
+  await accessApi.deleteProjectAccessPerson("CORE", "carol+x@example.com", keyed("delete-1"));
+  await accessApi.putProjectAccessGroup("CORE", "crew", keyed("put-2"));
+  await accessApi.deleteProjectAccessGroup("CORE", "crew", keyed("delete-2"));
+  await accessApi.listAccessGroups();
+  await accessApi.putAccessGroup("crew", { members: ["carol@example.com"] }, keyed("put-3"));
+  await accessApi.deleteAccessGroup("crew", keyed("delete-3"));
+
+  expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
+    ["GET", "/api/v1/projects/CORE/access"],
+    ["PATCH", "/api/v1/projects/CORE/access"],
+    ["PUT", "/api/v1/projects/CORE/access/people/carol%2Bx%40example.com"],
+    ["DELETE", "/api/v1/projects/CORE/access/people/carol%2Bx%40example.com"],
+    ["PUT", "/api/v1/projects/CORE/access/groups/crew"],
+    ["DELETE", "/api/v1/projects/CORE/access/groups/crew"],
+    ["GET", "/api/v1/access-groups"],
+    ["PUT", "/api/v1/access-groups/crew"],
+    ["DELETE", "/api/v1/access-groups/crew"],
+  ]);
+  // The owner is the body of the PATCH; a person and a group are their own address, so their
+  // writes carry no body at all.
+  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ owner: "bob@example.com" });
+  expect(stub.requests[2]?.body).toBeUndefined();
+  expect(stub.requests[4]?.body).toBeUndefined();
+  expect(JSON.parse(stub.requests[7]?.body as string)).toEqual({ members: ["carol@example.com"] });
+});
+
 test("API client sends inline artifacts as JSON", async () => {
   const stub = stubFetch(() => Response.json({ artifact: {}, version: {} }));
   const api = createApiClient(stub.fetch);

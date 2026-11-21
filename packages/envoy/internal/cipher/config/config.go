@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -960,11 +961,6 @@ func (n NATSCallout) Enabled() bool { return len(n.URLs) > 0 }
 // noSharedEnvoyBearer is why BROKER_ENVOY_TOKEN and BROKER_ENVOY_TOKEN_FILE are gone.
 const noSharedEnvoyBearer = "set BROKER_ENVOY_ACCOUNT_TOKEN_FILE to the broker's own projected ServiceAccount token instead: the listener admits the account it names, and a bearer the broker shared with every other caller of the listener is no longer read"
 
-// serviceAccountPattern is a Kubernetes service account's subject, the one a pod's projected token
-// carries: system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS
-// subdomain.
-var serviceAccountPattern = regexp.MustCompile(`^system:serviceaccount:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
-
 // defaultServiceAccount is the account name Kubernetes gives every namespace and runs every pod
 // whose spec names no account as.
 const defaultServiceAccount = "default"
@@ -986,7 +982,7 @@ func parseServiceAccounts(setting, value string) ([]serviceAccountEntry, error) 
 	seen := map[string]string{}
 	for _, text := range strings.Fields(value) {
 		service, subject, ok := strings.Cut(text, "=")
-		if !ok || !record.ValidService(service) || service == policy.OwnerShared || !serviceAccountPattern.MatchString(subject) {
+		if !ok || !record.ValidService(service) || service == policy.OwnerShared || !principal.ServiceAccountSubject.MatchString(subject) {
 			return nil, fmt.Errorf("%s must be <service>=system:serviceaccount:<namespace>:<name> entries, each service lowercase letters, digits and hyphens, at most 64, not %s, got %q", setting, policy.OwnerShared, text)
 		}
 		if isDefaultServiceAccount(subject) {
@@ -1048,9 +1044,9 @@ func bindOnce(seen map[string]string, setting, account, service string) error {
 // parsePodRegistrars reads setting's whitespace-separated <registrar account>=<pod account>
 // entries, BROKER_POD_REGISTRARS, as the set of pairs the registration route admits. Both
 // accounts are ServiceAccount subjects held to the rule BROKER_SERVICE_LOGINS holds its accounts
-// to (serviceAccountPattern, isDefaultServiceAccount): the registrar is a login account and the
-// pod account the subject of a pod's projected token. It refuses, naming setting and the entry:
-// one without exactly one "=", an account of any other form (a google: one included), a
+// to (principal.ServiceAccountSubject, isDefaultServiceAccount): the registrar is a login account
+// and the pod account the subject of a pod's projected token. It refuses, naming setting and the
+// entry: one without exactly one "=", an account of any other form (a google: one included), a
 // namespace's default account, and a pair given twice. A registrar with several pod accounts, a
 // pod account with several registrars and an account paired with itself are each allowed. No
 // entries answer nil, as an unset setting does.
@@ -1058,7 +1054,7 @@ func parsePodRegistrars(setting, value string) (api.PodRegistrars, error) {
 	var registrars api.PodRegistrars
 	for _, text := range strings.Fields(value) {
 		registrar, pod, _ := strings.Cut(text, "=")
-		if strings.Count(text, "=") != 1 || !serviceAccountPattern.MatchString(registrar) || !serviceAccountPattern.MatchString(pod) {
+		if strings.Count(text, "=") != 1 || !principal.ServiceAccountSubject.MatchString(registrar) || !principal.ServiceAccountSubject.MatchString(pod) {
 			return nil, fmt.Errorf("%s must be <registrar account>=<pod account> entries, each account system:serviceaccount:<namespace>:<name>, got %q", setting, text)
 		}
 		if isDefaultServiceAccount(registrar) || isDefaultServiceAccount(pod) {
@@ -1291,7 +1287,7 @@ func ParseAccount(setting, text, account string) (Account, error) {
 			return Account{}, err
 		}
 		return Account{Address: address, Google: true}, nil
-	case !serviceAccountPattern.MatchString(account):
+	case !principal.ServiceAccountSubject.MatchString(account):
 		return Account{}, ErrAccountForm
 	case isDefaultServiceAccount(account):
 		return Account{}, defaultServiceAccountRefusal(setting, text)
@@ -1407,7 +1403,7 @@ func exchangeFields(text string, want int) ([]string, bool) {
 // to a VM's.
 func podAccountRefusal(setting, text, account string) error {
 	switch {
-	case !serviceAccountPattern.MatchString(account):
+	case !principal.ServiceAccountSubject.MatchString(account):
 		return fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)
 	case isDefaultServiceAccount(account):
 		return fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it, so its token says nothing about which pod is asking; name a dedicated account", setting, text)

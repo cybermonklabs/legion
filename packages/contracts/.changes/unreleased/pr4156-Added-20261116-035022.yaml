@@ -1,0 +1,5 @@
+kind: Added
+body: 'The contracts carry the project access shapes and events: `Project.visibility` (absent for a public project), `AuthenticatedUser.member_kind` (`"restricted"`, absent for everyone else), and the two events `project.access_changed` and `access_group.changed`.'
+time: 2026-11-16T03:50:22.209030652Z
+custom:
+    Issue: pr4156

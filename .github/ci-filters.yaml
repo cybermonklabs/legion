@@ -82,6 +82,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/metrics/*'
   - 'packages/envoy/internal/oidc/**'
   - 'packages/envoy/internal/pgmigrate/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
@@ -111,6 +112,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/ctxlock/*'
+  - 'packages/envoy/internal/dispatch/access/*'
   - 'packages/envoy/natscred/*'
   - 'packages/envoy/internal/cistore/*'
   - 'packages/envoy/internal/contracts/*'
@@ -342,6 +344,7 @@ daemon_go_tests:
   - *dispatch_server
   - *listener_command
   - 'packages/envoy/internal/contracts/**'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/contracts/fixtures/capability-redaction.json'
   - 'packages/contracts/fixtures/capability-redaction-plugin-report.json'
   - 'packages/contracts/fixtures/checks-settlement/*'
@@ -422,6 +425,7 @@ plugin_pack:
   - *dispatch_server
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/dispatchbody/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -1129,6 +1133,7 @@ docs:
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/fileowner/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/cipher/rulehost/*'
   - 'packages/envoy/internal/cipher/logmask/*'
@@ -1582,6 +1587,7 @@ dispatch_browser:
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/oidc/oidctest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/internal/cipher/rulehost/*'
@@ -1609,6 +1615,7 @@ envoy_infra_go:
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/oidc/oidctest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/*'
   - 'packages/envoy/internal/testpg/testdb/*'
@@ -1758,6 +1765,7 @@ dispatch_memory:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -1800,6 +1808,7 @@ dispatch_multiprocess:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -1844,6 +1853,7 @@ dispatch_two_builds_go:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -1940,6 +1950,7 @@ dispatch_two_builds:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -2040,6 +2051,7 @@ listener_server_change:
   - *listener_command
   # why: .github/ci-notes/ci.md#listener_server_change-what-cmdlisteners-test-binary-compiles-that-go-list
   - 'packages/envoy/going/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/routing/*'
   - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
   - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
@@ -2054,6 +2066,7 @@ listener_server_change:
   - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/internal/cmdtest/*'
   - 'packages/envoy/internal/ctxlock/*'
+  - 'packages/envoy/internal/dispatch/access/*'
   - 'packages/envoy/internal/dispatch/accesslog/*'
   - 'packages/envoy/internal/dispatch/cipher/*'
   - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -2191,6 +2204,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/oidc/**'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
@@ -2318,6 +2332,7 @@ envoy_smoke:
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+  - '!packages/envoy/internal/principal/**/*_test.go'
   - '!packages/envoy/internal/ratelimit/**/*_test.go'
   - '!packages/envoy/internal/redact/**/*_test.go'
   - '!packages/envoy/internal/roles/**/*_test.go'
@@ -2649,6 +2664,7 @@ envoy_go_race:
   - '!packages/envoy/internal/contracts/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dedupe/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/access/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
   - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
   - '!packages/envoy/internal/dispatch/api/**/*_test.go'
@@ -2712,6 +2728,7 @@ envoy_go_race:
   - '!packages/envoy/internal/oidc/oidctest/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+  - '!packages/envoy/internal/principal/**/*_test.go'
   - '!packages/envoy/internal/ratelimit/**/*_test.go'
   - '!packages/envoy/internal/redact/**/*_test.go'
   - '!packages/envoy/internal/roles/**/*_test.go'
@@ -2779,6 +2796,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/cputest/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/natscred/*'
+  - 'packages/envoy/internal/dispatch/access/*'
   - 'packages/envoy/internal/dispatch/accesslog/*'
   - 'packages/envoy/internal/dispatch/cipher/*'
   - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -2860,6 +2878,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/oidc/oidctest/*'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
@@ -2891,6 +2910,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/ciphertoken/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/access/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
   - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
   - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_checks_test.go'
@@ -2960,6 +2980,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+  - '!packages/envoy/internal/principal/**/*_test.go'
   - '!packages/envoy/internal/ratelimit/**/*_test.go'
   - '!packages/envoy/internal/redact/**/*_test.go'
   - '!packages/envoy/internal/roles/**/*_test.go'
@@ -3004,6 +3025,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/contracts/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dedupe/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/access/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
   - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
   - '!packages/envoy/internal/dispatch/api/no_reach_base_test.go'
@@ -3069,6 +3091,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+  - '!packages/envoy/internal/principal/**/*_test.go'
   - '!packages/envoy/internal/ratelimit/**/*_test.go'
   - '!packages/envoy/internal/redact/**/*_test.go'
   - '!packages/envoy/internal/roles/**/*_test.go'

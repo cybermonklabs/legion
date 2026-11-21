@@ -167,6 +167,8 @@ Dispatch resolves every external issue through the stored mapping, then falls ba
 An unmapped external repository without a default project is rejected.
 An issue created through the default also gets a `repo:owner/name` label.
 
+Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
+
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
@@ -185,6 +187,13 @@ Half the pair refuses to boot, naming the missing variable; neither leaves beare
 A verified caller acts as the `session` it names in the request body, and every actor it writes carries `service`, the token's verified subject (`system:serviceaccount:<namespace>:<name>`)
 — set from the token, never from the body.
 A JWT the verifier rejects is `401 OIDC_TOKEN_INVALID` naming the reason class; it is never retried as a personal token.
+
+`DISPATCH_OIDC_ACCOUNTS` names the service accounts the deployment admits, comma-separated subjects such as `system:serviceaccount:dispatch:envoy-broker`:
+a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, before any handler reads or writes a row, on every route that reads a credential and on both sockets.
+Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so, `dispatch: DISPATCH_OIDC_ACCOUNTS is unset, …`, with `issuer` and `audience`.
+`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person`), the secrets broker's own account in production;
+every other caller is `403 ACCESS_ACCOUNT_REQUIRED` there.
+The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>` (naming its position), and an access account that a set `DISPATCH_OIDC_ACCOUNTS` does not list.
 
 With `DISPATCH_AGENT_SECRETS_URL` set, an access token the secrets broker issued is a fifth credential, and the only one that proves a session of its own.
 It is presented under RFC 9449's DPoP scheme
@@ -2859,6 +2868,58 @@ It reports locks, sizes and counts — what a migration would wait behind and ho
 that one-release gap is the author's to reason about, and the two-build test (Two builds at once, above) boots the previous release on this tree's schema and drives it.
 The five-second `pgmigrate.LockTimeout` also bites harder under a rolling update than under `Recreate`, which stops the previous pods before the new one boots:
 while a deployment rolls, the old build's connections are still open and still holding locks on the tables the migration wants, so a migration that applies cleanly against an idle database can fail the new pod's boot.
+
+### Giving a project to another owner
+
+Every project has one owner, the full member who changes its access list and whether it is public or private (`projects.owner`).
+The owner gives the project to another full member from the project's Access tab, at any time.
+An operator gives any project to another full member with the database credential alone, with no server running if need be:
+
+```sh
+envoy-dispatch project-owner <KEY> <email>
+```
+
+It reads `DATABASE_URL`, as every other subcommand does, and makes the change in one transaction that appends `project.access_changed` naming the new owner, written by the actor `{"kind": "system", "id": "envoy-dispatch project-owner"}` (`access.SetOwner`).
+Who owned the project before, and whether that person is still a member, makes no difference.
+It exits 0 once the change commits;
+2 for a key no project holds, for an email that is not a full member's (a restricted member, or a login nobody has signed in with), and for arguments that are not exactly a key and an email, writing nothing;
+and 1 when the database cannot be opened or written.
+No write clears an owner: an update that would is refused with `check_violation` (`23514`, the trigger `projects_owner_kept`).
+
+Migration `20261116015736_project_access` gives each project its default assignee as owner where that person has signed in.
+A project created after it is owned by the person `POST /api/v1/projects` creates it for, and an insert that names no owner takes its default assignee as owner (`projects_owner_from_default`).
+A project whose default assignee had never signed in when the migration ran keeps no owner, and the boot refuses to serve while any project has none, naming each one by its key, and both repairs, and no person's email, since it writes the refusal to its log (`store.EnsureProjectOwners`, run right after `DISPATCH_DEFAULT_PROJECT`'s check):
+set `DISPATCH_PROJECT_OWNER_FALLBACK` to the lowercase email of a full member who has signed in, and the next boot makes that person the owner of every such project;
+or give each one an owner with the command above.
+The migration's census answers `0`, because a census that counts refuses the deploy and these projects are repaired after it.
+So read them before the deploy, on the release still serving, with the query `20261116015736_project_access.census.sql`'s header gives:
+
+```sql
+select key, default_assignee from projects p
+where not exists (select 1 from people where email = p.default_assignee);
+```
+
+When it names any project, set `DISPATCH_PROJECT_OWNER_FALLBACK` for the deploy.
+
+### Filling the sessions' projects
+
+`session_projects` records which projects each agent session has acted in, which is how a session is one of a project's agents (`access.SessionClause`).
+From migration `20261116015736_project_access` on, every event append records the pair of its session and its project in the event's own transaction, only where no row holds that pair yet (`events.Broker.QueueAppend`);
+the table has no unique key, on purpose, as the migration's header says.
+The events written before that are covered once, by:
+
+```sh
+envoy-dispatch backfill-session-projects
+```
+
+Run it after the deploy that carries the live insert, so every event is covered by the one or the other.
+It reads `DATABASE_URL`, then `events` in id order, 10,000 at a time, one statement each, and records the pair the live insert would have recorded:
+for an event whose actor is a session (`actor->>'kind'` is `session` and `actor->>'id'` is not empty; a personal token's actor has an empty one), the session and the event's project, which is its own `project_key`, else its issue's for an issue's event, else its document's for a document's event.
+A person's event, and an event of no project, records nothing.
+The project is the one the issue or document is in when the fill reads it.
+A pair a row already holds is not written again, so a second run writes no pair, and a run interrupted anywhere is run again from the start.
+Once it has read every event it writes the one `session_projects_filled` row, none when a run before it did, and prints `backfill-session-projects: events=<read> pairs=<written> filled`.
+It exits 0 then, and 1 when the database cannot be opened or written.
 
 ### Pre-deploy census
 

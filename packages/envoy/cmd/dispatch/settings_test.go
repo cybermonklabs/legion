@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1136,6 +1137,52 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 			})
 		},
+		"DISPATCH_PROJECT_OWNER_FALLBACK": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": " operator@example.com "}); boot.ProjectOwnerFallback != "operator@example.com" {
+				t.Errorf("ProjectOwnerFallback = %q", boot.ProjectOwnerFallback)
+			}
+			if boot := resolveWith(t, nil); boot.ProjectOwnerFallback != "" {
+				t.Errorf("unset: ProjectOwnerFallback = %q", boot.ProjectOwnerFallback)
+			}
+			for _, value := range []string{"Operator@example.com", "operator", "operator@", "@example.com", "operator@example.com,carol@example.com", "op erator@example.com"} {
+				refusedWith(t, map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": value}, "DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email")
+			}
+			// Its reader is the boot's owner check (store.EnsureProjectOwners), right after the
+			// default project's: over a project with no owner a process refuses to serve, naming
+			// the project and both repairs, until the setting names a full member, whom the boot
+			// then makes the project's owner.
+			t.Run("boot", func(t *testing.T) {
+				ctx := context.Background()
+				database := storetest.Open(t)
+				if _, err := database.Pool.Exec(ctx, `
+					insert into people (email, member_kind) values ('operator@example.com', 'full');
+					alter table projects disable trigger projects_owner_from_default;
+					insert into projects (key, name, default_assignee) values ('STRAY', 'Its default never signed in', 'gone@example.com');
+					alter table projects enable trigger projects_owner_from_default;
+				`); err != nil {
+					t.Fatalf("seed a project with no owner: %v", err)
+				}
+				refused := startDispatchProcess(t, database.Pool.Config().ConnString())
+				refused.WaitExit(t, "its start over a project with no owner")
+				output := refused.Output.String()
+				if code := refused.Cmd.ProcessState.ExitCode(); code != 1 {
+					t.Errorf("unset: Dispatch exited %d over a project with no owner, want 1:\n%s", code, output)
+				}
+				for _, named := range []string{"STRAY", "DISPATCH_PROJECT_OWNER_FALLBACK", "envoy-dispatch project-owner <KEY> <email>"} {
+					if !strings.Contains(output, named) {
+						t.Errorf("unset: Dispatch refused its start without naming %q:\n%s", named, output)
+					}
+				}
+				served := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+					Env: map[string]string{"DISPATCH_PROJECT_OWNER_FALLBACK": "operator@example.com"},
+				})
+				served.waitHealthy(t)
+				var owner string
+				if err := database.Pool.QueryRow(ctx, `select owner from projects where key = 'STRAY'`).Scan(&owner); err != nil || owner != "operator@example.com" {
+					t.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK=operator@example.com: STRAY's owner after the boot = %q, %v; want the operator", owner, err)
+				}
+			})
+		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
 				t.Errorf("set: client %q from %q, %v; want the variable over app.json", clientID, source, err)
@@ -1463,6 +1510,142 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("OIDCAudience = %q", boot.OIDCAudience)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_OIDC_ISSUER": "https://issuer.example"}, "DISPATCH_OIDC_AUDIENCE")
+		},
+		"DISPATCH_OIDC_ACCOUNTS": func(t *testing.T) {
+			const listed, unlisted = "system:serviceaccount:dispatch:envoy-broker", "system:serviceaccount:legion:legion-worker"
+			issuer := oidctest.New(t)
+			key := issuer.PublishKey(t, "signing-key")
+			verifying := func(accounts string) map[string]string {
+				return map[string]string{"DISPATCH_OIDC_ISSUER": issuer.URL(), "DISPATCH_OIDC_AUDIENCE": "dispatch", "DISPATCH_OIDC_ACCOUNTS": accounts}
+			}
+			if boot := resolveWith(t, verifying(" "+listed+" , "+unlisted+" ")); !slices.Equal(boot.OIDCAccounts, []string{listed, unlisted}) {
+				t.Errorf("OIDCAccounts = %q", boot.OIDCAccounts)
+			}
+			if boot := resolveWith(t, verifying(" ")); boot.OIDCAccounts != nil {
+				t.Errorf("blank: OIDCAccounts = %q, want none", boot.OIDCAccounts)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_OIDC_ACCOUNTS": listed}, "DISPATCH_OIDC_ACCOUNTS is set but DISPATCH_OIDC_AUDIENCE is not")
+			for value, naming := range map[string]string{
+				"legion-worker":                                 "DISPATCH_OIDC_ACCOUNTS entry 1 of 1 is not a Kubernetes service account's subject",
+				"system:serviceaccount:legion":                  "DISPATCH_OIDC_ACCOUNTS entry 1 of 1 is not a Kubernetes service account's subject",
+				listed + ",system:serviceaccount:Legion:worker": "DISPATCH_OIDC_ACCOUNTS entry 2 of 2 is not a Kubernetes service account's subject",
+				listed + ",":                                    "DISPATCH_OIDC_ACCOUNTS entry 2 of 2 is empty",
+				listed + ", ," + unlisted:                       "DISPATCH_OIDC_ACCOUNTS entry 2 of 3 is empty",
+			} {
+				refusedWith(t, verifying(value), naming)
+			}
+			// Its reader is the API's service-token check (Deps.OIDCAccounts), which the router takes
+			// through appContextOptions: a verified token of an account the list does not name is
+			// refused before any handler runs, and one it names is served.
+			boot := resolveWith(t, verifying(listed))
+			verifier := serviceTokenVerifier(boot)
+			if err := verifier.Discover(t.Context()); err != nil {
+				t.Fatalf("discover the service-account token issuer: %v", err)
+			}
+			handler := routerFor(t, boot, routes.AppContextOptions{OIDC: verifier})
+			whoami := func(subject string) *httptest.ResponseRecorder {
+				request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
+				request.Header.Set("Authorization", "Bearer "+issuer.Mint(t, key, issuer.Claims(subject, "dispatch")))
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				return response
+			}
+			if response := whoami(listed); response.Code != http.StatusOK {
+				t.Errorf("DISPATCH_OIDC_ACCOUNTS=%s: GET /api/v1/whoami as %s = %d %s, want 200", listed, listed, response.Code, response.Body.String())
+			}
+			if response := whoami(unlisted); response.Code != http.StatusUnauthorized || errorCode(response) != "SERVICE_ACCOUNT_NOT_ADMITTED" {
+				t.Errorf("DISPATCH_OIDC_ACCOUNTS=%s: GET /api/v1/whoami as %s = %d %s, want 401 SERVICE_ACCOUNT_NOT_ADMITTED", listed, unlisted, response.Code, response.Body.String())
+			}
+			// With an audience and no list, every account of the issuer is admitted, as before the
+			// setting existed, and the boot says so in one warning; a list, or no audience, says
+			// nothing.
+			t.Run("warning", func(t *testing.T) {
+				var logged cmdtest.LockedBuffer
+				logtest.SetDefault(t, slog.NewJSONHandler(&logged, nil))
+				const warning = "DISPATCH_OIDC_ACCOUNTS is unset"
+				warnings := func() []map[string]any {
+					t.Helper()
+					var lines []map[string]any
+					for line := range strings.Lines(logged.String()) {
+						var entry map[string]any
+						if err := json.Unmarshal([]byte(line), &entry); err != nil {
+							t.Fatalf("decode log line %q: %v", line, err)
+						}
+						if message, _ := entry["msg"].(string); strings.Contains(message, warning) {
+							lines = append(lines, entry)
+						}
+					}
+					return lines
+				}
+				boot := resolveWith(t, verifying(""))
+				if lines := warnings(); len(lines) != 0 {
+					t.Fatalf("resolveBootConfig logged %v; it only reads the environment, and main logs the warning", lines)
+				}
+				warnEveryServiceAccountAdmitted(boot)
+				if lines := warnings(); len(lines) != 1 || lines[0]["level"] != "WARN" || lines[0]["audience"] != "dispatch" {
+					t.Fatalf("an audience and no list logged %v, want one WARN naming the audience", lines)
+				}
+				warnEveryServiceAccountAdmitted(resolveWith(t, verifying(listed)))
+				warnEveryServiceAccountAdmitted(resolveWith(t, nil))
+				if lines := warnings(); len(lines) != 1 {
+					t.Errorf("a list, then no audience, logged the warning again: %v", lines)
+				}
+			})
+		},
+		"DISPATCH_ACCESS_ACCOUNTS": func(t *testing.T) {
+			const broker, reader = "system:serviceaccount:dispatch:envoy-broker", "system:serviceaccount:legion:reader"
+			verifying := func(overrides map[string]string) map[string]string {
+				values := map[string]string{"DISPATCH_OIDC_ISSUER": "https://issuer.example", "DISPATCH_OIDC_AUDIENCE": "dispatch"}
+				maps.Copy(values, overrides)
+				return values
+			}
+			boot := resolveWith(t, verifying(map[string]string{"DISPATCH_OIDC_ACCOUNTS": broker + "," + reader, "DISPATCH_ACCESS_ACCOUNTS": " " + broker + " "}))
+			if !slices.Equal(boot.AccessAccounts, []string{broker}) {
+				t.Errorf("AccessAccounts = %q", boot.AccessAccounts)
+			}
+			// Its reader is the API's membership answer (Deps.AccessAccounts), which the router
+			// takes through appContextOptions: an account the list names reads it, and another
+			// account the deployment admits is refused before anything is read.
+			if got := appContextOptions(boot, routes.AppContextOptions{}).AccessAccounts; !slices.Equal(got, []string{broker}) {
+				t.Errorf("appContextOptions hands the router AccessAccounts %q, want %q", got, []string{broker})
+			}
+			issuer := oidctest.New(t)
+			key := issuer.PublishKey(t, "signing-key")
+			served := resolveWith(t, map[string]string{
+				"DISPATCH_OIDC_ISSUER": issuer.URL(), "DISPATCH_OIDC_AUDIENCE": "dispatch",
+				"DISPATCH_OIDC_ACCOUNTS": broker + "," + reader, "DISPATCH_ACCESS_ACCOUNTS": broker,
+			})
+			verifier := serviceTokenVerifier(served)
+			if err := verifier.Discover(t.Context()); err != nil {
+				t.Fatalf("discover the service-account token issuer: %v", err)
+			}
+			handler := routerFor(t, served, routes.AppContextOptions{OIDC: verifier, Store: storetest.Open(t)})
+			answer := func(subject string) *httptest.ResponseRecorder {
+				request := httptest.NewRequest(http.MethodGet, "/api/v1/access/person?person=alice@example.com", nil)
+				request.Header.Set("Authorization", "Bearer "+issuer.Mint(t, key, issuer.Claims(subject, "dispatch")))
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				return response
+			}
+			if response := answer(broker); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"member_kind":"none"`) {
+				t.Errorf("DISPATCH_ACCESS_ACCOUNTS=%s: GET /api/v1/access/person as %s = %d %s, want 200 with member_kind none", broker, broker, response.Code, response.Body.String())
+			}
+			if response := answer(reader); response.Code != http.StatusForbidden || errorCode(response) != "ACCESS_ACCOUNT_REQUIRED" {
+				t.Errorf("DISPATCH_ACCESS_ACCOUNTS=%s: GET /api/v1/access/person as %s = %d %s, want 403 ACCESS_ACCOUNT_REQUIRED", broker, reader, response.Code, response.Body.String())
+			}
+			// With no list of admitted accounts every account of the issuer is admitted, so any
+			// account may be one that reads the answer.
+			if boot := resolveWith(t, verifying(map[string]string{"DISPATCH_ACCESS_ACCOUNTS": broker})); !slices.Equal(boot.AccessAccounts, []string{broker}) {
+				t.Errorf("no DISPATCH_OIDC_ACCOUNTS: AccessAccounts = %q", boot.AccessAccounts)
+			}
+			if boot := resolveWith(t, verifying(nil)); boot.AccessAccounts != nil {
+				t.Errorf("unset: AccessAccounts = %q, want none", boot.AccessAccounts)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_ACCESS_ACCOUNTS": broker}, "DISPATCH_ACCESS_ACCOUNTS is set but DISPATCH_OIDC_AUDIENCE is not")
+			refusedWith(t, verifying(map[string]string{"DISPATCH_OIDC_ACCOUNTS": reader, "DISPATCH_ACCESS_ACCOUNTS": broker}),
+				"DISPATCH_ACCESS_ACCOUNTS names "+broker+", which DISPATCH_OIDC_ACCOUNTS does not admit")
+			refusedWith(t, verifying(map[string]string{"DISPATCH_ACCESS_ACCOUNTS": "envoy-broker"}), "DISPATCH_ACCESS_ACCOUNTS entry 1 of 1 is not a Kubernetes service account's subject")
+			refusedWith(t, verifying(map[string]string{"DISPATCH_ACCESS_ACCOUNTS": broker + ","}), "DISPATCH_ACCESS_ACCOUNTS entry 2 of 2 is empty")
 		},
 		"DISPATCH_AGENT_SECRETS_URL": func(t *testing.T) {
 			tokenFile := writeFile(t, "account-token", "account-token")

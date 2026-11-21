@@ -755,6 +755,14 @@ test("parses and builds project, documents, and document routes with version and
   ).toBe("/projects/CORE/documents/design-notes?version=2&ask=ask-1");
 });
 
+// The Access tab is the project's own page of who may see it, at /access, beside Issues and
+// Documents; nothing deeper is a route.
+test("parses and builds the project Access tab's route", () => {
+  expect(parseProjectPath("/projects/CORE/access")).toEqual({ kind: "access", project: "CORE" });
+  expect(buildProjectPath({ kind: "access", project: "CORE" })).toBe("/projects/CORE/access");
+  expect(parseProjectPath("/projects/CORE/access/people")).toBeUndefined();
+});
+
 test("maps dispatch project artifact references onto the document path and back", () => {
   const route = parseDispatchReference("dispatch://CORE/artifact/design-notes@v3/comment/note-1");
 
