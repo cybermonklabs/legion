@@ -1422,6 +1422,15 @@ What the edge does that the API's port does not:
   sidecar or an ingress behind the balancer, would make the second-to-last entry the balancer's
   for every caller and put the whole internet in one bucket. The broker cannot see that at boot,
   so the deployment must not add one.
+- **Only Google's load balancer may reach the edge's port.** The broker does not check the address
+  of the peer that connects to the edge: it reads `X-Forwarded-For` from whatever reaches that
+  port, and holds no list of trusted proxies. A caller that reached the port without the balancer
+  could write the header itself and pick its own buckets, and would pass no Cloud Armor rule. So
+  the deployment's ingress firewall must allow the edge's port from Google's front-end proxy
+  ranges alone, the ranges a global external Application Load Balancer connects from
+  ([Google's load balancer firewall rules](https://docs.cloud.google.com/load-balancing/docs/firewall-rules)):
+  `35.191.0.0/16` and `130.211.0.0/22` for IPv4, and `2600:2d00:1:1::/64` for IPv6. The
+  balancer's IPv4 health checks come from `35.191.0.0/16`, inside the first range.
 - **Its rate-limit buckets are its own.** The edge spends the address, login and token buckets of
   [Network and trust](#network-and-trust) at the same limits, in buckets the API's port never
   reads, and its per-login keys open with `edge:`. A flood at the edge spends nothing a caller of
