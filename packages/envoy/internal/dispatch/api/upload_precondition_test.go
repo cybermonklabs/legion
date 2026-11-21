@@ -345,8 +345,8 @@ func uploadFromClient(t *testing.T, handler http.Handler, issueKey string, body 
 // because no deployed `dispatch` client can name a token on `dispatch artifact`; #3000 refused it
 // 400 PRECONDITION_REQUIRED and wrote nothing, which refused every agent's replacement of a
 // document. Both shapes a client uploads in are driven, the inline body and the multipart form.
-// Each one stored is counted on /metrics and logged with its caller, so the refusal can come back
-// once no client sends one without a token. A replacement
+// Each one stored is counted on /metrics and logged with the document it replaced, so the refusal
+// can come back once no client sends one without a token. A replacement
 // naming the live token is checked and taken and is not counted, and a first upload replaces
 // nothing and is not counted either.
 func TestUploadReplacingADocumentWithNoTokenIsTakenCountedAndLogged(t *testing.T) {
@@ -401,13 +401,15 @@ func TestUploadReplacingADocumentWithNoTokenIsTakenCountedAndLogged(t *testing.T
 		t.Fatalf("%d lines logged the replacements naming no token, want 2: %s", len(lines), logs.String())
 	}
 	for index, line := range lines {
-		for _, want := range []string{"artifact=" + artifactID, "caller_kind=user", "caller=alice"} {
+		for _, want := range []string{"artifact=" + artifactID, "document=" + issue.Key + "/notes-md"} {
 			if !strings.Contains(line, want) {
 				t.Fatalf("the log line of replacement %d = %q, want it to hold %q", index+1, line, want)
 			}
 		}
-		if strings.Contains(line, "user_agent") {
-			t.Fatalf("the log line of replacement %d = %q, want no request header in it", index+1, line)
+		for _, field := range []string{"caller=", "caller_kind=", "user_agent="} {
+			if strings.Contains(line, field) {
+				t.Fatalf("the log line of replacement %d = %q, want no %s in it: the access log's line names the caller", index+1, line, field)
+			}
 		}
 	}
 }

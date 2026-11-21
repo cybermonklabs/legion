@@ -209,14 +209,14 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 		}
 	}
 	attrs := []any{
-		"method", Clip(r.Method),
+		"method", clip(r.Method),
 		"route", route,
-		"path", Clip(r.URL.EscapedPath()),
+		"path", clip(r.URL.EscapedPath()),
 		"caller_kind", kind,
-		"caller", Clip(id),
-		"address", Clip(auth.ForwardedAddress(r)),
+		"caller", clip(id),
+		"address", clip(auth.ForwardedAddress(r)),
 		"peer", peerAddress(r),
-		"user_agent", Clip(r.UserAgent()),
+		"user_agent", clip(r.UserAgent()),
 		"status", status,
 		"elapsed_ms", elapsed.Milliseconds(),
 		"bytes", rec.written,
@@ -236,12 +236,11 @@ func peerAddress(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
 	}
-	return Clip(r.RemoteAddr)
+	return clip(r.RemoteAddr)
 }
 
-// Clip cuts caller-written text to fieldBytes, dropping a rune the cut splits: a line another
-// package logs about a request cuts the caller's own fields as this one does.
-func Clip(text string) string {
+// clip cuts caller-written text to fieldBytes, dropping a rune the cut splits.
+func clip(text string) string {
 	if len(text) <= fieldBytes {
 		return text
 	}
