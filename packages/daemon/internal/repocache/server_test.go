@@ -1585,13 +1585,21 @@ func (s *volumeSeam) read(path string) (volumestat.Reading, error) {
 	return s.reading, nil
 }
 
-// set has the seam answer a volume of size bytes with available bytes left.
+// set has the seam answer a volume of size bytes with available bytes left. Its used bytes leave
+// a reserve beside them, as a real filesystem's do (f_bfree against f_bavail): the volume less the
+// used bytes is the free space, which is more than the available bytes, so a cache that took the
+// free space for its room would answer more than every case sets, and the case would fail.
 func (s *volumeSeam) set(size, available uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.reading = volumestat.Reading{SizeBytes: size, UsedBytes: size - available, AvailableBytes: available}
+	reserve := min(seamReserve, size-available)
+	s.reading = volumestat.Reading{SizeBytes: size, UsedBytes: size - available - reserve, AvailableBytes: available}
 	s.failing = nil
 }
+
+// seamReserve is the space the seam's volume holds back from an unprivileged writer: the part of
+// its free space that is not available.
+const seamReserve = 1 << 30
 
 // fail has the seam's statfs fail with err.
 func (s *volumeSeam) fail(err error) {
@@ -1964,40 +1972,44 @@ func TestTheCacheKeepsARepackFailureAcrossARestart(t *testing.T) {
 	}
 }
 
-// statFS is `stat -f -c '%S %b %a' dir`: the fundamental block size, which is the unit statfs
-// counts its blocks in (f_frsize; %s is f_bsize, which need not be), the volume's blocks, and the
-// blocks available to an unprivileged writer.
-func statFS(t *testing.T, dir string) (unit, blocks, available uint64) {
+// statFS is `stat -f -c '%S %b %f %a' dir`: the fundamental block size, which is the unit statfs
+// counts its blocks in (f_frsize; %s is f_bsize, which need not be), the volume's blocks, its free
+// blocks, and the blocks available to an unprivileged writer.
+func statFS(t *testing.T, dir string) (unit, blocks, free, available uint64) {
 	t.Helper()
-	out, err := exec.Command("stat", "-f", "-c", "%S %b %a", dir).Output()
+	out, err := exec.Command("stat", "-f", "-c", "%S %b %f %a", dir).Output()
 	if err != nil {
 		t.Fatalf("stat -f %s: %v", dir, err)
 	}
 	fields := strings.Fields(string(out))
-	if len(fields) != 3 {
-		t.Fatalf("stat -f %s printed %q, want three counts", dir, out)
+	if len(fields) != 4 {
+		t.Fatalf("stat -f %s printed %q, want four counts", dir, out)
 	}
-	counts := make([]uint64, 3)
+	counts := make([]uint64, 4)
 	for i, field := range fields {
 		if counts[i], err = strconv.ParseUint(field, 10, 64); err != nil {
 			t.Fatalf("stat -f %s printed %q: %v", dir, out, err)
 		}
 	}
-	return counts[0], counts[1], counts[2]
+	return counts[0], counts[1], counts[2], counts[3]
 }
 
 // The cache reads its own volume with the real reader (readVolume is volumestat.Read) at Options.Root:
 // on a temporary directory, the size /healthz answers is what `stat -f` prints as the fundamental
-// block size times the blocks, and the available bytes are that block size times the available
-// blocks. A shared disk's available bytes move, and not in one direction: on CI on 2026-11-20 the
-// answer read one block more than both `stat -f` readings around it. So each try reads `stat -f`,
-// then /healthz, then `stat -f` again. A try whose two readings disagree counts for nothing; one
-// whose readings agree passes the test when the answer equals them exactly, and one whose answer
-// differs from them is kept as the last mismatch and the test tries again, since the disk can move
-// and move back between the two readings. After 20 tries the test fails naming the last mismatch,
-// or, when no try's two readings agreed, that the disk never held still, rather than passing on a
-// range; a reader that is always wrong fails every try. A cache with no clone yet answers 503, so
-// the figures are in that answer too.
+// block size times the blocks, which does not move, and the available bytes are that block size
+// times the available blocks, which do. A shared disk's available bytes move in both directions
+// while the other tests of the run write and delete, so a try reads `stat -f`, then /healthz, then
+// `stat -f` again, and the answer must lie between the smaller and the larger of the two available
+// readings, widened by readMargin on each side. That the reader takes the available blocks and not
+// the free ones is pinned without any disk, by volumestat's TestTheVolumesBytesAreCountedInFragments
+// and by the seam's figures here (seamReserve). Against the real disk it holds too where the disk
+// reserves more than the margin (its free blocks less its available ones, from the same `stat -f`):
+// there a try passes only when the free bytes of both readings lie above the range, so a reader of
+// the free blocks would fail it, and a try whose readings moved so far that the range reaches the
+// free bytes counts for nothing. Where the disk reserves no more than the margin, free and
+// available cannot be told apart on it, and the test logs that and passes on the range alone.
+// After 20 tries with no try passing, the test fails naming the last answer. A cache with no clone
+// yet answers 503, so the figures are in that answer too.
 func TestTheCacheReadsItsVolume(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skipf("the volume is read with statfs on Linux alone; on %s the reader refuses", runtime.GOOS)
@@ -2005,26 +2017,44 @@ func TestTheCacheReadsItsVolume(t *testing.T) {
 	const tries = 20
 	root := t.TempDir()
 	c := cacheOn(t, Options{Repo: ghrepo.MustParse("acme/widgets"), Root: root, Log: func(string) {}})
-	mismatch := ""
+	last := ""
 	for try := 1; try <= tries; try++ {
-		unit, blocks, available := statFS(t, root)
+		unit, blocks, free, available := statFS(t, root)
 		status, health, _ := healthzOf(t, c)
-		unitAfter, blocksAfter, availableAfter := statFS(t, root)
-		if unitAfter != unit || blocksAfter != blocks || availableAfter != available {
-			continue
-		}
+		unitAfter, blocksAfter, freeAfter, availableAfter := statFS(t, root)
 		if status != http.StatusServiceUnavailable || health.VolumeError != "" || health.VolumeBytes == nil || health.AvailableBytes == nil {
 			t.Fatalf("/healthz of a cache with no clone answers %d %+v, want 503 with the volume's figures", status, health)
 		}
-		volume, free := unit*blocks, unit*available
-		if *health.VolumeBytes == volume && *health.AvailableBytes == free {
+		if unitAfter != unit || blocksAfter != blocks {
+			t.Fatalf("stat -f read %s as %d blocks of %d bytes and then %d blocks of %d: the volume's size moved", root, blocks, unit, blocksAfter, unitAfter)
+		}
+		if volume := unit * blocks; *health.VolumeBytes != volume {
+			t.Fatalf("/healthz answered a volume of %d bytes, want %d blocks of %d bytes, %d, as stat -f read them before and after it", *health.VolumeBytes, blocks, unit, volume)
+		}
+		low := min(available, availableAfter) * unit
+		high := max(available, availableAfter)*unit + readMargin
+		low -= min(low, readMargin)
+		got := *health.AvailableBytes
+		last = fmt.Sprintf("on try %d, /healthz answered %d bytes available, and stat -f read %d and then %d available blocks of %d bytes (%d and %d free)",
+			try, got, available, availableAfter, unit, free, freeAfter)
+		if got < low || got > high {
+			t.Fatalf("%s: the answer is outside %d to %d, the two readings widened by %d", last, low, high, readMargin)
+		}
+		if reserve := (min(free-available, freeAfter-availableAfter)) * unit; reserve <= readMargin {
+			t.Logf("the filesystem of %s reserves %d bytes, not more than the margin of %d, so this disk cannot tell a reader of the available bytes from one of the free bytes; volumestat's TestTheVolumesBytesAreCountedInFragments and this package's seam (seamReserve) pin that choice",
+				root, reserve, readMargin)
 			return
 		}
-		mismatch = fmt.Sprintf("on try %d, /healthz answered a volume of %d bytes with %d available, want %d blocks of %d bytes, %d, with %d available blocks, %d, as stat -f read them before and after it",
-			try, *health.VolumeBytes, *health.AvailableBytes, blocks, unit, volume, available, free)
+		if min(free, freeAfter)*unit > high {
+			return
+		}
 	}
-	if mismatch != "" {
-		t.Fatalf("no try of %d had /healthz answer what stat -f read around it; the last: %s", tries, mismatch)
-	}
-	t.Fatalf("stat -f read %s differently before and after each of %d /healthz answers: the disk never held still for one read", root, tries)
+	t.Fatalf("no try of %d had the free bytes above the range its answer had to lie in, so no try told a reader of the available bytes from one of the free bytes; the last: %s", tries, last)
 }
+
+// readMargin widens the range of available bytes a try of TestTheCacheReadsItsVolume accepts on
+// each side: what the other tests of a run can write and delete again between the two readings of
+// one try. Where a disk reserves more than it, the test also tells a reader of the available bytes
+// from one of the free bytes: an issue pod's volume held 16 MiB back on 2026-11-21 (stat -f: 4,096
+// blocks of 4,096 bytes).
+const readMargin = 4 << 20
