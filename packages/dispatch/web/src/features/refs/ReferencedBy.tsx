@@ -298,8 +298,10 @@ export function ReferencedBy({
   // that fails over the list keeps the list and draws no line over it, and the line stays while
   // Retry's read is out, so Retry keeps its focus. That is `standsFailed`
   // (`issue-page/useIssueTree.ts`), written out here because importing it would bring the new
-  // page's words into every page that draws this list. Every other page draws the line while the
-  // last read failed.
+  // page's words into every page that draws this list. While the line stands in Details it takes
+  // the place of the loading line, as Details' own lines do while their Retry's read is out. Every
+  // other page draws the line while the last read failed, which is never while the read is
+  // pending, so the loading line there is as before.
   const failed =
     retried === undefined ? query.isError : query.data === undefined && query.errorUpdateCount > 0;
 
@@ -310,7 +312,7 @@ export function ReferencedBy({
           Referenced by{edges === undefined ? "" : ` (${edges.length})`}
         </h3>
       ) : null}
-      {query.isPending ? (
+      {query.isPending && !failed ? (
         <p className={`text-sm ${textMutedOnSurface}`}>Loading references…</p>
       ) : null}
       {failed ? (

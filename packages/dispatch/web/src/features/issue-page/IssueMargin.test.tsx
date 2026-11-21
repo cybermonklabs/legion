@@ -2744,6 +2744,52 @@ test("in Details, Referenced by's Retry keeps the focus while the read it sent i
   }
 });
 
+// Where the list's first read failed, the reader presses Retry by keyboard and its read is out: the
+// list holds no answer, so its line stands, with Retry refusing a press as its read is out, and the
+// line takes the place of the list's loading line, as each line of Details' own does while its
+// Retry's read is out. Drawing both would say at once that the list failed and that it loads.
+test("in Details, Referenced by's line stands without the list's loading line while its Retry's read is out", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, referenced_by_count: 3 });
+  // The list reads what references the issue with no kind, and its first read fails; Blocks reads
+  // one kind of it.
+  const getReferences = spyOn(api, "getReferences").mockImplementation((_to, options) =>
+    options === undefined ? Promise.reject(readFailure()) : Promise.resolve(NOTHING_REFERENCES)
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    const retry = await within(list).findByRole("button", { name: "Retry" });
+
+    getReferences.mockImplementation((_to, options) =>
+      options === undefined ? new Promise(() => undefined) : Promise.resolve(NOTHING_REFERENCES)
+    );
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(retry, "Retry takes a press while the read it sent is out").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
+    );
+    expect(
+      within(list).queryByText("Referenced by unavailable."),
+      "the list holds no answer, but its failure line went as Retry's read went out"
+    ).toBeInTheDocument();
+    expect(
+      within(list).queryByText("Loading references…"),
+      "the list says it loads beside the line that says it failed"
+    ).toBeNull();
+  } finally {
+    unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
 // Where the list's first read failed, a press of Referenced by's Retry reads it again, and the line
 // stays, with the focus the reader left on Retry, while that read is out. Once it answers with
 // nothing to list the line goes: that press is the reader's, so the focus goes on in the row, and
