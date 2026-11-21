@@ -20,6 +20,7 @@ func TestAGapsGoroutineStatesAreReadForItsThreadAndItsSpan(t *testing.T) {
 		baseTime: base,
 		baseMono: 0,
 		snapshot: exptrace.ClockSnapshot{Trace: 0, Mono: 0},
+		last:     at(20),
 		runs: map[int][]xidThreadRun{
 			7: {{at: at(0), g: 1}},
 			8: {{at: at(0), g: 2}},
@@ -106,14 +107,15 @@ func TestAGenerationsStatusEventsAreNoStateChange(t *testing.T) {
 	}
 }
 
-// The trace's P transitions and its GOMAXPROCS say when no P of the process was idle, and the part
-// of a goroutine's runnable time that fell then is read apart (xidGoStates.RunnableHeld). Two Ps:
-// P 1 is idle from the trace's start and runs from 2 ms, so none is idle until P 0 goes idle at
-// 4 ms. Then P 1 goes idle at 6 ms and P 0 runs at 7 ms, and GOMAXPROCS drops to 1 at 8 ms: the P
-// left idle is no longer the process's, so none is idle until GOMAXPROCS is 2 again at 11 ms.
-// Goroutine 1 is runnable from 1 to 5 ms and from 9 to 10 ms, 3 ms of it while no P was idle. A
-// P's status at a generation's start is no change.
-func TestTheTraceReadsWhenNoPWasIdle(t *testing.T) {
+// A trace that stops before a gap does says nothing of the gap's end: goStates carries no state
+// past the trace's last event, and pastEnd says how much of the gap the trace does not reach. Here
+// goroutine 1 runs on thread 7 and is runnable from 1 ms, and the trace's last event is at 2 ms,
+// a P's transition, which is read for the trace's reach alone. A gap from 0.5 to 21 ms reads 1 ms
+// runnable, not 20, and 19 ms past the trace; one that ends at 1.5 ms is all inside it. A
+// reviewer's forcing stopped the trace while the window's goroutine was runnable and then ran
+// 20 ms of the thread's CPU: carried to the gap's end, that state read 21.8 ms runnable and the gap
+// 7.9 µs made, and the window kept D6 (2026-11-21).
+func TestATracesStatesStopAtItsLastEvent(t *testing.T) {
 	base := time.Now()
 	at := func(ms float64) exptrace.Time { return exptrace.Time(ms * float64(time.Millisecond)) }
 	reading := &xidTraceReading{
@@ -122,43 +124,37 @@ func TestTheTraceReadsWhenNoPWasIdle(t *testing.T) {
 		changes:  map[exptrace.GoID][]xidGoStateChange{},
 		runs:     map[int][]xidThreadRun{},
 	}
-	reading.setProcs(2, at(0))
 	for _, event := range []struct {
 		change exptrace.StateTransition
 		at     float64
 		thread exptrace.ThreadID
-		procs  int
 	}{
-		{change: exptrace.MakeProcStateTransition(0, exptrace.ProcUndetermined, exptrace.ProcRunning), at: 0, thread: 7},
-		{change: exptrace.MakeProcStateTransition(1, exptrace.ProcUndetermined, exptrace.ProcIdle), at: 0, thread: exptrace.NoThread},
-		{change: exptrace.MakeGoStateTransition(1, exptrace.GoUndetermined, exptrace.GoRunning), at: 0, thread: 7},
-		{change: exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoRunnable), at: 1, thread: 7},
-		{change: exptrace.MakeProcStateTransition(1, exptrace.ProcIdle, exptrace.ProcRunning), at: 2, thread: 8},
-		{change: exptrace.MakeProcStateTransition(1, exptrace.ProcRunning, exptrace.ProcRunning), at: 3, thread: 8},
-		{change: exptrace.MakeProcStateTransition(0, exptrace.ProcRunning, exptrace.ProcIdle), at: 4, thread: 7},
-		{change: exptrace.MakeGoStateTransition(1, exptrace.GoRunnable, exptrace.GoRunning), at: 5, thread: 7},
-		{change: exptrace.MakeProcStateTransition(1, exptrace.ProcRunning, exptrace.ProcIdle), at: 6, thread: 8},
-		{change: exptrace.MakeProcStateTransition(0, exptrace.ProcIdle, exptrace.ProcRunning), at: 7, thread: 7},
-		{at: 8, procs: 1},
-		{change: exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoRunnable), at: 9, thread: 7},
-		{change: exptrace.MakeGoStateTransition(1, exptrace.GoRunnable, exptrace.GoRunning), at: 10, thread: 7},
-		{at: 11, procs: 2},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoUndetermined, exptrace.GoRunning), 0, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoRunnable), 1, 7},
+		{exptrace.MakeProcStateTransition(0, exptrace.ProcRunning, exptrace.ProcIdle), 2, 7},
 	} {
-		if event.procs > 0 {
-			reading.setProcs(event.procs, at(event.at))
-			continue
-		}
 		reading.transition(event.change, at(event.at), event.thread)
 	}
-	states, ok := reading.goStates(7, base.Add(500*time.Microsecond), base.Add(12*time.Millisecond))
+	states, ok := reading.goStates(7, base.Add(500*time.Microsecond), base.Add(21*time.Millisecond))
 	if !ok {
 		t.Fatal("the trace shows no goroutine on thread 7 by the gap's start")
 	}
-	if want := 5 * time.Millisecond; states.Runnable != want {
-		t.Errorf("runnable %s, want %s", states.Runnable, want)
+	if want := time.Millisecond; states.Runnable != want {
+		t.Errorf("runnable %s, want %s: the goroutine's last state carried past the trace's end", states.Runnable, want)
 	}
-	if want := 3 * time.Millisecond; states.RunnableHeld != want {
-		t.Errorf("runnable while no P was idle %s, want %s (held stretches %v)", states.RunnableHeld, want, reading.held)
+	if past, want := reading.pastEnd(base.Add(21*time.Millisecond)), 19*time.Millisecond; past != want {
+		t.Errorf("a gap ending at 21 ms lies %s past the trace, want %s", past, want)
+	}
+	if past := reading.pastEnd(base.Add(1500 * time.Microsecond)); past != 0 {
+		t.Errorf("a gap ending at 1.5 ms lies %s past the trace, want none", past)
+	}
+	window := XidWindow{Transaction: XidTransaction{PID: 7}, Statements: []XidStatement{{SQL: "insert into projects"}}, End: base.Add(21 * time.Millisecond)}
+	if problem := xidPastTraceProblem(window, reading); !strings.Contains(problem, "UNKNOWN: backend 7's window") || !strings.Contains(problem, "ends 19.000 ms past the execution trace's last event") {
+		t.Errorf("a window ending 19 ms past the trace: problem %q, want it UNKNOWN, naming how far", problem)
+	}
+	window.End = base.Add(1500 * time.Microsecond)
+	if problem := xidPastTraceProblem(window, reading); problem != "" {
+		t.Errorf("a window the trace reaches: problem %q, want none", problem)
 	}
 }
 

@@ -24,3 +24,5 @@ func (*xidTrace) read() (*xidTraceReading, error) { return &xidTraceReading{}, n
 func (*xidTraceReading) goStates(int, time.Time, time.Time) (xidGoStates, bool) {
 	return xidGoStates{}, false
 }
+
+func (*xidTraceReading) pastEnd(time.Time) time.Duration { return 0 }

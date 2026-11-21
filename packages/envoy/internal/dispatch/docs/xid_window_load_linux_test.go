@@ -260,8 +260,8 @@ func threadCPU(t *testing.T) time.Duration {
 // running, until the runtime preempts the spinner, which it does after the spinner has run 10 ms,
 // and its locked thread sleeps all that time. Read off the thread's clocks alone, that sleep is
 // time the code made, over the bound. Read off the execution trace it is the runtime's wait, but
-// one while no P was idle: the spinner is the operation's own goroutine, and the rig cannot tell
-// the operation's goroutines holding every P from the machine's load, so the window is UNKNOWN, a
+// whose the rig cannot tell: the spinner is the operation's own goroutine, and no wait on the
+// runtime can be laid to the machine (storetest.XidGap.Made), so the window is UNKNOWN, a
 // rig problem, and neither passes nor breaks D6. A receive on a channel the code waits on for as
 // long is a wait the code asked for (GoWaiting), and breaks D6. Each arm first holds that the wait
 // happened: its gap, read off the thread's clocks alone, is over the bound. The one P is set

@@ -14,8 +14,8 @@ import (
 )
 
 // A window whose own goroutines take every P is not judged as passing: Measure's idle Ps are idle
-// only while the operation leaves them so, and a wait for a P while none is idle may be the code's
-// own work as well as the machine's. Here, after the window's first statement, twice as many
+// only while the operation leaves them so, and a wait on the runtime may be the code's own work as
+// well as the machine's. Here, after the window's first statement, twice as many
 // goroutines as the operation has Ps, and one more, spin for xidOwnPsSpin, and the transaction's
 // goroutine gives up its turn to them meanwhile: it waits runnable on the runtime while they hold
 // every P. The rig cannot tell whose wait that is, so the window is UNKNOWN, a rig problem, never a
@@ -57,8 +57,8 @@ func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *t
 	}
 	window := report.Windows[0]
 	gap := window.Gaps[0]
-	// The Detail names the part of the runtime's wait while no P was idle; the log reads no field
-	// the rig before this row lacks, so this row runs against that rig too, and fails there.
+	// The log reads no field the rig before this row lacks, so this row runs against that rig too,
+	// and fails there.
 	t.Logf("%d goroutines spun at %d Ps; the gap took %s on the clock, its goroutine %s runnable on the runtime\n%s",
 		workers, ps, storetest.XidMillis(gap.Clock), storetest.XidMillis(gap.GoRunnable), window.Detail())
 	if gap.GoRunnable < xidOwnPsSpin/2 {
@@ -66,7 +66,7 @@ func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *t
 			storetest.XidMillis(gap.GoRunnable), xidOwnPsSpin, window.Detail())
 	}
 	err := report.Err()
-	if err == nil || !strings.Contains(err.Error(), "UNKNOWN: backend") || !strings.Contains(err.Error(), "while no P of the process was idle") {
+	if err == nil || !strings.Contains(err.Error(), "UNKNOWN: backend") || !strings.Contains(err.Error(), "keeps D6 only if its goroutine's waits on the runtime") {
 		t.Fatalf("a gap whose goroutine waited while the operation's own goroutines held every P: verdict %v, want the window UNKNOWN", err)
 	}
 }

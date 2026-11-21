@@ -221,8 +221,8 @@ type xidThreadRun struct {
 }
 
 // xidTraceReading is the execution trace read back: each goroutine's state changes in time order,
-// each thread's goroutines in the order they started running on it, the stretches during which no
-// P of the process was idle, and the tie between the trace's clock and the process's.
+// each thread's goroutines in the order they started running on it, how far the trace reaches,
+// and the tie between the trace's clock and the process's.
 type xidTraceReading struct {
 	changes  map[exptrace.GoID][]xidGoStateChange
 	runs     map[int][]xidThreadRun
@@ -232,16 +232,8 @@ type xidTraceReading struct {
 	// syncs are the moments each of the trace's generations began. At each the runtime flushes
 	// every thread's buffer and starts its string and stack tables anew.
 	syncs []exptrace.Time
-	// held are the stretches, in time order, during which no P was idle (xidTraceReading.updateHeld):
-	// procStates is each P's state as of the last transition read, procs the process's GOMAXPROCS
-	// as the trace last reported it (0 until it does), and holding says a stretch is open, from
-	// heldFrom. last is the latest event's moment, at which a stretch still open ends.
-	held       [][2]exptrace.Time
-	procStates map[exptrace.ProcID]exptrace.ProcState
-	procs      int
-	holding    bool
-	heldFrom   exptrace.Time
-	last       exptrace.Time
+	// last is the latest event's moment: the trace says nothing of any goroutine after it.
+	last exptrace.Time
 }
 
 // stop stops the tracer. It stops the world to stop, so Measure stops it once the operation has
@@ -278,7 +270,7 @@ func (x *xidTrace) read() (*xidTraceReading, error) {
 		if err != nil {
 			return nil, cannot(err)
 		}
-		reading.last = event.Time()
+		reading.last = max(reading.last, event.Time())
 		switch event.Kind() {
 		case exptrace.EventSync:
 			reading.syncs = append(reading.syncs, event.Time())
@@ -288,33 +280,25 @@ func (x *xidTrace) read() (*xidTraceReading, error) {
 			}
 		case exptrace.EventStateTransition:
 			reading.transition(event.StateTransition(), event.Time(), event.Thread())
-		case exptrace.EventMetric:
-			if metric := event.Metric(); metric.Name == "/sched/gomaxprocs:threads" {
-				reading.setProcs(int(metric.Value.Uint64()), event.Time())
-			}
 		}
 	}
 	if !snapped {
 		return nil, errors.New("the execution trace holds no clock snapshot to tie its clock to the process's")
 	}
-	if reading.holding {
-		reading.held = append(reading.held, [2]exptrace.Time{reading.heldFrom, reading.last})
-	}
 	return reading, nil
 }
 
-// transition records one state transition of the trace, at, on thread: a goroutine's new state,
-// and its start on thread when it starts running there, or a P's (proc). A transition from a state
-// to that same state changes nothing and is passed over: at each generation's start the trace
-// writes every goroutine's and every P's status as a transition from the state it was already in
-// (x/exp/trace's order.go).
+// transition records one goroutine state transition of the trace, at, on thread: the goroutine's
+// new state, and its start on thread when it starts running there. A transition from a state to
+// that same state changes nothing and is passed over: at each generation's start the trace writes
+// every goroutine's status as a transition from the state it was already in (x/exp/trace's
+// order.go). A P's transitions are not read: the trace cannot show that an idle P was free to run
+// a goroutine, since the runtime hands a P to a locked goroutine's thread (startlockedm) through a
+// stop that reads as idle until that thread starts it, so no wait for a P is laid to the machine
+// on a P's account (xidRuntimeWaitProblem).
 func (r *xidTraceReading) transition(change exptrace.StateTransition, at exptrace.Time, thread exptrace.ThreadID) {
-	switch change.Resource.Kind {
-	case exptrace.ResourceProc:
-		r.proc(change, at)
-		return
-	case exptrace.ResourceGoroutine:
-	default:
+	r.last = max(r.last, at)
+	if change.Resource.Kind != exptrace.ResourceGoroutine {
 		return
 	}
 	g := change.Resource.Goroutine()
@@ -328,66 +312,10 @@ func (r *xidTraceReading) transition(change exptrace.StateTransition, at exptrac
 	}
 }
 
-// proc records a P's transition at, and updates the stretches during which no P is idle.
-func (r *xidTraceReading) proc(change exptrace.StateTransition, at exptrace.Time) {
-	from, to := change.Proc()
-	if from == to {
-		return
-	}
-	if r.procStates == nil {
-		r.procStates = map[exptrace.ProcID]exptrace.ProcState{}
-	}
-	r.procStates[change.Resource.Proc()] = to
-	r.updateHeld(at)
-}
-
-// setProcs records the process's GOMAXPROCS as the trace reports it at, at the trace's start and
-// at each change: the Ps it no longer has leave the trace without a transition of their own, so
-// a P counts only while its id is under it.
-func (r *xidTraceReading) setProcs(procs int, at exptrace.Time) {
-	r.procs = procs
-	r.updateHeld(at)
-}
-
-// updateHeld opens a stretch during which no P is idle (held) at, when none of the process's Ps
-// is, and closes the open one when one is. A P whose goroutine is in a system call counts as held
-// until the runtime takes it back, and a P the trace has not yet shown as idle as not idle, so a
-// stretch may be read held that was not, never the other way.
-func (r *xidTraceReading) updateHeld(at exptrace.Time) {
-	if r.procs == 0 {
-		return
-	}
-	idle := 0
-	for id, state := range r.procStates {
-		if int(id) < r.procs && state == exptrace.ProcIdle {
-			idle++
-		}
-	}
-	switch {
-	case idle == 0 && !r.holding:
-		r.holding, r.heldFrom = true, at
-	case idle > 0 && r.holding:
-		r.holding = false
-		r.held = append(r.held, [2]exptrace.Time{r.heldFrom, at})
-	}
-}
-
-// heldWithin is how much of the stretch from start to end no P of the process was idle.
-func (r *xidTraceReading) heldWithin(start, end exptrace.Time) time.Duration {
-	first := slices.IndexFunc(r.held, func(span [2]exptrace.Time) bool { return span[1] > start })
-	if first < 0 {
-		return 0
-	}
-	var total time.Duration
-	for _, span := range r.held[first:] {
-		if span[0] >= end {
-			break
-		}
-		if from, to := max(span[0], start), min(span[1], end); to > from {
-			total += to.Sub(from)
-		}
-	}
-	return total
+// pastEnd is how much of the stretch up to moment lies past the trace's last event, where the
+// trace says nothing of any goroutine: zero when the trace reaches moment.
+func (r *xidTraceReading) pastEnd(moment time.Time) time.Duration {
+	return max(time.Duration(r.traceTime(moment)-r.last), 0)
 }
 
 // xidExpVersion is the golang.org/x/exp this binary was built with, as the build records it.
@@ -408,10 +336,12 @@ func (r *xidTraceReading) traceTime(moment time.Time) exptrace.Time {
 	return r.snapshot.Trace + exptrace.Time(mono-int64(r.snapshot.Mono))
 }
 
-// goStates are the states of the goroutine running on thread at from, over from to to (xidGoStates).
-// ok is false when the trace shows no goroutine running on thread by from.
+// goStates are the states of the goroutine running on thread at from, over from to to (xidGoStates),
+// read only as far as the trace reaches: a goroutine's last state is not carried past the trace's
+// last event, where the trace says nothing (pastEnd). ok is false when the trace shows no
+// goroutine running on thread by from.
 func (r *xidTraceReading) goStates(thread int, from, to time.Time) (xidGoStates, bool) {
-	start, end := r.traceTime(from), r.traceTime(to)
+	start, end := r.traceTime(from), min(r.traceTime(to), r.last)
 	runs := r.runs[thread]
 	last := slices.IndexFunc(runs, func(run xidThreadRun) bool { return run.at > start }) - 1
 	if last == -2 {
@@ -434,7 +364,6 @@ func (r *xidTraceReading) goStates(thread int, from, to time.Time) (xidGoStates,
 		switch change.state {
 		case exptrace.GoRunnable:
 			states.Runnable += segmentEnd.Sub(segmentStart)
-			states.RunnableHeld += r.heldWithin(segmentStart, segmentEnd)
 		case exptrace.GoWaiting:
 			states.Waiting += segmentEnd.Sub(segmentStart)
 		case exptrace.GoSyscall:

@@ -7,12 +7,12 @@ import "time"
 // the thread that sent it (XidTracer.lockTransaction) - the CPU time it ran meanwhile (Ran) and the
 // time it waited runnable on a run queue for a CPU (Runnable) - and off the execution trace of the
 // goroutine that sent it: the time the Go runtime kept it runnable but not running (GoRunnable),
-// GoRunnableHeld of it while no P of the process was idle, the time it waited on something it
-// asked for (GoWaiting), and the time it spent in a system call (GoSyscall). Read is false when
-// the rig could not read the thread's clocks at both ends on the thread its transaction's
-// goroutine was locked to, and Traced is false when the trace does not show that goroutine.
-// Softirqs are how many times each softirq ran on SoftirqCPU, the CPU the thread is pinned to,
-// over the gap, and Counted is false where the rig could not count them (xidwindow_softirq.go).
+// the time it waited on something it asked for (GoWaiting), and the time it spent in a system call
+// (GoSyscall). Read is false when the rig could not read the thread's clocks at both ends on the
+// thread its transaction's goroutine was locked to, and Traced is false when the trace does not
+// show that goroutine; the trace's states are read only as far as it reaches (goStates). Softirqs
+// are how many times each softirq ran on SoftirqCPU, the CPU the thread is pinned to, over the
+// gap, and Counted is false where the rig could not count them (xidwindow_softirq.go).
 //
 // No judgment reads the cgroup's cpu.stat, and none needs it. A CPU quota (cpu.max) that throttles
 // the thread keeps it runnable but off a CPU, and the kernel counts that time in the thread's
@@ -21,25 +21,23 @@ import "time"
 // counted throttled time anywhere else, the thread's clocks would show it as time asleep, which
 // Made counts as the code's: such a window would fail D6, never pass it.
 type XidGap struct {
-	Clock          time.Duration
-	Ran            time.Duration
-	Runnable       time.Duration
-	GoRunnable     time.Duration
-	GoRunnableHeld time.Duration
-	GoWaiting      time.Duration
-	GoSyscall      time.Duration
-	Read           bool
-	Traced         bool
-	Softirqs       XidSoftirqs
-	SoftirqCPU     int
-	Counted        bool
+	Clock      time.Duration
+	Ran        time.Duration
+	Runnable   time.Duration
+	GoRunnable time.Duration
+	GoWaiting  time.Duration
+	GoSyscall  time.Duration
+	Read       bool
+	Traced     bool
+	Softirqs   XidSoftirqs
+	SoftirqCPU int
+	Counted    bool
 }
 
 // xidGoStates is the time a goroutine spent over a stretch of the trace in each state the rig
-// reads (xidTraceReading.goStates): RunnableHeld is the part of Runnable during which no P of the
-// process was idle.
+// reads (xidTraceReading.goStates).
 type xidGoStates struct {
-	Runnable, RunnableHeld, Waiting, Syscall time.Duration
+	Runnable, Waiting, Syscall time.Duration
 }
 
 // Asleep is the time the gap's thread was off a CPU: neither running nor waiting for one.
@@ -71,18 +69,6 @@ func (g XidGap) Made() time.Duration {
 	return min(g.Clock-g.GoRunnable, g.Ran+g.Asleep()+g.GoWaiting)
 }
 
-// madeIfHeldWereTheCodes is Made with the runtime's wait while no P was idle (GoRunnableHeld)
-// counted as the code's. Measure runs its operation with idle Ps beside it (runWithIdlePs), so a
-// wait for a P while none is idle is not the machine's alone: the operation's own goroutines may
-// hold every P, and a route whose goroutines do waits on its own work. The rig cannot tell which,
-// so a gap that keeps D6 only by taking such a wait out is UNKNOWN (analyzeXidWindows).
-func (g XidGap) madeIfHeldWereTheCodes() time.Duration {
-	if !g.Read {
-		return g.Clock
-	}
-	return min(g.Clock-(g.GoRunnable-g.GoRunnableHeld), g.Ran+g.Asleep()+g.GoWaiting)
-}
-
 // xidStretch reads the stretch from to to off thread's clocks, from's reading and to's, where both
 // were read on it, and off the execution trace of the goroutine running on that thread, where the
 // rig took one (reading).
@@ -95,8 +81,7 @@ func xidStretch(from, to time.Time, fromClock, toClock xidThreadClock, thread in
 		if reading != nil {
 			var states xidGoStates
 			states, span.Traced = reading.goStates(thread, from, to)
-			span.GoRunnable, span.GoRunnableHeld = states.Runnable, states.RunnableHeld
-			span.GoWaiting, span.GoSyscall = states.Waiting, states.Syscall
+			span.GoRunnable, span.GoWaiting, span.GoSyscall = states.Runnable, states.Waiting, states.Syscall
 		}
 	}
 	return span

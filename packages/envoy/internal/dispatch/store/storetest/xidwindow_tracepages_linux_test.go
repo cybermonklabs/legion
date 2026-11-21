@@ -298,38 +298,88 @@ func TestAStalledCalibrationLeavesAGapOfTheCodesCPUMade(t *testing.T) {
 	}
 }
 
-// A window that keeps D6 only by taking out a wait for a P while none was idle is UNKNOWN: the
-// gap is a reviewer's forcing of 145 of the operation's own goroutines at 72 Ps (2026-11-21),
-// whose 49.966 ms runnable on the runtime, taken out, left 0.159 ms made. The same wait while a P
-// was idle is the machine's, and the window keeps D6; and a window that breaks D6 anyway is a
-// violation, not UNKNOWN.
-func TestAWindowThatKeepsD6OnlyOnAWaitWhileNoPWasIdleIsUnknown(t *testing.T) {
+// xidOneGapWindow is a window of two statements and the one gap between them, its statements
+// taking 3 ms, as analyzeXidWindows would build it from gap.
+func xidOneGapWindow(gap XidGap) XidWindow {
+	return XidWindow{
+		Transaction:   XidTransaction{PID: 7},
+		Statements:    []XidStatement{{SQL: "insert into projects"}, {SQL: "commit"}},
+		Gaps:          []XidGap{gap},
+		GapTime:       gap.Made(),
+		StatementTime: 3 * time.Millisecond,
+	}
+}
+
+// A window that keeps D6 only by taking its goroutine's wait on the runtime out is UNKNOWN: the gap
+// is a reviewer's forcing of 145 of the operation's own goroutines at 72 Ps (2026-11-21), whose
+// 49.966 ms runnable on the runtime, taken out, left 0.159 ms made while its thread slept 36 ms. A
+// wait on the runtime the thread spent waiting for a CPU decides nothing, and the window keeps D6
+// with it counted as the code's; a window that breaks D6 anyway is a violation, not UNKNOWN.
+func TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown(t *testing.T) {
 	RequireXidGapJudgment(t)
 	us := func(n int64) time.Duration { return time.Duration(n) * time.Microsecond }
-	window := func(gap XidGap) XidWindow {
-		return XidWindow{
-			Transaction:   XidTransaction{PID: 7},
-			Statements:    []XidStatement{{SQL: "insert into projects"}, {SQL: "commit"}},
-			Gaps:          []XidGap{gap},
-			GapTime:       gap.Made(),
-			StatementTime: 3 * time.Millisecond,
-		}
-	}
-	forced := XidGap{Clock: us(50125), Ran: us(1826), Runnable: us(12188), GoRunnable: us(49966), GoRunnableHeld: us(49966), Read: true, Traced: true}
+	forced := XidGap{Clock: us(50125), Ran: us(1826), Runnable: us(12188), GoRunnable: us(49966), Read: true, Traced: true}
 	if made := forced.Made(); made != us(159) {
 		t.Fatalf("the forced gap made %s, want 0.159 ms", made)
 	}
-	if problem := xidHeldProblem(window(forced)); !strings.Contains(problem, "UNKNOWN: backend 7's window") || !strings.Contains(problem, "49.966 ms in the gap after statement 0") {
+	if problem := xidRuntimeWaitProblem(xidOneGapWindow(forced)); !strings.Contains(problem, "UNKNOWN: backend 7's window") || !strings.Contains(problem, "49.966 ms in the gap after statement 0") {
 		t.Errorf("the forced gap's window: problem %q, want it UNKNOWN, naming the wait", problem)
 	}
-	idle := forced
-	idle.GoRunnableHeld = 0
-	if problem := xidHeldProblem(window(idle)); problem != "" {
-		t.Errorf("the same wait while a P was idle: problem %q, want none", problem)
+	queued := XidGap{Clock: us(50000), Ran: us(200), Runnable: us(49700), GoRunnable: us(49000), Read: true, Traced: true}
+	if problem := xidRuntimeWaitProblem(xidOneGapWindow(queued)); problem != "" {
+		t.Errorf("a runtime wait its thread spent waiting for a CPU: problem %q, want none", problem)
 	}
 	slept := forced
-	slept.GoRunnable, slept.GoRunnableHeld = 0, 0
-	if problem := xidHeldProblem(window(slept)); problem != "" || len(window(slept).Violations()) == 0 {
-		t.Errorf("a gap that breaks D6 with the wait counted as the code's: problem %q, violations %v, want a violation and no problem", problem, window(slept).Violations())
+	slept.GoRunnable = 0
+	if problem := xidRuntimeWaitProblem(xidOneGapWindow(slept)); problem != "" || len(xidOneGapWindow(slept).Violations()) == 0 {
+		t.Errorf("a gap that breaks D6 with the wait counted as the code's: problem %q, violations %v, want a violation and no problem", problem, xidOneGapWindow(slept).Violations())
+	}
+}
+
+// An idle P in the trace is no proof that the window's goroutine had a P free: the runtime hands a
+// P to a locked goroutine's thread (Go 1.27.3's startlockedm) by stopping it on the thread that
+// found the goroutine, where it reads as idle until the locked thread starts it. Here goroutine 1,
+// locked to thread 7, is runnable from 1 ms; thread 8 stops P 0 at 1.1 ms and hands it on, and
+// thread 7 starts P 0 and runs the goroutine at 51 ms, while its clocks say it slept 38 ms. P 0 is
+// idle in the trace that whole time, and the window is still UNKNOWN: a reviewer's control that
+// laid such a wait to the machine read 49.966 ms runnable as 159 µs made (2026-11-21).
+func TestAWaitOnAPHandedToALockedThreadDecidesNothing(t *testing.T) {
+	RequireXidGapJudgment(t)
+	base := time.Now()
+	at := func(ms float64) exptrace.Time { return exptrace.Time(ms * float64(time.Millisecond)) }
+	reading := &xidTraceReading{
+		baseTime: base,
+		snapshot: exptrace.ClockSnapshot{Trace: 0, Mono: 0},
+		changes:  map[exptrace.GoID][]xidGoStateChange{},
+		runs:     map[int][]xidThreadRun{},
+	}
+	for _, event := range []struct {
+		change exptrace.StateTransition
+		at     float64
+		thread exptrace.ThreadID
+	}{
+		{exptrace.MakeProcStateTransition(0, exptrace.ProcUndetermined, exptrace.ProcRunning), 0, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoUndetermined, exptrace.GoRunning), 0, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoRunnable), 1, 7},
+		{exptrace.MakeProcStateTransition(0, exptrace.ProcRunning, exptrace.ProcIdle), 1.1, 8},
+		{exptrace.MakeProcStateTransition(0, exptrace.ProcIdle, exptrace.ProcRunning), 51, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoRunnable, exptrace.GoRunning), 51, 7},
+		{exptrace.MakeGoStateTransition(1, exptrace.GoRunning, exptrace.GoWaiting), 60, 7},
+	} {
+		reading.transition(event.change, at(event.at), event.thread)
+	}
+	states, ok := reading.goStates(7, base.Add(500*time.Microsecond), base.Add(51500*time.Microsecond))
+	if !ok {
+		t.Fatal("the trace shows no goroutine on thread 7 by the gap's start")
+	}
+	if want := 50 * time.Millisecond; states.Runnable != want {
+		t.Fatalf("runnable %s, want %s", states.Runnable, want)
+	}
+	gap := XidGap{Clock: 51 * time.Millisecond, Ran: time.Millisecond, Runnable: 12 * time.Millisecond, GoRunnable: states.Runnable, Read: true, Traced: true}
+	if made := gap.Made(); made != time.Millisecond {
+		t.Fatalf("the gap made %s, want 1 ms with the wait taken out", made)
+	}
+	if problem := xidRuntimeWaitProblem(xidOneGapWindow(gap)); !strings.Contains(problem, "UNKNOWN: backend 7's window") || !strings.Contains(problem, "50.000 ms in the gap after statement 0") {
+		t.Errorf("a wait on a P handed to the goroutine's own thread: problem %q, want the window UNKNOWN", problem)
 	}
 }
