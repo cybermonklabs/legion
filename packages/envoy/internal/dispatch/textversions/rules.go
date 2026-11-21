@@ -15,14 +15,18 @@ import (
 // rulesVersion is the version of the event rules versionRules holds, which the fill writes in the
 // cursor row it creates (search_text_versions_fill.rules). Each batch keeps there the lower of the
 // version stored and this one (advanceCursorQuery), so the column holds the lowest rules version
-// that wrote the rows up to the cursor, and a later build that reads more event types knows which
-// events to read again. Version 1 read issues, primary documents, the creates, replies and edits
-// of comments, the creates and replies of issue messages, and asks; version 2 reads, besides,
-// message.edited, comment.deleted and message.deleted (dispatch://INFRA-1523), and takes a post's
-// whole body from its body history (bodyFromHistory). No build reads events again for a lower
-// stored version: no build before version 2 writes an event of those three types, so a log a
-// version 1 fill read holds none of them unless a version 1 fill read past events a version 2
-// build wrote beside it, which it passes as types no rule reads.
+// that wrote the rows up to the cursor. Version 1 read issues, primary documents, the creates,
+// replies and edits of comments, the creates and replies of issue messages, and asks; version 2
+// reads, besides, message.edited, comment.deleted and message.deleted (dispatch://INFRA-1523,
+// rulesAdded), takes a post's whole body from its body history (bodyFromHistory), and makes an
+// issue's vector from its document version's masked text (maskedSpecTexts).
+//
+// A batch of this build that finds a lower version stored reads again what that version's fill
+// passed over before it writes the events above the cursor (filler.rereadBatch): every event of
+// the types added since, up to the cursor, and the rows that version's rules decided otherwise
+// than this one's; and only that pass raises the column, once it has read everything. Only a
+// build with these rules writes an event of the three types, so every one in the log was written
+// by the roll that brought them or later, and a read of them all up to the cursor misses none.
 const rulesVersion = 2
 
 // Where a version's body came from, the values of search_text_versions.body_from this build
@@ -489,14 +493,14 @@ type decided struct {
 	Bytes    int64
 }
 
-// decideVersions decides, in the caller's transaction tx, the versions events start: events in
-// ascending id order, as the fill reads the log, of which it decides those that fit in maxBytes.
-// Each event goes through the rule of its type (versionRules) with the item's latest version,
-// which is the latest of the item decided earlier in the same batch, else the item's latest row
-// in the table (latestVersions), so two events of one item in one batch each see the other's
-// change: an issue's title and its primary document version are carried forward from row to
-// row, and an edit is compared with the text before it. An event of a type no rule reads starts
-// no version.
+// decideVersions decides, in the caller's transaction tx, the versions events start under rules:
+// events in ascending id order, as the fill reads the log, of which it decides those that fit in
+// maxBytes. Each event goes through the rule of its type (rules.rules) with the item's latest
+// version, which is the latest of the item decided earlier in the same batch, else the item's
+// latest row in the table (latestVersions), so two events of one item in one batch each see the
+// other's change: an issue's title and its primary document version are carried forward from row
+// to row, and an edit is compared with the text before it. An event of a type no rule reads
+// starts no version.
 //
 // What an event does not hold is read from the item's rows, in the same transaction:
 //
@@ -532,7 +536,7 @@ type decided struct {
 // the first, it decided, and the error naming an unreadable payload where one ended them; with
 // every event decided, that count is len(events). Any other error, a statement that failed,
 // events out of id order or an ask's event read with no body (askVersion), answers no version.
-func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events []event, maxBytes int64) (decided, int, error) {
+func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, rules *ruleSet, events []event, maxBytes int64) (decided, int, error) {
 	// A first pass runs each event through the rule of its type with no latest version
 	// (noLatest), as though the event were its item's first, and names the item of each version
 	// it starts, so the table's latest rows of all of them are read in one statement. That names
@@ -565,7 +569,7 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 		if index > 0 && e.ID <= events[index-1].ID {
 			return decided{}, 0, fmt.Errorf("decide the keyword versions: event %d comes after event %d, out of id order", e.ID, events[index-1].ID)
 		}
-		apply, ok := versionRules[e.Type]
+		apply, ok := rules.rules[e.Type]
 		if !ok {
 			continue
 		}
@@ -598,7 +602,7 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 	if err != nil {
 		return decided{}, 0, err
 	}
-	d := &decider{tx: tx, logger: logger, stored: stored, batch: map[item]*version{}, specs: texts}
+	d := &decider{tx: tx, logger: logger, rules: rules, stored: stored, batch: map[item]*version{}, specs: texts}
 	for index, e := range events {
 		v, starts, err := d.start(ctx, e)
 		if err != nil {
@@ -625,14 +629,22 @@ func eventError(e event, err error) error {
 	return fmt.Errorf("decide the keyword version of event %d (%s): %w", e.ID, e.Type, err)
 }
 
-// decider is one batch's decision as decideVersions makes it: the latest versions the table held
-// of the batch's items, the latest each item has taken in this batch, the primary document
-// versions the batch's rows can name, measured, the versions decided so far, and the warnings of
-// the event being decided, which wait until it is known to be in the batch.
+// decider is one batch's decision as decideVersions makes it: the rules it decides under, the
+// latest versions the table held of the batch's items, the latest each item has taken in this
+// batch, the primary document versions the batch's rows can name, measured, the versions decided
+// so far, and the warnings of the event being decided, which wait until it is known to be in the
+// batch.
+//
+// A re-read batch (decideReread) gives it, in place of the latest versions, the row each event's
+// item held just before the event's own seq (before, by event id), and the event being decided
+// (event): an event read again comes after rows the table holds of its item's later events.
 type decider struct {
 	tx       pgx.Tx
 	logger   *slog.Logger
+	rules    *ruleSet
 	stored   map[item]*version
+	before   map[int64]*version
+	event    int64
 	batch    map[item]*version
 	specs    map[specVersion]specText
 	out      decided
@@ -647,10 +659,21 @@ type warning struct {
 }
 
 // latest is the latestVersion the batch's rules read: the item's latest version decided in this
-// batch, else its latest row in the table.
+// batch, else its latest row in the table. In a re-read batch it is the later of the item's
+// version decided earlier in the batch and its row just before the event being decided (before):
+// the batch reads an item's events in seq order, so a version it decided earlier comes before the
+// event too.
 func (d *decider) latest(kind, id string) *version {
-	if v, ok := d.batch[item{kind, id}]; ok {
-		return v
+	decidedHere, inBatch := d.batch[item{kind, id}]
+	if d.before != nil {
+		prior := d.before[d.event]
+		if inBatch && (prior == nil || decidedHere.EventSeq > prior.EventSeq) {
+			return decidedHere
+		}
+		return prior
+	}
+	if inBatch {
+		return decidedHere
 	}
 	return d.stored[item{kind, id}]
 }
@@ -659,10 +682,11 @@ func (d *decider) latest(kind, id string) *version {
 // completes the version it starts from the item's rows (complete): the version, and whether e
 // starts one.
 func (d *decider) start(ctx context.Context, e event) (version, bool, error) {
-	apply, ok := versionRules[e.Type]
+	apply, ok := d.rules.rules[e.Type]
 	if !ok {
 		return version{}, false, nil
 	}
+	d.event = e.ID
 	v, started, err := apply(e, d.latest)
 	if err != nil || !started {
 		return version{}, false, err

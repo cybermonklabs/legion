@@ -71,7 +71,10 @@ func (v TextVersions) SQL() string {
 // vector from it (internal/dispatch/textversions), and the delete of the comment rewrites, in its
 // own transaction, the vector of each row the fill already wrote of a version that holds the
 // insert (QueueTextVersionsMask, api's deleteComment). That rewrite is the one write of a row the
-// fill did not make, and the one update of a row.
+// fill did not make. The fill's own re-read, after a fill of a lower rules version wrote, makes it
+// too, for a row such a fill wrote from the stored markdown after the delete (MaskTextVersions),
+// and writes again a post's row that version decided otherwise (textversions' rereadBatch): those
+// are the table's other updates of a row.
 //
 // The two take one lock, so neither misses the other: each batch of the fill holds it
 // exclusively from its start to its commit (LockTextVersionsMask), and the delete takes it shared
@@ -81,10 +84,10 @@ func (v TextVersions) SQL() string {
 // the delete commits, and then reads the comment deleted in every statement it runs, each with a
 // snapshot of its own (READ COMMITTED), the mask's read among them. Deletes share the lock, so
 // none waits on another. A batch takes no lock a delete holds: it takes no owner's or document's
-// lock, and inserts only rows a delete's snapshot did not see. So a delete, which holds its
-// owner's and its document's locks when it takes this one, waits at most for one batch, and no
-// cycle of waits forms. It is a transaction-level advisory lock in the two-key space, named as
-// this repository's others are.
+// lock, and writes only keyword rows, which a delete writes only once it holds this lock. So a
+// delete, which holds its owner's and its document's locks when it takes this one, waits at most
+// for one batch, and no cycle of waits forms. It is a transaction-level advisory lock in the
+// two-key space, named as this repository's others are.
 const (
 	textVersionsMaskLockQuery       = `select pg_advisory_xact_lock(hashtext('search-text-versions-mask'), 0)`
 	textVersionsMaskSharedLockQuery = `select pg_advisory_xact_lock_shared(hashtext('search-text-versions-mask'), 0)`
@@ -127,6 +130,23 @@ func QueueTextVersionsMask(b *WriteBatch, artifactID string, numbers []int32, te
 	b.Queue("take the keyword table's mask lock", textVersionsMaskSharedLockQuery)
 	b.Queue(fmt.Sprintf("mask a deleted insert in the keyword rows of %d versions of document %s", len(numbers), artifactID),
 		textVersionsMaskQuery, artifactID, numbers, texts)
+}
+
+// MaskTextVersions rewrites in tx, a batch of the keyword fill that holds the mask lock
+// (LockTextVersionsMask), the vector of each keyword row that names one of versions numbers of
+// document artifactID from its masked text, texts in the same order (textVersionsMaskQuery), and
+// answers how many rows it rewrote. It is the rewrite QueueTextVersionsMask queues, made by the
+// fill's re-read for a row a fill of an earlier build wrote from the stored markdown after the
+// delete's rewrite ran (textversions' rereadBatch).
+func MaskTextVersions(ctx context.Context, tx pgx.Tx, artifactID string, numbers []int32, texts []string) (int64, error) {
+	if len(numbers) == 0 {
+		return 0, nil
+	}
+	tag, err := tx.Exec(ctx, textVersionsMaskQuery, artifactID, numbers, texts)
+	if err != nil {
+		return 0, fmt.Errorf("mask a deleted insert in the keyword rows of %d versions of document %s: %w", len(numbers), artifactID, err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // TextVersionsNotReachedError is TextVersionsAt's refusal of a cut the keyword table's fill has

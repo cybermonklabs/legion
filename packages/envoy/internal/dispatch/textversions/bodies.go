@@ -11,11 +11,11 @@ import (
 )
 
 // wholeBody gives v, a version of a post whose event e cut its body, the whole body from the
-// first source that holds it (decideVersions): the post's present row where no later event of
-// the post changes its text (presentBody); then the post's body history, the body the first such
-// later event kept (historyBody); then, for a comment.created, revision 1 of its blocks
-// (firstRevisionBody). Else it keeps the event's text (bodyFromCut), which complete warns of
-// where it keeps v.
+// first source that holds it under the decider's rules (decideVersions): the post's present row
+// where no later event of the post changes its text (presentBody); then the post's body history,
+// the body the first such later event kept (historyBody), which version 1 of the rules did not
+// read; then, for a comment.created, revision 1 of its blocks (firstRevisionBody). Else it keeps
+// the event's text (bodyFromCut), which complete warns of where it keeps v.
 //
 // The history comes before the blocks because it is exact: it is the body the later edit or
 // delete replaced, byte for byte, which is the body e wrote since no change of the post's text
@@ -23,7 +23,8 @@ import (
 // The blocks stay for a comment whose later change kept no history, as a build before the body
 // history wrote its edits.
 func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
-	body, found, err := presentBody(ctx, d.tx, e, v.Kind, v.ID)
+	read := d.rules.posts[v.Kind]
+	body, found, err := presentBody(ctx, d.tx, read, e, v.Kind, v.ID)
 	if err != nil {
 		return err
 	}
@@ -31,12 +32,14 @@ func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
 		v.Body, v.BodyFrom = body, bodyFromRow
 		return nil
 	}
-	if body, found, err = historyBody(ctx, d.tx, e, v.Kind, v.ID); err != nil {
-		return err
-	}
-	if found {
-		v.Body, v.BodyFrom = body, bodyFromHistory
-		return nil
+	if d.rules.history {
+		if body, found, err = historyBody(ctx, d.tx, read, e, v.Kind, v.ID); err != nil {
+			return err
+		}
+		if found {
+			v.Body, v.BodyFrom = body, bodyFromHistory
+			return nil
+		}
 	}
 	if e.Type == "comment.created" {
 		body, ok, err := firstRevisionBody(ctx, d.tx, v.ID, e.CreatedAt)
@@ -121,12 +124,13 @@ type postBodyRead struct {
 	laterTypes       []string
 }
 
-// postBodyReads is the read of each kind of post's whole body, over the table of its rows and
-// the column of post_body_history that names it, with the event types that change the post's
-// text after the event that created it: its edit and its delete. A post's present row holds the
-// text of one of its events only where no committed event of these types of the same post comes
-// after that one (presentBody); and each such event kept the body it replaced in the post's
-// history (historyBody). Each kind's statements are given its own types alone.
+// postBodyReads is the read of each kind of post's whole body under this build's rules, over the
+// table of its rows and the column of post_body_history that names it, with the event types that
+// change the post's text after the event that created it: its edit and its delete. A post's
+// present row holds the text of one of its events only where no committed event of these types
+// of the same post comes after that one (presentBody); and each such event kept the body it
+// replaced in the post's history (historyBody). Each kind's statements are given its own types
+// alone.
 var postBodyReads = map[string]postBodyRead{
 	kindComment: postBodyReadOf("comments", "comment_id", "comment.edited", "comment.deleted"),
 	kindMessage: postBodyReadOf("messages", "message_id", "message.edited", "message.deleted"),
@@ -151,10 +155,9 @@ func (r postBodyRead) arguments(e event, id string) []any {
 
 // presentBody reads the whole body of post id of kind, whose event e cut it, from the post's
 // present row where that row holds the text e wrote: where no committed event of the post after
-// e changes its text (presentBodyQuery). found is false where a later event changes it, and where
-// the post has no row.
-func presentBody(ctx context.Context, tx pgx.Tx, e event, kind, id string) (string, bool, error) {
-	read := postBodyReads[kind]
+// e of read's later types changes its text (presentBodyQuery). found is false where a later event
+// changes it, and where the post has no row.
+func presentBody(ctx context.Context, tx pgx.Tx, read postBodyRead, e event, kind, id string) (string, bool, error) {
 	body, found, err := readBody(ctx, tx, read.present, read.arguments(e, id))
 	if err != nil {
 		return "", false, fmt.Errorf("read %s %s: %w", kind, id, err)
@@ -163,11 +166,10 @@ func presentBody(ctx context.Context, tx pgx.Tx, e event, kind, id string) (stri
 }
 
 // historyBody reads the whole body of post id of kind, whose event e cut it, from the post's body
-// history: the body the first committed event of the post after e that changes its text kept,
+// history: the body the first committed event of the post after e of read's later types kept,
 // where each of the post's events of those types kept one (historyBodyQuery). found is false where
 // no later event changes the post's text, and where its history does not hold a body for each.
-func historyBody(ctx context.Context, tx pgx.Tx, e event, kind, id string) (string, bool, error) {
-	read := postBodyReads[kind]
+func historyBody(ctx context.Context, tx pgx.Tx, read postBodyRead, e event, kind, id string) (string, bool, error) {
 	body, found, err := readBody(ctx, tx, read.history, read.arguments(e, id))
 	if err != nil {
 		return "", false, fmt.Errorf("read the body history of %s %s: %w", kind, id, err)

@@ -15,6 +15,9 @@ An issue's vector reads the primary document version's text as every read gives 
 Before each batch it pauses while an answers read that its process serves took longer than 800 ms within the last 10 s, or has run longer than 800 ms (`sessionanswers.Latency`).
 A reset of the event log (`events.EventLogWasReset`) empties both tables and starts the cursor again at the first event.
 After each batch it stores the reach, which `store.TextVersionsAt` reads before it answers a cut.
+The cursor row keeps the lowest rules version that wrote the rows up to the cursor, and a batch that finds a lower version than its own reads again before it writes past the cursor (`rereadBatch`), in batches bounded as the others, with their pause and rest: every event of the types its rules added up to the cursor (`rulesAdded`), each decided against the row its post held just before it; each post row whose cut body that version read from another source than this build reads first, written again; and each issue row naming a document version that holds a deleted comment's insert, its vector made again from the masked text (`store.MaskTextVersions`).
+Only the re-read's last batch raises the version, so a re-read stopped early, or a lower version's batch that writes again, has the next batch read again from the log's first event.
+Its tests run a fill of rules version 1 by giving a filler that version's rule set (`ruleSet`, `rulesVersion1`).
 
 It imports `store` for the pool, the reach, the mask lock and the lease callers, `docs` (`dispatch-docs`) for the version mask, `duty` for its hold, `events` (`dispatch-events`) for the horizon and the reset check, and `sessionanswers` (`dispatch-api`) for the pause.
 Its tests write the issues, the events and the rows they check through `textversions/textversionstest`, which imports no `textversions`.

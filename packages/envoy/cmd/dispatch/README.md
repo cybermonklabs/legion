@@ -2697,7 +2697,7 @@ This release also writes both again for every unpublished event a batch reads no
 Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
 Its key is `(kind, id, event_seq)`, and a new version is a new row.
-A row is updated in one case alone: the delete of a comment whose insert suggestion's words a stored document version holds rewrites, in its own transaction, the vector of each issue row that names such a version from the version's masked text (Search, below).
+A row is updated in two cases alone: the delete of a comment whose insert suggestion's words a stored document version holds rewrites, in its own transaction, the vector of each issue row that names such a version from the version's masked text (Search, below); and the fill's re-read, below, writes again the rows a fill of a lower rules version decided otherwise than this build's rules.
 `search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
 `search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
 `search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
@@ -2708,8 +2708,15 @@ At production's counts the table and its indexes take about 2 GB (1.9 GB measure
 So once the table is filled, the census refuses a later migration that names it unless the census admits every statement of that migration.
 A change to its shape is a new table that the fill writes again.
 The cursor row's `rules` holds the lowest version of the event rules that wrote the rows up to the cursor: each batch keeps the lower of its own version and the one stored, so a newer build that takes the hold after an older one does not hide the older one's events.
-A later build that reads more event types reads `rules` to know which events to read again, and only that read again raises it.
-Version 2 reads, besides version 1's, `message.edited`, `comment.deleted` and `message.deleted`, which no earlier build writes; no build reads events again yet, so a version 1 fill that ran beside a version 2 build during a roll and passed events of those types leaves `rules` at 1 and those versions unwritten.
+Version 2 reads, besides version 1's, `message.edited`, `comment.deleted` and `message.deleted`, takes a cut post body from the post's body history (`post_body_history`), and makes an issue's vector from its document version's masked text under the mask lock.
+A version 1 fill that runs beside a version 2 build during a roll passes over the events of those three types, reads a cut body from a post's row after a later edit or delete changed it, and writes an issue's vector from the stored markdown after a delete's rewrite masked it; and it lowers `rules` to 1.
+So a batch of version 2 that finds `rules` below 2 reads again before it writes past the cursor (`textversions`' `rereadBatch`), in batches bounded as the fill's are, each after the pause and before the rest:
+every event of the three types up to the cursor, decided against the row its post held just before it, each version written unless the table holds it;
+each row of a post with a later edit or delete whose body its event cut and that was read from another source than the post's body history, written again as version 2 decides it;
+and the vector of each issue row naming a document version that holds a deleted comment's insert, from the masked text.
+Its last batch raises `rules` to 2, and only it does: a re-read stopped before then, or a later version 1 batch that lowers `rules` again, has the next version 2 batch read again from the log's first event, which writes nothing twice.
+Only a build with version 2 writes an event of the three types, so every one in the log was written by the roll that brought them or later, and the re-read misses none.
+Its read walks the log for those types with no index of its own, under a statement time of a minute.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
@@ -3478,7 +3485,7 @@ Where an event cut a post's body, the fill reads the whole body from the post's 
 The functions that make the item's own `search` column make the vector of each version, so the vector of an item unchanged since its version started equals that column.
 An issue's vector reads its primary document version's text as every read of that version gives it, without the words of a pending insert suggestion whose comment was deleted.
 The delete of such a comment rewrites the vector of each row the fill already wrote of a version holding those words, and every fill batch and that delete take the advisory lock `search-text-versions-mask`, so neither misses the other's write (`internal/dispatch/store/README.md`).
-The keyword fill writes the rows from the event log while Dispatch serves (Background loops, above).
+The keyword fill writes the rows from the event log while Dispatch serves (Background loops, above); after a fill of an earlier rules version wrote during a roll, it reads again what that version passed over or decided otherwise (Database migrations, above).
 `store.TextVersionsAt(ctx, cut)` answers `store.TextVersions`, the relation of the version of each item that held at the cut.
 A statement joins it as `from <SQL()> v` and matches, ranks and cuts snippets in itself, as the arms of the present search do over the items' own tables.
 `TextVersionsAt` refuses a cut that the fill has not reached with `*store.TextVersionsNotReachedError`, which names the reach (`internal/dispatch/store/README.md`).

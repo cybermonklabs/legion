@@ -22,7 +22,8 @@ It holds the keyword table of each past version of the searchable text, in two t
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask; a new version is a new row.
 `search_text_versions_fill` holds the one cursor row of the keyword fill: every event at or below its `event_id` has its rows.
 The keyword fill (`dispatch-textversions`) writes both tables, and no migration writes them.
-One other write updates rows: the delete of a comment whose insert suggestion's words a stored document version holds rewrites, through `store.QueueTextVersionsMask` in its own transaction, the vector of each issue row that names such a version from its masked text, under the advisory lock `search-text-versions-mask` that each fill batch holds exclusively (`store.LockTextVersionsMask`).
+Rows are updated in two cases: the delete of a comment whose insert suggestion's words a stored document version holds rewrites, through `store.QueueTextVersionsMask` in its own transaction, the vector of each issue row that names such a version from its masked text, under the advisory lock `search-text-versions-mask` that each fill batch holds exclusively (`store.LockTextVersionsMask`); and the fill's re-read, after a fill of a lower rules version wrote, writes again the rows that version decided otherwise, an issue row's vector through `store.MaskTextVersions`.
+The cursor row's `rules` is the lowest rules version that wrote the rows up to the cursor, which only that re-read raises.
 The relation's `deleted_at` is the post's own delete mark on every version of a deleted comment or message.
 `store.TextVersionsAt` gives `store.TextVersions`, the relation of the version of each item that held at a cut, only for a cut at or before the reach.
 It refuses a later cut with `store.TextVersionsNotReachedError`, which names the reach.

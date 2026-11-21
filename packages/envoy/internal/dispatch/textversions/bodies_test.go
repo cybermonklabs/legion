@@ -587,7 +587,7 @@ func decideBoundTo1Byte(t *testing.T, database *store.Store, logs *logtest.Buffe
 	t.Helper()
 	tx, _ := textversionstest.BeginTransaction(t, database)
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	_, decidedEvents, err := decideVersions(t.Context(), tx, slog.New(slog.NewJSONHandler(logs, nil)), batch, 1)
+	_, decidedEvents, err := decideVersions(t.Context(), tx, slog.New(slog.NewJSONHandler(logs, nil)), &currentRules, batch, 1)
 	return decidedEvents, err
 }
 
@@ -831,11 +831,11 @@ func decideAndWrite(t *testing.T, database *store.Store, logs *logtest.Buffer, b
 	ctx := t.Context()
 	var got decided
 	textversionstest.Commit(t, database, func(tx pgx.Tx) {
-		decidedVersions, _, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), batch, batchBytes)
+		decidedVersions, _, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), &currentRules, batch, batchBytes)
 		if err != nil {
 			t.Fatalf("decide the versions: %v", err)
 		}
-		if err := insertVersions(ctx, tx, decidedVersions.Versions); err != nil {
+		if err := insertVersions(ctx, tx, &currentRules, decidedVersions.Versions, false); err != nil {
 			t.Fatalf("write the versions: %v", err)
 		}
 		got = decidedVersions
