@@ -813,64 +813,6 @@ func newHTTPServer(handler http.Handler) *http.Server {
 	}
 }
 
-// startingGate answers 503 "service starting" until open hands it the mux to serve, and logs each
-// request it refuses: that line is the listener's only record of a caller it turned away while it
-// started. main builds each gate's mux only once every dependency of its handlers is open, so a
-// request never reaches a handler over a dependency that is not there. The two list reads, GET
-// /v1/sessions and GET /v1/interests/, get the refilling answer the routes give while their copies
-// cannot be served (writeListRefilling), since before /v1 opens no copy has been read: a caller
-// reads one answer for "the list is not ready" whether the gate or the route gives it.
-type startingGate struct {
-	name   string
-	logger *logging.Logger
-	mux    atomic.Pointer[http.ServeMux]
-}
-
-// newStartingGate returns a closed gate whose refusals log under name.
-func newStartingGate(name string, logger *logging.Logger) *startingGate {
-	return &startingGate{name: name, logger: logger}
-}
-
-func (g *startingGate) open(mux *http.ServeMux) { g.mux.Store(mux) }
-
-// route names the /v1 route r reaches, envoy_listener_requests_total's path label: once the gate
-// is open, the pattern of the route that serves it ((*http.ServeMux).Handler, which routes as
-// ServeHTTP does and changes nothing on r), and before then, or for a path no route matches, the
-// pattern that routed it to the gate (/v1 or /v1/). It is always a pattern and never the path, so
-// a session id, or any other text a caller writes into a path, never becomes a series of its own.
-func (g *startingGate) route(r *http.Request) string {
-	if mux := g.mux.Load(); mux != nil {
-		if _, pattern := mux.Handler(r); pattern != "" {
-			return pattern
-		}
-	}
-	return r.Pattern
-}
-
-func (g *startingGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	mux := g.mux.Load()
-	if mux == nil {
-		g.logger.Warn("request refused while starting",
-			slog.String("gate", g.name),
-			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
-		)
-		if isListRead(r) {
-			writeListRefilling(w)
-			return
-		}
-		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
-		return
-	}
-	mux.ServeHTTP(w, r)
-}
-
-// isListRead reports whether r is one of the two list reads, GET /v1/sessions or GET
-// /v1/interests/, whose closed-gate answer is the refilling one.
-func isListRead(r *http.Request) bool {
-	return r.Method == http.MethodGet && (r.URL.Path == "/v1/sessions" || r.URL.Path == "/v1/interests/")
-}
-
 // openWebhooks builds the webhook routes over the publisher they publish through and the CI store
 // (nil without the GitHub route) and opens the webhook gate onto them. A webhook waits on nothing
 // else, not even the interest and session caches /v1 waits on, and GitHub does not redeliver a
@@ -1189,7 +1131,9 @@ func main() {
 	// (the two /v1 list reads the refilling answer, startingGate), each behind its own gate: the
 	// webhooks once NATS and, for the GitHub route, the CI store are (Phase 5), /v1 once the
 	// interest and session caches are too (Phase 6). Neither waits for the durable consumer, which
-	// only /healthz reads. The webhook paths reach their gate bare, /v1 through apiAuth.
+	// only /healthz reads. The webhook paths reach their gate bare. /v1 reaches its gate through
+	// v1API, which answers the closed gate before apiAuth judges any credential, so a starting
+	// listener spends no request's DPoP proof.
 	webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1", logger)
 	hooks := webhookRoutes(webhookCfg)
 	for _, hook := range hooks {
@@ -1198,9 +1142,13 @@ func main() {
 	// Serve /v1/* on the listener port for local plugin registration.
 	apiAuthConfig.requests = newListenerRequests(met)
 	apiAuthConfig.route = v1Gate.route
-	v1Handler := apiAuth(apiAuthConfig, v1Gate)
+	v1Handler := v1API(apiAuthConfig, v1Gate)
 	mux.Handle("/v1", v1Handler)
 	mux.Handle("/v1/", v1Handler)
+	// /readyz says whether /v1 serves, and nothing else: it is the path a load balancer's health
+	// check reads (the edge's), so a starting pod takes no request before its /v1 can serve one.
+	// /healthz stays as it is for the probes that read it.
+	mux.HandleFunc("/readyz", readyzHandler(v1Gate))
 
 	// Phase 4: Start HTTP server on the listener Phase 2 holds.
 	server := newHTTPServer(mux)

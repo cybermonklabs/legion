@@ -1032,12 +1032,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     }
     if (unminted !== undefined && response.status === 401) {
       // The listener wanted the credential this machine could not mint: a listener that requires
-      // one answers a request without it 401 and nothing else, at its auth gate before any route
-      // runs (`apiauth.go`). That is no answer about the call itself, and nothing the call asked
-      // was done, so it retries as an unanswered attempt does — the broker may have come back —
-      // but is never one the listener may have acted on, and the error names both halves. A 403
-      // is the listener's own refusal of what the call asked (a send's capability, a denied
-      // publish), and stands as its answer.
+      // one answers a request without it 401 at its auth gate, before any route runs
+      // (`apiauth.go`), once its /v1 has opened; while it starts, its starting gate answers every
+      // request 503 ahead of that auth gate (`starting_gate.go`), which this client reads as any
+      // 503. The 401 is no answer about the call itself, and nothing the call asked was done, so it
+      // retries as an unanswered attempt does — the broker may have come back — but is never one
+      // the listener may have acted on, and the error names both halves. A 403 is the listener's
+      // own refusal of what the call asked (a send's capability, a denied publish), and stands as
+      // its answer.
       return {
         notSent: new Error(
           `${init.method ?? "GET"} ${shown(url)} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
@@ -1207,7 +1209,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // attempt got: a first attempt can store the message and lose its answer, and the retry
       // then find the target gone. A last attempt that reached no route of the listener (its
       // auth gate's 401 to a request sent without the credential that could not be minted)
-      // stored nothing, so where no earlier attempt may have, the send was refused.
+      // stored nothing, so where no earlier attempt may have, the send was refused. A listener
+      // still starting answers such a request 503 from its starting gate instead, which reads as
+      // an attempt it may have acted on, so that send ends unconfirmed.
       let unanswered = false;
       let notSent = false;
       // The attempts this send made, which the unconfirmed error names: fewer than the client's

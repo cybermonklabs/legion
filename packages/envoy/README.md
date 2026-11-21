@@ -145,7 +145,7 @@ skip, except where `CI` is set, where they fail.
 `ENVOY_EDGE_PROJECTS` makes a listener the edge listener, the one an outside person's agents reach Envoy through.
 It names the projects the edge serves: project keys separated by commas or white space, read as a broker token's own list is (`parseEdgeProjects`, `internal/config/config.go`).
 A list that no token could carry refuses the start, naming the variable, and so does a set value that names no project, such as a lone comma or white space.
-Unset or empty, the listener serves as every other listener does, and nothing in this section applies.
+Unset or empty, the listener serves as every other listener does, and nothing in this section applies to it except what a bullet says holds for every listener: `/readyz` (**Health**) and the closed `/v1` gate's `503` ahead of any credential (**A `503` and the balancer's retry**).
 
 The edge holds each session to the projects of the broker token that admitted it, also in a deployment where each project is public.
 It follows, stores and shows a session no topic of no project, except the GitHub topics of its projects' repositories, and at each registration it releases the session's claims of another project's roles that its view of the role claims shows (see **Roles** below).
@@ -162,6 +162,40 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   Any other session's broker token gets `403` with the reason `token_not_admitted`, whose text names what the token carries (its scope, or a project it lists that the edge does not serve) and no project the edge serves; the projects served go to the log line `listener: edge listener refused a broker token` alone.
   A read-only token, and a request with no broker token, get `401` before any handler runs: the listener's verifier refuses a read-only token as no session's.
   `/metrics` and `/healthz` answer on the same port with no credential, so the edge's public route forwards `/v1/` alone.
+
+- **Behind Google's load balancer**: the edge is reached through Google's global external Application Load Balancer, so every request comes from one of its proxies, in `35.191.0.0/16` or `130.211.0.0/22`, or `2600:2d00:1:1::/64` over IPv6 (Google's "GFE proxy ranges").
+  That holds for container-native backends (zonal NEGs), which the edge's route uses: behind instance-group backends kube-proxy rewrites the source to a node's address, and every request would be keyed on the node.
+  From those ranges the edge reads its caller's address from the second-to-last entry of the one `X-Forwarded-For` line the balancer writes, and keys the broker token's introspection bucket on it (a burst of 20, then five a second, per address and process: `ciphertoken.DefaultAddressLimit`); an IPv6 caller is keyed by its `/64`.
+  A request from those ranges with no `X-Forwarded-For`, more than one line, a line of one entry, or an entry there that is no IP address gets `400` before the broker is asked anything, logged as `listener: edge request without the address Google's load balancer forwards`.
+  A request from any other address is keyed on its connection, as on every other listener, and its `X-Forwarded-For` chooses nothing (`edgeCallerAddress`, `cmd/listener/edge_forwarded.go`).
+  The `400` body is the listener's plain error (`listenerwire.APIError`), since no project rule refused the request.
+  That trust rests on the deployment, not on the code: only Google's Application Load Balancer may front the edge port. Google's proxy Network Load Balancers send from the same ranges and append no `X-Forwarded-For`, and so would a sidecar in front of the edge port; behind either, a client would write the entry the edge keys on.
+  Keying an IPv6 caller by its `/64` hands one host that holds a `/48` 65,536 buckets (read from the code, not measured); a `/56` or `/48` key, or one ceiling shared by every bucket, would bound that.
+
+- **Health**: every listener serves `GET /readyz`, which reflects only whether /v1 serves: 503 until the /v1 gate opens, 200 after; the edge's load balancer health check reads it, and the deployment's health-check policy for the edge names the path.
+  It takes no credential, answers `503 {"status":"starting"}` and `200 {"status":"serving"}`, and reads nothing else (`readyzHandler`).
+  The gate never closes again, so once /v1 opens `/readyz` answers 200 also while the bus is down and /v1 answers bus-unavailable `503`s: the pod's readiness probe stays on `/healthz`, which answers `503` then, so such a replica still leaves the balancer's backends (an inference: that the edge's backends follow the pod's readiness rests on its Deployment, which is outside this repository).
+  `/healthz` is unchanged for its other callers: it answers `200 {"status":"starting"}` from the listener's first answer, before `/v1` serves, so a balancer that read it would send requests to a pod that answers them `503`.
+
+- **A `503` and the balancer's retry**: Google's balancer sends a request that carries no body once more after a `502`, `503` or `504`, with the same headers, its DPoP proof among them, and a proof is good for one request.
+  So the listener answers every `503` it can before it checks or records the proof: the closed `/v1` gate answers before any credential is read (`startingGate.ahead`, `v1API`), on every listener, and a broker or a spent-proof store that did not answer ends the check before the proof is recorded.
+  On the edge alone, a `503` a route answers after the proof was recorded, to a request with no body, gives the proof back: the listener deletes the record that request's own presentation wrote, and only that record, before it writes the `503` (`proofReleasingWriter`).
+  The balancer's retry is then served, and a proof presented again after a request it served is still refused as a replay.
+  A `503` says the listener cannot tell whether it acted, and the body-less routes are idempotent, so the retry has the outcome the client's own retry with a fresh proof would have.
+  A proof signs the method, the path and the token, and not the query, the body or any other header.
+  So a given-back proof can be presented once more on the same method and path with another query, such as a session's `DELETE` without the conditions its query carried; that takes the token and the proof in plaintext, inside the proof's window.
+  TLS covers the client's hop to the balancer alone: the hop from Google's proxy to the pod is HTTP inside Google's network, where the token and the proof travel in plaintext, so whoever reads that hop could replay a given-back proof once; that risk is accepted.
+  A request with a body keeps its proof spent whatever its status; the balancer does not retry it, and the client sends it again with a fresh proof.
+  Three cases still answer the balancer's retry `401`, and the status stays `503` in each, the one every route documents for a fault the client can ask again about:
+  - a spent-proof store that did not answer while its write of the proof landed;
+  - a release whose delete did not reach the bucket in its second (`proofReleaseBudget`), which a bus that did not answer the route makes likely, logged as `listener: a 503 could not give its request's DPoP proof back`;
+  - a `502` or `504` the balancer wrote itself after the proof was recorded: a connection that ended before an answer (a killed pod, a handler that panicked, a shutdown that ended with the request in flight), or a request past the backend timeout.
+
+  The retry's create reads the delete marker from the stream's leader, since the edge's bucket handles read with stream message gets (`bus.WithStreamMessageReads`), so `ENVOY_NATS_REPLICAS` changes none of this.
+
+  The relay socket's client reads an upgrade refused `401` as a refused token and opens the socket again after a second with a fresh token and a fresh proof.
+  A plain `/v1` call gets the generic `401` body every refused credential gets, which names nothing, and the client sends no request again on a `401`; the listener logs it as `listener: broker token rejected` with the reason `proof_invalid`, the class a replay is logged under.
+  Every other listener gives no proof back, since no such balancer stands in front of it.
 
 - **Topics**: a registration follows only the session's own agent subject, the topics of the token's projects, and the GitHub topics of one repository each that the repository answer of those projects names.
   The `403` of a refused registration lists each refused topic, with the reason `repository_not_in_project` when each is a GitHub topic and `topic_not_in_project` otherwise, and nothing of the registration is stored (`edgeTopicHold`).
@@ -203,7 +237,7 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   A session's own `GET /v1/interests/{session_id}` shows the topics of its token's projects alone.
   `GET /v1/interests/` and another session's `GET /v1/interests/{session_id}` get `403 session_not_in_project`, and a write of the Legion agent registry gets `403 legion_registry_not_written`.
 
-Every edge refusal's body is `listenerwire.EdgeRefusal`, whose comment in `listenerwire/listenerwire.go` names each reason and says how a client reads a refused registration's `refused` list.
+Every refusal of a project rule above has the body `listenerwire.EdgeRefusal`, whose comment in `listenerwire/listenerwire.go` names each reason and says how a client reads a refused registration's `refused` list.
 
 Every listener that checks broker tokens records the registering token's projects on the session's entry in `envoy_sessions` (`session.SessionEntry.Projects`).
 The edge's send and read rules read that record, and no answer of the API carries it.

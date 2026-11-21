@@ -790,6 +790,12 @@ cache ping and no read of the durable consumer. A liveness or startup probe read
 outage or a warming cache restarts no listener. Readiness stays on `/healthz`, whose status tells
 a starting listener from a serving one.
 
+`GET /readyz` needs no credential either. It reflects only whether /v1 serves: 503 until the /v1
+gate opens, 200 after; a load balancer's health check reads it. Its bodies are
+`{"status":"starting"}` and `{"status":"serving"}`, and it reads nothing else. It is the path for a
+balancer that sends requests to `/v1`, such as the edge listener's, since `/healthz` answers `200`
+`starting` from the listener's first answer, while `/v1` still answers `503`.
+
 After a NATS reconnect the listener rebuilds the key-value watches its caches read through. A
 rebuild that fails is tried again within seconds, so one that fails and then succeeds inside that
 minute leaves the listener `healthy` and logs a warning rather than an error; only a rebuild that
