@@ -145,6 +145,10 @@ type workflowRuntime struct {
 	controllerWake time.Duration
 	// controllerFirstWake replaces firstControllerTick in a test; zero is the production delay.
 	controllerFirstWake time.Duration
+	// controllerTicks is overrides.controllerTicks: when not nil, tickController applies a tick at
+	// each moment it delivers and at no other, in place of both its timers. nil, in production, is
+	// the timers.
+	controllerTicks <-chan time.Time
 	// idlePeriod is how long an issue pod must have had no turn in progress and no turn due
 	// before the daemon releases it (runtime.kubernetes.idle_release.idle_minutes); zero turns
 	// release off, as `idle_minutes: 0` and every runtime but Kubernetes do. idleStore is the
@@ -1662,7 +1666,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
-	w.outbox.hold = supervision.plan.holdOutbox
+	w.outbox.hold, w.outbox.beforeStatusWrite = supervision.plan.holdOutbox, supervision.plan.beforeOutboxStatusWrite
 	w.dropConsumedEvent = supervision.plan.dropConsumedEvent
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
@@ -2333,8 +2337,19 @@ const firstControllerTick = time.Minute
 // waiting on a refused root claim, or a quiet day would otherwise leave the controller idle and the
 // daily report unposted until the next wake. Each tick's event id is its
 // own (the project, this boot, and the tick's time), since processed_events is shared by every
-// project's daemon. A failed apply is logged, and the next tick tries again.
+// project's daemon. A failed apply is logged, and the next tick tries again. A test's
+// controllerTicks, when set, is the one source of ticks.
 func (w *workflowRuntime) tickController(ctx context.Context) {
+	if w.controllerTicks != nil {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case at := <-w.controllerTicks:
+				w.applyControllerTick(ctx, at)
+			}
+		}
+	}
 	interval := w.controllerWake
 	if interval <= 0 {
 		interval = time.Hour

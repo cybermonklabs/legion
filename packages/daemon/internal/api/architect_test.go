@@ -77,6 +77,11 @@ type statusWrite struct {
 type statusRecorder struct {
 	err    error
 	writes []statusWrite
+	// foreignOpen names, by issue, the open children of another project an acceptance write of that
+	// issue is refused for (409 FOREIGN_CHILD_OPEN), as Dispatch refuses it; acceptances is each
+	// acceptance write the fake took, as `<issue>=<status>`, which writes keeps as well.
+	foreignOpen map[string][]dispatch.ForeignChild
+	acceptances []string
 	// taken is every other Dispatch write the fake took, in order, as `<method> <issue or
 	// project>`: a message, a document upload, a role-holder publication, and a write of the
 	// gated steps, the design gates, a step, a step's rating or a plan. It keeps none of them.
@@ -172,6 +177,21 @@ func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dis
 // take it, and they run in the outbox.
 func (r *statusRecorder) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, errors.New("the architect routes write no status at a sequence")
+}
+
+// SetAcceptanceStatus is SetStatus sent with refuse_open_foreign_children: refused with Dispatch's
+// 409 FOREIGN_CHILD_OPEN where foreignOpen names children of the issue, and otherwise taken and
+// kept as SetStatus keeps a write, and in acceptances.
+func (r *statusRecorder) SetAcceptanceStatus(ctx context.Context, issue, status string) (dispatch.Issue, error) {
+	if children := r.foreignOpen[issue]; len(children) > 0 {
+		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: dispatch.ForeignChildOpen,
+			Message: issue + " has an open child of another project", Issues: children}
+	}
+	written, err := r.SetStatus(ctx, issue, status)
+	if err == nil {
+		r.acceptances = append(r.acceptances, issue+"="+status)
+	}
+	return written, err
 }
 
 func (r *statusRecorder) HandOver(context.Context, dispatch.Issue, string) error {
@@ -572,8 +592,12 @@ func TestArchitectRoutesRefuseWrongRoleAndForeignTree(t *testing.T) {
 // root ends the tree, and a sibling is another architect's; both are refused, and nothing applies.
 // The root's architect owns every issue of its tree, and a sub-architect its own.
 func TestSignOffAndRetryAreTheOwningArchitects(t *testing.T) {
-	h, facts, _ := newArchitectHarness(t, nil, nil)
+	h, facts, statuses := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209", "LEGION-210")
+	// sign_off reads each issue's Dispatch status before it writes retro there.
+	for _, key := range []string{"LEGION-209", "LEGION-210"} {
+		statuses.issues[key] = dispatch.Issue{Key: key, Status: "needs_review", LastSeq: 3}
+	}
 	root := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	subArchitect := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleArchitect)
 	for n, route := range []struct {
@@ -667,8 +691,12 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 // notice router decides (record.OwningArchitect): the root architect the reviewer's phase-finished
 // notice reaches may accept it and retry it, and a sub-architect still may not.
 func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
-	h, facts, _ := newArchitectHarness(t, nil, nil)
+	h, facts, statuses := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
+	// sign_off reads each issue's Dispatch status before it writes retro there.
+	for _, key := range []string{"LEGION-211", "LEGION-212"} {
+		statuses.issues[key] = dispatch.Issue{Key: key, Status: "needs_review", LastSeq: 3}
+	}
 	unrecorded := "LEGION-999"
 	records := record.NewStore()
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
@@ -710,10 +738,14 @@ func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 	}
 }
 
+// A refused fact is answered with its refusal, and the grant still authenticates a repeated call.
+// sign_off writes retro in Dispatch before its fact, so a refusal of the fact writes back the
+// status Dispatch showed before that write.
 func TestArchitectureRouteRefusalsExposeTheFactResultAndGrantState(t *testing.T) {
 	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
-	h, _, _ := newArchitectHarness(t, credential.New(func() time.Time { return now }),
+	h, _, statuses := newArchitectHarness(t, credential.New(func() time.Time { return now }),
 		&intake.Refusal{Status: http.StatusConflict, Code: "PHASE_HELD", Message: "phase is held"})
+	statuses.issues["LEGION-208"] = dispatch.Issue{Key: "LEGION-208", Status: "needs_review", LastSeq: 7}
 	seedTree(t, h, "LEGION-208")
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	grant := architect.grant(t)
@@ -721,12 +753,18 @@ func TestArchitectureRouteRefusalsExposeTheFactResultAndGrantState(t *testing.T)
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
 		"grantId": grant, "issue": "LEGION-208",
 	}, nil), http.StatusForbidden, "GRANT_EXPIRED")
+	if len(statuses.writes) != 0 {
+		t.Fatalf("a sign-off refused before its fact wrote %+v to Dispatch, want nothing", statuses.writes)
+	}
 
 	now = now.Add(-time.Minute)
 	grant = architect.grant(t)
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
 		"grantId": grant, "issue": "LEGION-208",
 	}, nil), http.StatusConflict, "PHASE_HELD")
+	if want := []statusWrite{{"LEGION-208", "retro"}, {"LEGION-208", "needs_review"}}; !reflect.DeepEqual(statuses.writes, want) {
+		t.Fatalf("Dispatch writes of a sign-off whose fact was refused = %+v, want retro and then needs_review written back: %+v", statuses.writes, want)
+	}
 	// The grant still authenticates a repeated call, and the repeated fact is refused again rather
 	// than answered as though it had applied.
 	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
@@ -1199,9 +1237,10 @@ func TestASecondRegistrationAtOneVersionCarriesWhatItsOwnReadFound(t *testing.T)
 // A root architect ends its own tree before its first phase starts: a human decided no change at
 // the design gate, or the issue is moot. The route takes the reason; nothing else ends an admitted
 // root from the architect's side, since sign_off needs the production check and a backward move
-// needs a phase worker.
+// needs a phase worker. It writes done in Dispatch before it applies the close, which carries the
+// sequence Dispatch answered that write with.
 func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
-	h, facts, _ := newArchitectHarness(t, nil, nil)
+	h, facts, statuses := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	closed := h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
@@ -1210,8 +1249,11 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close = %d: %s", closed.Code, closed.Body)
 	}
-	if got := facts.recorded(); len(got) != 1 || got[0] != (intake.CloseRoot{Issue: "LEGION-208", Reason: "The human decided no change is needed."}) {
-		t.Fatalf("close facts = %#v", got)
+	if got := facts.recorded(); len(got) != 1 || got[0] != (intake.CloseRoot{Issue: "LEGION-208", Reason: "The human decided no change is needed.", Written: 8}) {
+		t.Fatalf("close facts = %#v, want the close with done's sequence 8", got)
+	}
+	if want := []string{"LEGION-208=done"}; !slices.Equal(statuses.acceptances, want) {
+		t.Fatalf("acceptance writes = %q, want %q", statuses.acceptances, want)
 	}
 
 	// A child is not the root, a sub-architect of the tree is not the root's architect, and a
@@ -1228,9 +1270,10 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 		"grantId": worker.grant(t), "issue": "LEGION-208", "reason": "moot",
 	}, nil), http.StatusForbidden, "ARCHITECT_REQUIRED")
 
-	// The close posts the reason as a message before it writes the status, so a reason whose one
-	// block passes Dispatch's bound is refused here, naming the bound and how far over it is.
-	// Nothing is recorded: no fact reached the intake, so no outbox row carries the close.
+	// The close's row posts the reason as a message once the route has written done, so a reason
+	// whose one block passes Dispatch's bound is refused here, naming the bound and how far over it
+	// is. Nothing is written or recorded: Dispatch takes no write, no fact reached the intake, and
+	// no outbox row carries the close.
 	overBlock := strings.Repeat("x", dispatchbody.BlockUnits)
 	refusal := refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-208", "reason": overBlock,
@@ -1238,8 +1281,8 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	if want := "block 1 (text) is 48 characters over the 32000-character block limit"; !strings.Contains(refusal, want) {
 		t.Fatalf("refusal = %q, want it naming %q", refusal, want)
 	}
-	if got := facts.recorded(); len(got) != 1 {
-		t.Fatalf("the refused close applied %#v, want nothing beyond the first close recorded", got[1:])
+	if got := facts.recorded(); len(got) != 1 || len(statuses.acceptances) != 1 {
+		t.Fatalf("the refused close applied %#v and wrote %q, want nothing beyond the first close", got[1:], statuses.acceptances[1:])
 	}
 	if rows := outboxRowsOf(t, h, "LEGION-208"); rows != 0 {
 		t.Fatalf("outbox rows after the refused close = %d, want none", rows)
@@ -1254,7 +1297,7 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	if closedLong.Code != http.StatusOK {
 		t.Fatalf("close with a reason of six blocks = %d: %s", closedLong.Code, closedLong.Body)
 	}
-	if got := facts.recorded(); len(got) != 2 || got[1] != (intake.CloseRoot{Issue: "LEGION-208", Reason: long}) {
+	if got := facts.recorded(); len(got) != 2 || got[1] != (intake.CloseRoot{Issue: "LEGION-208", Reason: long, Written: 9}) {
 		t.Fatalf("close facts = %#v, want the 40,000-character reason applied whole", got)
 	}
 }

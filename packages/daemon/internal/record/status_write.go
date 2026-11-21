@@ -117,7 +117,9 @@ func HandOverStatusWrite(status, observed, tree string, linger uint64) StatusWri
 
 // CloseStatusWrite is the daemon's own close of an issue, to status (done) from the observed
 // status Dispatch shows, with reason posted as a message before the status lands, fenced on the
-// generation of the run the close ended (CloseStatusRow).
+// generation of the run the close ended (CloseStatusRow). An architect's close_root writes done in
+// Dispatch itself before it queues this row, so there the post follows the status, which Dispatch
+// takes on a closed issue, and the row finds done already written.
 func CloseStatusWrite(status, observed, reason string, generation uint64) StatusWrite {
 	return StatusWrite{Kind: CloseStatusRow, Status: status, ObservedStatus: observed, Reason: reason,
 		CloseGeneration: generation}

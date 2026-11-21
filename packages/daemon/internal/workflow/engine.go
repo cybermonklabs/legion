@@ -2229,23 +2229,15 @@ func (e *Engine) testingParent(ctx context.Context, tx pgx.Tx, issue record.Issu
 // it together, so it is accepted after them, before the admission pass that would move it. A
 // parent that the wait has already moved stands in awaiting_children, no phase that sign_off acts
 // on, and is refused with the wait's own code, naming its open children (waitingRefusal, R11).
+// The judgement is SignOffRefusal's, which the sign_off route asks first in a read-only
+// transaction of its own, before it writes retro in Dispatch.
 func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if issue.Phase == phase.AwaitingChildren {
-		return e.waitingRefusal(ctx, tx, *issue, actSignOff)
-	}
-	if issue.Phase != phase.Accepting {
-		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil
-	}
-	held, err := e.acceptanceHeld(ctx, tx, *issue)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	if refusal, refuses := held.refusal(actSignOff, issue.Key); refuses {
-		return refusal, nil
+	if refusal, err := e.signOffRefusal(ctx, tx, *issue); err != nil || refusal != nil {
+		return intake.Result{Refusal: refusal}, err
 	}
 	review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
@@ -2256,6 +2248,37 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", review, pr, "")
+}
+
+// SignOffRefusal is the refusal the architect's sign_off of key meets as the daemon records key
+// now, nil where the sign-off is taken, and nil for an issue it does not record: every hold of
+// signOff, read and never written, so the sign_off route judges a sign-off in a read-only
+// transaction before it writes retro in Dispatch, and the fact judges it again in its own.
+func (e *Engine) SignOffRefusal(ctx context.Context, tx pgx.Tx, key string) (*intake.Refusal, error) {
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return nil, err
+	}
+	return e.signOffRefusal(ctx, tx, *issue)
+}
+
+// signOffRefusal is SignOffRefusal of issue as the caller read it.
+func (e *Engine) signOffRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue) (*intake.Refusal, error) {
+	if issue.Phase == phase.AwaitingChildren {
+		result, err := e.waitingRefusal(ctx, tx, issue, actSignOff)
+		return result.Refusal, err
+	}
+	if issue.Phase != phase.Accepting {
+		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)).Refusal, nil
+	}
+	held, err := e.acceptanceHeld(ctx, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	if refusal, refuses := held.refusal(actSignOff, issue.Key); refuses {
+		return refusal.Refusal, nil
+	}
+	return nil, nil
 }
 
 func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) error {

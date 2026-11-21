@@ -1,0 +1,21 @@
+kind: Changed
+body: |-
+  `sign_off` and `close_root` write their status in Dispatch, `retro` or `done`, before the daemon
+  records the acceptance or the close, with `refuse_open_foreign_children` set. So whenever a
+  daemon records an acceptance, Dispatch already shows it, and the daemon of every other project
+  refuses a `register_gate` on that issue (`BASIS_ACCEPTED`) from that moment; and Dispatch refuses
+  the write while a child of another project is open under the issue (any status but `done` and
+  `icebox`, as `record.ChildOpen` reads it), also a child filed after the last controller tick.
+  The daemon answers that refusal `409 SIGNOFF_CHILD_OPEN`, naming each such child with its
+  project and status, and records nothing. Each route first judges the act read-only as the
+  workflow records the issue (`workflow.Engine.SignOffRefusal`, `CloseRootRefusal`), so a refusal
+  the workflow makes writes nothing in Dispatch; a fact that refuses or fails after the write
+  writes back the status Dispatch showed before it, and records that write so the event of the
+  acceptance's own write changes nothing. The reason of a `close_root` is posted by the close's
+  status row after the status, which Dispatch takes on a closed issue; where the event of the
+  route's own `done` write reaches the record before the close's fact, the fact posts the reason
+  and is taken. The daemon's Dispatch client gains `SetAcceptanceStatus`, which needs a Dispatch
+  that holds the refusal `FOREIGN_CHILD_OPEN`: an older Dispatch writes the status with no check.
+time: 2026-11-21T19:22:37.000000000Z
+custom:
+    Issue: parent-across-projects

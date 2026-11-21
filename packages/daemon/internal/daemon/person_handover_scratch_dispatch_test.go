@@ -179,6 +179,7 @@ type scratchIssue struct {
 	Labels            []string `json:"labels"`
 	PrimaryArtifactID string   `json:"primary_artifact_id"`
 	LastSeq           int64    `json:"last_seq"`
+	Parent            *string  `json:"parent"`
 }
 
 // scratchEvent is one event of an issue's Dispatch event log: its id, which the envelope the
@@ -228,10 +229,13 @@ type scratchReview struct {
 // writes. The spec document every issue is created with gives its primary document a settled
 // version 1 to approve. architects keeps, by tree, the launch and the registered session of each
 // architect admit launched, which ready reports ready; tune, when set, adjusts the daemon's test
-// overrides at each boot, as a proof that holds the outbox or a registration sets them.
+// overrides at each boot, as a proof that holds the outbox or a registration sets them. scratch
+// is the scratch Dispatch itself, which a proof that writes a row Dispatch's API refuses reaches
+// through its database, and which a second project's rig shares (newProjectRigOn).
 type personHandoverRig struct {
 	t          *testing.T
 	baseURL    string
+	scratch    *scratchDispatch
 	cfg        config.Config
 	pool       *store.Pool
 	logs       *syncBuffer
@@ -271,11 +275,19 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 // (register_gate_basis_live_test.go) names all three; every other proof takes newPersonHandoverRig.
 func newPersonHandoverRigOn(t *testing.T, board scratchDispatchOptions, admissionCap int) *personHandoverRig {
 	t.Helper()
-	scratch := startScratchDispatchOn(t, board)
-	baseURL := scratch.base
-	cfg := workflowConfig(t, board.natsURL)
 	// Dispatch takes a project key of at most ten characters; workflowConfig's is longer.
-	cfg.Project = "P" + randomSuffix(t)[:9]
+	return newProjectRigOn(t, startScratchDispatchOn(t, board), board.natsURL, "P"+randomSuffix(t)[:9], "acme/widgets", admissionCap)
+}
+
+// newProjectRigOn readies a daemon of project on scratch, the scratch Dispatch whose events
+// natsURL carries, without booting it: the project is made in Dispatch with repository as its
+// default repository, and the daemon gets a database of its own on the test server, so two
+// projects' daemons can run beside each other on one Dispatch, as a deployment's do.
+func newProjectRigOn(t *testing.T, scratch *scratchDispatch, natsURL, project, repository string, admissionCap int) *personHandoverRig {
+	t.Helper()
+	baseURL := scratch.base
+	cfg := workflowConfig(t, natsURL)
+	cfg.Project = project
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
 	cfg.PostgresDSN = blockersDatabase(t)
 	cfg.AdmissionCap = admissionCap
@@ -289,17 +301,25 @@ func newPersonHandoverRigOn(t *testing.T, board scratchDispatchOptions, admissio
 	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(scratch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the scratch Dispatch bearer: %v", err)
 	}
-	dispatchCall(t, baseURL, http.MethodPost, "/api/v1/projects",
-		map[string]string{"key": cfg.Project, "name": "A person's handover"}, nil)
-	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": cfg.Project, "default": true}, nil)
+	scratchProject(t, baseURL, cfg.Project, repository)
 	raw, err := pgxpool.New(t.Context(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)
 	}
 	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
-	return &personHandoverRig{t: t, baseURL: baseURL, cfg: cfg, pool: pool, logs: &syncBuffer{}, github: blockersGitHub(t), architects: map[string]rigArchitect{}}
+	return &personHandoverRig{t: t, baseURL: baseURL, scratch: scratch, cfg: cfg, pool: pool, logs: &syncBuffer{}, github: blockersGitHub(t),
+		architects: map[string]rigArchitect{}}
+}
+
+// scratchProject makes project in the scratch Dispatch at baseURL, with repository (owner/name)
+// as its default repository.
+func scratchProject(t *testing.T, baseURL, project, repository string) {
+	t.Helper()
+	dispatchCall(t, baseURL, http.MethodPost, "/api/v1/projects", map[string]string{"key": project, "name": "A person's handover " + project}, nil)
+	owner, name, _ := strings.Cut(repository, "/")
+	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/settings/repo-projects/"+owner+"/"+name,
+		map[string]any{"project": project, "default": true}, nil)
 }
 
 // boot starts the daemon on the rig's configuration and database, on a fresh fake runtime, its log
