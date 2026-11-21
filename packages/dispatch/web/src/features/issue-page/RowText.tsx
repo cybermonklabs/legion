@@ -278,9 +278,8 @@ function StoredText({
           <Fragment key={`${one.start}:${one.reference}`}>
             {before}
             {one.path === undefined ? (
-              <span aria-label={label} data-row-reference={one.reference}>
-                {content}
-              </span>
+              // A person, whom no page shows: words with no link, and never an issue's name.
+              <span data-row-reference={one.reference}>{content}</span>
             ) : (
               <a
                 aria-label={label}

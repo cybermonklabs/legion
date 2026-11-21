@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { statusText } from "../features/project/board-model";
 import {
   GLYPH_SHAPES,
   GLYPH_VIEW_BOX,
@@ -7,7 +8,6 @@ import {
   type StatusGlyphText,
   statusGlyph,
   statusGlyphClassName,
-  statusGlyphLabelling,
 } from "./status-glyph";
 
 /** A shape's attributes by the names React takes them by: `stroke-width` as `strokeWidth`. */
@@ -42,16 +42,28 @@ export function StatusGlyph({
   status: string;
 }): ReactNode {
   const glyph = statusGlyph(status);
-  return (
+  const shapes = (REACT_SHAPES.get(glyph) ?? []).map(({ attributes, tag: Shape }) => (
+    <Shape key={Shape} {...attributes} />
+  ));
+  // The same markup, attribute for attribute, as `statusGlyphElement` builds.
+  return decorative ? (
     <svg
-      {...statusGlyphLabelling(status, decorative)}
+      aria-hidden="true"
       className={statusGlyphClassName(status)}
       data-status-glyph={glyph}
       viewBox={GLYPH_VIEW_BOX}
     >
-      {(REACT_SHAPES.get(glyph) ?? []).map(({ attributes, tag: Shape }) => (
-        <Shape key={Shape} {...attributes} />
-      ))}
+      {shapes}
+    </svg>
+  ) : (
+    <svg
+      aria-label={statusText(status)}
+      className={statusGlyphClassName(status)}
+      data-status-glyph={glyph}
+      role="img"
+      viewBox={GLYPH_VIEW_BOX}
+    >
+      {shapes}
     </svg>
   );
 }

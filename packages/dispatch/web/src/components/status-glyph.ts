@@ -92,20 +92,12 @@ export function statusGlyphClassName(status: string): string {
   return `${GLYPH_BOX} ${statusTone(status)}`;
 }
 
-/** What names the mark to assistive technology: an image named by the status's words, or, where
- *  the words beside it say the status already (`decorative`), nothing at all. */
-export function statusGlyphLabelling(
-  status: string,
-  decorative: boolean
-): Readonly<Record<string, string>> {
-  return decorative ? { "aria-hidden": "true" } : { "aria-label": statusText(status), role: "img" };
-}
-
 const SVG = "http://www.w3.org/2000/svg";
 
 /** `status`'s mark as an svg element of `document`, for a caller that draws DOM and not React:
- *  the document editor's reference titles and the issue page's rows. The same element
- *  `StatusGlyph` renders. */
+ *  the document editor's reference titles and the issue page's rows. The same element, attribute
+ *  for attribute, that `StatusGlyph` renders: an image named by the status's words, or, where the
+ *  words beside it say the status already (`decorative`), hidden from assistive technology. */
 export function statusGlyphElement(
   document: Document,
   status: string,
@@ -113,11 +105,11 @@ export function statusGlyphElement(
 ): SVGSVGElement {
   const glyph = statusGlyph(status);
   const svg = document.createElementNS(SVG, "svg");
-  for (const [name, value] of Object.entries(statusGlyphLabelling(status, decorative))) {
-    svg.setAttribute(name, value);
-  }
+  if (decorative) svg.setAttribute("aria-hidden", "true");
+  else svg.setAttribute("aria-label", statusText(status));
   svg.setAttribute("class", statusGlyphClassName(status));
   svg.setAttribute("data-status-glyph", glyph);
+  if (!decorative) svg.setAttribute("role", "img");
   svg.setAttribute("viewBox", GLYPH_VIEW_BOX);
   for (const shape of GLYPH_SHAPES[glyph]) {
     const drawn = document.createElementNS(SVG, shape.tag);
