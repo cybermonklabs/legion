@@ -17,6 +17,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -240,14 +241,15 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 // this machine's own authority on it rather than asking the issuer again at every enrolment
 // (SignInAuthority.Current). Refresh returns it, with the command to sign in again
 // (FailureSignInRefused), for a refresh the issuer refuses 400 or 401 invalid_grant
-// (grantRefused), and no other text of that answer prints.
+// (oauthrefusal.EndsGrant), and no other text of that answer prints.
 var ErrSignInEnded = errors.New("the issuer no longer honours this sign-in")
 
 // Refresh mints a fresh ID token from a kept refresh token, with no step by the person. A
 // refresh token the issuer no longer honours — the person revoked the grant, or it expired — is
-// ErrSignInEnded, a sign-in that is over, which names the command that makes another. Every other
-// failure, an issuer that is busy or down among them, is an error that says nothing about the
-// sign-in, which a later refresh may cure.
+// ErrSignInEnded, a sign-in that is over, which names the command that makes another; the rule is
+// oauthrefusal.EndsGrant's, a 400 or 401 invalid_grant. Every other failure, an issuer that is
+// busy or down or a 403 among them, is an error that says nothing about the sign-in, which a
+// later refresh may cure.
 func (d *DeviceFlow) Refresh(ctx context.Context, refreshToken string) (*SignIn, error) {
 	config, err := d.discover(ctx)
 	if err != nil {
@@ -255,26 +257,13 @@ func (d *DeviceFlow) Refresh(ctx context.Context, refreshToken string) (*SignIn,
 	}
 	token, err := config.TokenSource(d.context(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token()
 	if err != nil {
-		if grantRefused(err) {
+		if oauthrefusal.EndsGrant(err) {
 			return nil, WithHint(fmt.Errorf("%s: %w", d.issuer(), ErrSignInEnded), FailureSignInRefused)
 		}
 		return nil, fmt.Errorf("renew the sign-in at %s: %w", d.issuer(), redact.Class(err))
 	}
 	// A refresh answers no new refresh token, so the kept one stays the one to keep.
 	return d.signIn(token, false)
-}
-
-// grantRefused reports whether err is the issuer's token endpoint answering 400 or 401 with the
-// OAuth error invalid_grant (RFC 6749 section 5.2): the issuer saying the refresh token is over,
-// the rule internal/oidc's CodeFlow.Refresh reads a refresh by. A 429 or a 5xx is the issuer
-// being busy or down, and a 403 no refusal of the grant, whatever the body names, so none of them
-// ends a sign-in.
-func grantRefused(err error) bool {
-	var refused *oauth2.RetrieveError
-	if !errors.As(err, &refused) || refused.ErrorCode != "invalid_grant" || refused.Response == nil {
-		return false
-	}
-	return refused.Response.StatusCode == http.StatusBadRequest || refused.Response.StatusCode == http.StatusUnauthorized
 }
 
 // signIn reads the ID token out of an answer and names the person it was minted for. needRefresh

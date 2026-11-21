@@ -37,10 +37,10 @@ const INVALID_GRANT = "invalid_grant";
 /**
  * Whether `error` is the issuer's token endpoint answering 400 or 401 with `invalid_grant`
  * (RFC 6749 section 5.2): the issuer saying the refresh token is over, the rule Go's
- * `grantRefused` (`packages/envoy/internal/cipherclient/device.go`) reads a refresh by. A 403 or a
- * 429 naming `invalid_grant` is no such refusal. A 5xx never reaches this as one: the library
- * (oauth4webapi, under `openid-client`) reads an error body only from a 4xx answer, and fails a
- * 5xx as an answer that is not a token response.
+ * `oauthrefusal.EndsGrant` (`packages/envoy/internal/oauthrefusal`) states for ending a grant. A
+ * 403 or a 429 naming `invalid_grant` is no such refusal. A 5xx never reaches this as one: the
+ * library (oauth4webapi, under `openid-client`) reads an error body only from a 4xx answer, and
+ * fails a 5xx as an answer that is not a token response.
  */
 function grantRefused(error: unknown): boolean {
   return (

@@ -101,14 +101,15 @@ func TestASignInTheIssuerNoLongerHonoursNamesTheCommandThatMakesAnother(t *testi
 
 // TestOnlyTheIssuersRefusalEndsASignIn: a refresh ends the sign-in (ErrSignInEnded) only when the
 // issuer's token endpoint answers 400 or 401 with the OAuth error invalid_grant (RFC 6749 section
-// 5.2), the rule internal/oidc's CodeFlow.Refresh reads a refresh by. A 429 or a 5xx is the
-// issuer being busy or down, whatever its body names, and so is a 403, and none of them says the
-// person's grant is over: reading one as the end of the sign-in would drop the token in hand, stop
-// the renewal loop and fall the box back to its machine over an outage. Every row renews a refresh
-// token the issuer issued.
+// 5.2), the rule oauthrefusal.EndsGrant states for every reader that ends a grant. A 429 or a 5xx
+// is the issuer being busy or down, whatever its body names, and a 403 is no end of a grant, and
+// none of them says the person's grant is over: reading one as the end of the sign-in would drop
+// the token in hand, stop the renewal loop and fall the box back to its machine over an outage.
+// Every row renews a refresh token the issuer issued.
 //
-// The named revert: read invalid_grant at any status as ErrSignInEnded, as Refresh once did, and
-// the 403, 429, 500 and 503 rows fail.
+// The named reverts: read invalid_grant at any status as ErrSignInEnded, as Refresh once did, and
+// the 403, 429, 500 and 503 rows fail; read it by oauthrefusal.Refusal, which takes a 403 as a
+// refusal's code, and the 403 row fails.
 func TestOnlyTheIssuersRefusalEndsASignIn(t *testing.T) {
 	for _, tc := range []struct {
 		status int
