@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"runtime"
@@ -27,6 +28,7 @@ import (
 // testwait.Bounded(t, time.Hour, time.Second): the test binary's deadline less a second, and at most
 // an hour, so it runs out only after the test binary's own timeout would have.
 func TestASignalDuringTheReceiveIsNoFailure(t *testing.T) {
+	requireThreadRecord(t)
 	name, accepted := serveOnce(t)
 	r := startReceive(t, name, testwait.Bounded(t, time.Hour, time.Second))
 	var conn *net.UnixConn
@@ -75,6 +77,7 @@ func TestASignalDuringTheReceiveIsNoFailure(t *testing.T) {
 // receive timeout never returns, since the kernel restarts its recvmsg after each signal. testwait's
 // hang guard fails a receive that does not return.
 func TestASignalledReceiveEndsAtItsBound(t *testing.T) {
+	requireThreadRecord(t)
 	const bound = time.Second
 	// The kernel completes the connection in the listener's backlog, so the receive waits on a
 	// connection the server holds and never writes to, accepted or not.
@@ -99,6 +102,66 @@ func TestASignalledReceiveEndsAtItsBound(t *testing.T) {
 	t.Logf("signalled the receive %d times before it returned", signals)
 	if !errors.Is(r.err, syscall.EAGAIN) {
 		t.Fatalf("the receive returned descriptor %d, %v; want EAGAIN once its bound of %s passed", r.fd, r.err, bound)
+	}
+}
+
+// Where the kernel keeps no record of what each thread is asleep in, as gVisor keeps none, the check
+// the rows make first answers errNoThreadRecord, which requireThreadRecord turns into a skip outside
+// CI and a failure under it, and not a read error that fails the row.
+func TestAKernelThatKeepsNoThreadRecordIsNamed(t *testing.T) {
+	previous := threadRecord
+	threadRecord = "no-such-record"
+	t.Cleanup(func() { threadRecord = previous })
+	if err := threadRecordKept(); !errors.Is(err, errNoThreadRecord) {
+		t.Fatalf("threadRecordKept = %v, want errNoThreadRecord", err)
+	}
+}
+
+// threadRecord is the file under /proc/self/task/<tid> where the kernel writes what that thread is
+// asleep in. It is a variable for TestAKernelThatKeepsNoThreadRecordIsNamed, which points it at a
+// name no thread has, to stand for a kernel that keeps none.
+var threadRecord = "syscall"
+
+// errNoThreadRecord is the answer where the kernel keeps no record of what each thread of this
+// process is asleep in. The rows read that record to see the receiving thread sleep in recvmsg.
+var errNoThreadRecord = errors.New("the kernel keeps no record of what each thread of this process is asleep in (/proc/self/task/<tid>/syscall), as gVisor keeps none")
+
+// threadRecordPath is the record of thread tid of this process.
+func threadRecordPath(tid int) string {
+	return fmt.Sprintf("/proc/self/task/%d/%s", tid, threadRecord)
+}
+
+// threadRecordKept reads the record of the thread it runs on: nil where the kernel keeps it,
+// errNoThreadRecord where the file does not exist, and the read's own error otherwise.
+func threadRecordKept() error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	_, err := os.ReadFile(threadRecordPath(syscall.Gettid()))
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %v", errNoThreadRecord, err)
+	}
+	return err
+}
+
+// requireThreadRecord stops a row where the kernel keeps no thread record, under the rule the
+// daemon's launcher tests follow for a test this machine cannot run (skipOutsideCI): under
+// GITHUB_ACTIONS it fails, since CI's runners keep the record and a runner that keeps none is
+// broken, never a green job with the proof gone from it; anywhere else it skips, naming why. Any
+// other failure to read the record fails the row: then it has no answer, not a clean one. This
+// module cannot import the daemon's test helpers, so the rule is written here.
+func requireThreadRecord(t *testing.T) {
+	t.Helper()
+	err := threadRecordKept()
+	switch {
+	case err == nil:
+		return
+	case errors.Is(err, errNoThreadRecord):
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatalf("%v: CI's runners keep it, so this runner is broken", err)
+		}
+		t.Skipf("%v: this row cannot see the receiving thread sleep in recvmsg here", err)
+	default:
+		t.Fatalf("cannot tell whether the kernel keeps a record of what each thread is asleep in: %v", err)
 	}
 }
 
@@ -212,7 +275,7 @@ func sleepsInRecvmsgAgain(t *testing.T, tid, after int) (int, bool) {
 // /proc/<pid>/task/<tid>/syscall starts with the number of the system call a thread is blocked in,
 // and reads "running" or a negative number otherwise.
 func inRecvmsg(tid int) (bool, error) {
-	raw, err := os.ReadFile(fmt.Sprintf("/proc/self/task/%d/syscall", tid))
+	raw, err := os.ReadFile(threadRecordPath(tid))
 	if err != nil {
 		return false, fmt.Errorf("read thread %d's system call: %w", tid, err)
 	}
