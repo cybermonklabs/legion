@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A delivery exception that a clustered stream refuses because another listener's publish of the
+  same exception is still in process is now logged at WARN as `listener exception publish in
+  process`, not at ERROR as `listener exception publish failed`. Several listeners raise one
+  exception for the same stored message under one `Nats-Msg-Id`, and the stream stores one copy, so
+  the publish-failure alarm, which counts the ERROR line, could fire while that copy was being
+  stored. Any other failure to publish a delivery exception still logs the ERROR line.
+time: 2026-11-21T22:59:27Z
+custom:
+    Issue: pr4919
