@@ -2000,16 +2000,24 @@ func statFS(t *testing.T, dir string) (unit, blocks, free, available uint64) {
 // times the available blocks, which do. A shared disk's available bytes move in both directions
 // while the other tests of the run write and delete, so a try reads `stat -f`, then /healthz, then
 // `stat -f` again, and the answer must lie between the smaller and the larger of the two available
-// readings, widened by readMargin on each side. That the reader takes the available blocks and not
-// the free ones is pinned without any disk, by volumestat's TestTheVolumesBytesAreCountedInFragments
-// and by the seam's figures here (seamReserve). Against the real disk it holds too where the disk
-// reserves more than the margin (its free blocks less its available ones, from the same `stat -f`):
-// there a try passes only when the free bytes of both readings lie above the range, so a reader of
-// the free blocks would fail it, and a try whose readings moved so far that the range reaches the
-// free bytes counts for nothing. Where the disk reserves no more than the margin, free and
-// available cannot be told apart on it, and the test logs that and passes on the range alone.
-// After 20 tries with no try passing, the test fails naming the last answer. A cache with no clone
-// yet answers 503, so the figures are in that answer too.
+// readings, widened by readMargin on each side.
+//
+// Two tests elsewhere hold the two halves of taking the available bytes rather than the free ones,
+// each without a disk: volumestat's TestTheVolumesBytesAreCountedInFragments holds the reader to
+// f_bavail over f_bfree, and this package's seam (seamReserve), which replaces the reader, holds
+// the cache to Reading.AvailableBytes over its size less its used bytes. Against the real disk this
+// test holds the two together where the disk reserves more than the margin (its free blocks less
+// its available ones, from the same `stat -f`): there a try passes only when the free bytes of both
+// readings lie above the range, so a reader of the free blocks would fail it. Where the disk
+// reserves no more than the margin, free and available cannot be told apart on it, and a try passes
+// on the range alone, with a log line saying so.
+//
+// A try that misses (an answer outside the range, or a range that reaches the free bytes because
+// the readings moved past the reserve) is kept as the last miss, and the test tries again: a write
+// and a delete larger than the margin, with /healthz read between them, moves one window and not
+// the next. A reader of a wrong statfs field or in a wrong unit is wrong by a fixed amount and so
+// misses every try. After 20 tries with no try passing, the test fails naming the last miss. A
+// cache with no clone yet answers 503, so the figures are in that answer too.
 func TestTheCacheReadsItsVolume(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skipf("the volume is read with statfs on Linux alone; on %s the reader refuses", runtime.GOOS)
@@ -2035,21 +2043,23 @@ func TestTheCacheReadsItsVolume(t *testing.T) {
 		high := max(available, availableAfter)*unit + readMargin
 		low -= min(low, readMargin)
 		got := *health.AvailableBytes
-		last = fmt.Sprintf("on try %d, /healthz answered %d bytes available, and stat -f read %d and then %d available blocks of %d bytes (%d and %d free)",
+		answer := fmt.Sprintf("on try %d, /healthz answered %d bytes available, and stat -f read %d and then %d available blocks of %d bytes (%d and %d free)",
 			try, got, available, availableAfter, unit, free, freeAfter)
 		if got < low || got > high {
-			t.Fatalf("%s: the answer is outside %d to %d, the two readings widened by %d", last, low, high, readMargin)
+			last = fmt.Sprintf("%s: the answer is outside %d to %d, the two readings widened by %d", answer, low, high, readMargin)
+			continue
 		}
 		if reserve := (min(free-available, freeAfter-availableAfter)) * unit; reserve <= readMargin {
-			t.Logf("the filesystem of %s reserves %d bytes, not more than the margin of %d, so this disk cannot tell a reader of the available bytes from one of the free bytes; volumestat's TestTheVolumesBytesAreCountedInFragments and this package's seam (seamReserve) pin that choice",
+			t.Logf("the filesystem of %s reserves %d bytes, not more than the margin of %d, so this disk cannot tell a reader of the available bytes from one of the free bytes; volumestat's TestTheVolumesBytesAreCountedInFragments holds the reader to f_bavail, and this package's seam (seamReserve) holds the cache to Reading.AvailableBytes",
 				root, reserve, readMargin)
 			return
 		}
 		if min(free, freeAfter)*unit > high {
 			return
 		}
+		last = fmt.Sprintf("%s: the range %d to %d reaches the free bytes, so a reader of the free blocks would have passed this try", answer, low, high)
 	}
-	t.Fatalf("no try of %d had the free bytes above the range its answer had to lie in, so no try told a reader of the available bytes from one of the free bytes; the last: %s", tries, last)
+	t.Fatalf("no try of %d passed; the last miss: %s", tries, last)
 }
 
 // readMargin widens the range of available bytes a try of TestTheCacheReadsItsVolume accepts on
