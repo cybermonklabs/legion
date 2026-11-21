@@ -42,7 +42,8 @@ var ErrNoRecordReader = errors.New("this build passes the census no reader of th
 const streamsUsage = `usage: envoy-infra streams update [--hold ID] --reason R [settings] <the hold's flags>
        envoy-infra streams census [--hold ID] --reason R --family F... [--listener-machine-id M]...
                                   [--daemon-consumer <name>=<filter>[,<filter>...]]...
-                                  [--daemon-database <project>=<file>]... [settings] <the hold's flags>
+                                  [--daemon-database <project>=<file>]... [--dispatch-database-file F]
+                                  [settings] <the hold's flags>
 
 The writer hold's two stream commands. update makes each missing protected stream with the build's
 configuration and raises each by a start's own rules, inside a streams-update hold; census, once
@@ -66,6 +67,7 @@ type streamsOptions struct {
 	families, machineIDs, daemons     stringList
 	replicas, maxBytes, sessionMaxAge string
 	daemonDatabases                   stringList
+	dispatchDatabaseFile              string
 }
 
 // StreamIDWriter reconciles each daemon store's recorded StreamID with the current identity of
@@ -82,20 +84,41 @@ type StreamIDWriter func(ctx context.Context, conn *nats.Conn, families, daemonD
 // so the census is UNKNOWN rather than done.
 var ErrNoStoreWriter = errors.New("this build passes the census no writer of the daemon stores' stream ids")
 
+// FreshNames reads the fresh consumer names the selection records name (CensusInput's
+// RecordedFreshNames), on conn, from each store: family to its sorted fresh names
+// `<base>~<nuid>`, for the listeners' durables, Dispatch's (from the database at
+// dispatchDatabaseFile) and each daemon's (daemonDatabases' <P>=<file> entries). A store it cannot
+// read is its error. It is consumernames.RecordedFreshNames, whose package imports this one, so
+// cmd/envoy-infra passes it in.
+type FreshNames func(ctx context.Context, conn *nats.Conn, families []string, dispatchDatabaseFile string, daemonDatabases []string) (map[string][]string, error)
+
+// ErrNoFreshNamesReader is a census run with no reader of the recorded fresh names: every consumer
+// in a fresh form would read as a crashed create's orphan and be removed, so the census is UNKNOWN
+// and removes nothing.
+var ErrNoFreshNamesReader = errors.New("this build passes the census no reader of the recorded fresh consumer names")
+
+// CensusReaders are the census's readers and writer from package consumernames (t-7), which
+// imports this package and so cannot be imported here: the recorded session consumers, the
+// recorded fresh names, and the writer of the daemon stores' stream ids. A census with any of the
+// three nil is UNKNOWN (exit 2) and removes nothing.
+type CensusReaders struct {
+	Recorded   RecordedSessionConsumers
+	FreshNames FreshNames
+	Stores     StreamIDWriter
+}
+
 // streamsEnv is what a streams run reaches outside the process.
 type streamsEnv struct {
 	env
-	recorded RecordedSessionConsumers
-	stores   StreamIDWriter
+	readers CensusReaders
 }
 
 // StreamsCommand runs `envoy-infra streams update|census` with args, the words after "streams",
-// and returns its exit code. recorded is the census's reader of the recorded session consumers and
-// stores its writer of the daemon stores' StreamIDs; a census with either nil is UNKNOWN (exit 2).
-// The census is the final command of every workflow that can recreate ENVOY_NOTIFICATIONS (the
-// cutover, hub-restore, streams-update's own and streams-census), so its reconcile covers each.
-func StreamsCommand(ctx context.Context, args []string, stdout, stderr io.Writer, recorded RecordedSessionConsumers, stores StreamIDWriter) int {
-	return runStreams(ctx, args, stdout, stderr, streamsEnv{env: realEnv(), recorded: recorded, stores: stores})
+// and returns its exit code. readers are the census's readers and writer. The census is the final
+// command of every workflow that can recreate ENVOY_NOTIFICATIONS (the cutover, hub-restore,
+// streams-update's own and streams-census), so its stream-id reconcile covers each.
+func StreamsCommand(ctx context.Context, args []string, stdout, stderr io.Writer, readers CensusReaders) int {
+	return runStreams(ctx, args, stdout, stderr, streamsEnv{env: realEnv(), readers: readers})
 }
 
 // StreamsDeps are what StreamsCommandOn reaches outside the process, in place of the broker,
@@ -109,9 +132,8 @@ type StreamsDeps struct {
 	Operator func(ctx context.Context) (*Operator, error)
 	// Now is the clock the minter report is checked by; time.Now when nil.
 	Now func() time.Time
-	// Recorded and Stores are the census's reader and writer, as StreamsCommand takes them.
-	Recorded RecordedSessionConsumers
-	Stores   StreamIDWriter
+	// CensusReaders are the census's readers and writer, as StreamsCommand takes them.
+	CensusReaders
 }
 
 // StreamsCommandOn is StreamsCommand with deps in place of the broker, Secret Manager and hub its
@@ -128,7 +150,7 @@ func StreamsCommandOn(ctx context.Context, args []string, stdout, stderr io.Writ
 		hub: func(ctx context.Context, _ options) (*Operator, error) { return deps.Operator(ctx) },
 		now: now,
 	}
-	return runStreams(ctx, args, stdout, stderr, streamsEnv{env: e, recorded: deps.Recorded, stores: deps.Stores})
+	return runStreams(ctx, args, stdout, stderr, streamsEnv{env: e, readers: deps.CensusReaders})
 }
 
 func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e streamsEnv) int {
@@ -147,6 +169,7 @@ func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e 
 	flags.Var(&o.machineIDs, "listener-machine-id", "a machine id of the deployment's listeners; repeat")
 	flags.Var(&o.daemons, "daemon-consumer", "a Legion daemon's consumer, <name>=<filter>[,<filter>...]; repeat")
 	flags.Var(&o.daemonDatabases, "daemon-database", "a daemon store's database, <project>=<file> (the file holds its URL); repeat")
+	flags.StringVar(&o.dispatchDatabaseFile, "dispatch-database-file", "", "the file holding Dispatch's database URL, whose selection records name its fresh consumer names")
 	flags.StringVar(&o.replicas, "replicas", os.Getenv(bus.ReplicasEnvVar), "the deployment's replica count")
 	flags.StringVar(&o.maxBytes, "stream-max-bytes", os.Getenv(bus.StreamMaxBytesEnvVar), "the notification stream's byte limit")
 	flags.StringVar(&o.sessionMaxAge, "session-max-age", os.Getenv(bus.SessionMaxAgeEnvVar), "the session bucket's age")
@@ -237,6 +260,15 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			if err != nil {
 				return nil, nil, err
 			}
+			// The fresh names are read before anything is removed: with no reader, or one that
+			// cannot read a store, the census is UNKNOWN and removes nothing.
+			if e.readers.FreshNames == nil {
+				return nil, nil, unknownf(StepPostcheck, ErrNoFreshNamesReader, "read the recorded fresh consumer names")
+			}
+			fresh, err := e.readers.FreshNames(ctx, nc, o.families, o.dispatchDatabaseFile, o.daemonDatabases)
+			if err != nil {
+				return nil, nil, unknownf(StepPostcheck, err, "read the recorded fresh consumer names")
+			}
 			barriers := map[string]uint64{}
 			r, err := streams.Census(ctx, nc, streams.CensusInput{
 				Settings: settings,
@@ -262,11 +294,12 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 				},
 				Consumers: streams.DeclaredConsumers(streams.ConsumerSet{ListenerMachineIDs: o.machineIDs, Daemons: shapes}),
 				RecordedSessionConsumers: func(ctx context.Context) ([]streams.ConsumerShape, error) {
-					if e.recorded == nil {
+					if e.readers.Recorded == nil {
 						return nil, ErrNoRecordReader
 					}
-					return e.recorded(ctx, nc)
+					return e.readers.Recorded(ctx, nc)
 				},
+				RecordedFreshNames: fresh,
 			})
 			result = r
 			changes := streamChanges(r)
@@ -285,7 +318,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			if refused := streamsRefusal(r, err); refused != nil {
 				return changes, nil, leftBy(r, refused)
 			}
-			outputs, err := reconcileStreamIDs(ctx, nc, e.stores, o.families, o.daemonDatabases, stdout)
+			outputs, err := reconcileStreamIDs(ctx, nc, e.readers.Stores, o.families, o.daemonDatabases, stdout)
 			return changes, outputs, leftBy(r, err)
 		}
 	}

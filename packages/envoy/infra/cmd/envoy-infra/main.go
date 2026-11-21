@@ -58,7 +58,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	// writer of the daemon stores' stream ids are envoy-infra consumer-names' (t-7), which this
 	// build does not carry, so its census is UNKNOWN.
 	if len(args) > 1 && args[0] == "streams" && (args[1] == "update" || args[1] == "census") {
-		return writerhold.StreamsCommand(ctx, args[1:], stdout, stderr, nil, nil)
+		return writerhold.StreamsCommand(ctx, args[1:], stdout, stderr, writerhold.CensusReaders{})
 	}
 	if len(args) > 0 && args[0] == "streams" {
 		return streams.Command(ctx, args[1:], stdout, stderr)
