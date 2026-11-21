@@ -17,6 +17,7 @@ import {
   followNatsCredential,
   keepNatsCredential,
   type NatsAdmissions,
+  type RefusalCountedToken,
 } from "../nats-credential";
 import { natsBrokerStandIns } from "./broker-stand-ins";
 
@@ -122,9 +123,10 @@ function askedOf(credential: BrokerNatsCredential): {
 }
 
 /** A stand-in credential that counts refusals as a credential does: its own count
- *  (`brokerTokenRefusals`), started over at each admission. */
+ *  (`brokerTokenRefusals`) over `parts`, which drops through `parts.drop`, started over at each
+ *  admission. */
 function standIn(
-  parts: Omit<BrokerNatsCredential, "refused" | "admitted" | "admissions">
+  parts: Omit<BrokerNatsCredential, "refused" | "admitted" | "admissions"> & RefusalCountedToken
 ): BrokerNatsCredential {
   const count = brokerTokenRefusals(parts);
   let admissions: NatsAdmissions = { count: 0, dialedAt: undefined };

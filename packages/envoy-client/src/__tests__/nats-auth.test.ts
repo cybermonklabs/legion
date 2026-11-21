@@ -112,7 +112,6 @@ describe("natsAuthOptions", () => {
       renew: async () => {},
       expiresAt: () => new Date(0),
       needsReconnect: () => false,
-      drop: () => {},
       tokenGeneration: () => 0,
       tokenSession: () => undefined,
       refused: () => undefined,

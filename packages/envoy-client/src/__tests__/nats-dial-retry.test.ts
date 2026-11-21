@@ -395,14 +395,14 @@ describe("connectNats with a broker token", () => {
   });
 
   test("tells of a drop at the last dial its budget affords, which no redial follows", async () => {
-    // A pass with 3 s to dial in, at the lowest draws: refused at once, again 2 s on, and the 4 s
+    // A pass with 4 s to dial in, at the lowest draws: refused at once, again 2 s on, and the 4 s
     // wait after that second refusal is past the budget, so the call ends on the refusal that
-    // dropped the token.
+    // dropped the token. The first wait fits while less than 1.5 s has passed before it.
     const { credential, seen } = brokerCredential([false, true]);
     const run = await scriptedDials(
       [REFUSED, REFUSED, REFUSED],
       { credential, random: () => 0 },
-      3_000
+      4_000
     );
     expect(run.opened).toBe(false);
     expect(run.dials).toBe(2);

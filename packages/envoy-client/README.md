@@ -242,7 +242,7 @@ reconnects the connection with each new token, before the server drops the user 
 admitted as; a renewal that fails is retried at 2 s doubling to a minute and warned about once,
 then every 30 minutes, never naming the token. It reads the connection's status too: a server
 that refuses the live token in hand is warned of at once, and at that token's second refusal the
-keeper drops it (`BrokerNatsCredential.drop`, here and in the token client) and trades for
+keeper drops it (`BrokerNatsCredential.refused`, here and in the token client) and trades for
 another. Refusals are counted per token (`tokenGeneration`), and a drop is made once per session
 until the connection is back (`tokenSession`), so a session switched to has its revoked token
 dropped in its turn, and an auth service that is away costs each session one trade for the

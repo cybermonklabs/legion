@@ -94,12 +94,8 @@ export interface BrokerNatsCredential {
   /** Whether the last CONNECT presented a token other than the one in hand, so the connection
    *  should reconnect to present it. */
   needsReconnect(): boolean;
-  /** Drops the token in hand, which the NATS server refused though it is live (a revoke), here
-   *  and in the token client that traded it, so the next renewal, or the next CONNECT's own
-   *  trade, takes another rather than be answered that one again. */
-  drop(): void;
   /** A number that moves each time a token traded is not the one held: a renewal's, a session
-   *  switch's, or the one after a drop. It names no token. */
+   *  switch's, or the one after a drop (`refused`). It names no token. */
   tokenGeneration(): number;
   /** The session the token in hand was traded for; undefined where none is held. */
   tokenSession(): string | undefined;
@@ -378,7 +374,6 @@ export function brokerNatsCredential(
     },
     expiresAt,
     needsReconnect,
-    drop,
     tokenGeneration,
     tokenSession,
     refused: refusals.refused,
@@ -426,6 +421,23 @@ export interface BrokerTokenRefusal {
   readonly dropped: boolean;
 }
 
+/** What a refusal count (`brokerTokenRefusals`) reads of the token in hand, and how it drops it:
+ *  `brokerNatsCredential` hands it its own closure's functions, and a test's stand-in its own. */
+export interface RefusalCountedToken {
+  /** When the token in hand lapses; the epoch before any is taken. */
+  expiresAt(): Date;
+  /** Whether the connection has yet to present the token in hand. */
+  needsReconnect(): boolean;
+  /** Drops the token in hand, which the NATS server refused though it is live (a revoke), here
+   *  and in the token client that traded it, so the next renewal, or the next CONNECT's own
+   *  trade, takes another rather than be answered that one again. */
+  drop(): void;
+  /** The token in hand's generation (`BrokerNatsCredential.tokenGeneration`). */
+  tokenGeneration(): number;
+  /** The session the token in hand was traded for; undefined where none is held. */
+  tokenSession(): string | undefined;
+}
+
 /**
  * A new count of a NATS server's refusals of a broker credential's live token in hand. A
  * credential builds its own once and owns it (`BrokerNatsCredential.refused`), so its keeper
@@ -436,18 +448,14 @@ export interface BrokerTokenRefusal {
  * refusal of a token that lapsed, or of one the connection is about to move off, is the renewal's
  * to cure. Refusals are counted per token (`tokenGeneration`), so a refusal of one token and a
  * refusal of the next are no two refusals of either. At a token's second refusal it drops that
- * token (`token.drop`), so a revoked token is not presented again until it lapses; the caller has
- * another traded. It drops one token per session until `reset`, which the credential calls when a
- * connection is admitted (`BrokerNatsCredential.admitted`): an auth service that is away refuses
- * every token whatever it is, and costs each session one trade for the outage, however many dials
- * and passes it refuses, never one every second refusal.
+ * token (`token.drop`: here and in the token client that traded it), so a revoked token is not
+ * presented again until it lapses; the caller has another traded. It drops one token per session
+ * until `reset`, which the credential calls when a connection is admitted
+ * (`BrokerNatsCredential.admitted`): an auth service that is away refuses every token whatever it
+ * is, and costs each session one trade for the outage, however many dials and passes it refuses,
+ * never one every second refusal.
  */
-export function brokerTokenRefusals(
-  token: Pick<
-    BrokerNatsCredential,
-    "expiresAt" | "needsReconnect" | "drop" | "tokenGeneration" | "tokenSession"
-  >
-): {
+export function brokerTokenRefusals(token: RefusalCountedToken): {
   readonly refused: (code: string) => BrokerTokenRefusal | undefined;
   readonly reset: () => void;
 } {
