@@ -620,7 +620,13 @@ another person:
 
 - the enrollment the pod holds keeps renewing, and the broker answers each of its calls as its
   account's own, for no person, also after a move: the first person's agent-tier secrets wait for
-  that person's approval, and a shared agent-tier secret is still granted;
+  that person's approval, and a shared agent-tier secret is still granted. A broker with
+  `BROKER_PROJECT_ACCESS_URL` still asks Dispatch about the first person, the one the pod was
+  enrolled for: when Dispatch calls that person a restricted member, the pod is denied every secret
+  `restricted-member`, a shared agent-tier secret included, and each grant it holds ends at its
+  next use, whatever the items below say; while Dispatch cannot say what kind of member that
+  person is, each secret request, release and new airlock call of the pod is refused
+  `503 MEMBER_KIND_UNCHECKABLE`;
 - the pod's requests are its own enrollment's alone. The pod no longer reads or cancels a request
   of the person's box or of another session of the person, and those sessions no longer read or
   cancel the pod's requests: each is refused `403 NOT_YOURS`, or `404 NOT_FOUND` for a request of
@@ -637,7 +643,8 @@ another person:
   pod's next request for that secret waits for the person. It is not revoked, and putting the entry
   back makes it release again;
 - a grant a person approved stands on that approval. It keeps releasing, whoever approved it, until
-  it expires, its approver revokes it, the policy refuses it to the account, or the enrollment ends;
+  it expires, its approver revokes it, the policy refuses it to the account, or the enrollment ends,
+  unless Dispatch calls the first person a restricted member or cannot say, as the first item says;
 - a grant of a secret whose `requesters` tag names the person ends for good
   (`requester-not-listed`), and putting the entry back does not revive it;
 - the pod's login keeps the first person until the pod logs in again, and lives at most an hour.
