@@ -40,8 +40,9 @@ func TestUnderNoTimeoutRemainingHasNoEnd(t *testing.T) {
 }
 
 // TestRemainingNoDeadlineChild is the child of TestUnderNoTimeoutRemainingHasNoEnd, run under
-// -timeout 0: Remaining is noDeadline, and a deadline that far off is still after now, as a read
-// deadline or a timer built from it needs. It runs only when the parent re-executes this binary.
+// -timeout 0: Remaining is unboundedRemaining, and a deadline that far off is still after now, as
+// a read deadline or a timer built from it needs. It runs only when the parent re-executes this
+// binary.
 func TestRemainingNoDeadlineChild(t *testing.T) {
 	if os.Getenv(remainingChildEnv) == "" {
 		t.Skip(remainingChildEnv + " is not set: this test is the child of TestUnderNoTimeoutRemainingHasNoEnd")
@@ -50,8 +51,8 @@ func TestRemainingNoDeadlineChild(t *testing.T) {
 		t.Fatalf("the child has the deadline %s; it was meant to run under -timeout 0", deadline.Format(time.RFC3339Nano))
 	}
 	got := Remaining(t)
-	if got != noDeadline {
-		t.Fatalf("under -timeout 0 Remaining = %s, want %s, a span no wait reaches", got, noDeadline)
+	if got != unboundedRemaining {
+		t.Fatalf("under -timeout 0 Remaining = %s, want %s, a span no wait reaches", got, unboundedRemaining)
 	}
 	if now := time.Now(); !now.Add(got).After(now) {
 		t.Fatalf("now plus Remaining's %s is %s, not after now %s", got, now.Add(got), now)

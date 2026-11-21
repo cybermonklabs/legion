@@ -64,19 +64,19 @@ func Holds(bound, poll time.Duration, condition func() bool) bool {
 // panics the binary.
 const giveUpMargin = 30 * time.Second
 
-// noDeadline is Remaining's answer when the test binary has no deadline (-timeout 0): about 146
-// years, a span no wait reaches, which time.Now().Add takes without overflowing.
-const noDeadline = time.Duration(1 << 62)
+// unboundedRemaining is Remaining's answer when the test binary has no deadline (-timeout 0):
+// about 146 years, a span no wait reaches, which time.Now().Add takes without overflowing.
+const unboundedRemaining = time.Duration(1 << 62)
 
 // Remaining is how long a wait in t may last: the time until the test binary's deadline, the one
 // go test's -timeout sets, less giveUpMargin, which is zero or less once that moment has passed;
-// and noDeadline under -timeout 0. A wait bounded by it ends on its fact or gives up 30 s before
-// the deadline, never at a fixed span, so a fact that is merely slow on a loaded machine still
-// passes, and the failing test still has the margin to report in.
+// and unboundedRemaining under -timeout 0. A wait bounded by it ends on its fact or gives up 30 s
+// before the deadline, never at a fixed span, so a fact that is merely slow on a loaded machine
+// still passes, and the failing test still has the margin to report in.
 func Remaining(t *testing.T) time.Duration {
 	deadline, ok := t.Deadline()
 	if !ok {
-		return noDeadline
+		return unboundedRemaining
 	}
 	return time.Until(deadline) - giveUpMargin
 }
