@@ -1364,6 +1364,13 @@ ci-ok-report.sh both already have it. It is the one filter step's outputs as one
 On a dispatched run that step is skipped and this is `{}`, which is right - the label
 holds nothing back there, and the changes job's other outputs are all 'true'.
 
+A job the label held back did not run at this head, and ci-ok passes over its skip, so
+ci-ok.sh names it once more after its verdict, pass or fail, on a line of its own:
+`not run at this head: <job> (selected by paths, gated by full-ci; runs in the merge queue)`.
+The same lines go to the ci-ok job's summary, apart from the jobs that ran and passed, so a
+green ci-ok on a pull request without the label is not read as those jobs passing. A run
+in which the label held nothing back writes no summary.
+
 ## On pull_request dorny/paths-filter reads the file list from the API and reads
 
 On pull_request dorny/paths-filter reads the file list from the API and reads only the

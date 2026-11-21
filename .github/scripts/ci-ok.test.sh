@@ -14,9 +14,10 @@
 # another event than pull_request, which is what
 # PULL_REQUEST_ONLY turns on; the script takes the event as a string and knows no workflow's
 # triggers. docs also stands for one of the slow suites, whose output a pull request
-# without the label `full-ci` holds false whatever the paths filter answered: three cases hand
+# without the label `full-ci` holds false whatever the paths filter answered: five cases hand
 # the run the filter's own verdicts beside the outputs (with_verdicts below) and hold the report
-# to telling that skip from a filter miss.
+# to telling that skip from a filter miss, and to naming such a job as not run at this head, in
+# its log and its job summary, only where the label held it back.
 #
 # A job that ends `failure` is asked about: ci-ok.sh reads the check runs on this run's head to
 # tell a job the platform killed from one the change broke (runner-shutdown.sh), so each case
@@ -135,17 +136,22 @@ gated_selects=$(with_verdicts "$selects" \
 unmatched_selects=$(with_verdicts "$selects" \
   '{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "false"}')
 
-# run_ci_ok <needs> [<event>] [<always run>]: sets out and status. The event defaults to
-# pull_request and the always-run list to ci.yaml's own two jobs. The GitHub half of the
-# environment is the ci-ok job's own, pointed at the stand-in above: the head its check runs are
-# on, the run they must belong to, and gh-read.sh's retry delay turned off.
+# run_ci_ok <needs> [<event>] [<always run>]: sets out, status and step_summary. The event
+# defaults to pull_request and the always-run list to ci.yaml's own two jobs. The GitHub half of
+# the environment is the ci-ok job's own, pointed at the stand-in above: the head its check runs
+# are on, the run they must belong to, and gh-read.sh's retry delay turned off. GITHUB_STEP_SUMMARY
+# is a fresh file of each case, never the summary of the job running this harness, and
+# step_summary is what ci-ok.sh wrote to it.
 run_ci_ok() {
+  : > "$work/step-summary"
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GH_RETRY_SECONDS=0 HEAD_SHA=abc123 NEEDS=$1 EVENT=${2:-pull_request} SELECTED_BY=$selected_by \
-    PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} "$script_dir/ci-ok.sh" 2>&1)
+    PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} \
+    GITHUB_STEP_SUMMARY="$work/step-summary" "$script_dir/ci-ok.sh" 2>&1)
   status=$?
   set -e
+  step_summary=$(cat "$work/step-summary")
 }
 
 echo "case: a job changes selected ended skipped"
@@ -229,6 +235,27 @@ check "passes, as it does for any job changes did not select" "$(is "$status" 0)
 check "says the label held it back, not the filter" \
   "$(contains "$out" '^docs: skipped (not selected: selected by paths, gated by full-ci: runs in the merge queue)$')"
 check "reports no error" "$(is "$(contains "$out" '::error::')" false)"
+# The line above sits among the jobs that ran, in the same `<job>: <result>` shape, and the pass
+# line after it says every job changes selected succeeded: read together they let a green ci-ok
+# stand for a docs that never ran. So the verdict names docs once more, after the pass line and
+# in a shape of its own, and the job summary sets it apart from the jobs that ran and passed.
+not_run_docs='not run at this head: docs (selected by paths, gated by full-ci; runs in the merge queue)'
+check "names docs after the pass line as not run at this head" \
+  "$(contains "$(sed -n '/^changes and lint succeeded/,$p' <<<"$out")" "^$not_run_docs\$")"
+check "the job summary names docs as not run at this head" \
+  "$(contains "$step_summary" "^- $not_run_docs\$")"
+check "the job summary lists the jobs that ran and passed apart from it" \
+  "$(contains "$step_summary" '^\*\*Ran and passed at this head:\*\* changes, lint, typecheck, worker-image$')"
+
+echo "case: docs held back by the label beside a selected job that failed"
+# A red ci-ok sends its reader to the failure, and the not-run line still says docs did not run,
+# so a re-run that turns the failure green leaves nobody thinking docs passed with it.
+run_ci_ok "$(needs success "$gated_selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "still names docs as not run at this head" "$(contains "$out" "^$not_run_docs\$")"
+check "and so does the job summary" "$(contains "$step_summary" "^- $not_run_docs\$")"
+check "which leaves the failed job out of the jobs that ran and passed" \
+  "$(contains "$step_summary" '^\*\*Ran and passed at this head:\*\* changes, lint, worker-image$')"
 
 echo "case: docs' paths did not match on a pull request, where the label would have changed nothing"
 run_ci_ok "$(needs success "$unmatched_selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
@@ -236,6 +263,17 @@ check "passes" "$(is "$status" 0)"
 check "keeps today's wording" \
   "$(contains "$out" '^docs: skipped (not selected: needs.changes.outputs.docs is false)$')"
 check "says nothing about full-ci" "$(is "$(contains "$out" 'gated by full-ci')" false)"
+check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
+check "writes no job summary" "$(is "$step_summary" "")"
+
+echo "case: docs' paths matched and the pull request carries full-ci, so docs ran"
+labelled_selects=$(with_verdicts "$selects_docs" \
+  '{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "true"}')
+run_ci_ok "$(needs success "$labelled_selects" success typecheck=success envoy-client=skipped worker-image=success docs=success)"
+check "passes" "$(is "$status" 0)"
+check "prints docs as selected" "$(contains "$out" '^docs: success (selected: needs.changes.outputs.docs is true)$')"
+check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
+check "writes no job summary" "$(is "$step_summary" "")"
 
 echo "case: a merge-group run never says full-ci, since the label term of those outputs is already true there"
 run_ci_ok "$(needs success "$gated_selects" success typecheck=success envoy-client=skipped worker-image=skipped docs=skipped)" merge_group
@@ -243,6 +281,8 @@ check "passes" "$(is "$status" 0)"
 check "keeps today's wording" \
   "$(contains "$out" '^docs: skipped (not selected: needs.changes.outputs.docs is false)$')"
 check "says nothing about full-ci" "$(is "$(contains "$out" 'gated by full-ci')" false)"
+check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
+check "writes no job summary" "$(is "$step_summary" "")"
 
 echo "case: changes failed"
 run_ci_ok "$(needs failure '{}' success typecheck=success envoy-client=skipped worker-image=skipped docs=skipped)"
