@@ -19,9 +19,10 @@ body: |-
   4xx names one of the four it writes; before, it also wrote one a 2xx named. A discovery document
   whose `revocation_endpoint` is `null` now fails discovery, as one whose `revocation_endpoint` is
   a number already did. The broker's approval page refuses a callback whose code is longer than
-  2048 bytes with 400 `SIGN_IN_CODE_INVALID`, and sends the provider no token request for it. The
-  agent-secrets helper reads the broker's own answers the same way: a login poll answered 408, 429
-  or 5xx naming `access_denied` or `expired_token` now polls again,
+  2048 bytes with 400 `SIGN_IN_CODE_INVALID`, and Dispatch's `/auth/callback` with 400 "the
+  callback's code is longer than 2048 bytes"; neither sends the provider a token request for it.
+  The agent-secrets helper reads the broker's own answers the same way: a login poll answered 408,
+  429 or 5xx naming `access_denied` or `expired_token` now polls again,
   where it recorded the login denied or expired, and a refresh of the machine login ends the login
   only on a 400 or 401 naming `invalid_grant`, as Dispatch's refresh ends a sign-in: one answered
   5xx naming `invalid_grant` now keeps the login and is retried, where it deleted the machine file.

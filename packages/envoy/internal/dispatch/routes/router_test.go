@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -510,6 +511,41 @@ func TestSignInCallbackAnswersATokenEndpointThatCannotAnswer503(t *testing.T) {
 			if response.Code != c.status || unavailable != (c.status == http.StatusServiceUnavailable) || sessionCookie(response) != nil {
 				t.Fatalf("a callback whose token endpoint answers %s: %d %s, want %d, SIGNIN_UNAVAILABLE %t, and no session",
 					c.name, response.Code, response.Body.String(), c.status, c.status == http.StatusServiceUnavailable)
+			}
+		})
+	}
+}
+
+// A callback's code is chosen by whoever holds the browser, so Dispatch sends the issuer's token
+// endpoint a code of at most 2048 bytes. One of 2048 is exchanged (the issuer refuses it, a code it
+// never issued, so the sign-in fails 502); one of 2049 is refused 400 before any token request,
+// with no session.
+func TestSignInCallbackBoundsItsCodeBeforeTheExchange(t *testing.T) {
+	for _, c := range []struct {
+		size      int
+		exchanged bool
+	}{
+		{2048, true},
+		{2049, false},
+	} {
+		t.Run(strconv.Itoa(c.size), func(t *testing.T) {
+			rig := newSignInRig(t, "")
+			rig.issuer.SignInAs(personClaims(rigGroup))
+			authURL, stateCookie := rig.start(t, "http://dispatch.test/auth/start?next=/issues/CORE-1")
+			_, state := rig.issuer.Authorize(t, authURL.String())
+			before := len(rig.issuer.TokenRequests())
+			response := callbackOn(rig.handler, strings.Repeat("c", c.size), state, stateCookie)
+			sent := len(rig.issuer.TokenRequests()) - before
+			want, wantSent := http.StatusBadRequest, 0
+			if c.exchanged {
+				want, wantSent = http.StatusBadGateway, 1
+			}
+			if response.Code != want || sent != wantSent || sessionCookie(response) != nil {
+				t.Fatalf("a callback with a %d-byte code = %d %s after %d token requests, want %d after %d, and no session",
+					c.size, response.Code, response.Body.String(), sent, want, wantSent)
+			}
+			if !c.exchanged && !strings.Contains(response.Body.String(), "2048") {
+				t.Fatalf("the refusal of a %d-byte code does not name the bound: %s", c.size, response.Body.String())
 			}
 		})
 	}

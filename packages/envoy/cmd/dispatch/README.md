@@ -3947,6 +3947,7 @@ Each item below names a path with its method and identity, then its purpose.
   Record the person and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account held it), issue the cookie.
   Any process holding a key of the set completes a sign-in another process started.
   `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
+  `400` "missing code or state in callback", or "the callback's code is longer than 2048 bytes", before any request to the issuer, when the callback carries no code or state or a code longer than 2048 bytes;
   `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, or when the issuer's token endpoint answers the exchange `5xx`, `408` or `429`, or not at all;
   `502` for every other answer of the token endpoint (a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, or a `3xx`) and every other failure of the sign-in;
   `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie.
