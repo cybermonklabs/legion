@@ -10,10 +10,11 @@
 # A full member has no cookie at the outside origin, and no full member's credential goes on the
 # runner. So this box runs the sweep's fills mode, which makes the full member's half of every
 # row, and passes the file to the workflow as `sweep_fills`; and it runs the sweep's writer, which
-# comments on the write issue every 15 s and reads the full member's own feed, as the live
-# socket's control. Fills mode writes the full member's half of the GitHub proxy rows (a
-# `can_fail` line for each read that can fail) only with the full member's browser session, since
-# the proxy reads no token, so the sweep needs OUTSIDE_FULL_COOKIE_FILE.
+# every 15 s comments on the write issue and sends a direct message to the fills' session, prints
+# `write <UTC> <comment id> <message id> delivered` for each the full member's own feed was sent,
+# and so is the live socket's control. Fills mode writes the full member's half of the GitHub proxy
+# rows (a `can_fail` line for each read that can fail) only with the full member's browser session,
+# since the proxy reads no token, so the sweep needs OUTSIDE_FULL_COOKIE_FILE.
 
 # sweep_setup: sets sweep_script and sweep_problem, from the inputs and the browser's reading.
 sweep_setup() {
@@ -124,6 +125,7 @@ EOF
 sweep_row() {
   local want="restricted-sweep.sh on the runner PASS, with a full member's comment delivered inside its live window, and the full member's browser answered 200 by the GitHub proxy for the repository its proxy rows read"
   local log="$results/restricted-sweep.log" sweep_exit window='' w0 w1 inside='' line at verdict_line=''
+  local word comment message state rest
   if [ -n "$sweep_problem" ]; then
     row sweep "$want" "$sweep_problem" UNKNOWN
     return
@@ -138,13 +140,14 @@ sweep_row() {
   done <"$log"
   w0=${window%% *}
   w1=${window#* }
+  # The writer prints one line a write, `write <UTC> <comment id> <message id> delivered`, or
+  # `... not delivered` when the full member's feed was not sent both; only the first counts.
   while IFS= read -r line; do
-    case $line in 'write '*' delivered')
-      at=${line#write }
-      at=${at%% *}
-      [[ -n "$w0" && "$at" > "$w0" && "$at" < "$w1" ]] && inside=$at
-      ;;
-    esac
+    read -r word at comment message state rest <<<"$line"
+    if [ "$word" = write ] && [ -n "$comment" ] && [ -n "$message" ] && [ "$state" = delivered ] &&
+      [ -z "$rest" ] && [[ -n "$w0" && "$at" > "$w0" && "$at" < "$w1" ]]; then
+      inside="$at (comment $comment, message $message)"
+    fi
   done <"$work/sweep-writer.log"
   # The verdict is the sweep's last line; the log's first is the workflow's own note.
   while IFS= read -r line; do
@@ -159,9 +162,9 @@ sweep_row() {
       elif [ -z "$window" ]; then
         row sweep "$want" "the sweep passed and printed no live window, so the writer's control cannot be held to it" UNKNOWN
       elif [ -z "$inside" ]; then
-        row sweep "$want" "the sweep passed, and no comment of the writer was delivered inside its live window $window, so its live check proved nothing" UNKNOWN
+        row sweep "$want" "the sweep passed, and no write of the writer was delivered inside its live window $window, so its live check proved nothing" UNKNOWN
       else
-        row sweep "$want" "the sweep passed; the writer's comment at $inside was delivered inside its live window $window; $proxy_control" PASS
+        row sweep "$want" "the sweep passed; the writer's write at $inside was delivered inside its live window $window; $proxy_control" PASS
       fi
       ;;
     *) row sweep "$want" "the sweep exited ${sweep_exit:-with no code read}: $verdict_line" UNKNOWN ;;

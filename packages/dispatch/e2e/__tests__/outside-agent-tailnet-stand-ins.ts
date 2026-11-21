@@ -7,8 +7,9 @@
  *  makes a directory takes the test file's own `scratch`, whose directories that file's hooks
  *  remove. */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   closedPort,
@@ -57,8 +58,9 @@ export interface StandIns {
   readonly controls: "answered" | "refused";
   /** What the scratch helper's canary session, and the canary's request, are refused with. */
   readonly canaryRefusal: string;
-  /** Whether Dispatch's build holds every commit OUTSIDE_DISPATCH_COMMITS names. */
-  readonly dispatchCommits: "held" | "lacking";
+  /** What OUTSIDE_DISPATCH_COMMITS holds: commits Dispatch's build holds, one it lacks too, only
+   *  blanks, or a word that is no commit id beside a held one. */
+  readonly dispatchCommits: "held" | "lacking" | "blank" | "malformed";
   /** Whether OUTSIDE_FULL_COOKIE_FILE is given, and the proxy read the fills leave out, if any. */
   readonly cookie?: "given" | "absent";
   readonly fillsLeaveOut?: string;
@@ -83,6 +85,18 @@ export interface StandIns {
   /** How the public leg starts: the local command (default), or the workflow through `gh`, its
    *  other inputs those `OUTSIDE_WORKFLOW_INPUTS` holds (default the invite link alone). */
   readonly workflow?: { readonly inputs?: string };
+  /** The read sweep beside the leg and on the runner: the writer's one line (default a write
+   *  delivered inside the runner's window, in the `write <UTC> <comment id> <message id>
+   *  delivered` form); fills mode refusing to write a file, as it refuses one that lacks a fill;
+   *  and the runner's last line and exit (default PASS, 0). */
+  readonly sweep?: {
+    readonly writer?: string;
+    readonly fillsRefused?: boolean;
+    readonly verdict?: string;
+    readonly exit?: number;
+  };
+  /** A P row the public TSV holds twice, first with `first`'s verdict, then with `second`'s. */
+  readonly duplicate?: { readonly name: string; readonly first: string; readonly second: string };
 }
 
 export interface StandInRun extends LegRun {
@@ -257,90 +271,73 @@ esac
 
 export interface StandInDispatch {
   readonly origin: string;
-  /** Each request it answered, `METHOD path`. */
-  readonly seen: readonly string[];
+  /** Each request it answered so far, `METHOD path`. */
+  seen(): string[];
   stop(): void;
 }
 
-/** A Dispatch whose /healthz names the commit `serving` says, which answers the full member's
- *  browser session (cookie `session=full`, with the origin's own Origin) on the routes the leg's
- *  controls read, and 401 to anything else. Its access list names the test person until
- *  `POST /_remove`, the owner's removal. */
+const standInDispatchFile = fileURLToPath(
+  new URL("./outside-agent-stand-in-dispatch.ts", import.meta.url)
+);
+
+/** The stand-in Dispatch (`outside-agent-stand-in-dispatch.ts`) as a process of its own, its
+ *  /healthz naming the commit `serving` says: no event loop of a test worker holds its answers,
+ *  the bounded runner's synchronous stop of a sibling run included. It answers before this
+ *  returns. */
 function standInDispatch(
   state: string,
   controls: StandIns["controls"],
   repo: Checkout,
   serving: NonNullable<StandIns["serving"]>
 ): StandInDispatch {
-  const seen: string[] = [];
-  let listed = true;
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    async fetch(request) {
-      const url = new URL(request.url);
-      const path = url.pathname;
-      seen.push(`${request.method} ${path}`);
-      if (path === "/healthz") {
-        const commit = serving === "other" ? repo.apart : repo.built;
-        return Response.json({
-          ok: true,
-          commit,
-          fleet_commit: serving === "split" ? repo.apart : commit,
-        });
-      }
-      if (path === "/_remove") {
-        listed = false;
-        return Response.json({});
-      }
-      if (
-        request.headers.get("cookie") !== "session=full" ||
-        request.headers.get("origin") !== url.origin
-      ) {
-        return Response.json({ code: "UNAUTHENTICATED" }, { status: 401 });
-      }
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const code = typeof body.code === "string" ? body.code : "";
-      const route = `${request.method} ${path}`;
-      if (route === "GET /api/v1/whoami") {
-        return Response.json({ kind: "user", login: fullLogin, scopes: ["person", "approve"] });
-      }
-      if (route === "GET /api/v1/projects/EXAMPLE/access") {
-        return Response.json({ people: listed ? ["outside-e2e@example.com"] : [] });
-      }
-      if (route === "POST /api/v1/me/agent-tokens") {
-        return Response.json(
-          { id: "token-1", name: body.name, token: "dsp_plaintext" },
-          { status: 201 }
-        );
-      }
-      if (route === "DELETE /api/v1/me/agent-tokens/token-1")
-        return new Response(null, { status: 204 });
-      if (route === "POST /api/v1/credential-requests/machine-lookup") {
-        return Response.json({ record_id: `record-${code}` });
-      }
-      if (route === `POST /api/v1/credential-requests/record-${code}/approve`) {
-        if (controls === "refused") return Response.json({ code: "FORBIDDEN" }, { status: 403 });
-        writeFileSync(join(state, `approved-${code}`), "");
-        return Response.json({ credential_id: `cred-${code.toLowerCase()}` });
-      }
-      if (route.startsWith("POST /api/v1/machine-logins/cred-")) return Response.json({});
-      if (route === `GET /api/github/rest/repos/${proxyRepository}/actions/runs`) {
-        return controls === "answered"
-          ? Response.json({ total_count: 0, workflow_runs: [] })
-          : Response.json({ code: "GITHUB_TOKEN_UNAVAILABLE" }, { status: 503 });
-      }
-      return Response.json({ code: "NOT_FOUND" }, { status: 404 });
+  const port = closedPort();
+  const origin = `http://127.0.0.1:${port}`;
+  const commit = serving === "other" ? repo.apart : repo.built;
+  const child = Bun.spawn([process.execPath, standInDispatchFile], {
+    env: {
+      PATH: process.env.PATH ?? "",
+      OUTSIDE_STAND_IN_DISPATCH: JSON.stringify({
+        port,
+        state,
+        controls,
+        commit,
+        fleetCommit: serving === "split" ? repo.apart : commit,
+        fullLogin,
+        proxyRepository,
+      }),
     },
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "inherit",
   });
-  return { origin: server.url.origin, seen, stop: () => server.stop(true) };
+  // Its readiness, read as the rest of the preparation is, before any leg starts: at most 10 s.
+  const ready = Bun.spawnSync([
+    "bash",
+    "-c",
+    'i=0; while [ "$i" -lt 200 ]; do curl -q -sf -o /dev/null --max-time 1 "$0/_ready" && exit 0; sleep 0.05; i=$((i + 1)); done; exit 1',
+    origin,
+  ]);
+  if (!ready.success) {
+    child.kill();
+    throw new Error(`the stand-in Dispatch did not answer at ${origin} within 10 s`);
+  }
+  const seenFile = join(state, "dispatch-seen");
+  return {
+    origin,
+    seen: () =>
+      existsSync(seenFile)
+        ? readFileSync(seenFile, "utf8")
+            .split("\n")
+            .filter((line) => line !== "")
+        : [],
+    stop: () => child.kill(),
+  };
 }
 
 /** A copy of the tailnet leg ready to run against the stand-ins, with a stand-in read sweep beside
  *  it and a public leg that approves the scratch login and writes what the workflow's would. Every
- *  synchronous step (the checkout's git, the files, the links) is here, before any leg starts: the
- *  stand-in Dispatch answers on this process's event loop, which a `spawnSync` would hold while a
- *  leg running beside it waits for an answer. */
+ *  step that waits (the checkout's git, the files, the links, the stand-in Dispatch's start) is
+ *  here, before any leg starts. */
 export interface PreparedStandIn {
   readonly leg: string;
   readonly env: Record<string, string>;
@@ -366,8 +363,9 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   const state = scratch("state");
   writeFileSync(join(state, "canary-refusal"), `${standIns.canaryRefusal}\n`);
   if (standIns.approve === false) writeFileSync(join(state, "login-expires"), "");
-  // The fills the sweep's fills mode writes: the repository, and a `can_fail` line for each proxy
-  // read, but only with the full member's cookie, as restricted-sweep.sh does.
+  // The fills the sweep's fills mode writes, version 2: the project, where and when they were
+  // made, the repository, and a `can_fail` line for each proxy read, but only with the full
+  // member's cookie, as restricted-sweep.sh does.
   const canFail = [
     "GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}",
     "GET /api/github/rest/repos/{owner}/{repo}/issues/{number}",
@@ -378,7 +376,10 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   writeFileSync(
     join(state, "fills"),
     [
-      "restricted-sweep-fills\t1",
+      "restricted-sweep-fills\t2",
+      "project\tPRIV",
+      "origin\thttp://127.0.0.1",
+      `made_at\t${Math.floor(Date.now() / 1000)}`,
       `proxy_repo\t${proxyRepository}`,
       ...canFail.map((read) => `can_fail\t${read}`),
       "",
@@ -389,10 +390,15 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   const tab = "\t";
   const publicTsv = [
     ["row", "want", "got", "verdict"],
-    ...publicRows.map((name) =>
-      name === "P6" && standIns.p6 !== undefined
-        ? [name, `the row ${name}`, standIns.p6, standIns.p6.split(" ")[0] as string]
-        : [name, `the row ${name}`, `what ${name} read`, "PASS"]
+    ...publicRows.flatMap((name) =>
+      name === standIns.duplicate?.name
+        ? [
+            [name, `the row ${name}`, `what ${name} read first`, standIns.duplicate.first],
+            [name, `the row ${name}`, `what ${name} read second`, standIns.duplicate.second],
+          ]
+        : name === "P6" && standIns.p6 !== undefined
+          ? [[name, `the row ${name}`, standIns.p6, standIns.p6.split(" ")[0] as string]]
+          : [[name, `the row ${name}`, `what ${name} read`, "PASS"]]
     ),
     ["revocations", "every login revoked", "the revoke command exited 0", "PASS"],
     ...(standIns.publicVerdict === "absent"
@@ -402,6 +408,16 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
     .map((fields) => fields.join(tab))
     .join("\n");
   writeFileSync(join(state, "public.tsv"), `${publicTsv}\n`);
+  // The writer's line and the runner's last line, as files, since a sweep's own words may hold a
+  // quote no shell string may.
+  writeFileSync(
+    join(state, "writer-line"),
+    `${standIns.sweep?.writer ?? "write 2026-01-01T00:00:05Z cmt-1 msg-1 delivered"}\n`
+  );
+  writeFileSync(
+    join(state, "sweep-verdict"),
+    `${standIns.sweep?.verdict ?? "PASS: every read refused"}\n`
+  );
   const repo = checkout(scratch);
   const inputs = scratch("inputs");
   const leg = copyLeg(scratch, tailnetLeg);
@@ -419,10 +435,11 @@ case $SWEEP_MODE in
   fills)
     [ -n "\${SWEEP_FULL_COOKIE:-}" ] || { echo 'UNKNOWN: SWEEP_FULL_COOKIE is required'; exit 2; }
     : >'${state}/fills-read-the-cookie'
+    ${standIns.sweep?.fillsRefused === true ? "echo 'UNKNOWN: fills mode writes no file that lacks a fill: dm_session'; exit 2" : ""}
     cat '${state}/fills' >"$SWEEP_FILLS_FILE"
     ;;
   writer)
-    echo 'write 2026-01-01T00:00:05Z delivered'
+    cat '${state}/writer-line'
     sleep 600 &
     child=$!
     trap 'kill "$child"; : >"${state}/writer-stopped"; exit 0' TERM
@@ -465,8 +482,8 @@ cp '${state}/public.tsv' "$out/outside-agent-public.tsv"
 ${lastAnswered}
 printf 'revoke-cred-%s\\trevoked\\tstatus 200\\t%s\\n' "$(printf '%s' "$OUTSIDE_TAILNET_USER_CODE" | tr 'A-Z' 'a-z')" '${standIns.revokeVerdict ?? "PASS"}' >"$out/outside-edge-revocations.tsv"
 : >'${state}/revoked'
-printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\nPASS: every read refused\\n' >"$out/restricted-sweep.log"
-echo 0 >"$out/restricted-sweep.exit"
+{ printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat '${state}/sweep-verdict'; } >"$out/restricted-sweep.log"
+echo ${standIns.sweep?.exit ?? 0} >"$out/restricted-sweep.exit"
 ${standIns.window === undefined ? "" : "sleep 3"}
 exit ${standIns.publicExit ?? 0}
 `
@@ -489,8 +506,12 @@ exit ${standIns.publicExit ?? 0}
     OUTSIDE_IMAGE_REVISION_COMMAND: `sh ${revision}`,
     OUTSIDE_LEGION_CHECKOUT: repo.dir,
     OUTSIDE_ENROLL_REFUSAL_COMMIT: repo.held,
-    OUTSIDE_DISPATCH_COMMITS:
-      standIns.dispatchCommits === "held" ? repo.held : `${repo.held} ${repo.apart}`,
+    OUTSIDE_DISPATCH_COMMITS: {
+      held: repo.held,
+      lacking: `${repo.held} ${repo.apart}`,
+      blank: "  ",
+      malformed: `${repo.held} HEAD`,
+    }[standIns.dispatchCommits],
     OUTSIDE_TAILNET_BROKER_URL: `http://127.0.0.1:${closedPort()}`,
     OUTSIDE_TAILNET_DISPATCH_URL: dispatch.origin,
     ...(standIns.cookie === "absent" ? {} : { OUTSIDE_FULL_COOKIE_FILE: join(inputs, "cookie") }),

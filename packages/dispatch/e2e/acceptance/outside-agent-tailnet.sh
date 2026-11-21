@@ -259,6 +259,19 @@ problem=$(lacking OUTSIDE_PINS OUTSIDE_ENROLL_REFUSAL_COMMIT OUTSIDE_DISPATCH_CO
 if [ -z "$problem" ] && [ ! -r "$OUTSIDE_PINS" ]; then
   problem="OUTSIDE_PINS names $OUTSIDE_PINS, which cannot be read"
 fi
+# Each commit the builds are held to is a whole commit id: a list of blanks holds Dispatch's build
+# to nothing, and a word that is no commit id is read by git as whatever it names.
+read -r -a dispatch_shas <<<"$dispatch_commits"
+if [ -z "$problem" ] && [ "${#dispatch_shas[@]}" -eq 0 ]; then
+  problem="OUTSIDE_DISPATCH_COMMITS names no commit"
+fi
+for sha in "$commit" "${dispatch_shas[@]}"; do
+  case $sha in
+    *[!0-9a-f]* | '') ;;
+    *) [ "${#sha}" -eq 40 ] && continue ;;
+  esac
+  [ -n "$problem" ] || problem="${sha:-an empty word} is no 40-character commit id (OUTSIDE_ENROLL_REFUSAL_COMMIT, OUTSIDE_DISPATCH_COMMITS)"
+done
 if [ -n "$problem" ]; then
   row pins "$want_pins" "$problem" UNKNOWN
   skip_from "the pins were not read: $problem" issue
@@ -299,7 +312,6 @@ if [ -n "$serving_commit" ]; then
     *) problem="Dispatch serves $serving_commit, and its pin names $dispatch_revision" ;;
   esac
 fi
-read -r -a dispatch_shas <<<"$dispatch_commits"
 if ! command -v git >/dev/null 2>&1; then
   problem="${problem:+$problem; }git not on PATH"
 else
@@ -821,14 +833,18 @@ if [ -z "$t5_problem" ]; then
   say "T5: waiting for the public leg to open its window"
   opened=''
   # The window line is read before whether the public leg still runs: a leg that opened its window
-  # and has since ended still opened it.
+  # and has since ended still opened it. The public leg opens it after P10, well within an hour.
+  window_deadline=$(($(now) + 3600))
   while [ -z "$opened" ]; do
     case $(peer_text) in *'outside-e2e t5-open '*) opened=yes && break ;; esac
     public_running || break
+    [ "$(now)" -lt "$window_deadline" ] || break
     sleep 5
   done
   before=$(listed_now)
-  if [ -z "$opened" ]; then
+  if [ -z "$opened" ] && public_running; then
+    t5_problem="the public leg had not opened its window within an hour"
+  elif [ -z "$opened" ]; then
     t5_problem="the public leg ended without opening its window"
   elif [ "$before" != true ]; then
     t5_problem="before the removal $person is not read on the access list ($before), so a refusal would prove nothing"
@@ -853,13 +869,24 @@ fi
 
 # --- The public leg's end, its TSV and its revocations. ---
 if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
+  # gh polls the run every 30 s; the leg holds that watch to two hours, past the workflow's own
+  # budget of 115 minutes, and a run not ended by then, or a watch that ended before the run did,
+  # is read as no end.
   say "waiting for run $run_id"
-  gh run watch "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --interval 30 >/dev/null 2>&1 </dev/null
-  gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n outside-agent-public -D "$results" >/dev/null 2>&1 </dev/null
-  gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n outside-edge-revocations -D "$results" >/dev/null 2>&1 </dev/null
-  gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n restricted-sweep -D "$results" >/dev/null 2>&1 </dev/null
-  public_end=$(gh run view "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --json conclusion --jq .conclusion 2>/dev/null </dev/null)
-  say "run $run_id: ${public_end:-no conclusion read}"
+  gh run watch "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --interval 30 >/dev/null 2>&1 </dev/null &
+  watch_pid=$!
+  background="$background $watch_pid"
+  await_child "$watch_pid" 7200 5
+  [ -n "$child_exit" ] || stop_child "$watch_pid"
+  if public_running; then
+    public_problem="run $run_id had not ended within two hours, or its watch ended before it did"
+  else
+    gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n outside-agent-public -D "$results" >/dev/null 2>&1 </dev/null
+    gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n outside-edge-revocations -D "$results" >/dev/null 2>&1 </dev/null
+    gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n restricted-sweep -D "$results" >/dev/null 2>&1 </dev/null
+    public_end=$(gh run view "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --json conclusion --jq .conclusion 2>/dev/null </dev/null)
+    say "run $run_id: ${public_end:-no conclusion read}"
+  fi
 elif [ -z "$public_problem" ]; then
   say "waiting for the public leg's command"
   await_child "$public_pid" 3600 5
@@ -874,17 +901,34 @@ sweep_writer_stop
 public_tsv="$results/outside-agent-public.tsv"
 [ -n "$public_problem" ] || [ -f "$public_tsv" ] || public_problem="the public leg left no outside-agent-public.tsv"
 
-# public_part NAME: the public TSV's NAME row as `verdict<TAB>got`, or nothing.
-public_part() {
-  local each rest
+# public_line NAME: the public TSV's NAME row, whole, or nothing. Where the TSV holds NAME more
+# than once, the worst of them: FAIL, then any word but PASS, then PASS, so a later PASS never
+# hides an earlier FAIL.
+public_line() {
+  local each worst='' rank best=-1
   [ -f "$public_tsv" ] || return 0
   while IFS= read -r each; do
-    case $each in "$1$tab"*)
-      rest=${each#*"$tab"*"$tab"}
-      printf '%s\t%s' "${rest##*"$tab"}" "${rest%"$tab"*}"
-      ;;
+    case $each in "$1$tab"*) ;; *) continue ;; esac
+    case ${each##*"$tab"} in
+      FAIL) rank=2 ;;
+      PASS) rank=0 ;;
+      *) rank=1 ;;
     esac
+    if [ "$rank" -gt "$best" ]; then
+      best=$rank
+      worst=$each
+    fi
   done <"$public_tsv"
+  printf '%s' "$worst"
+}
+
+# public_part NAME: the public TSV's NAME row (public_line's) as `verdict<TAB>got`, or nothing.
+public_part() {
+  local each rest
+  each=$(public_line "$1")
+  [ -n "$each" ] || return 0
+  rest=${each#*"$tab"*"$tab"}
+  printf '%s\t%s' "${rest##*"$tab"}" "${rest%"$tab"*}"
 }
 
 # --- T4: the scratch login is revoked on the test person's page, and the helper reads it ended. ---
@@ -986,11 +1030,7 @@ fi
 # --- P1-P10 as the public leg's TSV has them, each held to what this leg saw beside it. ---
 for name in $public_rows; do
   line=''
-  if [ -z "$public_problem" ]; then
-    while IFS= read -r each; do
-      case $each in "$name$tab"*) line=$each ;; esac
-    done <"$public_tsv"
-  fi
+  [ -n "$public_problem" ] || line=$(public_line "$name")
   if [ -z "$line" ]; then
     row "$name" "the public leg's row $name" "${public_problem:-the public TSV has no $name row}" UNKNOWN
     continue

@@ -392,7 +392,7 @@ async function runStandIn(prepared: PreparedStandIn): Promise<StandInRun> {
     const run = await runLeg(prepared.leg, ["EXAMPLE"], prepared.env);
     return {
       ...run,
-      seen: [...prepared.dispatch.seen],
+      seen: prepared.dispatch.seen(),
       state: prepared.state,
       repo: prepared.repo,
     };
@@ -439,6 +439,10 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         expect(pass.get("sweep")?.got).toContain(
           `the full member's browser read ${proxyRepository}'s workflow runs through the proxy: 200`
         );
+        // The writer's line in its `write <UTC> <comment id> <message id> delivered` form.
+        expect(pass.get("sweep")?.got).toContain(
+          "the writer's write at 2026-01-01T00:00:05Z (comment cmt-1, message msg-1) was delivered"
+        );
         // T3 enrolled through the full member's helper, whose broker is the one T2 asked.
         expect(readFileSync(join(answered.state, "t3-operator"), "utf8")).toBe(`${fullLogin}\n`);
         // Each thing the control made is revoked again, the sweep's fills read the cookie, and the
@@ -469,10 +473,16 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the pins row fails, and no leg starts, when Dispatch's build lacks a commit the check needs",
+      "the pins row fails, and no leg starts, when Dispatch's build lacks a commit the check needs, and reads UNKNOWN for a commit list of blanks or of a word that is no commit id",
       async () => {
-        const [run] = await runStandIns({ ...passingControls, dispatchCommits: "lacking" });
-        if (run === undefined) throw new Error("one run, want one");
+        const [run, blank, malformed] = await runStandIns(
+          { ...passingControls, dispatchCommits: "lacking" },
+          { ...passingControls, dispatchCommits: "blank" },
+          { ...passingControls, dispatchCommits: "malformed" }
+        );
+        if (run === undefined || blank === undefined || malformed === undefined) {
+          throw new Error("three runs, want three");
+        }
         const rows = rowsOf(run.stdout);
         expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
           verdicts: { pins: "FAIL" },
@@ -484,9 +494,21 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         // Dispatch is asked only the build it serves.
         expect(run.seen).toEqual(["GET /healthz"]);
         expect(run.code).toBe(1);
+        // A list that holds Dispatch's build to nothing, or to a word git reads as anything,
+        // starts no leg.
+        for (const [each, said] of [
+          [blank, "OUTSIDE_DISPATCH_COMMITS names no commit"],
+          [malformed, "HEAD is no 40-character commit id"],
+        ] as const) {
+          expect({ verdicts: verdictsOf(each.stdout), stdout: each.stdout }).toMatchObject({
+            verdicts: { pins: "UNKNOWN", T1: "UNKNOWN" },
+          });
+          expect(rowsOf(each.stdout).get("pins")?.got).toContain(said);
+          expect(each.seen).toEqual([]);
+        }
       },
-      // The leg, a bounded child under the short bound.
-      rowLimit("short")
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
     );
 
     test(
@@ -566,6 +588,63 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
+      "the sweep counts no write the writer did not deliver, and reads UNKNOWN for a fills file fills mode refused and for a runner's UNKNOWN",
+      async () => {
+        const [undelivered, oldForm, refusedFills, unlisted] = await runStandIns(
+          {
+            ...passingControls,
+            sweep: { writer: "write 2026-01-01T00:00:05Z cmt-1 msg-1 not delivered" },
+          },
+          { ...passingControls, sweep: { writer: "write 2026-01-01T00:00:05Z delivered" } },
+          { ...passingControls, sweep: { fillsRefused: true } },
+          {
+            ...passingControls,
+            sweep: {
+              verdict:
+                "UNKNOWN: GET /api/v1/example is a route the deployment's own index lists and routes.txt lacks, which the sweep never called",
+              exit: 2,
+            },
+          }
+        );
+        if (
+          undelivered === undefined ||
+          oldForm === undefined ||
+          refusedFills === undefined ||
+          unlisted === undefined
+        ) {
+          throw new Error("four runs, want four");
+        }
+        // A write the full member's feed was not sent, or a line of another form, is no control.
+        for (const run of [undelivered, oldForm]) {
+          expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+            verdicts: { sweep: "UNKNOWN" },
+          });
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(
+            "no write of the writer was delivered inside its live window"
+          );
+        }
+        // Fills mode refuses to write a file that lacks a fill, so no fills reach the runner.
+        expect({
+          verdicts: verdictsOf(refusedFills.stdout),
+          stdout: refusedFills.stdout,
+        }).toMatchObject({ verdicts: { sweep: "UNKNOWN" } });
+        expect(rowsOf(refusedFills.stdout).get("sweep")?.got).toContain(
+          "the sweep's fills mode made no file: UNKNOWN: fills mode writes no file that lacks a fill"
+        );
+        // A runner's UNKNOWN, a route the deployment lists and routes.txt lacks among them, stays
+        // UNKNOWN.
+        expect({ verdicts: verdictsOf(unlisted.stdout), stdout: unlisted.stdout }).toMatchObject({
+          verdicts: { sweep: "UNKNOWN" },
+        });
+        expect(rowsOf(unlisted.stdout).get("sweep")?.got).toContain(
+          "the sweep exited 2: UNKNOWN: GET /api/v1/example is a route the deployment's own index lists and routes.txt lacks"
+        );
+      },
+      // The four runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    );
+
+    test(
       "T1 reads a login nobody approved UNKNOWN, and T4 counts a revoke row with no verdict as UNKNOWN",
       async () => {
         const [control, expired, noVerdict] = await runStandIns(
@@ -619,18 +698,27 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the public row holds the gate to the public leg's own verdict and end, and P6's sub crossing stands",
+      "the public row holds the gate to the public leg's own verdict and end, a later PASS of a row hides no earlier FAIL, and P6's sub crossing stands",
       async () => {
-        const [failed, silent] = await runStandIns(
+        const [failed, silent, failedExit0, duplicated] = await runStandIns(
           {
             ...passingControls,
             publicVerdict: "FAIL",
             publicExit: 1,
             p6: "FAIL a relay sub to example-peer's subject was granted; peer_listed=yes foreign_listed=no foreign_send=refused sub=granted",
           },
-          { ...passingControls, publicVerdict: "absent" }
+          { ...passingControls, publicVerdict: "absent" },
+          { ...passingControls, publicVerdict: "FAIL", publicExit: 0 },
+          { ...passingControls, duplicate: { name: "P5", first: "FAIL", second: "PASS" } }
         );
-        if (failed === undefined || silent === undefined) throw new Error("two runs, want two");
+        if (
+          failed === undefined ||
+          silent === undefined ||
+          failedExit0 === undefined ||
+          duplicated === undefined
+        ) {
+          throw new Error("four runs, want four");
+        }
         expect({ verdicts: verdictsOf(failed.stdout), stdout: failed.stdout }).toMatchObject({
           verdicts: { public: "FAIL", P6: "FAIL" },
         });
@@ -640,9 +728,21 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           verdicts: { public: "UNKNOWN" },
         });
         expect(rowsOf(silent.stdout).get("public")?.got).toContain("verdict row absent");
+        // The verdict row's FAIL holds the public row by itself, whatever the leg's exit.
+        expect({
+          verdicts: verdictsOf(failedExit0.stdout),
+          stdout: failedExit0.stdout,
+        }).toMatchObject({ verdicts: { public: "FAIL" } });
+        expect(rowsOf(failedExit0.stdout).get("public")?.got).toContain("verdict row FAIL");
+        // A row the public TSV holds twice reads as the worse of the two.
+        expect({
+          verdicts: verdictsOf(duplicated.stdout),
+          stdout: duplicated.stdout,
+        }).toMatchObject({ verdicts: { P5: "FAIL" } });
+        expect(rowsOf(duplicated.stdout).get("P5")?.got).toContain("what P5 read first");
       },
-      // The two runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short"] })
+      // The four runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short"] })
     );
 
     test(

@@ -20,6 +20,7 @@ The gate must pass before the deployment names a real person from outside on any
 | `../__tests__/outside-agent-public.test.ts` | The test that the public leg's own judgments (P6, P7, P10 and T5's agent part) hold against stand-ins. |
 | `../__tests__/outside-agent-fixture.ts` | What the two test files share: where the legs are, the rows each prints, and the helpers that copy a leg and read its TSV. |
 | `../__tests__/outside-agent-tailnet-stand-ins.ts` | The stand-ins the tailnet leg's tests run it against: the checkout, the deployment repository and workflow behind a stand-in `gh`, the broker's tools, Dispatch, the sweep and the public leg. |
+| `../__tests__/outside-agent-stand-in-dispatch.ts` | The stand-in Dispatch those tests run in a process of its own, so no test worker's busy event loop holds its answers. |
 
 ## What each leg prints
 
@@ -135,10 +136,20 @@ The tailnet leg does these steps, in this order:
    `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as
    `SWEEP_MEMBER`, and the full member's cookie as `SWEEP_FULL_COOKIE`, with which it reads the
    GitHub proxy; without `OUTSIDE_FULL_COOKIE_FILE` the sweep does not run and its row reads
-   UNKNOWN), and starts its writer, which comments on the scratch issue
-   `OUTSIDE_SWEEP_WRITE_ISSUE` every 15 s until the public leg ends, when the leg stops it. No full
-   member's credential goes to the runner: the fills file holds none, and is at most 40 KiB so that
-   it fits one input. Then the sweep's proxy control. The fills must hold a `can_fail` line, the
+   UNKNOWN), and starts its writer. Every 15 s until the public leg ends, when the leg stops it, the
+   writer comments on the scratch issue `OUTSIDE_SWEEP_WRITE_ISSUE` and sends a direct message to
+   the fills' session of that project, and prints `write <UTC> <comment id> <message id>
+   delivered`, or `... not delivered` when the full member's own feed was not sent both; only a
+   delivered write counts. No full member's credential goes to the runner: the fills file (version
+   2, `restricted-sweep-fills<TAB>2`) holds none, and is at most 40 KiB so that it fits one input.
+   Fills mode writes no file that lacks a fill, and a runner refuses fills older than 55 minutes,
+   so the leg starts the public leg right after. The runner's own control of the member's feed is
+   the member's direct message to `SWEEP_MEMBER_SESSION`, their own session in the scratch
+   project. The runner is the workflow's sweep step, not a leg, so the workflow sets it, to the
+   session its driver registered at the edge as the test person; it needs no input from this leg.
+   Without it the runner reads UNKNOWN, and so does the sweep row. A runner's
+   UNKNOWN, such as a GET route the deployment's own index lists and `routes.txt` lacks, keeps the
+   sweep row UNKNOWN. Then the sweep's proxy control. The fills must hold a `can_fail` line, the
    full member's answer that can fail, for each GitHub proxy read the runner makes:
    `GET /api/github/rest/repos/{owner}/{repo}/` with `pulls/{number}`, `issues/{number}`,
    `commits/{sha}/check-runs` and `actions/runs?head_sha={sha}`, and
@@ -165,8 +176,10 @@ The tailnet leg does these steps, in this order:
    `OUTSIDE_OWNER_REMOVE_COMMAND` set, it runs that command instead, as a harness acting as the
    owner's browser does on a local stack. It reads its clock before it asks and after the owner
    answers: the removal was made between the two. Re-adding the person is the owner's own act.
-9. It waits for the public run to end, downloads its artifacts `outside-agent-public`,
-   `outside-edge-revocations` and `restricted-sweep`, stops the sweep's writer, and runs row T4.
+9. It waits for the public run to end, at most two hours (the workflow's budget is 115 minutes;
+   a run not ended by then reads as no end, and the public row UNKNOWN), downloads its artifacts
+   `outside-agent-public`, `outside-edge-revocations` and `restricted-sweep`, stops the sweep's
+   writer, and runs row T4. The wait for the T5 window to open is held to an hour alike.
 10. It judges T5 from the public leg's T5 rows and the removal's two clocks, prints rows P1-P10,
     the public leg's own last word and the sweep, reads the pins and Dispatch's serving build again
     (row `pins-end`), and prints the gate.
@@ -242,7 +255,7 @@ shim finds its program through the caller's HOME.
 
 | Row | It passes when |
 | --- | --- |
-| pins | The broker's image was built from a commit that holds `OUTSIDE_ENROLL_REFUSAL_COMMIT`; Dispatch's `/healthz` names its pin's commit as both `commit` and `fleet_commit`; and that build holds each commit of `OUTSIDE_DISPATCH_COMMITS`. A build that lacks one reads FAIL; a Dispatch that serves another build than its pin, or is half rolled out, reads UNKNOWN; either way no leg starts. |
+| pins | `OUTSIDE_ENROLL_REFUSAL_COMMIT` and each word of `OUTSIDE_DISPATCH_COMMITS` are whole 40-character commit ids, and the list names at least one (else UNKNOWN). The broker's image was built from a commit that holds `OUTSIDE_ENROLL_REFUSAL_COMMIT`; Dispatch's `/healthz` names its pin's commit as both `commit` and `fleet_commit`; and that build holds each commit of `OUTSIDE_DISPATCH_COMMITS`. A build that lacks one reads FAIL; a Dispatch that serves another build than its pin, or is half rolled out, reads UNKNOWN; either way no leg starts. |
 | issue | An issue of the project names `OUTSIDE_REPOSITORY`. |
 | T1 | The scratch helper's machine login completes. Its machine file holds a credential, and `agent-secrets machine list` names the test person as its approver. `agent-secrets whoami` cannot show this: it reads an enrolled session, and T2 shows that the test person's login enrolls none. A login that ends `expired`, a code nobody approved, reads UNKNOWN: the public leg never approved it, which is a missing step, not a crossing. |
 | T2 | `agent-secrets register` through the scratch helper is refused `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, by that code and no other, and the canary asked for through it gets no value, its session refused by that same code. A canary that gets no value for another reason, such as a requesters list on the secret that names someone else, reads FAIL: it says nothing of the member kind. |
@@ -254,7 +267,9 @@ shim finds its program through the caller's HOME.
 | pins-end | The pins read again at the end, from `OUTSIDE_PINS_REPO`'s main, are those read at the start, and Dispatch still serves the build it served at the start, on every process. A pin that moved between the legs, or a Dispatch build that changed, reads UNKNOWN: the rows ran against builds the start did not check. Without `OUTSIDE_PINS_REPO` it reads UNKNOWN. |
 | gate | Every row above passes. |
 
-The tailnet leg holds a public row to what it saw beside it. P4 reads UNKNOWN when the peer did not
+The tailnet leg reads a row the public TSV holds more than once as the worst of them: FAIL, then
+any word but PASS, then PASS, so a later PASS never hides an earlier FAIL. It holds a public row to
+what it saw beside it. P4 reads UNKNOWN when the peer did not
 start. A PASS of P4 also needs the peer's own side: the peer was shown the ping and the reply within
 10 s of their stamps, read from its transcript (or the scripted peer's log); not seen there, it
 reads UNKNOWN. A PASS of P5 reads UNKNOWN when the issue row did not pass. A PASS of P6 reads
