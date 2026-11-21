@@ -149,6 +149,9 @@ type outboxDispatch struct {
 func (d *outboxDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *outboxDispatch) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *outboxDispatch) GetIssue(context.Context, string) (dispatch.Issue, error) {
 	return d.issue, d.getErr
 }

@@ -125,7 +125,7 @@ func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string,
 	parents := StartedParents(issues, facts.Owed)
 	both := slices.Concat(candidates, parents)
 	slices.Sort(both)
-	children, err := store.DispatchChildren(ctx, tx, project, slices.Compact(both))
+	children, err := store.DispatchChildren(ctx, tx, slices.Compact(both))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -201,8 +201,8 @@ func withoutHeldUnderAccepted(waits map[string]ChildWait, records map[string]Iss
 // ChildOpen says whether one Dispatch child of a parent still holds that parent's phase starts:
 // its own first phase (ChildWaits) and, once its phases started, every later one
 // (LineFacts.StartedParentWaits). It is read over two sources and no others: the status Dispatch
-// shows the child in, from the daemon's mirror of the project's issues, and the daemon's own
-// record of the child, nil when it has never recorded one.
+// shows the child in, from the daemon's mirror of Dispatch's issues, and the daemon's own record
+// of the child, nil when it has never recorded one, as for every child of another project.
 //
 //	| Dispatch status of the child       | daemon record of the child                                   | open? |
 //	| ---------------------------------- | ------------------------------------------------------------ | ----- |
@@ -263,11 +263,12 @@ func ChildOpen(child DispatchIssueRow, recorded *Issue) bool {
 // controller tick both read Dispatch again and write each value a newer reading shows.
 //
 // The wait is only as complete as the mirror is. A child in backlog or triage that the daemon has
-// never recorded reaches the mirror only from a Dispatch listing of the whole project — the boot
-// read and the controller tick's re-read — because the daemon consumes the events of its own
-// project's issues and such a child has none it has applied. So a daemon that has not listed
-// since the child was filed does not see it, and the children-first wait is complete only from
-// the first boot listing after the child exists.
+// never recorded reaches the mirror only from a read of Dispatch — the boot listing, and the
+// controller tick's re-read, which lists the children of each such parent in every project —
+// because the daemon consumes the events of its own project's issues and such a child has none
+// it has applied; a child of another project has none it ever applies. So a daemon that has not
+// read since the child was filed does not see it, and the children-first wait is complete only
+// from the first such read after the child exists.
 //
 // above is the records of the issues over the pass's own that it leaves out (LineFacts.Parents),
 // so that the cycle's own walk of the parent chain crosses an ancestor already done: it is the

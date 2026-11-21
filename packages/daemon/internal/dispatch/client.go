@@ -43,7 +43,20 @@ func New(baseURL, token string) *HTTPClient {
 func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []string) ([]IssueSummary, error) {
 	query := url.Values{}
 	query.Set("project", project)
+	return c.listIssues(ctx, query, statuses)
+}
 
+// ListChildren reads GET /api/v1/issues?parent=<parent> with no project: every issue whose
+// Dispatch parent is parent, in any project, in Dispatch's order.
+func (c *HTTPClient) ListChildren(ctx context.Context, parent string) ([]IssueSummary, error) {
+	query := url.Values{}
+	query.Set("parent", parent)
+	return c.listIssues(ctx, query, nil)
+}
+
+// listIssues reads GET /api/v1/issues with query, and keeps the summaries whose status is one of
+// statuses, all of them for none, in Dispatch's order.
+func (c *HTTPClient) listIssues(ctx context.Context, query url.Values, statuses []string) ([]IssueSummary, error) {
 	var response []issueSummaryResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/issues?"+query.Encode(), nil, &response); err != nil {
 		return nil, err

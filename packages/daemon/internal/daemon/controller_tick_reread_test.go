@@ -244,6 +244,30 @@ func (d *tickDispatch) ListIssues(context.Context, string, []string) ([]dispatch
 	return d.summaries, nil
 }
 
+// ListChildren answers the children of parent among the summaries, as Dispatch's list of an
+// issue's children in every project would: the turn's list of a parent's children
+// (workflowRuntime.readObserved), counted by no listing.
+func (d *tickDispatch) ListChildren(_ context.Context, parent string) ([]dispatch.IssueSummary, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.err != nil {
+		return nil, d.err
+	}
+	return childrenIn(d.summaries, parent), nil
+}
+
+// childrenIn is the summaries whose Dispatch parent is parent, in their order: what a fake that
+// holds a listing answers for Dispatch's list of an issue's children.
+func childrenIn(summaries []dispatch.IssueSummary, parent string) []dispatch.IssueSummary {
+	var children []dispatch.IssueSummary
+	for _, summary := range summaries {
+		if summary.Parent != nil && *summary.Parent == parent {
+			children = append(children, summary)
+		}
+	}
+	return children
+}
+
 // asked is the keys the turn read one at a time, in the order it asked for them.
 func (d *tickDispatch) asked() []string {
 	d.mu.Lock()
@@ -308,19 +332,26 @@ func tickRecords() record.Store {
 	return projectRecords{Store: record.NewStore(), project: "CAPTURE"}
 }
 
-// tickRuntime is a runtime whose turn reads client, with the production handler chain — the
-// mirror first, then the two handlers that judge from its rows — and one admission slot.
+// tickRuntime is a runtime of project CAPTURE whose turn reads client, with the production
+// handler chain — the mirror first, then the two handlers that judge from its rows — and one
+// admission slot.
 func tickRuntime(t *testing.T, pool *store.Pool, client dispatch.Client) *workflowRuntime {
 	t.Helper()
+	return tickRuntimeIn(t, pool, client, "CAPTURE")
+}
+
+// tickRuntimeIn is tickRuntime for the daemon of project.
+func tickRuntimeIn(t *testing.T, pool *store.Pool, client dispatch.Client, project string) *workflowRuntime {
+	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	records := tickRecords()
-	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
-	admission := admit.New(records, engine, 1, "CAPTURE", log)
+	records := record.Store(projectRecords{Store: record.NewStore(), project: project})
+	engine := workflow.New(records, workflow.Config{Project: project, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
+	admission := admit.New(records, engine, 1, project, log)
 	return &workflowRuntime{
 		pool: pool, records: records, admission: admission,
-		handlers:        []intake.Handler{blockers.NewMirror(records, "CAPTURE"), engine, admission},
+		handlers:        []intake.Handler{blockers.NewMirror(records, project), engine, admission},
 		dispatch:        client,
-		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
+		dispatchProject: project, bootID: "test-boot", log: log,
 	}
 }
 

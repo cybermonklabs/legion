@@ -253,6 +253,9 @@ type pilotDispatch struct {
 func (d *pilotDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return d.summaries, nil
 }
+func (d *pilotDispatch) ListChildren(_ context.Context, parent string) ([]dispatch.IssueSummary, error) {
+	return childrenIn(d.summaries, parent), nil
+}
 func (d *pilotDispatch) GetIssue(context.Context, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
@@ -319,6 +322,9 @@ func (d *filteringDispatch) ListIssues(_ context.Context, _ string, statuses []s
 		}
 	}
 	return filtered, nil
+}
+func (d *filteringDispatch) ListChildren(_ context.Context, parent string) ([]dispatch.IssueSummary, error) {
+	return childrenIn(d.summaries, parent), nil
 }
 func (d *filteringDispatch) GetIssue(context.Context, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil

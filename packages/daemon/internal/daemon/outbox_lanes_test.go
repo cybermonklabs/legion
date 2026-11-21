@@ -156,6 +156,9 @@ type postingDispatch struct {
 func (d *postingDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *postingDispatch) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *postingDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	return dispatch.Issue{Key: key}, nil
 }
@@ -230,6 +233,9 @@ type laneBoard struct {
 }
 
 func (d *laneBoard) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
+func (d *laneBoard) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
 func (d *laneBoard) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {

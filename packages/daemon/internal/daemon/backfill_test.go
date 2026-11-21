@@ -26,6 +26,10 @@ func (d *listingDispatch) ListIssues(context.Context, string, []string) ([]dispa
 	return d.summaries, nil
 }
 
+func (d *listingDispatch) ListChildren(_ context.Context, parent string) ([]dispatch.IssueSummary, error) {
+	return childrenIn(d.summaries, parent), nil
+}
+
 // A record written before the record carried the issue's repository is filled at boot from the
 // repository Dispatch resolves the issue to and that repository's default branch, GitHub read once
 // per repository. A record Dispatch resolves to none is left as it is, and the issue and the cause

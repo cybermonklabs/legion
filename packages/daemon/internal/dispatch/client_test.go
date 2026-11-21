@@ -57,6 +57,34 @@ func TestListIssuesFiltersStatusesWithoutChangingDispatchOrder(t *testing.T) {
 	}
 }
 
+// A parent's children are read with the parent alone and no project, so Dispatch answers them in
+// every project, and each summary is decoded as the project listing decodes one.
+func TestListChildrenAsksForTheParentInEveryProject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
+			t.Fatalf("request = %s %s, want GET /api/v1/issues", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query(); got.Get("parent") != "LEGION-1" || got.Has("project") {
+			t.Fatalf("query = %q, want parent LEGION-1 and no project", r.URL.RawQuery)
+		}
+		assertBearer(t, r)
+		writeJSON(t, w, []map[string]any{
+			{"key": "LEGION-2", "title": "Own child", "status": "todo", "rank": "a", "parent": "LEGION-1", "labels": []string{"legion"}},
+			{"key": "OTHR-5", "title": "Child of another project", "status": "in_progress", "rank": "b", "parent": "LEGION-1", "last_seq": 7},
+		})
+	}))
+	defer server.Close()
+
+	children, err := New(server.URL, dispatchToken).ListChildren(context.Background(), "LEGION-1")
+	if err != nil {
+		t.Fatalf("list children: %v", err)
+	}
+	if len(children) != 2 || children[0].Key != "LEGION-2" || !children[0].HandedOver || children[1].Key != "OTHR-5" ||
+		children[1].Status != "in_progress" || children[1].Parent == nil || *children[1].Parent != "LEGION-1" || children[1].LastSeq != 7 {
+		t.Fatalf("children = %#v, want LEGION-2 handed over and OTHR-5 in_progress under LEGION-1 at 7, in Dispatch's order", children)
+	}
+}
+
 // release_children reads a child from the project's listing when Dispatch's detail read of it
 // fails, as the summary made an Issue (api's cachedIssueReader), and the copy of Dispatch's issues
 // takes that Issue as a reading of all five values: the Issue keeps the labels the listing showed,

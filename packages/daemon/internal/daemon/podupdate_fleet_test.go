@@ -443,6 +443,9 @@ func (d *fleetHandoffs) Handoff(_ context.Context, id string) (dispatch.Handoff,
 func (d *fleetHandoffs) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *fleetHandoffs) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *fleetHandoffs) GetIssue(context.Context, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }

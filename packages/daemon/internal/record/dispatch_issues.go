@@ -159,9 +159,8 @@ func (s *Postgres) DispatchIssues(ctx context.Context, tx pgx.Tx, project string
 // since an issue may wait on an issue of another project and a blocker whose row the judgement
 // cannot read counts as unfinished for ever (blockers.Blocked), which would hold its slot back
 // for good. The table is keyed by the issue alone, so a key names one row and project is the
-// row's own. DispatchIssues and DispatchChildren keep their project term: the first is the
-// daemon's listing of its own project, and a parent link cannot cross a project, so a child of
-// one is of that project too.
+// row's own. DispatchIssues keeps its project term, since it is the daemon's listing of its own
+// project; DispatchChildren names no project either, since a parent's children may be of any.
 func (s *Postgres) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []string) ([]DispatchIssueRow, error) {
 	if len(keys) == 0 {
 		return nil, nil
@@ -178,20 +177,23 @@ func (s *Postgres) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []strin
 	return mirrored, nil
 }
 
-// DispatchChildren groups the mirror's children of each of parents under the parent they name. A
-// later step reads it to decide whether a parent's own first phase waits for a child of its own
-// that is still open, which is a question about every child Dispatch knows of, recorded here or
-// not, so it is the mirror that answers it rather than the daemon's records.
-func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project string, parents []string) (map[string][]DispatchIssueRow, error) {
+// DispatchChildren groups the mirror's children of each of parents under the parent they name, in
+// every project. A later step reads it to decide whether a parent's own first phase waits for a
+// child of its own that is still open, which is a question about every child Dispatch knows of,
+// recorded here or not, so it is the mirror that answers it rather than the daemon's records. A
+// child of another project is a child as well: Dispatch takes a parent of any project, the
+// controller tick writes such a child's row under its own project (workflowRuntime.readObserved),
+// and the parent waits for it as for a child of its own (ChildOpen).
+func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, parents []string) (map[string][]DispatchIssueRow, error) {
 	children := make(map[string][]DispatchIssueRow, len(parents))
 	if len(parents) == 0 {
 		return children, nil
 	}
 	mirrored, err := queryDispatchIssues(ctx, tx, `select i.key, i.project, i.status, i.blockers, i.dispatch_seq, coalesce(c.claimed_by, ''), coalesce(c.claim_seq, 0), coalesce(i.parent, ''), i.labels, i.rank
 		from dispatch_issues i left join dispatch_claims c on c.key = i.key
-		where i.project = $1 and i.parent = any($2) order by i.key`, project, parents)
+		where i.parent = any($1) order by i.key`, parents)
 	if err != nil {
-		return nil, fmt.Errorf("read the Dispatch children of %v in %s: %w", parents, project, err)
+		return nil, fmt.Errorf("read the Dispatch children of %v: %w", parents, err)
 	}
 	for _, row := range mirrored {
 		children[row.Parent] = append(children[row.Parent], row)
@@ -199,13 +201,12 @@ func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project stri
 	return children, nil
 }
 
-// HasDispatchChildren answers whether the mirror holds a child of parent, with the project term
-// DispatchChildren keeps, in one exists query.
-func (s *Postgres) HasDispatchChildren(ctx context.Context, tx pgx.Tx, project, parent string) (bool, error) {
+// HasDispatchChildren answers whether the mirror holds a child of parent, in any project as
+// DispatchChildren reads them, in one exists query.
+func (s *Postgres) HasDispatchChildren(ctx context.Context, tx pgx.Tx, parent string) (bool, error) {
 	var has bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from dispatch_issues where project = $1 and parent = $2)`,
-		project, parent).Scan(&has); err != nil {
-		return false, fmt.Errorf("read whether %s has a Dispatch child in %s: %w", parent, project, err)
+	if err := tx.QueryRow(ctx, `select exists (select 1 from dispatch_issues where parent = $1)`, parent).Scan(&has); err != nil {
+		return false, fmt.Errorf("read whether %s has a Dispatch child: %w", parent, err)
 	}
 	return has, nil
 }

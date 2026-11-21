@@ -2045,15 +2045,15 @@ type Store interface {
 	// wait on an issue of another project and a blocker whose row the judgement cannot read
 	// counts as unfinished for ever.
 	DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []string) ([]DispatchIssueRow, error)
-	// DispatchChildren is every mirrored issue of the Dispatch project key project whose parent is
-	// one of parents, grouped by parent and in key order within each group; a parent with no
-	// children has no entry, and no parents reads nothing. A later step reads it to decide whether
-	// a parent's own first phase waits for a child of its own that is still open.
-	DispatchChildren(ctx context.Context, tx pgx.Tx, project string, parents []string) (map[string][]DispatchIssueRow, error)
-	// HasDispatchChildren is whether the mirror holds an issue of the Dispatch project key project
-	// whose parent is parent, of any status: one row's existence, read without the rows
-	// themselves (DispatchChildren reads them).
-	HasDispatchChildren(ctx context.Context, tx pgx.Tx, project, parent string) (bool, error)
+	// DispatchChildren is every mirrored issue, of any Dispatch project, whose parent is one of
+	// parents, grouped by parent and in key order within each group; a parent with no children has
+	// no entry, and no parents reads nothing. A later step reads it to decide whether a parent's
+	// own first phase waits for a child of its own that is still open.
+	DispatchChildren(ctx context.Context, tx pgx.Tx, parents []string) (map[string][]DispatchIssueRow, error)
+	// HasDispatchChildren is whether the mirror holds an issue, of any Dispatch project, whose
+	// parent is parent, of any status: one row's existence, read without the rows themselves
+	// (DispatchChildren reads them).
+	HasDispatchChildren(ctx context.Context, tx pgx.Tx, parent string) (bool, error)
 	// DispatchClaim is who the claims mirror shows holding key's claim (`<kind>:<id>`, "" for
 	// nobody), "" when it holds no claim of key. It reads the claim alone (PutDispatchClaim), with
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is

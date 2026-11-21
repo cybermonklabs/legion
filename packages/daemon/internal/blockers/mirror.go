@@ -73,9 +73,10 @@ func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 			// The release's read carries the child's status, blockers and parent, so its reading
 			// carries those and leaves every other value as the copy holds it. The parent is among
 			// them because the children-first rule (record.ChildWaitsOf) reads the child under the
-			// parent that read showed. The project is this daemon's, since a parent link never
-			// crosses a project and the release adopts the children of a root of its own; a row
-			// written under no project would drop out of every project's read of its children.
+			// parent that read showed. The project is this daemon's, since the release adopts only
+			// issues of its own project (api's releasableChild ends a chain before an ancestor of
+			// another project); a row written under no project would drop out of every project's
+			// read of its children.
 			reading := record.DispatchReading{Key: child.Issue, Project: m.project, Seq: child.Seq,
 				Status: record.Carry(child.Status), Parent: record.Carry(child.Parent), Blockers: record.Carry(child.BlockedBy)}
 			if err := m.put(ctx, tx, reading); err != nil {

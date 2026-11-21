@@ -2172,7 +2172,7 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 // (acceptanceHeld), and nil for one to read it only when Dispatch shows a child under issue at
 // all, which is what the guard on every phase start reads (childrenHolding).
 func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue, members []record.Issue) ([]record.OpenChild, error) {
-	mirrored, err := e.store.DispatchChildren(ctx, tx, e.cfg.Project, []string{issue.Key})
+	mirrored, err := e.store.DispatchChildren(ctx, tx, []string{issue.Key})
 	if err != nil {
 		return nil, err
 	}
@@ -2200,7 +2200,7 @@ func (e *Engine) testingParent(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if issue.Phase != phase.Testing {
 		return false, nil
 	}
-	return e.store.HasDispatchChildren(ctx, tx, e.cfg.Project, issue.Key)
+	return e.store.HasDispatchChildren(ctx, tx, issue.Key)
 }
 
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to

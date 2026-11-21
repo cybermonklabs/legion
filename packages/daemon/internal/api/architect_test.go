@@ -135,6 +135,27 @@ func (r *statusRecorder) ListIssues(context.Context, string, []string) ([]dispat
 	return summaries, nil
 }
 
+// ListChildren answers Dispatch's list of an issue's children in every project: every issue the
+// fake knows whose parent is parent, in key order. No route of the daemon's API reads it, so it
+// records no read.
+func (r *statusRecorder) ListChildren(_ context.Context, parent string) ([]dispatch.IssueSummary, error) {
+	keys := make([]string, 0, len(r.issues))
+	for key, issue := range r.issues {
+		if issue.Parent != nil && *issue.Parent == parent {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	children := make([]dispatch.IssueSummary, 0, len(keys))
+	for _, key := range keys {
+		issue := r.issues[key]
+		children = append(children, dispatch.IssueSummary{Key: issue.Key, Title: issue.Title, Status: issue.Status, Parent: issue.Parent, Rank: issue.Rank,
+			HandedOver: issue.HandedOver, LastSeq: issue.LastSeq, ResolvedRepo: issue.ResolvedRepo, BlockedBy: issue.BlockedBy,
+			ClaimedBy: issue.Claim.Holder(), ClaimUnread: issue.ClaimUnread})
+	}
+	return children, nil
+}
+
 func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	r.reads = append(r.reads, "issue:"+key)
 	if err, fails := r.readFails[key]; fails {

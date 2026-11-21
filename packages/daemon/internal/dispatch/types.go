@@ -14,6 +14,10 @@ import (
 // writes the daemon owns; callers preserve the order ListIssues returns when deciding admission.
 type Client interface {
 	ListIssues(ctx context.Context, project string, statuses []string) ([]IssueSummary, error)
+	// ListChildren is every issue whose Dispatch parent is parent, in any project, as summaries in
+	// Dispatch's order: a parent's children are not all of its own project, and the project
+	// listing names none of another. A summary carries no project; its key names it.
+	ListChildren(ctx context.Context, parent string) ([]IssueSummary, error)
 	GetIssue(ctx context.Context, key string) (Issue, error)
 	SetStatus(ctx context.Context, key, status string) (Issue, error)
 	// SetStatusAt is SetStatus on the issue's sequence as the caller read it, so a change Dispatch

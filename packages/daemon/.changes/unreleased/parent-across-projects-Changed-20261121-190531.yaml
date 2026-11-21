@@ -1,0 +1,5 @@
+kind: Changed
+body: 'A parent counts its Dispatch children of other projects. At each controller tick the daemon lists the children of each issue whose phases have started, and of each issue whose first phase waits on its children, in every project (`GET /api/v1/issues?parent=KEY`, one request for each such issue), and it reads each child of another project once. The copy of Dispatch''s issues stores such a child under the child''s own project. The children-first hold, `awaiting_children` and the acceptance hold count the child as open while it is in any status but `done` or `icebox`. A close, a move to `icebox` or a move to another parent is seen at the next tick. When the list fails, the tick logs one warning for each issue whose children it did not read, and nothing else changes.'
+time: 2026-11-21T19:05:31.648088293Z
+custom:
+    Issue: parent-across-projects

@@ -242,6 +242,9 @@ type blockingDispatch struct {
 func (d *blockingDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *blockingDispatch) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *blockingDispatch) GetIssue(context.Context, string) (dispatch.Issue, error) {
 	return d.issue, nil
 }
@@ -440,6 +443,9 @@ type refusingDispatch struct {
 func (d *refusingDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
+func (d *refusingDispatch) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
 func (d *refusingDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	d.reads++
 	return dispatch.Issue{Key: key, Status: d.status}, nil
@@ -500,6 +506,9 @@ type boardDispatch struct {
 }
 
 func (d *boardDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
+	return nil, nil
+}
+func (d *boardDispatch) ListChildren(context.Context, string) ([]dispatch.IssueSummary, error) {
 	return nil, nil
 }
 func (d *boardDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {

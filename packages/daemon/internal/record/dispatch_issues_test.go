@@ -103,7 +103,7 @@ func TestTheCopyChangesOnlyOnANewerReading(t *testing.T) {
 				put(tx, 100, tc.none, false)
 				holds(tx, "a reading at 100 carrying none", tc.v1, 100)
 				if tc.value == "parent" {
-					children, err := records.DispatchChildren(t.Context(), tx, "LEGION", []string{"LEGION-801"})
+					children, err := records.DispatchChildren(t.Context(), tx, []string{"LEGION-801"})
 					must(t, err)
 					if got := children["LEGION-801"]; len(got) != 1 || got[0].Key != key {
 						t.Fatalf("the children of LEGION-801 after the readings at 100 = %#v, want %s alone", got, key)
@@ -174,10 +174,36 @@ func TestAnEqualReadingChangesNoValueItWrote(t *testing.T) {
 		if got, seq := parent(tx); got != "null" || seq != 100 {
 			t.Fatalf("after a reading at 100 carrying LEGION-800 the parent = %s at %d, want null at 100", got, seq)
 		}
-		children, err := records.DispatchChildren(t.Context(), tx, "LEGION", []string{"LEGION-800"})
+		children, err := records.DispatchChildren(t.Context(), tx, []string{"LEGION-800"})
 		must(t, err)
 		if len(children["LEGION-800"]) != 0 {
 			t.Fatalf("the children of LEGION-800 = %#v, want none", children)
+		}
+	})
+}
+
+// A parent's children in the copy are its children in every project: a child of another project
+// is a row of that project, written by the controller tick's read of it, and the parent waits for
+// it as for a child of its own (ChildOpen). So DispatchChildren and HasDispatchChildren read the
+// parent column alone, whatever project the child is in.
+func TestDispatchChildrenReadsEveryProject(t *testing.T) {
+	st := migratedStore(t)
+	records := NewStore()
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutDispatchIssue(t.Context(), tx, DispatchReading{Key: "LEGION-1", Project: "LEGION", Seq: 1,
+			Status: Carry("in_progress"), Parent: Carry(""), Blockers: Carry[[]string](nil)}))
+		must(t, records.PutDispatchIssue(t.Context(), tx, DispatchReading{Key: "OTHR-5", Project: "OTHR", Seq: 3,
+			Status: Carry("in_progress"), Parent: Carry("LEGION-1"), Blockers: Carry[[]string](nil)}))
+
+		children, err := records.DispatchChildren(t.Context(), tx, []string{"LEGION-1"})
+		must(t, err)
+		if got := children["LEGION-1"]; len(got) != 1 || got[0].Key != "OTHR-5" || got[0].Project != "OTHR" {
+			t.Fatalf("the children of LEGION-1 = %#v, want OTHR-5 of project OTHR alone", got)
+		}
+		has, err := records.HasDispatchChildren(t.Context(), tx, "LEGION-1")
+		must(t, err)
+		if !has {
+			t.Fatal("HasDispatchChildren(LEGION-1) = false, want true: OTHR-5 is its child")
 		}
 	})
 }
@@ -475,10 +501,9 @@ func TestTakingARefillMarkEmptiesOnlyThatProjectsRowsOnce(t *testing.T) {
 	})
 }
 
-// The copy has an index on its parent column. A parent's children are read by it
-// (DispatchChildren, `where project = $1 and parent = any($2)`), and a parent link never crosses a
-// project, so the column alone serves that read; a walk up a chain reads by key, which the primary
-// key serves.
+// The copy has an index on its parent column. A parent's children, in every project, are read by
+// it (DispatchChildren, `where parent = any($1)`), so the column alone serves that read; a walk up
+// a chain reads by key, which the primary key serves.
 func TestTheCopyIndexesItsParentColumn(t *testing.T) {
 	st := migratedStore(t)
 	inTx(t, st, func(tx pgx.Tx) {

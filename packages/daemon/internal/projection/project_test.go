@@ -119,7 +119,7 @@ func (s projectionStore) DispatchIssuesOf(_ context.Context, _ pgx.Tx, keys []st
 // DispatchChildren groups the mirror's rows under the parent each names, as the real store does:
 // the children-first judgement reads it for every issue whose own first phase has not started
 // (record.ChildWaitsOf).
-func (s projectionStore) DispatchChildren(_ context.Context, _ pgx.Tx, _ string, parents []string) (map[string][]record.DispatchIssueRow, error) {
+func (s projectionStore) DispatchChildren(_ context.Context, _ pgx.Tx, parents []string) (map[string][]record.DispatchIssueRow, error) {
 	children := make(map[string][]record.DispatchIssueRow, len(parents))
 	for _, row := range s.mirror {
 		if row.Parent != "" && slices.Contains(parents, row.Parent) {
