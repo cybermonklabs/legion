@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,19 +91,30 @@ func (k *kubectlSource) args(args ...string) []string {
 // inClusterContext names the cluster a pod reads through its ServiceAccount, with no kubeconfig.
 const inClusterContext = "in-cluster"
 
+// serviceAccountCA is where a pod holds its cluster's CA certificate beside its ServiceAccount's
+// token, which client-go's in-cluster configuration reads (k8s.io/client-go/rest, InClusterConfig).
+var serviceAccountCA = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
 // Cluster reads the context kubectl reads through, the one given or its kubeconfig's current one,
 // and that context's API server, from `kubectl config view --minify`, which keeps that context and
-// its cluster alone and reads no object of the cluster. In a pod with no kubeconfig, as the
-// operator's Job runs, kubectl reads the cluster through the pod's ServiceAccount (client-go's
-// in-cluster configuration), and `config view --minify` fails, having no current context: with no
-// context given, and KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT set, as the kubelet sets
-// them in every pod, the cluster is in-cluster, at that address.
+// its cluster alone and reads no object of the cluster; and the digest of that cluster's CA
+// certificate (caDigest) from its certificate-authority-data, which `--flatten` gives for a CA held
+// as data or as a file, and a jsonpath of that field alone keeps the user's credentials out of
+// kubectl's output. In a pod with no kubeconfig, as the operator's Job runs, kubectl reads the
+// cluster through the pod's ServiceAccount (client-go's in-cluster configuration), and `config
+// view --minify` fails, having no current context: with no context given, and
+// KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT set, as the kubelet sets them in every pod,
+// the cluster is in-cluster, at that address, with the digest of the pod's ServiceAccount CA.
 func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 	out, err := k.kubectl(ctx, "config", "view", "--minify", "--output", "json")
 	if err != nil {
 		host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 		if k.Context == "" && host != "" && port != "" {
-			return Cluster{Context: inClusterContext, Server: "https://" + net.JoinHostPort(host, port)}, nil
+			ca, caErr := os.ReadFile(serviceAccountCA)
+			if caErr != nil && !errors.Is(caErr, os.ErrNotExist) {
+				return Cluster{}, fmt.Errorf("read the pod's ServiceAccount CA certificate: %w", caErr)
+			}
+			return Cluster{Context: inClusterContext, Server: "https://" + net.JoinHostPort(host, port), CA: caDigest(ca)}, nil
 		}
 		return Cluster{}, err
 	}
@@ -118,7 +132,27 @@ func (k *kubectlSource) Cluster(ctx context.Context) (Cluster, error) {
 	if config.CurrentContext == "" || len(config.Clusters) != 1 || config.Clusters[0].Cluster.Server == "" {
 		return Cluster{}, errors.New("kubectl's configuration names no context with one cluster and its server")
 	}
-	return Cluster{Context: config.CurrentContext, Server: config.Clusters[0].Cluster.Server}, nil
+	data, err := k.kubectl(ctx, "config", "view", "--minify", "--flatten", "--output", "jsonpath={.clusters[0].cluster.certificate-authority-data}")
+	if err != nil {
+		return Cluster{}, err
+	}
+	ca, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
+	if err != nil {
+		return Cluster{}, fmt.Errorf("decode the cluster's certificate-authority-data: %w", err)
+	}
+	return Cluster{Context: config.CurrentContext, Server: config.Clusters[0].Cluster.Server, CA: caDigest(ca)}, nil
+}
+
+// caDigest is the SHA-256, in hex, of a CA certificate's bytes as the client holds them, or empty
+// when it holds none: a pod whose ServiceAccount has no CA, or a context with no
+// certificate-authority, which trusts the system's roots or skips verification. Those bytes are
+// public; the digest is what the record keeps of them.
+func caDigest(ca []byte) string {
+	if len(ca) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(ca)
+	return hex.EncodeToString(sum[:])
 }
 
 // Pods reads the StatefulSet's replica count and the state of its latest roll, and then each of its

@@ -94,10 +94,14 @@ type Source interface {
 	Close() error
 }
 
-// Cluster is the kubeconfig context a source reads through, and the API server of its cluster.
+// Cluster is the kubeconfig context a source reads through, the API server of its cluster, and the
+// SHA-256, in hex, of that cluster's CA certificate as the client holds it, empty when it holds
+// none. Two clusters can share a context's name and server, and in a pod the in-cluster address is
+// the `kubernetes` Service's, which clusters of a kind can share; their CAs differ.
 type Cluster struct {
 	Context string `json:"context"`
 	Server  string `json:"server"`
+	CA      string `json:"caSHA256"`
 }
 
 // Record is what `routes record` saves: the hub it read, through which context of which cluster,

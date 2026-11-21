@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,8 +27,23 @@ import (
 	"github.com/sjawhar/envoy/infra/routes"
 )
 
+// exampleCA and otherCA are two clusters' CA certificates, as a client holds them, PEM. Neither is a
+// valid certificate: the Source hashes the bytes and parses nothing.
+const (
+	exampleCA = "-----BEGIN CERTIFICATE-----\nMIIBexampleCA\n-----END CERTIFICATE-----\n"
+	otherCA   = "-----BEGIN CERTIFICATE-----\nMIIBotherCA\n-----END CERTIFICATE-----\n"
+)
+
+// caDigest is the SHA-256 of a CA certificate's bytes, in hex, as a record holds it.
+func caDigest(pem string) string {
+	sum := sha256.Sum256([]byte(pem))
+	return hex.EncodeToString(sum[:])
+}
+
 // fakeKubectl is a kubectl that answers from the files in $FAKE_KUBECTL_DIR, as the commands
-// OpenKubectl's Source runs: `config view --minify`, `get statefulset`, `get pod <name>`, `port-forward pod/<name> ...
+// OpenKubectl's Source runs: `config view --minify`, from config.json, and with `--flatten` and the
+// jsonpath of the cluster's certificate-authority-data, from ca.b64, each failing as kubectl does
+// with no kubeconfig when config.json is absent; `get statefulset`, `get pod <name>`, `port-forward pod/<name> ...
 // :<port>`, which writes its PID to pid-<name>-<port>, then prints the local port in
 // port-<name>-<port> and runs until killed, and `logs pod/<name> --container nats --timestamps`.
 // It appends every command line it is given to calls, and refuses any other. It cuts its arguments
@@ -40,6 +58,8 @@ printf '%s\n' "$args" >> "$dir/calls"
 case "$args" in
 *" config view --minify --output json") [ -f "$dir/config.json" ] || { echo "error: current-context must exist in order to minify" >&2; exit 1; }
   exec cat "$dir/config.json" ;;
+*" config view --minify --flatten --output jsonpath={.clusters[0].cluster.certificate-authority-data}") [ -f "$dir/config.json" ] || { echo "error: current-context must exist in order to minify" >&2; exit 1; }
+  exec cat "$dir/ca.b64" ;;
 *" get statefulset envoy-nats --output json") exec cat "$dir/statefulset.json" ;;
 *" get pod "*" --output json") pod=${args#* get pod }; pod=${pod%% *}; exec cat "$dir/pod-$pod.json" ;;
 *" port-forward pod/"*) pod=${args#* port-forward pod/}; pod=${pod%% *}; remote=${args##*:}
@@ -104,6 +124,7 @@ func fakeKubeHub(t *testing.T, h *fakeHub) (routes.Source, string) {
 	require.NoError(t, err)
 	write("statefulset.json", sts)
 	write("config.json", []byte(`{"current-context":"example-context","clusters":[{"name":"example","cluster":{"server":"https://example-context.example.invalid"}}]}`))
+	write("ca.b64", []byte(base64.StdEncoding.EncodeToString([]byte(exampleCA))))
 	for _, p := range h.pods {
 		pod, err := json.Marshal(kubePod(p.Name, p.UID, p.IP, p.Ready, int(p.RestartCount), p.StartedAt))
 		require.NoError(t, err)
@@ -190,7 +211,7 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 	require.Equal(t, routes.Clean, report.Verdict(), "findings: %v", report.Findings)
 	cluster, err := src.Cluster(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid"}, cluster)
+	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid", CA: caDigest(exampleCA)}, cluster)
 
 	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
 	require.NoError(t, err)
@@ -203,6 +224,7 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 	}
 	require.Equal(t, 6, forwards, "one port-forward per pod and port for the pass, its /varz and /routez both through the monitoring one:\n%s", calls)
 	require.Contains(t, string(calls), "--context example-context --namespace envoy config view --minify --output json\n")
+	require.Contains(t, string(calls), "--context example-context --namespace envoy config view --minify --flatten --output jsonpath={.clusters[0].cluster.certificate-authority-data}\n")
 	for _, p := range h.pods {
 		require.Contains(t, string(calls), "--context example-context --namespace envoy get pod "+p.Name+" --output json\n")
 		require.Contains(t, string(calls), "--context example-context --namespace envoy port-forward pod/"+p.Name+" --address 127.0.0.1 :8222\n")
@@ -317,6 +339,9 @@ func TestKubectlClusterInAPodWithNoKubeconfig(t *testing.T) {
 	kubectl := filepath.Join(dir, "kubectl")
 	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+	// A pod whose ServiceAccount holds no CA: the record holds none, and compares the context and
+	// server alone (TestCheckRefusesARecordOfAnotherClusterAtTheSameAddress holds one).
+	routes.SetServiceAccountCA(t, filepath.Join(t.TempDir(), "no-ca.crt"))
 	open := func(context string) routes.Source {
 		t.Helper()
 		s, err := routes.OpenKubectl(routes.Target{Namespace: "envoy", StatefulSet: "envoy-nats", Kubectl: kubectl, Context: context, MonitorPort: 8222, RoutePort: 6222})
@@ -326,7 +351,7 @@ func TestKubectlClusterInAPodWithNoKubeconfig(t *testing.T) {
 	}
 	cluster, err := open("").Cluster(ctx)
 	require.NoError(t, err)
-	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid"}, cluster,
+	require.Equal(t, routes.Cluster{Context: "example-context", Server: "https://example-context.example.invalid", CA: caDigest(exampleCA)}, cluster,
 		"control: a kubeconfig is read as before, though the in-cluster variables are set")
 
 	require.NoError(t, os.Remove(filepath.Join(dir, "config.json")))
@@ -356,6 +381,61 @@ func TestKubectlClusterInAPodWithNoKubeconfig(t *testing.T) {
 	code, _, stderr = run("check", "--record", out, "--context", "example-context")
 	require.Equal(t, 2, code, "a record taken in the pod, checked through a kubeconfig context: stderr %q", stderr)
 	require.Contains(t, stderr, `is the record taken through context "in-cluster" of the cluster at "https://10.96.0.1:443", not through context "example-context"`)
+}
+
+// Two clusters can share the address a record names: in a pod, the in-cluster name is the
+// `kubernetes` Service's address, which every cluster of a kind can share (on GKE Autopilot,
+// 34.118.224.1), and a kubeconfig context of one name and server can be pointed at another cluster.
+// Their CA certificates differ, so the record holds the SHA-256 of the cluster's CA as the client
+// holds it, the pod's ServiceAccount ca.crt or the context's certificate-authority-data, and
+// routes check refuses a record of another CA, exit 2, naming both. Control: the same CA, exit 0.
+func TestCheckRefusesARecordOfAnotherClusterAtTheSameAddress(t *testing.T) {
+	for _, inPod := range []bool{true, false} {
+		t.Run(map[bool]string{true: "in a pod, through the Service address", false: "through one context and server"}[inPod], func(t *testing.T) {
+			ctx := context.Background()
+			h := cleanHub()
+			src, dir := fakeKubeHub(t, h)
+			require.NoError(t, src.Close())
+			setCA := func(pem string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "ca.b64"), []byte(base64.StdEncoding.EncodeToString([]byte(pem))), 0o600))
+			}
+			if inPod {
+				t.Setenv("KUBERNETES_SERVICE_HOST", "34.118.224.1")
+				t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+				require.NoError(t, os.Remove(filepath.Join(dir, "config.json")))
+				caFile := filepath.Join(t.TempDir(), "ca.crt")
+				routes.SetServiceAccountCA(t, caFile)
+				setCA = func(pem string) {
+					t.Helper()
+					require.NoError(t, os.WriteFile(caFile, []byte(pem), 0o600))
+				}
+			}
+			run := func(args ...string) (int, string) {
+				t.Helper()
+				var stdout, stderr bytes.Buffer
+				code := routes.Command(ctx, append(args, "--namespace", "envoy", "--statefulset", "envoy-nats", "--kubectl", filepath.Join(dir, "kubectl")),
+					&stdout, &stderr, routes.OpenKubectl)
+				return code, stdout.String() + stderr.String()
+			}
+			out := filepath.Join(t.TempDir(), "routes.json")
+			setCA(exampleCA)
+			back := h.atEnv()
+			code, output := run("record", "--out", out)
+			back()
+			require.Equal(t, 0, code, output)
+			code, output = run("check", "--record", out)
+			require.Equal(t, 0, code, "control: the same cluster: %s", output)
+			setCA(otherCA)
+			code, output = run("check", "--record", out)
+			require.Equal(t, 2, code, "another cluster at the same address: %s", output)
+			require.Contains(t, output, "is the record of a cluster whose CA certificate has the SHA-256 "+caDigest(exampleCA)+
+				"; the cluster read now through the same context and server has "+caDigest(otherCA))
+			body, err := os.ReadFile(out)
+			require.NoError(t, err)
+			require.Contains(t, string(body), `"caSHA256": "`+caDigest(exampleCA)+`"`, "the record holds the CA's digest")
+		})
+	}
 }
 
 // OpenKubectl refuses a kubectl it cannot find, naming it, before it runs anything.

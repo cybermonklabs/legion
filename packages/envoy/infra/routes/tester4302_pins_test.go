@@ -26,7 +26,7 @@ import (
 // shows it, and the live test holds that case. Control: the same hub at routes, whose logs hold no
 // reload that loaded authorization, is recorded.
 func TestTakeRefusesOnceAuthorizationHasLoaded(t *testing.T) {
-	t.Skip("a documented limit of the record, which this change scopes and does not fix: docs/nats-hub.md:1220, Route authorization, " +
+	t.Skip("a documented limit of the record, which this change scopes and does not fix: docs/nats-hub.md, Route authorization, " +
 		"\"a record is valid only for a `secretKey` that has never been under `authorization`\", and routes record prints it " +
 		"(TestRecordThenCheck); the stronger fix, a list of the keys that were under authorization, needs a person's yes")
 	control := cleanHub()

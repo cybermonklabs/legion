@@ -15,22 +15,23 @@ import (
 const usageText = `usage: envoy-infra routes record --namespace <ns> --statefulset <name> --out <file> [--context <kubeconfig context>] [--kubectl <path>] [--route-port <port>]
        envoy-infra routes check --namespace <ns> --statefulset <name> --record <file> [--context <kubeconfig context>] [--kubectl <path>] [--monitor-port <port>] [--route-port <port>]
   record, once routeAuthorization's env stage has rolled every pod, before routes: saves each pod's
-    uid and its nats container's restart count and start, and the context and cluster it read
-    through, "in-cluster" in a pod with no kubeconfig and no --context, which reads the cluster as
-    the pod's ServiceAccount; exit 0 when recorded, 2 otherwise, and while any pod's route port
-    already requires authorization. A record is valid only for a secretKey that has never been
-    under authorization: after a rollback below authorization, or any exit 1 of check, rotate to a
-    new secretKey first.
-  check, once authorization is on every pod, through the record's context and cluster: exit 0 when
-    authorization is in force with a password and every route since it loaded joined two of the
-    hub's servers, which says nothing of any time before the record; 1 when another process held one
-    or may have been handed the password, or a log line may hold it (treat the route password as
-    read, cut its reach, rotate the password, then record and check again); 2 when it could not read
-    all it needs, when authorization is not in force, left no line of the reload that loaded it, or
-    loaded within 10 s of a pod's start, when the mesh is not whole or the servers do not hold one
-    password, when a route connection from another address named no server, was still open when the
-    log was read, or was logged in the 5 s before authorization loaded, when the log holds a line in
-    the server's form the server did not write, or when a pod changed during the check.
+    uid and its nats container's restart count and start, and the context, server and CA
+    certificate digest of the cluster it read, "in-cluster" in a pod with no kubeconfig and no
+    --context, which reads the cluster as the pod's ServiceAccount; exit 0 when recorded, 2
+    otherwise, and while any pod's route port already requires authorization. A record is valid
+    only for a secretKey that has never been under authorization: after a rollback below
+    authorization, or any exit 1 of check, rotate to a new secretKey first.
+  check, once authorization is on every pod, through the record's context, server and CA: exit 0
+    when authorization is in force with a password and every route since it loaded joined two of
+    the hub's servers, which says nothing of any time before the record; 1 when another process
+    held one or may have been handed the password, or a log line may hold it (treat the route
+    password as read, cut its reach, rotate the password, then record and check again); 2 when it
+    could not read all it needs, or the record is of another cluster, when authorization is not in
+    force, left no line of the reload that loaded it, or loaded within 10 s of a pod's start, when
+    the mesh is not whole or the servers do not hold one password, when a route connection from
+    another address named no server, was still open when the log was read, or was logged in the 5 s
+    before authorization loaded, when the log holds a line in the server's form the server did not
+    write, or when a pod changed during the check.
 `
 
 // timeout bounds a command's reads of the hub: each kubectl call, each wait for a port-forward to
@@ -172,9 +173,14 @@ func check(ctx context.Context, target Target, recordPath string, stdout, stderr
 		fmt.Fprintf(stderr, "envoy-infra routes check: which cluster it reads is not known: %v\n", err)
 		return 2
 	}
-	if cluster != rec.Cluster {
+	if cluster.Context != rec.Cluster.Context || cluster.Server != rec.Cluster.Server {
 		fmt.Fprintf(stderr, "envoy-infra routes check: %s is the record taken through context %q of the cluster at %q, not through context %q of "+
 			"the cluster at %q\n", recordPath, rec.Cluster.Context, rec.Cluster.Server, cluster.Context, cluster.Server)
+		return 2
+	}
+	if cluster.CA != rec.Cluster.CA {
+		fmt.Fprintf(stderr, "envoy-infra routes check: %s is the record of a cluster whose CA certificate has the SHA-256 %s; the cluster read now "+
+			"through the same context and server has %s, so it is another cluster\n", recordPath, displayDigest(rec.Cluster.CA), displayDigest(cluster.CA))
 		return 2
 	}
 	report := Check(ctx, src, rec)
@@ -195,6 +201,14 @@ func check(ctx context.Context, target Target, recordPath string, stdout, stderr
 			"a process named above, so it concludes nothing; fix or find what is named above and run it again")
 	}
 	return int(verdict)
+}
+
+// displayDigest is a CA digest as the check prints it: "none" for a client that held no CA.
+func displayDigest(digest string) string {
+	if digest == "" {
+		return "none"
+	}
+	return digest
 }
 
 // readRecord decodes the record at path, refusing a field it does not know and a record that
