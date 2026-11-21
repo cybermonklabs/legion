@@ -439,7 +439,12 @@ func (r *registerGateBasisLive) refusedOnAnAcceptedBasis() {
 		"spec": requirementsMarkdown("Uplink", "u1", "u2")}))
 	r.setStatus(ancestor.Key, "in_progress")
 	approved := r.approve(ancestor.PrimaryArtifactID).Version
-	accepted, err := dispatch.New(r.baseURL, r.scratch.token).SetAcceptanceStatus(t.Context(), ancestor.Key, "retro")
+	client := dispatch.New(r.baseURL, r.scratch.token)
+	read, err := client.GetIssue(t.Context(), ancestor.Key)
+	if err != nil {
+		t.Fatalf("read %s before its acceptance: %v", ancestor.Key, err)
+	}
+	accepted, err := client.SetAcceptanceStatus(t.Context(), read, "retro")
 	if err != nil || accepted.Status != "retro" {
 		t.Fatalf("the acceptance of %s, written as its daemon's sign_off writes it, = %+v, %v; want retro", ancestor.Key, accepted, err)
 	}

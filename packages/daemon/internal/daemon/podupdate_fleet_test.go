@@ -455,7 +455,7 @@ func (d *fleetHandoffs) SetStatus(context.Context, string, string) (dispatch.Iss
 func (d *fleetHandoffs) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
-func (d *fleetHandoffs) SetAcceptanceStatus(context.Context, string, string) (dispatch.Issue, error) {
+func (d *fleetHandoffs) SetAcceptanceStatus(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
 func (d *fleetHandoffs) HandOver(context.Context, dispatch.Issue, string) error    { return nil }

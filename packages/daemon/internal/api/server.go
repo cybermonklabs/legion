@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -289,16 +291,23 @@ type Options struct {
 	GateRegistrationRead func(ctx context.Context, issue string)
 	// AfterSignOffStatusWrite is told of each sign_off once its status write in Dispatch has
 	// landed and before its fact is applied: the issue it signs off, on the route's own context and
-	// goroutine, so the sign-off waits for it to return, and holding the issue's acceptance lock, so
-	// a second sign_off or close_root of the issue on this daemon waits for it too. It is a test's
-	// seam alone, to act on Dispatch and on another daemon while Dispatch shows the issue accepted
-	// and this daemon does not record it so yet; nil, the daemon's, tells no one.
+	// goroutine, so the sign-off waits for it to return, and holding the issue's lock
+	// (Options.IssueLocks), so a second sign_off or close_root of the issue and each of its status
+	// rows on this daemon wait for it too. It is a test's seam alone, to act on Dispatch and on
+	// another daemon while Dispatch shows the issue accepted and this daemon does not record it so
+	// yet; nil, the daemon's, tells no one.
 	AfterSignOffStatusWrite func(ctx context.Context, issue string)
 	// Acceptance judges sign_off and close_root as the workflow records the issue (workflow.Engine),
 	// in a read-only transaction before either route writes its status in Dispatch, so a sign-off
 	// or a close the workflow refuses writes nothing there. Nil, a server built with no workflow,
 	// judges nothing before the write, and the fact's own handlers decide.
 	Acceptance AcceptanceJudge
+	// IssueLocks is the daemon's one coordination of the writers of an issue's Dispatch status
+	// (issuelock.Locks), which the outbox's status rows and the status repair share: sign_off and
+	// close_root hold their issue's lock from their read of Dispatch until their fact commits and
+	// any write back is made (acceptStatus). Nil, a test's server, takes a set of its own, which
+	// serializes this server's acceptances alone.
+	IssueLocks *issuelock.Locks
 	// Pause is the project's pause service (internal/pause's Service), which the four pause and
 	// resume routes act through and whose flag the claim routes read to refuse a turn while the
 	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
@@ -420,9 +429,8 @@ type server struct {
 	signOffWritten func(ctx context.Context, issue string)
 	// acceptance is Options.Acceptance, nil for a server built with no workflow.
 	acceptance AcceptanceJudge
-	// acceptances holds one lock for each issue a sign_off or a close_root is under way on, from
-	// its read of Dispatch to its write back (acceptStatus).
-	acceptances issueLocks
+	// issueLocks is Options.IssueLocks, or a set of the server's own where none was given.
+	issueLocks *issuelock.Locks
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
@@ -501,6 +509,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		gateRead:           opts.GateRegistrationRead,
 		signOffWritten:     opts.AfterSignOffStatusWrite,
 		acceptance:         opts.Acceptance,
+		issueLocks:         cmp.Or(opts.IssueLocks, &issuelock.Locks{}),
 		pause:              opts.Pause,
 		readiness:          opts.Ready,
 		log:                opts.Log,

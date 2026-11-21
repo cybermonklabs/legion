@@ -289,23 +289,25 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 	}
 }
 
-// SetAcceptanceStatus is SetStatus with refuse_open_foreign_children set, and SetStatus sends no
-// such field. Dispatch's 409 FOREIGN_CHILD_OPEN comes back as an *Error naming each open child of
-// another project, which ForeignChildrenOpen reads; another refusal's issues list, of a shape of
-// its own, is not read as children and leaves its code and message standing.
+// SetAcceptanceStatus is SetStatus with refuse_open_foreign_children set, fenced on the sequence of
+// the caller's read (expected_sequence), and SetStatus sends neither field. Dispatch's 409
+// FOREIGN_CHILD_OPEN comes back as an *Error naming each open child of another project, which
+// ForeignChildrenOpen reads; another refusal's issues list, of a shape of its own, is not read as
+// children and leaves its code and message standing.
 func TestSetAcceptanceStatusAsksForTheOpenChildCheckAndReadsItsRefusal(t *testing.T) {
 	var refuse, foreignShape bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]json.RawMessage
 		decodeJSON(t, r, &body)
 		field, sent := body["refuse_open_foreign_children"]
+		sequence, fenced := body["expected_sequence"]
 		switch {
 		case string(body["status"]) == `"testing"`:
-			if sent {
-				t.Fatalf("SetStatus sent refuse_open_foreign_children %s, want no such field", field)
+			if sent || fenced {
+				t.Fatalf("SetStatus sent refuse_open_foreign_children %s and expected_sequence %s, want neither field", field, sequence)
 			}
-		case string(field) != "true" || string(body["status"]) != `"retro"`:
-			t.Fatalf("acceptance write = %v, want status retro with refuse_open_foreign_children true", body)
+		case string(field) != "true" || string(body["status"]) != `"retro"` || string(sequence) != "12":
+			t.Fatalf("acceptance write = %v, want status retro with refuse_open_foreign_children true at expected_sequence 12", body)
 		}
 		switch {
 		case refuse:
@@ -326,18 +328,19 @@ func TestSetAcceptanceStatusAsksForTheOpenChildCheckAndReadsItsRefusal(t *testin
 	if _, err := client.SetStatus(context.Background(), "LEGION-4", "testing"); err != nil {
 		t.Fatalf("set status: %v", err)
 	}
-	written, err := client.SetAcceptanceStatus(context.Background(), "LEGION-4", "retro")
+	read := Issue{Key: "LEGION-4", Status: "needs_review", LastSeq: 12}
+	written, err := client.SetAcceptanceStatus(context.Background(), read, "retro")
 	if err != nil || written.Status != "retro" || written.LastSeq != 13 {
 		t.Fatalf("acceptance write = %#v, %v; want retro at sequence 13", written, err)
 	}
 	refuse = true
-	_, err = client.SetAcceptanceStatus(context.Background(), "LEGION-4", "retro")
+	_, err = client.SetAcceptanceStatus(context.Background(), read, "retro")
 	children, open := ForeignChildrenOpen(err)
 	if !open || len(children) != 1 || children[0] != (ForeignChild{Key: "OTHR-5", Project: "OTHR", Status: "triage"}) {
 		t.Fatalf("the refused acceptance write = %v, children %#v, want FOREIGN_CHILD_OPEN naming OTHR-5 (OTHR, triage)", err, children)
 	}
 	refuse, foreignShape = false, true
-	_, err = client.SetAcceptanceStatus(context.Background(), "LEGION-4", "retro")
+	_, err = client.SetAcceptanceStatus(context.Background(), read, "retro")
 	var refusal *Error
 	if _, open := ForeignChildrenOpen(err); open || !errors.As(err, &refusal) || refusal.Code != "ISSUE_DUPLICATE" || refusal.Message != "a near duplicate" || len(refusal.Issues) != 0 {
 		t.Fatalf("another refusal carrying an issues list = %#v, want ISSUE_DUPLICATE with its message and no children", err)
