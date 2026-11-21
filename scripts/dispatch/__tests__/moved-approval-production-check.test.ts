@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
+import { keyedLayer } from "../../../packages/envoy-client/test/keyed-layer.ts";
+import { routeAnswer } from "../../../packages/envoy-client/test/route-answers.ts";
 import {
   type DispatchWrites,
   type ExpectedMove,
@@ -170,18 +172,18 @@ const SPEC_ID = "2b7f1d90-4c3a-4e58-9b21-7d0e6a5c4f83";
 const VERIFICATION_ID = "c51a7e24-8f60-4b19-83d7-4e2a9c0b6d15";
 const NOTES_ID = "9d3c6b08-2a74-4f51-b6e9-0c8f5a1d7243";
 
-/** A Dispatch that refuses the closing reason and answers the close, writing down every request
- *  it was sent in the order it arrived. */
+/** A Dispatch, behind its keyed layer, that refuses the closing reason and answers the close,
+ *  writing down every request it was sent in the order it arrived. */
 function closingServer(sent: string[]) {
   return Bun.serve({
     port: 0,
-    fetch(request) {
+    fetch: keyedLayer((request: Request) => {
       const { pathname } = new URL(request.url);
       sent.push(`${request.method} ${pathname}`);
       return pathname.endsWith("/messages")
         ? Response.json({ error: { code: "REFUSED", message: "no" } }, { status: 422 })
-        : Response.json({ status: "done" });
-    },
+        : Response.json(routeAnswer("PATCH /api/v1/issues/{key}", { key: KEY, status: "done" }));
+    }),
   });
 }
 
@@ -241,10 +243,12 @@ describe("the session the check's writes act as", () => {
     const bodies: unknown[] = [];
     const server = Bun.serve({
       port: 0,
-      async fetch(request) {
+      fetch: keyedLayer(async (request: Request) => {
         bodies.push(await request.json());
-        return Response.json({ status: "in_progress" });
-      },
+        return Response.json(
+          routeAnswer("PATCH /api/v1/issues/{key}", { key: KEY, status: "in_progress" })
+        );
+      }),
     });
     const before = process.env.DISPATCH_SESSION_ID;
     if (value === undefined) delete process.env.DISPATCH_SESSION_ID;

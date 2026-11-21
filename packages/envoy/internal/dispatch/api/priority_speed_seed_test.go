@@ -156,6 +156,12 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	copySeededRows(t, database, "events", seededEventColumns, events)
 	copySeededRows(t, database, "priority_nodes", seededNodeColumns, priorities)
 	copySeededRows(t, database, "priority_tuples", seededTupleColumns, tuples)
+	// A deployment-sized corpus needs deployment planner statistics. Fresh COPY-loaded tables
+	// otherwise retain reltuples=-1 until an unrelated autovacuum happens to analyze them,
+	// changing the relation plan (and the ratio) independently of the code being measured.
+	if _, err := database.Pool.Exec(context.Background(), "ANALYZE projects, issues, events, priority_nodes, priority_tuples"); err != nil {
+		t.Fatalf("analyze the speed corpus: %v", err)
+	}
 	assertSpeedCorpus(t, database)
 	settleSpeedCorpus(t, database)
 
@@ -183,14 +189,15 @@ func assertSpeedCorpus(t *testing.T, database *store.Store) {
 	t.Helper()
 	for _, counted := range []struct {
 		what  string
+		table string
 		query string
 		want  int
 	}{
-		{"projects", `select count(*) from projects`, speedCorpusProjects},
-		{"open issues", `select count(*) from issues where closed_at is null`, speedCorpusIssues},
-		{"events", `select count(*) from events`, speedCorpusEvents},
-		{"priorities", `select count(*) from priority_nodes`, speedCorpusPriorities},
-		{"advances relations", `select count(*) from priority_tuples`, speedCorpusRelations},
+		{"projects", "projects", `select count(*) from projects`, speedCorpusProjects},
+		{"open issues", "issues", `select count(*) from issues where closed_at is null`, speedCorpusIssues},
+		{"events", "events", `select count(*) from events`, speedCorpusEvents},
+		{"priorities", "priority_nodes", `select count(*) from priority_nodes`, speedCorpusPriorities},
+		{"advances relations", "priority_tuples", `select count(*) from priority_tuples`, speedCorpusRelations},
 	} {
 		got := 0
 		if err := database.Pool.QueryRow(context.Background(), counted.query).Scan(&got); err != nil {
@@ -198,6 +205,13 @@ func assertSpeedCorpus(t *testing.T, database *store.Store) {
 		}
 		if got != counted.want {
 			t.Fatalf("the corpus holds %d %s, want %d", got, counted.what, counted.want)
+		}
+		var estimated int64
+		if err := database.Pool.QueryRow(context.Background(), `select reltuples::bigint from pg_class where oid = $1::regclass`, counted.table).Scan(&estimated); err != nil {
+			t.Fatalf("read the corpus planner statistics for %s: %v", counted.what, err)
+		}
+		if estimated != int64(counted.want) {
+			t.Fatalf("the planner sees %d of the corpus's %s, want %d; analyze the seeded corpus before timing it", estimated, counted.what, counted.want)
 		}
 	}
 }

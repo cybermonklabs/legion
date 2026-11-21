@@ -50,7 +50,6 @@ import type {
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
 import { natsFailureReason } from "@legion/envoy-client/errors";
-import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
@@ -67,6 +66,8 @@ import {
   startEnvoyStack,
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
+import { leastAnswerFor, routeAnswer } from "@legion/envoy-client/test/route-answers";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
@@ -174,15 +175,20 @@ function relayCarries(subject: string): boolean {
 
 /**
  * Records every registration whatever `fetch` a row installs, so the followed topics are known
- * centrally. A row's own fetch is kept behind this one; reading `globalThis.fetch` answers this
- * wrapper, so a row that wraps the fetch it found takes it from `rowFetch()`, never from
- * `globalThis.fetch`, which would call the row's own wrapper forever. That mistake fails at once,
- * by name: a call nested past `MOST_NESTED_FETCHES` of this wrapper's own is refused. Made once,
- * it grew one row's process to 118 GiB before anything stopped it.
+ * centrally, and puts the row's fetch behind Dispatch's keyed layer (`keyedLayer`): each 2xx it
+ * gives a Dispatch write names the write's key back, as Dispatch's own answers do. A row's own
+ * fetch is kept behind this one; reading `globalThis.fetch` answers this wrapper, so a row that
+ * wraps the fetch it found takes it from `rowFetch()`, never from `globalThis.fetch`, which would
+ * call the row's own wrapper forever. That mistake fails at once, by name: a call nested past
+ * `MOST_NESTED_FETCHES` of this wrapper's own is refused. Made once, it grew one row's process to
+ * 118 GiB before anything stopped it.
  */
 let installedFetch: typeof globalThis.fetch = globalThis.fetch;
 /** The real fetch, as this file found it: what a row restores and what the live stack uses. */
 const nativeFetch: typeof globalThis.fetch = installedFetch;
+const keyedFetch = keyedLayer((input: string | URL | Request, init?: RequestInit) =>
+  installedFetch(input, init)
+);
 /** How deep the calls of `recordingFetch` are nested in the current call's async context. */
 const fetchDepth = new AsyncLocalStorage<number>();
 /** A row's fetch may hand a request on through `globalThis.fetch` this many times at most. */
@@ -205,7 +211,7 @@ const recordingFetch: typeof globalThis.fetch = async (input, init) => {
   } catch {
     // A request that is not a registration, or a body that is not JSON, teaches nothing.
   }
-  return fetchDepth.run(depth, () => installedFetch(input, init));
+  return fetchDepth.run(depth, () => keyedFetch(input, init));
 };
 /** The fetch a row installed, for a row that answers some requests itself and hands on the rest. */
 const rowFetch = (): typeof globalThis.fetch => installedFetch;
@@ -773,9 +779,6 @@ afterEach(async () => {
   if (originalEnvoyUrl === undefined) delete process.env.ENVOY_URL;
   else process.env.ENVOY_URL = originalEnvoyUrl;
   globalThis.fetch = originalFetch;
-  // What a test's Dispatch answers taught the process about its keyed layer is per process, so a
-  // later suite in the same run (envoy-client's) would read it for the same origin.
-  forgetKeyedLayerMemory();
   // A broker client's retry loop trades on for the process's life, so each row's clients are
   // closed with it: one whose trades were failing would go on trading, and logging, into the
   // rows after it.
@@ -1166,17 +1169,14 @@ const acceptOnce =
       ? { accepted: true, ...(body !== undefined && { body }) }
       : { code: "ACCEPT_ALREADY_ACCEPTED", status: 409 };
 
-/** The accept route's response for `answer` to an accept of `attempt`, carrying back the request's
- *  key as Dispatch's keyed layer does (`key`), which is what lets the client ask again under it. */
+/** The accept route's response for `answer` to an accept of `attempt`. */
 function acceptResponse(
   attempt: number,
   answer: AcceptAnswer,
-  messageID = DIRECT_MESSAGE_ID,
-  key: string | null = null
+  messageID = DIRECT_MESSAGE_ID
 ): Response {
   if ("reject" in answer) throw new TypeError(answer.reject);
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (key !== null) headers["Idempotency-Key"] = key;
   if (!("accepted" in answer)) {
     return new Response(JSON.stringify({ code: answer.code, error: "refused" }), {
       headers,
@@ -1263,13 +1263,8 @@ async function bootDirectSession(
   const replyWaiters: { readonly count: number; readonly resolve: () => void }[] = [];
   globalThis.fetch = async (input, init) => {
     const url = new URL(input.toString());
-    // This Dispatch runs the keyed layer: its answers to a keyed write carry the key back and its
-    // /healthz says so, so a failed accept is asked again under its key.
-    if (url.pathname === "/healthz") {
-      return new Response(JSON.stringify({ status: "ok", idempotency_keys: true }), {
-        headers: { "content-type": "application/json" },
-      });
-    }
+    // This Dispatch runs the keyed layer: its answers to a keyed write carry the key back, and a
+    // failed accept is asked again under its key.
     if (url.pathname.startsWith("/api/v1/messages/")) {
       const authorization = new Headers(init?.headers).get("Authorization");
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/accept")) {
@@ -1279,12 +1274,18 @@ async function bootDirectSession(
           body: JSON.parse(init?.body?.toString() ?? "null"),
           path: url.pathname,
         });
-        return acceptResponse(
-          Number(url.pathname.split("/").at(-2)),
-          await (options.accept ?? acceptOnce())(accepts.length),
-          url.pathname.split("/").at(-4),
-          new Headers(init?.headers).get("Idempotency-Key")
-        );
+        const answer = await (options.accept ?? acceptOnce())(accepts.length);
+        // The keyed layer judged each accept, its refusals too, so each names the request's key
+        // back, which is what lets the client ask again under it.
+        return keyedLayer(
+          (_input: string | URL | Request, _init?: RequestInit) =>
+            acceptResponse(
+              Number(url.pathname.split("/").at(-2)),
+              answer,
+              url.pathname.split("/").at(-4)
+            ),
+          { judged: () => true }
+        )(input, init);
       }
       // The session asks Dispatch nothing else about a direct message but its reply and, where
       // the event carried the body in part, the read of the message whole: a row that expects
@@ -1809,12 +1810,30 @@ function sessionRoleLines(): { readonly lines: string[]; readonly stop: () => vo
   return { lines, stop };
 }
 
+/**
+ * The listener's answer to a registration, a keyed write's answer to a Dispatch write, and
+ * `fallback` to anything else. A Dispatch write (a POST or PATCH under `/api/v1/`) these tests do
+ * not answer themselves gets its route's least answer, which the keyed layer every row's fetch
+ * passes (`recordingFetch`) names the request's key back on, so the session's client reads it as
+ * Dispatch's answer.
+ */
 function responseWithRegistration(
   input: string | URL | Request,
   init: RequestInit | undefined,
   fallback: unknown
 ): Response {
-  const path = new URL(input.toString()).pathname;
+  const request = new Request(input, init);
+  const path = new URL(request.url).pathname;
+  const written =
+    (request.method === "POST" || request.method === "PATCH") && path.startsWith("/api/v1/")
+      ? leastAnswerFor(request.method, path)
+      : undefined;
+  if (written !== undefined) {
+    return new Response(JSON.stringify(written.body), {
+      headers: { "Content-Type": "application/json" },
+      status: written.status,
+    });
+  }
   if (path !== "/v1/interests/subscribe") return response(fallback);
   const body = JSON.parse(init?.body?.toString() ?? "{}") as {
     readonly session_id: string;
@@ -6050,9 +6069,14 @@ console.log(JSON.stringify(args));
           recordWrites.uploads += 1;
           keep(body.content ?? "");
           const name = body.name ?? "";
+          const slug = name.replace(/\./g, "-");
           if (!recordDocuments.some((document) => document.name === name))
-            recordDocuments.push({ id: "doc-decisions", name, slug: name.replace(/\./g, "-") });
-          return Response.json({ artifact: { id: "doc-decisions" } });
+            recordDocuments.push({ id: "doc-decisions", name, slug });
+          return Response.json(
+            routeAnswer("POST /api/v1/projects/{key}/artifacts", {
+              artifact: { id: "doc-decisions", name, slug, project: "INFRA" },
+            })
+          );
         }
         if (url.endsWith("/edits")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as {
@@ -6060,7 +6084,9 @@ console.log(JSON.stringify(args));
           };
           recordWrites.appends += 1;
           for (const op of body.ops ?? []) keep(op.markdown ?? "");
-          return Response.json({ applied: body.ops?.length ?? 0 });
+          return Response.json(
+            routeAnswer("POST /api/v1/artifacts/{id}/edits", { applied: body.ops?.length ?? 0 })
+          );
         }
         return other(input, init);
       };
@@ -6103,7 +6129,10 @@ console.log(JSON.stringify(args));
           stderr: () => {},
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
-          fetchImpl: (async () => Response.json({})) as typeof fetch,
+          // The write's own answer, its route's row with its key named back, as Dispatch's.
+          fetchImpl: keyedLayer((input: string | URL | Request, init?: RequestInit) =>
+            responseWithRegistration(input, init, {})
+          ) as typeof fetch,
         }
       );
       await fixture.handlers.get("tool_result")?.(
@@ -6274,7 +6303,10 @@ console.log(JSON.stringify(args));
           stderr: () => {},
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
-          fetchImpl: (async () => Response.json({})) as typeof fetch,
+          // The write's own answer, its route's row with its key named back, as Dispatch's.
+          fetchImpl: keyedLayer((input: string | URL | Request, init?: RequestInit) =>
+            responseWithRegistration(input, init, {})
+          ) as typeof fetch,
         }
       );
       const readLedger = () =>

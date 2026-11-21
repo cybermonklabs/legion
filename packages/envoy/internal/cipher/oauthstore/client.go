@@ -80,9 +80,11 @@ func machineClient() *oauth2.DefaultRegisteredClient {
 // secret in every pod, which is what this exchange exists to remove.
 //
 // It holds the token-exchange grant and no other, may present exactly the five kinds of subject
-// token this broker accepts, and may ask for an access token and nothing else: a caller that
-// asked for a JSON Web Token would be asking the broker to sign a claim set of its own, which it
-// does not do here. The one actor token it may present is the machine's Google identity token,
+// token this broker accepts, and may ask for an access token or the airlock placeholder a result
+// entry's run is answered (oauthwire.TokenTypeAirlockPlaceholder, which the exchange's decision
+// refuses every other caller) and nothing else: a caller that asked for a JSON Web Token would be
+// asking the broker to sign a claim set of its own, which it does not do here. The one actor
+// token it may present is the machine's Google identity token,
 // which a person signing in on that machine carries beside their own: the library reads an empty
 // actor list as no restriction at all, so naming this one is what keeps every other kind of
 // token out of the actor_token parameter, and a request that carries no actor token is not an
@@ -101,7 +103,7 @@ func exchangeClient() oauth2.Client {
 			oauthwire.SubjectTokenTypePerson,
 			oauthwire.SubjectTokenTypeAccessToken,
 		},
-		TokenExchangeRequestTokenTypes: []string{oauthwire.SubjectTokenTypeAccessToken},
+		TokenExchangeRequestTokenTypes: []string{oauthwire.SubjectTokenTypeAccessToken, oauthwire.TokenTypeAirlockPlaceholder},
 		TokenExchangeActorTokenTypes:   []string{oauthwire.ActorTokenTypeMachine},
 	}}
 }

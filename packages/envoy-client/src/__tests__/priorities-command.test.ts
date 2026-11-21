@@ -3,10 +3,10 @@ import { readFileSync } from "node:fs";
 import type { IssueAdvance, Priorities } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags, fieldFlag } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // The priority surface of the `dispatch` command: the relation an issue states (`--advance`,
 // repeated, and `--clear-advances`, both derived from the one `advances` field of the tool
@@ -166,9 +166,10 @@ function issueBody() {
   };
 }
 
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
+  fetch: keyedLayer(async (request: Request) => {
     const { pathname, search, searchParams } = new URL(request.url);
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
@@ -204,7 +205,7 @@ const server = Bun.serve({
       return Response.json({ node: { kind: "issue", id: "DSP-1" }, edges: [], members: [] });
     }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  }),
 });
 
 afterAll(() => server.stop(true));
@@ -216,7 +217,6 @@ beforeEach(() => {
   ownAdvances = ["ship-the-daemon"];
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{ code: number; stdout: string }> {

@@ -172,6 +172,14 @@
       "types": "./test/fake-dispatch.ts",
       "bun": "./test/fake-dispatch.ts"
     },
+    "./test/keyed-layer": {
+      "types": "./test/keyed-layer.ts",
+      "bun": "./test/keyed-layer.ts"
+    },
+    "./test/route-answers": {
+      "types": "./test/route-answers.ts",
+      "bun": "./test/route-answers.ts"
+    },
     "./test/stall-proxy": {
       "types": "./test/stall-proxy.ts",
       "bun": "./test/stall-proxy.ts"
@@ -227,6 +235,7 @@
     "@biomejs/biome": "^2.3.14",
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
+    "ajv": "8.20.0",
     "typescript": "^5.3.0"
   }
 }

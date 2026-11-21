@@ -35,6 +35,9 @@ import {
   roleHeldBy,
 } from "../transport";
 
+/** The listener's bearer in the redirect cases, made for this run so no line holds a credential. */
+const REDIRECT_TOKEN = fixtureSecret("listener");
+
 /** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server
  *  refuses a claim take by: a change of that constant must change the rule's text, and these
  *  expectations with it, rather than leaving the text saying a number nothing enforces. */
@@ -2287,6 +2290,85 @@ describe("EnvoyClient", () => {
     const failure = await client.getRole("reviewer").catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
   }, 5_000);
+});
+
+// fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization` alone),
+// and the listener answers no route with a redirect, so no call follows one: the origin it names
+// is asked nothing.
+describe("a listener answer that redirects to another origin", () => {
+  test("is not followed, so the credential's proof never leaves", async () => {
+    const elsewhere: string[] = [];
+    const other = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        elsewhere.push(`${request.method} ${request.headers.get("DPoP") ?? "no proof"}`);
+        return Response.json({ role: "reviewer", session_id: "ses_other" });
+      },
+    });
+    const listener = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: `http://127.0.0.1:${other.port}/v1/roles/reviewer` },
+        }),
+    });
+    const credential: RequestCredential = {
+      ...bearerCredential(REDIRECT_TOKEN),
+      headers: async () => ({ Authorization: "DPoP listener-token", DPoP: "PROOF" }),
+    };
+    try {
+      const client = createEnvoyClient({
+        baseUrl: `http://127.0.0.1:${listener.port}/`,
+        fetch,
+        credential,
+        retry: false,
+      });
+      await client.getRole("reviewer").catch((error: unknown) => error);
+      expect(elsewhere).toEqual([]);
+    } finally {
+      listener.stop(true);
+      other.stop(true);
+    }
+  });
+
+  // The refusal says where the redirect points, so an operator who wrote `http://` for an
+  // `https://` listener fixes the URL from the line: the scheme and the host of the target, never
+  // its path, its query or its user, any of which can carry a secret.
+  test("is refused with a line that names the origin it points at, and nothing else of its target", async () => {
+    // A target that carries a user and a secret, built from its parts; the secret is made for
+    // this run, so no line of the test holds a credential.
+    const hidden = crypto.randomUUID();
+    const withUser = new URL("https://listener.example.com/v1/roles/reviewer");
+    withUser.username = "user";
+    withUser.password = hidden;
+    for (const [location, origin] of [
+      [
+        "https://sso.example.com:8443/start?session=s3cr3t-query#frag",
+        "https://sso.example.com:8443",
+      ],
+      [withUser.href, "https://listener.example.com"],
+      ["/v1/roles/reviewer?again=1", "http://listener.test"],
+    ] as const) {
+      const client = createEnvoyClient({
+        baseUrl: "http://listener.test/",
+        fetch: (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+          new Response(null, { status: 302, headers: { Location: location } })) as typeof fetch,
+        retry: false,
+      });
+      const failure = await client.getRole("reviewer").catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(EnvoyApiError);
+      const { message } = failure as EnvoyApiError;
+      expect(message, location).toContain(
+        `(a redirect to ${origin}, which this client does not follow)`
+      );
+      for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "again=1"]) {
+        expect(message, location).not.toContain(part);
+      }
+    }
+  });
 });
 
 describe("newClientInstanceID", () => {

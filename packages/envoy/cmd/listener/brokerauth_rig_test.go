@@ -333,12 +333,30 @@ const v1RoutePatterns = 15
 // scope none beside the one scope read, which a read entry mints for Dispatch's read list — is
 // answered 401 not_a_session on every path registerV1Routes registers, because the verifier
 // brokerTokens.open builds leaves the read-only switch unset (ciphertoken.Options.ServesReadOnly)
-// and so refuses the token as a build before the switch refuses it. A token of a named project,
-// the same kind of token but for its project scope, its project and its scope, is answered
-// anything but 401 on each of the same requests, and its presentation writes no rejection line,
-// so the refusal is the scope's and not the route's.
+// and so refuses the token as a build before the switch refuses it.
+func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
+	rig := newBrokerRig(t)
+	walkV1RoutesRefusing(t, rig, "ses_rig_reader", readOnlyAnswer("ses_rig_reader", "example-reader", rig.caller.JKT()))
+}
+
+// A results token — the project scope results beside the one scope results and the run a result
+// entry mints it for, the one token Dispatch's results route takes — is answered 401
+// not_a_session on every path registerV1Routes registers, because the verifier brokerTokens.open
+// builds leaves the results switch unset (ciphertoken.Options.ServesResults) and so refuses the
+// token as a build before the switch refuses it. A CI job's token writes its results and reaches
+// no listener.
+func TestAPIAuthRefusesAResultsTokenOnEveryV1Route(t *testing.T) {
+	rig := newBrokerRig(t)
+	walkV1RoutesRefusing(t, rig, "ses_rig_results", resultsAnswer("ses_rig_results", rig.caller.JKT()))
+}
+
+// walkV1RoutesRefusing presents a token the broker answers refused as, of the session it names,
+// on every path registerV1Routes registers, and holds each to 401 not_a_session and its
+// rejection line. A token of a named project, the same kind of token but for its project scope,
+// its project and its scope, is answered anything but 401 on each of the same requests, and its
+// presentation writes no rejection line, so the refusal is the scope's and not the route's.
 //
-// The listener has no route table, so the list below is this test's own: every path
+// The listener has no route table, so the list below is this walk's own: every path
 // registerV1Routes registers, under each method its handler serves (a handler that serves two is
 // walked under both). Each is first resolved through the rig's own mux to the pattern the list
 // names, so an entry that no longer reaches its registered pattern — one the catch-all would
@@ -347,19 +365,18 @@ const v1RoutePatterns = 15
 // can only be the credential's. A path registerV1Routes gains later is behind apiAuth all the
 // same, since apiAuth wraps the whole of /v1 once (main.go); TestAPIAuthBrokerToken holds that
 // apiAuth refuses the token before any handler runs.
-func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
-	rig := newBrokerRig(t)
+func walkV1RoutesRefusing(t *testing.T, rig *brokerRig, session string, refused ciphertoken.Introspection) {
+	t.Helper()
 	const (
-		reader        = "ses_rig_reader"
-		named         = "ses_rig_named"
-		readOnlyToken = "access-token-that-only-reads"
-		namedToken    = "access-token-of-a-named-project"
-		// session is where a path or a body names the session its token names.
-		session = "<session>"
+		named        = "ses_rig_named"
+		refusedToken = "access-token-the-listener-refuses"
+		namedToken   = "access-token-of-a-named-project"
+		// placeholder is where a path or a body names the session its token names.
+		placeholder = "<session>"
 	)
-	rig.broker.Says(readOnlyToken, readOnlyAnswer(reader, "example-reader", rig.caller.JKT()))
+	rig.broker.Says(refusedToken, refused)
 	rig.broker.Says(namedToken, serviceAnswer(named, "example-fleet", rig.caller.JKT()))
-	rig.register(t, reader)
+	rig.register(t, session)
 	rig.register(t, named)
 
 	routes := []struct {
@@ -396,20 +413,20 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 	for _, route := range routes {
 		t.Run(route.method+" "+route.pattern, func(t *testing.T) {
 			as := func(id string) (string, string) {
-				return strings.ReplaceAll(route.path, session, id), strings.ReplaceAll(route.body, session, id)
+				return strings.ReplaceAll(route.path, placeholder, id), strings.ReplaceAll(route.body, placeholder, id)
 			}
-			path, body := as(reader)
+			path, body := as(session)
 			if _, pattern := rig.routes.Handler(httptest.NewRequest(route.method, path, nil)); pattern != route.pattern {
 				t.Fatalf("%s %s resolves to the pattern %q, want %q: the list no longer names what registerV1Routes registers",
 					route.method, path, pattern, route.pattern)
 			}
 
 			before := rig.logs.Len()
-			refused := rig.call(t, rig.handler, route.method, readOnlyToken, path, body)
-			if refused.Code != http.StatusUnauthorized {
-				t.Fatalf("%s %s under a read-only token: status = %d, want 401; body = %s", route.method, path, refused.Code, refused.Body.String())
+			answer := rig.call(t, rig.handler, route.method, refusedToken, path, body)
+			if answer.Code != http.StatusUnauthorized {
+				t.Fatalf("%s %s under the refused token: status = %d, want 401; body = %s", route.method, path, answer.Code, answer.Body.String())
 			}
-			assertBrokerRejectionLog(t, rig.logs.String()[before:], "not_a_session", readOnlyToken, "")
+			assertBrokerRejectionLog(t, rig.logs.String()[before:], "not_a_session", refusedToken, "")
 
 			path, body = as(named)
 			before = rig.logs.Len()
@@ -418,7 +435,7 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 				t.Fatalf("%s %s under a named project's token: status = 401, want anything but; body = %s", route.method, path, admitted.Body.String())
 			}
 			assertBrokerRejectionLog(t, rig.logs.String()[before:], "", namedToken, "")
-			t.Logf("%s %s: the read-only token 401, the named project's token %d", route.method, path, admitted.Code)
+			t.Logf("%s %s: the refused token 401, the named project's token %d", route.method, path, admitted.Code)
 			walked++
 			patterns[route.pattern] = true
 		})

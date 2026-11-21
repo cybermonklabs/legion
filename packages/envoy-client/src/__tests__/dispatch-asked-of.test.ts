@@ -9,10 +9,11 @@ import {
 } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
+import { routeAnswer } from "../../test/route-answers";
 import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // Who an open ask waits on, from the command line and from the texts an agent reads. A person
 // hands an ask on through the web app or `PUT /api/v1/asks/{id}/asked-of`, both person-scoped, so
@@ -51,7 +52,7 @@ const ISSUE = {
   route: null,
   parent: null,
   blocked_by: [],
-  components: [],
+  components: { mode: "inherit", ids: null, unknown: null, reason: null, inherited_from: null },
   repo: null,
   resolved_repo: null,
   closed_at: null,
@@ -59,9 +60,10 @@ const ISSUE = {
   artifacts: [],
 };
 
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
+  fetch: keyedLayer(async (request: Request) => {
     const { pathname } = new URL(request.url);
     const text = await request.text();
     const body: unknown = text === "" ? undefined : JSON.parse(text);
@@ -71,10 +73,14 @@ const server = Bun.serve({
     }
     if (pathname === "/api/v1/issues/DSP-1" && request.method === "PATCH") {
       const sent = (body ?? {}) as { assignee?: string | null };
-      return Response.json({ ...ISSUE, assignee: sent.assignee ?? null });
+      // The PATCH answers the issue without the documents the read lists beside it.
+      const { artifacts: _documents, ...issue } = ISSUE;
+      return Response.json(
+        routeAnswer("PATCH /api/v1/issues/{key}", { ...issue, assignee: sent.assignee ?? null })
+      );
     }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  }),
 });
 
 afterAll(() => server.stop(true));
@@ -84,7 +90,6 @@ beforeEach(() => {
   requests.length = 0;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{

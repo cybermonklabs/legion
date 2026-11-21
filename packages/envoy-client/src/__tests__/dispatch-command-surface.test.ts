@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { dispatchToolSpecs } from "@legion/contracts";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool } from "../dispatch-execute";
@@ -342,11 +343,14 @@ function recordRequest(url: string, init: RequestInit | undefined): RecordedRequ
 
 async function runCommand(tool: string, call: string, args: Record<string, unknown>) {
   const requests: RecordedRequest[] = [];
-  const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const target = new URL(String(url));
-    requests.push(recordRequest(String(url), init));
-    return answerFor(init?.method ?? "GET", target.pathname, init?.body);
-  };
+  // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
+  const fetchImpl = keyedLayer(
+    async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      requests.push(recordRequest(String(url), init));
+      return answerFor(init?.method ?? "GET", target.pathname, init?.body);
+    }
+  );
   const run = await executeDispatchTool({
     tool,
     args,

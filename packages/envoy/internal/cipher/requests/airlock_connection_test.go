@@ -7,6 +7,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -79,7 +80,7 @@ func TestAirlockConnectionAnswersEverySlotOfALiveGrant(t *testing.T) {
 // own string is the case that matters: it is in a running command's environment.
 func TestAirlockConnectionRefusesWhatOpensNothing(t *testing.T) {
 	m, enr, grantID, release := twoNameGrant(t, "no issue here")
-	if conn, err := m.AirlockConnection(t.Context(), PlaceholderPrefix+"neverMintedByThisBrokerAtAll00"); !errors.Is(err, ErrGrantNotLive) {
+	if conn, err := m.AirlockConnection(t.Context(), placeholder.Prefix+"neverMintedByThisBrokerAtAll00"); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("AirlockConnection(an unknown placeholder) = %+v, %v; want ErrGrantNotLive", conn, err)
 	}
 	if conn, err := m.AirlockConnection(t.Context(), ""); !errors.Is(err, ErrGrantNotLive) {

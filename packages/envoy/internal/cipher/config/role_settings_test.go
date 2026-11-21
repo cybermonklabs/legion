@@ -86,6 +86,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_AIRLOCK_TEST_NO_KIND":         givesNone("a test-only switch"),
 	"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY": givesNone("a test-only host"),
 	"BROKER_JUDGE_TEST_SKIP_CHECKS":       givesNone("a test-only switch"),
+	"BROKER_RESULT_GRANT_TEST_SECONDS":    givesNone("a test-only lifetime"),
 
 	"BROKER_SECRETS_KMS_KEY_ARN":    givesNone("a KMS key"),
 	"BROKER_SECRETS_KMS_KEY_NAME":   givesNone("a KMS key"),
@@ -109,15 +110,16 @@ var settingRoles = map[string]settingRole{
 	"BROKER_VM_INSTANCES":            givesNone("a Google account's instance names"),
 	"BROKER_VM_EXCHANGE_ACCOUNTS":    givesNone("a Google account's person and project"),
 
-	"BROKER_API_ACCOUNTS":             givesARole("a BROKER_API_ACCOUNTS entry names it"),
-	"BROKER_EXCHANGE_GITHUB_ISSUER":   givesNone("an issuer"),
-	"BROKER_EXCHANGE_GITHUB_AUDIENCE": givesNone("an audience"),
-	"BROKER_EXCHANGE_K8S_AUDIENCE":    givesNone("an audience"),
-	"BROKER_EXCHANGE_ACCOUNTS":        givesARole("a BROKER_EXCHANGE_ACCOUNTS entry maps it to another person"),
-	"BROKER_EXCHANGE_READ_ACCOUNTS":   givesARole("a BROKER_EXCHANGE_READ_ACCOUNTS entry names it"),
-	"BROKER_EXCHANGE_WORKFLOWS":       givesNone("a GitHub workflow"),
-	"BROKER_PRIVATE_PROJECTS":         givesNone("project keys"),
-	"BROKER_ENVOY_ACCOUNT_TOKEN_FILE": givesNone("a file path"),
+	"BROKER_API_ACCOUNTS":              givesARole("a BROKER_API_ACCOUNTS entry names it"),
+	"BROKER_EXCHANGE_GITHUB_ISSUER":    givesNone("an issuer"),
+	"BROKER_EXCHANGE_GITHUB_AUDIENCE":  givesNone("an audience"),
+	"BROKER_EXCHANGE_K8S_AUDIENCE":     givesNone("an audience"),
+	"BROKER_EXCHANGE_ACCOUNTS":         givesARole("a BROKER_EXCHANGE_ACCOUNTS entry maps it to another person"),
+	"BROKER_EXCHANGE_READ_ACCOUNTS":    givesARole("a BROKER_EXCHANGE_READ_ACCOUNTS entry names it"),
+	"BROKER_EXCHANGE_WORKFLOWS":        givesNone("a GitHub workflow"),
+	"BROKER_EXCHANGE_RESULT_WORKFLOWS": givesNone("a GitHub workflow's results scope, not a Kubernetes account"),
+	"BROKER_PRIVATE_PROJECTS":          givesNone("project keys"),
+	"BROKER_ENVOY_ACCOUNT_TOKEN_FILE":  givesNone("a file path"),
 
 	// loadNATSCallout's.
 	"BROKER_NATS_SEED_FILE":        givesNone("a file path"),

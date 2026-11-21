@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -326,7 +327,9 @@ func TestAPanickingHandlerReleasesItsKey(t *testing.T) {
 
 // A key belongs to the login that sent it. Another person's identical request under the same key
 // is another request; the same person under another casing of the identity header is the same
-// person; the shared agent token's keys are its own.
+// person; the shared agent token's keys are its own. A CI job's results token names its result
+// entry's person, who sent nothing: its keys are its run's, the repository and the check run of
+// its job, so two runs or two legs of one entry never replay each other's writes.
 func TestAKeyBelongsToItsLogin(t *testing.T) {
 	rig := newKeyedRig(t, answerRun)
 	alices := rig.send(t, "a", nil, "alice", "shared")
@@ -349,6 +352,7 @@ func TestAKeyBelongsToItsLogin(t *testing.T) {
 	}
 
 	owner, service := "Carol@example.com", "system:serviceaccount:legion:worker"
+	run := &oauthwire.CIRun{Repository: "example-org/example-repo", CheckRunID: "97"}
 	for name, test := range map[string]struct {
 		actor model.Actor
 		human bool
@@ -356,8 +360,10 @@ func TestAKeyBelongsToItsLogin(t *testing.T) {
 	}{
 		"a person":                {model.Actor{Kind: "user", ID: " Carol@Example.com "}, true, "carol@example.com"},
 		"that person's own token": {model.Actor{Kind: "session", Owner: &owner}, false, "carol@example.com"},
-		"a service token":         {model.Actor{Service: &service}, false, "service:" + service},
-		"the shared agent token":  {model.Actor{}, false, requestKeyAgentToken},
+		"a CI job's results token": {model.Actor{Kind: "session", Owner: &owner, Credential: &model.Credential{ResultsOnly: true, CI: run}},
+			false, "ci-run:example-org/example-repo#97"},
+		"a service token":        {model.Actor{Service: &service}, false, "service:" + service},
+		"the shared agent token": {model.Actor{}, false, requestKeyAgentToken},
 	} {
 		if got := requestKeyLogin(test.actor, test.human); got != test.want {
 			t.Errorf("%s's keys belong to %q, want %q", name, got, test.want)
@@ -420,9 +426,11 @@ func TestAWriteWithoutAKeyRunsEachTime(t *testing.T) {
 	}
 }
 
-// Every answer to a keyed request names its key back - run, replayed, refused 422, refused 409 and
-// a 5xx the key does not keep - so a client can tell a Dispatch that judged the key from one that
-// ignored the header, and retries a 5xx under its key only against the first.
+// Every answer to a keyed request names its key back - run, replayed, refused 422, refused 409, a
+// 5xx the key does not keep, a 204 with no body and an answer past the kept size, written through
+// as it comes and replayed as its status alone - so a client can tell a Dispatch that judged the
+// key from one that ignored the header, retries a 5xx under its key only against the first, and
+// reads a 2xx that names no key back, or another, as no answer of Dispatch's to its write.
 func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 	running := make(chan struct{})
 	var slowRuns atomic.Int32
@@ -431,6 +439,12 @@ func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 		switch {
 		case r.PathValue("thing") == "broken":
 			writeError(w, "BROKEN", http.StatusInternalServerError, "the handler's own failure")
+		case r.PathValue("thing") == "empty":
+			w.WriteHeader(http.StatusNoContent)
+		case r.PathValue("thing") == "large":
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, strings.Repeat("x", keyedAnswerKept+10))
 		case r.PathValue("thing") == "slow":
 			if slowRuns.Add(1) == 1 {
 				close(running)
@@ -451,6 +465,10 @@ func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 	names("a replay", rig.send(t, "a", nil, "alice", `"echo-1"`), http.StatusCreated, "echo-1")
 	names("a reused key", rig.send(t, "b", nil, "alice", "echo-1"), http.StatusUnprocessableEntity, "echo-1")
 	names("a 5xx", rig.send(t, "broken", nil, "alice", "echo-2"), http.StatusInternalServerError, "echo-2")
+	names("a 204", rig.send(t, "empty", nil, "alice", "echo-4"), http.StatusNoContent, "echo-4")
+	names("a 204 replayed", rig.send(t, "empty", nil, "alice", "echo-4"), http.StatusNoContent, "echo-4")
+	names("an answer past the kept size", rig.send(t, "large", nil, "alice", "echo-5"), http.StatusCreated, "echo-5")
+	names("its replay, its status alone", rig.send(t, "large", nil, "alice", "echo-5"), http.StatusCreated, "echo-5")
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "slow", nil, "alice", "echo-3") }()
 	<-running

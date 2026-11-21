@@ -2116,7 +2116,11 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): the scope read alone, which
 // the broker mints from a read entry. Dispatch is the one service that asks for it, because its
 // route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
-// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
+// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs. It
+// serves a results token (ciphertoken.Options.ServesResults) for the same reason: the scope
+// results alone, which the broker mints from a result entry for one CI run, reaches the routes
+// the results list names (resultsScopeRoutes) and every other route answers it 403
+// RESULTS_ONLY_TOKEN.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
@@ -2134,9 +2138,11 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
-		// The read list and its gate are Dispatch's own (internal/dispatch/api), so a read-only
-		// token reaches the routes that list names and no other.
+		// The read list, the results list and their gates are Dispatch's own
+		// (internal/dispatch/api), so a read-only token and a results token reach the routes their
+		// lists name and no other.
 		ServesReadOnly: true,
+		ServesResults:  true,
 	})
 }
 
@@ -2204,8 +2210,9 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // publishes at a time, so a healthy process may well report false, and it never decides `ok`.
 //
 // `idempotency_keys` is true on every build that judges a write's Idempotency-Key (INFRA-258,
-// api/request_keys.go): the agents' client reads it before it retries a write under its key, since
-// an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
+// api/request_keys.go): an operator's deploy check reads it (cmd/dispatch/README.md, "Checking a
+// deploy"), since an earlier Dispatch ignores the header and would run a retried write again. The
+// agents' client asks it nothing before it sends a write again under its key. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
 func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string

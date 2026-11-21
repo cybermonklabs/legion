@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  An airlock rules entry may name the kind `dpop`: a capability the broker mints for a CI run and holds, whose requests the proxy sends with a DPoP proof of its pod's key. `Validate` and the Lean model's `validate` take it, and a kind written in another case, such as `DPoP`, is still refused, with a refusal that names the four kinds. A broker from before this release refuses a rules file that names the kind at start, so the deployment moves to this release before its rules file names it.

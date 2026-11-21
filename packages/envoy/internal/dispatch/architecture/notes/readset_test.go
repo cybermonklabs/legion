@@ -9,6 +9,7 @@ package notes
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"maps"
 	"os"
@@ -196,6 +197,72 @@ func TestTheBoundRefusesANoteThatGrewAfterItsSizeWasRead(t *testing.T) {
 	}
 }
 
+// The two bounds of the set refuse a set from its listing, with one finding, before ReadSet reads
+// any note: one note more than MaxFiles, and notes whose sizes sum to one byte more than
+// MaxSetSize, though each note is within MaxFileSize. A set at each bound is read whole.
+func TestTheSetBoundsRefuseTheSetBeforeAnyNoteIsRead(t *testing.T) {
+	t.Parallel()
+	const dir = "/checkout/.dispatch/spec"
+	for _, row := range []struct {
+		name  string
+		fsys  fstest.MapFS
+		want  string
+		notes int
+	}{
+		{name: "one note over MaxFiles", fsys: notesOfSize(MaxFiles+1, 1), notes: MaxFiles + 1, want: "set too large: " + dir + " holds 1001 files (limit 1000)"},
+		{name: "one byte over MaxSetSize", fsys: notesSumming(MaxSetSize + 1), notes: MaxSetSize/MaxFileSize + 1, want: "set too large: " + dir + " holds 16777217 bytes in its files (limit 16777216)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			opened := &openRecorder{fsys: row.fsys}
+			set, err := ReadSet(opened, dir)
+			var refused *SizeRefusal
+			if !errors.As(err, &refused) || !errors.Is(err, ErrSetTooLarge) {
+				t.Fatalf("ReadSet: %v, want a *SizeRefusal of ErrSetTooLarge", err)
+			}
+			if set.Files != nil || refused.Held != row.notes || len(refused.Problems) != 1 || refused.Problems[0].Error() != row.want {
+				t.Errorf("ReadSet: %d files, %d notes held, problems %q; want no files, %d notes and the one refusal %q", len(set.Files), refused.Held, refused.Problems, row.notes, row.want)
+			}
+			if !slices.Equal(opened.names, []string{"."}) {
+				t.Errorf("opened %d names, want the directory alone: a note was read", len(opened.names))
+			}
+		})
+	}
+	for _, row := range []struct {
+		name string
+		fsys fstest.MapFS
+	}{
+		{name: "MaxFiles notes", fsys: notesOfSize(MaxFiles, 1)},
+		{name: "notes summing MaxSetSize", fsys: notesSumming(MaxSetSize)},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			set, err := ReadSet(row.fsys, dir)
+			if err != nil || len(set.Files) != len(row.fsys) {
+				t.Fatalf("ReadSet: %d files, err %v; want all %d read", len(set.Files), err, len(row.fsys))
+			}
+		})
+	}
+}
+
+// The set's bounds are checked again once the notes are read, so a set that grew between the
+// listing and the read past MaxSetSize is refused as one whose listing showed it is: its listing
+// sums MaxSetSize, and one note listed empty answers one byte.
+func TestTheSetBoundsRefuseASetThatGrewAfterItsSizesWereRead(t *testing.T) {
+	t.Parallel()
+	const dir = "/checkout/.dispatch/spec"
+	fsys := notesSumming(MaxSetSize)
+	fsys["zz-empty.md"] = &fstest.MapFile{}
+	set, err := ReadSet(oneByteMoreFS{MapFS: fsys, name: "zz-empty.md"}, dir)
+	var refused *SizeRefusal
+	if !errors.As(err, &refused) || !errors.Is(err, ErrSetTooLarge) || set.Files != nil {
+		t.Fatalf("ReadSet: %d files, %v; want no files and a *SizeRefusal of ErrSetTooLarge", len(set.Files), err)
+	}
+	if want := "set too large: " + dir + " holds 16777217 bytes in its files (limit 16777216)"; len(refused.Problems) != 1 || refused.Problems[0].Error() != want {
+		t.Errorf("ReadSet: problems %q, want the one refusal %q", refused.Problems, want)
+	}
+}
+
 // A note ReadSet cannot read is its "cannot be read" error, naming the note by its absolute path,
 // though os.DirFS's error names it by its name inside the directory.
 func TestReadSetNamesANoteItCannotReadByItsAbsolutePath(t *testing.T) {
@@ -269,4 +336,39 @@ type deniedFS struct{ fstest.MapFS }
 
 func (deniedFS) ReadFile(name string) ([]byte, error) {
 	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+}
+
+// notesOfSize is a directory of count notes of size bytes each, named n0000.md and on.
+func notesOfSize(count, size int) fstest.MapFS {
+	content := bytes.Repeat([]byte("a"), size)
+	fsys := fstest.MapFS{}
+	for i := range count {
+		fsys[fmt.Sprintf("n%04d.md", i)] = &fstest.MapFile{Data: content}
+	}
+	return fsys
+}
+
+// notesSumming is a directory of notes of MaxFileSize bytes each and one of the rest, whose sizes
+// sum to total.
+func notesSumming(total int) fstest.MapFS {
+	fsys := notesOfSize(total/MaxFileSize, MaxFileSize)
+	if rest := total % MaxFileSize; rest > 0 {
+		fsys["rest.md"] = &fstest.MapFile{Data: bytes.Repeat([]byte("a"), rest)}
+	}
+	return fsys
+}
+
+// oneByteMoreFS is a directory whose note name grew by one byte after it was listed: its listing
+// gives the size the MapFS holds, and a read of it answers one byte more.
+type oneByteMoreFS struct {
+	fstest.MapFS
+	name string
+}
+
+func (f oneByteMoreFS) ReadFile(name string) ([]byte, error) {
+	content, err := f.MapFS.ReadFile(name)
+	if name == f.name {
+		content = append(content, 'a')
+	}
+	return content, err
 }

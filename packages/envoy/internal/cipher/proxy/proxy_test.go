@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -50,8 +51,8 @@ import (
 // would be an open relay for anyone who can reach the pod.
 func TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing(t *testing.T) {
 	r := newRig(t, Options{})
-	ended := requests.PlaceholderPrefix + "endedendedendedendedendedended01"
-	noNames := requests.PlaceholderPrefix + "nonamesnonamesnonamesnonames0001"
+	ended := placeholder.Prefix + "endedendedendedendedendedended01"
+	noNames := placeholder.Prefix + "nonamesnonamesnonamesnonames0001"
 	r.grants.refusals[ended] = requests.ErrGrantNotLive
 	r.grants.refusals[noNames] = requests.ErrAirlockNoNames
 
@@ -59,7 +60,7 @@ func TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing(t *testing.T) {
 		{"no credential at all", "", "carries none"},
 		{"a credential that is not Basic", "Proxy-Authorization: Bearer " + workerPlaceholder + "\r\n", "not Basic"},
 		{"a Bas" + "ic credential that is not base64", "Proxy-Authorization: Bas" + "ic not-base-64-at-all\r\n", "not base64"},
-		{"a password no grant holds", basic(requests.PlaceholderPrefix + "unknownunknownunknownunknown001"), requests.ErrGrantNotLive.Error()},
+		{"a password no grant holds", basic(placeholder.Prefix + "unknownunknownunknownunknown001"), requests.ErrGrantNotLive.Error()},
 		{"an empty password", basic(""), requests.ErrGrantNotLive.Error()},
 		{"a grant that has ended", basic(ended), requests.ErrGrantNotLive.Error()},
 		{"a grant holding no name this session may have", basic(noNames), requests.ErrAirlockNoNames.Error()},
@@ -880,8 +881,8 @@ func TestOneRequestIsHandledForOneNameOfTheGrant(t *testing.T) {
 		betaName         = "BETA_TOKEN"
 		alphaValue       = "the-real-alpha"
 		betaValue        = "the-real-beta"
-		alphaPlaceholder = requests.PlaceholderPrefix + "alphaalphaalphaalphaalphaalpha01"
-		betaPlaceholder  = requests.PlaceholderPrefix + "betabetabetabetabetabetabetabe01"
+		alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
+		betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 	)
 	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 		{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
@@ -1174,8 +1175,8 @@ func TestDropNameDropsOneNameAndKeepsTheGrantsOthers(t *testing.T) {
 	const (
 		alphaName        = "ALPHA_TOKEN"
 		betaName         = "BETA_TOKEN"
-		alphaPlaceholder = requests.PlaceholderPrefix + "alphaalphaalphaalphaalphaalpha01"
-		betaPlaceholder  = requests.PlaceholderPrefix + "betabetabetabetabetabetabetabe01"
+		alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
+		betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 	)
 	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 		{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
@@ -1285,7 +1286,7 @@ func TestAPolicyChangeTheReloadTookReachesTheValuesThisPodHolds(t *testing.T) {
 // has proved the switch is what the behaviour hangs on. Dropping the name and then holding what
 // is left would read the grant again and find the new value, which is the defect this row pins.
 func TestKeepValuesHoldsAValueAcrossAReread(t *testing.T) {
-	const placeholder = requests.PlaceholderPrefix + "keepkeepkeepkeepkeepkeepkeepke01"
+	const placeholder = placeholder.Prefix + "keepkeepkeepkeepkeepkeepkeepke01"
 	r := newRig(t, Options{KeepValues: true})
 	r.grants.connections[placeholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
@@ -1323,8 +1324,8 @@ func TestAGitHubAppInstallationsTokenIsSwappedForItsOwnSlotsPlaceholder(t *testi
 		appName    = "GITHUB_APP_KEY"
 		acmeSlot   = requests.SlotGitHubPrefix + "acme"
 		zedSlot    = requests.SlotGitHubPrefix + "zed"
-		acmeHolder = requests.PlaceholderPrefix + "acmeacmeacmeacmeacmeacmeacmeac01"
-		zedHolder  = requests.PlaceholderPrefix + "zedzedzedzedzedzedzedzedzedzed01"
+		acmeHolder = placeholder.Prefix + "acmeacmeacmeacmeacmeacmeacmeac01"
+		zedHolder  = placeholder.Prefix + "zedzedzedzedzedzedzedzedzedzed01"
 		acmeToken  = "ghs_the-real-acme-installation-token"
 		zedToken   = "ghs_the-real-zed-installation-token"
 	)
@@ -1504,8 +1505,8 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 			betaName         = "BETA_TOKEN"
 			alphaValue       = "the-real-alpha"
 			betaValue        = "the-real-beta"
-			alphaPlaceholder = requests.PlaceholderPrefix + "alphaalphaalphaalphaalphaalpha01"
-			betaPlaceholder  = requests.PlaceholderPrefix + "betabetabetabetabetabetabetabe01"
+			alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
+			betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 		)
 		rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 			{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},

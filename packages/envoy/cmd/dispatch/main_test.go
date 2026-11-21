@@ -1054,11 +1054,11 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	}
 }
 
-// /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the agents' client
-// reads before it retries a write under its key: an earlier Dispatch ignores the header and would
-// run the retry again. It is the binary's fact, so a probe that answers 503 - its database down,
-// closed or never configured - carries it in its body as a 200 does: a client that reads the body
-// whatever the status resends a write its outage refused.
+// /healthz says this build judges a write's Idempotency-Key, which an operator's deploy check reads
+// (cmd/dispatch/README.md, "Checking a deploy"): an earlier Dispatch ignores the header and would
+// run a retried write again. It is the binary's fact, so a probe that answers 503 - its database
+// down, closed or never configured - carries it in its body as a 200 does: a reader of the body
+// learns it whatever the status.
 func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 	closed := storetest.Open(t)
 	closed.Pool.Close()

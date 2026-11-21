@@ -11,13 +11,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
 // testAirlockPlaceholder is one placeholder in the broker's own shape: its prefix and 32
-// characters of the alphabet requests.mintPlaceholder draws from.
+// characters of the alphabet placeholder.Mint draws from.
 const testAirlockPlaceholder = "agent-secrets-placeholder-aBcD1234aBcD1234aBcD1234aBcD1234"
 
 // testAirlockCertificate is the PEM the release carries as the proxy's certificate authority.
@@ -810,5 +811,29 @@ func TestExecFormRunsACommandForANameBehindTheAirlock(t *testing.T) {
 	}
 	if env["AGENT_SECRETS_URL"] != broker.URL {
 		t.Errorf("the command's AGENT_SECRETS_URL is %q, want the session's broker %q", env["AGENT_SECRETS_URL"], broker.URL)
+	}
+}
+
+// TestAFixedNoProxyEntryOverABoundHostIsDropped: a fixed NO_PROXY entry is held to the bound hosts
+// as an inherited one is. With Dispatch's tailnet name bound, `.ts.net` leaves the list, so a
+// write to it goes through the proxy rather than straight out with a placeholder in it; the
+// broker's own tailnet name, which the release does not bind, stays, and so does every other fixed
+// entry. A grant bound to a host outside the tailnet keeps `.ts.net`.
+func TestAFixedNoProxyEntryOverABoundHostIsDropped(t *testing.T) {
+	environ := []string{"AGENT_SECRETS_URL=https://secrets.example-tailnet.ts.net"}
+	entries := func(hosts ...string) []string {
+		return strings.Split(airlockNoProxy(environ, testRelease("DISPATCH_RESULTS_TOKEN", hosts, map[string]string{"value": testAirlockPlaceholder})), ",")
+	}
+	dispatch := entries("dispatch.example-tailnet.ts.net")
+	if slices.Contains(dispatch, ".ts.net") || !slices.Contains(dispatch, "secrets.example-tailnet.ts.net") {
+		t.Fatalf("with Dispatch's tailnet name bound, NO_PROXY = %q; want no .ts.net and the broker's own name", dispatch)
+	}
+	for _, fixed := range airlockFixedNoProxy {
+		if fixed != ".ts.net" && !slices.Contains(dispatch, fixed) {
+			t.Errorf("with Dispatch's tailnet name bound, NO_PROXY = %q; want the fixed entry %q kept", dispatch, fixed)
+		}
+	}
+	if github := entries("api.github.com"); !slices.Contains(github, ".ts.net") {
+		t.Fatalf("with api.github.com bound, NO_PROXY = %q; want .ts.net kept", github)
 	}
 }

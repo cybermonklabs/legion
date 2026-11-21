@@ -597,13 +597,28 @@ type tokenAnswer struct {
 // request itself through the address's Error, so no error of a trade carries a user name,
 // password, query or fragment the configured address holds.
 func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
+	body, shown, err := c.send(ctx, form)
+	if err != nil {
+		return nil, err
+	}
+	var answer tokenAnswer
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
+	}
+	return c.read(shown, answer)
+}
+
+// send posts one trade and answers the body of a 2xx answer that is JSON, and the token endpoint
+// as a message may print it; every other answer is post's error, a refusal the broker answered
+// with an OAuth error a RefusedError.
+func (c *Client) send(ctx context.Context, form url.Values) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, tradeTimeout)
 	defer cancel()
 	endpoint := c.brokerURL.Raw() + TokenPath
 	shown := c.brokerURL.Call(endpoint)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, c.brokerURL.Error(err)
+		return nil, shown, c.brokerURL.Error(err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	base := c.http.Transport
@@ -616,18 +631,18 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 	proofed := redirects.Refused(&http.Client{Transport: NewDPoPTransport(c.key, base), Timeout: c.http.Timeout})
 	resp, err := proofed.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), shown, c.brokerURL.Error(err))
+		return nil, shown, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), shown, c.brokerURL.Error(err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, fmt.Errorf("read the broker's answer from %s: %w", shown, c.brokerURL.Error(err))
+		return nil, shown, fmt.Errorf("read the broker's answer from %s: %w", shown, c.brokerURL.Error(err))
 	}
 	var answer tokenAnswer
 	if err := json.Unmarshal(body, &answer); err != nil && resp.StatusCode/100 == 2 {
 		// The decoder's error quotes the value it could not read, which is the answer's own
 		// text, so it prints as the address lets that text print (cipheraddr.Address.Words).
-		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
+		return nil, shown, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
 	}
 	if resp.StatusCode/100 != 2 {
 		// The broker's own words are its answer's text, and a caller prints what it is
@@ -641,11 +656,74 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		// the credential the address carries in the words it answers with; any other
 		// answer prints its words as the address lets them (cipheraddr.Address.Words).
 		if resp.StatusCode/100 == 4 && answer.Error != "" {
-			return nil, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, answer.Error, answer.ErrorDescription))
+			return nil, shown, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, answer.Error, answer.ErrorDescription))
 		}
-		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.Words(answer.Error))
+		return nil, shown, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.Words(answer.Error))
 	}
-	return c.read(shown, answer)
+	return body, shown, nil
+}
+
+// AirlockGrant is a CI run's result grant as the token endpoint answers it: the airlock
+// placeholder the run's command holds in place of a Dispatch credential, the grant's id, when it
+// ends, and the airlock release the command runs with.
+type AirlockGrant struct {
+	Placeholder, GrantID string
+	ExpiresAt            time.Time
+	Release              oauthwire.AirlockRelease
+}
+
+// placeholderAnswer is the token endpoint's answer to a run asking for the airlock placeholder,
+// as this client reads it.
+type placeholderAnswer struct {
+	AccessToken     string                    `json:"access_token"`
+	IssuedTokenType string                    `json:"issued_token_type"`
+	ExpiresIn       json.Number               `json:"expires_in"`
+	GrantID         string                    `json:"grant_id"`
+	Airlock         *oauthwire.AirlockRelease `json:"airlock"`
+}
+
+// AirlockPlaceholder trades a GitHub workflow run's token at the broker's token endpoint for the
+// airlock placeholder of a result grant (requested_token_type
+// oauthwire.TokenTypeAirlockPlaceholder), with a DPoP proof of this client's key, and never for
+// an access token: the broker keeps the grant and its proxy holds the run's results token. It
+// declines the launcher credential when Config.NoLauncherCredential says to. A refusal the
+// broker answered with an OAuth error is a RefusedError; an answer that is no placeholder of a
+// live grant - an access token among them - is refused, so a command is never run on one.
+func (c *Client) AirlockPlaceholder(ctx context.Context) (*AirlockGrant, error) {
+	subject, subjectType, err := c.subject.Token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	form := url.Values{
+		"grant_type":           {GrantTypeTokenExchange},
+		"client_id":            {oauthwire.ExchangeClientID},
+		"subject_token":        {subject},
+		"subject_token_type":   {subjectType},
+		"requested_token_type": {oauthwire.TokenTypeAirlockPlaceholder},
+	}
+	if c.noLauncherCredential {
+		form.Set(oauthwire.FormLauncherCredential, oauthwire.FormLauncherCredentialDeclined)
+	}
+	body, shown, err := c.send(ctx, form)
+	if err != nil {
+		return nil, err
+	}
+	var answer placeholderAnswer
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
+	}
+	seconds, secondsErr := answer.ExpiresIn.Int64()
+	switch {
+	case answer.IssuedTokenType != oauthwire.TokenTypeAirlockPlaceholder:
+		return nil, fmt.Errorf("the broker at %s answered issued_token_type %s, not the airlock placeholder", shown, c.brokerURL.Words(strconv.Quote(answer.IssuedTokenType)))
+	case answer.AccessToken == "" || answer.GrantID == "" || answer.Airlock == nil || answer.Airlock.ProxyPassword != answer.AccessToken ||
+		answer.Airlock.Names[oauthwire.AirlockResultsName].Value != answer.AccessToken:
+		return nil, fmt.Errorf("the broker at %s answered no placeholder of a result grant with its airlock release", shown)
+	case secondsErr != nil || seconds <= 0:
+		return nil, fmt.Errorf("the broker at %s answered no usable expires_in (%s)", shown, c.brokerURL.Words(strconv.Quote(answer.ExpiresIn.String())))
+	}
+	c.logf(ctx, "traded a workflow run's identity for an airlock placeholder", "grant", answer.GrantID)
+	return &AirlockGrant{Placeholder: answer.AccessToken, GrantID: answer.GrantID, ExpiresAt: c.now().Add(time.Duration(seconds) * time.Second), Release: *answer.Airlock}, nil
 }
 
 // read is the answer as a Token, refusing one that is not this grant's: no access token, a token

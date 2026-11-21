@@ -21,4 +21,5 @@ project_scope
 projects
 project
 scope
+ci
 credential_id

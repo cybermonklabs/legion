@@ -1,6 +1,7 @@
 import type { Artifact } from "@legion/contracts";
 import { ARTIFACT_NAME_EXISTS_RULE, PATH_KEEPS_BYTES, pathKeepsBytesOf } from "@legion/contracts";
 import { actorText } from "../actor-text";
+import { DispatchAnswerMissingError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { dispatchAnswered } from "./failures";
 
@@ -126,7 +127,13 @@ export function storedTextProblem(given: string, stored: string, name: string): 
  * which stores the file and asks this route nothing.
  */
 export function storedTextCheckFailed(error: unknown, name: string): string {
-  const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error)}.`;
+  // The round trip stores nothing, so a 2xx with no text in it (`DispatchAnswerMissingError`) says
+  // only that. Any other failure is named as it reads, its own final period left to this sentence.
+  const failed =
+    error instanceof DispatchAnswerMissingError
+      ? `answered without the text it would store (${error.code})`
+      : `failed with ${messageFor(error).replace(/\.$/, "")}`;
+  const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip ${failed}.`;
   if (!dispatchAnswered(error, 413)) {
     return `${failure} Send the upload again once that call is answered.`;
   }

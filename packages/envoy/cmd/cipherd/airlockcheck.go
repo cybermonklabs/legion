@@ -34,8 +34,8 @@ const airlockCheckUsage = "broker: usage: broker " + airlockCheckCommand +
 // removed and a changed allow, kind or judge. Those last three are in the report beside the
 // hosts and headers because they decide where a credential may go and what a judge may approve:
 // allow is the methods and path prefixes it may travel on, kind the sort of credential the entry
-// holds ("", "aws" or "azure"), and judge the longest lifetime a judge may give it. What is left
-// for the reviewer is whether each host is the right one for its secret.
+// holds ("", "aws", "azure" or "dpop"), and judge the longest lifetime a judge may give it. What
+// is left for the reviewer is whether each host is the right one for its secret.
 //
 // On a file it would not serve it exits 1 with one line on stderr naming the file and what the
 // refusal says: the entry for a validation refusal or for a name that is not a name a session

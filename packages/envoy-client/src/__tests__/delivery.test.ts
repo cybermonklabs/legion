@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { type Envelope, legacyDispatchIssueSubject } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { decode } from "@toon-format/toon";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import {
   type DispatchDelivery,
@@ -384,10 +385,10 @@ describe("renderInbound dispatch events", () => {
     const replies: Array<{ readonly path: string; readonly body: unknown }> = [];
     const server = Bun.serve({
       port: 0,
-      fetch: async (request) => {
+      fetch: keyedLayer(async (request: Request) => {
         replies.push({ path: new URL(request.url).pathname, body: await request.json() });
         return Response.json({});
-      },
+      }),
     });
     const { created_at: _createdAt, ...malformedPayload } = targetedComment;
 
@@ -434,10 +435,10 @@ describe("renderInbound dispatch events", () => {
     const paths: string[] = [];
     const server = Bun.serve({
       port: 0,
-      fetch: (request) => {
+      fetch: keyedLayer((request: Request) => {
         paths.push(new URL(request.url).pathname);
         return Response.json({});
-      },
+      }),
     });
     const message = JSON.parse(targetedDispatchPayload) as {
       event: { payload: { id: string } };
@@ -477,10 +478,10 @@ describe("renderInbound dispatch events", () => {
     const paths: string[] = [];
     const server = Bun.serve({
       port: 0,
-      fetch: (request) => {
+      fetch: keyedLayer((request: Request) => {
         paths.push(new URL(request.url).pathname);
         return Response.json({});
-      },
+      }),
     });
     const deliveries: DispatchDelivery[] = [
       {
@@ -533,23 +534,25 @@ describe("renderInbound dispatch events", () => {
   test("posts a delivery reply as one keyed write, asked again under its key", async () => {
     const keys: Array<string | null> = [];
     let answers = 0;
+    // Dispatch's keyed layer names the key back on every answer to a keyed request it judged,
+    // its refusals too, which is what tells the client a repeat is answered from the key rather
+    // than run again.
     const server = Bun.serve({
       port: 0,
-      fetch: (request) => {
-        const key = request.headers.get("Idempotency-Key");
-        keys.push(key);
-        answers += 1;
-        // Dispatch's keyed layer echoes the key on every answer to a keyed request, which is what
-        // tells the client a repeat is answered from the key rather than run again.
-        const headers: Record<string, string> = key === null ? {} : { "Idempotency-Key": key };
-        if (answers === 1)
-          return Response.json({ code: "UNAVAILABLE", error: "down" }, { status: 503, headers });
-        if (answers === 2) return Response.json({ reply: { id: "reply-1" } }, { headers });
-        return Response.json(
-          { code: "ATTEMPT_ANSWERED", error: "already answered" },
-          { status: 409, headers }
-        );
-      },
+      fetch: keyedLayer(
+        (request: Request) => {
+          keys.push(request.headers.get("Idempotency-Key"));
+          answers += 1;
+          if (answers === 1)
+            return Response.json({ code: "UNAVAILABLE", error: "down" }, { status: 503 });
+          if (answers === 2) return Response.json({ reply: { id: "reply-1" } });
+          return Response.json(
+            { code: "ATTEMPT_ANSWERED", error: "already answered" },
+            { status: 409 }
+          );
+        },
+        { judged: () => true }
+      ),
     });
     const delivery: DispatchDelivery = {
       resource: "message",

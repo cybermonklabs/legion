@@ -10,6 +10,7 @@ import type {
   WriteAdvice,
   WriteSuggestion,
 } from "@legion/contracts";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
@@ -247,7 +248,8 @@ async function executeWrite(
     config,
     env: {},
     exec: repoExec(),
-    fetchImpl: fetchImpl as typeof fetch,
+    // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
+    fetchImpl: keyedLayer(fetchImpl) as typeof fetch,
     // A session the listener records with no topics: every write names its owner.
     subscriptions: async () => [],
   });
@@ -824,7 +826,7 @@ describe("the related-item check", () => {
       config,
       env: {},
       exec: repoExec(),
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl: keyedLayer(fetchImpl) as typeof fetch,
       subscriptions: async () => [],
     });
 
@@ -876,7 +878,7 @@ describe("the related-item check", () => {
       config,
       env: {},
       exec: repoExec(),
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl: keyedLayer(fetchImpl) as typeof fetch,
       subscriptions: async () => [],
     });
 
@@ -1477,7 +1479,7 @@ describe("a document write that superseded a person's approval", () => {
       config,
       env: {},
       exec: repoExec(),
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl: keyedLayer(fetchImpl) as typeof fetch,
       subscriptions: async () => [],
     });
 
@@ -1608,7 +1610,7 @@ describe("a document write that superseded a person's approval", () => {
       config,
       env: {},
       exec: repoExec(),
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl: keyedLayer(fetchImpl) as typeof fetch,
       subscriptions: async () => [],
     });
 
@@ -1910,7 +1912,7 @@ describe("dispatch_related", () => {
       config,
       env: {},
       exec: repoExec(),
-      fetchImpl: fetchImpl as typeof fetch,
+      fetchImpl: keyedLayer(fetchImpl) as typeof fetch,
     });
     return { result, requests };
   }

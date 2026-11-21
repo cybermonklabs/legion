@@ -63,6 +63,10 @@ type Config struct {
 	// Exchange is what the RFC 8693 token exchange decides and verifies with: the listed
 	// identities, and the issuers whose tokens it accepts as a subject token.
 	Exchange ExchangeConfig
+	// Airlock is what a result entry's run is handed beside its placeholder (AirlockSettings), nil
+	// for a broker whose airlock binds no DISPATCH_RESULTS_TOKEN: such a broker answers no run a
+	// placeholder, and config.Load refuses a start that lists a result entry without one.
+	Airlock *AirlockSettings
 }
 
 // Provider runs the machine login's device authorization and token endpoints, and the token
@@ -73,6 +77,10 @@ type Provider struct {
 	strategy *codeStrategy
 	// exchange is Config.Exchange, which the exchange's own step decides by.
 	exchange ExchangeConfig
+	// airlock is Config.Airlock, and accessLifetime Config.AccessLifetime, which a result grant's
+	// lifetime is bounded by (resultGrantLifetime).
+	airlock        *AirlockSettings
+	accessLifetime time.Duration
 	// deviceGrant is whether Config.VerificationURL named a page, so the RFC 8628 factories are
 	// composed: what the broker mounts its device authorization route on, and what its metadata
 	// document says.
@@ -193,7 +201,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	// built. Its sign-in domain is empty, which admits no person at all: a set nobody built
 	// lists no machine either, so there is no box a person could have signed in on.
 	if c.Exchange.Policy == nil {
-		policy, err := exchange.NewSet(nil, nil, nil, nil, "")
+		policy, err := exchange.NewSet(nil, nil, nil, nil, nil, "")
 		if err != nil {
 			return nil, fmt.Errorf("oauth: the empty exchange policy: %w", err)
 		}
@@ -262,6 +270,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	}
 	p := &Provider{
 		oauth: provider, store: store, strategy: strategy, exchange: c.Exchange,
+		airlock: c.Airlock, accessLifetime: c.AccessLifetime,
 		deviceGrant: deviceGrant, grantTypes: grantTypes,
 		subjectTokenTypes: subjectTokenTypes(cfg.RFC8693TokenTypes),
 		// Read from the configuration the provider was composed with rather than written down

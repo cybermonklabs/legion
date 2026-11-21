@@ -383,6 +383,13 @@ Go for it (packages/daemon/go.mod). The `legion` build of the private-name port
 harness, which put that binary's whole closure on this filter, is the
 private-names-port job's now, with the private_names_port filter.
 
+## test: Both keyed-write harnesses read the route answers
+
+Both keyed-write harnesses read the route answers from the generated API
+document: packages/envoy-client/test/keyed-layer.ts and route-answers.ts, whose
+`document` reads packages/contracts/schemas/dispatch-openapi.json, which the
+Bun suites of scripts/dispatch and scripts/e2e/lib this job runs import by path.
+
 ## test: Each harness step's own gate, named here so the job runs
 
 Each harness step's own gate, named here so the job runs for the change that

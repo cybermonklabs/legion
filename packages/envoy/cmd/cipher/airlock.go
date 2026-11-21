@@ -48,7 +48,9 @@ const airlockProxyUser = "agent-secrets"
 // inherited ones: the loopback addresses, the suffixes of a cluster's and a tailnet's own names,
 // the two metadata addresses and the four private ranges. They never reach the airlock proxy,
 // which refuses a private address anyway, and a request to one of them must not wait on a proxy
-// that will not carry it.
+// that will not carry it. An entry that covers a host the release binds is left out, as an
+// inherited one is (airlockNoProxy): Dispatch's tailnet name is under `.ts.net`, and its writes
+// must reach the proxy.
 var airlockFixedNoProxy = []string{
 	"localhost",
 	"127.0.0.1",
@@ -555,7 +557,14 @@ func airlockNoProxy(environ []string, release *AirlockRelease) string {
 		}
 		entries = append(entries, entry)
 	}
-	entries = append(entries, airlockFixedNoProxy...)
+	// A fixed entry is held to the bound hosts as an inherited one is: `.ts.net` covers a bound
+	// host on the tailnet, Dispatch's own name among them, and kept, it would send that host's
+	// requests straight out with a placeholder in them rather than through the proxy.
+	for _, entry := range airlockFixedNoProxy {
+		if !overlapsBoundHost(entry, bound) {
+			entries = append(entries, entry)
+		}
+	}
 	if host := brokerHostname(envValue(environ, "AGENT_SECRETS_URL")); host != "" {
 		entries = append(entries, host)
 	}

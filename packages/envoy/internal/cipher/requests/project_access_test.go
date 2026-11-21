@@ -91,7 +91,7 @@ func everyonesPod(t *testing.T, m *Machine, name, project string) (string, *ecds
 	t.Helper()
 	subject := "system:serviceaccount:example:" + name
 	if project != "" {
-		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: project, Person: insider}}, nil, nil, nil, "")
+		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: project, Person: insider}}, nil, nil, nil, nil, "")
 		if err != nil {
 			t.Fatalf("exchange.NewSet: %v", err)
 		}
@@ -199,7 +199,7 @@ func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 	set, err := exchange.NewSet([]exchange.AccountEntry{
 		{Account: fixtureSubject, Project: privProject, Person: insider},
 		{Account: otherSubject, Project: teamProject, Person: insider},
-	}, nil, nil, nil, "")
+	}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  A CI run of a result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`) now trades its GitHub token at the secrets broker's token endpoint for an airlock placeholder, `requested_token_type=urn:envoy:params:oauth:token-type:airlock-placeholder`, and never for an access token: the broker refuses such a run an access token with `invalid_request`, and grants no other identity a placeholder. The answer holds the placeholder (`agent-secrets-placeholder-result-` and 32 characters), its grant id `result:<id>` and the airlock release a command runs with. The broker keeps the grant in its database (`result_grants`), so every broker pod reads it, for fifteen minutes or `BROKER_ACCESS_TOKEN_SECONDS` when that is shorter, and its sweep deletes an ended grant. The trade needs no route to the broker's own public URL.
+
+  A broker with result entries refuses to start unless `BROKER_AIRLOCK_RULES_FILE` names a rules file whose entry `DISPATCH_RESULTS_TOKEN` is of kind `dpop`, binds a host, has a non-empty allow list and is carried in `Authorization` alone; each refusal names what is missing. `BROKER_RESULT_GRANT_TEST_SECONDS` (1 to 900) sets a local stack's grant lifetime, and a production start refuses it. The broker's log masks a result placeholder whole.
+
+  The public route `POST /v1/oauth/result-grants`, and the broker's in-memory result grants behind it, are removed.

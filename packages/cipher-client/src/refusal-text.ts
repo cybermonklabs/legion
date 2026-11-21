@@ -127,8 +127,10 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
   ),
   policy(
     "claimMissing",
-    "the subject token's workflow_ref is not <owner>/<name>/<path>@<ref> under its repository %s",
-    REPOSITORY
+    "the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref",
+    WORKFLOW_REF,
+    REPOSITORY,
+    GIT_REF
   ),
   policy(
     "noEntry",

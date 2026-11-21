@@ -304,16 +304,40 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// The entry's kind is what the value behind this name is: "" a string a header carries,
 	// which the swap below puts there; "aws" a key pair the call itself has to be signed with
 	// (aws.go); "azure" a federated token that has to be exchanged at a token endpoint for an
-	// access token (azure.go). Validate allows no other kind, so an entry this reads nothing
-	// for is a header swap. It is the kind candidates already read for this name, carried on
-	// the pair rather than looked up again.
+	// access token (azure.go); "dpop" a CI run's results token the broker minted, which the swap
+	// puts in and resultTransport signs a DPoP proof of the pod's key for (dpop.go). Validate
+	// allows no other kind, so an entry this reads nothing for is a header swap. It is the kind
+	// candidates already read for this name, carried on the pair rather than looked up again.
 	kind := chosen.kind
-	if s.noKind {
+	if s.noKind && kind != proxyrules.KindDPoP {
 		// Options.NoKind: the entry's kind is read as none, so an azure or aws entry takes
 		// the plain header swap below, and the federated token's refusal below holds as it does
 		// under every kind. It is the negative control of the check those two kinds belong to,
-		// and is refused on a production start.
+		// and is refused on a production start. A dpop entry keeps its kind: read as none, it
+		// would send the run's token on with no proof and with the command's forwarding headers.
 		kind = ""
+	}
+	if kind == proxyrules.KindDPoP {
+		// A CI run's results capability (requests.Machine.AirlockConnection for a result grant):
+		// two rules hold every request to its host, each refused before any value is minted or
+		// any dial is made. An upgrade is refused, since the bytes after its answer are no request
+		// the airlock reads; and the request carries the grant's placeholder as its one
+		// Authorization header, which the swap below replaces with the run's token, so nothing
+		// else a command sends there - its own token, a second header beside the placeholder -
+		// goes on to the service.
+		if len(r.Header.Values("Upgrade")) != 0 {
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeProtocolSwitch, "a request to this host is never an upgrade: the airlock reads each request it carries there")
+			return
+		}
+		authorization := r.Header.Values("Authorization")
+		if !holdsPlaceholder || len(authorization) != 1 || authorization[0] != "DPoP "+info.grant.Names[chosen.name].Slots[chosen.slot] {
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoPlaceholder, "a request to this host carries the grant's placeholder as its one Authorization header, DPoP <placeholder>; this one does not, so nothing was sent")
+			return
+		}
+		if s.dpopKey == nil {
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoValue, "the broker holds no DPoP key for "+chosen.name+", so no proof can be made for this request and nothing was sent")
+			return
+		}
 	}
 	exchange := kind == proxyrules.KindAzure && isTokenRequest(r)
 	if exchange {
@@ -495,8 +519,14 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// refusedByCut is whether the watcher ended the call before its service answered, which
 	// ErrorHandler answers as a refusal; ErrorHandler runs inside ServeHTTP, on this goroutine.
 	refusedByCut := false
+	var transport http.RoundTripper = s.upstream
+	if kind == proxyrules.KindDPoP {
+		// The swap put the run's token in; resultTransport signs its proof with the pod's key,
+		// for the bound host's origin.
+		transport = &resultTransport{key: s.dpopKey, origin: "https://" + info.host, base: s.upstream}
+	}
 	proxy := &httputil.ReverseProxy{
-		Transport: s.upstream,
+		Transport: transport,
 		// httputil's own lines - a body copy that failed, which quotes what the service sent -
 		// go through this package's log rather than the standard logger (Server.errorLog).
 		ErrorLog: s.errorLog,
@@ -514,6 +544,16 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 				RawQuery: rawQuery,
 			}
 			pr.Out.Host = hostHeaderOf(info.target)
+			if kind == proxyrules.KindDPoP {
+				// A results write goes on without any forwarding header the command sent, so
+				// Dispatch reads the broker's address and never one the command wrote:
+				// ReverseProxy has dropped Forwarded and X-Forwarded-*, which are not set back
+				// here, and dpopDroppedHeaders are the two it leaves.
+				for _, name := range dpopDroppedHeaders {
+					pr.Out.Header.Del(name)
+				}
+				return
+			}
 			// ReverseProxy drops the command's own Forwarded and X-Forwarded-* headers before
 			// Rewrite runs, for a proxy that writes its own; this one writes none and changes
 			// no header the entry does not name, so they go on as the command sent them, and
@@ -528,9 +568,11 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			}
 		},
 		// The one thing read of an answer is whether it has a body at all (statusWriter.whole).
-		// It is streamed back as it came otherwise: nothing of it is read, buffered,
-		// decompressed or changed, because this design changes no answer from an API service -
-		// what it guards is what leaves, not what comes back.
+		// It is streamed back as it came otherwise: nothing of it is read, buffered or
+		// decompressed, because this design changes no answer from an API service - what it
+		// guards is what leaves, not what comes back. The one change is the two headers that
+		// say the answer is the service's and not the proxy's own (ownAnswer): the service's own
+		// Airlock-Code goes, so a service cannot pass for the proxy.
 		ModifyResponse: func(answer *http.Response) error {
 			if !toCommand.start() {
 				// The watcher ended the call between the service's answer and here, so
@@ -538,6 +580,8 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 				// service had not answered (ErrorHandler).
 				return context.Cause(carried)
 			}
+			answer.Header.Set(forwardedHeader, "true")
+			answer.Header.Del(codeHeader)
 			served.whole.Store(answer.ContentLength == 0)
 			return nil
 		},
@@ -640,6 +684,13 @@ func (c *commandSide) finish() {
 // Rewrite runs, which serveBound sets back as the command sent them, each that the command's
 // Connection header does not name.
 var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
+
+// dpopDroppedHeaders are the forwarding headers ReverseProxy leaves on a request, which a request
+// to a host whose entry is of kind dpop loses in Rewrite: with the four ReverseProxy drops and
+// serveBound does not set back for that kind, they are the six that Dispatch reads a caller's
+// address from (internal/dispatch/routes's forwardingHeaders), so a results write reaches Dispatch
+// with the broker's address and none the command wrote.
+var dpopDroppedHeaders = []string{"X-Real-IP", "Via"}
 
 // upgrading reports whether a request asks to leave HTTP behind: a Connection header naming the
 // Upgrade token and an Upgrade header naming a protocol, which is how net/http and
@@ -828,6 +879,7 @@ func (info connInfo) callFor(chosen pair) call {
 func (s *Server) refuse(w http.ResponseWriter, r *http.Request, c call, status int, code, reason string) {
 	rec := answerOf(w)
 	rec.note(code)
+	ownAnswer(w, code)
 	if !answer.Refused(status, code) {
 		s.log.Info(callMessage, s.callFields(rec.ID(), c, r, status, reason)...)
 		http.Error(w, "airlock: "+reason, status)
@@ -859,6 +911,9 @@ func (s *Server) refusalFields(id string, c call, r *http.Request, status int, c
 	trailing := make([]any, 0, 4)
 	if c.grant.GrantID != "" {
 		trailing = append(trailing, "issue", c.grant.Issue)
+		if c.grant.CheckRunID != "" {
+			trailing = append(trailing, "ci_check_run_id", c.grant.CheckRunID)
+		}
 	}
 	if slot := c.chosen.namedSlot(); slot != "" {
 		trailing = append(trailing, "slot", slot)
@@ -892,6 +947,11 @@ func (s *Server) callFields(id string, c call, r *http.Request, status int, reas
 		"path", r.URL.Path,
 		"status", status,
 		"allowed", reason == "",
+	}
+	if c.grant.CheckRunID != "" {
+		// A CI run's result grant: the check run of the job whose write this is, which ties
+		// the line to the run Dispatch stores the result for.
+		fields = append(fields, "ci_check_run_id", c.grant.CheckRunID)
 	}
 	if slot := c.chosen.namedSlot(); slot != "" {
 		fields = append(fields, "slot", slot)

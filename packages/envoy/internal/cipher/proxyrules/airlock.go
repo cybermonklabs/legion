@@ -43,7 +43,7 @@ type SecretRule struct {
 	Hosts   []string `json:"hosts"`
 	Headers []string `json:"headers"` // nil: the default ["authorization"]; empty: no header
 	Allow   []Allow  `json:"allow"`   // nil: any method and path; empty: nothing allowed
-	Kind    string   `json:"kind"`    // "", "aws" or "azure"
+	Kind    string   `json:"kind"`    // "", "aws", "azure" or "dpop"
 	Judge   *uint32  `json:"judge"`   // the judge's longest lifetime, in seconds
 	// Guidance is what the model judge reads, as the key owner's instruction, when it decides a
 	// request for this key: when to grant it. It is no part of the Lean model, which decides
@@ -86,17 +86,21 @@ func (s SecretRule) HeaderNames() []string {
 	return s.Headers
 }
 
-// KindAWS and KindAzure are the two kinds a rules entry may name (SecretRule.Kind), beside the
-// empty kind of a value a header simply carries. Validate allows no other, and each of them
-// says what the value behind the name is rather than where it may go: an AWS key pair, which
-// the proxy signs a call again with, and an azure-login secret, whose federated token is
-// exchanged for an access token. They are here rather than private to each reader because
-// three packages - the proxy's aws.go and azure.go and the broker's own release
-// (internal/cipher/requests) - each held a constant of the same string, and a kind is one
-// wire word for all of them.
+// KindAWS, KindAzure and KindDPoP are the three kinds a rules entry may name (SecretRule.Kind),
+// beside the empty kind of a value a header simply carries. Validate allows no other, and each
+// of them says what the value behind the name is rather than where it may go: an AWS key pair,
+// which the proxy signs a call again with; an azure-login secret, whose federated token is
+// exchanged for an access token; and a capability the broker mints for a CI run and holds. They
+// are here rather than private to each reader because three packages - the proxy's aws.go and
+// azure.go and the broker's own release (internal/cipher/requests) - each held a constant of the
+// same string, and a kind is one wire word for all of them.
 const (
 	KindAWS   = "aws"
 	KindAzure = "azure"
+	// KindDPoP is a capability the broker mints for a CI run and holds; the proxy swaps it in,
+	// signs a DPoP proof of the pod's key, and takes a request to its host only with the
+	// placeholder.
+	KindDPoP = "dpop"
 )
 
 // Rules is the whole airlock.json file.
@@ -131,7 +135,7 @@ const maxJudgeSeconds = 900
 
 // Validate reports why the file is not valid, naming the entry by its secret name and its
 // index. It reads the entries in order and reports the first failure: a repeated name, a judge
-// above 900 seconds, a kind other than "", "aws" or "azure", or a host that binds the secret
+// above 900 seconds, a kind other than "", "aws", "azure" or "dpop", or a host that binds the secret
 // nowhere (HostShapeOK). An entry with no host is valid: it binds the value nowhere and says who
 // decides a request for the key, and Decide refuses every proxy request for it ("secret not
 // behind airlock"). Whether it answers nil is the same answer as the Lean model's validate, so a
@@ -144,8 +148,8 @@ func Validate(rules Rules) error {
 			return fmt.Errorf("%s: the name is repeated", entry(i, s))
 		case s.Judge != nil && *s.Judge > maxJudgeSeconds:
 			return fmt.Errorf("%s: judge %d is above %d seconds", entry(i, s), *s.Judge, maxJudgeSeconds)
-		case s.Kind != "" && s.Kind != "aws" && s.Kind != "azure":
-			return fmt.Errorf("%s: kind %q is not %q, %q or %q", entry(i, s), s.Kind, "", "aws", "azure")
+		case s.Kind != "" && s.Kind != KindAWS && s.Kind != KindAzure && s.Kind != KindDPoP:
+			return fmt.Errorf("%s: kind %q is not %q, %q, %q or %q", entry(i, s), s.Kind, "", KindAWS, KindAzure, KindDPoP)
 		}
 		// A host HostShapeOK refuses binds the secret nowhere although the entry names it to bind
 		// one: the command gets its placeholder and no call of it is ever swapped. An entry meant to

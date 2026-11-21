@@ -1,10 +1,11 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
 // callers it answers share: the clients they present, the scope a machine login asks for and the
-// one a read entry's token holds, the names the token exchange knows a subject token by, the
-// fields the broker adds to a token answer, and the one grammar of a token's list of projects. It
-// imports nothing of the broker — only the standard library and the project-key rule
-// internal/contracts generates — so the agent-secrets helper reads it without the broker's
-// storage.
+// ones a read entry's and a result entry's tokens hold, the names the token exchange knows a
+// subject token by, the fields the broker adds to a token answer, the run a result entry's token
+// carries and how that run's workflow and principal are read from it, and the one grammar of a
+// token's list of projects. It imports nothing of the broker — only the standard library and the
+// project-key rule internal/contracts generates — so the agent-secrets helper reads it without
+// the broker's storage.
 package oauthwire
 
 import (
@@ -27,12 +28,19 @@ const (
 	// Scope is the one scope a machine login asks for and is granted.
 	Scope = "machine"
 	// ScopeRead is the one OAuth scope a token minted from a read entry
-	// (BROKER_EXCHANGE_READ_ACCOUNTS) holds, and the only scope the exchange grants: a token
-	// that writes nothing and reads only the routes a resource server lists for it, which
-	// Dispatch does in its read list and every other service refuses (ciphertoken). The entry
-	// decides it, never the request: the exchange client is registered for Scope alone, so the
-	// library refuses a request that names this one invalid_scope under every entry.
+	// (BROKER_EXCHANGE_READ_ACCOUNTS) holds: a token that writes nothing and reads only the
+	// routes a resource server lists for it, which Dispatch does in its read list and every
+	// other service refuses (ciphertoken). The entry decides it, never the request: the exchange
+	// client is registered for Scope alone, so the library refuses a request that names this one
+	// invalid_scope under every entry.
 	ScopeRead = "read"
+	// ScopeResults is the one OAuth scope a token minted from a result entry
+	// (BROKER_EXCHANGE_RESULT_WORKFLOWS) holds, beside the project scope ProjectScopeResults: a
+	// token that writes the results of its one project's spec checks for the run it carries
+	// (Introspection.CI), and nothing else, on the routes a resource server lists for it. The
+	// entry decides it, never the request, as it decides ScopeRead. ScopeRead and ScopeResults are
+	// the only scopes the exchange grants.
+	ScopeResults = "results"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"
@@ -125,6 +133,61 @@ const (
 	MembershipHeld = "membership_held"
 )
 
+// The token exchange's answer to a result entry's run: an airlock placeholder bound to a result
+// grant the broker keeps, never an access token. The run asks for it under
+// TokenTypeAirlockPlaceholder, and the broker's airlock proxy swaps the run's results token in for
+// the placeholder on each write the rules entry AirlockResultsName allows.
+const (
+	// TokenTypeAirlockPlaceholder is the requested_token_type a result entry's run asks for and
+	// the issued_token_type it is answered: the placeholder its writes carry through the airlock.
+	// RFC 8693 Section 2.2.1 lets the issued token be other than an access token; the broker
+	// defines this name, as it defines SubjectTokenTypeGitHub.
+	TokenTypeAirlockPlaceholder = "urn:envoy:params:oauth:token-type:airlock-placeholder"
+	// AirlockResultsName is the one airlock name a result grant holds: the rules entry of kind
+	// dpop that binds Dispatch's public host, and the variable the command finds the placeholder
+	// in.
+	AirlockResultsName = "DISPATCH_RESULTS_TOKEN"
+	// ResultGrantIDPrefix opens the id a result grant is named by on the wire and in the proxy's
+	// lines: "result:" and the grant's uuid.
+	ResultGrantIDPrefix = "result:"
+	// ExtraGrantID is the placeholder answer's field naming the grant (ResultGrantIDPrefix and its
+	// uuid).
+	ExtraGrantID = "grant_id"
+	// ExtraAirlock is the placeholder answer's field holding the grant's AirlockRelease.
+	ExtraAirlock = "airlock"
+)
+
+// AirlockRelease is how a command reaches the values the airlock holds back: the proxy it sends
+// their requests through, the certificate authority that proxy's certificates are signed by, the
+// password every connection to it opens with, and one entry per name held back. A release of
+// secrets answers it under "airlock" (POST /v1/grants/{id}/values), and so does the token
+// exchange's answer to a result entry's run (ExtraAirlock).
+type AirlockRelease struct {
+	// The URL the command points HTTPS_PROXY at (BROKER_AIRLOCK_PROXY_URL).
+	ProxyURL string `json:"proxy_url"`
+	// The PEM certificate the command must trust to reach the proxy, which signs a certificate
+	// for each host it carries a request to.
+	CACertificate string `json:"ca_certificate"`
+	// The password every proxy connection authenticates with: one of this grant's own
+	// placeholders, the first (name, slot) pair in sorted order.
+	ProxyPassword string `json:"proxy_password"`
+	// Each name the airlock holds back, by the name the command knows it as.
+	Names map[string]AirlockName `json:"names"`
+}
+
+// AirlockName is one name the airlock holds back.
+type AirlockName struct {
+	// What the command's environment variable of that name holds: the released shape of the
+	// secret with a placeholder wherever its value would be.
+	Value string `json:"value"`
+	// Each slot of the secret and the placeholder standing for it, so a command that takes one
+	// value of the secret apart knows which placeholder is which.
+	Slots map[string]string `json:"slots"`
+	// The hosts the secret's airlock entry allows, which the command keeps off its NO_PROXY so
+	// their requests reach the proxy.
+	Hosts []string `json:"hosts"`
+}
+
 // The wire names of a token's project scope, which an introspection answer's ProjectScope carries
 // and the exchange writes onto the session it stores (internal/cipher/oauth, ClaimProjectScope).
 // They are short and fixed so a reader of either reads one word rather than the prose
@@ -142,7 +205,98 @@ const (
 	// build that predates it refuses it, since it accepts only the two words above, and one of
 	// this build accepts it only where it asks to (ciphertoken).
 	ProjectScopeNone = "none"
+	// ProjectScopeResults is a token that may write the results of the one project it names, for
+	// the run it carries, and nothing else: the token a result entry mints, which holds the scope
+	// ScopeResults beside it. A resource server of a build that predates it refuses it, as it
+	// refuses ProjectScopeNone, and one of this build accepts it only where it asks to
+	// (brokertoken).
+	ProjectScopeResults = "results"
 )
+
+// CIRun is the GitHub Actions run a result entry's token was minted for, as the run's own GitHub
+// token named it: the claims of that token, copied onto the token the exchange mints and answered
+// back by introspection (Introspection.CI). The exchange mints such a token only when every field
+// is set, the workflow_ref one WorkflowPath reads under the repository and the ref, the commit in
+// the form IsCommit holds and the run, the attempt and the check run in the form IsPositiveDecimal
+// holds (exchange.Set.Workflow), and a resource server admits it only so (brokertoken). The check
+// run is the job's identity: GitHub names the check run of each job, and a resource server reads
+// its name and its commit from GitHub by this id.
+type CIRun struct {
+	// Repository is <owner>/<name>, the repository the run belongs to.
+	Repository string `json:"repository"`
+	// WorkflowRef is <owner>/<name>/<workflow path>@<ref>, the workflow the run started, which
+	// WorkflowPath reads the path out of.
+	WorkflowRef string `json:"workflow_ref"`
+	// Ref is the git ref the run is on, such as refs/heads/main.
+	Ref string `json:"ref"`
+	// SHA is the commit the run was started for.
+	SHA string `json:"sha"`
+	// EventName is the event that started the run, such as push.
+	EventName string `json:"event_name"`
+	// RunID is the workflow run.
+	RunID string `json:"run_id"`
+	// RunAttempt is which attempt of that run the token was minted in, from 1.
+	RunAttempt string `json:"run_attempt"`
+	// RunnerEnvironment is github-hosted or self-hosted, as GitHub names the runner.
+	RunnerEnvironment string `json:"runner_environment"`
+	// CheckRunID is the check run of the job the token was minted in.
+	CheckRunID string `json:"check_run_id"`
+}
+
+// IsCommit reports whether text is a commit as a run names it: 40 lowercase hex digits.
+func IsCommit(text string) bool {
+	if len(text) != 40 {
+		return false
+	}
+	for i := range len(text) {
+		if c := text[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// IsPositiveDecimal reports whether text is a positive decimal number that a signed 64-bit integer
+// holds, written as GitHub writes a run's id, its attempt and a check run's id: no sign and no
+// leading zero, so one number has one spelling, and no larger than a resource server's bigint.
+func IsPositiveDecimal(text string) bool {
+	const largest = "9223372036854775807"
+	if text == "" || text[0] == '0' || len(text) > len(largest) {
+		return false
+	}
+	for i := range len(text) {
+		if text[i] < '0' || text[i] > '9' {
+			return false
+		}
+	}
+	return len(text) < len(largest) || text <= largest
+}
+
+// WorkflowPath is the path, inside repository, of the workflow file that a run's workflow_ref
+// names. GitHub writes workflow_ref as "<repository>/<path>@<ref>", where ref is the run's own ref
+// claim. A workflow file's name and a branch's name can each hold an "@", so no cut at an "@"
+// reads the path: it is what is left once the prefix "<repository>/" and the suffix "@<ref>" are
+// removed. It answers false for a workflow_ref that does not start with that prefix, does not end
+// with that suffix, or holds no path between them. The broker reads a run's workflow with it
+// (exchange.Set.Workflow), a resource server admits a results token's run only where it reads
+// (brokertoken), and Dispatch reads the principal it stores on a result with it, so the identity
+// on a result is the one the broker authenticated.
+func WorkflowPath(workflowRef, repository, ref string) (string, bool) {
+	prefix, suffix := repository+"/", "@"+ref
+	if len(workflowRef) <= len(prefix)+len(suffix) ||
+		workflowRef[:len(prefix)] != prefix || workflowRef[len(workflowRef)-len(suffix):] != suffix {
+		return "", false
+	}
+	return workflowRef[len(prefix) : len(workflowRef)-len(suffix)], true
+}
+
+// ResultPrincipal is the principal a result entry's run writes under: workflow-results:, the
+// repository and the path of the workflow file (WorkflowPath), one holder for every run of the
+// workflow whatever its ref. The broker spells it so (exchange.Set.Workflow), and Dispatch stores
+// it as the recorder of a result, so the two spell one string with one definition.
+func ResultPrincipal(repository, workflow string) string {
+	return "workflow-results:" + repository + "/" + workflow
+}
 
 // MaxProjects is the most projects one token names.
 const MaxProjects = 16
@@ -229,19 +383,23 @@ type Introspection struct {
 	// as the actor token's issuer spells it, which is a Google subject rather than an account,
 	// so this is the name a reader can act on.
 	Machine string `json:"machine,omitempty"`
-	// ProjectScope is what Projects means: ProjectScopeNamed, ProjectScopePerson or
-	// ProjectScopeNone. A machine login's own token, which no exchange decided for, carries
-	// neither this nor Projects.
+	// ProjectScope is what Projects means: ProjectScopeNamed, ProjectScopePerson,
+	// ProjectScopeNone or ProjectScopeResults. A machine login's own token, which no exchange
+	// decided for, carries neither this nor Projects.
 	ProjectScope string `json:"project_scope,omitempty"`
 	// Projects is the token's list of projects: for a ProjectScopeNamed token, the entry's one
 	// project, or none for an account entry naming none; for a ProjectScopePerson token, the 0 to
 	// MaxProjects projects its trade asked for, each one its person could see then; for a
+	// ProjectScopeResults token, the one project whose results it may write; for a
 	// ProjectScopeNone token, none. Sorted, each once; absent for none.
 	Projects []string `json:"projects,omitempty"`
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
-	// exchanged token holds ScopeRead when a read entry minted it and no scope otherwise, and a
-	// machine login's own token holds Scope.
+	// exchanged token holds ScopeRead when a read entry minted it, ScopeResults when a result
+	// entry minted it, and no scope otherwise, and a machine login's own token holds Scope.
 	Scope string `json:"scope,omitempty"`
+	// CI is the run a result entry's token was minted for. It is set exactly beside
+	// ProjectScopeResults, and absent from every other token.
+	CI *CIRun `json:"ci,omitempty"`
 	// ExpiresAt is when the token expires, in seconds since the epoch (RFC 7662's 'exp'), so a
 	// caller that remembers an affirmative answer can keep it no longer than the token lives.
 	ExpiresAt int64 `json:"exp,omitempty"`

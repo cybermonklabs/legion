@@ -694,6 +694,42 @@ func TestEveryAddressConfigReadsIsReadWithoutItsZone(t *testing.T) {
 	}
 }
 
+// TestTheResolveSettingMayNameThePortItsDialReaches: an entry of BROKER_AIRLOCK_TEST_RESOLVE may
+// name a port beside its address, which the proxy dials in place of the CONNECT's own: a stand-in
+// on loopback needs no privileged port 443, as a test of the real broker's airlock does. An entry
+// with no port leaves the CONNECT's. An address given two ports, or the port 0, is refused, naming
+// it: a dial to the address could not tell which port it means.
+func TestTheResolveSettingMayNameThePortItsDialReaches(t *testing.T) {
+	e := validEnv()
+	e["BROKER_AIRLOCK_TEST_RESOLVE"] = "s.airlock.test=127.0.0.2:8443 t.airlock.test=[::1]:9443 u.airlock.test=127.0.0.3"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load with ports in BROKER_AIRLOCK_TEST_RESOLVE: %v", err)
+	}
+	wantHosts := map[string]netip.Addr{
+		"s.airlock.test": netip.MustParseAddr("127.0.0.2"),
+		"t.airlock.test": netip.MustParseAddr("::1"),
+		"u.airlock.test": netip.MustParseAddr("127.0.0.3"),
+	}
+	if !maps.Equal(cfg.AirlockTestResolve, wantHosts) {
+		t.Errorf("the resolve map reads %v; want %v", cfg.AirlockTestResolve, wantHosts)
+	}
+	wantPorts := map[netip.Addr]uint16{netip.MustParseAddr("127.0.0.2"): 8443, netip.MustParseAddr("::1"): 9443}
+	if !maps.Equal(cfg.AirlockTestDialPorts, wantPorts) {
+		t.Errorf("the dial ports read %v; want %v, and none for an entry that names no port", cfg.AirlockTestDialPorts, wantPorts)
+	}
+	for value, want := range map[string]string{
+		"s.airlock.test=127.0.0.2:8443 t.airlock.test=127.0.0.2:9443": "127.0.0.2",
+		"s.airlock.test=127.0.0.2:0":                                  "127.0.0.2:0",
+	} {
+		e := validEnv()
+		e["BROKER_AIRLOCK_TEST_RESOLVE"] = value
+		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_AIRLOCK_TEST_RESOLVE") || !strings.Contains(err.Error(), want) {
+			t.Errorf("Load(BROKER_AIRLOCK_TEST_RESOLVE=%q) = %v; want a refusal naming the setting and %s", value, err, want)
+		}
+	}
+}
+
 // TestLoadReadsTheRegisteredServices pins BROKER_SERVICES: whitespace-separated
 // name=<service-account subject> entries keyed by subject, none when unset. A name is one a
 // machine login's service can take ([a-z0-9-]{1,64}) and not the owner tag's own "shared"; a
@@ -2281,6 +2317,63 @@ func TestLoadReadsTheExchangeWorkflows(t *testing.T) {
 	e["BROKER_EXCHANGE_WORKFLOWS"] = entry + "=EXAMPLE=ada@example.com"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_ISSUER") {
 		t.Errorf("BROKER_EXCHANGE_WORKFLOWS with no GitHub issuer: err = %v, want a refusal naming BROKER_EXCHANGE_GITHUB_ISSUER", err)
+	}
+}
+
+// TestLoadReadsTheExchangeResultWorkflows pins BROKER_EXCHANGE_RESULT_WORKFLOWS:
+// <repository>=<workflow>=<ref pattern>=<project>=<person> entries in order, none when unset,
+// one workflow under two patterns, and refusals naming the setting and the entry for one that is
+// not of that form, a ref pattern exchange.CheckRefPattern refuses, and one workflow under one
+// pattern twice. It needs GitHub's issuer and audience, whose tokens its runs present.
+func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ExchangeResultWorkflows != nil {
+		t.Fatalf("ExchangeResultWorkflows = %v, want nil when BROKER_EXCHANGE_RESULT_WORKFLOWS is unset", cfg.ExchangeResultWorkflows)
+	}
+	withGitHub := func() map[string]string {
+		e := withResultsAirlock(validEnv())
+		e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
+		e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-exchange"
+		return e
+	}
+	const workflow = "example-org/example-repo=.github/workflows/ci-results.yaml"
+	e := withGitHub()
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com\n " + workflow + "=refs/heads/*/*=EXAMPLE=ada@example.com "
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []exchange.ResultWorkflowEntry{
+		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", RefPattern: "refs/heads/*", Project: "EXAMPLE", Person: "ada@example.com"},
+		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", RefPattern: "refs/heads/*/*", Project: "EXAMPLE", Person: "ada@example.com"},
+	}
+	if !slices.Equal(cfg.ExchangeResultWorkflows, want) {
+		t.Fatalf("ExchangeResultWorkflows = %v, want %v", cfg.ExchangeResultWorkflows, want)
+	}
+	for _, bad := range []string{
+		"example-org/example-repo", workflow + "=refs/heads/*=EXAMPLE",
+		workflow + "==EXAMPLE=ada@example.com", workflow + "=refs/heads/*=EXAMPLE=ada@example.com=a-session",
+		workflow + "=refs/*/main=EXAMPLE=ada@example.com", workflow + "=refs/heads/[x=EXAMPLE=ada@example.com",
+	} {
+		e := withGitHub()
+		e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = bad
+		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
+			t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
+		}
+	}
+	e = withGitHub()
+	const again = workflow + "=refs/heads/*=OTHER=ada@example.com"
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com " + again
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), strconv.Quote(again)) {
+		t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS naming one workflow and pattern twice: err = %v, want a refusal naming the setting and the entry", err)
+	}
+	e = validEnv()
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_ISSUER") {
+		t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS with no GitHub issuer: err = %v, want a refusal naming the setting and BROKER_EXCHANGE_GITHUB_ISSUER", err)
 	}
 }
 

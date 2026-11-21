@@ -141,7 +141,7 @@ func TestARevokeWaitsForAnAdoptionOfTheSessionInFlight(t *testing.T) {
 func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: dave.account, Project: teamProject, Person: insider}}, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: dave.account, Project: teamProject, Person: insider}}, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestOnlyAMappedPersonRevokesTheirPodsAutomaticGrant(t *testing.T) {
 			const dave = "dave@example.com"
 			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 			p := personPod{person: dave, service: "person-dave", account: "system:serviceaccount:people:dave"}
-			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: p.account, Project: teamProject, Person: insider}}, nil, nil, nil, "")
+			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: p.account, Project: teamProject, Person: insider}}, nil, nil, nil, nil, "")
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1222,15 +1223,27 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 }
 
 // DirFiles reads every file of a Dir listing (one blob read each, base64),
-// keyed by file name. The bound is the notes package's: a file whose listed
-// size exceeds notes.MaxFileSize is notes.ErrFileTooLarge (notes.CheckSize)
-// before any blob is fetched, and so is a decoded blob over it; a blob that
+// keyed by file name. The bounds are the notes package's: a listing over
+// notes.MaxFiles files or notes.MaxSetSize bytes in sum is
+// notes.ErrSetTooLarge (notes.CheckSet), and a file whose listed size exceeds
+// notes.MaxFileSize is notes.ErrFileTooLarge (notes.CheckSize), each before
+// any blob is fetched, and so is a decoded blob over MaxFileSize; a blob that
 // vanished between the listing and the read fails the whole set. A path is
-// GitHub's text (Dir), so the error of notes.CheckSize names it as ShownBody
-// shows it.
+// GitHub's text (Dir), so the errors of notes.CheckSet and notes.CheckSize
+// name it as ShownBody shows it.
 func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listing Dir) (map[string][]byte, error) {
 	if c == nil {
 		return nil, ErrNoAppKey
+	}
+	var listed int64
+	for _, file := range listing.Files {
+		listed += file.Size
+	}
+	if len(listing.Files) > 0 {
+		// Every file of a listing is directly in its directory, so the first one's names it.
+		if err := notes.CheckSet(ShownBody(path.Dir(listing.Files[0].Path)), len(listing.Files), listed); err != nil {
+			return nil, err
+		}
 	}
 	for _, file := range listing.Files {
 		if err := notes.CheckSize(ShownBody(file.Path), file.Size); err != nil {

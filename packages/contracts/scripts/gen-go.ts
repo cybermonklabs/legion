@@ -45,6 +45,10 @@ import {
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
+  SPEC_CHECK_OBSERVED_CUT_NOTE,
+  SPEC_CHECK_OBSERVED_END,
+  SPEC_CHECK_OBSERVED_MAX,
+  SPEC_CHECK_OBSERVED_START,
   STORE_UNCONFIRMED_CAUSE,
 } from "../src/dispatch-api";
 import {
@@ -500,6 +504,18 @@ const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
 // and the \`dispatch issues\` command's cannot drift apart.
 const MaxIssuePageLimit = ${MAX_ISSUE_PAGE_LIMIT}
 const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
+
+// SpecCheckObservedMax is the most runes of what a CI job observed that a result of a spec check
+// keeps. A longer text is kept as its first SpecCheckObservedStart runes, then
+// SpecCheckObservedCutNote, which says that the middle was cut, then its last
+// SpecCheckObservedEnd runes, SpecCheckObservedMax runes in all. Generated from
+// SPEC_CHECK_OBSERVED_MAX, SPEC_CHECK_OBSERVED_START, SPEC_CHECK_OBSERVED_CUT_NOTE and
+// SPEC_CHECK_OBSERVED_END in packages/contracts, so the text Dispatch keeps and the text
+// \`dispatch result --project\` sends are cut by one rule.
+const SpecCheckObservedMax = ${SPEC_CHECK_OBSERVED_MAX}
+const SpecCheckObservedStart = ${SPEC_CHECK_OBSERVED_START}
+const SpecCheckObservedCutNote = ${JSON.stringify(SPEC_CHECK_OBSERVED_CUT_NOTE)}
+const SpecCheckObservedEnd = ${SPEC_CHECK_OBSERVED_END}
 
 // IssueTitleMax is the longest issue title, in UTF-16 units, that POST /api/v1/issues and
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the

@@ -36,7 +36,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
-	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 )
 
 // Mark is what a line writes in place of a placeholder.
@@ -49,9 +49,11 @@ const markToken = `"` + Mark + `"`
 // read is one it cannot mask, so none of it is written.
 const NotJSON = `{"severity":"ERROR","message":"broker: a log line that was no JSON object was not written"}`
 
-// prefix is the prefix every placeholder the broker mints starts with (requests.PlaceholderPrefix),
-// in any case: Go's case folding, which also reads ſ as s.
-var prefix = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(requests.PlaceholderPrefix))
+// prefix is the opening of every placeholder the broker mints, in any case: placeholder.Prefix,
+// and the "result-" of a CI run's result grant (placeholder.ResultPrefix) when it follows, so the
+// characters a result placeholder draws after it are masked as a release's are. Go's case
+// folding also reads ſ as s.
+var prefix = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(placeholder.Prefix) + `(?:` + regexp.QuoteMeta(strings.TrimPrefix(placeholder.ResultPrefix, placeholder.Prefix)) + `)?`)
 
 // Writer is w behind the placeholder mask, for the lines slog's JSON handler writes: each line of
 // each Write is read as one JSON object, each of its strings holding a placeholder is written
@@ -145,7 +147,7 @@ func maskLine(line []byte) ([]byte, bool) {
 // string, so the escape is decoded and a letter Go's case folding reads as one of the prefix's,
 // such as ſ, is read as that letter.
 func mayHoldPlaceholder(line []byte) bool {
-	opening := requests.PlaceholderPrefix
+	opening := placeholder.Prefix
 	for i, b := range line {
 		switch {
 		case b == '\\' && i+1 < len(line) && line[i+1] == 'u', b >= utf8.RuneSelf:
@@ -215,7 +217,7 @@ func maskString(token []byte) ([]byte, bool) {
 
 // maskText is text with each placeholder in it written as Mark, and false where it holds none. A
 // placeholder is the prefix, in any case, and the letters and digits after it, at most as many as
-// the broker mints (requests.PlaceholderLength), up to where the next prefix starts: so of two
+// the broker mints (placeholder.Length), up to where the next prefix starts: so of two
 // placeholders written together, or of the prefix written before a placeholder, each is a
 // placeholder of its own, and none takes the opening of the next one. A letter is read in any
 // case, as Go's case folding reads one, so ſ and the Kelvin sign are letters here too.
@@ -232,7 +234,7 @@ func maskText(text []byte) ([]byte, bool) {
 			limit = openings[i+1][0]
 		}
 		end := opening[1]
-		for range requests.PlaceholderLength {
+		for range placeholder.Length {
 			r, size := utf8.DecodeRune(text[end:limit])
 			if size == 0 || !minted(r) {
 				break
@@ -246,10 +248,10 @@ func maskText(text []byte) ([]byte, bool) {
 }
 
 // minted is whether r is a character of a placeholder after its prefix: one of the alphabet the
-// broker mints from (requests.PlaceholderAlphabet, both cases), or a letter Go's case folding
+// broker mints from (placeholder.Alphabet, both cases), or a letter Go's case folding
 // reads as one of it, ſ (s) and the Kelvin sign (k).
 func minted(r rune) bool {
-	return strings.ContainsRune(requests.PlaceholderAlphabet, r) || r == 'ſ' || r == '\u212a'
+	return strings.ContainsRune(placeholder.Alphabet, r) || r == 'ſ' || r == '\u212a'
 }
 
 // SetDefault makes handler the process's default logger and points the log package at it

@@ -394,14 +394,12 @@ the whole command within 60. Once an attempt got no answer for 20 seconds or was
 command does, so the command keeps asking every 3 seconds or less (longer only when Dispatch's
 `Retry-After` asks), starting no ask in the last 5 seconds of its 60, to collect the answer; an
 upload of a megabyte or more, whose every ask sends the whole file again, keeps the five attempts.
-Once an attempt may have reached Dispatch, it asks again only of a Dispatch that judges the key:
-one whose answer carried the key back, or whose `/healthz` said `idempotency_keys: true` in the
-last five minutes, whatever its status; any other would make a repeated write twice. An attempt
-that reached nothing (a refused connection, a credential whose trade goes on) is asked again
-without that check, since its repeat is no second write. Dispatch makes the write once per key and
-answers a repeat with the first answer, so the command never makes a write twice. When the write
-landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too large
-to keep), the command exits 0 and says it was made: read it back to see it. When an attempt may
+It asks nothing else first: every Dispatch judges the key, and `/healthz` says
+`idempotency_keys: true` on every build since `legion-envoy-v21.0.0`. Dispatch makes the write
+once per key and answers a repeat with the first answer, so the command never makes a write
+twice. When the
+write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too
+large to keep), the command exits 0 and says it was made: read it back to see it. When an attempt may
 have reached Dispatch and the command got no answer Dispatch's keyed layer gave (no attempt
 answered, a page something in Dispatch's place wrote, a 2xx that is empty, not typed JSON or not
 JSON, but a bodiless 204 or 205), the command says the write may or may not have taken effect:

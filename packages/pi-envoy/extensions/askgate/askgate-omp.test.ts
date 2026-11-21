@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import {
   type Cleanup,
   deliveryFor,
@@ -299,6 +300,8 @@ for (const [language, code] of [
 // other form reaches the CLI with no marker and is refused before it sends, which the CLI logs and
 // pi-envoy records as an `unmarked` entry. With the switch off nothing asks any form for a marker.
 const REFUSED = "dispatch ask was not called: AskGate is on for this session";
+/** The CLI's own line that the ask is stored: a command that failed after its post posted once too. */
+const ASKED = "Asked ask-1 on DSP-1";
 /** The ask's argument vector as a JS or Python list literal, the CLI called by its path. */
 const askArgv = (dispatch: string) =>
   JSON.stringify([dispatch, "ask", "--issue", "DSP-1", "--question", "Ship the release today?"]);
@@ -331,6 +334,7 @@ test.skipIf(omp === undefined && !onActions)(
       }),
     });
     expect(asksPosted(requests)).toBe(1);
+    expect(lastTurn(requests)).toContain(ASKED);
     expect(lastTurn(requests)).not.toContain(REFUSED);
     expect(await gateEntries(sessions)).toMatchObject([
       { tool: "dispatch_ask", outcome: "verdict", decision: "allow" },
@@ -341,7 +345,8 @@ test.skipIf(omp === undefined && !onActions)(
 
 // The review of the marker design at cf3f1e021, C1: the gate bound an upload's marker to its own
 // review input, so the CLI refused every reviewed markdown upload by `--path`. The fake Dispatch
-// here takes the upload's form and records the file's bytes.
+// here takes the upload's form and records the file's bytes, behind Dispatch's keyed layer
+// (`keyedLayer`), so each 2xx names the write's key back as Dispatch's own answers do.
 test.skipIf(omp === undefined && !onActions)(
   "the real CLI: a markdown upload by --path is reviewed, carries its marker and posts its bytes once",
   async () => {
@@ -349,7 +354,7 @@ test.skipIf(omp === undefined && !onActions)(
     const uploads: string[] = [];
     const fake = Bun.serve({
       port: 0,
-      async fetch(request) {
+      fetch: keyedLayer(async (request: globalThis.Request) => {
         const route = new URL(request.url).pathname;
         // The upload reads two things before it posts: the issue's own documents, so it can refuse
         // a name the issue already carries, and the store's round trip of the markdown, so it can
@@ -371,7 +376,7 @@ test.skipIf(omp === undefined && !onActions)(
         }
         // An unavailable open-asks read arms no run-end self-check.
         return new Response("unavailable", { status: 503 });
-      },
+      }),
     });
     cleanup.push(() => fake.stop(true));
     const { requests, sessions } = await runSession({
@@ -388,6 +393,9 @@ test.skipIf(omp === undefined && !onActions)(
       }),
     });
     expect(uploads).toEqual([brief]);
+    // The command's own line that the upload is stored: a command that failed after its post
+    // (an answer that names no key back, say) still posted the bytes once.
+    expect(lastTurn(requests)).toContain("Uploaded brief.md as version 1");
     expect(lastTurn(requests)).not.toContain("was not called");
     expect(await gateEntries(sessions)).toMatchObject([
       { tool: "dispatch_artifact", outcome: "verdict", decision: "allow" },
@@ -466,6 +474,7 @@ test.skipIf(omp === undefined && !onActions)(
       }),
     });
     expect(asksPosted(requests)).toBe(1);
+    expect(lastTurn(requests)).toContain(ASKED);
     expect(lastTurn(requests)).not.toContain(REFUSED);
     expect(lastTurn(requests)).toContain("AskGate is on for this session in warn mode");
     expect(await gateEntries(sessions)).toMatchObject([
@@ -489,6 +498,7 @@ test.skipIf(omp === undefined && !onActions)(
       }),
     });
     expect(asksPosted(requests)).toBe(1);
+    expect(lastTurn(requests)).toContain(ASKED);
     expect(lastTurn(requests)).not.toContain(REFUSED);
     expect(await gateEntries(sessions)).toEqual([]);
   },

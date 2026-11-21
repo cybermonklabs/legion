@@ -700,7 +700,7 @@ func TestTheExchangeClientIsConfidentialAndNarrow(t *testing.T) {
 				"urn:ietf:params:oauth:token-type:access_token",
 			}},
 		{name: "requested token types", got: exchanger.GetSupportedRequestTokenTypes(),
-			want: []string{"urn:ietf:params:oauth:token-type:access_token"}},
+			want: []string{"urn:ietf:params:oauth:token-type:access_token", oauthwire.TokenTypeAirlockPlaceholder}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if !slices.Equal(c.got, c.want) {

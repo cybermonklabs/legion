@@ -655,15 +655,16 @@ them, covers the issue; with Envoy off or no answer from the listener it names n
 `DISPATCH_FIRST_MARKER`, the text pi-envoy and claude-envoy inject into a session with Dispatch.
 
 Every write `DispatchClient` makes carries one key. Each JSON and multipart call mints a
-`crypto.randomUUID()` `Idempotency-Key` per `POST` and `PATCH` call, once (`#writeCall`), and sends
-it on every attempt: the write's own attempts, the re-send after `401 BROKER_TOKEN_NOT_ACTIVE`,
-and each retry after an old build's answer of no route. So Dispatch runs the write once however
-many attempts reach it and answers a repeat with the first answer
-(`packages/envoy/cmd/dispatch/README.md`, "Keyed writes"); a `GET`, `PUT` or `DELETE` carries none
-and is sent once. No Dispatch request follows a redirect (`redirect: "manual"`): Dispatch's API
-answers none, and followed, a 301, 302 or 303 turns a write's `POST` into a `GET` whose 2xx would
-read as the write's answer, while a 307 or 308 sends it again to another origin without its
-credential. The body is encoded once
+`crypto.randomUUID()` `Idempotency-Key` per `POST` and `PATCH` call, once (`#writeCall`), or uses
+the key its caller gives (`docEdit` and a project's upload take one, and an empty key names
+nothing: [`docs/write-answers.md`](docs/write-answers.md)), and sends it on every attempt: the
+write's own attempts, the re-send after `401 BROKER_TOKEN_NOT_ACTIVE`, and each retry after an old
+build's answer of no route. So Dispatch runs the write once however many attempts reach it and
+answers a repeat with the first answer (`packages/envoy/cmd/dispatch/README.md`, "Keyed writes");
+a `GET`, `PUT` or `DELETE` carries none and is sent once. No Dispatch request follows a redirect
+(`redirect: "manual"`): Dispatch's API answers none, and followed, a 301, 302 or 303 turns a
+write's `POST` into a `GET` whose 2xx would read as the write's answer, while a 307 or 308 sends it
+again to another origin without its credential. The body is encoded once
 for the whole call, a multipart form under a boundary of its own, since a retry whose bytes differ
 from the first attempt's is a different request to Dispatch and its key is refused. A transport
 failure, any 5xx, a 408, a 429 and Dispatch's `409 KEY_IN_FLIGHT` (`retriesUnderKey`, the rule
@@ -682,7 +683,12 @@ with no attempt started more than 55 s after the first (`inFlightWithinMs`), unt
 answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
 its answer. An upload (a body of a megabyte or more) keeps the five-attempt schedule, since each
 repeat sends its whole body again. No attempt of any write starts more than 55 s after the client
-was made, since its 60 s deadline counts from there. The numbers come from the 3,612 `dispatch`
+was made, since its 60 s deadline counts from there; a caller with a bound of its own names it as
+the client's `deadlineMs`, and an `inFlightWithinMs` inside it, as `dispatch result --project`
+does (`ResultBound`). The credential is given that budget less the request's reserve
+(`#credentialSignal`), so a request's wait on a broker credential's trade ends inside it; the
+trade itself runs under its own 30 s bound, and goes on for every other request that shares it.
+The numbers come from the 3,612 `dispatch`
 write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
 (p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
 Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
@@ -696,8 +702,9 @@ reached nothing. Every answer's body is read inside its attempt, so a 2xx settle
 body is read whole. From "may have landed", only such a 2xx or a refusal Dispatch's keyed layer
 judged for the key (the key echoed back) settles the write. A 2xx that is no answer of Dispatch's
 settles nothing from either state: one whose body is empty or not typed JSON (a captive portal's
-200 page; every Dispatch write answers JSON, or a bodiless 204 or 205), whatever the process knows,
-and one that carries no key back from a Dispatch this process knows runs the keyed layer. Every
+200 page; every Dispatch write answers JSON, or a bodiless 204 or 205), whatever key it names back,
+and one that names no key back, or another request's key, whatever its body (a proxy's page),
+since every answer the keyed layer gives a keyed write names its key back (`foreign-2xx`). Every
 other end — a 3xx, a page something in Dispatch's place wrote, a refusal Dispatch's auth made
 before its keyed layer ran (a 401, `403 READ_ONLY_TOKEN`, a second `401
 BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the deadline,
@@ -728,36 +735,16 @@ since a new command sends it under a new key. A conversion that writes nothing
 `dispatch-write-outcomes.test.ts` drives the client through every (state, event) pair and every
 sequence of events up to its limits against that rule.
 
-A write that may have landed is asked again only against a Dispatch this process has lately seen
-run the keyed layer, since an earlier Dispatch ignores the header and would run a retried write a
-second time; before anything may have landed (a refused connection, a 408 or 429, a credential
-whose trade goes on), a repeat is no second write, and nothing is asked first. A failing
-answer that echoes the request's key (`Idempotency-Key: <key>`) is that proof itself, a 2xx whose
-body then broke off included, so one of Dispatch's 5xx, 429 or `409 KEY_IN_FLIGHT` is resent
-without a probe, paced by the `Retry-After` its headers carried. A transport failure, a silence cut and a
-gateway's answer carry no echo, so they rely on what an echo, or a `GET /healthz` answering
-`idempotency_keys: true`, showed for that origin within the last five minutes
-(`KEYED_LAYER_MEMORY_MS`), and otherwise read `/healthz` before the first resend, bounded at 5 s.
-The probe presents no credential: Dispatch serves `/healthz` outside its API, and a credential
-failing at that moment would otherwise end a write the keyed layer could take again. Its status
-is not read, since Dispatch answers 503 while its database or NATS is down and still says
-`idempotency_keys`; a probe that fails, times out, answers no JSON or lacks the field means no
-resend, and the attempt's own failure is the call's. Only a yes is remembered, and only for those
-five minutes, so a rollback to a Dispatch without the layer is noticed within that bound.
-Dispatch's own refusal that carries no echo says its layer did not judge the request, so it sets
-the memory aside and `/healthz` decides afresh. The probe runs only after a write has already
-failed, so the ordinary path makes no request of its own.
+The write-state table (`write-outcome.ts`) uses declared answer rows (`dispatch-write-rows.ts`). Each POST or PATCH declares the row its callers read and whether it stores anything. The markdown round trip, related-item check and result dry run store nothing. A successful answer is usable only when the table settles on it (it names this call's key back, and its body, read whole, is JSON or a bodiless 204 or 205) and it matches the row; extra members from a newer server are allowed. Such a 2xx proves commitment even when its JSON is not the row, or it carries no body where the row needs one: it is `DispatchWriteLandedError` with `ANSWER_LOST`, not a retry. An echoed `KEY_COMMITTED` or replayed `ANSWER_NOT_KEPT` is also a landing. A non-storing route instead reports `DispatchAnswerMissingError`. A 2xx without the matching key cannot settle a storing write.
 
-The `dispatch` command runs each call in a process of its own, so it carries that memory in its
-session's `state.json` (`keyedLayer`: each origin with the wall-clock time of its last sighting,
-`keyedLayerMemory`), and the next call of the session takes in every sighting still under five
-minutes old (`rememberKeyedLayer`). Without it every call would know nothing and ask `/healthz`,
-which the load that stalled the write can keep from answering within 5 s, and the write would be
-reported as perhaps taken effect rather than asked again. A sighting the file dates more than five
-minutes back, ahead of the clock, or not as a time is passed over. The wall clock is the one clock
-calls share, so a clock set back between two calls stretches the five minutes by as much, and two
-calls racing in one session can bring back a sighting one of them set aside, which still ends
-five minutes after the answer that showed it.
+Every Dispatch runs the keyed layer on every `POST` and `PATCH` route, the writes the client asks
+again: `GET /healthz` answers `idempotency_keys: true` on every build since
+`legion-envoy-v21.0.0`, a fact of the binary, and the client asks it nothing. So a
+write is asked again under its key after any answer that is no definitive one, a transport failure
+and a silence cut alike, and asks nothing else first: the repeat is answered from the key rather
+than run again. One of Dispatch's 5xx, 429 or `409 KEY_IN_FLIGHT` is resent paced by the
+`Retry-After` its headers carried. A rollback to a release older than that runs a repeat as a
+second write (`packages/envoy/cmd/dispatch/README.md`, the rollback note).
 
 A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
@@ -783,13 +770,13 @@ Dispatch, so the advice is to check whether it took effect before retrying. The 
 `advice`, `transient` and `mayHaveReachedDispatch` let a caller that knows more about its own
 request, such as `dispatch issue-update`'s close path, give its own advice instead. The executor
 reads a status as Dispatch's meaning (a 404 as no linked issue, no such document, or a server
-without the route) only when `fromDispatch` is true. A 2xx is no answer of Dispatch's either where
-its body is empty, not typed JSON (`application/json` or a `+json` type, letter case aside, as
-Dispatch's own rule reads it) or not JSON, but for a bodiless 204 or 205: every route this client
-reads as JSON answers JSON (`WriteJSON`), so such a read is a `DispatchGatewayError` too, naming
-the body the same way, and a retry may succeed, since a proxy or a captive portal in the way can
-be got past. Before, its text was handed back as the route's answer, and `dispatch open-asks` read a
-portal's page as no asks at all.
+without the route) only when `fromDispatch` is true. A 2xx of a read, a `PUT` or a `DELETE` is no
+answer of Dispatch's either where its body is empty, not typed JSON (`application/json` or a
+`+json` type, letter case aside, as Dispatch's own rule reads it) or not JSON, but for a bodiless
+204 or 205: every route this client reads as JSON answers JSON (`WriteJSON`), so such a read is a
+`DispatchGatewayError` too, naming the body the same way, and a retry may succeed, since a proxy or
+a captive portal in the way can be got past. Before, its text was handed back as the route's
+answer, and `dispatch open-asks` read a portal's page as no asks at all.
 
 `DispatchWriteUnsettledError` is deliberately not a `DispatchServiceError`, since a caller reads
 one as a refusal Dispatch decided: its message is the last answer or failure, the number of
@@ -800,19 +787,27 @@ write that ends with no answer at all names the request: its last attempt cut of
 ("made no progress for 20 s, so it was cut off"), or the call's deadline ending it while an
 attempt was out or after one that may have reached Dispatch ("had no definitive answer when its
 deadline ended it"). A write Dispatch
-made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `IdempotencyLandedCode`, and
+made whose answer is gone is a `DispatchWriteLandedError` (`code`, a `DispatchLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
-not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
-answer larger than Dispatch keeps (`answerNotKept`, shared with the page). It is no refusal and no
-`DispatchServiceError`, and it is never asked again. Its message is the one line the session
-reads: the method and URL were made, why the answer is gone, and to read what it made back with
-`dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
+not run again, a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
+answer larger than Dispatch keeps (`answerNotKept`, shared with the page), or a 2xx the table
+settled on whose body gives no row (`#writePayload`), the client's own `ANSWER_LOST`. It is no
+refusal and no `DispatchServiceError`, and it is never asked again. Its message is the one line
+the session reads: the method and URL were made, why the answer is gone, and to read what it made
+back with `dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
 `landed_without_answer: <code>` in its ledger entry. A step before the
 command's own write that lands this way fails the command (exit 1) with that line and what it
 means: a picture upload (nothing else was written: run the call again, which uploads it as its
 next version), or the closing reason of `issue-update --status done` (the close was not sent: read
 the issue's messages for the reason, then close with one that points at it). The close's own
 `PATCH` landing this way is the command's write, and exits 0.
+
+[`docs/write-answers.md`](docs/write-answers.md) says what each answer of Dispatch becomes, and
+what the `dispatch` command prints for each. It covers Dispatch's refusal, a gateway's page, a
+refused redirect, a path value that names nothing, and a write whose outcome is unknown. It also
+covers a landing whose answer is gone, and a 2xx that names no key back, which is never the call's
+answer. A landing needs the key that Dispatch names back. The line of a refused redirect names the
+target's origin and the body as one redacted line, as for any gateway's page.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
@@ -870,7 +865,9 @@ a Google identity token through a workload identity pool, as the Go client's `Po
 does (`pool-identity.ts`), for a machine with no Google service account of its own, such as an
 Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
-An identity with one of its variables missing is an error that names the variable.
+An identity with one of its variables missing is an error that names the variable. A CI job's
+`dispatch result --project` trades no identity: it holds the airlock's placeholder of its run
+(`DISPATCH_RESULTS_TOKEN`, [`docs/ci-results.md`](docs/ci-results.md)).
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1032,7 +1029,36 @@ first `: `; a label holding `: ` goes in `--options-json`, which the generated c
 for such a list), and `--<field>-json` for any other object. Only one flag of a call may read
 stdin. For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
 and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
-names a local file. `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
+names a local file. The command refuses an empty value of each flag that names what a call is
+about or narrows a read, before any request, and of each item of such a flag's list
+(`dispatch priorities --project`). These flags are `--issue`, `--project`, `--artifact`, `--check`,
+`--commit`, `--at`, `--retract`, `--comment`, `--session` of `dispatch send-to-agent`, and
+`--parent` of `dispatch issues` and `dispatch issue` (`IDENTIFIER_FIELDS` in
+`dispatch-command.ts`). An empty variable gives such a value. The command reads the value trimmed
+by Go's white space, the set Dispatch trims a value by (`goBlankPattern`,
+`@legion/contracts/go-blank`), so a value of only white space is refused too, U+0085 among it.
+For a flag whose value goes into a URL path in some command,
+which is `--issue`, `--project`, `--artifact`, `--retract`, `--comment` and `--session`, it
+refuses a value of only dots and slashes too, such as `.`, `..` or `./`. The other flags send `.`
+and `..` as they are. The refusal names the flag, and the command exits 2. Sent, such a value
+named nothing. In a path it reached no route, a redirect of Dispatch's router, or another route:
+the URL drops `.` and `..` as steps of the path, so `dispatch read --issue ..` asked
+`GET /api/v1/`. A read that it narrowed came back wider: `dispatch search --project ""` answered
+every project's rows, and `dispatch issues --project ""` or `" "` every project's issues.
+`dispatch issues --parent ""` answered every issue of its project, and `dispatch results --at ""`
+as with no `--at`. An empty `--check` of `dispatch results --project` answered the results of
+every check at the commit. `dispatch issue --parent ""` made the issue under no parent. Dispatch
+refused at once `dispatch open-asks --project ""`, an empty `--commit` of `dispatch results`, and
+an empty `--check` or `--commit` of `dispatch result`. To search every project, leave `--project`
+out.
+`dispatch issue-update --parent ""` clears the parent, as its help says, so it is not refused. No
+URL path of this client holds a value that names nothing either: empty, only Go's white space, or
+only dots and slashes (`pathNamesNothingPattern`). `DispatchClient` refuses one before any request,
+for every caller (`DispatchEmptyPathError`), which a model's tool call can reach. No argument of
+the command reaches it, since the command refuses each such value of a path flag first: a program
+that ran every command in each of its forms (of an issue, of a project, and of a project's
+document) with 14 such values in each string flag found no run that did.
+`dispatch --help` lists the commands, `dispatch <command> --help` its flags and
 an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
@@ -1061,10 +1087,15 @@ the full text written to a file the output names, and the picture lines and foll
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so.
 
+A CI job records its result of a check of the spec files with `dispatch result --project`, the
+one call that is no session's, run under `agent-secrets result-grant`, which gives it the airlock's
+placeholder of its run and no Dispatch credential; a session reads those results with `dispatch
+results --project`: [`docs/ci-results.md`](docs/ci-results.md) says how each works.
+
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a
-long-lived host remembered across calls (the triage lines and pictures already shown, the asks
-whose follow notice was printed, which Dispatch lately showed it runs the keyed layer), and
+long-lived host remembered across calls (the triage lines and pictures already shown, and the asks
+whose follow notice was printed), and
 `results.jsonl` gets one line per call with the tool's `details` or its refusal, a refusal the CLI
 made before the call reached Dispatch included, which pi-envoy's run-end check reads; a line that
 is not JSON is named (file and line number) and skipped. Directories idle for 14 days are removed,

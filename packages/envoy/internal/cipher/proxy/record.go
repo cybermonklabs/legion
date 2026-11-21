@@ -57,6 +57,9 @@ const (
 	codeAccessToken = "ACCESS_TOKEN_UNAVAILABLE"
 	// serveBound: a request proxyrules.Decide refuses, in its own words.
 	codeNotAllowed = "REQUEST_NOT_ALLOWED"
+	// serveBound: a request to a host whose entry is of kind dpop that does not carry the grant's
+	// placeholder as its one Authorization header, DPoP <placeholder>.
+	codeNoPlaceholder = "NO_PLACEHOLDER"
 	// serveBound: an AWS call the airlock will not sign again (signAWS).
 	codeAWSSignature = "AWS_SIGNATURE_REFUSED"
 	// serveBound: a request the swap refused although the decision allowed it.
@@ -222,14 +225,37 @@ func established(w http.ResponseWriter) []byte {
 // since the writer that knows the cause logs it where it is wanted.
 func fail(w http.ResponseWriter, status int, code, message string) {
 	answerOf(w).note(code)
+	ownAnswer(w, code)
 	http.Error(w, "airlock: "+message, status)
 }
 
+// The two headers that tell the command whether an answer is the proxy's own or a service's. The
+// proxy's own answer (fail, refuse) says Airlock-Forwarded: false and names its code in
+// Airlock-Code: it was written before anything was sent on, so the request reached no service. A
+// service's answer the proxy carried says Airlock-Forwarded: true and carries no Airlock-Code,
+// whatever the service sent, so a service cannot pass for the proxy (serveBound's
+// ModifyResponse). dispatch's client reads them to tell a write the airlock refused, which stored
+// nothing, from one Dispatch answered.
+const (
+	forwardedHeader = "Airlock-Forwarded"
+	codeHeader      = "Airlock-Code"
+)
+
+// ownAnswer marks an answer the proxy writes itself, before its status is written.
+func ownAnswer(w http.ResponseWriter, code string) {
+	w.Header().Set(forwardedHeader, "false")
+	w.Header().Set(codeHeader, code)
+}
+
 // callerOf is the caller a refusal's line names: the grant the proxy password proved and the
-// enrollment it belongs to, as <grant>@<enrollment>, and empty before a grant is proved.
+// enrollment it belongs to, as <grant>@<enrollment>, and empty before a grant is proved. A CI
+// run's result grant belongs to no enrollment, and is named by the grant alone.
 func callerOf(grant requests.AirlockConnection) string {
 	if grant.GrantID == "" {
 		return ""
+	}
+	if grant.EnrollmentID == "" {
+		return grant.GrantID
 	}
 	return grant.GrantID + "@" + grant.EnrollmentID
 }

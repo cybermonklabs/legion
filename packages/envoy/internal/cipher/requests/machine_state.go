@@ -132,7 +132,7 @@ var refusals = []error{
 	ErrNotYours, ErrNotOwner, ErrNotApprover, ErrTerminal, ErrExpired, ErrNotExpired, ErrGrantNotLive, ErrGrantChainInvalid,
 	ErrSecretNotInStore, ErrMixedApprovers, ErrGrantRequiresLifetime, ErrMintFailed,
 	ErrNarrowingNotApplicable, ErrNarrowingOwnerNotListed, ErrNarrowingBehindAirlock,
-	ErrRequestPending, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape,
+	ErrRequestPending, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape, ErrAirlockMintedOnly,
 }
 
 // IsRefusal reports whether err is one of this package's own refusals, as against a read that
@@ -347,6 +347,15 @@ type Machine struct {
 	// both, since a command that cannot reach the proxy or cannot trust it has nothing.
 	AirlockProxyURL      string
 	AirlockCACertificate string
+	// ResultGrants reads CI runs' result grants, which the token endpoint writes in place of a
+	// results token: a proxy connection presenting a result placeholder is that grant's
+	// (resultConnection), and the proxy's read of its values is the token ResultTokens mints for
+	// it, bound to the pod key whose RFC 7638 thumbprint ResultKey is (resultValues). Each pod
+	// mints its own token for a grant, with its own key, which nothing but that pod holds. With
+	// any of the three unset, every result placeholder is answered ErrGrantNotLive.
+	ResultGrants ResultGrants
+	ResultTokens ResultTokens
+	ResultKey    string
 	// Judge, when set, is handed every request Create has just written pending, once that
 	// transaction has committed and the request's grant-log line is out: the broker's model
 	// judge, which may approve such a request in its approver's place (cmd/cipherd wires it to

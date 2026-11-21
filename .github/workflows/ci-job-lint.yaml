@@ -185,6 +185,15 @@ jobs:
       - name: Check every Bun gate's filter selects the files its typecheck compiles
         run: .github/scripts/check-ts-filters.sh
 
+      # Beside the filter checks, whose reasons it holds: a line .github/scripts/ci_job_reads.py
+      # cites in a file that imports the read is the line of that import. An import added above
+      # another moves the line a citation names, and that is a change to the cited file rather than
+      # to a CI file, so the check runs here, on every change. The file's other two rules hold the
+      # convention of one pull request's reviews, not of this repository, and run only where a
+      # reader sets CITATIONS_BASE, which this step does not.
+      - name: Check each line ci_job_reads.py cites holds the import it means
+        run: bun test ./.github/scripts/ci-citations.test.ts
+
       # The notices step below builds go-licenses and loads every release binary's modules. It
       # keeps them in a cache family of its own, go-notices: one entry, read on every run, so never
       # evicted, and refreshed only when Go is bumped. Keyed on the go.sum files it would leave a

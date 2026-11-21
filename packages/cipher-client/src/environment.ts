@@ -62,9 +62,9 @@ export const IDENTITY_METADATA = "metadata";
 export const IDENTITY_POOL = "pool";
 
 /**
- * The variables this package reads, by name: this module's, and those `signins.ts` reads to find
- * a person's sign-in on this machine and the client that renews it, whose names that module
- * holds (`SIGNIN_DIR_VAR`, `PERSON_VAR`, `SIGNIN_ISSUER_VAR`, `SIGNIN_CLIENT_ID_VAR` and
+ * The variables this package reads, by name: this module's, those `signins.ts` reads to find a
+ * person's sign-in on this machine and the client that renews it, whose names that module holds
+ * (`SIGNIN_DIR_VAR`, `PERSON_VAR`, `SIGNIN_ISSUER_VAR`, `SIGNIN_CLIENT_ID_VAR` and
  * `SIGNIN_CLIENT_SECRET_FILE_VAR`), `PERSON_TRADE_VAR`, which turns a person's trade off for a
  * process whose own credentials are a service's, and `XDG_STATE_HOME` and `HOME`, which its
  * directory is read from when `SIGNIN_DIR_VAR` names none. A caller that keeps what this package
@@ -116,7 +116,9 @@ function required(env: BrokerEnvironment, name: keyof BrokerVariables, kind: str
  * that trades nothing and is no error. A named identity whose own variables are missing throws
  * naming them, since a deployment that asked for one and gave it nothing has a mistake in it.
  * Each kind reads the variables Go's `MachineIdentity` reads for it
- * (`packages/envoy/internal/cipherclient/environment.go`), in the same order.
+ * (`packages/envoy/internal/cipherclient/environment.go`), in the same order. Go's also takes
+ * `github-actions`, a CI job's own identity, which this client never trades: a job's `dispatch
+ * result` holds the airlock's placeholder of its run, and the broker holds the run's token.
  */
 export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined {
   const kind = value(env, IDENTITY_VAR);

@@ -67,8 +67,8 @@ var sweepBatch = 1000
 var sweepMaxBatches = 10
 
 // sweepStatements are Sweep's statements for state deleted row by row, $1 the batch. Each
-// selects its batch by primary key through 0016's, 0018's or 0021's *_expires index on the
-// predicate it sweeps by, oldest first, so a table of mostly live rows is never read whole.
+// selects its batch by primary key through 0016's, 0018's, 0021's or 0041's *_expires index on
+// the predicate it sweeps by, oldest first, so a table of mostly live rows is never read whole.
 var sweepStatements = []struct{ what, sql string }{
 	{"device codes", `delete from oauth_device_codes where signature in (select signature from oauth_device_codes
 		where expires_at < now() - interval '1 hour' order by expires_at limit $1)`},
@@ -83,6 +83,8 @@ var sweepStatements = []struct{ what, sql string }{
 	{"exchanged JWT ids", `delete from oauth_exchange_jtis where jti in (select jti from oauth_exchange_jtis
 		where expires_at <= now() order by expires_at limit $1)`},
 	{"pod session registrations", `delete from oauth_pod_sessions where (pod_uid, session) in (select pod_uid, session from oauth_pod_sessions
+		where expires_at <= now() order by expires_at limit $1)`},
+	{"result grants", `delete from result_grants where id in (select id from result_grants
 		where expires_at <= now() order by expires_at limit $1)`},
 }
 
@@ -109,9 +111,9 @@ type sweepCursor struct {
 // Sweep deletes spent OAuth state: device codes an hour past their expiry (so a helper still
 // polling one is answered expired_token, not invalid_grant as for an unknown code), DPoP proofs
 // and nonces past theirs, access tokens past theirs, lapsed session bindings, the two replay
-// stores' remembered JWT ids past theirs, pod-session registrations past theirs, and every
-// refresh token of a family (rows sharing
-// request_id) none of whose rows is still redeemable (active, unexpired, and in its
+// stores' remembered JWT ids past theirs, pod-session registrations past theirs, CI runs' result
+// grants past theirs, and every refresh token of a family (rows sharing request_id) none of whose
+// rows is still redeemable (active, unexpired, and in its
 // rotation's grace or never rotated). A family with a redeemable row keeps all its rows, so
 // replaying one of its rotated tokens still finds it and revokes the family. Each kind is
 // worked in batches of sweepBatch, each its own statements, until a batch comes up short or

@@ -1,7 +1,15 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { keyedLayer } from "../../../packages/envoy-client/test/keyed-layer.ts";
+import { routeAnswer } from "../../../packages/envoy-client/test/route-answers.ts";
+
+// Each row starts the check as a Bun process, and the --cli row starts the command as a second one
+// and waits its first pause of 1 s, so on a loaded host a row that works passes Bun's default
+// bound of 5 s. 90 s is above the command's own deadline of 60 s, so a command that hangs fails
+// with its own answer.
+setDefaultTimeout(90_000);
 
 const check = join(import.meta.dir, "dispatch-keyed-comment.ts");
 const servers: Server<undefined>[] = [];
@@ -45,47 +53,49 @@ interface StandIn {
   readonly comments: { id: string; body: string }[];
 }
 
-/** A Dispatch that keys comments as the real one does (`keyed`), or one that ignores the header
- *  and makes every POST it gets; its `/healthz` answers `health`. */
+/** A Dispatch that keys comments as the real one does (`keyed`), behind the keyed layer that names
+ *  each 2xx's key back (`keyedLayer`), or one with no keyed layer, which ignores the header, makes
+ *  every POST it gets and names no key back; its `/healthz` answers `health`. */
 function standIn(options: {
   keyed: boolean;
   health: { status: number; body: Record<string, unknown> };
 }): StandIn {
   const posts: StandIn["posts"] = [];
   const comments: StandIn["comments"] = [];
-  const answers = new Map<string, { id: string; body: string }>();
+  const answers = new Map<string, Record<string, unknown>>();
   const server = Bun.serve({
-    async fetch(request) {
-      const url = new URL(request.url);
-      if (url.pathname === "/healthz") {
-        return Response.json(options.health.body, { status: options.health.status });
-      }
-      if (url.pathname !== "/api/v1/issues/CORE-1/comments") {
-        return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
-      }
-      if (request.headers.get("authorization") !== "Bearer agent-token") {
-        return Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 });
-      }
-      if (request.method === "GET") return Response.json(comments);
-      const key = request.headers.get("idempotency-key");
-      const input = (await request.json()) as { body: string };
-      const stored = options.keyed && key !== null ? answers.get(key) : undefined;
-      if (stored !== undefined) {
-        posts.push({ key, made: false });
-        return Response.json(stored, {
-          headers: { "Idempotency-Key": key ?? "", "Idempotency-Replayed": "?1" },
-          status: 201,
+    fetch: keyedLayer(
+      async (request: Request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/healthz") {
+          return Response.json(options.health.body, { status: options.health.status });
+        }
+        if (url.pathname !== "/api/v1/issues/CORE-1/comments") {
+          return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
+        }
+        if (request.headers.get("authorization") !== "Bearer agent-token") {
+          return Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 });
+        }
+        if (request.method === "GET") return Response.json(comments);
+        const key = request.headers.get("idempotency-key");
+        const input = (await request.json()) as { body: string };
+        const stored = options.keyed && key !== null ? answers.get(key) : undefined;
+        if (stored !== undefined) {
+          posts.push({ key, made: false });
+          return Response.json(stored, { headers: { "Idempotency-Replayed": "?1" }, status: 201 });
+        }
+        const comment = { body: input.body, id: crypto.randomUUID() };
+        comments.push(comment);
+        posts.push({ key, made: true });
+        const answer = routeAnswer("POST /api/v1/issues/{key}/comments", {
+          ...comment,
+          issue_key: "CORE-1",
         });
-      }
-      const comment = { body: input.body, id: crypto.randomUUID() };
-      comments.push(comment);
-      posts.push({ key, made: true });
-      if (options.keyed && key !== null) answers.set(key, comment);
-      return Response.json(comment, {
-        headers: options.keyed && key !== null ? { "Idempotency-Key": key } : {},
-        status: 201,
-      });
-    },
+        if (options.keyed && key !== null) answers.set(key, answer);
+        return Response.json(answer, { status: 201 });
+      },
+      options.keyed ? {} : { namesNoKey: true }
+    ),
     hostname: "127.0.0.1",
     port: 0,
   });

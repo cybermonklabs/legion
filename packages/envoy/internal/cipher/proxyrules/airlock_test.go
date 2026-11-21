@@ -2,6 +2,7 @@ package proxyrules
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -258,6 +259,39 @@ func TestValidate(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if err := Validate(c.rules); err != nil {
 				t.Errorf("Validate: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateTakesTheDPoPKind: an entry of kind dpop, the capability the broker mints for a CI
+// run and holds, is a valid file, and a kind that is only near it is refused. The kind is
+// compared as it is written, as the other three are, so "DPoP" is no kind; each refusal names
+// the kind the file wrote and the four kinds there are, so its reader sees what to write.
+func TestValidateTakesTheDPoPKind(t *testing.T) {
+	const file = `{"secrets": [{"name": "DISPATCH_RESULTS_TOKEN", "hosts": ["dispatch.test"], "headers": ["Authorization"],
+  "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}], "kind": %q}]}`
+	rules, err := Parse(fmt.Appendf(nil, file, "dpop"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if err := Validate(rules); err != nil {
+		t.Errorf("Validate of an entry of kind dpop: %v", err)
+	}
+	for _, kind := range []string{"DPoP", "dpo"} {
+		t.Run(kind, func(t *testing.T) {
+			rules, err := Parse(fmt.Appendf(nil, file, kind))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			err = Validate(rules)
+			if err == nil {
+				t.Fatalf("Validate of an entry of kind %q: no error", kind)
+			}
+			for _, want := range []string{`secrets[0]`, `"DISPATCH_RESULTS_TOKEN"`, fmt.Sprintf("kind %q", kind), `"", "aws", "azure" or "dpop"`} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %s", err, want)
+				}
 			}
 		})
 	}

@@ -1,5 +1,6 @@
 import { isCleanUrl } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { AIRLOCK_RESULTS_VAR, airlockCredential } from "./airlock-credential";
 import {
   type BearerSource,
   bearerCredential,
@@ -28,16 +29,19 @@ import {
   type SectionOff,
 } from "./envoy-config";
 import { messageFor } from "./errors";
+import { sendable } from "./secret-file";
 
 /** Default dispatch server base URL, matching the Go server's listen address. */
 const DEFAULT_SERVER_URL = "http://localhost:8766";
 
-/** The variables `dispatchSettings` consults, by name, over whatever else the environment holds. */
+/** The variables `dispatchSettings` and `ownIdentityDispatch` consult, by name, over whatever else
+ *  the environment holds. */
 export type DispatchEnvironment = EnvoyConfigEnvironment & {
   readonly DISPATCH_TOKEN?: string | undefined;
   readonly DISPATCH_TOKEN_FILE?: string | undefined;
   readonly DISPATCH_TOKEN_BROKER?: string | undefined;
   readonly DISPATCH_PUBLIC_URL?: string | undefined;
+  readonly [AIRLOCK_RESULTS_VAR]?: string | undefined;
 };
 
 /** Dispatch on: its URL and the credential every request presents, and `publicUrl`, Dispatch's
@@ -248,6 +252,43 @@ export function dispatchSettings(
 export function dispatchUrl(env: DispatchEnvironment, config: EnvoyConfig): string | undefined {
   const target = dispatchTarget(env, config);
   return target.enabled ? target.url : undefined;
+}
+
+/**
+ * Dispatch for a CI job that records its result of a check of the spec files (`dispatch result
+ * --project`), which has no session and no envoy.json. Its server is `DISPATCH_URL`, and its
+ * credential is the secrets broker's airlock placeholder of the run's result grant, which
+ * `agent-secrets result-grant -- <command>` gives the command in `DISPATCH_RESULTS_TOKEN`
+ * (`AIRLOCK_RESULTS_VAR`), presented as its one `Authorization` header and nothing else
+ * (`airlockCredential`): the airlock proxy, whose settings the same command gives, puts the run's
+ * results token and a proof of its own key in its place. No bearer and no broker variable is read,
+ * so the job makes no trade and holds no Dispatch credential, and the write never carries a
+ * person's. Off, it says why as an `error`, which names no value of the environment.
+ */
+export function ownIdentityDispatch(env: DispatchEnvironment): DispatchConfigResolution {
+  const url = nonEmpty(env.DISPATCH_URL);
+  if (url === undefined) {
+    return offWithError(
+      "DISPATCH_URL is not set: a CI job's write reads Dispatch's server from it alone"
+    );
+  }
+  if (httpUrl(url) === undefined) return offWithError("DISPATCH_URL must be an http or https URL");
+  const placeholder = nonEmpty(env[AIRLOCK_RESULTS_VAR]);
+  if (placeholder === undefined) {
+    return offWithError(
+      `dispatch result --project runs under \`agent-secrets result-grant -- …\`, which gives it ${AIRLOCK_RESULTS_VAR}; this environment holds none, so nothing was sent`
+    );
+  }
+  if (!sendable(placeholder)) {
+    return offWithError(
+      `${AIRLOCK_RESULTS_VAR} holds white space or a control character, so it is no placeholder \`agent-secrets result-grant\` gives, and nothing was sent`
+    );
+  }
+  return {
+    enabled: true,
+    url: withoutTrailingSlashes(url),
+    credential: airlockCredential(placeholder),
+  };
 }
 
 /** Where Dispatch's credential comes from: a variable, a file with the server written beside it,

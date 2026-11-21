@@ -223,6 +223,31 @@ test("a redirect from the security token service is refused, and its target is a
   expect(iam.posted).toHaveLength(0);
 });
 
+// A redirector writes its target into the body as well, path and query included, so the refusal
+// of a redirect names its status and quotes nothing of its body.
+test("a security token service that redirects is refused with its status and nothing of its body", async () => {
+  const path = `sign-in-${crypto.randomUUID()}`;
+  const state = crypto.randomUUID();
+  const target = `https://sso.example.com/${path}?state=${state}`;
+  const sts = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () =>
+      new Response(`Found. Redirecting to ${target}`, {
+        status: 302,
+        headers: { Location: target, "Content-Type": "text/plain" },
+      }),
+  });
+  stops.push(() => sts.stop(true));
+  const iam = stubService(minting);
+  const url = `http://127.0.0.1:${sts.port}`;
+  const refusal = await refusalOf(async () => (await poolAt(url, iam.url)).read());
+  expect(refusal?.message).toBe(
+    `trade this machine's credential at the security token service ${url}/v1/token: HTTP 302`
+  );
+  expect(iam.posted).toHaveLength(0);
+});
+
 test("a security token service that answers no access_token is an error naming it", async () => {
   const sts = stubService(() => ({ body: { token_type: "Bearer", expires_in: 3600 } }));
   const iam = stubService(minting);

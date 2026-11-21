@@ -24,6 +24,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -190,6 +191,11 @@ type Options struct {
 	// federated token. BROKER_AIRLOCK_TEST_AZURE_AUTHORITY is it in the broker's local stack,
 	// whose token authority is a stand-in.
 	AzureAuthority string
+	// DPoPKey is the pod's own key, which the proxy signs the DPoP proof of each request to a
+	// host whose entry is of kind dpop with (resultTransport): made at the broker's start, held
+	// in this process alone, and the key every results token this pod mints is bound to. Nil
+	// refuses every request to such a host, since no proof can be made for it.
+	DPoPKey *ecdsa.PrivateKey
 }
 
 // Server is the broker's proxy port: one HTTP CONNECT proxy whose password is a placeholder of a
@@ -203,6 +209,8 @@ type Server struct {
 	log    *slog.Logger
 	dial   func(ctx context.Context, network, addr string) (net.Conn, error)
 	now    func() time.Time
+	// dpopKey is Options.DPoPKey.
+	dpopKey *ecdsa.PrivateKey
 
 	// answers is Options.Answers, which record counts each answer a handler of the port writes
 	// on.
@@ -322,6 +330,7 @@ func New(o Options) *Server {
 		answers:       o.Answers,
 		dial:          o.Dial,
 		now:           o.Now,
+		dpopKey:       o.DPoPKey,
 		resolve:       o.Resolve,
 		clusterRanges: o.ClusterRanges,
 		dialAllow:     o.DialAllow,

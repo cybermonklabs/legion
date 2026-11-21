@@ -36,7 +36,8 @@ const (
 	// KindService is a verified Kubernetes service-account token, by its subject.
 	KindService = "service"
 	// KindBrokerToken is an access token the secrets broker issued, presented under the DPoP
-	// scheme and proved against the key it is bound to, by the person its session acts for.
+	// scheme and proved against the key it is bound to, by the person its session acts for, or,
+	// for a results token, by the session of the CI run it was minted for.
 	KindBrokerToken = "broker-token"
 	// KindSharedToken is the deployment's shared agent token with no session named: it proves
 	// no owner, so the line names none.

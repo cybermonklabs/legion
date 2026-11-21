@@ -30,6 +30,10 @@ export type WriteState = "nothing-sent" | "may-have-landed";
 
 /** What one step of a write met. */
 export type WriteEvent =
+  /** An echoed auth refusal cannot settle a possibly committed attempt. */
+  | "uncommitted-401"
+  /** A reused key cannot settle an earlier uncertain attempt of this call. */
+  | "key-reused"
   /** A 2xx whose body was read whole: Dispatch ran the write, or replayed the answer it stored
    *  under the key. */
   | "applied"
@@ -43,9 +47,11 @@ export type WriteEvent =
   /** A 3xx, `304` included. Never followed: a 301, 302 or 303 would turn the POST into a GET,
    *  and a 307 or 308 would send it again to another origin without its credential. */
   | "redirect"
-  /** A 2xx that carried no key back, from a Dispatch this process knows runs the keyed layer,
-   *  whose every answer to a keyed write carries it: not Dispatch's answer to this write (a
-   *  captive portal's or a proxy's own page), so it says nothing of whether the write ran. */
+  /** A 2xx that is no answer of Dispatch's to this write (a captive portal's or a proxy's own
+   *  page), so it says nothing of whether the write ran: its body is empty or not JSON-typed where
+   *  its status carries one, though every answer Dispatch writes to a keyed write is JSON or a
+   *  bodiless 204 or 205; or it carried no key back, though every Dispatch runs the keyed layer,
+   *  whose every answer to a keyed write carries it. */
   | "foreign-2xx"
   /** A 2xx whose body broke off before it was read whole (a reset mid-body): Dispatch answered,
    *  and asked again under the key it replays what it stored. */
@@ -95,7 +101,6 @@ export type WriteEvent =
   /** The caller's stop ended a pause, a wait or a presentation: nothing in flight. */
   | "cancelled"
   /** No ask is left after an event that asks again: the attempts or the time are spent, the
-   *  Dispatch is not known to run the keyed layer (a repeat there would be a second write), the
    *  rolling-release schedule is spent, or the client asks no route again (`retryNoRoute: false`). */
   | "exhausted";
 
@@ -125,6 +130,8 @@ const nothing = (action: WriteAction): WriteStep => ({ state: "nothing-sent", ac
 export const WRITE_TRANSITIONS: {
   readonly [E in WriteEvent]: { readonly [S in WriteState]: WriteStep };
 } = {
+  "uncommitted-401": { "nothing-sent": landed("end"), "may-have-landed": landed("end") },
+  "key-reused": { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
   applied: { "nothing-sent": nothing("settle"), "may-have-landed": landed("settle") },
   judged: { "nothing-sent": nothing("settle"), "may-have-landed": landed("settle") },
   unjudged: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },

@@ -3,9 +3,9 @@ import { readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // Who a question reaches, from the command line and from the texts that state the rule.
 //
@@ -82,9 +82,10 @@ let projectRefusal: string | null = null;
  *  older than that answer, which leaves the field out. */
 let projectDefault: string | undefined = DEFAULT_ASSIGNEE;
 
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
+  fetch: keyedLayer(async (request: Request) => {
     const { pathname } = new URL(request.url);
     const text = await request.text();
     const body: unknown = text === "" ? undefined : JSON.parse(text);
@@ -190,7 +191,7 @@ const server = Bun.serve({
       });
     }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  }),
 });
 
 afterAll(() => server.stop(true));
@@ -204,7 +205,6 @@ beforeEach(() => {
   projectDefault = DEFAULT_ASSIGNEE;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{
