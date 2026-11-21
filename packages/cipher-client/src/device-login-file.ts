@@ -284,14 +284,16 @@ export function lockLost(
 
 /** The refusal of a save of a new login whose copy, written whole, is kept beside the login's file
  *  under that file's name with `suffix` added ({@link keptCopy}). The copy holds the whole login,
- *  so moved over the file it is the login, and its credential needs no revoke. */
+ *  so moved over the file it is the login, and its credential needs no revoke. `failed` says why
+ *  the save failed, in this package's own words and with no cause of its own, so its words are
+ *  this error's and it is kept as no cause: that is left for a failure to let go of the lock after
+ *  the save (`withLoginLock`). */
 export class KeptCopyError extends Error {
   readonly suffix: string;
 
-  constructor(suffix: string, cause: unknown) {
+  constructor(suffix: string, failed: unknown) {
     super(
-      `${messageOf(cause)}; a copy of the new login is kept beside ${DEVICE_LOGIN_FILE_NAMED}, under that file's name with ${suffix} added: move the copy over the file to use the login`,
-      { cause }
+      `${messageOf(failed)}; a copy of the new login is kept beside ${DEVICE_LOGIN_FILE_NAMED}, under that file's name with ${suffix} added: move the copy over the file to use the login`
     );
     this.suffix = suffix;
   }

@@ -12,7 +12,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { rmSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { chmod, mkdir, readdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   STAND_IN_CREDENTIAL,
@@ -300,4 +300,38 @@ test("a login kept whose lock is not let go is answered as kept, with no revoke"
   expect(kept.lockLeft).toContain("takes it over once it is 15 s old");
   expect(kept.lockLeft).not.toContain("revoke");
   expect((await readDeviceLogin(path)).credentialId).toBe("cred-kept-1");
+});
+
+test("a login whose save keeps its copy and whose lock is then not let go names the copy", async () => {
+  const stub = broker({ credentialId: "cred-double-1" });
+  const path = loginPath();
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  // Two failures in one run: the rename over the file fails, so the copy is kept, and then letting
+  // go of the lock fails at the move of the lock aside.
+  const renames = failRenames((from, to) => to === path || from === `${path}.lock`);
+  let unsaved: KeptDeviceLogin | Error;
+  try {
+    unsaved = await finish(started, path);
+  } finally {
+    renames.mockRestore();
+  }
+  expect(unsaved).toBeInstanceOf(Error);
+  const refusal = unsaved as Error;
+  // The person is told of the copy, which holds the live key and refresh token, and not told the
+  // lock is why: the save is.
+  expect(refusal.message).toContain("cred-double-1");
+  expect(refusal.message).toContain("needs no revoke");
+  expect(refusal.message).toContain("delete it, since it holds the login's key and refresh token");
+  expect(refusal.message).not.toContain("move the lock");
+  expect(refusal.message).not.toContain(dirname(path));
+  const left = await leftBeside(path);
+  expect(left.kept, left.names.join(", ")).toHaveLength(1);
+  expect(refusal.message).toContain((left.kept[0] ?? "").slice(basename(path).length));
+  // Control: letting go did fail. The lock is still there, and its failure is kept as the cause
+  // of the save's.
+  expect(left.names).toContain(`${basename(path)}.lock`);
+  const kept = refusal.cause as Error;
+  expect(kept.message).toContain(".kept-");
+  expect((kept.cause as Error | undefined)?.message).toContain("move the lock beside");
+  expect((kept.cause as Error | undefined)?.message).toContain("EIO");
 });

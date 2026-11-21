@@ -245,10 +245,12 @@ async function takeStale(
  * cause, and `work` never run), or it is stale and this caller alone takes it ({@link takeStale}).
  * The holder touches the lock every {@link LOCK_HEARTBEAT_MS} while `work` runs, on a timer that
  * holds no process open, so a holder that is slow is never taken for dead, and lets go of it when
- * `work` settles, removing it only while it still holds its own value ({@link removeOwn}). `work`
- * is handed `held`, which reads the lock again and says whether it still holds this call's value:
- * false once another caller took it from a holder that was stopped. `named` names the login in an
- * error.
+ * `work` settles, removing it only while it still holds its own value ({@link removeOwn}). Where
+ * `work` rejects and letting go then fails too, `work`'s error is the one rejected with, since it
+ * says what `work` did and did not do, and the release's is kept as its cause where it has none.
+ * `work` is handed `held`, which reads the lock again and says whether it still holds this call's
+ * value: false once another caller took it from a holder that was stopped. `named` names the login
+ * in an error.
  */
 export async function withLoginLock<T>(
   path: string,
@@ -279,12 +281,19 @@ export async function withLoginLock<T>(
     await utimes(lock, now, now).catch(() => {});
   }, LOCK_HEARTBEAT_MS);
   beat.unref();
+  let answer: T;
   try {
-    return await work(async () => (await holderValue(lock)) === mine);
-  } finally {
+    answer = await work(async () => (await holderValue(lock)) === mine);
+  } catch (error) {
     clearInterval(beat);
-    await removeOwn(lock, mine, `the lock beside ${named}`, named);
+    await removeOwn(lock, mine, `the lock beside ${named}`, named).catch((released: unknown) => {
+      if (error instanceof Error && error.cause === undefined) error.cause = released;
+    });
+    throw error;
   }
+  clearInterval(beat);
+  await removeOwn(lock, mine, `the lock beside ${named}`, named);
+  return answer;
 }
 
 /** Whether `name` is `prefix` and a UUID: a file a caller named with a fresh value of its own. */

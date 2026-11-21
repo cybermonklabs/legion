@@ -555,3 +555,33 @@ test("a caller that lets go of its take-over lock leaves the one another caller 
   // D took the dead holder's lock and let go, then A did: nothing is left beside the login.
   expect(await readdir(dirname(path))).toEqual(["device-login.json"]);
 });
+
+test("a holder whose work fails and whose release then fails is told the work's failure", async () => {
+  const path = loginPath();
+  await writeDeviceLoginFile(path, "http://127.0.0.1:1");
+  const lock = `${path}.lock`;
+  // Letting go fails at the move of the lock aside.
+  const realRename = fs.rename;
+  const renames = spyOn(fs, "rename").mockImplementation((async (
+    from: Parameters<typeof fs.rename>[0],
+    to: Parameters<typeof fs.rename>[1]
+  ) => {
+    if (String(from) === lock) throw Object.assign(new Error("refused"), { code: "EIO" });
+    return await realRename(from, to);
+  }) as typeof fs.rename);
+  const failure = new Error("the work's own failure");
+  let caught: unknown;
+  try {
+    caught = await withDeviceLoginLock(path, async () => {
+      throw failure;
+    }).catch((error: unknown) => error);
+  } finally {
+    renames.mockRestore();
+  }
+  // The work's error is the one answered, and the release's is kept as its cause.
+  expect(caught).toBe(failure);
+  expect((failure.cause as Error | undefined)?.message).toContain("move the lock beside");
+  expect((failure.cause as Error | undefined)?.message).toContain("EIO");
+  // Control: letting go did fail, so the lock is still there.
+  expect(await readdir(dirname(path))).toContain("device-login.json.lock");
+});
