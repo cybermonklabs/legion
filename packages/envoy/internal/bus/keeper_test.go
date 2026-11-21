@@ -27,16 +27,57 @@ const (
 	keeperByteLimit = 2_000_000
 )
 
+// streamReadPoll is how often a test asks for a stream's state while it waits: a STREAM.INFO is a
+// request the stream's leader answers, too costly to send a hundred times a second
+// (testwait.Holds).
+const streamReadPoll = 50 * time.Millisecond
+
+// infoRead is one read of a stream's info: the info, or the error that came instead, so a wait
+// that gives up prints what its last read answered.
+type infoRead struct {
+	info *nats.StreamInfo
+	err  error
+}
+
+func (r infoRead) String() string { return fmt.Sprintf("%+v (%v)", r.info, r.err) }
+
+// readOf reads stream once.
+func readOf(js nats.JetStreamContext, stream string) infoRead {
+	info, err := js.StreamInfo(stream)
+	return infoRead{info: info, err: err}
+}
+
 // awaitKept waits until kept reports the stream holds what the keeper restores, and returns its
 // info. The wait ends on that fact alone: a keeper pass and the cluster's change of the stream take
 // what they take on a loaded machine, and the test binary's deadline is the one bound
-// (testwait.Until).
+// (testwait.UntilPolling).
 func awaitKept(t *testing.T, js nats.JetStreamContext, stream, what string, kept func(*nats.StreamInfo) bool) *nats.StreamInfo {
 	t.Helper()
-	return testwait.Until(t, stream+": "+what+" kept", func() (*nats.StreamInfo, bool) {
-		info, err := js.StreamInfo(stream)
-		return info, err == nil && kept(info)
+	return testwait.UntilPolling(t, streamReadPoll, stream+": "+what+" kept", func() (infoRead, bool) {
+		read := readOf(js, stream)
+		return read, read.err == nil && kept(read.info)
+	}).info
+}
+
+// answeredRead reads stream until the server answers, and returns that answer, an error included:
+// a read the server leaves unanswered within the JetStream wait (unanswered) says nothing of the
+// stream, so it is asked again rather than failing the row on the wait's span.
+func answeredRead(t *testing.T, js nats.JetStreamContext, stream string) infoRead {
+	t.Helper()
+	return testwait.UntilPolling(t, streamReadPoll, "an answered read of "+stream, func() (infoRead, bool) {
+		read := readOf(js, stream)
+		return read, !unanswered(read.err)
 	})
+}
+
+// readStream is answeredRead's info, failing the test on an answer that is an error.
+func readStream(t *testing.T, js nats.JetStreamContext, stream string) *nats.StreamInfo {
+	t.Helper()
+	read := answeredRead(t, js, stream)
+	if read.err != nil {
+		t.Fatalf("read %s: %v", stream, read.err)
+	}
+	return read.info
 }
 
 // keeperPasses waits until the keeper of each of keepers has ended n passes begun after the call
@@ -60,17 +101,13 @@ func keeperPasses(t *testing.T, keepers []*Client, n int) {
 	})
 }
 
-// heldFor runs periods passes of each of keepers (keeperPasses) and fails the test when, after any
-// of them, still stops reporting that the stream is as it was left.
-func heldFor(t *testing.T, keepers []*Client, js nats.JetStreamContext, stream, what string, periods int, still func(*nats.StreamInfo) bool) {
+// heldFor waits for passes passes of each of keepers, one at a time (keeperPasses), and fails the
+// test when, after any of them, still stops reporting that the stream is as it was left.
+func heldFor(t *testing.T, keepers []*Client, js nats.JetStreamContext, stream, what string, passes int, still func(*nats.StreamInfo) bool) {
 	t.Helper()
-	for range periods {
+	for range passes {
 		keeperPasses(t, keepers, 1)
-		info, err := js.StreamInfo(stream)
-		if err != nil {
-			t.Fatalf("read %s: %v", stream, err)
-		}
-		if !still(info) {
+		if info := readStream(t, js, stream); !still(info) {
 			t.Fatalf("%s: %s changed: %+v", stream, what, info.Config)
 		}
 	}
@@ -86,25 +123,27 @@ func keptAtSettings(id string) func(*nats.StreamInfo) bool {
 }
 
 // interleavedJetStream runs another program's write in the middle of one program's read and write
-// of the stream: afterRead once its first StreamInfo has answered, beforeUpdate just before its
-// first UpdateStream is sent, each once and each only when set. It counts the stream updates sent
-// through it.
+// of the stream: firstRead, when set, answers its first StreamInfo in place of the server, a read
+// the test made before that write, and beforeUpdate runs just before its first UpdateStream is
+// sent, once and only when set. It counts the stream updates sent through it.
 type interleavedJetStream struct {
 	nats.JetStreamContext
-	afterRead, beforeUpdate func()
-	readOnce, updateOnce    sync.Once
-	updates                 atomic.Int32
+	firstRead            *nats.StreamInfo
+	beforeUpdate         func()
+	readOnce, updateOnce sync.Once
+	updates              atomic.Int32
 	// updateErr is the server's answer to the last update sent through the wrapper: nil when the
 	// update was applied, an unanswered wait when nats-server never answered it.
 	updateErr atomic.Pointer[error]
 }
 
 func (js *interleavedJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	info, err := js.JetStreamContext.StreamInfo(stream, opts...)
-	if js.afterRead != nil {
-		js.readOnce.Do(js.afterRead)
+	var stale *nats.StreamInfo
+	js.readOnce.Do(func() { stale = js.firstRead })
+	if stale != nil {
+		return stale, nil
 	}
-	return info, err
+	return js.JetStreamContext.StreamInfo(stream, opts...)
 }
 
 func (js *interleavedJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
@@ -247,8 +286,9 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 // A start moves the role lanes off a stream that still carries them, and a keeper that read the
 // stream before the move never puts them back: on a stream whose subjects capture the role lanes
 // it sends nothing and reports why, so its stale write cannot land after the start's. The test
-// forces that order through the keeper's read. Its next pass, on the stream the start moved them
-// off, restores the byte limit with no role lane in the list.
+// forces that order through the keeper's read, which answers with the stream as the test read it
+// before the start's move. Its next pass, on the stream the start moved them off, restores the
+// byte limit with no role lane in the list.
 func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
 	js := streamTestJetStream(t)
 	roleLane := contracts.RoleTopicPrefix + ">"
@@ -261,11 +301,11 @@ func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
 	limited := parseConnectOptions([]ConnectOption{WithStreamMaxBytes(keeperByteLimit)}).streamConfig()
 	defaults := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	keeper := &interleavedJetStream{JetStreamContext: js, afterRead: func() {
-		if _, err := ensureStreamWithConfig(t.Context(), js, &defaults, capsAnUnsetStream, atStart); err != nil {
-			t.Fatalf("the start that moves the role lanes off: %v", err)
-		}
-	}}
+	stale := deployedStream(t, js)
+	if _, err := ensureStreamWithConfig(t.Context(), js, &defaults, capsAnUnsetStream, atStart); err != nil {
+		t.Fatalf("the start that moves the role lanes off: %v", err)
+	}
+	keeper := &interleavedJetStream{JetStreamContext: js, firstRead: stale}
 	restored, err := keepStream(t.Context(), keeper, &limited, capsAnUnsetStream)
 	if err == nil || !strings.Contains(err.Error(), roleLane) || len(restored) != 0 {
 		t.Fatalf("the keeper's pass on the stream it read with the role lanes = %v (%v), want an error naming %s", restored, err, roleLane)
@@ -488,8 +528,8 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 	}
 	heldFor(t, []*Client{client}, js, "KV_"+unlisted, "one copy", 4, func(info *nats.StreamInfo) bool { return info.Config.Replicas == 1 })
 
-	if _, err := js.StreamInfo("KV_" + missing); !errors.Is(err, nats.ErrStreamNotFound) {
-		t.Fatalf("read KV_%s = %v, want it still missing", missing, err)
+	if read := answeredRead(t, js, "KV_"+missing); !errors.Is(read.err, nats.ErrStreamNotFound) {
+		t.Fatalf("read KV_%s = %v, want it still missing", missing, read)
 	}
 	if n := missingRequests.Load(); n != 0 {
 		t.Fatalf("the keeper sent %d create or update requests for the missing bucket, want none", n)
@@ -591,8 +631,10 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 			client.mu.Lock()
 			conn := client.Conn
 			// The update is held until the stop has closed the connection: a gate the
-			// connection's own close opens.
+			// connection's own close opens. Removing the listener at the row's end closes the gate
+			// too, so a stop that never closed the connection leaves no keeper held.
 			closed := conn.StatusChanged(nats.CLOSED)
+			t.Cleanup(func() { conn.RemoveStatusListener(closed) })
 			client.js = &interleavedJetStream{JetStreamContext: client.js, beforeUpdate: func() {
 				close(entered)
 				<-closed
@@ -605,7 +647,12 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 			}
 			testwait.Receive(t, "the keeper's update of the lowered stream", entered)
 
-			stop.stop(client)
+			stopped := make(chan struct{})
+			go func() {
+				stop.stop(client)
+				close(stopped)
+			}()
+			testwait.Receive(t, stop.name+" of the client to return", stopped)
 			select {
 			case <-client.keeperDone:
 			default:
@@ -616,8 +663,8 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 			}
 			// The keeper has ended (keeperDone above) and its update failed on the closed
 			// connection, so no pass is left to raise the stream again: it stays at one copy.
-			if info, err := js.StreamInfo(Stream); err != nil || info.Config.Replicas != 1 {
-				t.Fatalf("the stream after the stop = %+v (%v), want one copy", info, err)
+			if info := readStream(t, js, Stream); info.Config.Replicas != 1 {
+				t.Fatalf("the stream after the stop = %+v, want one copy", info)
 			}
 		})
 	}
@@ -666,16 +713,16 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 	reconciled := func(info *nats.StreamInfo) bool {
 		return slices.Contains(info.Config.Subjects, replacing) && !slices.Contains(info.Config.Subjects, replaced)
 	}
-	testwait.Until(t, fmt.Sprintf("the first connection's reconcile to replace %s with %s", replaced, replacing), func() (*nats.StreamInfo, bool) {
-		info, err := js.StreamInfo(Stream)
-		return info, err == nil && reconciled(info)
+	testwait.UntilPolling(t, streamReadPoll, fmt.Sprintf("the first connection's reconcile to replace %s with %s", replaced, replacing), func() (infoRead, bool) {
+		read := readOf(js, Stream)
+		return read, read.err == nil && reconciled(read.info)
 	})
 	// A hundred keeper passes begun after the reconcile was read: a pass that read the stream
 	// before the reconcile has ended by then, and the subject it put back would stay, since the
 	// keeper only adds subjects.
 	keeperPasses(t, []*Client{client}, 100)
-	if info, err := js.StreamInfo(Stream); err != nil || !reconciled(info) {
-		t.Fatalf("the stream after a hundred keeper passes = %+v (%v), want %s kept and %s gone", info, err, replacing, replaced)
+	if info := readStream(t, js, Stream); !reconciled(info) {
+		t.Fatalf("the stream after a hundred keeper passes = %+v, want %s kept and %s gone", info, replacing, replaced)
 	}
 	if failures := logs.recordsWithMsg(t, "envoy nats keeper could not restore the stream"); len(failures) != 0 {
 		t.Fatalf("the keeper logged %v, want no pass before the reconcile", failures)

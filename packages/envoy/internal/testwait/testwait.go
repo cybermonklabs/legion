@@ -13,12 +13,14 @@
 // 30 s or less of the binary's deadline left, as every wait does under a -timeout of 30 s or less,
 // has already passed that moment: Until asks once, Receive takes only a value already sent or a
 // close, and either fails the test at once when that answer is not there. Until waits until a
-// reading holds and returns it, and its failure prints the last value it read; Receive waits for
-// one receive from a channel. A wait that gives up writes "testwait: <test>: gave up waiting for
-// <what> 30s before the test binary's deadline; last read: <reading>" to stderr at once, then fails
-// the test with the same text: Go's alarm panics without printing a running test's log, so a
-// cleanup that outlasted the margin would otherwise take the message with it. The text is one
-// line: a newline in what or in the reading is written as \n.
+// reading holds and returns it, asking every Poll, and its failure prints the last value it read;
+// UntilPolling is Until at a pace the caller gives, for a reading that costs something, such as a
+// request to a cluster. Receive waits for one receive from a channel. A wait that gives up writes
+// "testwait: <test>: gave up waiting for <what> 30s before the test binary's deadline; last read:
+// <reading>" to stderr at once, then fails the test with the same text: without -v, Go's alarm
+// panics without printing a running test's log, so a cleanup that outlasted the margin would
+// otherwise take the message with it. The text is one line: a newline in what or in the reading is
+// written as \n.
 package testwait
 
 import (
@@ -94,9 +96,16 @@ func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bo
 // binary.
 const margin = 30 * time.Second
 
-// Until waits until read reports true, and returns what it read then. Its one bound is the test
-// binary's deadline less margin, and its failure prints the last value read.
+// Until waits until read reports true, asking every Poll, and returns what it read then. Its one
+// bound is the test binary's deadline less margin, and its failure prints the last value read.
 func Until[T any](t *testing.T, what string, read func() (T, bool)) T {
+	t.Helper()
+	return UntilPolling(t, Poll, what, read)
+}
+
+// UntilPolling is Until asking every poll, for a reading too costly to ask a hundred times a
+// second (Holds).
+func UntilPolling[T any](t *testing.T, poll time.Duration, what string, read func() (T, bool)) T {
 	t.Helper()
 	var value T
 	end, bounded := giveUpAt(t)
@@ -105,7 +114,7 @@ func Until[T any](t *testing.T, what string, read func() (T, bool)) T {
 		value, ok = read()
 		return ok
 	}
-	if !asked(end, bounded, holds) {
+	if !asked(end, bounded, poll, holds) {
 		gaveUp(t, what, func() string { return fmt.Sprintf("%+v", value) })
 	}
 	return value
@@ -133,15 +142,15 @@ func Receive[T any](t *testing.T, what string, ch <-chan T) T {
 	return zero
 }
 
-// asked asks holds every Poll until it reports true, and reports whether it did. Once end has
+// asked asks holds every poll until it reports true, and reports whether it did. Once end has
 // passed a false answer ends the asking, so the question is asked once after end; with no end
 // (bounded false) it asks until holds reports true.
-func asked(end time.Time, bounded bool, holds func() bool) bool {
+func asked(end time.Time, bounded bool, poll time.Duration, holds func() bool) bool {
 	for !holds() {
 		if bounded && !time.Now().Before(end) {
 			return false
 		}
-		time.Sleep(Poll)
+		time.Sleep(poll)
 	}
 	return true
 }

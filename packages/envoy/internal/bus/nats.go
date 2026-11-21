@@ -393,9 +393,10 @@ type Client struct {
 	// client that runs none, or none yet: one that connects in the background starts it on its first
 	// reconcile (ensureStreamOnce). It is written and read under mu (startKeeper, awaitKeeper).
 	keeperDone chan struct{}
-	// keepPasses counts the keeper's passes that have ended (keep, keepPass), for a test that must
-	// know a whole pass ran after a change it made: a pass that finds nothing to restore logs
-	// nothing and sends no update, so the count is the one sign of it.
+	// keepPasses counts the keeper's passes that have ended, a pass that failed included (keep,
+	// keepPass), for a test that must know a pass ran after a change it made: a pass that finds
+	// nothing to restore logs nothing and sends no update, so the count is the one sign it ran. It
+	// says nothing of whether the pass did what it set out to; a failed pass logs that.
 	keepPasses atomic.Uint64
 }
 

@@ -178,8 +178,9 @@ func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
 // which is the interleaving a server that goes away right behind the publish has: nats.go clears
 // its pending flushes as the connection turns reconnecting, so a flush begun after that waits out
 // its whole timeout for a PONG no server sends. The loss is the answer either way, and it is given
-// the moment the loss is seen. The request's own timeout is a day, past any deadline go test gives
-// this binary, so an answer that comes is the loss and never a timeout.
+// the moment the loss is seen. The request's own timeout is a day, so an answer before it is the
+// loss and never a timeout; a Request that never answered the loss would wait until the test
+// binary's deadline less testwait's margin, or under -timeout 0 a day, and fail the row either way.
 func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 	lost := make(chan struct{})
 	server, _, client := requestClient(t, bus.WithBeforeRequestFlush(func() {

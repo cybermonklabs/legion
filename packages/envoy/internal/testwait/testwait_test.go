@@ -45,6 +45,19 @@ func TestUntilReturnsTheReadingThatHeld(t *testing.T) {
 	}
 }
 
+// UntilPolling asks at the caller's pace: two false readings before the one that holds cost it at
+// least two of its polls. Sleep never ends early, so the bound below is a floor no load can push
+// the row under.
+func TestUntilPollingAsksAtItsPace(t *testing.T) {
+	const poll = 50 * time.Millisecond
+	asks := 0
+	started := time.Now()
+	got := UntilPolling(t, poll, "the third reading", func() (int, bool) { asks++; return asks, asks == 3 })
+	if elapsed := time.Since(started); got != 3 || elapsed < 2*poll {
+		t.Fatalf("UntilPolling returned %d after %s, want the third reading after at least two polls of %s", got, elapsed, poll)
+	}
+}
+
 // Receive returns a value a sender sends later, and returns on a close with the zero value.
 func TestReceiveReturnsASentValueAndAClose(t *testing.T) {
 	sent := make(chan string)

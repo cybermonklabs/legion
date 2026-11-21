@@ -13,19 +13,14 @@ import (
 )
 
 // A Request answers ErrUnavailable the moment the life its window pinned ends (connLife), whether
-// or not the client has heard of the loss yet. nats.go reports a drop to connLife's listener from
-// inside its own status change, which connLife's drain goroutine takes, and to the client on its
-// callback goroutine (onDisconnect), behind any callback queued before it, so the two come in
-// either order. A Request that woke only on the client's connection event and then read the life
-// read it as current whenever the client heard first, waited for the client's next event, and got
-// none while the connection kept failing to reconnect: it answered only at its own timeout.
+// or not the client has heard of the loss yet: lifeEnded says why the two come in either order.
 //
 // The row ends the window's life as the drain does on nats.go's report, while the connection stays
 // up, so the client hears of nothing and no connection event comes at all. The request's subject
 // is a role lane, which no stream subject captures, so nothing acknowledges it, and its timeout is
-// a day, past any deadline go test gives this binary: the answer can only be the life's end. A
-// Request that waits for the client's event instead waits until the test binary's deadline, the
-// row's one bound.
+// a day: the answer can only be the life's end. A Request that waits for the client's event
+// instead waits until the test binary's deadline less testwait's margin, the row's one bound, or
+// under -timeout 0 until its day runs out and it answers ErrNotAcknowledged; either fails the row.
 func TestARequestAnswersUnavailableOnceItsWindowsLifeEndsBeforeTheClientHearsOfTheLoss(t *testing.T) {
 	_, url := testnats.Start(t)
 	client, err := ConnectOwningStream([]string{url})
