@@ -333,7 +333,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		OIDCAccounts:          options.oidcAccounts,
 		AccessAccounts:        options.accessAccounts,
 		SignInIssuer:          options.signInIssuer,
-		Passkeys:              passkeysOf(options.passkeyIssuer, database.Pool),
+		Passkeys:              passkeysOf(options, database.Pool),
 		WorkspaceAddress:      workspaceAddressOf(options.passkeyIssuer, database.Pool),
 		RestrictedAdmission:   restrictedAdmissionOf(options.admitsRestricted, database.Pool),
 		PrivateProjects:       options.privateProjects,
@@ -394,12 +394,18 @@ func restrictedAdmissionOf(admitsRestricted bool, pool *store.Pool) identity.Res
 }
 
 // passkeysOf is Deps.Passkeys for a deployment whose people from outside sign in with a passkey at
-// issuer, the outside origin, over pool; nil for none.
-func passkeysOf(issuer string, pool *store.Pool) *store.PgPasskeys {
-	if issuer == "" {
+// options.passkeyIssuer, the outside origin, over pool; nil for none. Its people store owes the
+// broker the revocation of an account the Reset replaces where options configure a broker and a
+// sign-in issuer, as cmd/dispatch's peopleOptions gives the one store main shares with it.
+func passkeysOf(options testServerOptions, pool *store.Pool) *store.PgPasskeys {
+	if options.passkeyIssuer == "" {
 		return nil
 	}
-	return store.NewPgPasskeys(store.NewPgPeopleStore(pool, auth.SingleSigningKey("passkey test key"), nil), issuer)
+	var people []store.PeopleOption
+	if options.agentSecretsURL != "" && options.signInIssuer != "" {
+		people = append(people, store.WithBrokerRevocations(options.signInIssuer))
+	}
+	return store.NewPgPasskeys(store.NewPgPeopleStore(pool, auth.SingleSigningKey("passkey test key"), nil, people...), options.passkeyIssuer)
 }
 
 // workspaceAddressOf is Deps.WorkspaceAddress beside passkeysOf: the passkey rule's check over

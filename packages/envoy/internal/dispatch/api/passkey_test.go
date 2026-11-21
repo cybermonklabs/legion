@@ -4,7 +4,11 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -111,5 +115,129 @@ func TestAResetRevokesTheMembersDeviceLogins(t *testing.T) {
 	}
 	if refreshed, err := r.client.Refresh(t, erins.key, erinsDevice); err == nil {
 		t.Errorf("erin's device login refreshed after the Reset, answering a token expiring %s; want it refused", refreshed.Expiry)
+	}
+}
+
+// TestAnApprovalInFlightAcrossAResetMintsNoLogin (R5, R16): an approve whose standing Dispatch
+// read before the owner's Reset of the approver (approveCredentialRecord: the account and the
+// session generation it relays), and which reaches the secrets broker only after the Reset
+// committed and the broker revocation loop's pass ran, mints nothing. The Reset gave the address
+// a new passkey account and owes the broker the revocation of the old one at the generation the
+// Reset left, so the broker refuses an approve that names the old account, or an older
+// generation, and erin's machine never gets a token for that login.
+//
+// Control: the Reset keeps the address's account (store.PgPasskeys.ResetTx recording no new
+// subject), and the late approve mints the login and the row fails naming its credential.
+func TestAnApprovalInFlightAcrossAResetMintsNoLogin(t *testing.T) {
+	r := newRestrictedTokenRig(t, withPasskeys)
+	ctx := t.Context()
+	const subject = "aW4tZmxpZ2h0LXN1YmplY3Qh"
+	recordPasskeyAccount(t, r.database, accessErin, subject)
+	machine := r.startLogin(t, accessErin, "erin-laptop")
+	recordID, _ := r.recordOf(t, accessErin, machine)
+	var generation int64
+	if err := r.database.Pool.QueryRow(ctx, `select coalesce((select generation from user_sessions where login = $1), 0)`, accessErin).Scan(&generation); err != nil {
+		t.Fatalf("read erin's session generation: %v", err)
+	}
+	inFlight := agentsecrets.Decision{
+		Approver: accessErin, Code: &machine.device.UserCode,
+		ApproverIssuer: passkeyOutsideOrigin, ApproverSubject: subject, ApproverSessionGeneration: &generation,
+	}
+
+	if reset := dispatchRequest(t, r.dispatch, http.MethodPost, "/api/v1/projects/ACC/access/people/"+accessErin+"/reset", nil, "alice"); reset.Code != http.StatusOK {
+		t.Fatalf("alice's Reset of erin: %d %s, want 200", reset.Code, reset.Body.String())
+	}
+	r.server.revokeBrokerDebts(ctx)
+	if minted, err := r.server.deps.AgentSecrets.Approve(ctx, recordID, inFlight); err == nil {
+		t.Fatalf("the approve Dispatch read before the Reset, relayed after the revocation pass, minted erin's login: %s", minted)
+	}
+	if token, err := r.client.DeviceToken(t, machine.key, machine.device); err == nil {
+		t.Fatalf("erin's machine got a token for the login approved across the Reset, expiring %s", token.Expiry)
+	}
+}
+
+// TestTwoRemovalsFromTheLastTwoListsEndThePasskeySignIn (R5): two owners take a restricted member
+// off the last two lists that name them at the same moment, on a deployment with no broker, and
+// the removal that commits second ends the sign-in and deletes the passkeys: each removal reads
+// whether a list still names the person only under the address's lock
+// (endUnlistedPasskeySignIn), so the second reads the first's committed removal.
+//
+// Control: read the lists before taking the address's lock (endUnlistedPasskeySignIn without
+// store.LockAddressTx), and each removal reads the other's row as still there, both skip the end,
+// and the row fails naming the passkey still stored.
+func TestTwoRemovalsFromTheLastTwoListsEndThePasskeySignIn(t *testing.T) {
+	served, database, s := newRegisteredAccessServer(t, testServerOptions{passkeyIssuer: passkeyOutsideOrigin, signInIssuer: "https://accounts.google.com"})
+	ctx := t.Context()
+	if created := dispatchRequest(t, served, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTHER", "name": "Other project"}, "alice"); created.Code != http.StatusCreated {
+		t.Fatalf("create OTHER: %d %s", created.Code, created.Body.String())
+	}
+	for _, key := range []string{"ACC", "OTHER"} {
+		if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/"+key+"/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+			t.Fatalf("alice names erin on %s: %d %s", key, listed.Code, listed.Body.String())
+		}
+	}
+	const subject = "dHdvLXJlbW92YWxzLWVyaW4h"
+	recordPasskeyAccount(t, database, accessErin, subject)
+	if _, err := database.Pool.Exec(ctx, `insert into passkeys (credential_id, email, user_handle, public_key, aaguid, flags)
+		values ('\x01'::bytea, $1, convert_to($2, 'UTF8'), '\x02'::bytea, ''::bytea, 0)`, accessErin, subject); err != nil {
+		t.Fatalf("store erin's passkey: %v", err)
+	}
+
+	begin := func() pgx.Tx {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+		return tx
+	}
+	first, second := begin(), begin()
+	for tx, key := range map[pgx.Tx]string{first: "ACC", second: "OTHER"} {
+		if _, err := tx.Exec(ctx, `delete from project_access where project_key = $1 and principal_kind = 'person' and principal = $2`, key, accessErin); err != nil {
+			t.Fatalf("take erin off %s: %v", key, err)
+		}
+	}
+	if err := s.endUnlistedPasskeySignIn(ctx, first, "ACC", accessErin); err != nil {
+		t.Fatalf("the removal from ACC: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.endUnlistedPasskeySignIn(ctx, second, "OTHER", accessErin) }()
+	// The removal from OTHER either reads the lists before ACC's commits (no lock) or waits for
+	// ACC's address lock; ACC's commits once one of the two is seen.
+	var secondErr error
+	finished := false
+	for deadline := time.Now().Add(time.Minute); !finished; {
+		select {
+		case secondErr = <-done:
+			finished = true
+			continue
+		case <-time.After(20 * time.Millisecond):
+		}
+		var waiting int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the removal from OTHER neither finished nor waited on the address's lock within a minute")
+		}
+	}
+	if err := first.Commit(ctx); err != nil {
+		t.Fatalf("commit the removal from ACC: %v", err)
+	}
+	if !finished {
+		secondErr = <-done
+	}
+	if secondErr != nil {
+		t.Fatalf("the removal from OTHER: %v", secondErr)
+	}
+	if err := second.Commit(ctx); err != nil {
+		t.Fatalf("commit the removal from OTHER: %v", err)
+	}
+	if n := countRows(t, database, `select count(*) from passkeys where email = '`+accessErin+`'`); n != 0 {
+		t.Fatalf("after both removals erin holds %d passkey(s), want every one deleted", n)
 	}
 }

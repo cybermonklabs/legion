@@ -8,17 +8,24 @@ body: |-
   enrolls a passkey (`/auth/passkey/register/begin` and `/finish`) and then signs in with it
   (`/auth/passkey/login/begin` and `/finish`): a discoverable credential, user verification
   required, no attestation, the relying party the outside origin's host, a signature counter that
-  does not go up refused, and each ceremony's answer taken once. No link is made for an address on a
-  domain the Workspace owns (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`) or for a
-  full member's. The hourly confirmation, the owner's removal of the person from the last list
-  that names them and the owner's Reset (`POST .../access/people/{email}/reset`) each end the
-  sign-in and delete the passkeys in one transaction; the Reset also owes the secrets broker the
-  revocation of the machine logins the person approved. The owner's access answer carries
-  `passkeys` and `invitable`. Dispatch relays a passkey member's approvals to the broker under the
-  outside origin as the approving account's issuer (`people.sub_issuer`, migration
-  `20261120165538`). The passkey routes answer 404 at `DISPATCH_SERVER_URL`. Boot refuses the
-  setting without `DISPATCH_SIGNIN_DOMAIN` or `DISPATCH_OUTSIDE_ORIGIN`, and under IAP or header
-  identity.
+  does not go up refused while either it or the stored one is not zero, and each ceremony's answer
+  taken once. No link is made, and no passkey enrolled, for an address on a domain the Workspace
+  owns (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`) or for a full member's (409
+  `FULL_MEMBER`, also for a link made before its person signed in as one). The hourly
+  confirmation, the owner's removal of the person from the last list that names them and the
+  owner's Reset (`POST .../access/people/{email}/reset`) each end the sign-in and delete the
+  passkeys in one transaction. The Reset also ends the person's unused links of every project,
+  owes the secrets broker the revocation of the machine logins the person approved, and gives the
+  address a new passkey account, which revokes the person's personal tokens and owes the broker
+  the old account's revocation, so a machine login approved while the Reset ran is refused too.
+  The owner's access answer carries `passkeys` and `invitable`. Dispatch relays a passkey member's
+  approvals to the broker under the outside origin as the approving account's issuer
+  (`people.sub_issuer`, migration `20261120165538`). At the outside origin `/auth/start` and
+  `/auth/callback` now answer 404 unless `DISPATCH_SIGNIN_OUTSIDE=1`, and the passkey routes answer
+  404 at `DISPATCH_SERVER_URL`. With the setting turned off, a passkey member's cookie is refused
+  `401 NO_IDENTITY` with `reason` `OUTSIDE_SIGNIN_OFF`. Boot refuses the setting beside
+  `DISPATCH_SIGNIN_OUTSIDE=1`, without `DISPATCH_SIGNIN_DOMAIN` or `DISPATCH_OUTSIDE_ORIGIN`, and
+  under IAP or header identity.
 time: 2026-11-20T20:09:36Z
 custom:
     Issue: outside-passkeys

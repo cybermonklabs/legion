@@ -335,16 +335,22 @@ func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, pe
 }
 
 // endUnlistedPasskeySignIn is a removal's end of a person's passkey sign-in, in its transaction tx,
-// where passkey sign-in is on (R5): it deletes the person's unused links of project key, and when
-// no project's owner is them and no list names them directly any more (access.Listed, read after
-// the removal in tx), and their row is no full member's, it ends their sign-in and deletes their
-// passkeys (store.EndPasskeySignInTx), so their cookie stops at its next use.
+// where passkey sign-in is on (R5): it deletes the person's unused links of project key, takes the
+// address's lock (store.LockAddressTx), and when no project's owner is them and no list names them
+// directly any more (access.Listed, read after the removal and under that lock in tx), and their
+// row is no full member's, it ends their sign-in and deletes their passkeys
+// (store.EndPasskeySignInTx), so their cookie stops at its next use. The lock puts two removals
+// from the last two lists that name the person in order, so the second reads the first's commit
+// and ends the sign-in, with no broker configured too.
 func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, key, email string) error {
 	if s.deps.Passkeys == nil {
 		return nil
 	}
 	login := model.CanonicalLogin(email)
 	if err := store.DeleteInvitationsTx(ctx, tx, key, login); err != nil {
+		return err
+	}
+	if err := store.LockAddressTx(ctx, tx, login); err != nil {
 		return err
 	}
 	listed, err := access.Listed(ctx, tx, login)
@@ -469,13 +475,17 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 }
 
 // resetProjectAccessPerson is POST /api/v1/projects/{key}/access/people/{email}/reset: the
-// project's owner, in a browser session, ends the sign-in of a person its list names directly and
-// deletes their passkeys and their unused links of the project, and records that Dispatch owes the
-// secrets broker the revocation of the machine logins they approved (recordMachineLoginRevocation,
-// the record a removal from the list makes), all in one transaction, so the person signs in again
-// only with a new link and the device logins a hijacker approved end too (R5, R16). The person
-// stays on the list. A full member's address is 409 FULL_MEMBER. It answers the project's access,
-// as the list's writes do.
+// project's owner, in a browser session, resets a person its list names directly, in one
+// transaction: it records that Dispatch owes the secrets broker the revocation of the machine
+// logins they approved (recordMachineLoginRevocation, the record a removal from the list makes),
+// deletes their unused links of every project (store.DeletePersonInvitationsTx), gives the
+// address a new passkey account, which revokes their personal tokens and owes the broker the
+// revocation of the old account, and ends their sign-in and deletes their passkeys
+// (store.PgPasskeys.ResetTx). So the person signs in again only with a new link, and nothing the
+// old account made or approved acts again, a machine login approved while the Reset ran included
+// (R5, R16). The writes lock as a removal's do: the revocation's row, then the links, then the
+// address. The person stays on the list. A full member's address is 409 FULL_MEMBER. It answers
+// the project's access, as the list's writes do.
 func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
 	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		if err := s.passkeyOwnerRefusal(by); err != nil {
@@ -485,13 +495,17 @@ func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
-		if err := store.DeleteInvitationsTx(ctx, tx, key, login); err != nil {
-			return model.ProjectAccess{}, nil, err
-		}
-		if _, err := store.EndPasskeySignInTx(ctx, tx, login); err != nil {
-			return model.ProjectAccess{}, nil, err
-		}
 		if err := s.recordMachineLoginRevocation(ctx, tx, login); err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		if err := store.DeletePersonInvitationsTx(ctx, tx, login); err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		subject, err := identity.NewPasskeySubject()
+		if err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		if _, err := s.deps.Passkeys.ResetTx(ctx, tx, login, subject); err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
 		answer, err := access.ReadProjectWritten(ctx, tx, key)

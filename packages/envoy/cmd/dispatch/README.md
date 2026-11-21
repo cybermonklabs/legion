@@ -653,6 +653,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 - With `DISPATCH_SIGNIN_PASSKEY=1` beside the domain, a person outside it whom a project's access list names directly signs in as a restricted member with a passkey, at `DISPATCH_OUTSIDE_ORIGIN` alone, and with no Google account (`identity.PasskeyRule`, `identity.Passkeys`, the `/auth/passkey/*` routes below).
   Google signs in the domain's people alone, as without the setting.
+  List every other domain the Workspace owns in `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`: an address on a domain it does not list is no Workspace address to this rule, so the owner can make a link for a Workspace member's address there before the member first signs in with Google, and the passkey enrolled with it keeps signing in as that address after the Workspace offboards the member, since no passkey sign-in or confirmation asks Google.
   The project's owner makes a single-use link for the person in their browser (`POST /api/v1/projects/{key}/access/people/{email}/invitations`, which any token is refused): `<DISPATCH_OUTSIDE_ORIGIN>/enroll#<token>`, 32 random bytes, base64url, in the URL fragment, which no server logs and no browser sends on, of which `outside_invitations` keeps only the SHA-256.
   It lapses 24 hours after it was made, or at its first use, and a newer link for the same person and project, the person's removal from that project's list and the owner's Reset each end it.
   The owner gets no link for an email the list does not name directly (`409 PERSON_NOT_LISTED`: a group never counts), for an address on a domain the Workspace owns (`400 WORKSPACE_ADDRESS`: `DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` or a subdomain of one), or for a full member's (`409 FULL_MEMBER`).
@@ -660,14 +661,14 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   `people.sub_issuer` moves only with `sub`, and a row with no `sub` holds none (migration `20261120165538`'s guard), and a passkey's row holds no refresh token (`people_sign_in_stands`): its sign-in stands while `confirmed_at` holds a time.
   The hourly confirmation of a passkey's sign-in asks the rule again (`AdmitsRestricted`) and whether the person holds a passkey;
   a person no list names directly any more, or whose address is now on a domain the Workspace owns, has their sign-in ended and their passkeys deleted in one transaction (`PgPasskeys.End`), and is told why as above.
-  So does the owner's removal of the person from the last list that names them, in the removal's own transaction, and the owner's Reset (`POST .../access/people/{email}/reset`), which keeps the person on the list, ends their unused links and owes the secrets broker the revocation of the machine logins they approved, as a removal does.
+  So does the owner's removal of the person from the last list that names them, in the removal's own transaction, and the owner's Reset (`POST .../access/people/{email}/reset`), which keeps the person on the list and, in one transaction, owes the secrets broker the revocation of the machine logins they approved, as a removal does, ends their unused links of every project, and gives the address a new passkey account (`PgPasskeys.ResetTx`, through the account binding), which revokes their personal tokens and owes the broker the revocation of the old account, so a machine login approved with it while the Reset ran is refused or ended too.
   The owner's browser reads, on the project's access answer, when each passkey of a listed person was enrolled (`passkeys`) and whom it can make a link for now (`invitable`); no other caller reads either, and a deployment without the setting answers neither.
-  With the setting turned off, a passkey's cookie is refused at its next use, and the person's tokens are refused as below.
+  With the setting turned off, a passkey's cookie is refused at its next use, `401 NO_IDENTITY` with `reason` `OUTSIDE_SIGNIN_OFF` (below), and the person's tokens are refused as below.
 
 - A restricted member's personal `dsp_` token, and an access token the secrets broker issued naming them, are held to the rule that admits them at every use, not hourly (`api.restrictedOwnerAdmitted`, the one check both call, asks the sign-in rule's own `AdmitsRestricted`):
   it acts only while `DISPATCH_SIGNIN_PASSKEY=1`, its owner's address is on no domain the Workspace owns (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`), and some project names its owner directly, and is otherwise `401 TOKEN_OWNER_NOT_ADMITTED`, whose words say which failed;
   lists that cannot be read are `503 IDENTITY_UNAVAILABLE`, never an accept.
-  So a deployment that stops admitting restricted members, listing the owner's domain as the Workspace's, or taking the person off every list, stops their tokens at their next request, on every route and at a live socket's next heartbeat, while their cookie stops at its next confirmation.
+  So a deployment that stops admitting restricted members, listing the owner's domain as the Workspace's, or taking the person off every list, stops their tokens at their next request, on every route and at a live socket's next heartbeat, while their cookie stops at its next confirmation (a passkey's at once when the owner takes them off the last list, and at its next use once `DISPATCH_SIGNIN_PASSKEY` is off).
   None of these revokes the token, so it acts again once all hold again;
   another Google account's sign-in to the address revokes a personal token (below).
   A personal token's owner's member kind is read in the token's own lookup (`api.personalTokenActor`), by the owner in the form `people.email` holds (`canonical_login`, migration `20261117000831`: `model.CanonicalLogin` in SQL, every Unicode space trimmed and A-Z lowered), whatever case or surrounding space the token's row spells it with, so a full member's token, and one whose owner has no `people` row, reads nothing more and answers as before.
@@ -685,7 +686,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 - A person from outside the domain whom the hourly confirmation signs out (above) is told why: the request that ran it and every one after it, from any browser still holding the session, is `401 NO_IDENTITY` with `reason` and `login`, the address (`identity.SignedOut`), and the dashboard's sign-in page says it in words.
   `reason` is `WORKSPACE_ADDRESS` for a restricted member whose address is now on a domain the Workspace owns (`identity.ErrWorkspaceAddress`), whatever the lists say;
   `NOT_LISTED` once no list names the account;
-  or `OUTSIDE_SIGNIN_OFF` for a restricted member once the deployment admits nobody from outside.
+  or `OUTSIDE_SIGNIN_OFF` for a restricted member once the deployment admits nobody from outside (`DomainRule.SignedOutReason`), a passkey's account at its very next request, since the refusal of its cookie writes nothing.
   It is read from the address's row and the lists at each request (`SignInRule.SignedOutReason`), not kept from the request that ended the sign-in, so it reaches the person whichever of their requests ran the confirmation, a live socket's heartbeat included, and whichever server process answers the next one, and it needs no column of its own.
   A sign-out, an expired cookie, a person a list still names at an address on no domain the Workspace owns, an address another account or another sign-in holds now and a full member are told none;
   a deployment that never admitted a restricted member holds none, so it answers as it always has.
@@ -4272,6 +4273,7 @@ Each item below names a field of the line, then what it holds.
 
   The route's own pattern (`/api/v1/issues/{key}`), so one route's requests group together whatever ids their paths carry;
   `unmatched` for a path under `/api`, `/v1`, `/auth`, `/ws` or `/healthz` that no route answers.
+  A route that answers at one origin alone (`/auth/start` and `/auth/callback` at `DISPATCH_SERVER_URL`, the passkey ceremonies at `DISPATCH_OUTSIDE_ORIGIN`) answers the other the same `404` and logs that request under its own pattern, once.
 
 - `path`
 
@@ -4384,7 +4386,7 @@ Each item below names a path with its method and identity, then its purpose.
   The issuer sends the browser back to the callback of the origin the request came to: `DISPATCH_OUTSIDE_ORIGIN`'s when the request's `Host` is its host, else `DISPATCH_SERVER_URL`'s.
   `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`;
   `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read.
-  With `DISPATCH_SIGNIN_PASSKEY=1` it answers, at `DISPATCH_OUTSIDE_ORIGIN`, the `404` a path no route serves answers, as `/auth/callback` does there: a person from outside signs in there with a passkey alone (below).
+  At `DISPATCH_OUTSIDE_ORIGIN` it answers the `404` a path no route serves answers, as `/auth/callback` does there, with passkey sign-in on or off: a person from outside signs in there with a passkey (below), or not at all.
 
 - `/auth/callback` (GET; sign-in state)
 

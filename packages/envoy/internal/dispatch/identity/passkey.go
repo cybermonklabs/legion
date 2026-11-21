@@ -16,6 +16,7 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -172,8 +173,9 @@ func NewInvitationToken() (string, [32]byte, error) {
 	return base64.RawURLEncoding.EncodeToString(raw[:]), sha256.Sum256(raw[:]), nil
 }
 
-// newPasskeySubject is a new passkey subject: 16 random bytes, base64url, unpadded.
-func newPasskeySubject() (string, error) {
+// NewPasskeySubject is a new passkey subject: 16 random bytes, base64url, unpadded. A person's
+// first enrollment makes one, and the owner's Reset makes another (store.PgPasskeys.ResetTx).
+func NewPasskeySubject() (string, error) {
 	var raw [passkeySubjectBytes]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", fmt.Errorf("make the passkey subject: %w", err)
@@ -185,7 +187,8 @@ func newPasskeySubject() (string, error) {
 // would: no such link (store.ErrInvitationUnknown), used, lapsed, the project's list no longer
 // naming its email directly, the rule no longer admitting the address (ErrWorkspaceAddress,
 // ErrNotListed, or ErrMembershipUnreadable, which is no refusal), or a full member's address
-// (store.ErrInvitationUnknown: a link the owner could not have made for them).
+// (auth.ErrAddressHeldByMember, as the finish's account binding refuses it: the person signed in
+// with Google as a full member after the owner made the link).
 func (p *Passkeys) invitedPerson(ctx context.Context, token string) ([32]byte, store.Invitation, store.PasskeyAccount, error) {
 	hash, ok := InvitationHash(token)
 	if !ok {
@@ -213,7 +216,7 @@ func (p *Passkeys) invitedPerson(ctx context.Context, token string) ([32]byte, s
 		return [32]byte{}, store.Invitation{}, store.PasskeyAccount{}, err
 	}
 	if account.FullMember {
-		return [32]byte{}, store.Invitation{}, store.PasskeyAccount{}, store.ErrInvitationUnknown
+		return [32]byte{}, store.Invitation{}, store.PasskeyAccount{}, auth.ErrAddressHeldByMember
 	}
 	return hash, invitation, account, nil
 }
@@ -231,7 +234,7 @@ func (p *Passkeys) BeginEnrollment(ctx context.Context, token string) (*protocol
 	}
 	subject := account.Subject
 	if subject == "" {
-		if subject, err = newPasskeySubject(); err != nil {
+		if subject, err = NewPasskeySubject(); err != nil {
 			return nil, PasskeyCeremony{}, err
 		}
 	}

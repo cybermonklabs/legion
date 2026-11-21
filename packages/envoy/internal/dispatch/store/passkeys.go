@@ -18,7 +18,7 @@ import (
 var (
 	// ErrInvitationUnknown means no link of a project's owner has the token: never made, or
 	// ended by a newer link for the same person and project, a removal from that project's list
-	// or the owner's Reset.
+	// or the owner's Reset of the person on any project.
 	ErrInvitationUnknown = errors.New("no invitation has this token")
 	// ErrInvitationUsed means the link was used: it enrolls one passkey, once.
 	ErrInvitationUsed = errors.New("the invitation was used")
@@ -163,8 +163,9 @@ func MakeInvitationTx(ctx context.Context, tx pgx.Tx, tokenHash [32]byte, email,
 	return expiresAt, nil
 }
 
-// DeleteInvitationsTx deletes, in tx, email's unused links of project: a newer link, a removal
-// from the project's list and the owner's Reset each end them.
+// DeleteInvitationsTx deletes, in tx, email's unused links of project: a newer link and a removal
+// from the project's list each end them (the owner's Reset ends every project's,
+// DeletePersonInvitationsTx).
 func DeleteInvitationsTx(ctx context.Context, tx pgx.Tx, project, email string) error {
 	if _, err := tx.Exec(ctx, `delete from outside_invitations where project_key = $1 and email = $2 and used_at is null`,
 		project, model.CanonicalLogin(email)); err != nil {
@@ -173,10 +174,11 @@ func DeleteInvitationsTx(ctx context.Context, tx pgx.Tx, project, email string) 
 	return nil
 }
 
-// EndPasskeySignInTx ends, in tx, email's sign-in and deletes their passkeys: the owner's Reset and
-// a removal from the last list that names a restricted member (api). It advances the address's
-// session generation, so no cookie of theirs acts again, forgets the row's refresh token and
-// confirmation, and answers how many passkeys it deleted. An address no row holds has neither.
+// EndPasskeySignInTx ends, in tx, email's sign-in and deletes their passkeys: a removal from the
+// last list that names a restricted member (api), the hourly check (settle) and the owner's Reset
+// (ResetTx). It advances the address's session generation, so no cookie of theirs acts again,
+// forgets the row's refresh token and confirmation, and answers how many passkeys it deleted. An
+// address no row holds has neither.
 func EndPasskeySignInTx(ctx context.Context, tx pgx.Tx, email string) (int64, error) {
 	login := model.CanonicalLogin(email)
 	if _, err := tx.Exec(ctx, addressLockSQL, login); err != nil {
@@ -198,6 +200,59 @@ func EndPasskeySignInTx(ctx context.Context, tx pgx.Tx, email string) (int64, er
 		return 0, fmt.Errorf("end the person's sign-in: %w", err)
 	}
 	return deleted.RowsAffected(), nil
+}
+
+// DeletePersonInvitationsTx deletes, in tx, email's unused links of every project: the owner's
+// Reset ends them all, so the person enrolls again only with a link made after it. A caller that
+// also takes the address's lock deletes the links first, the order Enroll locks them in (the link,
+// then the address).
+func DeletePersonInvitationsTx(ctx context.Context, tx pgx.Tx, email string) error {
+	if _, err := tx.Exec(ctx, `delete from outside_invitations where email = $1 and used_at is null`, model.CanonicalLogin(email)); err != nil {
+		return fmt.Errorf("end the person's unused invitations: %w", err)
+	}
+	return nil
+}
+
+// LockAddressTx takes email's address lock for tx (addressLockSQL), the lock every write that
+// signs the address in, ends its passkey sign-in or deletes its passkeys takes first: a removal
+// takes it before it reads whether a list still names the person, so two removals from the last
+// two lists that name them read one after the other, and the second ends the sign-in.
+func LockAddressTx(ctx context.Context, tx pgx.Tx, email string) error {
+	if _, err := tx.Exec(ctx, addressLockSQL, model.CanonicalLogin(email)); err != nil {
+		return fmt.Errorf("lock the address: %w", err)
+	}
+	return nil
+}
+
+// ResetTx is the owner's Reset of email, in tx (api.resetProjectAccessPerson), whose caller
+// deleted the person's unused links first (DeletePersonInvitationsTx), so the links are locked
+// before the address, as Enroll locks them. Where the address records a passkey's account (a
+// subject under the outside origin), it records subject, a new one, through the account binding
+// (signInAccountTx), as another account's sign-in would: that revokes the address's personal
+// tokens and, where a broker is configured, owes the broker the revocation of the old account at
+// the session generation the Reset leaves, which ends every machine login and sign-in the old
+// account approved at the broker, one minted after the Reset's own revocation pass too, and refuses
+// every later approve that names it or an older generation. An address that records no passkey's
+// account has its personal tokens revoked alone. Last it ends the sign-in and deletes the passkeys
+// (EndPasskeySignInTx), so nobody signs in as the person until they enroll with a new link, under
+// the new account. It answers how many passkeys it deleted.
+func (p *PgPasskeys) ResetTx(ctx context.Context, tx pgx.Tx, email, subject string) (int64, error) {
+	login := model.CanonicalLogin(email)
+	if _, err := tx.Exec(ctx, addressLockSQL, login); err != nil {
+		return 0, fmt.Errorf("reset the person: lock the address: %w", err)
+	}
+	var recorded bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from people where email = $1 and sub_issuer = $2)`, login, p.issuer).Scan(&recorded); err != nil {
+		return 0, fmt.Errorf("reset the person: read their account: %w", err)
+	}
+	if recorded {
+		if _, err := p.people.signInAccountTx(ctx, tx, login, signInAccount{issuer: p.issuer, subject: subject}, nil, model.MemberRestricted); err != nil {
+			return 0, fmt.Errorf("reset the person: record a new account: %w", err)
+		}
+	} else if _, err := tx.Exec(ctx, revokeAddressTokensSQL, login); err != nil {
+		return 0, fmt.Errorf("reset the person: revoke their personal tokens: %w", err)
+	}
+	return EndPasskeySignInTx(ctx, tx, login)
 }
 
 // EnrolledPasskeys answers when each passkey of the people emails names was enrolled, sorted by

@@ -32,10 +32,12 @@
 --     for a passkey whose signature counter stays 0, which the counter check cannot catch. Each
 --     begin deletes the rows that lapsed, so the table holds the last 5 minutes of begins.
 --
--- New tables, a nullable column with no default, a check dropped and one added NOT VALID, a
--- function replaced and its setting pinned: none reads or rewrites a row of people. The new check
--- admits every row the old one did (a row with no sub_issuer is held to the old rule), so it needs
--- no validating scan; it holds every write from here on.
+-- New tables, a nullable column with no default and its check added NOT VALID (as 20261117064356
+-- adds agent_tokens.subject's: an inline check on `add column` would read every row of people), a
+-- check dropped and one added NOT VALID, a function replaced and its setting pinned: none reads or
+-- rewrites a row of people. The column is null in every row, and the new people check admits
+-- every row the old one did (a row with no sub_issuer is held to the old rule), so neither needs a
+-- validating scan; both hold every write from here on.
 create table outside_invitations (
   token_sha256 bytea primary key check (octet_length(token_sha256) = 32),
   email text not null check (email <> '' and email = lower(email)),
@@ -74,7 +76,9 @@ create table passkey_ceremonies (
 
 create index passkey_ceremonies_expires_at on passkey_ceremonies (expires_at);
 
-alter table people add column sub_issuer text check (sub_issuer <> '');
+alter table people add column sub_issuer text;
+
+alter table people add constraint people_sub_issuer_check check (sub_issuer <> '') not valid;
 
 alter table people drop constraint people_check;
 

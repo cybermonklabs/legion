@@ -768,13 +768,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	if isReservedPath(strings.ToLower(normalized), serverRoots) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
 		// does not exist is visible beside the callers of the routes that do.
-		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
-			api.WriteJSON(w, http.StatusNotFound, map[string]string{
-				"code":  "NOT_FOUND",
-				"error": "no route for " + req.Method + " " + req.URL.Path,
-				"hint":  "GET /api/v1, with a credential, lists every route",
-			})
-		})(w, req)
+		accesslog.HandlerFunc(unmatchedRoute, writeNoRoute)(w, req)
 		return
 	}
 	if r.ctx.WebDistDir == "" {
@@ -824,6 +818,17 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	servePage(w, req, filepath.Join(r.ctx.WebDistDir, "index.html"))
+}
+
+// writeNoRoute answers the 404 a path under serverRoots that no route serves answers. A route's
+// gate that answers as a path no route serves (atOutsideOrigin, googleSignInHere) writes it
+// directly, so the request's one access-log line is its route's own, as every request's is.
+func writeNoRoute(w http.ResponseWriter, req *http.Request) {
+	api.WriteJSON(w, http.StatusNotFound, map[string]string{
+		"code":  "NOT_FOUND",
+		"error": "no route for " + req.Method + " " + req.URL.Path,
+		"hint":  "GET /api/v1, with a credential, lists every route",
+	})
 }
 
 // isMissingFile reports whether os.Stat's err means no file is there: the path does not exist,

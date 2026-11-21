@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,9 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The two origins of a deployment whose people from outside sign in with a passkey: the canonical
@@ -291,6 +294,30 @@ func TestTheInvitationIsSingleUseAndExpires(t *testing.T) {
 	}
 }
 
+// TestAFullMembersLinkEnrollsNoPasskey (R5): a link made for a person who has since signed in with
+// Google as a full member (their address on a domain of the Workspace that
+// DISPATCH_SIGNIN_WORKSPACE_DOMAINS does not list) enrolls nothing: its begin is 409 FULL_MEMBER,
+// as the owner's link for that address is now, so the enrollment page says the address signs in
+// with Google rather than asking for a new link.
+//
+// Control: answer a full member's link as one no owner made (invitedPerson returning
+// store.ErrInvitationUnknown), and the begin is 404 INVITATION_UNKNOWN and the row fails.
+func TestAFullMembersLinkEnrollsNoPasskey(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	token := r.invite(t, outsiderEmail)
+	sessionCookieOf(t, outsiderEmail+"'s Google sign-in as a Workspace account", codeFlowSignIn(t, r.handler, r.pool, map[string]any{
+		"sub": "google-outsider", "email": outsiderEmail, "email_verified": true, "hd": "example.com",
+	}))
+	if kind := r.memberKind(t, outsiderEmail); kind != string(model.MemberFull) {
+		t.Fatalf("people.member_kind of %s = %q, want full", outsiderEmail, kind)
+	}
+	wantCode(t, "the enrollment of a link made before its person signed in as a full member", r.beginEnrollment(r.handler, token), http.StatusConflict, "FULL_MEMBER")
+	wantCode(t, "alice's link for a full member", r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/invitations", nil), http.StatusConflict, "FULL_MEMBER")
+	if n := r.passkeysOf(t, outsiderEmail); n != 0 {
+		t.Fatalf("%s holds %d passkeys, want none", outsiderEmail, n)
+	}
+}
+
 // TestAPasskeySignInWithALowerSignCountIsRefused (R5): a sign-in whose signature counter is above
 // the stored one signs in and stores it; one whose counter is lower than the stored one is 401
 // PASSKEY_SIGN_COUNT, sets no cookie and leaves the stored counter.
@@ -386,6 +413,87 @@ func TestTheOwnersResetEndsSignInAndDeletesPasskeys(t *testing.T) {
 	wantCode(t, "a Reset of a full member", r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+privOwner+"/reset", nil), http.StatusConflict, "FULL_MEMBER")
 }
 
+// TestTheOwnersResetRevokesThePersonsPersonalTokens (R5): a personal token the person's passkey
+// cookie minted stops at the owner's Reset, 401 TOKEN_REVOKED, while the person stays on the list:
+// the Reset gives the address a new passkey account, as another account's sign-in would, so
+// whoever used the link first keeps nothing the cookie made. The next link enrolls under that new
+// account.
+//
+// Control: the Reset keeps the address's account (store.PgPasskeys.ResetTx recording no new
+// subject), and the token still reads PRIV and the row fails.
+func TestTheOwnersResetRevokesThePersonsPersonalTokens(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	cookie := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
+	minted := call(r.handler, passkeyOrigin, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "outsider's agent"}, cookie)
+	var token struct {
+		Token string `json:"token"`
+	}
+	if minted.Code != http.StatusCreated || json.Unmarshal(minted.Body.Bytes(), &token) != nil || token.Token == "" {
+		t.Fatalf("the outsider mints a personal token at their browser: %d %s", minted.Code, minted.Body.String())
+	}
+	read := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, passkeyOrigin+"/api/v1/projects", nil)
+		request.Header.Set("Authorization", "Bearer "+token.Token)
+		response := httptest.NewRecorder()
+		r.handler.ServeHTTP(response, request)
+		return response
+	}
+	if before := read(); before.Code != http.StatusOK {
+		t.Fatalf("the outsider's token before the Reset answered %d %s, want 200", before.Code, before.Body.String())
+	}
+	subjectOf := func() string {
+		var subject string
+		if err := r.database.Pool.QueryRow(context.Background(), `select coalesce(sub, '') from people where email = $1`, outsiderEmail).Scan(&subject); err != nil {
+			t.Fatal(err)
+		}
+		return subject
+	}
+	enrolledUnder := subjectOf()
+
+	if reset := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/reset", nil); reset.Code != http.StatusOK {
+		t.Fatalf("alice's Reset of the outsider answered %d %s, want 200", reset.Code, reset.Body.String())
+	}
+	wantCode(t, "the outsider's personal token after the Reset", read(), http.StatusUnauthorized, "TOKEN_REVOKED")
+	resetUnder := subjectOf()
+	if resetUnder == "" || resetUnder == enrolledUnder {
+		t.Fatalf("after the Reset the address records the account %q, want a new one in place of %q", resetUnder, enrolledUnder)
+	}
+	r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
+	if again := subjectOf(); again != resetUnder {
+		t.Fatalf("the enrollment after the Reset records the account %q, want the Reset's %q", again, resetUnder)
+	}
+}
+
+// TestTheOwnersResetEndsEveryProjectsUnusedLinks (R5): the owner's Reset ends the person's unused
+// links of every project, not only the Reset's own: a link OTHER's owner made before PRIV's Reset
+// enrolls nothing after it (404 INVITATION_UNKNOWN), so the person enrolls again only with a link
+// made after the Reset.
+//
+// Control: end only the Reset's own project's links (store.DeleteInvitationsTx of PRIV), and
+// OTHER's link begins an enrollment and the row fails.
+func TestTheOwnersResetEndsEveryProjectsUnusedLinks(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	if _, err := r.database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee, owner) values ('OTHER', 'Other', $1, $1)`, privOwner); err != nil {
+		t.Fatalf("seed OTHER: %v", err)
+	}
+	r.listOn(t, "OTHER", access.PrincipalPerson, outsiderEmail)
+	r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
+	made := r.asOwner(http.MethodPost, "/api/v1/projects/OTHER/access/people/"+outsiderEmail+"/invitations", nil)
+	_, fragment, found := strings.Cut(made.Body.String(), "#")
+	other, _, _ := strings.Cut(fragment, `"`)
+	if made.Code != http.StatusCreated || !found || len(other) != 43 {
+		t.Fatalf("OTHER's owner makes a link for the outsider: %d %s, want 201 and its token", made.Code, made.Body.String())
+	}
+
+	if reset := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/reset", nil); reset.Code != http.StatusOK {
+		t.Fatalf("alice's Reset of the outsider on PRIV answered %d %s, want 200", reset.Code, reset.Body.String())
+	}
+	wantCode(t, "the enrollment with OTHER's link made before PRIV's Reset", r.beginEnrollment(r.handler, other), http.StatusNotFound, "INVITATION_UNKNOWN")
+	if n := r.passkeysOf(t, outsiderEmail); n != 0 {
+		t.Fatalf("after the Reset %s holds %d passkey(s), want none", outsiderEmail, n)
+	}
+}
+
 // TestADelistedPersonLosesSignInAndPasskeysAtTheHourlyCheck (R5): a person the lists stop naming
 // by any write but a removal keeps their sign-in until its confirmation is an hour old; the next
 // request after it ends the sign-in and deletes their passkeys in one transaction, and says why
@@ -424,7 +532,8 @@ func TestADelistedPersonLosesSignInAndPasskeysAtTheHourlyCheck(t *testing.T) {
 // TestTheOutsideOriginServesNoGoogleSignIn (R5): at the outside origin GET /auth/start and GET
 // /auth/callback answer 404, as a path no route serves; at the canonical origin /auth/start still
 // sends the browser to Google. TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff is the same
-// row with passkey sign-in off.
+// row with passkey sign-in turned off, and TestTheOutsideOriginServesNoGoogleSignInWithPasskeysNeverSet
+// with it never set.
 //
 // Control: serve the Google sign-in at both origins (googleSignInHere passing every request), and
 // the outside origin's /auth/start answers 302 and the row fails.
@@ -436,6 +545,87 @@ func TestTheOutsideOriginServesNoGoogleSignIn(t *testing.T) {
 	if started := call(r.handler, canonicalOrigin, http.MethodGet, "/auth/start", nil); started.Code != http.StatusFound {
 		t.Fatalf("GET /auth/start at the canonical origin answered %d %s, want 302 to Google", started.Code, started.Body.String())
 	}
+}
+
+// TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff (R5): with DISPATCH_SIGNIN_PASSKEY unset
+// and DISPATCH_OUTSIDE_ORIGIN still set on the same database (a rollback, or an outside origin
+// kept for agents), GET /auth/start and GET /auth/callback still answer 404 at the outside origin:
+// no deployment signs anyone in with Google there. The canonical origin still sends the browser to
+// Google.
+//
+// Control: refuse Google at the outside origin only while passkey sign-in is on (googleSignInHere
+// reading Passkeys), and the outside origin's /auth/start answers 302 and the row fails.
+func TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
+	for _, path := range []string{"/auth/start", "/auth/callback?code=c&state=s"} {
+		wantCode(t, "GET "+path+" at the outside origin with passkeys off", call(off, passkeyOrigin, http.MethodGet, path, nil), http.StatusNotFound, "NOT_FOUND")
+	}
+	if started := call(off, canonicalOrigin, http.MethodGet, "/auth/start", nil); started.Code != http.StatusFound {
+		t.Fatalf("GET /auth/start at the canonical origin with passkeys off answered %d %s, want 302 to Google", started.Code, started.Body.String())
+	}
+}
+
+// TestAGatedAuthRouteLogsOneLine: a request one of the outside origin's gates answers 404 (Google's
+// /auth/start at the outside origin, a passkey ceremony at the tailnet origin) writes one
+// access-log line, its route's own, as every request does: the gate answers the 404 a path no
+// route serves without a second, unmatched, line.
+//
+// Control: answer the gate's 404 through staticHandler, which logs an unmatched line of its own,
+// and each request writes two lines and the row fails naming them.
+func TestAGatedAuthRouteLogsOneLine(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	logged := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logged, nil))
+	for _, gated := range []struct {
+		origin, method, path string
+		body                 any
+	}{
+		{passkeyOrigin, http.MethodGet, "/auth/start", nil},
+		{canonicalOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{}},
+	} {
+		before := logged.Len()
+		what := gated.method + " " + gated.path + " at " + gated.origin
+		wantCode(t, what, call(r.handler, gated.origin, gated.method, gated.path, gated.body), http.StatusNotFound, "NOT_FOUND")
+		written := logged.String()[before:]
+		if lines := strings.Count(written, `msg="dispatch: request"`); lines != 1 {
+			t.Errorf("%s wrote %d access-log lines, want its route's one:\n%s", what, lines, written)
+		}
+	}
+}
+
+// passkeySettingReachesItsReaders hands DISPATCH_SIGNIN_PASSKEY, through the settings read alone, to
+// each reader: boot, which takes 1 and refuses any other value naming the setting; the sign-in rule,
+// a PasskeyRule with it on and the domain rule with it off (signInRule); and the router, which
+// serves the passkey ceremonies at the outside origin with it on, a sign-in's begin answering 200,
+// and answers that begin 404 with it off, on the same database.
+func passkeySettingReachesItsReaders(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	if !r.boot.SignInPasskey {
+		t.Fatal("DISPATCH_SIGNIN_PASSKEY=1: SignInPasskey false")
+	}
+	if rule, err := signInRule(r.boot, accessLister(r.database)); err != nil {
+		t.Fatalf("signInRule with DISPATCH_SIGNIN_PASSKEY=1: %v", err)
+	} else if _, ok := rule.(identity.PasskeyRule); !ok {
+		t.Errorf("signInRule with DISPATCH_SIGNIN_PASSKEY=1 = %T, want identity.PasskeyRule", rule)
+	}
+	if begun := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{}); begun.Code != http.StatusOK {
+		t.Errorf("DISPATCH_SIGNIN_PASSKEY=1: a sign-in's begin at the outside origin answered %d %s, want 200", begun.Code, begun.Body.String())
+	}
+	off, offBoot := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
+	if offBoot.SignInPasskey {
+		t.Error("DISPATCH_SIGNIN_PASSKEY unset: SignInPasskey true")
+	}
+	if rule, err := signInRule(offBoot, accessLister(r.database)); err != nil {
+		t.Fatalf("signInRule with DISPATCH_SIGNIN_PASSKEY unset: %v", err)
+	} else if _, ok := rule.(identity.DomainRule); !ok {
+		t.Errorf("signInRule with DISPATCH_SIGNIN_PASSKEY unset = %T, want identity.DomainRule", rule)
+	}
+	wantCode(t, "DISPATCH_SIGNIN_PASSKEY unset: a sign-in's begin at the outside origin", call(off, passkeyOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{}), http.StatusNotFound, "NOT_FOUND")
+	refusedWith(t, map[string]string{
+		"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com",
+		"DISPATCH_OUTSIDE_ORIGIN": passkeyOrigin, "DISPATCH_SIGNIN_PASSKEY": "true",
+	}, "DISPATCH_SIGNIN_PASSKEY must be 1 or unset")
 }
 
 // TestTheTailnetOriginServesNoPasskeyRoute (R5): at the canonical origin the four passkey routes
@@ -496,6 +686,25 @@ func TestTurningPasskeysOffEndsEveryRestrictedCredential(t *testing.T) {
 	}
 	if err := rule.AdmitsRestricted(context.Background(), outsiderEmail); err == nil || !strings.Contains(err.Error(), "nobody from outside") {
 		t.Fatalf("the rule with passkeys off admits %s: %v, want ErrOutsideSignInOff", outsiderEmail, err)
+	}
+}
+
+// TestTurningPasskeysOffTellsThePersonWhy (E-I5's rollback): with DISPATCH_SIGNIN_PASSKEY unset on
+// the same database, the passkey member's cookie is refused 401 NO_IDENTITY with reason
+// OUTSIDE_SIGNIN_OFF and their address as login, at every request, so the sign-in page says
+// Dispatch no longer signs them in.
+//
+// Control: tell a passkey's row only by whether its sign-in stands (DomainRule.SignedOutReason
+// reading endedRestricted alone), and the 401 names no reason and the row fails.
+func TestTurningPasskeysOffTellsThePersonWhy(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	cookie := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
+	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
+	want := signedOutAnswer{Code: "NO_IDENTITY", Reason: "OUTSIDE_SIGNIN_OFF", Login: outsiderEmail}
+	for _, read := range []string{"the first whoami with passkeys off", "the whoami after it"} {
+		if got := signedOutOf(t, read, whoamiOutside(off, cookie)); got != want {
+			t.Fatalf("%s: %+v, want %+v", read, got, want)
+		}
 	}
 }
 

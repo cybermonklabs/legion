@@ -196,18 +196,20 @@ func requirePlainNoIdentity(t *testing.T, what string, recorder *httptest.Respon
 	}
 }
 
-// TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff (R5): with DISPATCH_SIGNIN_PASSKEY
-// unset, a deployment that answers at an outside origin too serves Google's sign-in at its
+// TestTheOutsideOriginServesNoGoogleSignInWithPasskeysNeverSet (R5): with DISPATCH_SIGNIN_PASSKEY
+// never set, a deployment that answers at an outside origin too serves Google's sign-in at its
 // canonical origin alone. At the outside origin GET /auth/start and GET /auth/callback answer 404,
 // as a path no route serves does. At the canonical origin the Google sign-in of outsiderEmail, whom
 // PRIV's access list names directly, gets the 403 page saying it is not in the domain, no session
 // cookie and no people row, and alice, an account of example.com, signs in.
-// TestTheOutsideOriginServesNoGoogleSignIn is the same row with passkey sign-in on.
+// TestTheOutsideOriginServesNoGoogleSignIn is the same row with passkey sign-in on, and
+// TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff with it turned off on a database that had
+// it on.
 //
 // Control: serve the Google sign-in at the outside origin while passkey sign-in is off
 // (googleSignInHere refusing it only beside Passkeys), and the outside origin's /auth/start answers
 // 302 and the row fails.
-func TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff(t *testing.T) {
+func TestTheOutsideOriginServesNoGoogleSignInWithPasskeysNeverSet(t *testing.T) {
 	const canonical, outside = "https://dispatch.example.com", "https://dispatch-outside.example.com"
 	s := newOutsideSignIn(t, nil)
 	// The harness's deployment, answering at a second origin too: the origin's own settings are
