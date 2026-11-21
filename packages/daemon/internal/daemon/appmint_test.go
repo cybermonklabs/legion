@@ -738,6 +738,14 @@ func bootStoppedWhen(t *testing.T, cfg config.Config, tokens appauth.Source, log
 // (c-boot-mint-rate-limit case 5, first half, on the key proof; the maximum shortened to 2 s): a 429
 // asking for a second waits a second, one asking for 30 s waits the 2 s, and the start serves after
 // each.
+//
+// The wait line's checks follow from the start's own decisions, whatever the machine's load: the
+// start's count of its waits (waited) is the wait it decided; the wait left can be any amount up to
+// that wait, nothing or less once the line comes late; and the until (whole seconds) is at most the
+// wait past the line and less than a second short of the wait past the refused read, which the
+// start answered after. One bound still follows the clock: the second read at most 3 s past the
+// wait, the bound on a wait that runs past its until. An earlier version held the wait left to
+// equal the wait decided; with a 1 s delay injected before the line, it failed.
 func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 	quickAppMints(t)
 	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Max = 2 * time.Second })
@@ -772,13 +780,25 @@ func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 			if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
 				t.Fatalf("boot = %v, want it to wait out GitHub's Retry-After and serve", err)
 			}
-			if wait := loggedDuration(t, oneRateLimitWait(t, logs.String(), "GitHub App key proof"), "wait"); wait != tc.want {
-				t.Errorf("the wait line's wait = %s, want %s", wait, tc.want)
+			wait := oneRateLimitWait(t, logs.String(), "GitHub App key proof")
+			if waited := loggedDuration(t, wait, "waited"); waited != tc.want {
+				t.Errorf("the start's waits so far = %s, want %s: the one wait it decided", waited, tc.want)
+			}
+			if left := loggedDuration(t, wait, "wait"); left > tc.want {
+				t.Errorf("the wait left = %s, want at most the %s wait decided", left, tc.want)
+			}
+			until, err := time.Parse(time.RFC3339, fmt.Sprint(wait["until"]))
+			if err != nil {
+				t.Fatalf("the wait line's until = %v: %v", wait["until"], err)
 			}
 			mu.Lock()
 			defer mu.Unlock()
 			if len(reads) < 2 || reads[1].Sub(reads[0]) < tc.want || reads[1].Sub(reads[0]) > tc.want+3*time.Second {
 				t.Fatalf("GitHub was read for the App's installations at %v, want the refused read and one more %s after it", reads, tc.want)
+			}
+			if line := loggedAt(t, wait); until.After(line.Add(tc.want)) || !until.After(reads[0].Add(tc.want-time.Second)) {
+				t.Errorf("the wait line at %s says until %s, want at most %s past the line and less than a second short of %s past the refused read at %s",
+					line, until, tc.want, tc.want, reads[0])
 			}
 		})
 	}
