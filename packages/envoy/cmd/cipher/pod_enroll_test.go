@@ -458,7 +458,7 @@ func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
 	}
 
 	// What a later call now says: the broker's refusal, not a missing file.
-	if _, _, err := buildSigner(); err == nil ||
+	if _, _, err := buildSigner(io.Discard); err == nil ||
 		!strings.Contains(err.Error(), enrollmentErrorFile) || !strings.Contains(err.Error(), "POD_SELF_ENROLL_ONLY") {
 		t.Fatalf("a later call after a refused enrolment = %v; want it to name %s and what the broker said", err, enrollmentErrorFile)
 	}
@@ -472,7 +472,7 @@ func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(out, enrollmentErrorFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("%s after a run that succeeded: %v; want it gone", enrollmentErrorFile, err)
 	}
-	if _, _, err := buildSigner(); err != nil {
+	if _, _, err := buildSigner(io.Discard); err != nil {
 		t.Fatalf("a later call after the run that succeeded: %v", err)
 	}
 }

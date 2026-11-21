@@ -176,6 +176,8 @@ this order, and needs no registered agent session:
    `$XDG_RUNTIME_DIR/agent-secrets`), a box's or a pod's. Absent without `key.pem`; a `key.pem`
    that does not parse, one with no `enrollment`, or a fresh `enrollment.pending` still without
    `key.pem` after `AGENT_SECRETS_ENROLL_WAIT` (a launcher still enrolling), stops the command.
+   While it waits on a fresh `enrollment.pending`, the command says so on stderr, naming the files
+   it waits for, and again once `key.pem` is there and `enrollment` is not.
 2. `sign-in`: a person's `agent-secrets login` on this machine. Absent when nobody signed in.
 3. `helper`: `agent-secrets-helper`, asked first whether the caller is in a session it registered.
    Absent when there is no socket and no helper is expected (`AGENT_SECRETS_HELPER_SOCK` unset, no
