@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { newDpopKey } from "@legion/broker-client/dpop";
-import { BrokerTokenClient } from "@legion/broker-client/token-client";
+import { newDpopKey } from "@legion/cipher-client/dpop";
+import { BrokerTokenClient } from "@legion/cipher-client/token-client";
 import { bearerCredential } from "../bearer";
 import { DispatchClient } from "../dispatch-http";
 import { messageFor } from "../errors";

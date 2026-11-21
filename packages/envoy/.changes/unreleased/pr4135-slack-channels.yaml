@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  `agent-secrets secret create --project-channels slack` writes a secret's `project-channels` tag,
+  and `agent-secrets secret retag --project-channels slack|none` writes it or removes it, on AWS
+  Secrets Manager and Google Secret Manager alike. The tag marks a Slack bot token whose use a
+  private project's owner limits: a session or pod whose credential names a private Dispatch
+  project gets it only behind the airlock, and is denied it `project-channels-need-airlock` where
+  the secret has no airlock entry. `secret show` prints the tag as a `project_channels:` line,
+  `secret list` as a `PROJECT_CHANNELS` column, and `--json` carries it as `project_channels`,
+  `null` for a secret without it. Any value but `slack`, and `none` on create, is refused before
+  anything is read or written, naming `project-channels-malformed`. A policy that limits
+  `aws:TagKeys` must now allow `project-channels`.
+time: 2026-11-16T04:48:58Z
+custom:
+    Issue: pr4135

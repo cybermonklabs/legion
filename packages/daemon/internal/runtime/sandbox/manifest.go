@@ -37,9 +37,10 @@ const (
 
 // The pod's volumes. ghVolume is the prefix of each launcher role's gh volume (roleVolume), the
 // projection of its role Secret's gh files, which only that role's namespace sees at GHConfigDir.
-// roleHomesVolume is an issue pod's disk emptyDir of every role's home overlay, temporary
-// directories and own config home (issuePod.mainVolumes), and roleProbeVolume the image probe's
-// disk emptyDir its role-namespace check runs a role generation over (probeManifest).
+// roleHomesVolume is the disk emptyDir of every role's home overlay, temporary directories and own
+// config home of a pod whose launcher runs the roles-dir form: an issue pod, and the controller's
+// pod under a writer audience (roleHomesVolumes). roleProbeVolume is the image probe's disk
+// emptyDir its role-namespace check runs a role generation over (probeManifest).
 const (
 	provisionVolume = "provision"
 	stateVolume     = "state"
@@ -57,6 +58,11 @@ const (
 	// (WorkloadIdentityDir, workloadIdentityVolumes), when the deployment names that endpoint
 	// (runtime.kubernetes.sandbox.microvm.metadata).
 	workloadIdentityTokenVolume = "workload-identity-token"
+	// sessionWriterTokenVolume is the projected ServiceAccount token a pod's launcher gives its
+	// session proxy, which exchanges it to impersonate the session database's service account
+	// (SessionWriterDir, sessionWriterVolumes), when the session database names a writer audience
+	// (runtime.kubernetes.session_database.writer_audience).
+	sessionWriterTokenVolume = "session-writer-token"
 )
 
 // The agent-secrets volumes: agentSecretsTokenVolume alone carries the projected token for the
@@ -204,8 +210,8 @@ const slackChannelsVariable = "LEGION_SLACK_CHANNELS"
 
 // machineIdentityVariable and machineTokenFileVariable are the two variables a pod's broker
 // clients read to decide which identity the machine proves and where its token is
-// (packages/broker-client/src/environment.ts's IDENTITY_VAR and MACHINE_TOKEN_FILE_VAR, and
-// packages/envoy/internal/brokerclient's IdentityVar and MachineTokenFileVar), and
+// (packages/cipher-client/src/environment.ts's IDENTITY_VAR and MACHINE_TOKEN_FILE_VAR, and
+// packages/envoy/internal/cipherclient's IdentityVar and MachineTokenFileVar), and
 // kubernetesIdentity the value naming a projected Kubernetes ServiceAccount token. A role is told
 // them where its pod trades (launch.trades), and they are Legion's only where the deployment names
 // an exchange audience (exchangeOwned).
@@ -252,11 +258,21 @@ var sessionProxyFlagNames = [3]string{"--session-instance", "--session-database"
 // command its pods were created with before the flag existed, and none of them drifts for it.
 const sessionProxyAccountFlag = "--session-impersonate-service-account"
 
+// sessionWriterAudienceFlag names the audience of the session writer token a pod's `legion
+// launcher` reads at <roles-dir>/session-writer/token and exchanges, in place of the pod's own
+// credentials, to impersonate the service account sessionProxyAccountFlag names
+// (Database.WriterAudience, SessionWriterDir). It follows that flag, and only where the store
+// names a writer audience, which the store names only with an account: a pod without one carries
+// no such flag at all, so a deployment that names none keeps the very command its pods were
+// created with before the flag existed, and none of them drifts for it.
+const sessionWriterAudienceFlag = "--session-writer-audience"
+
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
 // test database's, and each launcher role's private ones. The agent-secrets volumes are reserved
 // whether or not this deployment enrolls, the workload identity token whether or not an issue pod
-// of it serves the metadata endpoint, and the test database's whether or not it sets
+// of it serves the metadata endpoint, the session writer token whether or not its session
+// database names a writer audience, and the test database's whether or not it sets
 // `runtime.kubernetes.test_postgres`: an operator's pod may never claim them. The exchange
 // identity's (agentSecretsExchangeVolume) is Legion's only where exchange says the deployment names
 // an exchange audience: one that names none keeps that name the operator's, as it was before the
@@ -265,7 +281,7 @@ const sessionProxyAccountFlag = "--session-impersonate-service-account"
 func legionVolumeNames(exchange bool) []string {
 	names := []string{
 		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, workloadIdentityTokenVolume,
-		roleHomesVolume, roleProbeVolume, testPGVolume,
+		sessionWriterTokenVolume, roleHomesVolume, roleProbeVolume, testPGVolume,
 	}
 	if exchange {
 		names = append(names, agentSecretsExchangeVolume)
@@ -985,8 +1001,8 @@ func kubeletEscape(text string) string {
 // included: a Secret
 // projection with no items would project every key of the Secret, the launcher token among them.
 // Then the volumes its kind's one container alone mounts (podKind.mainVolumes), the agent-secrets
-// volumes, a microVM pod's workload identity token (workloadIdentityVolumes), the providers and
-// the operator's.
+// volumes, a microVM pod's workload identity token (workloadIdentityVolumes), the session writer
+// token (sessionWriterVolumes), the providers and the operator's.
 func (r *Runtime) volumes(l launch) []corev1.Volume {
 	providers, _ := r.providers()
 	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
@@ -1024,7 +1040,7 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 	volume := corev1.Volume{Name: issueVolume, VolumeSource: disk}
 	config := corev1.Volume{Name: configVolume, VolumeSource: memory}
 	return slices.Concat([]corev1.Volume{volume}, l.kind.initVolumes(l), []corev1.Volume{config}, roleVolumes,
-		l.kind.mainVolumes(r), r.agentSecretsVolumes(l.roles), workloadIdentityVolumes(l), providers, r.pod.Volumes)
+		l.kind.mainVolumes(r), r.agentSecretsVolumes(l.roles), workloadIdentityVolumes(l), r.sessionWriterVolumes(), providers, r.pod.Volumes)
 }
 
 // agentSecretsVolumes are, for a pod the runtime enrolls with the secrets broker
@@ -1068,10 +1084,10 @@ func brokerTokenProjection(broker *AgentSecrets) *corev1.ServiceAccountTokenProj
 	return &corev1.ServiceAccountTokenProjection{Audience: broker.Audience, ExpirationSeconds: &expiry, Path: AgentSecretsTokenFile}
 }
 
-// workloadIdentityTokenSeconds is the lifetime of the token workloadIdentityVolumes projects: an
-// hour, the cluster admission policy's cap on a projected token (the agent-secrets token's bound,
-// configureProber). The kubelet writes a fresh one before it expires, and the launcher reads the
-// file at every exchange.
+// workloadIdentityTokenSeconds is the lifetime of the tokens workloadIdentityVolumes and
+// sessionWriterVolumes project: an hour, the cluster admission policy's cap on a projected token
+// (the agent-secrets token's bound, configureProber). The kubelet writes a fresh one before it
+// expires, and the launcher and its session proxy read the file at every exchange.
 const workloadIdentityTokenSeconds = 3600
 
 // workloadIdentityVolumes are, for a microVM launch whose block names the metadata endpoint
@@ -1085,13 +1101,52 @@ func workloadIdentityVolumes(l launch) []corev1.Volume {
 	if l.microVM == nil || l.microVM.Metadata == nil {
 		return nil
 	}
+	return []corev1.Volume{projectedTokenVolume(workloadIdentityTokenVolume, l.microVM.Metadata.WorkloadPool, launcher.WorkloadIdentityTokenFile)}
+}
+
+// projectedTokenVolume is a volume of one projected ServiceAccount token for audience, at path in
+// the volume, for workloadIdentityTokenSeconds and readable by the pod's group, which is the
+// fsGroup every file of the pod's volumes carries (podTemplate): the shape of each token the
+// pod's launcher reads and no role does (workloadIdentityVolumes, sessionWriterVolumes).
+func projectedTokenVolume(name, audience, path string) corev1.Volume {
 	expiry := int64(workloadIdentityTokenSeconds)
-	return []corev1.Volume{{Name: workloadIdentityTokenVolume, VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+	return corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
 		DefaultMode: new(int32(0o440)),
 		Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-			Audience: l.microVM.Metadata.WorkloadPool, ExpirationSeconds: &expiry, Path: launcher.WorkloadIdentityTokenFile,
+			Audience: audience, ExpirationSeconds: &expiry, Path: path,
 		}}},
-	}}}}
+	}}}
+}
+
+// sessionWriterAudience is the audience of the session writer token the pods of r carry
+// (Database.WriterAudience): the session database's under cloudsql-iam, and empty under any other
+// store and where that database names none. It is the one reading of whether a pod carries the
+// token (sessionWriterVolumes, podTokenMounts), whether its launcher is told the audience
+// (sessionProxyFlags), and whether the controller's pod runs the roles-dir form
+// (controllerPod.launcherContainer), so the four never disagree.
+func (r *Runtime) sessionWriterAudience() string {
+	if r.sessionStore.Kind != ompsessions.StoreCloudSQLIAM {
+		return ""
+	}
+	return r.sessionStore.Database.WriterAudience
+}
+
+// sessionWriterVolumes are, where the session database names a writer audience
+// (sessionWriterAudience), the one projected ServiceAccount token the pod's launcher gives its
+// session proxy. The proxy exchanges it at Google's security token service and impersonates the
+// session database's service account with the federated token, never with the pod's own
+// credentials. The token is for the writer audience, which is also the audience that exchange
+// names, at launcher.SessionWriterTokenFile, readable by the pod's group, which is the fsGroup
+// every file of the pod's volumes carries (podTemplate). Its one mount is the launcher
+// container's, under RolesDir (podTokenMounts): an issue pod's, and the controller's, whose
+// launcher then runs the roles-dir form (controllerPod.launcherContainer). None where the
+// database names no writer audience, and none in the image probe's pod, which proxies no session.
+func (r *Runtime) sessionWriterVolumes() []corev1.Volume {
+	audience := r.sessionWriterAudience()
+	if audience == "" {
+		return nil
+	}
+	return []corev1.Volume{projectedTokenVolume(sessionWriterTokenVolume, audience, launcher.SessionWriterTokenFile)}
 }
 
 // exchangeTokenExpirySeconds is how long the kubelet mints a pod's exchange token for: an hour,
@@ -1115,10 +1170,11 @@ func exchangeTokenMounts(broker *AgentSecrets) []corev1.VolumeMount {
 }
 
 // agentSecretsMounts are the controller's container's mounts of the agent-secrets volumes when it
-// enrolls with broker, none when broker is nil: the one configured audience projection, the
-// role's own key directory, and the exchange token where the deployment names its audience. An
-// issue pod's container mounts each role's key directory under the role's directory of RolesDir
-// instead (issuePod.launcherContainer).
+// enrolls with broker and runs the single-role form, none when broker is nil: the one configured
+// audience projection, the role's own key directory, and the exchange token where the deployment
+// names its audience. A container that runs the roles-dir form mounts each role's key directory
+// under the role's directory of RolesDir instead (rolesDirLayout), and the two tokens once for the
+// pod (podTokenMounts).
 func agentSecretsMounts(broker *AgentSecrets, role claim.Role) []corev1.VolumeMount {
 	if broker == nil {
 		return nil
@@ -1127,6 +1183,25 @@ func agentSecretsMounts(broker *AgentSecrets, role claim.Role) []corev1.VolumeMo
 		{Name: agentSecretsTokenVolume, MountPath: AgentSecretsTokenDir, ReadOnly: true},
 		{Name: roleVolume(agentSecretsKeyVolume, role), MountPath: AgentSecretsKeyDir},
 	}, exchangeTokenMounts(broker)...)
+}
+
+// podTokenMounts are the projected tokens a container that runs the launcher's roles-dir form
+// mounts once for every role it runs, each read-only: the session writer token at
+// SessionWriterDir where the session database names a writer audience (sessionWriterVolumes),
+// under RolesDir, which no role's namespace shows; then, where the pod enrolls with the secrets
+// broker, the broker's token at AgentSecretsTokenDir and the exchange's where the deployment names
+// its audience (exchangeTokenMounts), which every role of the pod reads at those paths. No init
+// container mounts any of them.
+func (r *Runtime) podTokenMounts() []corev1.VolumeMount {
+	var mounts []corev1.VolumeMount
+	if r.sessionWriterAudience() != "" {
+		mounts = append(mounts, corev1.VolumeMount{Name: sessionWriterTokenVolume, MountPath: SessionWriterDir, ReadOnly: true})
+	}
+	if r.agentSecrets != nil {
+		mounts = append(mounts, corev1.VolumeMount{Name: agentSecretsTokenVolume, MountPath: AgentSecretsTokenDir, ReadOnly: true})
+		mounts = append(mounts, exchangeTokenMounts(r.agentSecrets)...)
+	}
+	return mounts
 }
 
 // providers are the providers Secret's volume and its read-only mount at ProvidersDir: the
@@ -1200,22 +1275,27 @@ func (r *Runtime) sessionDSNFile(l launch) string {
 // sessionProxyFlags are what a pod's `legion launcher` is told of the Cloud SQL session database
 // it proxies its generations' sessions to, none under any other store: the three of
 // sessionProxyFlagNames, then sessionProxyAccountFlag only where the store names a service account
-// to impersonate, so the login the pod signs in as is its own identity's, or that account's. There
-// is no address among them: the launcher binds the socket in the generation's own private
-// directory, which it knows from --roles-dir and the role in an issue pod's one container, and
-// from --private-dir in the controller's.
+// to impersonate, so the login the pod signs in as is its own identity's, or that account's, and
+// then sessionWriterAudienceFlag only where the store names a writer audience, so the launcher
+// impersonates that account with the writer token rather than with the pod's own credentials.
+// There is no address among them: the launcher binds the socket in the generation's own private
+// directory, which it knows from --roles-dir and the role in a container that runs the roles-dir
+// form, and from --private-dir in the controller's single-role form.
 func (r *Runtime) sessionProxyFlags() []string {
 	if r.sessionStore.Kind != ompsessions.StoreCloudSQLIAM {
 		return nil
 	}
 	database := r.sessionStore.Database
 	values := [len(sessionProxyFlagNames)]string{database.Instance, database.Name, database.User}
-	flags := make([]string, 0, 2*len(values)+2)
+	flags := make([]string, 0, 2*len(values)+4)
 	for i, value := range values {
 		flags = append(flags, sessionProxyFlagNames[i], value)
 	}
 	if database.ImpersonateServiceAccount != "" {
 		flags = append(flags, sessionProxyAccountFlag, database.ImpersonateServiceAccount)
+	}
+	if audience := r.sessionWriterAudience(); audience != "" {
+		flags = append(flags, sessionWriterAudienceFlag, audience)
 	}
 	return flags
 }
@@ -1648,7 +1728,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	}
 	// The identity the broker's exchange trades, gated on the one exchange decision (tradesIn) as
 	// the two above are on the enrollment: the pod's projected token for the exchange's audience,
-	// which the broker clients of every session in the role (packages/broker-client's
+	// which the broker clients of every session in the role (packages/cipher-client's
 	// environment.ts, machineIdentity) trade for a broker token of the session's own.
 	if l.trades(r) {
 		add(machineIdentityVariable, kubernetesIdentity)

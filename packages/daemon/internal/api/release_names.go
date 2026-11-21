@@ -46,26 +46,26 @@ func (s *server) releaseNames(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, "release-names") {
+	if s.stopped(w, r, "release-names") {
 		return
 	}
 	released, err := m.ReleaseNames(ctx)
 	switch {
 	case errors.Is(err, supervise.ErrCarryRefused):
 		s.logFailure("api: an operator request failed", "request", "release-names", "claim", token, "error", err)
-		writeJSON(w, http.StatusBadGateway, errorBody("release-names refused: "+err.Error()+"; "+carryRefusedRemedy))
+		s.refuse(w, r, http.StatusBadGateway, "release-names refused: "+err.Error()+"; "+carryRefusedRemedy)
 		return
 	case errors.Is(err, supervise.ErrCarryUnanswered):
 		s.logFailure("api: an operator request failed", "request", "release-names", "claim", token, "error", err)
-		writeJSON(w, http.StatusServiceUnavailable, errorBody("release-names refused: "+err.Error()+"; nothing was freed, run it again"))
+		s.refuse(w, r, http.StatusServiceUnavailable, "release-names refused: "+err.Error()+"; nothing was freed, run it again")
 		return
 	case err != nil:
-		s.operatorFailure(w, "release-names", token, err)
+		s.operatorFailure(w, r, "release-names", token, err)
 		return
 	}
 	answer := ReleasedNames{Claim: token, Freed: make([]ReleasedName, len(released.Freed)), Checked: released.Checked, Abandoned: released.Abandoned}
@@ -74,5 +74,5 @@ func (s *server) releaseNames(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("api: operator released a claim's names", "claim", token, "freed", len(answer.Freed), "checked", answer.Checked, "abandoned", answer.Abandoned)
 	s.operatorDone(r, token)
-	writeJSON(w, http.StatusOK, answer)
+	s.writeUnparsedAnswer(w, r, http.StatusOK, answer)
 }

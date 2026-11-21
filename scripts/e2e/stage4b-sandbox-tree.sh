@@ -3421,15 +3421,15 @@ for key in $stale; do
   note "moved stale todo issue $key to backlog"
 done
 [ -z "$(dispatch_get "issues?project=$project&status=todo" | jq -r '.[].key')" ] || fail "$project still holds todo issues"
-# The project's repository is Dispatch's mapping, not a key of legion.yaml: the daemon boots only
-# on a project with a repository mapped, and records an issue on the repository Dispatch resolves
-# for it, so $repo is mapped to $project as its default before the daemon starts. A mapping already
+# The project's repository is no key of legion.yaml: the daemon records an issue on the repository
+# Dispatch resolves for it, so $repo is set as $project's default repository in Dispatch before the
+# daemon starts (through Dispatch's mapping route, the one way to set it today). A default already
 # so is left as it is; the write names $project alone.
 if ! dispatch_get settings/repo-projects | jq -e --arg repo "$repo" --arg project "$project" \
   'any(.[]; .repo == $repo and .project == $project and .default == true)' >/dev/null; then
   dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null ||
-    fail "map $repo to $project as its default repository in production Dispatch"
-  note "mapped $repo to $project as its default repository"
+    fail "set $repo as the default repository of $project in production Dispatch"
+  note "set $repo as the default repository of $project"
 fi
 # The configured stream carries both halves of the workflow's intake. Each `last` call reads one
 # ordered-consumer message under its 20-second budget instead of draining every matching subject.
@@ -3550,11 +3550,12 @@ over charges nothing, and the end takes up to a minute to land on a loaded host,
 last long enough to be ended inside. A production check's task (its first line `Production check of
 <key>: …`, handed to the tester once the merge closed its issue) is no phase's task line and
 waits for no targeted message, since the proof sends none to it. Run no
-`sleep 300` on it; act on the task as it is written. This proof has no production and no deploy
-role: no production carries the merge, so the look leaves `Production: pending deploy of <merge
-commit>` on the pull request's body (on the last look, whose pending is for production not
-carrying the merge alone, as here, writes on the pull request that the check did not run because
-production did not carry the merge within the bound) and reports verdict
+`sleep 300` on it; act on the task as it is written. The issues of this proof have no requirement
+that only the deploy can show, and no spec of this proof names one. This proof has no production
+and no deploy role: no production carries the merge, so the look leaves `Production: pending deploy
+of <merge commit>` on the pull request's body (on the last look, whose pending is only for an issue
+with no requirement that only the deploy can show, as here, writes on the pull request why the
+check did not run within the bound) and reports verdict
 pending with the legion tool's handoff_complete, committing nothing. A pending report on a look
 that is not the last also carries wake_at, an RFC 3339 time: when you want your next look. Nothing
 else wakes a check — no deploy, no Dispatch notice, nothing the daemon does of its own — so the
@@ -6629,10 +6630,10 @@ until_true 900 "the bound to start the last look of $tree1's production check" l
 state_file check-look-2
 # The pod comes back for the look: 1 to 3 minutes in acceptance runs, placed on the pool like any.
 # A tester that reported the last look before this read has had its pod taken again. The
-# daemon's task names the last look and its rule (its pending is for production not carrying the
-# merge alone, as here: write on the pull request that the check did not run within the bound,
-# report pending), and the proof sends the closed issue nothing: the close of the check is the
-# observation.
+# daemon's task names the last look and its rule (its pending is only for an issue with no
+# requirement that only the deploy can show, as here: write on the pull request why the check did
+# not run within the bound, report pending), and the proof sends the closed issue nothing: the
+# close of the check is the observation.
 last_look_pod_back() { root_running || check_closed "$tree1"; }
 on_tree "$tree1" until_true 900 "the bound's look to make the root's Sandbox $root_pod again, Running, and bring its pod back" last_look_pod_back
 until_true 600 "the last look's pending report to close $tree1's production check" check_closed "$tree1"
