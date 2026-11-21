@@ -101,12 +101,10 @@ type Keys struct {
 	fetched  time.Time
 	missed   time.Time
 	inflight *keysFetch
-	// reads numbers the reads in the order they start, and goodRead is the number of the read whose
-	// set is kept.
-	reads, goodRead uint64
-	// failure and failedAt are the last failed read, kept only while no read started after it has
-	// succeeded: a good read clears them. So failure != nil says the key set's latest answer was a
-	// failure, by the order the reads ran in and never by their clock times, which can be equal.
+	// failure and failedAt are the last failed read, kept only until a read succeeds: a good read
+	// clears them. One read runs at a time (startReadLocked), so reads end in the order they start,
+	// and failure != nil says the key set's latest answer was a failure, never judged by comparing
+	// clock times, which can be equal.
 	failedAt time.Time
 	failure  error
 }
@@ -114,7 +112,6 @@ type Keys struct {
 // keysFetch is one key-set read in progress, which every caller that arrives while it runs waits
 // on instead of starting its own.
 type keysFetch struct {
-	seq  uint64
 	done chan struct{}
 	keys []jose.JSONWebKey
 	err  error
@@ -200,8 +197,9 @@ func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, erro
 			set = fresh
 		case fetched.IsZero() || ctx.Err() != nil:
 			// No set to fall back to, or a caller that has gone: a client that hung up or
-			// half-closed gets no answer from a set of any age. A live caller whose read failed, or
-			// whose keys deadline passed (wait cuts only a context derived from ctx), falls back.
+			// half-closed gets no answer from a set past Lifetime + MinRefresh. A live caller whose
+			// read failed, or whose keys deadline passed (wait cuts only a context derived from
+			// ctx), falls back.
 			return nil, err
 		default:
 			fetchErr = err
@@ -319,12 +317,12 @@ func (k *Keys) spacedLocked() bool {
 	return k.failure != nil && time.Since(k.failedAt) < k.FailureSpacing
 }
 
-// startReadLocked numbers a new read, makes it the read in flight, and starts it on a context
-// detached from ctx, bounded by FetchTimeout alone (complete): the one way a read starts, so every
-// read is detached from the caller that started it. k.mu is held.
+// startReadLocked makes a new read the read in flight and starts it on a context detached from
+// ctx, bounded by FetchTimeout alone (complete): the one way a read starts, so every read is
+// detached from the caller that started it. k.mu is held and k.inflight is nil: one read runs at a
+// time, so reads end in the order they start, and the outcome complete records last is the latest.
 func (k *Keys) startReadLocked(ctx context.Context) *keysFetch {
-	k.reads++
-	k.inflight = &keysFetch{seq: k.reads, done: make(chan struct{})}
+	k.inflight = &keysFetch{done: make(chan struct{})}
 	go k.complete(context.WithoutCancel(ctx), k.inflight)
 	return k.inflight
 }
@@ -365,19 +363,17 @@ func (k *Keys) wait(ctx context.Context, inflight *keysFetch) ([]jose.JSONWebKey
 
 // complete runs inflight's read on ctx, which no caller ends, and releases every caller waiting on
 // it. A read that succeeds keeps its set and clears the recorded failure; a read that fails is
-// recorded as the last failure (settleMiss, FailureSpacing). Either counts only when it started
-// after the read whose set is kept, so the order the reads ran in decides, never their end times.
+// recorded as the last failure (settleMiss, FailureSpacing). One read runs at a time, so the
+// outcome recorded here is the latest, by the order the reads ran in, never their end times.
 func (k *Keys) complete(ctx context.Context, inflight *keysFetch) {
 	inflight.keys, inflight.err = k.read(ctx)
 	k.mu.Lock()
 	k.inflight = nil
-	if inflight.seq > k.goodRead {
-		if inflight.err == nil {
-			k.keys, k.fetched, k.goodRead = inflight.keys, time.Now(), inflight.seq
-			k.failedAt, k.failure = time.Time{}, nil
-		} else {
-			k.failedAt, k.failure = time.Now(), inflight.err
-		}
+	if inflight.err == nil {
+		k.keys, k.fetched = inflight.keys, time.Now()
+		k.failedAt, k.failure = time.Time{}, nil
+	} else {
+		k.failedAt, k.failure = time.Now(), inflight.err
 	}
 	k.mu.Unlock()
 	close(inflight.done)
