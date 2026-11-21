@@ -1116,6 +1116,27 @@ test("a link in a row's words to a path the server answers is left to the browse
   }
 });
 
+// The owner's enrollment link, pasted into an issue, opens the enrollment page, which `App` draws
+// in place of the whole shell (`ENROLL_PATH`). The browser loads it as a page of its own, as a
+// person from outside opens it, rather than the router swapping the shell away under the reader.
+test("a link in a row's words to the enrollment page is left to the browser", async () => {
+  for (const href of ["/enroll#abc", "http://dispatch.test/enroll#abc"]) {
+    const text = `Send [the link](${href}) to them.`;
+    const drawn = drawWordsAt("/issues/CORE-1", text, displayTree(text), new Map());
+    try {
+      const link = await waitFor(() => {
+        const found = drawn.view.container.querySelector(`a[href="${href}"]`);
+        expect(found).not.toBeNull();
+        return found;
+      });
+      expect(drawn.click(link), `the router followed ${href}`).toBe(true);
+      expect(drawn.where()).toBe("/issues/CORE-1");
+    } finally {
+      drawn.view.unmount();
+    }
+  }
+});
+
 // The router's own `Link` replaces the reader's place when it points at that place, so Back
 // leaves the page; a link in a row's words does the same, as a tie's chip to that address does.
 test("a link in a row's words to the address the reader is at replaces it", async () => {

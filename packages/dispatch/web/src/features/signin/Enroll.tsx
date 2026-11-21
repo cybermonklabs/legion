@@ -10,12 +10,6 @@ import { CeremonyAlert } from "./CeremonyAlert";
 import { type CeremonyRefusal, ceremonyRefusal } from "./refusals";
 import { creationOptions, passkeysSupported, registrationJSON } from "./webauthn";
 
-/** The path of the link a project's owner makes for a person from outside: `<outside
- *  origin>/enroll#<token>`, the token in the fragment so no server logs it and no browser sends it
- *  as a Referer. The app shows this page in place of the sign-in gate, since the person has no
- *  session yet. */
-export const ENROLL_PATH = "/enroll";
-
 /** The state the page leaves on its history entry when it takes the token out of the address. A
  *  reload keeps a history entry's state, so a page loaded with no token tells a link it read
  *  already from a link that came with nothing after its #. */

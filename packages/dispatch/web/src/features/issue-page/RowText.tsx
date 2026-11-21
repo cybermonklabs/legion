@@ -16,6 +16,7 @@ import { TextAskCard } from "../refs/markdown-cards";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { type DispatchReferenceRoute, parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
+import { ENROLL_PATH } from "../signin/enroll-path";
 import { chipWords } from "./node-row-chip";
 import { authorText } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
@@ -262,10 +263,11 @@ function StoredText({
  * Follows an address of this application in a node's words in place, on a plain click, as a link
  * the router draws does: the words are drawn as HTML (`MarkdownBody`, `linkRowReferences`), and
  * their links would load the whole page again. A click with a key held or with another button, a
- * link to a download, to another window, to another origin or to a path the server answers
- * itself (`SERVER_ROOT`), and a click a picture already answered (`DispatchPicture`) are the
- * browser's. A link to the address the reader is at replaces it, as the router's `Link` does, so
- * Back leaves the page as it does from a tie's chip to that address.
+ * link to a download, to another window, to another origin, to a path the server answers itself
+ * (`SERVER_ROOT`) or to the enrollment page (`ENROLL_PATH`, which `App` draws in place of the
+ * whole shell, so it loads as a page of its own), and a click a picture already answered
+ * (`DispatchPicture`) are the browser's. A link to the address the reader is at replaces it, as
+ * the router's `Link` does, so Back leaves the page as it does from a tie's chip to that address.
  */
 function useFollowInPlace(): (event: MouseEvent<HTMLElement>) => void {
   const navigate = useNavigate();
@@ -278,7 +280,13 @@ function useFollowInPlace(): (event: MouseEvent<HTMLElement>) => void {
       if (!(anchor instanceof HTMLAnchorElement) || !event.currentTarget.contains(anchor)) return;
       if (anchor.hasAttribute("download") || anchor.getAttribute("target") !== null) return;
       const url = new URL(anchor.href, window.location.href);
-      if (url.origin !== window.location.origin || SERVER_ROOT.test(url.pathname)) return;
+      if (
+        url.origin !== window.location.origin ||
+        SERVER_ROOT.test(url.pathname) ||
+        url.pathname === ENROLL_PATH
+      ) {
+        return;
+      }
       event.preventDefault();
       const path = `${url.pathname}${url.search}${url.hash}`;
       navigate(path, { replace: path === current });
