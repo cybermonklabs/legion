@@ -12,6 +12,7 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { narrowIssue, patchAnswer } from "../issue-page/issue-fixtures";
 import { titleWrittenElsewhere } from "../issue-page/title-elsewhere-fixture";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
@@ -101,11 +102,6 @@ function renderIssuePage(path = "/issues/CORE-1") {
   return { queryClient, unmount: view.unmount };
 }
 
-function narrowIssue(details: IssueDetails): Issue {
-  const { artifacts: _artifacts, children: _children, open_asks: _openAsks, ...rest } = details;
-  return rest;
-}
-
 function stubIssueApi() {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
@@ -130,29 +126,8 @@ function stubIssueApi() {
   // The server answers a PATCH with the narrow `Issue`, not `IssueDetails`: no artifacts,
   // children, or open asks. The stub mirrors that so the page is exercised against the
   // real response shape.
-  const patchIssue = answerIssuePatches().mockImplementation(
-    // A null `status` or `title` in the body means "leave it as it is", which is what the server
-    // does with it; every other field the body names is written through. The body's `advances`
-    // is a list of priority ids, which the answer states as the resolved relations instead, so
-    // it is left to the issue's own.
-    async (
-      _key,
-      {
-        rank: _rank,
-        components: _components,
-        advances: _advances,
-        advances_revision: _advancesRevision,
-        status,
-        title,
-        ...update
-      }
-    ) =>
-      narrowIssue({
-        ...issue,
-        ...update,
-        status: status ?? issue.status,
-        title: title ?? issue.title,
-      })
+  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
+    patchAnswer(issue, input)
   );
 
   return {

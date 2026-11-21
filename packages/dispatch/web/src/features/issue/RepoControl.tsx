@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
+import type { PageWords } from "../../components/tooltips";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
   dangerText,
@@ -18,6 +19,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import type { EVENT_FRESH } from "../refs/reference-target";
 import { NOT_OWNER_NAME, wholeValue } from "../settings/classes";
 import { focusOnDocument } from "../shell/roving";
 import { pickLook } from "./issue-field-looks";
@@ -73,6 +75,35 @@ export function repoControlName(issueKey: string): string {
   return `Repository of ${issueKey}`;
 }
 
+/** The name of the button a row of Details draws in the box's place: the text it shows, then the
+ *  box's name - `None, Repository of <KEY>` while the issue resolves to no repository, else
+ *  `<owner/name>, Repository of <KEY>`. It takes the issue's state rather than the text, so the
+ *  rule for which text the button shows is written here once, and the new issue page's add menu,
+ *  which finds the button by this name, names the text the button draws. The words are the
+ *  page's list's, passed in, since this file imports nothing of that list
+ *  (`components/tooltips.tsx`). */
+export function repoTextControlName(
+  issueKey: string,
+  state: {
+    readonly resolvedRepo: string | null;
+    readonly words: Pick<PageWords, "CONTROL_LABELS">;
+  }
+): string {
+  return `${state.resolvedRepo ?? state.words.CONTROL_LABELS.none}, ${repoControlName(issueKey)}`;
+}
+
+/** What the repository control hands a host that says its failures in a line of its own
+ *  (`sayFailure`): a write that stands refused. */
+export type RepoControlFailure = {
+  readonly message: string;
+  /** Makes the refused pick again; undefined where a newer write of the repository is live
+   *  (`IssueFieldWrite.retry`). */
+  readonly retry: (() => void) | undefined;
+  /** Whether the reader stopped the pick, which `message` then says may have been saved
+   *  (`IssueFieldWrite.stopped`), rather than Dispatch refusing it. */
+  readonly stopped: boolean;
+};
+
 /**
  * The issue's repository in the details rail: `Repository:` and one combobox, labelled
  * `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` that suggests
@@ -110,8 +141,9 @@ export function repoControlName(issueKey: string): string {
  * assistive technology because the description already says it. The clear control's `title` is
  * its description there (`aria-describedby`), so its name stays `Clear the repository of <KEY>`
  * and a reader still hears that the issue then inherits a repository. The refusal keeps its
- * words, which the page's list has none for; a failed write shows `QueryError` as on every page.
- * Each colour is the page's: the box is the page's field, the repository the issue
+ * words, which the page's list has none for; a failed write shows `QueryError`, as on every
+ * page, unless the host says it in a line of its own (`sayFailure`), as Details does. Each
+ * colour is the page's: the box is the page's field, the repository the issue
  * inherits (its placeholder) in the quiet grey; the clear control is the muted grey that turns
  * ink under the pointer; a refusal is the failed red; and the line is the ink in a row of Details
  * and the muted grey elsewhere. Nothing there keeps its width: the line wraps, the box, at most
@@ -152,8 +184,10 @@ export function RepoControl({
   inRow = false,
   issueKey,
   project,
+  projectsFreshness,
   repo: hostRepo,
   resolvedRepo: hostResolvedRepo,
+  sayFailure,
 }: {
   disabled?: boolean;
   /** Whether the control is the value of a row of the new issue page's Details. It acts inside
@@ -161,8 +195,22 @@ export function RepoControl({
   inRow?: boolean;
   issueKey: string;
   project: string;
+  /** The options of the read of the project list the suggestion comes from (`projectsQuery`), in
+   *  place of the app's defaults. A host whose reads events keep fresh passes their options,
+   *  since a project's event reads the list again (`api/event-refresh.ts`), and a window focus
+   *  30 s after the read, the app's staleness, would read it again for nothing. Without it the
+   *  read keeps the app's defaults. The host passes the options rather than this file importing
+   *  them because the new page's browser tests load this file in Node
+   *  (`e2e/issue-page-h.e2e.ts`), and `EVENT_FRESH`'s module reaches the document schema's JSON
+   *  (`refs/markdown-engine.ts`, `doc/schema.ts`), which stops that test file from loading. Only
+   *  its type is imported, which the build removes. */
+  projectsFreshness?: typeof EVENT_FRESH;
   repo: string | null;
   resolvedRepo: string | null;
+  /** Says a failed write in the host's own line, in place of `QueryError`, while it stands
+   *  refused. The host draws the line, so the control imports nothing of the new issue page that
+   *  passes it, and the page's word list loads with that page alone (`components/tooltips.tsx`). */
+  sayFailure?: (failure: RepoControlFailure) => ReactNode;
 }): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
@@ -189,6 +237,7 @@ export function RepoControl({
         hostResolvedRepo);
   const defaultRepo = useQuery({
     ...projectsQuery(),
+    ...projectsFreshness,
     select: (projects) => projects.find((candidate) => candidate.key === project)?.default_repo,
   }).data;
   const descriptionId = useId();
@@ -255,12 +304,22 @@ export function RepoControl({
   // Whether the focus is on the row's text or in the box, its clear control included. Whichever
   // of them takes the other's place takes the focus the other held, which the one leaving the
   // page drops to the document: a press of the text leaves it in the box; Escape, or a write that
-  // lands, on the text, which then says what the issue resolves to; and "None" and the
-  // repository's text, each drawn in the other's place when the issue's repository changes under
-  // them, hand it on alike. Only a focus still on the document is taken (`focusOnDocument`):
+  // lands, on the text, which then says what the issue resolves to. "None" and the repository's
+  // text, drawn in each other's place as the issue's repository changes under them, hand nothing
+  // on, since that change is no press of the reader's: where the row drew text in its last commit
+  // (`wasText`) and draws text again, the focus the one leaving held stays on the page's body, as
+  // for every change the reader did not make, and the row no longer counts it as held. Between
+  // the text and the box, only a focus still on the document is taken (`focusOnDocument`):
   // anywhere else, the reader put it there.
   const focusHeld = useRef(false);
+  const wasText = useRef(showsText);
   useEffect(() => {
+    const drewText = wasText.current;
+    wasText.current = showsText;
+    if (drewText && showsText) {
+      focusHeld.current = false;
+      return;
+    }
     if (!focusHeld.current || !focusOnDocument()) return;
     (showsNone ? noneControl : showsText ? textControl : box).current?.focus();
   }, [showsNone, showsText]);
@@ -335,7 +394,7 @@ export function RepoControl({
       )}
       {showsNone ? (
         <button
-          aria-label={`${page.CONTROL_LABELS.none}, ${repoControlName(issueKey)}`}
+          aria-label={repoTextControlName(issueKey, { resolvedRepo, words: page })}
           className={`min-h-11 rounded-sm outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${ON_PAGE.none} ${focusVisibleRing}`}
           disabled={disabled}
           ref={noneControl}
@@ -382,7 +441,7 @@ export function RepoControl({
             // the text did, breaking anywhere so that a name with no space in it wraps too.
             <button
               aria-describedby={descriptionId}
-              aria-label={`${resolvedRepo}, ${repoControlName(issueKey)}`}
+              aria-label={repoTextControlName(issueKey, { resolvedRepo, words: page })}
               className={`min-h-11 min-w-0 max-w-full rounded-sm text-left font-mono text-xs [overflow-wrap:anywhere] outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? ON_PAGE.inherited : ON_PAGE.own} ${focusVisibleRing}`}
               disabled={disabled}
               ref={textControl}
@@ -532,13 +591,20 @@ export function RepoControl({
           {NOT_OWNER_NAME}
         </p>
       ) : null}
-      {write.failed ? (
+      {sayFailure === undefined && write.failed ? (
         <QueryError
           message={write.error ?? `Could not update the repository of ${issueKey}.`}
           onRetry={write.retry}
           retrying={write.pending}
         />
       ) : null}
+      {write.failed && sayFailure !== undefined
+        ? sayFailure({
+            message: write.error ?? `Could not update the repository of ${issueKey}.`,
+            retry: write.retry,
+            stopped: write.stopped !== undefined,
+          })
+        : null}
     </div>
   );
 }

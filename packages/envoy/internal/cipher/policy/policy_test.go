@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/groups/groupstest"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -219,6 +220,65 @@ func TestRequesters(t *testing.T) {
 				t.Errorf("Evaluate(%s, %s) = %+v, %v; want %+v", name, who, got, err, want)
 			}
 		}
+	}
+}
+
+// TestARestrictedMemberIsDeniedEverySecret: a requester Dispatch calls a restricted member — a
+// person an access list admitted from outside the sign-in domain — is denied every secret the set
+// serves, restricted-member, before owner, tier and the requesters tag are read: a shared
+// agent-tier secret, one the person owns, one whose requesters list names them, a human-tier one
+// that would have been an approval request, and a service's. A Google group the set's group reader
+// lists the person in, fresh, makes no difference: an agent-tier secret the group owns, a
+// human-tier one it owns, and a shared one whose requesters list names only the group are denied
+// the same way. The control is the same requester unmarked, who is answered exactly as before,
+// the group's secrets included. A name the set does not serve is still ErrUnknownSecret.
+func TestARestrictedMemberIsDeniedEverySecret(t *testing.T) {
+	const outsider = "outsider@outside.example"
+	store := secrets.NewLocal(
+		policytest.Secret("OWN_AGENT", outsider, policy.TierAgent, "v"),
+		policytest.Secret("PERSON_HUMAN", owner, policy.TierHuman, "v"),
+		policytest.Secret("SHARED_AGENT", policy.OwnerShared, policy.TierAgent, "v"),
+		policytest.Secret("SHARED_HUMAN", policy.OwnerShared, policy.TierHuman, "v"),
+		policytest.Secret("SERVICE_AGENT", legion, policy.TierAgent, "v"),
+		policytest.ListedSecret("LISTED_AGENT", policy.OwnerShared, policy.TierAgent, outsider, "v"),
+		policytest.Secret("GROUP_AGENT", approversOwner, policy.TierAgent, "v"),
+		policytest.Secret("GROUP_HUMAN", approversOwner, policy.TierHuman, "v"),
+		policytest.ListedSecret("GROUP_LISTED", policy.OwnerShared, policy.TierAgent, approversOwner, "v"),
+	)
+	loaded, err := policytest.Loader(store, legion).Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	directory := groupstest.New()
+	directory.Set(approversGroup, outsider)
+	set := policy.NewSetWithGroups(loaded.Secrets, directory)
+	unmarked := map[string]policy.Decision{
+		"OWN_AGENT":     {Outcome: policy.Automatic},
+		"PERSON_HUMAN":  {Outcome: policy.Approval, Approver: owner},
+		"SHARED_AGENT":  {Outcome: policy.Automatic},
+		"SHARED_HUMAN":  {Outcome: policy.Approval, Approver: record.AnyoneApprover},
+		"SERVICE_AGENT": {Outcome: policy.Deny},
+		"LISTED_AGENT":  {Outcome: policy.Automatic},
+		"GROUP_AGENT":   {Outcome: policy.Automatic},
+		"GROUP_HUMAN":   {Outcome: policy.Approval, Approver: approversOwner},
+		"GROUP_LISTED":  {Outcome: policy.Automatic},
+	}
+	if len(unmarked) != len(set.Secrets) {
+		t.Fatalf("the set serves %d secrets, the table names %d; refused: %v", len(set.Secrets), len(unmarked), loaded.Refused)
+	}
+	for name, want := range unmarked {
+		source := secrets.LocalARN(policytest.ID(name))
+		want.Source = source
+		if got, err := set.Evaluate(name, policy.Requester{Operator: outsider}); err != nil || got != want {
+			t.Errorf("Evaluate(%s, the person unmarked) = %+v, %v; want %+v", name, got, err, want)
+		}
+		denied := policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonRestrictedMember, Source: source}
+		if got, err := set.Evaluate(name, policy.Requester{Operator: outsider, Restricted: true}); err != nil || got != denied {
+			t.Errorf("Evaluate(%s, the person a restricted member) = %+v, %v; want %+v", name, got, err, denied)
+		}
+	}
+	if _, err := set.Evaluate("NOT_A_SECRET", policy.Requester{Operator: outsider, Restricted: true}); !errors.Is(err, policy.ErrUnknownSecret) {
+		t.Errorf("Evaluate(NOT_A_SECRET, a restricted member) = %v, want ErrUnknownSecret", err)
 	}
 }
 

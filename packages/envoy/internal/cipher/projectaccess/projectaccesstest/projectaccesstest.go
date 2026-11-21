@@ -70,13 +70,15 @@ type Server struct {
 	// Account reads Token, as ciphertoken.AccountToken reads a projected token from its file.
 	Account StaticAccount
 
-	mu     sync.Mutex
-	rows   map[string]Row
-	people map[string]string
-	calls  int
-	down   bool
-	answer *rawAnswer
-	stall  time.Duration
+	mu           sync.Mutex
+	rows         map[string]Row
+	people       map[string]string
+	calls        int
+	projectCalls int
+	down         bool
+	projectsDown bool
+	answer       *rawAnswer
+	stall        time.Duration
 }
 
 // rawAnswer is a status and body the stand-in answers every call with in place of its rows.
@@ -124,12 +126,39 @@ func (s *Server) Calls() int {
 	return s.calls
 }
 
+// ProjectCalls is how many of Calls asked the project route, refusals and failures included: the
+// questions about a project, beside the member-kind reads every request, release and airlock
+// connection of a person's session makes (requests.Machine.restrictedOperator).
+func (s *Server) ProjectCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.projectCalls
+}
+
 // SetDown makes every later request fail 503 (true) or be answered again (false), which is what a
 // Dispatch the broker cannot reach looks like to it.
 func (s *Server) SetDown(down bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.down = down
+}
+
+// SetProjectsDown makes every later request of the project route fail 503 (true) or be answered
+// again (false), while the person route goes on answering: a test of what a project Dispatch could
+// not answer for does to a request whose person's member kind is known.
+func (s *Server) SetProjectsDown(down bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projectsDown = down
+}
+
+// SetMemberKind makes person's member kind kind ("full", "restricted", or "none" to hold no row)
+// from the next request on, as Dispatch changes a person's kind at a sign-in or a confirmation.
+// A client that cached the old answer goes on answering it until that answer ages out.
+func (s *Server) SetMemberKind(person, kind string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.people[person] = kind
 }
 
 // SetRepositories makes the list project's issues resolve to, which the repository route answers,
@@ -172,7 +201,11 @@ func (s *Server) SetRow(key string, row Row) {
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls++
-	down, canned, stall := s.down, s.answer, s.stall
+	projectRoute := strings.HasPrefix(r.URL.Path, projectPath)
+	if projectRoute {
+		s.projectCalls++
+	}
+	down, canned, stall := s.down || projectRoute && s.projectsDown, s.answer, s.stall
 	s.mu.Unlock()
 	if down {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "UNAVAILABLE", "error": "the stand-in is down"})
@@ -259,6 +292,8 @@ func (s *Server) row(key string) (Row, bool) {
 
 // kind is a login's member kind, "none" for a login the stand-in does not hold or no login at all.
 func (s *Server) kind(person string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if kind, held := s.people[person]; held && person != "" {
 		return kind
 	}

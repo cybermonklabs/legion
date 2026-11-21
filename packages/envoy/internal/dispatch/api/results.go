@@ -1130,11 +1130,13 @@ func plainWord(word, punctuation string) bool {
 // a host that ends in `.internal` with no ASCII letter or digit after it (a full stop, a
 // parenthesis or a hyphen included). Both read case-insensitively, so the Kelvin sign U+212A and
 // the long s U+017F, which fold to `k` and `s`, count as letters after a host too, while `é` does
-// not. privateHost's trailing `.internal` is what the script does not refuse: the script guards the
-// whole repository, where names such as metadata.google.internal and host.docker.internal are
-// well known and not private, while the line is pasted into public text with no reader in
-// between, so it is stricter on purpose. The line drops every word holding one, written without a
-// scheme too, and the script's reserved example hosts with them, since no line needs such a host.
+// not. privateHost's trailing `.internal` is what the script refuses only in a pull request's own
+// text (check-pr-text.sh turns it on there), where it still lets metadata.google.internal and
+// host.docker.internal pass: over the whole repository it reads no such ending, since those names
+// are well known and not private there. The line is pasted into public text with no reader in
+// between, so it is stricter than either on purpose. The line drops every word holding one,
+// written without a scheme too, the two well-known names and the script's reserved example hosts
+// with them, since no line needs such a host.
 var (
 	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal([^[:alnum:]]|$)`)
 	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
