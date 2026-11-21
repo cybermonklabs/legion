@@ -17,7 +17,11 @@ When what you measure or read makes the plan build something differently from th
 Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'empty'`.
 Whatever it prints, run `jj -R "$LEGION_WORKSPACE" new @-`, never `jj new`. When `@` was not
 empty, take back only your own edits from the change `jj new @-` set aside, and tell the architect
-what you leave in it, as the daemon part below says. Never `jj describe` or `jj split` the
+what you leave in it, as the daemon part below says. When your issue moved back from implementing,
+start as `skill://legion-worker/references/commits.md` says, never with `jj new @-`: first read
+the change id of `@` with `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'change_id.short()'`,
+then run `jj -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`, so you push no local commit of the
+implementer's, and tell the architect the change id you left. Never `jj describe` or `jj split` the
 working-copy commit you found at the turn's start. Do not move a bookmark you do
 not own. Put only your logical paths in `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 Push any commits you make as the daemon part below says; your handoff is never a commit.

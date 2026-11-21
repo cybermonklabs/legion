@@ -16,7 +16,19 @@ A tree is a root issue and the issues beneath it. When another tree's open pull 
    ```
 
    Write `<message>` in the repository's own commit convention, read from the repository itself: its commit-message check (a commitlint configuration or the workflow that lints commits) where it has one, else its recent commits on the base. Where it uses Conventional Commits, that is a listed type and the merge in words, such as `chore(<scope>): merge <base> into <branch>`; where neither shows a convention, the merge in words alone, such as `Merge <base> into <branch>`. Never a fixed prefix of this skill's own: a check that lints every commit of the pull request refuses a type its list does not hold, and `merge` is in no Conventional Commits list. `@` after a split is an empty commit with no description, which `jj git push` refuses.
-2. Resolve any conflict in that one commit, then `jj -R "$LEGION_WORKSPACE" new` to move off it.
+2. Resolve any conflict in that one commit. Then list the paths it changes beyond the auto-merge of its parents: `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only`. Your resolutions are expected there. Any other path is a write the merge took in, made by another role after your turn-start check.
+
+   When it lists only your resolutions, or nothing, run `jj -R "$LEGION_WORKSPACE" new` to move off the merge. When it lists another path, take the merge out from under it, so the push carries none of it and no file changes on disk under a role that may still be writing it:
+
+   ```bash
+   jj -R "$LEGION_WORKSPACE" new --insert-before @ --no-edit -m "<message>"
+   jj -R "$LEGION_WORKSPACE" squash --into @- <your resolution paths…>
+   jj -R "$LEGION_WORKSPACE" describe -r @ -m ""
+   ```
+
+   Skip the `squash` when there is no resolution to move. `@-` is then the merge, with step 1's message and your resolutions, which step 4 pushes. `@` holds only the other paths and has no description, so a role's launch keeps it as `@` (the launch puts a new change on a described `@` only) and the next role that commits sets it aside at its turn start. Run no `jj new` here. Tell the architect each such path and `@`'s change id. Before your next commit, run your role prompt's turn-start rule.
+
+   When one path holds both your resolution and another role's edit, push nothing, and tell the architect.
 3. A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round. A finding's class is the defect it named wherever the head holds it, not the one line it cited: search the whole head, not the lines the merge changed alone.
 4. Push the merge as any code push, build the branch, and record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict.
 5. Post one PR comment with the Legion footer: `forward merge <old-tip-sha> → <new-tip-sha>; <the condition it meets>`, with each class search beside it. In a parent's last round, end it with `parent's last round: full test round`.

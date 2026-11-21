@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr4622
+body: |-
+  The forward merge lists the paths the merge changes beyond its parents' auto-merge and, when
+  another role's write is among them, pushes a merge without it and leaves that write, undescribed,
+  in the working copy for the next role that commits to set aside.

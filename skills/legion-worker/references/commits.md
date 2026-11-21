@@ -11,4 +11,4 @@ Read it before a push; before you cure a commit that lacks a trailer line or clo
 - `jj git push` refuses a commit that has no author and that the push does not fill; `jj -R "$LEGION_WORKSPACE" metaedit -r <commit> --update-author` fills it.
 - A base branch can require the issue line in the commit that lands: a squash builds that message from the branch's commit messages, and it leaves a merge commit's message out, so the line belongs in an ordinary commit.
 - A repository you clone under `$LEGION_WORKSPACE` is stamped with this issue's key: clone one you will push elsewhere outside it, and push no commit made under it to a repository that takes no issue key.
-- A planner whose issue moved back from implementing starts on the remote tip: `jj -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`.
+- A planner whose issue moved back from implementing starts on the remote tip, never with `jj new @-`, so it pushes no local commit of the implementer's: it reads the change id of `@` first with `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'change_id.short()'`, then runs `jj -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`, and tells the architect the change id it left.

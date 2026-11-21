@@ -2,5 +2,7 @@ kind: Changed
 custom:
   Issue: pr4622
 body: |-
-  The role prompts' turn-start step now always runs `jj new @-`, never `jj new`, and takes back
+  The role prompts' turn-start step now runs `jj new @-`, never `jj new`, and takes back
   only the role's own edits from the change it sets aside, telling the architect the rest.
+  A planner whose issue moved back from implementing reads `@`'s change id, starts on the remote
+  tip with `jj new legion/<KEY>@origin` and tells the architect the change id it left, instead.
