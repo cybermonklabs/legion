@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +97,33 @@ func (d *dpopTransport) send(r *http.Request) (*http.Response, error) {
 		d.mu.Unlock()
 	}
 	return resp, nil
+}
+
+// AtAddress is a RoundTripper that sends each request through base to address's scheme and host —
+// an address such as http://dispatch.dispatch.svc.cluster.local:8080 — whatever scheme and host the
+// request's URL names, and changes nothing else of it: its path and query, its Host header and its
+// body are the request's own. It is what lets a caller reach a server at an address other than the
+// URL that server checks a proof against: a DPoP transport wrapped around it (NewDPoPTransport)
+// signs the URL the request names, its canonical one, and this connects where the caller can
+// reach. A server reached this way judges the proof by its own canonical URL and never by the
+// address, so signing the address instead would be refused.
+func AtAddress(address *url.URL, base http.RoundTripper) http.RoundTripper {
+	return &atAddress{scheme: address.Scheme, host: address.Host, base: base}
+}
+
+// atAddress is AtAddress's RoundTripper.
+type atAddress struct {
+	scheme, host string
+	base         http.RoundTripper
+}
+
+func (a *atAddress) RoundTrip(r *http.Request) (*http.Response, error) {
+	out := r.Clone(r.Context())
+	if out.Host == "" {
+		out.Host = r.URL.Host
+	}
+	out.URL.Scheme, out.URL.Host = a.scheme, a.host
+	return a.base.RoundTrip(out)
 }
 
 // proof is one DPoP proof for method on htu, carrying nonce and ath when they are not empty.

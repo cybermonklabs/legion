@@ -377,18 +377,28 @@ type Config struct {
 	// control of the check the judge belongs to. For the broker's local stack alone: a
 	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	JudgeTestSkipChecks bool
-	// BROKER_PROJECT_ACCESS_URL: the base URL of the Dispatch the broker asks whether a project
-	// is private, whether a person may see it, and what kind of member a person is
-	// (internal/broker/projectaccess), an absolute http(s) URL, read without the slashes it ends
-	// in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks
-	// Dispatch nothing. A token that names no project, and an operator entry's token, whose
-	// project that operator's own setting chose, are minted as before; a person's trade that
-	// names a project is refused, since nothing could say that person may see it.
+	// BROKER_PROJECT_ACCESS_URL: the canonical URL of the Dispatch the broker asks whether a
+	// project is private, whether a person may see it, and what kind of member a person is
+	// (internal/broker/projectaccess) — the URL Dispatch's DISPATCH_SERVER_URL names, which every
+	// DPoP proof the broker signs there names — an absolute http(s) URL, read without the slashes
+	// it ends in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker
+	// asks Dispatch nothing. A token that names no project, and an operator entry's token, whose
+	// project that operator's own setting chose, are minted as before; a person's trade that names
+	// a project is refused, since nothing could say that person may see it.
 	ProjectAccessURL string
+	// BROKER_PROJECT_ACCESS_DIAL_URL: the address the broker connects to for those calls instead,
+	// where it cannot reach BROKER_PROJECT_ACCESS_URL (Dispatch's in-cluster address): an absolute
+	// http(s) URL with no path, read without the slashes it ends in. Each proof still names the
+	// canonical URL, which is the one Dispatch checks. Empty connects to BROKER_PROJECT_ACCESS_URL
+	// itself; set only beside it.
+	ProjectAccessDialURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
-	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
-	// asks and not at boot, through brokertoken.AccountToken, which reads the file again once what
-	// it last read is 30 seconds old. Set with BROKER_PROJECT_ACCESS_URL or not at all.
+	// ServiceAccount token for the broker exchange's audience (BROKER_EXCHANGE_K8S_AUDIENCE). The
+	// broker trades it at its own token endpoint, under its read entry in
+	// BROKER_EXCHANGE_READ_ACCOUNTS, for the read token it presents to Dispatch
+	// (projectaccess.ReadToken); it never presents this token to Dispatch. Read at each trade and
+	// not at boot, since the kubelet rewrites it in place. Set with BROKER_PROJECT_ACCESS_URL or
+	// not at all.
 	ProjectAccessTokenFile string
 	// BROKER_HOLD_REQUIRES_DEADLINE: true on the broker of a deployment whose Dispatch runs behind
 	// Identity-Aware Proxy (DISPATCH_IDENTITY=iap), and unset or false everywhere else. With it
@@ -644,14 +654,18 @@ type Config struct {
 	// token minted for a pod of the account holds only the OAuth scope read, the project scope
 	// none, the service and the session, and names no person and no project: Dispatch serves it
 	// on the routes its read list names and refuses it everywhere else, and every other service
-	// that reads the broker's tokens, the Envoy listener among them, refuses it. That token reads the
+	// that reads the broker's tokens, the Envoy listener among them, refuses it. The token of a
+	// service Dispatch's DISPATCH_ACCESS_ACCOUNTS names, the broker's own read entry's, is served on
+	// Dispatch's access routes instead and on none of the read list. That token reads the
 	// whole answer of GET /api/v1/projects/{key}/architecture for every project that has an
 	// architecture source: each source, each component, and every issue of the project, closed and
 	// iceboxed ones included. No setting holds a read entry to some projects.
-	// The session is everything after the second "=", so it alone may carry one. A namespace's
-	// default account is refused, as is a service that is not lowercase letters, digits and
-	// hyphens, at most 64, or is shared, an account listed twice, and an account
-	// BROKER_EXCHANGE_ACCOUNTS lists too. Needs BROKER_K8S_OIDC_ISSUER and
+	// The session is everything after the second "=", so it alone may carry one. The service is a
+	// service's name, lowercase letters, digits and hyphens, at most 64, and not shared, or a
+	// service account's subject, system:serviceaccount:<namespace>:<name>, which the broker's own
+	// read entry names as its service; a read token writes and enrols nothing, so no record holds
+	// it. A namespace's default account is refused, as is any other service, an account listed
+	// twice, and an account BROKER_EXCHANGE_ACCOUNTS lists too. Needs BROKER_K8S_OIDC_ISSUER and
 	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older
 	// than this setting does not read it, so it mints those accounts no token at all. Unset, no
 	// account exchanges for a read-only token.
@@ -838,7 +852,7 @@ const noUIToken = "the broker's approval routes take the calling service's own K
 // Legion pod's issue is assigned to, and the token exchange's read of whether a person may see a
 // project. So a deployment that still sets one of the five is configured for a Dispatch the broker
 // never writes to and a credential it never holds.
-const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; it reads there with two projected ServiceAccount tokens of its own, and writes nothing: its model judge, whether an issue is open and whom a Legion pod's issue is assigned to, at BROKER_JUDGE_DISPATCH_URL (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and its token exchange, whether a person may see a project, at BROKER_PROJECT_ACCESS_URL (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
+const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; it reads there under settings of its own, and writes nothing: its model judge, whether an issue is open and whom a Legion pod's issue is assigned to, at BROKER_JUDGE_DISPATCH_URL with a projected ServiceAccount token of its own (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and its token exchange and hold, whether a person may see a project and whether Dispatch holds them, at BROKER_PROJECT_ACCESS_URL with a read token it issues to itself for its projected token in BROKER_PROJECT_ACCESS_TOKEN_FILE"
 
 // noDatabasePassword is why BROKER_DATABASE_PASSWORD and its placeholder are gone: BROKER_DATABASE_URL
 // alone says how the broker signs in.
@@ -1379,11 +1393,14 @@ func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, erro
 // lists, in order. Every field is required and the session is everything after the second "=",
 // so it alone may carry one. It refuses, naming the setting and the entry: one with fewer than
 // three fields or a blank one; an account that is not system:serviceaccount:<namespace>:<name>,
-// or a namespace's default account (podAccountRefusal); a service that is not a service's name,
-// or is policy.OwnerShared, the rule parseServiceAccounts holds a service to; and an account
-// listed twice, since one account reads as one identity. An account BROKER_EXCHANGE_ACCOUNTS
-// lists too is Load's to refuse, since it reads both settings. exchange.NewSet is the second
-// gate, and the session name's own form is its to refuse.
+// or a namespace's default account (podAccountRefusal); a service that is neither a service's
+// name, the rule parseServiceAccounts holds a service to, nor a service account's subject, or is
+// policy.OwnerShared; and an account listed twice, since one account reads as one identity. A
+// subject is a read entry's service alone, never an exchange entry's: the broker's own read entry
+// names its account as its service, which is the subject Dispatch's DISPATCH_ACCESS_ACCOUNTS
+// lists, and a read token writes nothing and enrols nothing, so no record holds that service. An
+// account BROKER_EXCHANGE_ACCOUNTS lists too is Load's to refuse, since it reads both settings.
+// exchange.NewSet is the second gate, and the session name's own form is its to refuse.
 func parseExchangeReadAccounts(setting, value string) ([]exchange.ReadEntry, error) {
 	var entries []exchange.ReadEntry
 	seen := map[string]bool{}
@@ -1398,8 +1415,8 @@ func parseExchangeReadAccounts(setting, value string) ([]exchange.ReadEntry, err
 		if err := podAccountRefusal(setting, text, account); err != nil {
 			return nil, err
 		}
-		if !record.ValidService(service) || service == policy.OwnerShared {
-			return nil, fmt.Errorf("%s must name services of lowercase letters, digits and hyphens, at most 64, not %s, got %q", setting, policy.OwnerShared, text)
+		if !(record.ValidService(service) || principal.ServiceAccountSubject.MatchString(service)) || service == policy.OwnerShared {
+			return nil, fmt.Errorf("%s must name services of lowercase letters, digits and hyphens, at most 64, not %s, or service accounts' subjects, system:serviceaccount:<namespace>:<name>, got %q", setting, policy.OwnerShared, text)
 		}
 		if seen[account] {
 			return nil, fmt.Errorf("%s names the service account %s twice, got %q again; one account reads as one identity, so name it once", setting, account, text)
@@ -1765,6 +1782,7 @@ func Load(getenv func(string) string) (Config, error) {
 		JudgeDispatchURL:          strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_URL")),
 		JudgeDispatchTokenFile:    strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_TOKEN_FILE")),
 		ProjectAccessURL:          strings.TrimRight(strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_URL")), "/"),
+		ProjectAccessDialURL:      strings.TrimRight(strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_DIAL_URL")), "/"),
 		ProjectAccessTokenFile:    strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_TOKEN_FILE")),
 		AzureTokenFile:            orDefault(getenv("BROKER_AZURE_TOKEN_FILE"), secrets.DefaultAzureTokenFile),
 		AzureLoginSecret:          getenv("BROKER_AZURE_LOGIN_SECRET"),
@@ -1953,18 +1971,27 @@ func Load(getenv func(string) string) (Config, error) {
 			signInSwitchSetting, signInOffValue, strings.Join(JudgeSettings, ", "), signInSwitchSetting)
 	}
 	// The project-access settings are both or neither, as the judge's are: a URL with no token to
-	// present would be refused at every call, and a token with nowhere to present it asks nothing,
-	// so either alone is a deployment that meant to turn the check on and did not.
+	// trade for a read token would be refused at every call, and a token with nowhere to present
+	// that read token asks nothing, so either alone is a deployment that meant to turn the check on
+	// and did not. The dial address is only ever an address of that Dispatch, so it needs the URL.
 	switch {
 	case cfg.ProjectAccessURL == "" && cfg.ProjectAccessTokenFile == "":
 		// No project-access check, which is every deployment with no private project.
 	case cfg.ProjectAccessTokenFile == "":
-		return Config{}, errors.New("BROKER_PROJECT_ACCESS_URL is set and BROKER_PROJECT_ACCESS_TOKEN_FILE is not: the broker presents its own projected ServiceAccount token from that file on every call to Dispatch, so set both or neither")
+		return Config{}, errors.New("BROKER_PROJECT_ACCESS_URL is set and BROKER_PROJECT_ACCESS_TOKEN_FILE is not: the broker trades its own projected ServiceAccount token from that file for the read token it presents on every call to Dispatch, so set both or neither")
 	case cfg.ProjectAccessURL == "":
 		return Config{}, errors.New("BROKER_PROJECT_ACCESS_TOKEN_FILE is set and BROKER_PROJECT_ACCESS_URL is not: that URL names the Dispatch the broker asks about projects, so set both or neither")
 	default:
 		if err := httpURLSetting("BROKER_PROJECT_ACCESS_URL", cfg.ProjectAccessURL); err != nil {
 			return Config{}, err
+		}
+	}
+	if cfg.ProjectAccessDialURL != "" {
+		if cfg.ProjectAccessURL == "" {
+			return Config{}, errors.New("BROKER_PROJECT_ACCESS_DIAL_URL is set and BROKER_PROJECT_ACCESS_URL is not: the dial URL is the address the broker reaches that Dispatch at, so it means nothing without it")
+		}
+		if parsed, err := url.Parse(cfg.ProjectAccessDialURL); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return Config{}, fmt.Errorf("BROKER_PROJECT_ACCESS_DIAL_URL must be an absolute http(s) URL with no path: %q", redact.URL(cfg.ProjectAccessDialURL))
 		}
 	}
 	if cfg.HoldRequiresDeadline, err = onOffSetting("BROKER_HOLD_REQUIRES_DEADLINE", getenv("BROKER_HOLD_REQUIRES_DEADLINE")); err != nil {

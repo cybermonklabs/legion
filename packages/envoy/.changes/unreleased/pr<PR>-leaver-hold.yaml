@@ -20,6 +20,16 @@ body: |-
   `broker_hold_unchecked_total{last_answer}`. With `BROKER_PROJECT_ACCESS_URL` unset the broker
   holds nobody, and logs `hold of refused people state=off` at boot. A broker that cannot tell is
   `503 HOLD_UNCHECKABLE`, naming one of six fixed reasons.
+
+  The broker asks Dispatch's access routes with a read token it issues to itself, never its
+  projected token: set `BROKER_PROJECT_ACCESS_URL` to Dispatch's canonical URL (and
+  `BROKER_PROJECT_ACCESS_DIAL_URL` to its in-cluster address if the broker cannot reach that URL),
+  `BROKER_PROJECT_ACCESS_TOKEN_FILE` to the broker's projected token for the exchange's audience,
+  add `<broker account>=<broker account>=<session>` to `BROKER_EXCHANGE_READ_ACCOUNTS`, and name the
+  same account in Dispatch's `DISPATCH_ACCESS_ACCOUNTS`, which now needs no `DISPATCH_OIDC_*`
+  setting. Such a token calls `GET /api/v1/access/person`, `GET /api/v1/access/projects/{key}` and
+  `GET /api/v1/access/private-projects` and no other route, and another service's read token calls
+  none of them.
 time: 2026-11-20T20:29:55Z
 custom:
     Issue: pr<PR>

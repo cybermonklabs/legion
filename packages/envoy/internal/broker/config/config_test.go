@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -2178,8 +2179,12 @@ func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
 		return e
 	}
 	e := withExchange()
+	// The broker's own read entry names its account as its service too, the subject Dispatch's
+	// DISPATCH_ACCESS_ACCOUNTS names: a read entry's service may be a service's name or a
+	// service account's subject.
 	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session\n" +
-		" system:serviceaccount:example-ns:example-viewer=example-viewer=example-viewer=1 "
+		" system:serviceaccount:example-ns:example-viewer=example-viewer=example-viewer=1 " +
+		"system:serviceaccount:dispatch:envoy-broker=system:serviceaccount:dispatch:envoy-broker=broker-access"
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
@@ -2187,6 +2192,7 @@ func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
 	want := []exchange.ReadEntry{
 		{Account: "system:serviceaccount:example-ns:example-reader", Service: "example-reader", Session: "example-reader-session"},
 		{Account: "system:serviceaccount:example-ns:example-viewer", Service: "example-viewer", Session: "example-viewer=1"},
+		{Account: "system:serviceaccount:dispatch:envoy-broker", Service: "system:serviceaccount:dispatch:envoy-broker", Session: "broker-access"},
 	}
 	if !slices.Equal(cfg.ExchangeReadAccounts, want) {
 		t.Fatalf("ExchangeReadAccounts = %v, want %v", cfg.ExchangeReadAccounts, want)
@@ -2201,6 +2207,8 @@ func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
 		"system:serviceaccount:example-ns:default=example-reader=example-reader-session",
 		"system:serviceaccount:example-ns:example-reader=Example_Reader=example-reader-session",
 		"system:serviceaccount:example-ns:example-reader=shared=example-reader-session",
+		"system:serviceaccount:example-ns:example-reader=system:serviceaccount:Example:reader=example-reader-session",
+		"system:serviceaccount:example-ns:example-reader=system:serviceaccount:example-ns=example-reader-session",
 	} {
 		e := withExchange()
 		e["BROKER_EXCHANGE_READ_ACCOUNTS"] = bad
@@ -2225,6 +2233,33 @@ func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
 	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_READ_ACCOUNTS") || !strings.Contains(err.Error(), "BROKER_EXCHANGE_K8S_AUDIENCE") {
 		t.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS with no exchange audience: err = %v, want a refusal naming the setting and BROKER_EXCHANGE_K8S_AUDIENCE", err)
+	}
+}
+
+// TestASubjectIsAServiceOfReadEntriesAlone: a service account's subject names a read entry's
+// service (TestLoadReadsTheExchangeReadAccounts) and no service that enrols or writes. Each setting
+// whose service a credential is enrolled under, or a record stores, refuses it: the fleets whose
+// pods enrol and write (BROKER_SERVICES), their logins (BROKER_SERVICE_LOGINS), the machines'
+// fleets (BROKER_VM_SERVICES), and a launcher credential's recorded service (record.ValidService,
+// which every such write is held to).
+//
+// Control: record.ValidService accepting a service account's subject, as the read entry's check
+// does: every row here is admitted.
+func TestASubjectIsAServiceOfReadEntriesAlone(t *testing.T) {
+	const subject = "system:serviceaccount:dispatch:envoy-broker"
+	if record.ValidService(subject) {
+		t.Errorf("record.ValidService(%q) = true, want false: a launcher credential's service is a service's name", subject)
+	}
+	for setting, value := range map[string]string{
+		"BROKER_SERVICES":       subject + "=system:serviceaccount:legion:legion-daemon",
+		"BROKER_SERVICE_LOGINS": subject + "=system:serviceaccount:legion:legion-daemon",
+		"BROKER_VM_SERVICES":    subject + "=box@example-project.iam.gserviceaccount.com",
+	} {
+		e := validEnv()
+		e[setting] = value
+		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), setting) {
+			t.Errorf("%s=%q: err = %v, want a refusal naming the setting: a subject is no service that enrols or writes", setting, value, err)
+		}
 	}
 }
 
@@ -2902,6 +2937,44 @@ func TestProjectAccessSettingsComeTogether(t *testing.T) {
 		_, err := Load(env(e))
 		if err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
 			t.Errorf("Load(BROKER_PROJECT_ACCESS_URL=%q) = %v; want a refusal naming the variable", bad, err)
+		}
+	}
+}
+
+// TestProjectAccessDialURLNamesAnAddressOfThatDispatch pins BROKER_PROJECT_ACCESS_DIAL_URL, the
+// address the broker connects to Dispatch at where it cannot reach BROKER_PROJECT_ACCESS_URL, the
+// canonical URL every proof names: unset is none, set beside the URL it is read without the
+// slashes it ends in, set alone it refuses the start naming the URL it needs, and anything but an
+// absolute http(s) URL with no path refuses the start naming it.
+//
+// Controls: Load leaving the setting unread: the dial URL reads empty. Load taking it without
+// BROKER_PROJECT_ACCESS_URL: the start goes on.
+func TestProjectAccessDialURLNamesAnAddressOfThatDispatch(t *testing.T) {
+	withAccess := func() map[string]string {
+		e := validEnv()
+		e["BROKER_PROJECT_ACCESS_URL"] = "https://dispatch.example.com"
+		e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/broker-exchange/token"
+		return e
+	}
+	cfg, err := Load(env(withAccess()))
+	if err != nil || cfg.ProjectAccessDialURL != "" {
+		t.Fatalf("Load with no dial URL = (%q, %v), want none", cfg.ProjectAccessDialURL, err)
+	}
+	e := withAccess()
+	e["BROKER_PROJECT_ACCESS_DIAL_URL"] = "http://dispatch.dispatch.svc.cluster.local:8080/"
+	if cfg, err = Load(env(e)); err != nil || cfg.ProjectAccessDialURL != "http://dispatch.dispatch.svc.cluster.local:8080" || cfg.ProjectAccessURL != "https://dispatch.example.com" {
+		t.Fatalf("Load with a dial URL = (dial %q, url %q, %v), want the dial URL without its trailing slash beside the canonical URL as given", cfg.ProjectAccessDialURL, cfg.ProjectAccessURL, err)
+	}
+	alone := validEnv()
+	alone["BROKER_PROJECT_ACCESS_DIAL_URL"] = "http://dispatch.dispatch.svc.cluster.local:8080"
+	if _, err := Load(env(alone)); err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_DIAL_URL is set and BROKER_PROJECT_ACCESS_URL is not") {
+		t.Errorf("Load(BROKER_PROJECT_ACCESS_DIAL_URL alone) = %v; want a refusal naming the URL it needs", err)
+	}
+	for _, bad := range []string{"dispatch.dispatch.svc", "ftp://dispatch.dispatch.svc", "http://", "http://dispatch.dispatch.svc/api", "http://dispatch.dispatch.svc?x=1"} {
+		e := withAccess()
+		e["BROKER_PROJECT_ACCESS_DIAL_URL"] = bad
+		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_DIAL_URL must be an absolute http(s) URL with no path") {
+			t.Errorf("Load(BROKER_PROJECT_ACCESS_DIAL_URL=%q) = %v; want a refusal naming the variable", bad, err)
 		}
 	}
 }

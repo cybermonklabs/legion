@@ -54,19 +54,19 @@ func refusedAccountWords(person string) string {
 	return "whether Dispatch holds " + person + " cannot be read: Dispatch refused the broker's own account"
 }
 
-// brokerAccount is the bearer the broker presents to the Dispatch stand-in: the stand-in's own, or,
-// once refused is set, one the stand-in answers 403, as a Dispatch whose DISPATCH_ACCESS_ACCOUNTS
-// does not name the broker's account answers it.
+// brokerAccount is the read token the broker presents to the Dispatch stand-in: the stand-in's own,
+// or, once refused is set, one the stand-in holds live for no key and answers 401, as a Dispatch
+// that does not take the broker's read token answers it.
 type brokerAccount struct {
-	bearer  string
+	*projectaccesstest.Account
 	refused atomic.Bool
 }
 
-func (a *brokerAccount) Read() (string, error) {
+func (a *brokerAccount) Token(ctx context.Context) (string, error) {
 	if a.refused.Load() {
-		return "a bearer Dispatch does not take", nil
+		return "a read token Dispatch does not take", nil
 	}
-	return a.bearer, nil
+	return a.Account.Token(ctx)
 }
 
 // gateClock is the clock the gate and its Dispatch client read: the wall clock, moved on by hand
@@ -93,7 +93,7 @@ type holdBroker struct {
 func newHoldBroker(t *testing.T) *holdBroker {
 	t.Helper()
 	dispatch := projectaccesstest.NewServer(t, nil, map[string]string{heldAda: projectaccess.MemberFull, servedBob: projectaccess.MemberFull})
-	account := &brokerAccount{bearer: dispatch.Token}
+	account := &brokerAccount{Account: dispatch.Account}
 	clock := &gateClock{}
 	access := projectaccess.New(dispatch.URL, account, nil)
 	access.UseClock(clock.now)
@@ -494,7 +494,7 @@ func TestHeldDeviceCodeRedemptionIsRefused(t *testing.T) {
 	bobLogin := b.client.DeviceLogin(t, bobKey, servedBob, "bob-second-box")
 	b.client.ApproveMachineLogin(t, servedBob, bobLogin.UserCode)
 	_, err = b.client.DeviceToken(t, bobKey, bobLogin)
-	expectOAuthRefusal(t, "bob's device code while Dispatch refuses the broker's account", err, http.StatusInternalServerError, "server_error", "Dispatch refused the broker's own account token")
+	expectOAuthRefusal(t, "bob's device code while Dispatch refuses the broker's account", err, http.StatusInternalServerError, "server_error", "Dispatch refused the broker's own read token")
 }
 
 // TestHeldIntrospectionReportsHeld: introspection answers a live token that names a held person

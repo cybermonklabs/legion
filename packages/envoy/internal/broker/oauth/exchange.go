@@ -802,13 +802,14 @@ func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSes
 // under, and read it from to answer introspection's `project`.
 const claimLegacyProject = "project"
 
-// refusedByDispatch is the trade's refusal when the broker's own account token does not work
+// refusedByDispatch is the trade's refusal when the broker's own read token does not work
 // (projectaccess.ErrBrokerRefused): Dispatch answered 401 or 403 to it, because Dispatch does not
-// list the broker's account or does not accept its token (one minted for another audience, say),
-// or the broker could not read it from its file at all. That is a misconfiguration and not an
-// outage, so the trade is refused naming it rather than minted.
+// list the broker's account or does not accept its token (one whose proof names another URL, say),
+// or the broker could not have the token at all: its projected token unreadable from its file, or
+// its own token endpoint refusing the trade. That is a misconfiguration and not an outage, so the
+// trade is refused naming it rather than minted.
 func refusedByDispatch(err error) error {
-	return oauth2.ErrServerError.WithHint("Dispatch refused the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), or the broker could not read that file, so this broker cannot check the token's projects: its operator mounts the file and lists the broker's account as one Dispatch answers.").WithWrap(err).WithDebugError(err)
+	return oauth2.ErrServerError.WithHint("Dispatch refused the broker's own read token, or the broker could not have that token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so this broker cannot check the token's projects: its operator mounts the broker's projected token for the exchange's audience in that file, lists the broker's read entry in BROKER_EXCHANGE_READ_ACCOUNTS, and names its account in Dispatch's DISPATCH_ACCESS_ACCOUNTS.").WithWrap(err).WithDebugError(err)
 }
 
 // unknownMemberKind is the trade's refusal when Dispatch answers a member kind the broker does not

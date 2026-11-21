@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -102,7 +101,13 @@ func TestAnUnreadableAccessTokenFileRefusesTheTrade(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			server := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{project: {Visibility: "private", Owner: person}},
 				map[string]string{person: projectaccess.MemberRestricted})
-			client := projectaccess.New(server.URL, brokertoken.NewAccountToken(c.path(t)), nil)
+			// The read token reads its subject file before any trade, so a file it cannot read
+			// reaches neither the token endpoint nor Dispatch.
+			readToken, err := projectaccess.NewReadToken(projectaccess.ReadTokenConfig{BrokerURL: server.NewExchange(t).URL, SubjectFile: c.path(t)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := projectaccess.New(server.URL, readToken, nil)
 			if _, err := client.Access(context.Background(), project, person); !errors.Is(err, projectaccess.ErrBrokerRefused) || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_TOKEN_FILE") {
 				t.Fatalf("Access with an unreadable account token = %v, want ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE", err)
 			}

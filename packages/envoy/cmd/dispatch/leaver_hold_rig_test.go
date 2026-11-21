@@ -29,7 +29,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	brokerstoretest "github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -47,10 +46,11 @@ import (
 // signs people in with Google, the fake Google (signInPool) standing in for it, under
 // DISPATCH_SIGNIN_DOMAIN=example.com and DISPATCH_SIGNIN_OUTSIDE=1, keeps its sessions in its
 // database (store.PgSessionStore), relays machine-login decisions to the broker and checks
-// broker-issued tokens against it (DISPATCH_AGENT_SECRETS_URL), and answers the broker's own
-// service account on its person route (DISPATCH_ACCESS_ACCOUNTS). A person the rig signs in holds
-// the credentials of the measurement table a leaver's hold is read on (person). A rig built
-// withIAP runs Dispatch as an Identity-Aware Proxy deployment runs it instead (R9).
+// broker-issued tokens against it (DISPATCH_AGENT_SECRETS_URL), and answers the broker's own read
+// token on its access routes (DISPATCH_ACCESS_ACCOUNTS), with no DISPATCH_OIDC_* setting. A person
+// the rig signs in holds the credentials of the measurement table a leaver's hold is read on
+// (person). A rig built withIAP runs Dispatch as an Identity-Aware Proxy deployment runs it instead
+// (R9).
 
 const (
 	// leaverDomain is the Workspace domain DISPATCH_SIGNIN_DOMAIN names: an address on it signs in
@@ -59,10 +59,11 @@ const (
 	// leaverProject is the project whose access list names the restricted members, owned by
 	// privOwner as newOutsideSignIn's PRIV is.
 	leaverProject = "PRIV"
-	// leaverBrokerAccount is the secrets broker's Kubernetes service account, the one account
-	// DISPATCH_OIDC_ACCOUNTS admits and DISPATCH_ACCESS_ACCOUNTS lets read the person answer, and
-	// leaverAccountAudience is DISPATCH_OIDC_AUDIENCE, the audience its projected token names.
-	leaverBrokerAccount   = "system:serviceaccount:dispatch:envoy-broker"
+	// leaverBrokerAccount is the secrets broker's Kubernetes service account: the service its
+	// read entry names (brokertest.BrokerAccount), which DISPATCH_ACCESS_ACCOUNTS lists. A
+	// two-build row, which boots a Dispatch that checks projected tokens, reads it as the account
+	// DISPATCH_OIDC_ACCOUNTS admits there, with leaverAccountAudience its audience.
+	leaverBrokerAccount   = brokertest.BrokerAccount
 	leaverAccountAudience = "dispatch"
 	// leaverHumanSecret is the broker rig's human-tier secret, which its operator, ada, owns: a
 	// session's ask for it is an approval request to her (brokertest.NewRig).
@@ -88,10 +89,6 @@ type leaverRig struct {
 	// the metadata and person identity tokens the broker's person-trade configuration accepts.
 	google    *oidctest.Issuer
 	googleKey *oidctest.Key
-	// accounts issues the projected service-account tokens Dispatch admits (DISPATCH_OIDC_ISSUER),
-	// signing them with accountKey.
-	accounts   *oidctest.Issuer
-	accountKey *oidctest.Key
 	// broker is the secrets broker, and client a machine's client of it.
 	broker *brokertest.Rig
 	client *brokertest.Client
@@ -102,8 +99,12 @@ type leaverRig struct {
 	brokerStopped atomic.Bool
 	cutCalls      atomic.Int64
 	// brokerDispatch is the server the broker's project-access client reaches when the fixture
-	// enables that client. It has a URL before the broker starts and its handler once Dispatch does.
+	// enables that client: the dial address of Dispatch, whose canonical URL every proof names. It
+	// has a URL before the broker starts and its handler once Dispatch does.
 	brokerDispatch *httptest.Server
+	// tradeDialURL is where the broker's trades for its own read token connect, empty for the
+	// broker rig's own server: a server withTradeDelay starts in between.
+	tradeDialURL string
 	// brokerAhead is how far, in nanoseconds, the clock of the broker's project-access client and
 	// hold gate runs ahead of the wall clock (brokerNow): pastBrokerCache moves it on.
 	brokerAhead atomic.Int64
@@ -139,8 +140,10 @@ type leaverConfig struct {
 	// broker is built, and give brokertest.NewRig its options.
 	broker []func(t *testing.T, r *leaverRig) []brokertest.Option
 	// toBroker hooks wrap the handler that carries each of Dispatch's calls to the broker, the
-	// first given innermost.
-	toBroker []func(t *testing.T, r *leaverRig, next http.Handler) http.Handler
+	// first given innermost; toDispatch hooks wrap the one that carries each of the broker's
+	// calls to Dispatch's access routes, on a rig built withBrokerGate, the same way.
+	toBroker   []func(t *testing.T, r *leaverRig, next http.Handler) http.Handler
+	toDispatch []func(t *testing.T, r *leaverRig, next http.Handler) http.Handler
 	// built hooks run once the router is built and r.handler serves it.
 	built []func(t *testing.T, r *leaverRig)
 	// iap is withIAP: Dispatch runs under DISPATCH_IDENTITY=iap.
@@ -181,29 +184,34 @@ func withRefreshFlowOfItsOwn() leaverOption {
 
 // withBrokerGate puts the broker's real project-access client in front of a Dispatch server, and
 // with it the broker's real hold gate, which brokertest.WithProjectAccess builds from that client
-// as cmd/broker/main.go does.
+// as cmd/broker/main.go does: the client presents the broker's own read token, traded at the
+// broker rig's token endpoint, signs Dispatch's canonical URL (brokerOrigin, the URL its proofs
+// are checked against) and connects to the server below, as a broker reaches Dispatch at an
+// internal address (BROKER_PROJECT_ACCESS_DIAL_URL).
 func withBrokerGate() leaverOption {
 	return func(c *leaverConfig) {
 		// The router is set once it is built, by the test goroutine, and read by the server's
 		// handler goroutines, so it is held atomically.
 		var dispatchHandler atomic.Pointer[http.Handler]
 		c.broker = append(c.broker, func(t *testing.T, r *leaverRig) []brokertest.Option {
-			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			var toDispatch http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				handler := dispatchHandler.Load()
 				if handler == nil {
 					http.Error(w, "Dispatch router is not built", http.StatusServiceUnavailable)
 					return
 				}
 				(*handler).ServeHTTP(w, req)
-			}))
+			})
+			for _, hook := range c.toDispatch {
+				toDispatch = hook(t, r, toDispatch)
+			}
+			server := httptest.NewUnstartedServer(toDispatch)
 			server.Start()
 			t.Cleanup(server.Close)
 			r.brokerDispatch = server
-			accountFile := filepath.Join(t.TempDir(), "broker-dispatch-account")
-			if err := os.WriteFile(accountFile, []byte(r.brokerAccountToken(t)+"\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			return []brokertest.Option{brokertest.WithProjectAccess(server.URL, brokertoken.NewAccountToken(accountFile), r.brokerNow)}
+			return []brokertest.Option{brokertest.WithProjectAccess(brokertest.ProjectAccess{
+				URL: brokerOrigin, DialURL: server.URL, TradeDialURL: r.tradeDialURL, Now: r.brokerNow,
+			})}
 		})
 		c.built = append(c.built, func(t *testing.T, r *leaverRig) {
 			if r.brokerDispatch == nil {
@@ -370,9 +378,8 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 	for _, opt := range opts {
 		opt(&config)
 	}
-	r := &leaverRig{google: signInPool(t, "dispatch-client", "client-secret"), accounts: oidctest.New(t), persons: map[string]*leaverPerson{}}
+	r := &leaverRig{google: signInPool(t, "dispatch-client", "client-secret"), persons: map[string]*leaverPerson{}}
 	r.googleKey = r.google.PublishKey(t, "broker-person-sign-in-key")
-	r.accountKey = r.accounts.PublishKey(t, "account-key")
 
 	var brokerOptions []brokertest.Option
 	for _, hook := range config.broker {
@@ -399,16 +406,15 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 	}))
 	t.Cleanup(r.toBroker.Close)
 
-	// Dispatch presents the broker rig's own Dispatch account token, as it presents its projected
-	// token in a deployment.
+	// Dispatch presents the broker rig's own Dispatch account token at the broker's
+	// introspection, as it presents its projected token in a deployment. It sets no
+	// DISPATCH_OIDC_* setting: the broker reads its access routes with its own read token, which
+	// Dispatch checks at that same broker.
 	accountFile := filepath.Join(t.TempDir(), "account-token")
 	if err := os.WriteFile(accountFile, []byte(r.broker.UIToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	settings := map[string]string{
-		"DISPATCH_OIDC_ISSUER":                      r.accounts.URL(),
-		"DISPATCH_OIDC_AUDIENCE":                    leaverAccountAudience,
-		"DISPATCH_OIDC_ACCOUNTS":                    leaverBrokerAccount,
 		"DISPATCH_ACCESS_ACCOUNTS":                  leaverBrokerAccount,
 		"DISPATCH_AGENT_SECRETS_URL":                r.toBroker.URL,
 		"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": accountFile,
@@ -448,13 +454,12 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 	if err != nil {
 		t.Fatalf("build the broker-token check: %v", err)
 	}
-	serviceTokens := serviceTokenVerifier(boot)
-	if err := serviceTokens.Discover(t.Context()); err != nil {
-		t.Fatalf("discover the service-account token issuer: %v", err)
+	if serviceTokenVerifier(boot) != nil {
+		t.Fatal("the leaver rig's Dispatch built a service-token verifier; it sets no DISPATCH_OIDC_* setting")
 	}
 	built := routes.AppContextOptions{
 		Lifetime: t.Context(), SigningKey: testSigningKey, SignIn: signInFlow(boot), People: r.outside.people,
-		Store: database, Sessions: store.NewPgSessionStore(database.Pool), BrokerTokens: brokerTokens, OIDC: serviceTokens,
+		Store: database, Sessions: store.NewPgSessionStore(database.Pool), BrokerTokens: brokerTokens,
 	}
 	rule, err := signInRule(boot, accessLister(built.Store))
 	if err != nil {
@@ -476,27 +481,10 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 	t.Cleanup(r.background.Wait)
 	r.outside.handler = r.handler
 
-	// The broker's account reads the person answer, which a broker pointed at this Dispatch asks:
-	// a rig whose service-account settings did not take fails here, saying so.
-	asked := httptest.NewRequest(http.MethodGet, brokerOrigin+"/api/v1/access/person?person="+url.QueryEscape(privOwner), nil)
-	asked.Header.Set("Authorization", "Bearer "+r.brokerAccountToken(t))
-	answered := httptest.NewRecorder()
-	r.handler.ServeHTTP(answered, asked)
-	if answered.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/access/person as the broker's account %s answered %d %s, want 200", leaverBrokerAccount, answered.Code, answered.Body.String())
-	}
-
 	for _, hook := range config.built {
 		hook(t, r)
 	}
 	return r
-}
-
-// brokerAccountToken is a projected token of the broker's service account for Dispatch's
-// audience, good for an hour: the bearer the broker presents on Dispatch's person route.
-func (r *leaverRig) brokerAccountToken(t *testing.T) string {
-	t.Helper()
-	return r.accounts.Mint(t, r.accountKey, r.accounts.Claims(leaverBrokerAccount, leaverAccountAudience))
 }
 
 // person signs email in and gives them every credential of the measurement table: a browser

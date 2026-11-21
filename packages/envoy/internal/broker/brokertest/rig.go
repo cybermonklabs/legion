@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -38,7 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -100,6 +101,17 @@ const (
 	ExchangeRef        = "refs/heads/main"
 )
 
+// BrokerAccount is the broker's own Kubernetes ServiceAccount, which a Rig built WithProjectAccess
+// lists in its read entries (BROKER_EXCHANGE_READ_ACCOUNTS) as the subject and as the service, the
+// one Dispatch's DISPATCH_ACCESS_ACCOUNTS names, with BrokerSession fixed as its session: the read
+// token the broker issues itself to ask Dispatch's access routes with.
+const (
+	BrokerAccount = "system:serviceaccount:dispatch:envoy-broker"
+	BrokerSession = "broker-access"
+	// brokerPodUID is the pod the broker's projected token is bound to, as a read entry requires.
+	brokerPodUID = "broker-pod-uid"
+)
+
 // Rig is a live broker HTTP server (real handlers, real Postgres) plus a direct handle to its
 // store — enough to drive a machine login, a session enrollment, and an agent-secret request
 // end to end over genuine HTTP, and to reach into the store directly for what the API itself has
@@ -134,6 +146,12 @@ type Rig struct {
 	// WithProjectAccess, the hold gate's broker_hold_unchecked_total. A test reads them through
 	// Registry.Handler(), the scrape main serves.
 	Registry *metrics.Registry
+	// ReadToken, ProjectAccess and Hold are, for a Rig built WithProjectAccess, the broker's own
+	// read token at Dispatch, the Dispatch client that presents it, and the hold gate on that
+	// client, as cmd/broker builds the three; nil otherwise.
+	ReadToken     *projectaccess.ReadToken
+	ProjectAccess *projectaccess.Client
+	Hold          *hold.Gate
 	// Policy is the broker's live policy, for a test that reloads it as the broker's five-minute
 	// reload does (Refresh): the rig's own reload runs once an hour, so never within a test.
 	Policy *policy.Current
@@ -154,10 +172,7 @@ type rigConfig struct {
 	lease         time.Duration
 	maxConns      int
 	minters       map[string]requests.Minter
-	projectAccess *projectaccess.Client
-	// projectAccessNow is the clock WithProjectAccess gives the client and the gate; nil is the
-	// wall clock.
-	projectAccessNow func() time.Time
+	projectAccess *ProjectAccess
 	// holdRequiresDeadline is WithHoldRequiresDeadline: the gate's RequireDeadline.
 	holdRequiresDeadline bool
 	personSignIns        *personSignInConfig
@@ -203,20 +218,32 @@ func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
 }
 
-// WithProjectAccess wires the rig's broker to Dispatch at baseURL as cmd/broker wires one whose
-// BROKER_PROJECT_ACCESS_URL is set: the token exchange's Dispatch client, and the hold gate built
-// on that client and the rig's store, given to every field of the broker that takes it. now is the
-// clock the client's 30-second cache of an answer (projectaccess.CacheTTL) and the gate's memories
-// are timed by, so a test can move it past an answer it would otherwise wait out; nil is the
-// wall clock, as main runs.
-func WithProjectAccess(baseURL string, account brokertoken.Account, now func() time.Time) Option {
-	return func(c *rigConfig) {
-		c.projectAccess = projectaccess.New(baseURL, account, nil)
-		if now != nil {
-			c.projectAccess.UseClock(now)
-		}
-		c.projectAccessNow = now
-	}
+// ProjectAccess is where a Rig built WithProjectAccess asks Dispatch, as cmd/broker's settings
+// say it.
+type ProjectAccess struct {
+	// URL is Dispatch's canonical URL (BROKER_PROJECT_ACCESS_URL), which every proof names.
+	URL string
+	// DialURL is the address the client connects to instead (BROKER_PROJECT_ACCESS_DIAL_URL);
+	// empty connects to URL.
+	DialURL string
+	// TradeDialURL is where the read token's trades connect, empty for the rig's own server, as
+	// cmd/broker's connect to the broker's own listener: a test that delays them puts a proxy of
+	// its own there. Each trade's proof names the rig's own URL whatever this says.
+	TradeDialURL string
+	// Now is the clock the client's 30-second cache of an answer (projectaccess.CacheTTL), the
+	// gate's memories and the read token's life are timed by, so a test can move it past an
+	// answer it would otherwise wait out; nil is the wall clock, as main runs.
+	Now func() time.Time
+}
+
+// WithProjectAccess wires the rig's broker to Dispatch as cmd/broker wires one whose
+// BROKER_PROJECT_ACCESS_URL is set: the broker's own read token, traded at the rig's token endpoint
+// for a projected token of BrokerAccount under its read entry, the token exchange's Dispatch client
+// that presents it, and the hold gate built on that client and the rig's store, given to every field
+// of the broker that takes it. The read token is traded at the first call that needs it; the rig
+// runs no renewal loop of its own.
+func WithProjectAccess(access ProjectAccess) Option {
+	return func(c *rigConfig) { c.projectAccess = &access }
 }
 
 // WithHoldRequiresDeadline sets the hold gate's deadline rule (hold.Config.RequireDeadline), as
@@ -325,17 +352,23 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		vmServices := map[string]string{machineAccount: "leaver-machine"}
 		enr.VMServicesByAccount, reqMachine.VMServicesByAccount = vmServices, vmServices
 	}
-	entries := newExchangeSet(t, google, machineAccount)
+	entries := newExchangeSet(t, google, machineAccount, config.projectAccess != nil)
 	providerOptions := []ProviderOption{func(c *providerConfig) { c.exchange = entries }}
-	// The hold gate, as main builds it where BROKER_PROJECT_ACCESS_URL is set: on the exchange's
-	// own Dispatch client, this rig's store and its registry, with the deadline rule where
-	// WithHoldRequiresDeadline sets it, as BROKER_HOLD_REQUIRES_DEADLINE does. Without
-	// WithProjectAccess there is none, and every field that takes one is nil, which holds nobody.
-	var gate *hold.Gate
-	if config.projectAccess != nil {
-		gate = hold.New(hold.Config{Access: config.projectAccess, Store: st, Log: slog.Default(), Metrics: registry, Now: config.projectAccessNow, RequireDeadline: config.holdRequiresDeadline})
+	// The broker's own read token and its Dispatch client, and the hold gate on that client, as
+	// main builds them where BROKER_PROJECT_ACCESS_URL is set: this rig's store and its registry,
+	// with the deadline rule where WithHoldRequiresDeadline sets it, as
+	// BROKER_HOLD_REQUIRES_DEADLINE does. Without WithProjectAccess there is none, and every field
+	// that takes one is nil, which holds nobody.
+	var (
+		gate      *hold.Gate
+		readToken *projectaccess.ReadToken
+		access    *projectaccess.Client
+	)
+	if pa := config.projectAccess; pa != nil {
+		readToken, access = newProjectAccess(t, *pa, srv.URL, issuer, podKey)
+		gate = hold.New(hold.Config{Access: access, Store: st, Log: slog.Default(), Metrics: registry, Now: pa.Now, RequireDeadline: config.holdRequiresDeadline})
 		providerOptions = append(providerOptions, func(c *providerConfig) {
-			c.projectAccess = config.projectAccess
+			c.projectAccess = access
 			c.hold = gate
 		})
 	}
@@ -383,6 +416,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Store:     st,
 		Secrets:   local,
 		Registry:  registry,
+		ReadToken: readToken, ProjectAccess: access, Hold: gate,
 		Policy:    cur,
 		podIssuer: issuer, podKey: podKey,
 		serviceLogins: serviceLogins,
@@ -390,6 +424,42 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	rig.UIToken = rig.MintAccountToken(t, APIAccount, time.Hour)
 	rig.ListenerToken = rig.MintAccountToken(t, ListenerAccount, time.Hour)
 	return rig
+}
+
+// newProjectAccess is the broker's own read token, traded at brokerURL, the rig's token endpoint,
+// for a projected token of BrokerAccount bound to brokerPodUID for ExchangeAudience, which issuer
+// signs with key, written to a file of t's own as the kubelet mounts one; and the Dispatch client
+// presenting it at access.URL, connecting to access.DialURL where it is set. A trade connects to
+// access.TradeDialURL where that is set, and signs brokerURL either way.
+func newProjectAccess(t *testing.T, access ProjectAccess, brokerURL string, issuer *oidctest.Issuer, key *oidctest.Key) (*projectaccess.ReadToken, *projectaccess.Client) {
+	t.Helper()
+	claims := issuer.Claims(BrokerAccount, ExchangeAudience)
+	claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": brokerPodUID}}
+	subjectFile := filepath.Join(t.TempDir(), "broker-exchange-token")
+	if err := os.WriteFile(subjectFile, []byte(issuer.Mint(t, key, claims)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	at := func(address string) *http.Client {
+		if address == "" {
+			return nil
+		}
+		parsed, err := url.Parse(address)
+		if err != nil {
+			t.Fatalf("brokertest: the address %q: %v", address, err)
+		}
+		return &http.Client{Transport: brokerclient.AtAddress(parsed, http.DefaultTransport)}
+	}
+	readToken, err := projectaccess.NewReadToken(projectaccess.ReadTokenConfig{
+		BrokerURL: brokerURL, HTTP: at(access.TradeDialURL), SubjectFile: subjectFile, Log: slog.Default(), Now: access.Now,
+	})
+	if err != nil {
+		t.Fatalf("brokertest: the broker's read token: %v", err)
+	}
+	client := projectaccess.New(access.URL, readToken, at(access.DialURL))
+	if access.Now != nil {
+		client.UseClock(access.Now)
+	}
+	return readToken, client
 }
 
 // Caller is the account a caller name carries, for an api.Deps a test wires itself as well as for
@@ -419,9 +489,10 @@ const personSignInDomain = "example.com"
 
 // newExchangeSet is the token exchange's entries a rig's broker trades on, the one set cmd/broker
 // builds from its exchange settings: the two accounts and the one workflow the Rig's constants
-// name, and, for a rig that accepts Google person trades (google), the Google entry for
-// machineAccount on the sign-in domain.
-func newExchangeSet(t *testing.T, google bool, machineAccount string) *exchange.Set {
+// name; for a rig that accepts Google person trades (google), the Google entry for machineAccount
+// on the sign-in domain; and for a rig that asks Dispatch (reads), the broker's own read entry,
+// BrokerAccount as subject and service with BrokerSession fixed.
+func newExchangeSet(t *testing.T, google bool, machineAccount string, reads bool) *exchange.Set {
 	t.Helper()
 	var machines []exchange.GoogleEntry
 	signInDomain := ""
@@ -429,12 +500,16 @@ func newExchangeSet(t *testing.T, google bool, machineAccount string) *exchange.
 		machines = []exchange.GoogleEntry{{Account: machineAccount, Service: "leaver-machine"}}
 		signInDomain = personSignInDomain
 	}
+	var readEntries []exchange.ReadEntry
+	if reads {
+		readEntries = []exchange.ReadEntry{{Account: BrokerAccount, Service: BrokerAccount, Session: BrokerSession}}
+	}
 	set, err := exchange.NewSet(
 		[]exchange.AccountEntry{
 			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
 			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
 		},
-		nil,
+		readEntries,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
 		machines,
 		signInDomain,
@@ -466,7 +541,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 	}
 	policy := config.exchange
 	if policy == nil {
-		policy = newExchangeSet(t, config.google != nil, config.machineAccount)
+		policy = newExchangeSet(t, config.google != nil, config.machineAccount, false)
 	}
 	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
 	if err != nil {

@@ -1,6 +1,7 @@
 package approval_test
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
@@ -26,19 +27,19 @@ func heldWords(person string) string {
 		" signs in to Dispatch, or when Dispatch can confirm " + person + " with Google again"
 }
 
-// brokerAccount is the bearer the broker presents to the Dispatch stand-in: the stand-in's own, or,
-// once refused is set, one the stand-in answers 403, as a Dispatch that does not list the broker's
-// account answers it.
+// brokerAccount is the read token the broker presents to the Dispatch stand-in: the stand-in's own,
+// or, once refused is set, one the stand-in holds live for no key and answers 401, as a Dispatch
+// that does not take the broker's read token answers it.
 type brokerAccount struct {
-	bearer  string
+	*projectaccesstest.Account
 	refused atomic.Bool
 }
 
-func (a *brokerAccount) Read() (string, error) {
+func (a *brokerAccount) Token(ctx context.Context) (string, error) {
 	if a.refused.Load() {
-		return "a bearer Dispatch does not take", nil
+		return "a read token Dispatch does not take", nil
 	}
-	return a.bearer, nil
+	return a.Account.Token(ctx)
 }
 
 // holdRig is newRig's broker with the hold of refused people wired as cmd/broker wires it where
@@ -83,7 +84,7 @@ func newHoldRig(t *testing.T) *holdRig {
 	h := &holdRig{dispatch: projectaccesstest.NewServer(t, nil, map[string]string{
 		ada: projectaccess.MemberFull, ben: projectaccess.MemberFull, bob: projectaccess.MemberFull, carol: projectaccess.MemberFull,
 	})}
-	h.account = &brokerAccount{bearer: h.dispatch.Token}
+	h.account = &brokerAccount{Account: h.dispatch.Account}
 	access := projectaccess.New(h.dispatch.URL, h.account, nil)
 	access.UseClock(h.now)
 	h.rig = newRig(t, withHold(func(st *store.Store) *hold.Gate {

@@ -160,7 +160,8 @@ type holdRig struct {
 
 // newHoldRig writes the four secrets the two people own and the airlock's rules for the two behind
 // it, starts the Dispatch stand-in, which answers both people as full members and neither as held
-// yet, and the service behind the airlock. It boots nothing.
+// yet, at an address of its own while checking every proof against holdDispatchOrigin, and the
+// service behind the airlock. It boots nothing.
 func newHoldRig(t *testing.T) *holdRig {
 	t.Helper()
 	r := &holdRig{f: newApprovalFixture(t), databaseURL: storetest.URL(t), public: newFront(t)}
@@ -176,8 +177,8 @@ func newHoldRig(t *testing.T) *holdRig {
 		secret("bob-airlock", bob, "agent", "bob-airlock-value"),
 	}, ",\n")+`]}`))
 
-	r.dispatch = projectaccesstest.NewServer(t, nil, map[string]string{ada: projectaccess.MemberFull, bob: projectaccess.MemberFull})
-	r.accessFile = writeTempFile(t, "dispatch-access-token", []byte(r.dispatch.Token+"\n"))
+	r.dispatch = projectaccesstest.NewServerAt(t, holdDispatchOrigin, nil, map[string]string{ada: projectaccess.MemberFull, bob: projectaccess.MemberFull})
+	r.accessFile = brokerAccessFile(t, r.f.issuer, r.f.podKey, exchangeAudience)
 
 	r.upstream = &holdUpstream{}
 	r.upstream.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -206,9 +207,11 @@ func newHoldRig(t *testing.T) *holdRig {
 
 // env is the broker's configuration at one boot: the approval fixture's, with its sign-in, the
 // machine-login page that turns the device grant on, the airlock, a lease and an access token
-// that outlive the whole run, a token exchange whose entries name each person once, and, for a
-// boot with the hold on, the Dispatch stand-in as BROKER_PROJECT_ACCESS_URL and the file holding
-// the one bearer it takes, beside BROKER_HOLD_REQUIRES_DEADLINE where the rig requires a deadline.
+// that outlive the whole run, a token exchange whose entries name each person once beside the
+// broker's own read entry, and, for a boot with the hold on, Dispatch's canonical URL as
+// BROKER_PROJECT_ACCESS_URL, the stand-in's own address as BROKER_PROJECT_ACCESS_DIAL_URL and the
+// broker's projected token for the exchange's audience in BROKER_PROJECT_ACCESS_TOKEN_FILE, beside
+// BROKER_HOLD_REQUIRES_DEADLINE where the rig requires a deadline.
 func (r *holdRig) env(holdOn bool) []string {
 	env := append(r.f.baseEnv(r.databaseURL, r.public.URL), r.f.signInEnv()...)
 	env = append(env, r.airlock...)
@@ -218,15 +221,22 @@ func (r *holdRig) env(holdOn bool) []string {
 		"BROKER_ACCESS_TOKEN_SECONDS=3600",
 		"BROKER_EXCHANGE_K8S_AUDIENCE="+exchangeAudience,
 		"BROKER_EXCHANGE_ACCOUNTS="+adaExchangeAccount+"="+project+"="+ada+" "+bobExchangeAccount+"="+project+"="+bob,
+		"BROKER_EXCHANGE_READ_ACCOUNTS="+brokerReadEntry,
 	)
 	if holdOn {
-		env = append(env, "BROKER_PROJECT_ACCESS_URL="+r.dispatch.URL, "BROKER_PROJECT_ACCESS_TOKEN_FILE="+r.accessFile)
+		env = append(env, "BROKER_PROJECT_ACCESS_URL="+holdDispatchOrigin, "BROKER_PROJECT_ACCESS_DIAL_URL="+r.dispatch.URL,
+			"BROKER_PROJECT_ACCESS_TOKEN_FILE="+r.accessFile)
 	}
 	if holdOn && r.requireDeadline {
 		env = append(env, "BROKER_HOLD_REQUIRES_DEADLINE=true")
 	}
 	return env
 }
+
+// holdDispatchOrigin is Dispatch's canonical URL in these rows, a name nothing answers: the URL
+// every proof of the broker's names, which the stand-in checks, while the broker connects to the
+// stand-in's own address (BROKER_PROJECT_ACCESS_DIAL_URL).
+const holdDispatchOrigin = "https://dispatch.example.invalid"
 
 // boot stops the broker serving now, if there is one, and starts the binary again on the same
 // database behind the same public URL, so every credential, record and sign-in an earlier boot
@@ -250,6 +260,9 @@ func (r *holdRig) boot(t *testing.T, holdOn bool) {
 		return
 	}
 	r.broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
+	// The stand-in checks the broker's read token at this boot's broker, as Dispatch does at the
+	// broker DISPATCH_AGENT_SECRETS_URL names.
+	introspectAt(t, r.dispatch, r.broker, r.f.dispatchToken(t))
 	// The token exchange's line comes after the hold's in the boot, so a log that holds it holds
 	// every line the hold could have written.
 	r.broker.AwaitRecord(t, "token exchange", nil)
@@ -607,4 +620,16 @@ func TestTheCompiledBrokerHoldsAHeldPerson(t *testing.T) {
 	const deadlineBoot = "with BROKER_HOLD_REQUIRES_DEADLINE=true and Dispatch holding ada"
 	r.expectAtEachPlace(t, deadlineBoot, heldAda, true)
 	r.expectAtEachPlace(t, deadlineBoot, servedBob, false)
+
+	// Every call the broker made to Dispatch presented its own read token under the DPoP scheme,
+	// never its projected token and never a bearer.
+	presented := r.dispatch.Presentations()
+	if len(presented) == 0 {
+		t.Fatal("the Dispatch stand-in saw no call at all, so no presentation was read")
+	}
+	for i, p := range presented {
+		if !strings.HasPrefix(p.Authorization, "DPoP ") || p.Proof == "" {
+			t.Errorf("call %d to Dispatch presented %q with proof %t, want the broker's read token under the DPoP scheme", i+1, p.Authorization, p.Proof != "")
+		}
+	}
 }

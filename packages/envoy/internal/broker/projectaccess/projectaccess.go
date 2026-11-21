@@ -1,8 +1,13 @@
-// Package projectaccess is the broker's one client of Dispatch's project-access routes: whether a
+// Package projectaccess is the broker's one client of Dispatch's access routes: whether a
 // project is private, whether a person may see it, and what kind of member a person is. Dispatch
 // decides all three — the owner, the access list, a group's members, the full and restricted
 // members — and the broker asks rather than keeps a copy, so a decision here is the one Dispatch
 // would make for that person's own read.
+//
+// The broker asks with its own read token (Credential, ReadToken): a token it issues to itself at
+// its own token endpoint from its read entry, for its projected Kubernetes token, bound to a key
+// the process holds, presented under the DPoP scheme with a proof signed for each request. It
+// never presents the projected token to Dispatch, and nothing here falls back to a bearer.
 //
 // Every answer is plain data. The rule every caller of this package keeps is that no answer is
 // asked for inside a database transaction, inside policy.Set.Evaluate, or while a row lock or an
@@ -22,6 +27,7 @@ package projectaccess
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,7 +41,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/broker/record"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 )
 
 // The member kinds Dispatch answers for a person.
@@ -85,13 +91,15 @@ var (
 	// ErrListRequired is a restricted member's credential that names no project: such a person
 	// sees only the projects that name them, so their credential names which.
 	ErrListRequired = errors.New("projectaccess: a restricted member's credential names its projects")
-	// ErrBrokerRefused is the broker's own account token not working: Dispatch answering 401 or
-	// 403 to it (Dispatch does not list the broker's account as one that may ask, or does not
-	// accept the token, one minted for another audience, say), or the broker unable to read it
-	// from BROKER_PROJECT_ACCESS_TOKEN_FILE at all (missing, empty or unreadable). Either is a
-	// misconfiguration and not an outage, so no caller mints or enrolls through it as it would
+	// ErrBrokerRefused is the broker's own credential not working: Dispatch answering 401 or 403
+	// to its read token (Dispatch does not list the broker's account as a service that may ask,
+	// or does not accept the token, one whose proof names another URL, say), or the broker unable
+	// to have that token at all: its projected token unreadable from
+	// BROKER_PROJECT_ACCESS_TOKEN_FILE (missing, empty or unreadable), or its trade refused by its
+	// own token endpoint in a way no retry cures (no read entry lists the account, say). Either is
+	// a misconfiguration and not an outage, so no caller mints or enrolls through it as it would
 	// through a failure to reach Dispatch: every check made with that credential would be wrong.
-	ErrBrokerRefused = errors.New("projectaccess: the broker's own account token was refused or could not be read")
+	ErrBrokerRefused = errors.New("projectaccess: the broker's own read token was refused or could not be had")
 	// ErrUnknownMemberKind is Dispatch answering a member kind that is none of MemberFull,
 	// MemberRestricted and MemberNone. The broker cannot tell whether such a person is held to the
 	// projects that name them, so no caller reads it as any of the three, and none mints or
@@ -155,12 +163,24 @@ type Access interface {
 	States(ctx context.Context, projects []string) (map[string]Answer, error)
 }
 
-// Client asks Dispatch's routes at one base URL, presenting the broker's own account token.
+// Credential is the broker's own read token at Dispatch, which the client presents on every call:
+// an access token of the broker's read entry under the DPoP scheme, beside a proof of the key it
+// is bound to signed for that one request. ReadToken is the broker's; a test hands in one of its
+// own (projectaccesstest.Account).
+type Credential interface {
+	// Token is a live access token, had within ctx: the token in hand, or one traded now. A
+	// failure no retry cures is ErrBrokerRefused; any other is a failure to ask.
+	Token(ctx context.Context) (string, error)
+	// Key is the private key every token Token answers is bound to, which signs each proof.
+	Key() *ecdsa.PrivateKey
+}
+
+// Client asks Dispatch's access routes at one base URL, presenting the broker's own read token.
 type Client struct {
-	base    string
-	account brokertoken.Account
-	http    *http.Client
-	now     func() time.Time
+	base       string
+	credential Credential
+	http       *http.Client
+	now        func() time.Time
 
 	mu      sync.Mutex
 	answers map[accessKey]cachedAnswer
@@ -190,20 +210,28 @@ type cachedPerson struct {
 	at    time.Time
 }
 
-// New is a client of Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL), presenting account
-// (BROKER_PROJECT_ACCESS_TOKEN_FILE's reader) on every call. A nil httpClient is
-// http.DefaultClient; each call is bounded by its own 10 s whatever the client.
-func New(baseURL string, account brokertoken.Account, httpClient *http.Client) *Client {
+// New is a client of Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL, Dispatch's canonical URL,
+// which every proof names), presenting credential on every call. Each request goes through a DPoP
+// transport of credential's key wrapped around httpClient's transport, so httpClient keeps its
+// timeout and whatever it connects through: brokerclient.AtAddress, where the broker reaches
+// Dispatch at BROKER_PROJECT_ACCESS_DIAL_URL instead. A nil httpClient is http.DefaultClient; each
+// call is bounded by its own 10 s whatever the client, the read token's trade included.
+func New(baseURL string, credential Credential, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	base := httpClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	proofed := &http.Client{Transport: brokerclient.NewDPoPTransport(credential.Key(), base), CheckRedirect: httpClient.CheckRedirect, Jar: httpClient.Jar, Timeout: httpClient.Timeout}
 	return &Client{
-		base:    strings.TrimRight(baseURL, "/"),
-		account: account,
-		http:    httpClient,
-		now:     time.Now,
-		answers: map[accessKey]cachedAnswer{},
-		people:  map[string]cachedPerson{},
+		base:       strings.TrimRight(baseURL, "/"),
+		credential: credential,
+		http:       proofed,
+		now:        time.Now,
+		answers:    map[accessKey]cachedAnswer{},
+		people:     map[string]cachedPerson{},
 	}
 }
 
@@ -292,8 +320,8 @@ const noHeldRetry = 5 * time.Second
 // ErrNoHeldField, answered from the cache for noHeldRetry and asked again after; an answer with
 // held and no as_of is a failure too, since no later answer could be told from it. Neither is
 // ever read as not held. A member kind the broker does not know is still an answer here, since
-// its held decodes. Dispatch refusing the broker's own account is ErrBrokerRefused, as for
-// MemberKind, and every other failure is a failure to ask.
+// its held decodes. Dispatch refusing the broker's own read token, or that token not to be had,
+// is ErrBrokerRefused, as for MemberKind, and every other failure is a failure to ask.
 func (c *Client) Person(ctx context.Context, person string) (PersonAnswer, error) {
 	person = record.CanonicalLogin(person)
 	if person == "" {
@@ -433,24 +461,25 @@ func (c *Client) sweepLocked() {
 	}
 }
 
-// get asks one route and decodes a 200 into into. An account token it cannot read is
-// ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE, asked nothing: the broker's own
-// credential is broken, not Dispatch. A 401 or a 403 is ErrBrokerRefused too, Dispatch refusing
-// that token, decided by the status alone before any of the body is read: a body cut short or
-// past the bound only leaves the error without the code it names, and never turns the refusal
-// into a failure to ask, which a caller mints through. A 404 is an answer, returned as its status
-// with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's project route
-// answers a project it does not hold with; any other 404 (a Dispatch that does not serve the
-// route, a wrong path behind an ingress) is a failure naming its code. Every other status, a
-// transport failure and a body it could not read or decode are errors naming what failed and
-// never the token.
+// get asks one route and decodes a 200 into into. It has the broker's read token first, within
+// this call's bound: a token it cannot have for good (ErrBrokerRefused from the credential) is
+// ErrBrokerRefused, asked nothing, since the broker's own credential is broken and not Dispatch,
+// and any other failure to have one is a failure to ask, asked nothing either; it never asks with
+// anything else. A 401 or a 403 is ErrBrokerRefused too, Dispatch refusing that token, decided by
+// the status alone before any of the body is read: a body cut short or past the bound only leaves
+// the error without the code it names, and never turns the refusal into a failure to ask, which a
+// caller mints through. A 404 is an answer, returned as its status with no error, only when its
+// body's code is PROJECT_NOT_FOUND, the code Dispatch's project route answers a project it does
+// not hold with; any other 404 (a Dispatch that does not serve the route, a wrong path behind an
+// ingress) is a failure naming its code. Every other status, a transport failure and a body it
+// could not read or decode are errors naming what failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
-	bearer, err := c.account.Read()
-	if err != nil {
-		return 0, fmt.Errorf("%w: BROKER_PROJECT_ACCESS_TOKEN_FILE could not be read: %w", ErrBrokerRefused, err)
-	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
+	token, err := c.credential.Token(ctx)
+	if err != nil {
+		return 0, err
+	}
 	target := c.base + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
@@ -459,7 +488,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 	if err != nil {
 		return 0, fmt.Errorf("projectaccess: build the request: %w", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+bearer)
+	request.Header.Set("Authorization", "DPoP "+token)
 	request.Header.Set("Accept", "application/json")
 	response, err := c.http.Do(request)
 	if err != nil {

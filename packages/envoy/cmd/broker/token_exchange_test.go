@@ -1134,15 +1134,15 @@ func projectAccessStandIn(t *testing.T) *projectaccesstest.Server {
 }
 
 // projectAccessEnv is exchangeEnv with the broker's project-access check pointed at server: its
-// URL, and a file holding the one bearer it takes, as a projected token is mounted.
-func projectAccessEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, server *projectaccesstest.Server) []string {
+// URL, the broker's own read entry beside exchangeEnv's, and a file holding the broker's projected
+// token for the exchange's audience, signed by cluster with clusterKey, as the kubelet mounts one.
+// The broker trades that token at its own token endpoint for the read token it presents; a caller
+// points server's check at the started broker (introspectAt) before a call that asks Dispatch.
+func projectAccessEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, clusterKey *oidctest.Key, server *projectaccesstest.Server) []string {
 	t.Helper()
-	tokenFile := filepath.Join(t.TempDir(), "dispatch-access-token")
-	if err := os.WriteFile(tokenFile, []byte(server.Token+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	return append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
-		"BROKER_PROJECT_ACCESS_URL="+server.URL, "BROKER_PROJECT_ACCESS_TOKEN_FILE="+tokenFile)
+		"BROKER_EXCHANGE_READ_ACCOUNTS="+readerAccount+"="+readerService+"="+readerSession+" "+brokerReadEntry,
+		"BROKER_PROJECT_ACCESS_URL="+server.URL, "BROKER_PROJECT_ACCESS_TOKEN_FILE="+brokerAccessFile(t, cluster, clusterKey, exchangeAudience))
 }
 
 // devBoxSession logs who's machine host in through the real binary under a key of its own, and
@@ -1201,8 +1201,9 @@ func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 	github.PublishKey(t, "github-key")
 	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
 	dispatch := projectAccessStandIn(t)
-	broker := startBroker(t, brokerOptions{Env: projectAccessEnv(t, databaseURL, cluster, github, dispatch)})
+	broker := startBroker(t, brokerOptions{Env: projectAccessEnv(t, databaseURL, cluster, github, clusterKey, dispatch)})
 	broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
+	introspectAt(t, dispatch, broker, apiToken)
 	trade := func(t *testing.T, who, host, session, projects string) (*liveBroker, int, map[string]any) {
 		t.Helper()
 		live, access := devBoxSession(t, broker.Addr, apiToken, who, host)
@@ -1284,8 +1285,10 @@ func TestTheProjectsClaimSurvivesTheStore(t *testing.T) {
 	clusterKey := cluster.PublishKey(t, "cluster-key")
 	github.PublishKey(t, "github-key")
 	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
-	broker := startBroker(t, brokerOptions{Env: projectAccessEnv(t, databaseURL, cluster, github, projectAccessStandIn(t))})
+	dispatch := projectAccessStandIn(t)
+	broker := startBroker(t, brokerOptions{Env: projectAccessEnv(t, databaseURL, cluster, github, clusterKey, dispatch)})
 	broker.Await(t, "project access check")
+	introspectAt(t, dispatch, broker, apiToken)
 	const session = "carol-store-1"
 	live, access := devBoxSession(t, broker.Addr, apiToken, privateOwner, "example-host-carol-store")
 	status, body := live.exchange(t, machineTrade(access, session, publicProject+" "+privateProject))
@@ -1364,12 +1367,13 @@ func TestAPodsEntryNamingAPrivateProjectIsHeldToItsPerson(t *testing.T) {
 			dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 				privateProject: {Visibility: "private", Owner: privateOwner, Listed: c.listed},
 			}, map[string]string{person: projectaccess.MemberFull})
-			env := append(projectAccessEnv(t, databaseURL, cluster, github, dispatch),
+			env := append(projectAccessEnv(t, databaseURL, cluster, github, clusterKey, dispatch),
 				"BROKER_EXCHANGE_ACCOUNTS="+podAccount+"="+privateProject+"="+person)
 			broker := startBroker(t, brokerOptions{Env: env})
 			broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
 			live := newLiveBroker(broker.Addr, proofKey(t))
 			apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+			introspectAt(t, dispatch, broker, apiToken)
 			live.registered(t, mintPodToken(t, cluster, clusterKey, podAccount, enrolmentAudience, firstPodUID), heldSession,
 				accountToken(t, cluster, clusterKey, registrarAccount))
 

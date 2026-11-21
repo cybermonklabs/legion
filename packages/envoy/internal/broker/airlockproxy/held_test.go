@@ -58,19 +58,19 @@ const (
 	brokerRefused    = "Dispatch refused the broker's own account"
 )
 
-// standInAccount is the bearer the gate's Dispatch client presents: the stand-in's own, or, once a
-// row refuses it, one the stand-in refuses, which is Dispatch refusing the broker's own account
-// (projectaccess.ErrBrokerRefused).
+// standInAccount is the read token the gate's Dispatch client presents: the stand-in's own, or,
+// once a row refuses it, one the stand-in refuses, which is Dispatch refusing the broker's own
+// read token (projectaccess.ErrBrokerRefused).
 type standInAccount struct {
-	bearer  string
+	*projectaccesstest.Account
 	refused atomic.Bool
 }
 
-func (a *standInAccount) Read() (string, error) {
+func (a *standInAccount) Token(ctx context.Context) (string, error) {
 	if a.refused.Load() {
-		return "a bearer the stand-in does not take", nil
+		return "a read token the stand-in does not take", nil
 	}
-	return a.bearer, nil
+	return a.Account.Token(ctx)
 }
 
 // heldStand is the service behind the bound host for these rows: a joined connection and a
@@ -151,7 +151,7 @@ func newHeldRigWith(t *testing.T, registry *metrics.Registry, answers *metrics.C
 		h.dispatch.SetNotHeldUntil(servedPerson, h.clock.read().Add(48*time.Hour))
 		h.heldWords = adaDirectoryHeld
 	}
-	h.account = &standInAccount{bearer: h.dispatch.Token}
+	h.account = &standInAccount{Account: h.dispatch.Account}
 	client := projectaccess.New(h.dispatch.URL, h.account, nil)
 	client.UseClock(h.clock.read)
 	gate := hold.New(hold.Config{Access: client, Store: h.store, Log: slog.New(slog.DiscardHandler), Now: h.clock.read, RequireDeadline: requireDeadline})

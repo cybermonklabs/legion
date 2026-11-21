@@ -58,7 +58,9 @@ and the one Dispatch project it may write, or no project for an entry that names
 (`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
 service and a fixed session instead, and no person and no project: the token holds the OAuth scope
 `read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
-other route with `403 READ_ONLY_TOKEN`; the Envoy listener refuses it with `401`, and the NATS auth
+other route with `403 READ_ONLY_TOKEN`; the token of a service Dispatch's `DISPATCH_ACCESS_ACCOUNTS`
+names, the broker's own, is served on Dispatch's access routes instead and on none of the read
+list. The Envoy listener refuses it with `401`, and the NATS auth
 service refuses a connection that presents it as `not_a_session`
 ([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
 `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
@@ -1291,8 +1293,9 @@ the ask it cites, with the broker's own projected ServiceAccount token, read aga
 once the copy it holds is 30 seconds old. Another, with the same token, is one GET of the issue a
 Legion worker pod's claim names, for its assignee alone ([Approvals](#approvals)); the token
 exchange's reads of a person's project access, and each read of whether Dispatch holds the person
-a credential names, are the last, at `BROKER_PROJECT_ACCESS_URL`
-([Operating the broker](/legion/broker/operate/#a-person-dispatch-holds)). The broker writes
+a credential names, are the last, at `BROKER_PROJECT_ACCESS_URL`, with a read token the broker
+issues to itself from its own read entry and presents under the DPoP scheme, never a projected
+token ([Operating the broker](/legion/broker/operate/#a-person-dispatch-holds)). The broker writes
 nothing there — no ask, no comment, no status — and reads nothing that belongs to a person. It
 reaches its model at
 the endpoint its settings name, presenting the broker machine's own Google identity token for the

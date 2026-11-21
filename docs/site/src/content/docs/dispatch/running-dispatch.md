@@ -351,9 +351,15 @@ and they are checked from then on.
 **The broker's part.** The broker refuses a held person's credentials only where its
 `BROKER_PROJECT_ACCESS_URL` and `BROKER_PROJECT_ACCESS_TOKEN_FILE` are set and Dispatch lists the
 broker's account in `DISPATCH_ACCESS_ACCOUNTS`
-([A person Dispatch holds](/legion/broker/operate/#a-person-dispatch-holds)). Without the URL the
-broker holds nobody and the Envoy listener serves every broker token; Dispatch still refuses a
-broker token whose person it has recorded as held.
+([A person Dispatch holds](/legion/broker/operate/#a-person-dispatch-holds)). The broker asks
+Dispatch's access routes with a read token it issues to itself, bound to its DPoP key: the service
+of its read entry in `BROKER_EXCHANGE_READ_ACCOUNTS`, which is the account
+`DISPATCH_ACCESS_ACCOUNTS` names. Dispatch checks that token at the broker
+`DISPATCH_AGENT_SECRETS_URL` names and its proof against `DISPATCH_SERVER_URL`, and needs no
+`DISPATCH_OIDC_*` setting for it. Such a token calls the access routes and no other route, and
+another service's read token calls none of them. Without the URL the broker holds nobody and the
+Envoy listener serves every broker token; Dispatch still refuses a broker token whose person it
+has recorded as held.
 
 ### Changing the Workspace domain
 

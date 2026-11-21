@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testport"
 )
@@ -100,13 +99,13 @@ type rig struct {
 	registry *metrics.Registry
 }
 
-func newRig(dispatchURL string, account brokertoken.Account, st *store.Store) *rig {
+func newRig(dispatchURL string, account projectaccess.Credential, st *store.Store) *rig {
 	return newRigWith(dispatchURL, account, st, false)
 }
 
 // newRigWith is newRig with the gate's RequireDeadline set as requireDeadline says, as
 // BROKER_HOLD_REQUIRES_DEADLINE sets it on an IAP deployment's broker.
-func newRigWith(dispatchURL string, account brokertoken.Account, st *store.Store, requireDeadline bool) *rig {
+func newRigWith(dispatchURL string, account projectaccess.Credential, st *store.Store, requireDeadline bool) *rig {
 	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
 	client := projectaccess.New(dispatchURL, account, nil)
 	client.UseClock(clock.read)

@@ -37,21 +37,21 @@ func unkeptWords(person string) string {
 
 // refusedAccount is what the token endpoint's server_error says while Dispatch refuses the
 // broker's own account (refusedByDispatch's hint).
-const refusedAccount = "Dispatch refused the broker's own account token"
+const refusedAccount = "Dispatch refused the broker's own read token"
 
-// brokerAccount is the bearer the broker presents to the Dispatch stand-in: the stand-in's own, or,
-// once refused is set, one the stand-in answers 403, as a Dispatch that does not list the broker's
-// account answers it.
+// brokerAccount is the read token the broker presents to the Dispatch stand-in: the stand-in's own,
+// or, once refused is set, one the stand-in holds live for no key and answers 401, as a Dispatch
+// that does not take the broker's read token answers it.
 type brokerAccount struct {
-	bearer  string
+	*projectaccesstest.Account
 	refused atomic.Bool
 }
 
-func (a *brokerAccount) Read() (string, error) {
+func (a *brokerAccount) Token(ctx context.Context) (string, error) {
 	if a.refused.Load() {
-		return "a bearer Dispatch does not take", nil
+		return "a read token Dispatch does not take", nil
 	}
-	return a.bearer, nil
+	return a.Account.Token(ctx)
 }
 
 // holdDispatch is the broker's hold of refused people as cmd/broker builds it where
@@ -78,7 +78,7 @@ func newHoldDispatch(t *testing.T, rows map[string]projectaccesstest.Row, people
 		kinds[p] = projectaccess.MemberFull
 	}
 	d := &holdDispatch{standIn: projectaccesstest.NewServer(t, rows, kinds)}
-	d.account = &brokerAccount{bearer: d.standIn.Token}
+	d.account = &brokerAccount{Account: d.standIn.Account}
 	d.access = projectaccess.New(d.standIn.URL, d.account, nil)
 	d.access.UseClock(d.now)
 	st, err := store.Open(context.Background(), storetest.URL(t))

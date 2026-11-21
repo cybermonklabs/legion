@@ -65,6 +65,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -532,15 +533,21 @@ func main() {
 	// sets BROKER_HOLD_REQUIRES_DEADLINE, so the gate serves a person only on an answer with a
 	// deadline (hold.Config.RequireDeadline).
 	var holdGate *hold.Gate
+	// readToken is the broker's own read token at Dispatch, where BROKER_PROJECT_ACCESS_URL is set:
+	// built here with no network I/O, and traded first once the server below serves.
+	var readToken *projectaccess.ReadToken
 	if cfg.ProjectAccessURL != "" {
-		// The broker's own projected ServiceAccount token for Dispatch's audience, read at call
-		// time through the reader every projected token here goes through, so a rotation needs no
-		// restart. config.Load holds the two settings to both or neither.
-		projects := projectaccess.New(cfg.ProjectAccessURL, brokertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		// The broker asks Dispatch with a read token it issues to itself, trading its projected
+		// token for the exchange's audience at its own token endpoint (projectAccessClient), read
+		// at each trade so a rotation needs no restart. config.Load holds the URL and the token
+		// file to both or neither.
+		var projects *projectaccess.Client
+		projects, readToken, err = projectAccessClient(cfg, listener.Addr())
+		fatal(err)
 		exchangeConfig.Projects = projects
 		holdGate = hold.New(hold.Config{Access: projects, Store: st, Log: slog.Default(), Metrics: registry, RequireDeadline: cfg.HoldRequiresDeadline})
 		exchangeConfig.Hold = holdGate
-		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
+		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL), "dial_url", redact.URL(cfg.ProjectAccessDialURL))
 	} else {
 		slog.Info("project access check", "state", "off",
 			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token naming no project is minted as before and a person's trade naming one is refused")
@@ -775,6 +782,17 @@ func main() {
 			stopNotify()
 		}
 	}()
+	// The read token's renewal starts once the server serves, beside it, so its first trade at the
+	// broker's own token endpoint finds a server answering: a trade before srv.Serve would wait on
+	// a socket nothing reads. It runs on serving, the broker's whole life, its drain included. A
+	// request that needs a token before the first trade lands trades within its own deadline.
+	if readToken != nil {
+		go func() {
+			if err := readToken.Run(serving); err != nil {
+				slog.Error("broker: the broker's own read token at Dispatch stopped renewing; each call to Dispatch trades for one itself", "error", err)
+			}
+		}()
+	}
 	if proxy != nil {
 		go func() {
 			if err := proxy.Serve(started.AirlockListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -1258,6 +1276,60 @@ func vmPersonsByAccount(entries []exchange.GoogleEntry) map[string]string {
 		}
 	}
 	return persons
+}
+
+// projectAccessClient is the broker's client of Dispatch's access routes where
+// BROKER_PROJECT_ACCESS_URL is set, and the read token it presents there, which main renews once
+// the server serves. The read token is traded at the broker's own token endpoint for the projected
+// token in BROKER_PROJECT_ACCESS_TOKEN_FILE: each trade's proof names BROKER_PUBLIC_URL, which the
+// token endpoint checks a proof against, and connects to this process's own listener (listening),
+// so a trade reaches the broker that needs the token rather than a Service that may not yet route
+// to it. Each call to Dispatch signs BROKER_PROJECT_ACCESS_URL, Dispatch's canonical URL, and
+// connects to BROKER_PROJECT_ACCESS_DIAL_URL where it is set. Both rewrites are the one
+// brokerclient.AtAddress. Nothing here touches the network.
+func projectAccessClient(cfg config.Config, listening net.Addr) (*projectaccess.Client, *projectaccess.ReadToken, error) {
+	self, err := url.Parse("http://" + selfAddress(listening))
+	if err != nil {
+		return nil, nil, fmt.Errorf("broker: the address of its own listener: %w", err)
+	}
+	readToken, err := projectaccess.NewReadToken(projectaccess.ReadTokenConfig{
+		BrokerURL:   cfg.PublicURL,
+		HTTP:        &http.Client{Transport: brokerclient.AtAddress(self, http.DefaultTransport)},
+		SubjectFile: cfg.ProjectAccessTokenFile,
+		Log:         slog.Default(),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	var toDispatch *http.Client
+	if cfg.ProjectAccessDialURL != "" {
+		dial, err := url.Parse(cfg.ProjectAccessDialURL)
+		if err != nil {
+			// config.Load refuses a dial URL that does not parse.
+			return nil, nil, fmt.Errorf("broker: BROKER_PROJECT_ACCESS_DIAL_URL: %w", err)
+		}
+		toDispatch = &http.Client{Transport: brokerclient.AtAddress(dial, http.DefaultTransport)}
+	}
+	return projectaccess.New(cfg.ProjectAccessURL, readToken, toDispatch), readToken, nil
+}
+
+// selfAddress is the host and port a request of this process reaches its own listener at: the
+// address it bound, with an unspecified IP, a listener on every interface, read as the loopback
+// address of its family.
+func selfAddress(listening net.Addr) string {
+	tcp, ok := listening.(*net.TCPAddr)
+	if !ok {
+		return listening.String()
+	}
+	ip := tcp.IP
+	switch {
+	case !ip.IsUnspecified():
+	case ip.To4() != nil:
+		ip = net.IPv4(127, 0, 0, 1)
+	default:
+		ip = net.IPv6loopback
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(tcp.Port))
 }
 
 // judgeDispatch is the broker's one read of Dispatch, at BROKER_JUDGE_DISPATCH_URL under the token

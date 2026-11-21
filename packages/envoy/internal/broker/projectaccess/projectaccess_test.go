@@ -125,13 +125,16 @@ func TestAccessCachesThirtySeconds(t *testing.T) {
 	}
 }
 
-// TestAccessSendsTheAccountToken: every call presents the broker's own account token and puts the
-// person in the query, never in the path; any other bearer is refused, and that refusal is no
-// answer.
-func TestAccessSendsTheAccountToken(t *testing.T) {
-	type seen struct{ path, person, bearer string }
+// TestAccessSendsTheReadToken: every call presents the broker's own read token under the DPoP
+// scheme, beside a proof, and puts the person in the query, never in the path; any other token is
+// refused, and that refusal is no answer.
+func TestAccessSendsTheReadToken(t *testing.T) {
+	type seen struct{ path, person, authorization string }
 	var requests []seen
 	recorder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("DPoP") == "" {
+			t.Errorf("the client asked %s with no DPoP proof", r.URL.Path)
+		}
 		requests = append(requests, seen{r.URL.EscapedPath(), r.URL.Query().Get("person"), r.Header.Get("Authorization")})
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasPrefix(r.URL.Path, "/api/v1/access/person") {
@@ -141,7 +144,7 @@ func TestAccessSendsTheAccountToken(t *testing.T) {
 		_, _ = w.Write([]byte(`{"project":"PRIV","visibility":"private","owner":"carol@example.com","person":"carol@example.com","member_kind":"full","visible":true,"slack_channels":[]}`))
 	}))
 	t.Cleanup(recorder.Close)
-	client := projectaccess.New(recorder.URL+"/", projectaccesstest.StaticAccount("the-broker-account-token-not-a-secret"), nil)
+	client := projectaccess.New(recorder.URL+"/", projectaccesstest.StaticAccount("the-broker-read-token-not-a-secret"), nil)
 	if _, err := client.Access(t.Context(), "PRIV", "Carol@Example.com"); err != nil {
 		t.Fatal(err)
 	}
@@ -149,17 +152,17 @@ func TestAccessSendsTheAccountToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []seen{
-		{"/api/v1/access/projects/PRIV", "carol@example.com", "Bearer the-broker-account-token-not-a-secret"},
-		{"/api/v1/access/person", "carol@example.com", "Bearer the-broker-account-token-not-a-secret"},
+		{"/api/v1/access/projects/PRIV", "carol@example.com", "DPoP the-broker-read-token-not-a-secret"},
+		{"/api/v1/access/person", "carol@example.com", "DPoP the-broker-read-token-not-a-secret"},
 	}
 	if !reflect.DeepEqual(requests, want) {
-		t.Fatalf("the client asked %+v, want %+v: the base URL's trailing slash dropped, the person lowercased in the query and the account token as the bearer", requests, want)
+		t.Fatalf("the client asked %+v, want %+v: the base URL's trailing slash dropped, the person lowercased in the query and the read token under the DPoP scheme", requests, want)
 	}
 
 	server := standIn(t)
 	stranger := projectaccess.New(server.URL, projectaccesstest.StaticAccount("not-the-stand-ins-token"), nil)
 	if _, err := stranger.Access(t.Context(), "PRIV", "carol@example.com"); err == nil || errors.Is(err, projectaccess.ErrProjectNotFound) {
-		t.Fatalf("Access with a bearer Dispatch refuses = %v, want a failure that is not an answer", err)
+		t.Fatalf("Access with a token Dispatch refuses = %v, want a failure that is not an answer", err)
 	}
 }
 

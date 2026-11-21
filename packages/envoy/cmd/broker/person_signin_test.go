@@ -12,8 +12,6 @@ package main
 import (
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -250,14 +248,12 @@ func TestASignInTradeNamesTheProjectsItsSessionWorksOn(t *testing.T) {
 		privateProject: {Visibility: "private", Owner: privateOwner, Listed: []string{person}},
 		"SECRET":       {Visibility: "private", Owner: privateOwner},
 	}, map[string]string{person: projectaccess.MemberFull})
-	tokenFile := filepath.Join(t.TempDir(), "dispatch-access-token")
-	if err := os.WriteFile(tokenFile, []byte(dispatch.Token+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	env := append(googleExchangeEnv(t, databaseURL, cluster, github, google, longAccessSeconds),
-		"BROKER_PROJECT_ACCESS_URL="+dispatch.URL, "BROKER_PROJECT_ACCESS_TOKEN_FILE="+tokenFile)
+		"BROKER_EXCHANGE_READ_ACCOUNTS="+readerAccount+"="+readerService+"="+readerSession+" "+brokerReadEntry,
+		"BROKER_PROJECT_ACCESS_URL="+dispatch.URL, "BROKER_PROJECT_ACCESS_TOKEN_FILE="+brokerAccessFile(t, cluster, clusterKey, exchangeAudience))
 	broker := startBroker(t, brokerOptions{Env: env})
 	broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
+	introspectAt(t, dispatch, broker, apiToken)
 	live := newLiveBroker(broker.Addr, proofKey(t))
 	trade := func(session, projects string) (int, map[string]any) {
 		form := signInForm(mintPersonToken(t, google, googleKey, person, deviceAudience, true, signInDomain),

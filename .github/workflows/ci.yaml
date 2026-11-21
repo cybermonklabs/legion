@@ -654,7 +654,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthstore/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               # The token exchange's Dispatch client (internal/broker/oauth imports it), and the
-              # account-token reader it presents with.
+              # broker's own read token it presents, traded through internal/brokerclient.
               - 'packages/envoy/internal/broker/projectaccess/*'
               - 'packages/envoy/internal/broker/policy/**'
               - 'packages/envoy/internal/broker/proof/*'
@@ -668,7 +668,6 @@ jobs:
               # The token client whose public re-export the daemon imports, and the wire corpus
               # its own tests replay.
               - 'packages/envoy/internal/brokerclient/**'
-              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/ctxlock/*'
@@ -4850,6 +4849,9 @@ jobs:
               # internal/broker/judge/model.go mints the account token it reads Dispatch with
               # through brokertoken.
               - 'packages/envoy/internal/brokertoken/*'
+              # cmd/broker's tests serve the Dispatch stand-in (projectaccesstest), which checks the
+              # broker's read token with brokertoken against brokertokentest's stub broker.
+              - 'packages/envoy/internal/brokertoken/brokertokentest/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/ctxlock/*'

@@ -20,9 +20,9 @@ func TestTheBootLogSaysWhetherTheHoldIsOff(t *testing.T) {
 	off.AwaitRecord(t, "hold of refused people", map[string]any{"state": "off", "reason": "BROKER_PROJECT_ACCESS_URL is not set"})
 
 	cluster, github := oidctest.New(t), oidctest.New(t)
-	cluster.PublishKey(t, "cluster-key")
+	clusterKey := cluster.PublishKey(t, "cluster-key")
 	github.PublishKey(t, "github-key")
-	on := startBroker(t, brokerOptions{Env: projectAccessEnv(t, storetest.URL(t), cluster, github, projectAccessStandIn(t))})
+	on := startBroker(t, brokerOptions{Env: projectAccessEnv(t, storetest.URL(t), cluster, github, clusterKey, projectAccessStandIn(t))})
 	on.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
 	// The token exchange's line comes after the hold's in the boot, so a log that holds it holds
 	// every line the hold could have written.

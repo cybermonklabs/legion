@@ -1843,7 +1843,7 @@ func TestDispatchRefusingTheBrokersTokenRefusesTheTrade(t *testing.T) {
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	const says = "Dispatch refused the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
+	const says = "Dispatch refused the broker's own read token, or the broker could not have that token (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
 	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
 	refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
 	machine := f.devBoxToken(t, key, person)
