@@ -38,7 +38,8 @@ controller: operator                   # who runs the controller: operator (legi
 consumer_names: fixed                  # how the daemon names its durable consumers: fixed (the default,
                                        # legion-go-<project>-<kind>) or fresh (a new name at each creation,
                                        # selected by the daemon's intake_consumers table). Set fresh once the
-                                       # operator's consumer-names cutover is done: fixed then refuses to start
+                                       # operator's consumer-names cutover is done: fixed then stops at its start
+                                       # or at its next NATS reconnect
 worker_wakes_per_minute: 8             # how many wakes a minute the daemon lets out: the role processes it
                                        # starts, and the tasks and notices it queues to wake a session that is
                                        # already running. Each wake has its session read its whole context

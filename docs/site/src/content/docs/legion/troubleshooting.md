@@ -1970,12 +1970,13 @@ notice comes once per handoff commit, from whichever read finds it first.
   grant has no consumer delete: `envoy-infra consumer-names status` lists it and `cleanup` deletes
   it.
 - **`intake_consumers says this database's durable consumers were converted to fresh names (cutover
-  done), and legion.yaml's consumer_names is fixed: …`** (the daemon's start refused). The
-  operator's consumer-names cutover converted the daemon's durable consumers to fresh names, and
-  the daemon was started with `consumer_names: fixed`, or with no `consumer_names`: creating the
-  fixed names again would run the race the cutover removed. Set `consumer_names: fresh` in
-  `legion.yaml` and start it again. A database whose cutover was rolled back (the sentinel reads
-  `rolled_back`) runs the fixed names.
+  done), and legion.yaml's consumer_names is fixed: …`** (the daemon stopped). The operator's
+  consumer-names cutover converted the daemon's durable consumers to fresh names, and the daemon
+  runs with `consumer_names: fixed`, or with no `consumer_names`: creating the fixed names again
+  would run the race the cutover removed. The daemon reads the marker at its start and again after
+  each reconnect of its NATS connection, so one that only reconnected across the cutover stops at
+  that reconnect. Set `consumer_names: fresh` in `legion.yaml` and start it again. A database whose
+  cutover was rolled back (the sentinel reads `rolled_back`) runs the fixed names.
 - **`agent-secrets: the token login failed; retrying`** (an error line with the cause, the class
   it was sorted into and the retry schedule that class takes).
   With `runtime.kubernetes.agent_secrets` set, the daemon logs in to the

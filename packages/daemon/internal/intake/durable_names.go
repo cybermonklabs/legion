@@ -49,15 +49,20 @@ const operationUpdate consumernames.Operation = "update"
 // selection record is missing (missingRecord).
 var errCheckpointWithoutRecord = errors.New("intake: a durable consumer has a checkpoint and no selection record")
 
-// refuseConvertedStore refuses a boot on fixed names whose database the operator's convert has
-// marked converted (the sentinel's cutover "done"): its durables are fresh names now, and creating
-// the fixed ones again would run the race the cutover removed. What says there is no marker is
+// errStoreConverted is the refusal of the fixed names on a database the operator's convert has
+// marked converted (refuseConvertedStore).
+var errStoreConverted = errors.New("intake_consumers says this database's durable consumers were converted to fresh names (cutover done), and legion.yaml's consumer_names is fixed: set consumer_names: fresh, since a converted store must not run the fixed names")
+
+// refuseConvertedStore refuses the fixed names on a database whose sentinel the operator's convert
+// has marked converted (cutover "done"), at the boot and after each reconnect of the daemon's
+// connection (Consumers.rereadMarker): its durables are fresh names now, and creating the fixed
+// ones again would run the race the cutover removed. What says there is no marker is
 // today's code, which opens the fixed names: no table, no sentinel, a read the database refuses
 // (insufficient_privilege: a login that may not read the table is a deployment that never ran the
 // cutover on it), a sentinel before any cutover, and one a rollback wrote ("rolled_back", which
 // restored the fixed names). A read that says nothing either way, no connection or a timeout, is
 // made again, from a quarter second doubling to five, until it answers or ctx ends, and then the
-// boot ends on its error: the fixed names never run on a marker the boot did not read.
+// caller ends on its error: the fixed names never run on a marker the daemon did not read.
 func refuseConvertedStore(ctx context.Context, pool Pool) error {
 	store := consumernames.NewPGStore(pool)
 	wait := markerReadWait
@@ -65,7 +70,7 @@ func refuseConvertedStore(ctx context.Context, pool Pool) error {
 		state, err := store.State(ctx)
 		switch {
 		case err == nil && state.Cutover == consumernames.CutoverDone:
-			return errors.New("intake_consumers says this database's durable consumers were converted to fresh names (cutover done), and legion.yaml's consumer_names is fixed: set consumer_names: fresh, since a converted store must not run the fixed names")
+			return errStoreConverted
 		case err == nil, errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel), readRefused(err):
 			return nil
 		}

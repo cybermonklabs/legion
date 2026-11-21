@@ -189,6 +189,58 @@ func TestFixedNamesRefuseADatabaseTheCutoverConverted(t *testing.T) {
 	}
 }
 
+// On fixed names the daemon reads its cutover marker again at every reconnect of its NATS
+// connection, not only at its boot: a daemon whose connection comes back after the operator's
+// convert, with no restart, stops at that reconnect, naming consumer_names, and never creates the
+// fixed name the convert removed. The control is today's start-only build, which goes on and
+// creates legion-go-<P>-github again at its next repositories change.
+func TestFixedNamesStopAtTheFirstReconnectAfterTheCutover(t *testing.T) {
+	pool := migratedPool(t)
+	js, stream := testJetStream(t)
+	spec := consumerSpec(&lockedBuffer{})
+	spec.Names = consumernames.ModeFixed
+	consumers := openIntake(t, js, pool, spec)
+	ran := make(chan error, 1)
+	running, stopRun := context.WithCancel(context.Background())
+	defer stopRun()
+	go func() { ran <- consumers.Run(running, factMarks()) }()
+	github := githubConsumerName(spec.Project)
+
+	// The operator's convert: the marker done, the fixed names deleted.
+	cutover(t, pool, consumernames.CutoverDone)
+	for _, name := range fixedNames(spec.Project) {
+		if err := stream.DeleteConsumer(context.Background(), name); err != nil {
+			t.Fatalf("delete %s as the convert does: %v", name, err)
+		}
+	}
+	before := js.Conn().Stats().Reconnects
+	if err := js.Conn().ForceReconnect(); err != nil {
+		t.Fatalf("force the daemon's connection to reconnect: %v", err)
+	}
+	testwait.Eventually(t, "the daemon's connection reconnected", func() bool {
+		return js.Conn().Stats().Reconnects > before && js.Conn().IsConnected()
+	})
+	// The repositories change that comes right after the reconnect: the start-only build creates
+	// the fixed GitHub name again here.
+	widgets := []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
+	if err := consumers.SetRepositories(context.Background(), widgets); err == nil || !strings.Contains(err.Error(), "consumer_names") {
+		t.Errorf("SetRepositories after the reconnect = %v, want the refusal naming consumer_names", err)
+	}
+	if heldInfo(t, stream, github) != nil {
+		t.Errorf("the stream holds %s again after the cutover", github)
+	}
+	// Run ends: on the refusal, or on its consumers the convert deleted, whichever it meets first;
+	// either way the daemon restarts, and its boot refuses the converted store.
+	select {
+	case err := <-ran:
+		if err == nil {
+			t.Fatal("Run after a reconnect past the cutover ended with no error")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run goes on after a reconnect past the cutover, want it stopped")
+	}
+}
+
 // On fresh names the daemon refuses every consumer call until the operator's convert has written
 // the cutover marker "done" into its database: with the table missing, the sentinel missing, the
 // cutover not run and after a rollback, the boot stops with the ERROR line, before any consumer is

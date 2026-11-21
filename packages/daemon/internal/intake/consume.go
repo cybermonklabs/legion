@@ -261,6 +261,15 @@ type Consumers struct {
 
 	mu    sync.Mutex
 	repos []ghrepo.Repository
+
+	// marker is what fixed names know of the cutover marker (rereadMarker): the count of the
+	// connection's reconnects at its last read, and the refusal once a read found the store
+	// converted. Fresh names never use it.
+	marker struct {
+		sync.Mutex
+		reconnects uint64
+		converted  error
+	}
 }
 
 // OpenConsumers creates or updates this project's Dispatch, GitHub and listener-wake durable
@@ -308,6 +317,7 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 		return nil, fmt.Errorf("open %s: %w", notificationStream, err)
 	}
 	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, repos: slices.Clone(spec.Repositories)}
+	consumers.marker.reconnects = js.Conn().Stats().Reconnects
 	if spec.Names == consumernames.ModeFresh {
 		consumers.names = newDurableNames(js, pool, spec)
 	}
@@ -358,12 +368,73 @@ func (c *Consumers) Close() {
 }
 
 // open opens config's durable, whose Durable is its fixed name: as main always has on fixed names
-// (openConsumer), and through its selection record on fresh ones (durableNames.open).
+// (openConsumer), once the cutover marker has been read since the connection's last reconnect
+// (rereadMarker), and through its selection record on fresh ones (durableNames.open).
 func (c *Consumers) open(ctx context.Context, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	if c.names == nil {
+		if err := c.rereadMarker(ctx); err != nil {
+			return nil, err
+		}
 		return openConsumer(ctx, c.js, c.stream, c.pool, c.spec.Logger, config)
 	}
 	return c.names.open(ctx, config)
+}
+
+// markerCheckEvery is how often Run, on fixed names, looks for a reconnect of the daemon's
+// connection whose marker it has not read (watchMarker), and markerReadBound bounds one such read.
+const (
+	markerCheckEvery = 250 * time.Millisecond
+	markerReadBound  = 30 * time.Second
+)
+
+// rereadMarker reads the cutover marker again (refuseConvertedStore) when the daemon's connection
+// has reconnected since the last read, at its boot or after a reconnect: a fixed daemon that only
+// reconnects across the operator's hold stops at its first connect after the convert rather than
+// create a fixed name again. A read that found the store converted is the answer from then on. A
+// read that did not answer leaves the count, so the next call reads again.
+func (c *Consumers) rereadMarker(ctx context.Context) error {
+	c.marker.Lock()
+	converted, seen := c.marker.converted, c.marker.reconnects
+	c.marker.Unlock()
+	if converted != nil {
+		return converted
+	}
+	reconnects := c.js.Conn().Stats().Reconnects
+	if reconnects == seen {
+		return nil
+	}
+	err := refuseConvertedStore(ctx, c.pool)
+	c.marker.Lock()
+	defer c.marker.Unlock()
+	switch {
+	case errors.Is(err, errStoreConverted):
+		c.marker.converted = err
+	case err == nil:
+		c.marker.reconnects = max(c.marker.reconnects, reconnects)
+	}
+	return err
+}
+
+// watchMarker is Run's watch, on fixed names, of the daemon's connection: every markerCheckEvery
+// it reads the cutover marker again if the connection has reconnected since the last read
+// (rereadMarker), and it returns the refusal of a store found converted, which ends Run. A read
+// that does not answer within markerReadBound is made again at the next look.
+func (c *Consumers) watchMarker(ctx context.Context) error {
+	ticker := time.NewTicker(markerCheckEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+		read, cancel := context.WithTimeout(ctx, markerReadBound)
+		err := c.rereadMarker(read)
+		cancel()
+		if errors.Is(err, errStoreConverted) {
+			return err
+		}
+	}
 }
 
 // consumerInfo is the info of the durable whose fixed name is name, read fresh through a handle of
@@ -678,7 +749,9 @@ func (c *Consumers) oldestWaiting(ctx context.Context, info *jetstream.ConsumerI
 // committed refusal is logged then acknowledged. Each message acknowledged or terminated is
 // recorded as its consumer's last handled (Lag). The Dispatch consumer's own position, and
 // admission's hold on it, are the daemon's boot-owned concern (workflowRuntime.pollHoldRelease),
-// not intake's: this loop knows nothing about either.
+// not intake's: this loop knows nothing about either. On fixed names Run also reads the cutover
+// marker again after each reconnect of the daemon's connection (watchMarker), and a store found
+// converted ends Run with its refusal, which stops the daemon.
 func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 	c.mu.Lock()
 	dispatch, github := c.dispatch, c.github
@@ -693,6 +766,9 @@ func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 	group.Go(func() error {
 		return c.consumeConsumer(consumeContext, c.wake, c.progress.wake, handlers)
 	})
+	if c.names == nil {
+		group.Go(func() error { return c.watchMarker(consumeContext) })
+	}
 	return group.Wait()
 }
 

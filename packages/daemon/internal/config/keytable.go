@@ -178,7 +178,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "consumer_names", Default: "`fixed`", RequiredBy: "no",
-			Description: "How the daemon names its durable consumers: `fixed`, the names `legion-go-<project>-dispatch`, `-github` and `-wake` it has always used, or `fresh`, a new physical name at each creation of each, which the logical name's row of the daemon's `intake_consumers` table selects. On `fresh` the daemon refuses every consumer call until the operator's cutover has marked that table done; on `fixed` it refuses to start once the cutover has.",
+			Description: "How the daemon names its durable consumers: `fixed`, the names `legion-go-<project>-dispatch`, `-github` and `-wake` it has always used, or `fresh`, a new physical name at each creation of each, which the logical name's row of the daemon's `intake_consumers` table selects. On `fresh` the daemon refuses every consumer call until the operator's cutover has marked that table done; on `fixed` it stops, at its start or at the first reconnect of its NATS connection, once the cutover has.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.ConsumerNames = v }),
 		},
 		{
