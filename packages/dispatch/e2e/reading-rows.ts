@@ -14,6 +14,7 @@ import {
   dashboardOrigin,
   getDocumentQuestions,
 } from "./api";
+import { expectStatusMark, issueReferenceName } from "./reference-surfaces";
 import { sessionIds } from "./session-ids";
 
 /**
@@ -23,9 +24,11 @@ import { sessionIds } from "./session-ids";
  * there a stored text holding each form a text names a node by (`DISPATCH_READING_FORMS`): an
  * issue key written bare, a `dispatch://` address, a URL of this dashboard, a question block's
  * `#id`, an address whose item id is written short, a picked party, and a link whose words its
- * author wrote (`readingText`). Each must draw through the one renderer: the first six as their
- * node's current name, the worded link as its author's words, each opening its node where the
- * host allows a link, and none left as the characters written (R6, R8).
+ * author wrote (`readingText`). Each must draw through the one renderer: the three issue forms
+ * as the issue's status mark and its key, its title in its accessible name
+ * (dispatch://INFRA-4009), the other three as their node's current name, the worded link as its
+ * issue's status mark and its author's words, each opening its node where the host allows a
+ * link, and none left as the characters written (R6, R8).
  *
  * A row says in the list which forms its surface cannot carry, and why (`cannotCarry`): a
  * surface whose text is no record, or is a record that belongs to no document, carries no
@@ -193,17 +196,24 @@ export async function scopedTo(world: ReadingWorld, artifactId: string): Promise
 }
 
 /** One form: how the text writes it, the address of the node it names, that node's own name,
- *  what the form reads as in a line of text, the path it opens, and the characters a surface
- *  that did not read it would leave. */
+ *  what the form reads as in a line of text, the status whose mark it draws, its accessible
+ *  name, the path it opens, and the characters a surface that did not read it would leave. */
 export interface FormReading {
   readonly form: DispatchReadingForm;
   readonly written: string;
   readonly reference: string;
   /** An issue's title, the question an ask asks, a comment's words, a session's title. */
   readonly name: string;
-  /** An issue as its key and title, a party as `@` and its name, a worded link as its words,
-   *  any other as its name. */
+  /** An issue as its key, a party as `@` and its name, a worded link as its words, any other as
+   *  its name. */
   readonly reads: string;
+  /** The status of the issue whose mark the form draws before what it reads as: a form that
+   *  names an issue, a worded link among them (dispatch://INFRA-4009 R1, R4). */
+  readonly status: string | undefined;
+  /** The accessible name a bare issue reference carries, its key, its status's words and its
+   *  title (`issueReferenceName`), since it draws no title; any other form is named by what it
+   *  draws. */
+  readonly label: string | undefined;
   readonly opens: string | RegExp;
   readonly unread: string | undefined;
 }
@@ -211,14 +221,18 @@ export interface FormReading {
 function formReading(world: ReadingWorld, form: DispatchReadingForm): FormReading {
   const issue = (named: Issue) => ({
     form,
+    label: issueReferenceName(named),
     name: named.title,
     opens: `/issues/${named.key}`,
-    reads: `${named.key} ${named.title}`,
+    reads: named.key,
     reference: `dispatch://${named.key}`,
+    status: named.status,
   });
+  const other = { label: undefined, status: undefined };
   switch (form) {
     case "bare-key":
-      // A key that was not read shows as itself, which its name starts with too.
+      // A key that was not read shows as itself, as a read one does: its mark and its name, which
+      // holds the title, are what tell the two apart.
       return { ...issue(world.keyed), unread: undefined, written: world.keyed.key };
     case "address": {
       const written = `dispatch://${world.addressed.key}`;
@@ -235,6 +249,7 @@ function formReading(world: ReadingWorld, form: DispatchReadingForm): FormReadin
       // An ask opens on its issue's page or on its document's, each of which ends in its id.
       const ask = world.question.slice(world.question.lastIndexOf("/") + 1);
       return {
+        ...other,
         form,
         name: READING_QUESTION,
         opens: new RegExp(`[/=]${ask}$`, "u"),
@@ -248,6 +263,7 @@ function formReading(world: ReadingWorld, form: DispatchReadingForm): FormReadin
       const id = world.shortened.slice(world.shortened.lastIndexOf("/") + 1);
       const prefix = id.slice(0, SHORT_ID);
       return {
+        ...other,
         form,
         name: READING_COMMENT,
         opens: `/issues/${world.keyed.key}/comments/${id}`,
@@ -259,6 +275,7 @@ function formReading(world: ReadingWorld, form: DispatchReadingForm): FormReadin
     }
     case "party":
       return {
+        ...other,
         form,
         name: READING_SESSION_TITLE,
         opens: `/agents/${READING_SESSION_ID}/live`,
@@ -268,9 +285,11 @@ function formReading(world: ReadingWorld, form: DispatchReadingForm): FormReadin
         written: `[@${READING_SESSION_PICKED_NAME}](${READING_SESSION_REFERENCE})`,
       };
     case "worded-link":
-      // The link's own words, and not the host's name, which a bare address would read as.
+      // The link's own words after the host's status mark, and not the host's key, which a
+      // bare address would read as; its name is the mark's and the words'.
       return {
         ...issue(world.host),
+        label: undefined,
         reads: WORDED_LINK_WORDS,
         unread: undefined,
         written: `[${WORDED_LINK_WORDS}](dispatch://${world.host.key})`,
@@ -339,12 +358,14 @@ export type ReadingShape = "link" | "inert" | "written";
 
 /**
  * Holds `scope` to what R6 and R8 say a surface of `shape` shows for `readingText(world,
- * forms)`. `link` and `inert`: each form reads as its node's current name - an issue's key and
- * title, the question a `#id` names, the comment a short id names, and `@` and the session's
- * current title rather than the name the text wrote for it - but a worded link, which reads as
- * the words its author wrote; and none is left as the characters written: no `dispatch://`, no
- * origin of this dashboard, no `#id`, no id prefix. `link` makes each a link that opens its
- * node, `inert` none. `written`: the text as stored.
+ * forms)`. `link` and `inert`: each form reads as its node's current reading - an issue as its
+ * status mark and its key, named by its key, its status's words and its title
+ * (dispatch://INFRA-4009 R1, R3), the question a `#id` names, the comment a short id names, and
+ * `@` and the session's current title rather than the name the text wrote for it - but a worded
+ * link, which reads as its issue's status mark and the words its author wrote (R4); and none is
+ * left as the characters written: no `dispatch://`, no origin of this dashboard, no `#id`, no id
+ * prefix. `link` makes each a link that opens its node, `inert` none. `written`: the text as
+ * stored.
  */
 export async function expectReadsReferences(
   scope: Locator,
@@ -366,9 +387,25 @@ export async function expectReadsForms(
   readings: readonly FormReading[],
   shape: "link" | "inert"
 ): Promise<void> {
-  for (const { form, opens, reads, reference, unread } of readings) {
+  for (const { form, label, opens, reads, reference, status, unread } of readings) {
     const drawn = scope.locator(`[data-dispatch-ref="${reference}"]`).first();
     await expect(drawn, `the ${form} reads as its node's name`).toHaveText(reads);
+    const mark = drawn.locator("svg[data-status-glyph]");
+    if (status === undefined) {
+      await expect(mark, `the ${form} draws no status mark`).toHaveCount(0);
+    } else {
+      await expectStatusMark(mark, status, `the ${form}`);
+    }
+    if (label === undefined) {
+      await expect(drawn, `the ${form} is named by what it draws`).not.toHaveAttribute(
+        "aria-label"
+      );
+    } else {
+      await expect(drawn, `the ${form} is named by its key, status and title`).toHaveAttribute(
+        "aria-label",
+        label
+      );
+    }
     if (shape === "link") {
       await expect(drawn, `the ${form} opens its node`).toHaveAttribute("href", opens);
     }

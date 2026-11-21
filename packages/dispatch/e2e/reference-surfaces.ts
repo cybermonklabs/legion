@@ -2,6 +2,8 @@ import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { Issue } from "../web/src/api/types";
+import { statusGlyph } from "../web/src/components/status-glyph";
+import { statusText } from "../web/src/features/project/board-model";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   createAsk,
@@ -335,6 +337,47 @@ export const FOUND_REFERENCE = `${DRAWN_REFERENCE}, [data-dispatch-missing]`;
  *  it (a reference card's two lines of its target, a reply's quote of its parent). */
 export const RENDERED_BODY = ".dispatch-markdown:not([data-markdown-preview])";
 
+/** What a bare issue reference reads its issue by: the key, the status and the title. */
+export type NamedIssue = Pick<Issue, "key" | "status" | "title">;
+
+/** The accessible name of a bare reference to `issue` once its issue is read (dispatch://INFRA-4009
+ *  R3): its key, its status's words and its title, as `CORE-2, Triage, Warm the cache`. The
+ *  reference draws no title, so its name is where the title, and a rename of it, is read. */
+export function issueReferenceName(issue: NamedIssue): string {
+  return `${issue.key}, ${statusText(issue.status)}, ${issue.title}`;
+}
+
+/** Holds `mark` to the one status mark of `status` that `subject` draws: its shape, named by the
+ *  status's words. */
+export async function expectStatusMark(
+  mark: Locator,
+  status: string,
+  subject = "the reference"
+): Promise<void> {
+  await expect(mark, `${subject} draws one status mark`).toHaveCount(1);
+  await expect(mark, `${subject} draws the mark of ${status}`).toHaveAttribute(
+    "data-status-glyph",
+    statusGlyph(status)
+  );
+  await expect(mark).toHaveAttribute("role", "img");
+  await expect(mark, `${subject}'s mark is named by its status`).toHaveAttribute(
+    "aria-label",
+    statusText(status)
+  );
+}
+
+/** Holds `reference` to a bare reference to `issue`, read: the issue's status mark and its key,
+ *  and no title, named by `issueReferenceName`. The same in a rendered body, the document editor
+ *  and a row of the new issue page (dispatch://INFRA-4009 R1, R3). */
+export async function expectIssueReference(reference: Locator, issue: NamedIssue): Promise<void> {
+  await expect(reference, `${issue.key} is named by its key, status and title`).toHaveAttribute(
+    "aria-label",
+    issueReferenceName(issue)
+  );
+  await expect(reference, `${issue.key} draws its key and no title`).toHaveText(issue.key);
+  await expectStatusMark(reference.locator("svg[data-status-glyph]"), issue.status, issue.key);
+}
+
 /** The reference each element in scope matching `selector` names, in the order they are drawn:
  *  a Dispatch picture's `data-dispatch-picture`, a missing target's `data-dispatch-missing`,
  *  any other's `data-dispatch-ref`. */
@@ -445,4 +488,14 @@ export function conversationTurn(
   id: string
 ): Locator {
   return page.locator(`[data-turn="${kind}:${id}"]`);
+}
+
+/** A comment's Conversation card, expanded. A collapsed card draws the inert one-line preview,
+ *  whose references are spans rather than links; the comment itself, with live links and the
+ *  card a body of one reference draws, is what the expanded card holds. */
+export async function expandedComment(page: Page, id: string): Promise<Locator> {
+  const card = conversationTurn(page, "comment", id);
+  await card.getByRole("button", { name: "Expand thread" }).click();
+  await expect(card.getByRole("button", { name: "Collapse thread" })).toBeVisible();
+  return card;
 }

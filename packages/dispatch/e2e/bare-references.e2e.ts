@@ -16,8 +16,11 @@ import { connectedDot, documentEditor, openSpec } from "./editor";
 import {
   ANCHOR,
   answeredQuestionPreview,
+  expectIssueReference,
   FOUND_REFERENCE,
   HOST_KEY,
+  issueReferenceName,
+  type NamedIssue,
   OTHER_KEY,
   openMarginThread,
   QUESTION_IDS,
@@ -320,17 +323,18 @@ async function expectWorldHolds(world: ReferenceWorld, cases: readonly Case[]): 
   }
 }
 
-/** The title each target this world made reads as, by its reference: the two kinds of target a
- *  bare key and a `#id` name. */
+/** What each target this world made reads as, by its reference: the two kinds of target a bare
+ *  key and a `#id` name. An issue is drawn as its status mark and its key, its title in its
+ *  accessible name (dispatch://INFRA-4009), and a question's ask as its question. */
 function madeTitles(
   world: ReferenceWorld,
   questions: Readonly<Record<string, SettledQuestion>>,
   scope: string
-): Map<string, string> {
-  return new Map([
-    [`dispatch://${world.host.key}`, `${world.host.key} ${world.host.title}`],
-    [`dispatch://${world.other.key}`, `${world.other.key} ${world.other.title}`],
-    [`dispatch://${world.acme.key}`, `${world.acme.key} ${world.acme.title}`],
+): Map<string, string | NamedIssue> {
+  return new Map<string, string | NamedIssue>([
+    [`dispatch://${world.host.key}`, world.host],
+    [`dispatch://${world.other.key}`, world.other],
+    [`dispatch://${world.acme.key}`, world.acme],
     ...QUESTION_IDS.map(
       (id) => [askReference(world, questions, id), questionText(id, scope)] as const
     ),
@@ -338,15 +342,16 @@ function madeTitles(
 }
 
 /**
- * Checks that every reference in scope to a target this world made reads as its title. A
- * one-line preview cuts a title that does not fit and ends it with an ellipsis, so what is
- * shown is the title or its own opening. It lists the references once, so its caller waits
- * first until the references in scope are the row's links.
+ * Checks that every reference in scope to a target this world made reads as it: an issue as its
+ * status mark and its key, named by its key, its status's words and its title, and a question's
+ * ask as its question. A one-line preview cuts a title that does not fit and ends it with an
+ * ellipsis, so what is shown of a question is the question or its own opening. It lists the
+ * references once, so its caller waits first until the references in scope are the row's links.
  */
 async function expectMadeTitles(
   scope: Locator,
   selector: (reference: string) => string,
-  titles: ReadonlyMap<string, string>,
+  titles: ReadonlyMap<string, string | NamedIssue>,
   item: Case
 ): Promise<void> {
   for (const link of new Set(item.links)) {
@@ -357,6 +362,11 @@ async function expectMadeTitles(
     // Every caller first polls the scope's references until they are the row's links, so the
     // references this link names are all drawn when they are read here.
     for (const each of await scope.locator(selector(link)).all()) {
+      if (typeof title !== "string") {
+        await test.step(`${rowName(item)}: ${link} reads as its status mark and its key`, () =>
+          expectIssueReference(each, title));
+        continue;
+      }
       // A reference is drawn before its target's title reaches it, so what it reads is polled
       // until it is the title or the title's opening. The poll answers the title for either,
       // and otherwise what the reference shows, which is what a failure prints.
@@ -431,7 +441,7 @@ test("a margin thread's replies link each reference the shared table links and n
 
     // A bare key opens its issue.
     await body(caseOf(cases, "See XCORE-1 here."))
-      .getByRole("link", { exact: true, name: `${world.other.key} ${world.other.title}` })
+      .getByRole("link", { exact: true, name: issueReferenceName(world.other) })
       .click();
     await expect(page).toHaveURL(new RegExp(`/issues/${OTHER_KEY}$`));
     await expect(page.getByRole("heading", { name: world.other.title }).first()).toBeVisible();
@@ -452,7 +462,7 @@ test("a margin thread's replies link each reference the shared table links and n
   }
 });
 
-test("the one-line preview shows each reference the shared table links as its target's title", async ({
+test("the one-line preview shows each reference the shared table links as its target's name, an issue as its status mark and its key", async ({
   browser,
 }) => {
   test.setTimeout(60_000 + DISPATCH_TEXT_REFERENCES.length * 1_500);
