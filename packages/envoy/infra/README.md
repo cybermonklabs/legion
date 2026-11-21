@@ -2364,14 +2364,17 @@ Dispatch instead closes a dependency cycle. So the stack applies twice:
    region. Until the second apply no request through the load balancer reaches Dispatch, since its
    backend service has no backend.
 2. Once `gcloud compute network-endpoint-groups list --filter=name=example-dispatch` lists the
-   group in every zone of the region, add each zone's group to the backend service's backends in
-   the stack, named by its URL,
-   `projects/<project>/zones/<zone>/networkEndpointGroups/example-dispatch`, and run `pulumi up`
-   again. Dispatch's inputs do not change, so this apply leaves Dispatch as it is.
+   group in every zone of the region, add one backend per zone to the backend service in the
+   stack, and run `pulumi up` again. Each backend names its zone's group by URL in `group`,
+   `projects/<project>/zones/<zone>/networkEndpointGroups/example-dispatch`, and sets
+   `balancingMode: RATE` and a `maxRatePerEndpoint`, since a network endpoint group does not take
+   the provider's default mode, `UTILIZATION`
+   ([Utilization balancing mode](https://cloud.google.com/load-balancing/docs/backend-service#utilization_balancing_mode)).
+   Dispatch's inputs do not change, so this apply leaves Dispatch as it is.
 
 Do not create the groups in the stack instead: GKE syncs no endpoint into a group of that name
 that it did not make itself
-([NEG is not synced with Service](https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg#troubleshooting)).
+([NEG is not synced with Service](https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg#neg_is_not_synced_with_service)).
 
 A stack that runs Google sign-in at its own origin instead sets the sign-in group in place of
 `iapAudience`, and its Google client lists `https://dispatch.example.com/auth/callback`.
