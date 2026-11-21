@@ -416,11 +416,11 @@ func linksIntoIssue(issue string) string {
 
 // closureBudgetStatement is the statement the route's budget sends before each statement of the
 // references read (setStatementBudget, api/references.go; api imports this package, so the text
-// is written again here), with the whole of the read's 2 s bound. The route sets what is left of
-// the bound, a value that changes from one statement to the next but not what a statement reads:
-// the earlier builds Job read the whole read with these statements at -3.3% and +5.4% of the read
-// without them, inside the 19.4% one side read against itself.
-var closureBudgetStatement = benchtime.Statement{SQL: `select set_config('statement_timeout', $1, true)`, Args: []any{"2000ms"}}
+// after ClosureTag is written again here), with the whole of the read's 2 s bound. The route sets
+// what is left of the bound, a value that changes from one statement to the next but not what a
+// statement reads: the earlier builds Job read the whole read with these statements at -3.3% and
+// +5.4% of the read without them, inside the 19.4% one side read against itself.
+var closureBudgetStatement = benchtime.Statement{SQL: ClosureTag + `select set_config('statement_timeout', $1, true)`, Args: []any{"2000ms"}}
 
 // closureRead is the references read of one issue, recorded: name, the subject as the pairs over
 // it name it; issue, its key; and sent, every statement Closure sent for it as it sent them, the
@@ -448,7 +448,7 @@ func readClosure(t *testing.T, runner *benchtime.Runner, name, issue string) clo
 		t.Fatalf("%s: read %s's references: %v", name, issue, err)
 	}
 	sent := recorder.statements
-	if len(sent) < 2 || sent[0].sql != closureTag+linksOutQuery || sent[1].sql != closureTag+linksInQuery {
+	if len(sent) < 2 || sent[0].sql != ClosureTag+linksOutQuery || sent[1].sql != ClosureTag+linksInQuery {
 		t.Fatalf("%s: Closure sent %d statements for %s, and not its out statement and then its in statement first", name, len(sent), issue)
 	}
 	var mainRows, depthOne int64

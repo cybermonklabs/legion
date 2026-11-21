@@ -91,17 +91,21 @@ func oneRowPerNode(own string) string {
 
 // linksOutQuery is the out statement of the references read of the issue whose key is $1: every
 // node the issue's own content links to, read from the links of that content by their source.
-// The issue's own content is its documents, its asks, its comments and its messages, each read by
-// the issue's key. Its links are each one's own refs rows, read by refs' primary key (from_kind,
-// from_id); every link of its documents' blocks, mentions and the pointers block_ref_listed
-// lists, read from block_refs by its primary key's document; and the links of its asks' current
-// parts, read from ask_block_refs by its primary key's ask (itemBlockLinks), since an ask's own
-// refs rows hold its question's links alone. A comment's or a message's own refs rows hold every
-// mention its blocks hold, so their block links need no read of their own. A document's or an
-// ask's own mention of a target a block of it holds counts as that block's link and not again
+// The issue's own content is its documents and its items, those of each item kind (itemKinds:
+// its comments, its messages and its asks), each read by the issue's key. Its links are each
+// one's own refs rows, read by refs' primary key (from_kind, from_id); every link of its
+// documents' blocks, mentions and the pointers block_ref_listed lists, read from block_refs by
+// its primary key's document; and the links of the current blocks of each item whose own refs
+// rows do not hold every mention its blocks hold (ItemKind.refsHoldBlockLinks), an ask's parts,
+// read from the kind's block mentions table by its primary key's item (itemBlockLinks). A
+// comment's or a message's own refs rows hold every mention its blocks hold, so their block links
+// need no read of their own. A source whose block links are read so, a document or such an item,
+// counts its own mention of a target a block of it holds as that block's link and not again
 // (heldByABlock), so a pointer's target takes the pointer's kind alone. Each read is a lateral
 // for one source, which `offset 0` keeps a nested loop keyed by that source: pulled up into a
-// join, it could be planned as a hash or a merge join over a whole read of its table.
+// join, it could be planned as a hash or a merge join over a whole read of its table. Each item
+// kind's items are read once by the issue's key (own_<its items table>), for its sources and for
+// the read of its block links alike.
 //
 // heldByABlock probes block_refs by the mention's target and its document's id as text
 // (`artifact_id::text = from_id`), which block_refs_to_source keys by its three columns, to_kind,
@@ -117,21 +121,51 @@ func oneRowPerNode(own string) string {
 // while a current version holds the block (documentTarget), and a block of an ask, a comment or a
 // message to its item while the block is current (itemBlockHeld); a link to a block neither
 // holds names nothing. A document is named by its ref_key, which a link stores. The issue and its
-// own content are left out (own). Its rows are one for each node, with the kinds of its links and
-// its lowest via: a document of the issue by its uuid, the id its links are written under, an
-// ask, a comment or a message by its uuid (oneRowPerNode).
-var linksOutQuery = `
+// own content are left out (own): the issue by its key, a document by its ref_key and every
+// other source as sources names it. Its rows are one for each node, with the kinds of its links
+// and its lowest via: a document of the issue by its uuid, the id its links are written under, an
+// item by its uuid (oneRowPerNode).
+var linksOutQuery = func() string {
+	ownItems := make([]string, 0, len(itemKinds))
+	sources := []string{`select 'artifact', o.id::text from own_documents o`}
+	// blockLinksRead is every kind of source whose block links an arm of links reads: a
+	// document's, and an item's whose own refs rows do not hold them.
+	blockLinksRead := []string{`'artifact'`}
+	blockLinks := []string{`select r.kind, r.to_kind, r.to_id, 'artifact', o.id::text
+			from own_documents o
+			cross join lateral (
+				select r.kind, r.to_kind, r.to_id from block_refs r
+				where r.artifact_id = o.id and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
+				offset 0
+			) r`}
+	for _, item := range itemKinds {
+		tables, _ := item.tables()
+		own := `own_` + tables.items
+		ownItems = append(ownItems, own+` as (
+			select x.id from `+tables.items+` x where x.issue_key = $1
+		)`)
+		sources = append(sources, `select '`+string(item)+`', o.id::text from `+own+` o`)
+		if item.refsHoldBlockLinks() {
+			continue
+		}
+		blockLinksRead = append(blockLinksRead, `'`+string(item)+`'`)
+		blockLinks = append(blockLinks, `select r.kind, r.to_kind, r.to_id, '`+string(item)+`', o.id::text
+			from `+own+` o
+			cross join lateral (
+				select r.kind, r.to_kind, r.to_id from `+itemBlockLinks(item)+`
+				where r.`+tables.item+` = o.id and `+itemBlockCurrent+`
+				offset 0
+			) r`)
+	}
+	return `
 		with own_documents as (
 			select a.id, a.ref_key from artifacts a where a.issue_key = $1
 		),
-		own_asks as (
-			select k.id from asks k where k.issue_key = $1
-		),
+		` + strings.Join(ownItems, `,
+		`) + `,
 		sources (kind, id) as (
-			select 'artifact', o.id::text from own_documents o
-			union all select 'ask', o.id::text from own_asks o
-			union all select 'comment', c.id::text from comments c where c.issue_key = $1
-			union all select 'message', m.id::text from messages m where m.issue_key = $1
+			` + strings.Join(sources, `
+			union all `) + `
 		),
 		own (kind, id) as (
 			select 'issue', $1::text
@@ -144,25 +178,13 @@ var linksOutQuery = `
 			cross join lateral (
 				select r.kind, r.to_kind, r.to_id from refs r
 				where r.from_kind = s.kind and r.from_id = s.id
-				  and (s.kind in ('comment', 'message') or not ` + heldByABlock("r") + `)
+				  and (s.kind not in (` + strings.Join(blockLinksRead, ", ") + `) or not ` + heldByABlock("r") + `)
 				offset 0
 			) r
 			union all
-			select r.kind, r.to_kind, r.to_id, 'artifact', o.id::text
-			from own_documents o
-			cross join lateral (
-				select r.kind, r.to_kind, r.to_id from block_refs r
-				where r.artifact_id = o.id and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
-				offset 0
-			) r
+			` + strings.Join(blockLinks, `
 			union all
-			select r.kind, r.to_kind, r.to_id, 'ask', o.id::text
-			from own_asks o
-			cross join lateral (
-				select r.kind, r.to_kind, r.to_id from ` + itemBlockLinks(ItemAsk) + `
-				where r.ask_id = o.id and ` + itemBlockCurrent + `
-				offset 0
-			) r
+			`) + `
 		),
 		far (node_kind, node_id, kind, via_kind, via_id) as (
 			select ` + targetNode + `, r.kind, r.via_kind, r.via_id
@@ -172,6 +194,7 @@ var linksOutQuery = `
 			where (` + documentTarget + ` or r.to_kind not in ('artifact', 'block'))
 			  and (r.to_kind not in ` + itemBlockKinds + ` or item_block.id is not null)
 		)` + oneRowPerNode(`select row(o.kind, o.id) from own o`)
+}()
 
 // linksInQuery is the in statement of the references read of the issue whose key is $1: every
 // node that links to the issue or to its own content, read from the links into them by their
@@ -263,19 +286,21 @@ var linksInQuery = func() string {
 		)` + oneRowPerNode(`select row(t.kind, t.id) from targets t`)
 }()
 
-// closureTag starts every statement Closure sends, so that the query text pg_stat_activity shows
-// for any statement of the read, the loaders' included, names it.
-const closureTag = "/* refs.Closure */\n"
+// ClosureTag starts every statement Closure sends, so that the query text pg_stat_activity shows
+// for any statement of the read, the loaders' included, names it. A caller that sends statements
+// of its own inside the read, as the route's budget sends its statement_timeout before each one
+// (api's setStatementBudget), starts them with it too.
+const ClosureTag = "/* refs.Closure */\n"
 
-// taggedQueryer passes every statement on to the Queryer it wraps with closureTag before it.
+// taggedQueryer passes every statement on to the Queryer it wraps with ClosureTag before it.
 type taggedQueryer struct{ Queryer }
 
 func (q taggedQueryer) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	return q.Queryer.Query(ctx, closureTag+sql, args...)
+	return q.Queryer.Query(ctx, ClosureTag+sql, args...)
 }
 
 func (q taggedQueryer) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	return q.Queryer.QueryRow(ctx, closureTag+sql, args...)
+	return q.Queryer.QueryRow(ctx, ClosureTag+sql, args...)
 }
 
 // linkRow is one row of the out or the in statement: the node at the far end, as resolveNodes
@@ -294,7 +319,7 @@ type linkRow struct {
 // resolveNodes does not name, a node gone since or of a kind this build does not know, is left
 // out, as Edges leaves such an edge out. Each list is in the order of the node's kind, then its
 // id. Members are the documents of Links, each at depth 1 with its row's via, by ref_key. Every
-// statement it sends, through q, starts with closureTag.
+// statement it sends, through q, starts with ClosureTag.
 func Closure(ctx context.Context, q Queryer, issueKey string) (References, error) {
 	tagged := taggedQueryer{q}
 	out, err := readLinkRows(ctx, tagged, linksOutQuery, issueKey)

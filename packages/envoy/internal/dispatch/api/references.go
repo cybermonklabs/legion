@@ -740,16 +740,18 @@ var errClosureBudgetSpent = errors.New("the reference closure's budget has less 
 // setStatementBudget gives the next statement of boundedClosure's transaction tx what is left of
 // referencesClosureBound, left, so that the statements of the read share the one bound rather
 // than each having it whole. It sets statement_timeout for the rest of tx to the whole
-// milliseconds of left, rounded down, with `select set_config('statement_timeout', $1, true)`:
-// 1ms at 1 ms left. Under 1 ms left it sends no statement and answers errClosureBudgetSpent,
-// which closureBoundHit reads as the bound, because the timeout rounded down would be 0, and a
-// statement_timeout of 0 turns the timeout off.
+// milliseconds of left, rounded down, 1ms at 1 ms left, with
+// `select set_config('statement_timeout', $1, true)` after refs.ClosureTag, which starts every
+// statement of the read, so that pg_stat_activity names this statement as the read's too. Under
+// 1 ms left it sends no statement and answers errClosureBudgetSpent, which closureBoundHit reads
+// as the bound, because the timeout rounded down would be 0, and a statement_timeout of 0 turns
+// the timeout off.
 func setStatementBudget(ctx context.Context, tx pgx.Tx, left time.Duration) error {
 	milliseconds := left.Milliseconds()
 	if milliseconds < 1 {
 		return errClosureBudgetSpent
 	}
-	_, err := tx.Exec(ctx, "select set_config('statement_timeout', $1, true)", strconv.FormatInt(milliseconds, 10)+"ms")
+	_, err := tx.Exec(ctx, refs.ClosureTag+"select set_config('statement_timeout', $1, true)", strconv.FormatInt(milliseconds, 10)+"ms")
 	return err
 }
 
