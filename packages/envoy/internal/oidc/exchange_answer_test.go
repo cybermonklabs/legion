@@ -59,6 +59,36 @@ func TestCodeFlowExchangeReadsOnlyAnOutageAsTheIssuerUnavailable(t *testing.T) {
 	}
 }
 
+// A 200 whose body breaks off before it arrives whole is an issuer that could not answer, however
+// it breaks off: the connection closed, the connection reset, or the issuer sending nothing more
+// until the token request's own timeout ends the read. The caller is still there in every row, so
+// none is the caller gone.
+func TestCodeFlowExchangeReadsABodyThatBreaksOffAsAnOutage(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		cut  func(issuer *oidctest.Issuer)
+	}{
+		{"closed after 10 bytes", func(i *oidctest.Issuer) { i.CutToken(http.StatusOK) }},
+		{"reset after 10 bytes", func(i *oidctest.Issuer) { i.ResetToken(http.StatusOK) }},
+		{"stalled after 10 bytes past the request's timeout", func(i *oidctest.Issuer) { i.StallToken(http.StatusOK) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			issuer, flow := newCodeFlowForDomain(t, flowDomain)
+			if err := flow.Discover(context.Background()); err != nil {
+				t.Fatalf("Discover: %v", err)
+			}
+			c.cut(issuer)
+			client := *flow.http
+			client.Timeout = 300 * time.Millisecond
+			flow.http = &client
+			_, err := flow.Exchange(context.Background(), flowRedirect, "a-code", "a-nonce")
+			if !errors.Is(err, ErrIssuerUnavailable) || errors.Is(err, context.Canceled) {
+				t.Fatalf("Exchange against a 200 %s: err = %v, want ErrIssuerUnavailable and not context.Canceled", c.name, err)
+			}
+		})
+	}
+}
+
 // A code exchange whose own context ends before the token endpoint answers - the browser left the
 // callback - fails with that context's error, not ErrIssuerUnavailable: the issuer was not shown
 // unable to answer, so a caller writes no outage for it. The flow has discovered its issuer, so the

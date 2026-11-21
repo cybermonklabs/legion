@@ -139,16 +139,28 @@ type codeFlow struct {
 }
 
 // tokenFailure is how the token endpoint answers every grant instead of
-// granting it, when FailToken, DropToken or CutToken set it: status with code
-// as the body's OAuth error; with drop, closing the connection unanswered; or,
-// with cut, answering status and closing the connection part of the way
-// through the body.
+// granting it, when FailToken, DropToken, CutToken, ResetToken or StallToken
+// set it: status with code as the body's OAuth error; with drop, closing the
+// connection unanswered; or, with cut, answering status and a body it breaks
+// off part of the way through, by closing the connection (cutClose),
+// resetting it (cutReset) or sending nothing more (cutStall).
 type tokenFailure struct {
 	status int
 	code   string
 	drop   bool
-	cut    bool
+	cut    cutAnswer
 }
+
+// cutAnswer is how the token endpoint breaks off a body it promised 200 bytes
+// of, after sending 10: none is a whole answer.
+type cutAnswer int
+
+const (
+	cutNone cutAnswer = iota
+	cutClose
+	cutReset
+	cutStall
+)
 
 // revocation is the state of the revocation endpoint: every token the client
 // sent it, in order, whatever it answered; the status and OAuth error code it
@@ -433,7 +445,24 @@ func (i *Issuer) DropToken() {
 func (i *Issuer) CutToken(status int) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.codeFlow.token = tokenFailure{status: status, cut: true}
+	i.codeFlow.token = tokenFailure{status: status, cut: cutClose}
+}
+
+// ResetToken is CutToken with the connection reset (a TCP RST) after the 10
+// bytes, where CutToken closes it. FailToken(0, "") undoes it.
+func (i *Issuer) ResetToken(status int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.codeFlow.token = tokenFailure{status: status, cut: cutReset}
+}
+
+// StallToken is CutToken with nothing more sent after the 10 bytes until the
+// client hangs up, so the client's own timeout ends its read of the body.
+// FailToken(0, "") undoes it.
+func (i *Issuer) StallToken(status int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.codeFlow.token = tokenFailure{status: status, cut: cutStall}
 }
 
 // DelayToken makes the token endpoint wait d before it answers each grant, or until the client

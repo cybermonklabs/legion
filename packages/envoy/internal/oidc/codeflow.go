@@ -276,10 +276,11 @@ func (f *CodeFlow) Exchange(ctx context.Context, redirectURL, code, nonce string
 // ID token, and refuse one whose nonce is not the sign-in's with ErrNonce. An empty nonce is
 // refused as well, since it binds the token to no sign-in. The token endpoint's answer decides by
 // its status alone (oauthrefusal.Outage), once it arrived whole: a 5xx, a 408 or a 429, whatever
-// error its body names, an answer whose body was cut off before it read whole, and no answer at
-// all are an issuer that could not answer, and match ErrIssuerUnavailable, as Refresh reads them,
-// as the client check reads a cut-off answer and as the broker's minters do (a body read that
-// failed is upstream there). Every other answer is the endpoint answering and fails the exchange
+// error its body names, an answer whose body was cut off before it read whole (the connection
+// closed or reset, or the token request's own timeout ended the read), and no answer at all are an
+// issuer that could not answer, and match ErrIssuerUnavailable, as Refresh reads them, as the
+// client check reads a cut-off answer and as the broker's minters do (a body read that failed is
+// upstream there). Every other answer is the endpoint answering and fails the exchange
 // as that answer, never as the issuer unavailable: a refusal, a 4xx with or without an OAuth error
 // (whose code, when it names one, is the caller's reason), and a 2xx or 3xx that names an error or
 // holds no token. An exchange that got no whole answer because its own ctx ended (the browser left
