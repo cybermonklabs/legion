@@ -409,34 +409,53 @@ func readOutcome(ctx context.Context, pool TxPool, xid string) (outcome, error) 
 	}
 }
 
-// watchOutcome runs hooks once readOutcome says xid committed, and drops them once it says it
-// aborted. ctx has no cancel and a hold mark of its own, since the transaction's owner may hold
-// its next transaction's connection on its old mark, and the watcher holds no connection between
-// reads. It waits outcomeRetryFirst, then twice as long each time up to outcomeRetryMax, and each
-// read takes at most outcomeReadBound. It ends at the first answer, or once the pool has closed,
-// which says that the hooks did not run; so it runs its hooks at most once. It has no other time
-// limit and is not joined at stop: a status the server does not keep leaves it reading every
-// outcomeRetryMax until the pool closes.
+// watchOutcome runs hooks once the store says xid committed, and drops them once it says it
+// aborted (pollOutcome, from outcomeRetryFirst). ctx has no cancel and a hold mark of its own,
+// since the transaction's owner may hold its next transaction's connection on its old mark, and
+// the watcher holds no connection between reads. It ends at the first answer, or once the pool
+// has closed, which says that the hooks did not run; so it runs its hooks at most once. It has no
+// other time limit and is not joined at stop: a status the server does not keep leaves it reading
+// every outcomeRetryMax until the pool closes.
 func watchOutcome(ctx context.Context, pool TxPool, xid string, hooks []func()) {
-	for wait := outcomeRetryFirst; ; wait = min(2*wait, outcomeRetryMax) {
-		time.Sleep(wait)
+	switch result, _ := pollOutcome(ctx, pool, xid, outcomeRetryFirst); result {
+	case outcomeCommitted:
+		slog.Warn("store: a transaction whose outcome was unknown committed; its commit hooks run now",
+			"transaction", xid, "hooks", len(hooks))
+		runWatchedHooks(xid, hooks)
+	case outcomeAborted:
+		slog.Info("store: a transaction whose outcome was unknown did not commit; its commit hooks are dropped",
+			"transaction", xid, "hooks", len(hooks))
+	default:
+		slog.Error("store: the pool closed before the store said whether a transaction committed; its commit hooks did not run",
+			"transaction", xid, "hooks", len(hooks))
+	}
+}
+
+// pollOutcome is the one loop that waits for the store to say whether xid committed: it waits
+// first (none reads at once), then reads, each read bounded by outcomeReadBound, and waits
+// outcomeRetryFirst before the next, twice as long each time up to outcomeRetryMax. It answers
+// committed or aborted at the store's first answer, and unknown with the error once the pool has
+// closed (puddle.ErrClosedPool) or ctx has ended. Each read takes ctx's hold mark, so a caller
+// that may still hold a connection on its own mark gives it a mark of its own.
+func pollOutcome(ctx context.Context, pool TxPool, xid string, first time.Duration) (outcome, error) {
+	for wait := first; ; wait = min(max(2*wait, outcomeRetryFirst), outcomeRetryMax) {
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return outcomeUnknown, ctx.Err()
+			case <-timer.C:
+			}
+		}
 		reading, cancel := context.WithTimeout(ctx, outcomeReadBound)
 		result, err := readOutcome(reading, pool, xid)
 		cancel()
 		switch {
-		case result == outcomeCommitted:
-			slog.Warn("store: a transaction whose outcome was unknown committed; its commit hooks run now",
-				"transaction", xid, "hooks", len(hooks))
-			runWatchedHooks(xid, hooks)
-			return
-		case result == outcomeAborted:
-			slog.Info("store: a transaction whose outcome was unknown did not commit; its commit hooks are dropped",
-				"transaction", xid, "hooks", len(hooks))
-			return
+		case result != outcomeUnknown:
+			return result, nil
 		case errors.Is(err, puddle.ErrClosedPool):
-			slog.Error("store: the pool closed before the store said whether a transaction committed; its commit hooks did not run",
-				"transaction", xid, "hooks", len(hooks))
-			return
+			return outcomeUnknown, err
 		}
 	}
 }
@@ -459,10 +478,11 @@ func runWatchedHooks(xid string, hooks []func()) {
 }
 
 // transactUntilCommitted runs write in Transact until one run commits, and returns nil then. A run
-// whose outcome is unknown is waited for and taken as that outcome; one that did not commit runs
-// again after outcomeRetryFirst, the wait doubling up to outcomeRetryMax. When ctx ends first, it
-// returns the last run's error, so a run whose outcome is still unknown answers
-// ErrCommitOutcomeUnknown. write must be safe to run again after a run that did not commit.
+// whose outcome is unknown is waited for (pollOutcome) and taken as that outcome; one that did not
+// commit runs again after outcomeRetryFirst, the wait doubling up to outcomeRetryMax. When ctx
+// ends first, or the pool closes while it waits for an outcome, it returns the last run's error,
+// so a run whose outcome is still unknown answers ErrCommitOutcomeUnknown. write must be safe to
+// run again after a run that did not commit.
 func transactUntilCommitted(ctx context.Context, pool TxPool, write func(ctx context.Context, tx pgx.Tx) error) error {
 	for wait := outcomeRetryFirst; ; wait = min(2*wait, outcomeRetryMax) {
 		err := Transact(ctx, pool, write)
@@ -471,12 +491,11 @@ func transactUntilCommitted(ctx context.Context, pool TxPool, write func(ctx con
 		}
 		var unknown *outcomeUnknownError
 		if errors.As(err, &unknown) {
-			committed, outcomeErr := awaitOutcome(ctx, pool, unknown.xid)
-			if outcomeErr != nil {
-				return err
-			}
-			if committed {
+			switch result, _ := pollOutcome(ForConcurrentWorker(ctx), pool, unknown.xid, 0); result {
+			case outcomeCommitted:
 				return nil
+			case outcomeUnknown:
+				return err
 			}
 		}
 		timer := time.NewTimer(wait)
@@ -484,29 +503,6 @@ func transactUntilCommitted(ctx context.Context, pool TxPool, write func(ctx con
 		case <-ctx.Done():
 			timer.Stop()
 			return err
-		case <-timer.C:
-		}
-	}
-}
-
-// awaitOutcome reads xid's status at the watcher's pace, each read bounded by outcomeReadBound,
-// until the store says committed (true) or aborted (false), or ctx ends.
-func awaitOutcome(ctx context.Context, pool TxPool, xid string) (bool, error) {
-	for wait := outcomeRetryFirst; ; wait = min(2*wait, outcomeRetryMax) {
-		reading, cancel := context.WithTimeout(ForConcurrentWorker(ctx), outcomeReadBound)
-		result, _ := readOutcome(reading, pool, xid)
-		cancel()
-		switch result {
-		case outcomeCommitted:
-			return true, nil
-		case outcomeAborted:
-			return false, nil
-		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return false, ctx.Err()
 		case <-timer.C:
 		}
 	}

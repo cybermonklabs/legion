@@ -472,6 +472,28 @@ func TestAHookThatPanicsOnTheWatchersGoroutineIsLoggedAndTheRestRun(t *testing.T
 	}
 }
 
+// A run of transactUntilCommitted whose outcome is unknown stops waiting for it once the pool
+// closes, as the watcher does, rather than reading a closed pool until its context ends: its
+// context here ends only after a minute, and it answers well before that.
+func TestARetryWhoseOutcomeIsUnknownEndsWhenThePoolCloses(t *testing.T) {
+	rig := newCommitRig(t)
+	ctx, cancel := context.WithTimeout(WithTransactionTracking(context.Background()), time.Minute)
+	defer cancel()
+	fired := rig.fault.Cut(commitMatch, testdb.CutAfterCommitRefusing)
+	done := make(chan error, 1)
+	go func() { done <- transactUntilCommitted(ctx, rig.pool, rig.write) }()
+	testdb.Met(t, fired)
+	rig.pool.Close()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrCommitOutcomeUnknown) {
+			t.Fatalf("transactUntilCommitted = %v, want %v", err, ErrCommitOutcomeUnknown)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("transactUntilCommitted still waits 20s after its pool closed, for a context that ends at a minute")
+	}
+}
+
 // The body's own cancel: the id read already refuses the ended context.
 func TestAContextEndedBeforeTheCommitCommitsNothing(t *testing.T) {
 	rig := newCommitRig(t)
