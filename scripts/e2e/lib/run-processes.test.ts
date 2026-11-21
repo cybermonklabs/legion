@@ -347,26 +347,45 @@ test.skipIf(skip || !otherLoopback)(
     // on at another loopback address. On a devbox a Go test (buckets.test) listened on
     // 127.162.56.110:41869 while the killed-reader row's own listener had 127.0.0.1:41869, and a
     // count of every LISTEN row with that port read "2 sockets listen" and failed the row. Here the
-    // collision is made every time: this test process listens on 127.0.0.1 with a port the kernel
-    // chooses, and another process (a bun of its own) then listens on 127.0.0.2 with the same port
-    // and says so once it listens. Both LISTEN rows are read from /proc/net/tcp before the walk.
+    // collision is made every time, in the order that cannot itself collide: another process (a bun
+    // of its own) listens on 127.0.0.2 with a port the kernel chooses and prints it, and this test
+    // process then listens on 127.0.0.1 with that port. The other order, 127.0.0.1 first, failed
+    // when a third process already held 127.0.0.2 at the port the kernel then gave 127.0.0.1. A port
+    // some process already holds on 127.0.0.1, or on every address, refuses this listen; the row
+    // then takes another from a new process, up to five times. Both LISTEN rows are read from
+    // /proc/net/tcp before the walk.
     const work = join(dir, "same-port");
     mkdirSync(work);
-    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    let listener: { port: number; stop(closeActiveConnections?: boolean): void } | undefined;
+    const refused: string[] = [];
     try {
-      const port = listener.port;
-      const other = Bun.spawn(
-        ownGroup([
-          process.execPath,
-          "-e",
-          'Bun.listen({ hostname: "127.0.0.2", port: Number(process.argv[1]), socket: { data() {} } }); console.log("listening"); setTimeout(() => {}, 60000);',
-          String(port),
-        ]),
-        { cwd: dir, env: { PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" }
-      );
-      started.push(other.pid);
-      const said = await other.stdout.getReader().read();
-      expect(new TextDecoder().decode(said.value)).toBe("listening\n");
+      for (let attempt = 0; attempt < 5 && listener === undefined; attempt++) {
+        const other = Bun.spawn(
+          ownGroup([
+            process.execPath,
+            "-e",
+            'console.log(Bun.listen({ hostname: "127.0.0.2", port: 0, socket: { data() {} } }).port); setTimeout(() => {}, 60000);',
+          ]),
+          { cwd: dir, env: { PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" }
+        );
+        started.push(other.pid);
+        const said = new TextDecoder().decode((await other.stdout.getReader().read()).value);
+        const port = Number(said.trim());
+        if (!Number.isInteger(port) || port <= 0) {
+          other.kill("SIGKILL");
+          throw new Error(
+            `the process listening on 127.0.0.2 printed ${JSON.stringify(said)}, not its port: ${await new Response(other.stderr).text()}`
+          );
+        }
+        try {
+          listener = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
+        } catch (error) {
+          refused.push(`127.0.0.1:${port}: ${(error as Error).message}`);
+          other.kill("SIGKILL");
+        }
+      }
+      expect({ refused, listening: listener !== undefined }).toEqual({ refused, listening: true });
+      const port = listener?.port ?? 0;
       const hex = port.toString(16).toUpperCase().padStart(4, "0");
       const listening = readFileSync("/proc/net/tcp", "utf8")
         .split("\n")
@@ -381,7 +400,7 @@ test.skipIf(skip || !otherLoopback)(
         err: "",
       });
     } finally {
-      listener.stop(true);
+      listener?.stop(true);
     }
   }
 );
