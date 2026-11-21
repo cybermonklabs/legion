@@ -805,7 +805,7 @@ func (r *subArchitectLive) publishIssue(key, status, parent string, blockers []s
 	if err != nil {
 		r.t.Fatalf("encode the Dispatch event: %v", err)
 	}
-	return r.publish("notifications.dispatch.issue."+key+".issue.updated", "dispatch", fmt.Sprintf("%s-%s-%d", key, status, r.seq), string(payload))
+	return r.publish(issueSubject(key, "issue.updated"), "dispatch", fmt.Sprintf("%s-%s-%d", key, status, r.seq), string(payload))
 }
 
 // register brings the launched claim of role on issue to ready, as its pane's shim and its agent

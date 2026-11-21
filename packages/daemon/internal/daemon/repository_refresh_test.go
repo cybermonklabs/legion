@@ -1156,7 +1156,7 @@ func TestARecoveryWhileTheConsumerIsBehindAdmitsOnceItCatchesUp(t *testing.T) {
 	const first, second, unrelated = "LEGION-1400", "LEGION-1401", "LEGION-1499"
 	client.show(issue(unrelated, "acme/widgets", "backlog", false, "", 1))
 	repo := "acme/widgets"
-	if _, err := js.Publish(ctx, "notifications.dispatch.issue."+unrelated+".issue.updated",
+	if _, err := js.Publish(ctx, issueSubject(unrelated, "issue.updated"),
 		retainedIssueEnvelope(t, unrelated, 1499, 1, "backlog", map[string]string{"kind": "user", "id": "a-person"}, &repo)); err != nil {
 		t.Fatal(err)
 	}
@@ -1543,7 +1543,7 @@ func (h *heldRecovery) behind(t *testing.T, key string) {
 	t.Helper()
 	h.seq++
 	h.client.show(issue(key, "acme/widgets", "todo", false, heldTree, 1))
-	if _, err := h.js.Publish(context.Background(), "notifications.dispatch.issue."+key+".issue.updated", childEnvelope(t, key, heldTree, "acme/widgets", 2000+h.seq, 1)); err != nil {
+	if _, err := h.js.Publish(context.Background(), issueSubject(key, "issue.updated"), childEnvelope(t, key, heldTree, "acme/widgets", 2000+h.seq, 1)); err != nil {
 		t.Fatal(err)
 	}
 }

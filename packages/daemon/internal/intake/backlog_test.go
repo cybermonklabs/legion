@@ -52,7 +52,7 @@ func TestABacklogIsDeliveredOnceWhileEachFactTakesItsAcknowledgementWindow(t *te
 	const backlog = 12
 	for i := range backlog {
 		key := fmt.Sprintf("CAPTURE-%d", 100+i)
-		publish(t, js, "notifications.dispatch.issue."+key+".issue.updated", envelopeJSON(t, fmt.Sprintf("dispatch-%d", i+1), "dispatch",
+		publish(t, js, issueSubject(key, "issue.updated"), envelopeJSON(t, fmt.Sprintf("dispatch-%d", i+1), "dispatch",
 			fmt.Sprintf(`{"id":%d,"issue_key":%q,"seq":1,"notify":true,"type":"issue.updated","actor":{"kind":"user","id":"someone"},`+
 				`"payload":{"key":%q,"status":"backlog","title":"a backlog event","parent":null,"rank":"A","labels":[],"resolved_repo":"sjawhar/legion"}}`, i+1, key, key)))
 	}

@@ -1116,5 +1116,5 @@ func (r *childAdoptionLive) publishIssue(key, status, parent string, handed, dae
 	if err != nil {
 		r.t.Fatalf("encode the Dispatch event: %v", err)
 	}
-	r.publish("notifications.dispatch.issue."+key+".issue.updated", "dispatch", fmt.Sprintf("%s-%s-%d", key, status, r.seq), string(payload))
+	r.publish(issueSubject(key, "issue.updated"), "dispatch", fmt.Sprintf("%s-%s-%d", key, status, r.seq), string(payload))
 }

@@ -1893,7 +1893,7 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 			}
 			// The move lands while the listing is read, which is already past it.
 			once.Do(func() {
-				if _, err := js.Publish(r.Context(), "notifications.dispatch.issue."+key+".issue.updated", []byte(moved)); err != nil {
+				if _, err := js.Publish(r.Context(), issueSubject(key, "issue.updated"), []byte(moved)); err != nil {
 					t.Errorf("publish the move: %v", err)
 				}
 			})
