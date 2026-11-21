@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -80,14 +81,17 @@ func headerIdentityEnvironment(overrides map[string]string) map[string]string {
 const testIAPAudience = "/projects/123456789012/global/backendServices/9876543210"
 
 // iapIdentityEnvironment is an IAP-identity boot environment admitting the people of example.com:
-// the identity, its audience and the domain, and no other sign-in setting.
+// the identity, its audience and the domain, the Directory reader's signer and delegated user, and
+// no other sign-in setting.
 func iapIdentityEnvironment(overrides map[string]string) map[string]string {
 	values := map[string]string{
-		"DATABASE_URL":           "postgres://dispatch",
-		"DISPATCH_AGENT_TOKEN":   "agent-token",
-		"DISPATCH_IDENTITY":      "iap",
-		"DISPATCH_IAP_AUDIENCE":  testIAPAudience,
-		"DISPATCH_SIGNIN_DOMAIN": "example.com",
+		"DATABASE_URL":               "postgres://dispatch",
+		"DISPATCH_AGENT_TOKEN":       "agent-token",
+		"DISPATCH_IDENTITY":          "iap",
+		"DISPATCH_IAP_AUDIENCE":      testIAPAudience,
+		"DISPATCH_SIGNIN_DOMAIN":     "example.com",
+		"DISPATCH_DIRECTORY_ACCOUNT": directoryCheckSigner,
+		"DISPATCH_DIRECTORY_ADMIN":   directoryCheckAdmin,
 	}
 	for name, value := range overrides {
 		values[name] = value
@@ -96,7 +100,8 @@ func iapIdentityEnvironment(overrides map[string]string) map[string]string {
 }
 
 // iapKeySet is a key set served on this machine in IAP's place, so no test calls Google, with the
-// ES256 key it publishes; iapBoot is boot pointed at it, as no setting can point a server.
+// ES256 key it publishes; iapBoot is boot pointed at it, and its Directory reader at directory, the
+// Google hosts served on this machine (directorytest), as no setting can point a server.
 func iapKeySet(t *testing.T) (*oidctest.Issuer, *oidctest.Key) {
 	t.Helper()
 	keys := oidctest.New(t)
@@ -105,13 +110,14 @@ func iapKeySet(t *testing.T) (*oidctest.Issuer, *oidctest.Key) {
 	return keys, signing
 }
 
-func iapBoot(t *testing.T, keys *oidctest.Issuer, overrides map[string]string) bootConfig {
+func iapBoot(t *testing.T, keys *oidctest.Issuer, directory *directorytest.Google, overrides map[string]string) bootConfig {
 	t.Helper()
 	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(overrides)))
 	if err != nil {
 		t.Fatalf("resolve an IAP boot: %v", err)
 	}
 	boot.IAPKeySetURL = keys.URL() + "/keys"
+	boot.DirectoryOptions = directory.ClientOptions()
 	return boot
 }
 
@@ -142,19 +148,25 @@ func iapWhoami(handler http.Handler, assertion string, headers map[string]string
 }
 
 func TestResolveBootConfigReadsIAPIdentity(t *testing.T) {
-	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IDENTITY": " iap "})))
+	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{
+		"DISPATCH_IDENTITY":          " iap ",
+		"DISPATCH_DIRECTORY_ACCOUNT": " " + directoryCheckSigner + " ",
+		"DISPATCH_DIRECTORY_ADMIN":   " " + directoryCheckAdmin + " ",
+	})))
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)
 	}
 	if boot.IAPAudience != testIAPAudience || boot.IAPKeySetURL != oidc.IAPKeySetURL || boot.SignInDomain != "example.com" ||
-		boot.IdentityHeader != "" || boot.SignInIssuer != "" {
-		t.Fatalf("boot = %#v, want IAP identity for %s over IAP's own key set, admitting example.com", boot, testIAPAudience)
+		boot.IdentityHeader != "" || boot.SignInIssuer != "" ||
+		boot.DirectoryAccount != directoryCheckSigner || boot.DirectoryAdmin != directoryCheckAdmin || boot.DirectoryOptions != nil {
+		t.Fatalf("boot = %#v, want IAP identity for %s over IAP's own key set, admitting example.com, reading the Directory through the trimmed signer and delegated user with no test options", boot, testIAPAudience)
 	}
 }
 
 // IAP signs people in, so an IAP server takes the domain it admits and no other sign-in setting,
-// an audience of the shape IAP signs for, and no dev sign-in; the audience is refused under any
-// other identity, which would leave it unread.
+// an audience of the shape IAP signs for, both Directory settings (K12), and no dev sign-in; the
+// audience and the Directory settings are refused under any other identity, which would leave them
+// unread.
 func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 	for name, value := range map[string]string{
 		"DISPATCH_SIGNIN_ISSUER":        "https://accounts.google.com",
@@ -181,6 +193,9 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": ""}, "DISPATCH_IAP_AUDIENCE required"},
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": "123456789012-client.apps.googleusercontent.com"}, "DISPATCH_IAP_AUDIENCE=\"123456789012-client.apps.googleusercontent.com\" must be the audience IAP signs"},
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": "/projects/example-project/global/backendServices/1"}, "begins /projects/<project number>/"},
+		{map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": ""}, "DISPATCH_IDENTITY=iap needs DISPATCH_DIRECTORY_ACCOUNT"},
+		{map[string]string{"DISPATCH_DIRECTORY_ADMIN": " "}, "DISPATCH_IDENTITY=iap needs DISPATCH_DIRECTORY_ADMIN"},
+		{map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": "", "DISPATCH_DIRECTORY_ADMIN": ""}, "DISPATCH_IDENTITY=iap needs DISPATCH_DIRECTORY_ACCOUNT and DISPATCH_DIRECTORY_ADMIN"},
 	} {
 		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(tc.overrides))); err == nil || !strings.Contains(err.Error(), tc.naming) {
 			t.Errorf("IAP identity with %v: err = %v, want a refusal naming %q", tc.overrides, err, tc.naming)
@@ -192,6 +207,17 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 	} {
 		if _, err := resolveBootConfig(envGetter(environment)); err == nil || !strings.Contains(err.Error(), "DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap") {
 			t.Errorf("%s with DISPATCH_IAP_AUDIENCE: err = %v, want a refusal naming it", name, err)
+		}
+	}
+	for _, setting := range []string{"DISPATCH_DIRECTORY_ACCOUNT", "DISPATCH_DIRECTORY_ADMIN"} {
+		for name, environment := range map[string]map[string]string{
+			"cookie identity":    signInEnvironment(map[string]string{setting: "set@example.com"}),
+			"header identity":    headerIdentityEnvironment(map[string]string{setting: "set@example.com"}),
+			"no sign-in setting": noSignInEnvironment(map[string]string{setting: "set@example.com"}),
+		} {
+			if _, err := resolveBootConfig(envGetter(environment)); err == nil || !strings.Contains(err.Error(), setting+" is read only with DISPATCH_IDENTITY=iap") {
+				t.Errorf("%s with %s: err = %v, want a refusal naming it", name, setting, err)
+			}
 		}
 	}
 	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{

@@ -36,6 +36,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
@@ -288,6 +289,33 @@ func (c *Client) RevokeSignIn(ctx context.Context, signInID, person string) (jso
 		return nil, err
 	}
 	return c.do(ctx, http.MethodPost, "/v1/person-signins/"+url.PathEscape(signInID)+"/revoke", body)
+}
+
+// PersonAccess asks the broker what person has there that outlives their browser session (GET
+// /v1/person-access): their own live machine logins, their unrevoked sign-ins on a machine, and the
+// exchange entries that name them. person is a login as model.CanonicalLogin spells it, which the
+// broker's answer names back.
+//
+// It answers the counts once the broker answers 200 naming person, and an error for anything else,
+// each naming person: an *Error for any other status, a 404 included (the route needs a broker that
+// serves it; any other 404 is a wrong DISPATCH_AGENT_SECRETS_URL or a proxy in the way), an
+// *AccountTokenError for Dispatch's own token, and a plain error for a transport failure, the
+// client's window (defaultTimeout) among them, or an answer that is not the broker's for person.
+// A caller that cannot tell what the person has keeps what it would otherwise forget.
+func (c *Client) PersonAccess(ctx context.Context, person string) (wire.PersonAccessResponse, error) {
+	var access wire.PersonAccessResponse
+	query := url.Values{"person": {person}}
+	answer, err := c.do(ctx, http.MethodGet, "/v1/person-access?"+query.Encode(), nil)
+	if err != nil {
+		return access, fmt.Errorf("agent-secrets: ask what %s has that outlives the browser: %w", person, err)
+	}
+	if err := json.Unmarshal(answer, &access); err != nil {
+		return access, fmt.Errorf("agent-secrets: read what %s has that outlives the browser: %w", person, err)
+	}
+	if access.Person != person {
+		return access, fmt.Errorf("agent-secrets: asked what %s has that outlives the browser, the broker answered for %q", person, access.Person)
+	}
+	return access, nil
 }
 
 // signInRevoke is the body the broker's sign-in revoke takes. It is not a Decision because a

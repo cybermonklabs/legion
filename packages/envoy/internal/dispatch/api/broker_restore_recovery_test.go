@@ -136,7 +136,7 @@ func TestABrokerRestoredAloneIsRecoveredByTellingItAgainWhatWasSettledSince(t *t
 	const email, takeback = "lostbroker@example.com", "takeback@example.com"
 	signIn := func(email, account string) {
 		t.Helper()
-		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, model.MemberFull); err != nil {
+		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, "", model.MemberFull); err != nil {
 			t.Fatalf("the sign-in of %s at %s: %v", account, email, err)
 		}
 	}
@@ -262,7 +262,7 @@ func TestABrokerRestoredBeforeTheResetIsRecoveredByRepeatingTheResetCredentialBl
 	if answer := r.resetBlocksAgain(t, time.Now(), directory); answer != "no reset ran" {
 		t.Errorf("the read of the last reset on a deployment that never reset answered %q; want no reset ran", answer)
 	}
-	if err := r.people.SignInSubject(ctx, email, "a-reset", "refresh-a", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "a-reset", "refresh-a", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	signIn := r.signInMachine(t, email, "a-reset", strings.Repeat("z", 43))
@@ -288,7 +288,7 @@ func TestABrokerRestoredBeforeTheResetIsRecoveredByRepeatingTheResetCredentialBl
 	if r.machineSignInLive(t, signIn) {
 		t.Errorf("after the broker-alone recovery, A's sign-in is live; want it ended before Dispatch starts")
 	}
-	if err := r.people.SignInSubject(ctx, email, "b-reset", "refresh-b", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "b-reset", "refresh-b", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	r.ageClaims(t)
@@ -315,7 +315,7 @@ func TestABrokerBackupWrittenWithinTheHourAfterTheResetRepeatsItsBlocks(t *testi
 	r := newRecoveryRig(t)
 	const email = "late-backup@example.com"
 	for _, account := range []string{"a-late", "b-late"} {
-		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, model.MemberFull); err != nil {
+		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, "", model.MemberFull); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -359,7 +359,7 @@ func TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks(t *testing.T) {
 	r := newRecoveryRig(t)
 	const email = "during-reset@example.com"
 	for _, account := range []string{"a-during", "b-during"} {
-		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, model.MemberFull); err != nil {
+		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, "", model.MemberFull); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -431,10 +431,10 @@ func TestABrokerRestoredBeforeTheResetLeavesTheDirectorysHolderCleared(t *testin
 	r := newRecoveryRig(t)
 	const email = "holder-after-reset@example.com"
 	// The restored database: X, then Y, and the revocation of X still owed.
-	if err := r.people.SignInSubject(ctx, email, "x-owed", "refresh-x", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "x-owed", "refresh-x", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.people.SignInSubject(ctx, email, "y-owed", "refresh-y", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "y-owed", "refresh-y", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	// The broker, before the reset: it applied that revocation before the loss, so it refuses X.
@@ -490,7 +490,7 @@ func TestAResetsSettledRevocationIsNotRecordedAgainByALaterBrokerRestore(t *test
 		r := newRecoveryRig(t)
 		const owed = "owedrow-restore@example.com"
 		for _, account := range []string{"x-owed", "y-owed"} {
-			if err := r.people.SignInSubject(ctx, owed, account, "refresh-"+account, model.MemberFull); err != nil {
+			if err := r.people.SignInSubject(ctx, owed, account, "refresh-"+account, "", model.MemberFull); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -529,7 +529,7 @@ func TestAResetsSettledRevocationIsNotRecordedAgainByALaterBrokerRestore(t *test
 		r := newRecoveryRig(t)
 		const kept = "kept-restore@example.com"
 		for _, account := range []string{"s-kept", "t-kept"} {
-			if err := r.people.SignInSubject(ctx, kept, account, "refresh-"+account, model.MemberFull); err != nil {
+			if err := r.people.SignInSubject(ctx, kept, account, "refresh-"+account, "", model.MemberFull); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -565,11 +565,11 @@ func TestABrokerDatabaseMadeAgainIsToldEveryRevocationSettled(t *testing.T) {
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "madeagain@example.com"
-	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	machine := r.signInMachine(t, email, "account-a", strings.Repeat("m", 43))
-	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	r.served.revokeOwedBrokerCredentials(ctx)
@@ -637,10 +637,10 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "lockedrows@example.com"
-	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	r.served.revokeOwedBrokerCredentials(ctx)

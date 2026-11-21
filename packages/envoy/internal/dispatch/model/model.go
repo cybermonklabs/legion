@@ -493,11 +493,23 @@ type PrivateProjectChannels struct {
 }
 
 // PersonAnswer is one person's member kind as the membership answer spells it (GET
-// /api/v1/access/person?person=), with Holder as AccessAnswer carries it.
+// /api/v1/access/person?person=), with Holder as AccessAnswer carries it. Held is whether Dispatch
+// holds the person's personal tokens and broker credentials until they sign in again or a refresh
+// confirms them (identity.Membership.Standing): present whenever that answered, false for a person
+// no row holds, and left out when it failed, so a reader tells "not held" from "could not be read".
+// AsOf is the database time of the read the answer rests on: Standing's, or the database's now()
+// where Standing did not answer. NotHeldUntil is set under IAP identity alone, on every answer that
+// is not held: when it stops being served, the last Active Workspace Directory answer plus 24
+// hours, or AsOf itself for an answer that is unavailable (identity.Standing.Unavailable), a
+// person no Active answer confirmed in 24 hours or no row holds. It is left out of a held answer and
+// everywhere outside IAP.
 type PersonAnswer struct {
-	Person     string `json:"person"`
-	MemberKind string `json:"member_kind" enum:"full,restricted,none"`
-	Holder     *bool  `json:"holder,omitempty"`
+	Person       string     `json:"person"`
+	MemberKind   string     `json:"member_kind" enum:"full,restricted,none"`
+	Holder       *bool      `json:"holder,omitempty"`
+	Held         *bool      `json:"held,omitempty"`
+	AsOf         time.Time  `json:"as_of"`
+	NotHeldUntil *time.Time `json:"not_held_until,omitempty"`
 }
 
 // The member kinds the membership answer spells: MemberKind's two, and MemberAnswerNone for a

@@ -159,6 +159,12 @@ Each item below names a variable, then its purpose.
   that budget is no setting but one sixteenth of the Go memory limit, at least 64 MiB and at most 1 GiB, and 256 MiB when no limit is set.
   `/debug/vars` (Profiling, below) shows how near each cap a running process is.
 
+- `DISPATCH_DIRECTORY_ACCOUNT`, `DISPATCH_DIRECTORY_ADMIN`
+
+  Under `iap` identity alone, and required there: the boot refuses `DISPATCH_IDENTITY=iap` without both, naming each one missing, and refuses either one under any other identity.
+  The server builds its Workspace Directory reader from them at boot (`identity.NewDirectoryReader`), and a reader it cannot build, with no Application Default Credentials say, stops the boot: an `iap` server that could not read the Directory would hold nobody (Identity, `iap`, below).
+  Before IAP admits anyone, the deployment operator makes the Domain-wide Delegation grant and runs `envoy-dispatch directory-check` (Checking the Directory reads, below).
+
 `DISPATCH_REPO_PROJECTS` optionally seeds repository-to-project settings at boot with comma-separated `owner/repo=KEY` entries.
 Each repository is read as a mapping's path is, lower-cased with one trailing `.git` trimmed, and held to the names GitHub allows as the settings route holds a mapping's path: an entry such as `acme/.git=KEY`, which reads as `acme/`, or `acme/..=KEY` is refused, naming the entry, and the boot with it.
 Existing dashboard mappings take precedence over this seed:
@@ -245,6 +251,7 @@ it names no session, it names neither a person nor a service, it was issued to a
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
+A token that names a person Dispatch holds is `401 MEMBERSHIP_HELD` (Identity, below), after every refusal above; under `iap`, one whose broker answered its person not held only until a deadline that has passed is `503 BROKER_UNAVAILABLE` with `Retry-After: 60` (Identity, below).
 The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and closes (1008) once the caller no longer resolves, or once a personal token's projects or scopes are other than when it opened, so a token narrowed to fewer projects reads nothing more of the ones it lost on a socket it already held.
 For a broker-issued credential that re-resolution is the broker's introspection answer alone, with the admission of the person the token names (below):
 the upgrade's proof authenticated it and cannot be presented a second time.
@@ -704,14 +711,65 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 - With either issuer, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
   A refresh the issuer refuses (`400` or `401` with the OAuth error `invalid_grant`:
-  the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold.
+  the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold:
+  under the sign-in pool it forgets the refresh token, and under the two Google rules it holds the person or, for a restricted member whom only the access lists refuse, keeps the token (below).
   With either issuer it ends them, and records a confirmation, only while the person's row still records the Google account (none for a sign-in pool's row) and the refresh token that refresh read (`PgPeopleStore.EndSubject`, `PgPeopleStore.ConfirmSubject`), so the answer to a refresh that began before the person signed in again, which stored another token, neither ends nor overwrites that newer sign-in.
   A refresh that fails any other way (the issuer undiscovered, down or slow, a `5xx` or `429`, another OAuth error, or an answer without an ID token that verifies) ends nothing:
   the request that found the confirmation lapsed is refused `503 SIGNIN_UNAVAILABLE`, the sessions and the refresh token are kept, and the first request after the issuer answers again refreshes and is served.
   A refresh is one request to the issuer's token endpoint, with the client's secret sent the way the issuer's discovery document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic where it names `client_secret_basic` (Google's does), else in the form where it names `client_secret_post`.
   Each request to the token endpoint has ten seconds, and the whole refresh, which also reads the person's row and, the first time, the discovery document, has fifteen; a refusal ends the sessions when its answer comes within both.
   An issuer whose document names neither is asked by HTTP Basic and, when that fails, may be asked again in the form, so its refusal can need both requests to answer within the fifteen seconds.
-  Logout ends Dispatch's session only, not the issuer's.
+  Logout ends Dispatch's session only, not the issuer's, and under the two Google rules it can keep the refresh token (below).
+
+- Under the two Google rules (`DISPATCH_SIGNIN_DOMAIN`, with or without `DISPATCH_SIGNIN_OUTSIDE=1`), a refresh the rule refuses holds the person: their personal tokens and the broker credentials that name them are refused until they sign in again, and nothing is revoked.
+  `PgPeopleStore.EndSubject` ends the sessions and forgets the refresh token as above, and records the hold in the same transaction (`people.held_since`, the database's `clock_timestamp()`, migration `20261117174706`).
+  A row records a hold while `held_since` is later than `signed_in_at`, so the person's next sign-in releases it, a sign-in by a build older than the hold included.
+  Each refusal holds: Google's `invalid_grant`, whatever its cause; a refreshed ID token that names another Google account or another address than the row records, both compared before the rule runs; one with no subject, no email, or an email Google has not verified; and every other refusal of the rule, a full member's `hd` that is not the domain among them.
+  Three refusals of a restricted member's row hold nobody, since the restricted admission rule decides that member's tokens at each use (above) and admits them again with no sign-in: no list names the account (`ErrNotListed`), its address is on a domain the Workspace owns (`ErrWorkspaceAddress`), or the deployment no longer signs in accounts from outside the domain (`ErrNotInDomain`).
+  Those end the sessions, keep the refresh token, set the confirmation to the end's time and mark the row signed out (below), so the membership pass goes on asking Google, and Google's later refusal holds them.
+  A row that records no Google account forgets its token and holds nobody, and so does every refusal under the sign-in pool.
+  Access lists that cannot be read end nothing and hold nobody, as above.
+
+- Whether Dispatch holds a person is `identity.Membership.Standing`, which reads the person's row and the database's time in one statement and answers by the first of these that applies:
+  under any other rule, not held;
+  a recorded hold, held;
+  no row, or no stored refresh token, not held, so a person whose token Dispatch forgot (a sign-out with no access that outlives the browser, below, or a sign-in ended before Dispatch recorded holds) or who never signed in is not checked;
+  a stored token that does not open, on a row that records a Google account, not held while the last confirmation is younger than 24 hours and held after (the unopenable rule), until a sign-in replaces the token, or the token opens again and Google confirms the person;
+  a confirmation younger than an hour (`identity.MembershipMaxAge`), not held;
+  and otherwise a refresh with Google, the one a request's hourly confirmation runs, shared by every caller in the process, which `Standing` waits for at most 2 seconds.
+  A refresh that confirms the person or ends their sign-in answers what the row records after it.
+  Google not reached (every refresh failure but `invalid_grant`, ten seconds without an answer included) and a refresh still running after the 2 seconds answer by the 24-hour rule: not held while the last confirmation is younger than 24 hours, and held after, until a refresh confirms the person.
+  Access lists that cannot be read, and any other failure, give no answer while the confirmation is younger than 24 hours, and the 24-hour rule after.
+  For 60 seconds after a refresh of a person ended with Google not reached or the lists unreadable, the process starts no new refresh of them and answers as that refresh did, and while one has run more than 2 seconds it answers the 24-hour rule at once, so an outage of Google costs each person at most one 2-second wait for each refresh in each process.
+  The 24-hour rule and the unopenable rule record nothing.
+
+- Under the two Google rules, a personal token reads its owner's hold in the statement that already reads its row (`api.personalTokenActor`): a recorded hold is `401 MEMBERSHIP_HELD` at once, an owner with no stored refresh token or a confirmation younger than an hour reads nothing more, and only an older confirmation asks `Standing`, which can add up to 2 seconds to that request; under any other rule no token is held, a recorded hold included.
+  A revoked token is `401 TOKEN_REVOKED` first, and a restricted member's admission rule answers before the hold.
+  The refusal's words say what ends the hold: for a recorded hold and the unopenable rule, "this token's owner must sign in to Dispatch again: Google no longer confirms their sign-in, so the token is held until they do"; for the 24-hour rule, "no refresh confirmed this token's owner in 24 hours; the token works again at the next confirmation".
+  When `Standing` gives no answer the token is `503 IDENTITY_UNAVAILABLE`, never an accept, and the refusal logs `msg="dispatch: a personal token was refused: whether Dispatch holds its owner could not be read"` at WARN.
+  A broker-issued token naming a person is `401 MEMBERSHIP_HELD` when the person's row records a hold, read in the statement that reads their member kind and account (`api.brokerPersonAdmitted`), in the personal token's words; and when the broker's introspection answers it `held` (`ciphertoken.Caller.Held`), in the broker's words, "<person>'s credentials are held by Dispatch; they work again when <person> signs in to Dispatch, or when Dispatch can confirm <person> with Google again".
+  That answer carries every hold the broker learned from the person route (below), the 24-hour and unopenable rules' included, and the five-second cache of introspection answers keeps it as it keeps any live answer; Dispatch asks `Standing` nothing for a broker token.
+  The token's revocation and account checks (below) and the restricted admission rule answer before the hold, and a live socket's heartbeat runs the same checks, so it closes at its next heartbeat after the refusal.
+  A machine login's approve or deny reads the caller's hold again right before Dispatch relays it (`api.approverStanding`): a personal token's by the steps above, a broker token's recorded hold, and a cookie's session generation, which a hold advances; a held caller is `401 MEMBERSHIP_HELD`, and the broker is not called.
+
+- The person route the secrets broker reads (`GET /api/v1/access/person`, `DISPATCH_ACCESS_ACCOUNTS` above) answers, beside `member_kind`, `held`, `Standing`'s answer, and `as_of`, the database time of the read it rests on, so a broker that keeps answers from several processes keeps the latest (`api.personStanding`).
+  A person no row holds is `held: false`, and so is everyone where no Google rule signs people in.
+  When `Standing` gives no answer the route still answers `200` with `member_kind`, leaves `held` out, and logs `msg="dispatch: the person answer leaves held out: whether Dispatch holds the person could not be read"` at WARN; the broker reads that answer as Dispatch not asked.
+  Under `iap`, every answer that is not held also carries `not_held_until` (below).
+
+- Under the two Google rules, `POST /auth/logout` ends the person's browser sessions, then asks whether they have access that outlives the browser (`cipher.OutlivingAccess`): an unrevoked personal token in `agent_tokens`, or, at the secrets broker, a live machine login of their own, an unrevoked sign-in on a machine, or an exchange entry that names them, which the broker counts on `GET /v1/person-access` within the broker client's 5 seconds.
+  With any such access, or when the broker cannot be asked (a broker without that route answers `404`, which counts as cannot), it keeps the refresh token and the confirmation, for membership checks only, and marks the row signed out (`people.signed_out_at`, later than `signed_in_at`); with none, it forgets the token, as under the sign-in pool.
+  Either write applies only while `signed_in_at` is the one the sign-out read first, so a sign-in that commits while the broker is asked keeps its own token.
+  A kept token never makes a browser session: only the sign-in callback makes one.
+  With no broker configured (`DISPATCH_AGENT_SECRETS_URL` unset) it reads `agent_tokens` alone.
+  A failure logs at WARN: `msg="dispatch: a sign-out could not ask whether the person has access that outlives the browser; keeping their refresh token"`, and, for the writes, `msg="dispatch: keep the signed-out person's refresh token failed"` or `msg="dispatch: forget the sign-in's refresh token failed"`; a sign-out whose first read of the row fails is `500` and logs `msg="dispatch: read the sign-in a sign-out ends failed"`.
+
+- Under the two Google rules the maintenance sweep runs the membership pass last (`identity.MembershipPass`, Background loops, below), so each stored refresh token is checked about once an hour whether or not its person makes a request, and Google's refusal holds a person who uses only a personal token or a broker credential, and one who signed in before Dispatch recorded holds.
+  First it takes, one row at a time, up to 20 signed-out rows with a stored token whose last check (`people.outliving_checked_at`) is null or older than an hour, starting none 10 seconds or more into the pass, and asks of each, within 5 seconds, whether the person still has access that outlives the browser: with none it forgets the token, guarded by the `signed_out_at` and `signed_in_at` it read; when the ask fails it keeps the token and logs `msg="dispatch: the membership pass could not ask whether a signed-out person has access that outlives the browser; keeping their refresh token"` at WARN.
+  Then it takes, one at a time, up to 20 rows with a stored token whose later of the confirmation and the last attempt (`people.confirm_tried_at`) is older than an hour, the one due longest first, starting none 20 seconds or more into that step, stamps the attempt and refreshes it (`Membership.ConfirmFor`), so a row that could not be confirmed is tried again an hour later.
+  A pass ends within 50 seconds.
+  Each pass that claimed a row logs `msg="dispatch: membership pass" confirmed=<n> held=<n> kept=<n> unasked=<n> forgotten=<n>` at INFO: `confirmed`, a refresh that confirmed the person or found them confirmed since the claim; `held`, `kept` and `forgotten`, a refresh that ended the sign-in that way, and `forgotten` also each forget of the first step; and `unasked`, every other outcome of a refresh, Google not reached, a token that does not open and access lists that cannot be read among them.
+  A pass that fails logs `msg="dispatch: membership pass failed"` at WARN.
 
 - A person from outside the domain whom the hourly confirmation signs out (above) is told why: the request that ran it and every one after it, from any browser still holding the session, is `401 NO_IDENTITY` with `reason` and `login`, the address (`identity.SignedOut`), and the dashboard's sign-in page says it in words.
   `reason` is `WORKSPACE_ADDRESS` for a restricted member whose address is now on a domain the Workspace owns (`identity.ErrWorkspaceAddress`), whatever the lists say;
@@ -738,13 +796,14 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   after reading the session generation the callback checks that the row still records its `sub`.
   Group mode neither reads nor writes `sub`, so there the old holder of a reassigned address keeps the cookies they have until their cookie expires, 30 days after it was issued, unless the pool user is removed from `DISPATCH_SIGNIN_GROUP` or disabled, and keeps their personal tokens until someone revokes them.
 
-  The refresh token is stored sealed (`people.refresh_token`):
+- The refresh token is stored sealed (`people.refresh_token`):
   AES-256-GCM under a key derived from the current key of `DISPATCH_SIGNING_KEY` with HKDF and a fixed purpose label, bound to the person's email, in a format whose `v1:` prefix names its version.
   A value is opened under each key of the set in turn, the GCM tag refusing a key it was not sealed under;
   it names no key, so the `v1:` format is byte for byte the one earlier releases write and read.
   A stored value that does not open (sealed under a key the set does not hold, moved from another person's row, or in plain text) counts as no refresh token:
   each read of it logs `msg="dispatch: a stored refresh token did not open; the person signs in again"` at WARN with the email and never the value, and writes nothing;
   the person's request answers `401 NO_IDENTITY`, and their next sign-in replaces the value.
+  Under the two Google rules that person's personal tokens and broker credentials go on by the unopenable rule (above): served while the last confirmation is younger than 24 hours, and held after.
 
 - The credentials a replaced account holds at the secrets broker (`DISPATCH_AGENT_SECRETS_URL`) end with its hold on the address too:
   the sign-in that replaces the `sub` an address's row records also records, in its own transaction, that Dispatch owes the broker a revocation of that account (`broker_revocations`, migration `20261116232217`), so a process that dies after the commit loses none.
@@ -843,7 +902,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET` and `DISPATCH_SIGNIN_GROUP` are refused beside it, and so are dev sign-in and `DISPATCH_IAP_AUDIENCE` under any other identity.
 
 - Under `iap`, IAP signs a fresh assertion for every request, so each request is decided on its own:
-  Dispatch keeps no session cookie, refresh token or hourly confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
+  Dispatch keeps no session cookie, refresh token or sign-in confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
   Each person admitted is recorded in `people`.
   A request with no assertion, one that fails a check, or one whose person the rule refuses is `401 NO_IDENTITY`;
   a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and nothing else, since the error of an assertion nobody signed quotes its own unverified `iss` or `aud`, which its sender chose; a refused person logs `msg="dispatch: IAP person refused" email=<email> hd=<hd> reason=<reason>`, read from an assertion IAP signed; both at WARN.
@@ -859,6 +918,30 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the live socket closes with `4001` (reason `credential expired`), on which the page reopens it at once and shows nothing, and the document socket with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects.
   The reopened socket's upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past its assertion, and an IAP user's sockets each reopen about every ten minutes.
   Any other refusal on a heartbeat closes the socket as before, an expired assertion that IAP's keys no longer verify (a key IAP withdrew) or whose person the rule no longer admits included: `1008` on the live socket, and no close frame (`1006`) on the document socket.
+
+- Under `iap`, IAP keeps no refresh token, so Google's refusal of a refresh cannot reach Dispatch; it follows each person's Google Workspace account in the Directory instead, through the reader `DISPATCH_DIRECTORY_ACCOUNT` and `DISPATCH_DIRECTORY_ADMIN` configure (`identity.Membership.Directory`).
+  A check reads `users.get` for the person's address and has three outcomes, which share one 15-second deadline with the database write of the outcome: Active, the person's own account not suspended, confirms them, releases a hold, and fixes `not_held_until` 24 hours later; Held, an account suspended or missing, or an answer whose `primaryEmail` is another address (the asked address made an alias of a colleague's account), records a hold; and Failed, any other answer, a timeout or a write that missed the deadline, changes nothing but the time of the check, and logs `msg="dispatch: a Workspace Directory check failed; ..."` at WARN.
+  An Active outcome rests on the check's own read of the person's row, made before its Directory read, and checks run in every process at once: its write changes nothing while the row holds a hold recorded at or after that read, a Held outcome of a check that read the Directory later, which stands (the check logs `msg="dispatch: a Workspace Directory check answered Active, and wrote nothing: ..."` at INFO).
+  Each Held outcome records the hold at its own time (`people.held_since`), not at the time of the row's first one, so this holds as well for a row that was already held when the earlier check read it and is held again: an account restored and suspended again while two checks of it run.
+  The membership pass checks each full member's row about once an hour, held rows and rows that never made a request included, and runs no sign-out step (its line counts an Active outcome `confirmed`, a Held one `held`, an Active one whose write changed nothing because a later check's hold stands `held` too, and a Failed one `unasked`).
+
+- Under `iap`, a personal token asks at every use, and the person route the secrets broker reads answers the same: a recorded hold is `401 MEMBERSHIP_HELD`, saying that Google's Workspace Directory no longer confirms the token's owner; an Active answer younger than an hour is served; an older one makes the request check the Directory, waiting at most 2 seconds, and starts no new check for a minute after a Failed one; and while no Active answer is younger than 24 hours (`not_held_until`), the token is `503 IDENTITY_UNAVAILABLE`, never served and never held.
+  So an outage of the Directory longer than 24 hours stops every personal token until it answers again, and a person whom IAP admits but whose row has no Active answer yet waits for the first check.
+  Only an Active answer releases a hold: IAP's assertion, however valid, records the person and nothing more.
+  The person route carries `not_held_until` on every answer that is not held: the last Active answer plus 24 hours, or `as_of` itself for a person no Active answer confirmed in 24 hours or no row holds, which the broker refuses as a deadline passed; a held answer carries none.
+  At Dispatch a broker token whose person is held is `401 MEMBERSHIP_HELD` in the words a personal token gets here, and so is a held person's approve or deny of a machine login; the Envoy listener refuses such a token `401 MEMBERSHIP_HELD` in its own words, which name the person and hold under every rule.
+  At both, a broker token whose introspection answered its person not held past that deadline is `503 BROKER_UNAVAILABLE` with `Retry-After: 60`.
+  An approve or deny of a machine login, a personal token's mint and a change of a token's scopes at a person's browser, which presents only IAP's assertion, ask the same once the request's body has arrived: `401 MEMBERSHIP_HELD`, saying that Google's Workspace Directory no longer confirms the caller, for a held person, and `503 IDENTITY_UNAVAILABLE` past their deadline; IAP still admits the browser itself.
+
+- Under `iap`, a Held outcome logs `msg="dispatch: the Workspace Directory reports a person's account suspended, missing or another's; their credentials are held"` at INFO with the email, and an Active or Held outcome whose write fails logs `msg="dispatch: a Workspace Directory check answered Active, and its write failed; the check is Failed"` (or `Held`) at WARN.
+  A people store that records no Directory outcome fails every check and logs `msg="dispatch: a Workspace Directory check cannot record its outcome; the person is not confirmed"` at ERROR.
+  At boot an `iap` server logs `msg="dispatch: naming people from Identity-Aware Proxy's signed assertion"` at INFO with `audience`, `keys`, `domain`, `directory_account` and `directory_admin`, and one that cannot build its Directory reader logs `msg="dispatch: build the request identity"` at ERROR and exits 1.
+
+- Under `iap`, the person's own account is the one whose id the row stores from its first Active answer, or, before one is stored, the one whose `primaryEmail` is the address, letter case ignored.
+  An answer for the address itself, not suspended, with another account's id (an address the Workspace deleted and created again for another person) asks the question a sign-out asks (`cipher.OutlivingAccess`, above), inside the check's 15 seconds: while the address still has an unrevoked personal token, or at the broker a live machine login, an unrevoked sign-in on a machine or an exchange entry that names it, or the question fails, the answer is Held and the stored id stays; once it has none, the answer is Active, the row stores the new account's id, and the person is confirmed and released with no request of their own.
+  A question or a write that runs past the 15 seconds makes the check Failed, which leaves the stored id, the confirmation, `not_held_until` and the hold as they were.
+  An answer whose `primaryEmail` is another address is Held whatever the address holds, and an answer with the stored id asks the broker nothing.
+  So the operator ends the earlier person's access ("Ending a person's access" in `docs/site/src/content/docs/dispatch/running-dispatch.md`), and the next check confirms the new person; with no broker configured the question reads personal tokens alone.
 
 - `header:<Header-Name>` is for tests and local harnesses only, never for a production Dispatch deployment.
   It accepts a header value, lowercases it and records the person.
@@ -897,6 +980,45 @@ a credential of the replaced account that the broker still holds goes on reading
 It also leaves the broker refusing the account the address came back to, when the broker had recorded that account replaced, since only a revocation naming that account as the holder lifts the refusal.
 Recording the revocation again, as the runbook and the store README give it, has the loop pay it and recovers both.
 It exits 0 once it listed what is owed or settled every revocation named, 1 when nothing of the address is owed, when a revocation named is not owed at that generation, or when the database cannot be opened, read or written, and 2 for anything but one address followed by well-formed `<subject>:<generation>` names.
+
+### Changing the Workspace domain
+
+```sh
+envoy-dispatch forget-hosted-domains
+```
+
+Under `DISPATCH_SIGNIN_DOMAIN`, each sign-in and each hourly confirmation records the Workspace domain its ID token carried (`hd`).
+Dispatch does not start while at least one full member's row holds a refresh token and records a domain, and none of those rows records `DISPATCH_SIGNIN_DOMAIN`, compared byte for byte: a mistyped domain would hold every member at their next hourly check.
+Its error names the domain it was given, the domains the rows record, and this command.
+A row that records no domain does not count, and neither does a restricted member's.
+The boot reads `people` once for this check, after it retires the refresh tokens stored in plain text (above), and from that read, under `DISPATCH_SIGNIN_DOMAIN` (and so under `iap`), it logs `msg="dispatch: people census" checkable=<n> held=<n> uncheckable=<n>` at INFO: the rows that record no hold, hold a refresh token (whether or not it opens) and record a Google account; the rows with a recorded hold; and every other row, whose sign-in Dispatch cannot check by a refresh.
+A row that only IAP recorded holds no refresh token, so under `iap` it is in the third count unless it is held, and the Directory checks it all the same.
+A refused boot logs `msg="dispatch: check the sign-in domain against the people"` at ERROR with the error and exits 1.
+
+For an intended change of domain: stop every Dispatch process; once Google gives the new `hd`, run `envoy-dispatch forget-hosted-domains` once; then start every process with the new domain.
+It forgets the domain every row recorded and prints how many rows it changed, `forget-hosted-domains: <n> people rows no longer record a Workspace domain; ...`; each row records a domain again at its next confirmation.
+It holds and releases nobody.
+A process that runs with the old domain after Google's change holds each full member whose refresh it runs, and that member must then sign in again.
+It exits 0 once it forgot the domains, 1 when the database cannot be opened or written, and 2 for any argument.
+
+### Checking the Directory reads
+
+```sh
+envoy-dispatch directory-check --active <login> --held <login> --scope-probe <scope>
+```
+
+checks, before IAP admits anyone, that an `iap` deployment's Workspace Directory reads work and that the signer's grant gives nothing more.
+It builds the reader Dispatch builds from `DISPATCH_DIRECTORY_ACCOUNT` and `DISPATCH_DIRECTORY_ADMIN` (`identity.DirectoryReader`): the process's own Google identity calls IAM `signJwt` on the signer for a JWT naming the delegated user and `https://www.googleapis.com/auth/admin.directory.user.readonly`, trades it at Google's token endpoint, and reads `users.get` with `fields=id,suspended,primaryEmail`.
+It checks each login once, as a person with no stored Directory user id, so by its primary address, and prints one line for each, `<login>: Active`, `<login>: Held` or `<login>: Failed (<reason>)`.
+Then it asks Google for a token for `--scope-probe`, a scope the grant must not give (`https://www.googleapis.com/auth/admin.directory.user`, say), with the same signer and delegated user, and prints `scope <scope>: granted`, `scope <scope>: refused (<OAuth error code>)`, or `scope <scope>: Failed (<reason>)` when Google gave neither answer.
+A reason names the step that failed (`signJwt`, the token exchange or the Directory read) and the HTTP status of its answer, and never a word Google wrote; an OAuth error code prints only when it is lowercase letters and underscores.
+Each check and the probe has the 15 seconds a check in the server has.
+It needs no server and no database.
+
+It exits 0 only when the `--active` login is Active, the `--held` login (a suspended or deleted account) is Held, and Google refuses the probe with `unauthorized_client`;
+1 for any other verdict, each named on stderr, or when the reader cannot be built (no Application Default Credentials);
+and 2 for a missing or blank flag, an argument, or `DISPATCH_DIRECTORY_ACCOUNT` or `DISPATCH_DIRECTORY_ADMIN` unset.
+Google states that a new Domain-wide Delegation grant can take up to 24 hours to take effect, so a run that fails at the token exchange soon after the grant may pass later.
 
 ## Local Postgres
 
@@ -1799,10 +1921,11 @@ A process that finds it held tries again
   Its tick records its period in `duty_passes`, so one process serves each period however many run, and `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test.
   That interval is the pass's own bound too: a pass that cannot cover every head within it ends there, logs its line and leaves the cursor for the pass after it, so the lease is free when the next pass is due (CI reconcile, above).
 
-- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
+- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind (Answering a question, below), sends every delivery a process that died left owed (Keyed writes, below), and last, under the two Google rules and under `iap`, runs the membership pass (Identity, above), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
   Each pass also logs an ERROR line for each project the database holds private that `DISPATCH_PRIVATE_PROJECTS` does not name, and, with a list, the loop logs an ERROR line while the store cannot hold a private project once as it starts in each process and then once an hour per process (Required configuration, above).
+  The lease holds until the pass returns, so no two processes run a membership pass at once, and a slow pass, up to 50 seconds, delays only the next run's work.
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
@@ -4524,7 +4647,8 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/auth/logout` (POST; cookie or trusted header)
 
-  End the person's Dispatch sessions, forget their refresh token, and clear the session cookie.
+  End the person's Dispatch sessions and clear the session cookie.
+  Under the sign-in pool it forgets their refresh token; under the two Google rules it keeps the token, marking the row signed out, while the person has access that outlives the browser or the broker cannot be asked, and forgets it otherwise (Identity, above).
 
 - `/auth/whoami` (GET; cookie or trusted header)
 
@@ -4984,6 +5108,7 @@ Each item below names a path with its method and identity, then its purpose.
   it defaults to the list that holds the writes of the caller's own credential (`writesHeldTo`), and a credential whose writes a list holds mints no token that lists none.
   The mint takes the owner's `people` row for share, the row a sign-in under another Google account takes for update, and inserts only while its caller still holds the address (a cookie's session generation is still its login's, and a personal token is not revoked and its account still holds the address, `api.tokenAccountReplaced`); a broker-issued token never mints, since none holds the `approve` scope:
   a mint racing that sign-in writes nothing and is refused as the caller's next request is, `401 NO_IDENTITY` for a cookie and `401 TOKEN_REVOKED` for a personal token.
+  Under `iap`, a mint at the person's browser is `401 MEMBERSHIP_HELD` while the Workspace Directory holds them and `503 IDENTITY_UNAVAILABLE` past their deadline (Identity, above).
   A listed row's `projects` holds only the projects the caller's own credential sees, so a token whose every project is hidden from the caller reads as one that lists none;
   at the person's own browser, `projects_hidden: true` marks a token that lists a project the person no longer sees, and it is absent everywhere else.
 

@@ -15,7 +15,9 @@
 #
 # setup signs alice@example.com and bob@example.com in through the harness's dev sign-in; alice
 # makes a project of the run's own, gives it the Slack channel C0MEMBER01, and mints a dsp_ token
-# of her own. `person` reads alice's member kind and an unknown login's. `project` reads the
+# of her own. `person` reads alice's answer, compared whole but for `as_of`, the time of the read it
+# rests on, which it checks as an RFC 3339 time: a full member, not held; and an unknown login's
+# member kind. `project` reads the
 # project for bob while it is public, compared whole but for `repositories`, which this driver
 # does not read and #4156 removes from the answer. `private` reads the private-projects list,
 # exactly {"projects":[]} while no project is private, then makes the project private with SQL
@@ -141,8 +143,15 @@ pass "$section" "alice minted a dsp_ token"
 section=person
 call broker GET "/api/v1/access/person?person=$(q "$alice")"
 want_status 200 "$section" "the broker reads $alice"
-expect "$section" "$alice is a full member" \
-  "$(jq -cnS --arg p "$alice" '{member_kind: "full", person: $p}')" .
+# The answer carries the time of the read it rests on (as_of), which changes with every read, so
+# it is checked as a time; the rest is compared whole. Under the harness's dev sign-in no Google
+# rule holds anyone, and the answer says alice is not held.
+expect "$section" "$alice is a full member, not held" \
+  "$(jq -cnS --arg p "$alice" '{held: false, member_kind: "full", person: $p}')" '{member_kind, person, held}'
+as_of="$(jq -r .as_of "$work/body")"
+[[ "$as_of" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$ ]] ||
+  fail "$section" "the answer for $alice carries its as_of" "as_of is $as_of, want an RFC 3339 time"
+pass "$section" "the answer for $alice carries its as_of, $as_of"
 call broker GET "/api/v1/access/person?person=$(q nobody@example.com)"
 want_status 200 "$section" "the broker reads a login nobody has signed in with"
 expect "$section" "a login nobody has signed in with is none" '"none"' .member_kind

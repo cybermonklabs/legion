@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
@@ -80,20 +82,18 @@ type bindingRefusal struct {
 const bindingToken = `insert into agent_tokens (owner, name, token_hash, prefix, subject) values ('r@x.example', 'token', '\x01'::bytea, 'test', 'account-a')`
 
 // bindingRevocationHolder is the address r@x.example recording account-b, which took it from
-// account-a; bindingRevocation is the revocation of account-a its sign-in records, owed, at the
-// address's session generation as it stands, which the recording reads in its own statement; and
-// bindingRevocationAgain is the sign-in's upsert of it, for an account replaced again
-// (store.recordBrokerRevocationSQL with its values written in).
+// account-a, and bindingRevocation is its sign-in's recording of the revocation of account-a,
+// naming account-b the holder: the writer's own statement (recordBrokerRevocationSQL) with its
+// values written in, so a writer's change is the census's too. On no row it records the
+// revocation, owed, at the address's session generation as it stands, which it reads in its own
+// statement; run again, for an account replaced again, it records it again under the next
+// generation, owed, at the generation the address holds then.
 const (
 	bindingRevocationHolder = `insert into people (email, sub) values ('r@x.example', 'account-b')`
-	bindingRevocation       = `insert into broker_revocations (email, issuer, subject, holder_subject, session_generation) values ('r@x.example', 'https://accounts.google.com', 'account-a', 'account-b', (select generation from user_sessions where login = 'r@x.example'))`
-	bindingRevocationAgain  = `insert into broker_revocations (email, issuer, subject, holder_subject, recorded_at, session_generation)
-		values ('r@x.example', 'https://accounts.google.com', 'account-a', 'account-b', clock_timestamp(), (select generation from user_sessions where login = 'r@x.example'))
-		on conflict (email, issuer, subject) do update
-		set generation = broker_revocations.generation + 1, holder_subject = excluded.holder_subject,
-			recorded_at = excluded.recorded_at, session_generation = excluded.session_generation, done_at = null`
-	bindingRevocationGuard = `alter table broker_revocations disable trigger broker_revocations_binding_columns`
+	bindingRevocationGuard  = `alter table broker_revocations disable trigger broker_revocations_binding_columns`
 )
+
+var bindingRevocation = writtenIn(recordBrokerRevocationSQL, `'r@x.example'`, `'https://accounts.google.com'`, `'account-a'`, `'account-b'`)
 
 // bindingFloor is the floor the runbook's recovery writes for p@x.example, the generation the
 // secrets broker recorded for the address, where a session row of it made later starts;
@@ -101,6 +101,38 @@ const (
 const (
 	bindingFloor      = `insert into session_generation_floors (login, generation) values ('p@x.example', 9)`
 	bindingFloorGuard = `alter table session_generation_floors disable trigger session_generation_floors_guarded`
+)
+
+// writtenIn is statement, a writer's own parameterized statement, with each $n replaced by
+// values[n-1], an SQL literal, the highest first so $1 never rewrites the start of $10. A
+// statement naming a parameter values does not fill keeps its $n, which Postgres refuses, so a
+// writer that takes a new parameter fails its census row rather than passing with a guess.
+func writtenIn(statement string, values ...string) string {
+	for n := len(values); n >= 1; n-- {
+		statement = strings.ReplaceAll(statement, "$"+strconv.Itoa(n), values[n-1])
+	}
+	return statement
+}
+
+// bindingDirectoryRow is the address i@x.example recording account-a; bindingDirectoryActive,
+// bindingDirectoryHeld, bindingDirectoryFailed and bindingDirectoryRebound are the writes of an
+// active, a Held, a Failed and a rebound Directory outcome for it: the writers' own statements
+// (recordDirectoryActiveSQL answered by the Directory user directory-a, recordDirectoryHeldSQL,
+// recordDirectoryFailedSQL, recordDirectoryReboundSQL answered by directory-b), with their values
+// written in, so a writer's change is the census's too. bindingDirectoryReadAt is the check's read
+// of the row the Active write and the rebind rest on: later than any hold a row's setup records, so
+// each writes and releases the hold rather than passing by writing nothing.
+const (
+	bindingDirectoryRow    = `insert into people (email, sub) values ('i@x.example', 'account-a')`
+	bindingDirectoryEmail  = `'i@x.example'`
+	bindingDirectoryReadAt = `'9999-12-31T00:00:00Z'::timestamptz`
+)
+
+var (
+	bindingDirectoryActive  = writtenIn(recordDirectoryActiveSQL, bindingDirectoryEmail, `'directory-a'`, bindingDirectoryReadAt)
+	bindingDirectoryHeld    = writtenIn(recordDirectoryHeldSQL, bindingDirectoryEmail)
+	bindingDirectoryFailed  = writtenIn(recordDirectoryFailedSQL, bindingDirectoryEmail)
+	bindingDirectoryRebound = writtenIn(recordDirectoryReboundSQL, bindingDirectoryEmail, `'directory-b'`, bindingDirectoryReadAt)
 )
 
 var bindingRefusals = []bindingRefusal{
@@ -356,7 +388,7 @@ var bindingTransitions = []bindingTransition{
 		`insert into user_sessions (login) values ('p@x.example') on conflict (login) do nothing`},
 	{"user_sessions.generation", "n -> n+1 (revokeSessionsSQL)",
 		[]string{`insert into people (email) values ('p@x.example')`, `insert into user_sessions (login) values ('p@x.example')`},
-		`insert into user_sessions (login, generation) values ('p@x.example', 1) on conflict (login) do update set generation = user_sessions.generation + 1`},
+		writtenIn(revokeSessionsSQL, `'p@x.example'`)},
 	{"agent_tokens.revoked_at", "null -> the revoke's time",
 		[]string{bindingToken},
 		`update agent_tokens set revoked_at = now() where revoked_at is null`},
@@ -369,16 +401,43 @@ var bindingTransitions = []bindingTransition{
 	{"agent_tokens.scopes", "changed by its owner",
 		[]string{bindingToken},
 		`update agent_tokens set scopes = array['person']`},
+	{"people.held_since", "a hold recorded, then released by a sign-in (EndSubject's EndHold, SignInSubject)",
+		[]string{`insert into people (email, sub, refresh_token, confirmed_at) values ('h@x.example', 'account-a', 'sealed', now())`,
+			writtenIn(endSubjectSQL[auth.EndHold], `'h@x.example'`)},
+		`update people set refresh_token = 'sealed', confirmed_at = now(), signed_in_at = now(), held_since = null, signed_out_at = null where email = 'h@x.example'`},
+	{"people.signed_out_at", "a sign-out that keeps the token, then forgets it (KeepAfterSignOut, ForgetSignedOut)",
+		[]string{`insert into people (email, sub, refresh_token, confirmed_at, signed_in_at) values ('o@x.example', 'account-a', 'sealed', now(), now())`,
+			`update people set signed_out_at = clock_timestamp() where email = 'o@x.example'`},
+		`update people set refresh_token = null, confirmed_at = null, signed_out_at = null where email = 'o@x.example'`},
+	{"people.hosted_domain", "recorded at a confirmation, then forgotten (ConfirmSubject, ForgetHostedDomains)",
+		[]string{`insert into people (email, sub, refresh_token, confirmed_at) values ('d@x.example', 'account-a', 'sealed', now())`,
+			`update people set confirmed_at = now(), hosted_domain = 'x.example' where email = 'd@x.example'`},
+		`update people set hosted_domain = null where hosted_domain is not null`},
+	{"people.confirm_tried_at", "claimed by the membership pass (ClaimOverdueConfirmation)",
+		[]string{`insert into people (email, sub, refresh_token, confirmed_at) values ('c@x.example', 'account-a', 'sealed', now() - interval '2 hours')`},
+		`update people set confirm_tried_at = clock_timestamp() where email = 'c@x.example'`},
+	{"people.directory_confirmed_at", "an active Directory answer after a Held one, which releases the hold (RecordDirectoryHeld, then RecordDirectoryActive)",
+		[]string{bindingDirectoryRow, bindingDirectoryHeld},
+		bindingDirectoryActive},
+	{"people.directory_checked_at", "a Failed check after an active answer, as the pass's claim stamps it too (RecordDirectoryFailed, ClaimDirectoryDue)",
+		[]string{bindingDirectoryRow, bindingDirectoryActive},
+		bindingDirectoryFailed},
+	{"people.not_held_until", "fixed at an active answer plus 24 hours, then moved by the next (RecordDirectoryActive)",
+		[]string{bindingDirectoryRow, bindingDirectoryActive, `select pg_sleep(0.01)`},
+		bindingDirectoryActive},
+	{"people.directory_user_id", "stored at the first active answer, then replaced by a rebind of a recreated address (RecordDirectoryActive, RecordDirectoryRebound)",
+		[]string{bindingDirectoryRow, bindingDirectoryActive},
+		bindingDirectoryRebound},
 	{"broker_revocations row", "recorded (the sign-in's insert, naming the holder people records)",
 		[]string{bindingRevocationHolder},
 		bindingRevocation},
 	{"broker_revocations.generation", "recorded again (the sign-in's upsert, for an account replaced again)",
 		[]string{bindingRevocationHolder, bindingRevocation, `update broker_revocations set done_at = now()`},
-		bindingRevocationAgain},
+		bindingRevocation},
 	{"broker_revocations.session_generation", "recorded again at the address's generation, moved since the first recording (the sign-in's upsert)",
 		[]string{bindingRevocationHolder, bindingRevocation, `update broker_revocations set done_at = now()`,
 			`update user_sessions set generation = generation + 1 where login = 'r@x.example'`},
-		bindingRevocationAgain},
+		bindingRevocation},
 	{"broker_revocations.tried_at", "claimed (a pass's claim)",
 		[]string{bindingRevocationHolder, bindingRevocation},
 		`update broker_revocations set tried_at = now()`},

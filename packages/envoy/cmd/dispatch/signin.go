@@ -13,8 +13,10 @@ import (
 	"golang.org/x/net/idna"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/weborigin"
@@ -220,6 +222,32 @@ func checkIAPSignInSettings(boot bootConfig) error {
 	return checkDomainShape(boot.SignInDomain)
 }
 
+// directorySettings reads DISPATCH_DIRECTORY_ACCOUNT and DISPATCH_DIRECTORY_ADMIN, each trimmed
+// (K12). IAP identity needs both: it confirms each person through the Workspace Directory as that
+// signer service account and delegated Workspace user (requestIdentityFor), and an IAP server that
+// could not would hold nobody, so the refusal names each one missing. Any other identity refuses
+// either, which it would leave unread.
+func directorySettings(env settingValues, iap bool) (account, admin string, err error) {
+	account, admin = strings.TrimSpace(env.get("DISPATCH_DIRECTORY_ACCOUNT")), strings.TrimSpace(env.get("DISPATCH_DIRECTORY_ADMIN"))
+	var named []string
+	for _, setting := range []struct{ name, value string }{{"DISPATCH_DIRECTORY_ACCOUNT", account}, {"DISPATCH_DIRECTORY_ADMIN", admin}} {
+		if (setting.value == "") == iap {
+			named = append(named, setting.name)
+		}
+	}
+	switch {
+	case len(named) == 0:
+		return account, admin, nil
+	case iap:
+		return "", "", fmt.Errorf("DISPATCH_IDENTITY=iap needs %s: Dispatch checks each person's Google Workspace account through the Directory API, as the signer service account DISPATCH_DIRECTORY_ACCOUNT names for the delegated Workspace user DISPATCH_DIRECTORY_ADMIN names, and without them would hold nobody",
+			strings.Join(named, " and "))
+	case len(named) == 1:
+		return "", "", fmt.Errorf("%s is read only with DISPATCH_IDENTITY=iap; unset it, or set DISPATCH_IDENTITY=iap", named[0])
+	default:
+		return "", "", fmt.Errorf("%s are read only with DISPATCH_IDENTITY=iap; unset them, or set DISPATCH_IDENTITY=iap", strings.Join(named, " and "))
+	}
+}
+
 // checkDomainShape refuses a DISPATCH_SIGNIN_DOMAIN that is not a lowercase DNS name, naming its
 // length and never its value.
 func checkDomainShape(domain string) error {
@@ -407,24 +435,69 @@ func retirePlainRefreshTokens(ctx context.Context, people *store.PgPeopleStore, 
 // would otherwise go on naming its person for its thirty days, signed by the deployment's own
 // DISPATCH_SIGNING_KEY and confirmed by nobody. Dev sign-in has no issuer either and keeps its
 // cookie: it mints that cookie itself. That case is read from boot, which says what the
-// deployment configured, and not from signIn.
-func requestIdentityFor(boot bootConfig, signingKey auth.SigningKeys, people auth.PeopleStore, sessions auth.SessionStore, signIn *oidc.CodeFlow, rule identity.SignInRule) identity.Identity {
+// deployment configured, and not from signIn. It also answers the *identity.Membership it built:
+// the one the router's Standing (standingFor) and the membership pass ask, so a request and a pass
+// share one refresh, or one Directory check, of a person. A cookie server builds one that confirms
+// the person with the issuer; an IAP server, which keeps no refresh token, one that checks each
+// person's Workspace account through the Directory reader it builds here, signing through
+// boot.DirectoryAccount for boot.DirectoryAdmin (identity.NewDirectoryReader), with no sign-in
+// issuer; and every other server none (nil: no signIn, header identity or no browser identity).
+// Its error is a Directory reader IAP identity cannot build, which stops the boot: an IAP server
+// that could not check the Directory would hold nobody.
+func requestIdentityFor(ctx context.Context, boot bootConfig, signingKey auth.SigningKeys, people auth.PeopleStore, sessions auth.SessionStore, signIn *oidc.CodeFlow, rule identity.SignInRule) (identity.Identity, *identity.Membership, error) {
 	if boot.IdentityHeader != "" {
-		return identity.HeaderIdentity{Header: boot.IdentityHeader, People: people}
+		return identity.HeaderIdentity{Header: boot.IdentityHeader, People: people}, nil, nil
 	}
 	if boot.IAPAudience != "" {
+		reader, err := identity.NewDirectoryReader(ctx, boot.DirectoryAccount, boot.DirectoryAdmin, boot.DirectoryOptions...)
+		if err != nil {
+			return nil, nil, err
+		}
 		return identity.IAPIdentity{
 			Verifier: oidc.NewIAPVerifier(boot.IAPAudience, oidc.NewKeysAt(boot.IAPKeySetURL)),
 			Rule:     rule,
 			People:   people,
-		}
+		}, &identity.Membership{People: people, Rule: rule, Directory: reader}, nil
 	}
 	if boot.SignInIssuer == "" && !boot.DevSignIn {
-		return identity.NoBrowserIdentity{}
+		return identity.NoBrowserIdentity{}, nil, nil
 	}
 	cookieIdentity := identity.CookieIdentity{SigningKey: signingKey, Sessions: sessions}
 	if signIn != nil {
 		cookieIdentity.Membership = &identity.Membership{People: people, SignIn: signIn, Rule: rule}
 	}
-	return cookieIdentity
+	return cookieIdentity, cookieIdentity.Membership, nil
+}
+
+// standingFor is the Standing the router is handed (routes.AppContextOptions.Standing, which the
+// API reads as api.Deps.Standing): membership where a Google rule signs people in (rule.Holds,
+// DISPATCH_SIGNIN_DOMAIN with or without DISPATCH_SIGNIN_OUTSIDE, or under IAP identity, whose
+// membership follows the Workspace Directory), and nil, which holds nobody, under any other rule or
+// where requestIdentityFor built no membership. It answers the interface so a nil membership is a
+// nil Standing, never a non-nil one holding a nil pointer.
+func standingFor(rule identity.SignInRule, membership *identity.Membership) api.PersonStanding {
+	if membership == nil || rule == nil || !rule.Holds() {
+		return nil
+	}
+	return membership
+}
+
+// buildAppContext is the router's app context main serves for boot, built from built with
+// membership, the one requestIdentityFor built (nil for none), as the router's Standing
+// (standingFor). It then hands membership the router's check of access that outlives the browser
+// (routes.AppContext.Outliving, api.Deps.Outliving), the one a sign-out asks, so a Directory check
+// of an address deleted and created again asks the same database and broker client and no second
+// client is built (identity.Membership.Outliving). requestIdentityFor runs before the router can
+// be built, so the handoff is here, before the app context serves a request or the maintenance
+// sweep starts a membership pass.
+func buildAppContext(boot bootConfig, rule identity.SignInRule, built routes.AppContextOptions, membership *identity.Membership) (*routes.AppContext, error) {
+	built.Standing = standingFor(rule, membership)
+	app, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
+	if err != nil {
+		return nil, err
+	}
+	if membership != nil {
+		membership.Outliving = app.Outliving()
+	}
+	return app, nil
 }

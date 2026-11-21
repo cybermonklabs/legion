@@ -1253,9 +1253,16 @@ func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 		}
 	})
 	t.Run("the same trade while Dispatch cannot be reached is answered with no project, as today", func(t *testing.T) {
-		live, access := devBoxSession(t, broker.Addr, apiToken, fullMember, "example-host-erin-1")
+		// The device-code grant of erin's machine login asks the hold gate about her, which warms
+		// the broker's 30-second cache of her answer (projectaccess.CacheTTL); a trade inside it
+		// would be answered from that cache and ask the stand-in nothing. The broker is its own
+		// process here, so no clock of this test's can age that cache (projectaccess.UseClock moves
+		// an in-process client's clock alone), and another person would warm it at their own
+		// login just the same. So Dispatch goes down before erin's login: her device-code grant
+		// gets no answer to cache, and the trade asks Dispatch about her itself, while it is down.
 		dispatch.SetDown(true)
 		t.Cleanup(func() { dispatch.SetDown(false) })
+		live, access := devBoxSession(t, broker.Addr, apiToken, fullMember, "example-host-erin-1")
 		before := dispatch.Calls()
 		_, body := live.exchange(t, machineTrade(access, "erin-box-1", ""))
 		if dispatch.Calls() == before {

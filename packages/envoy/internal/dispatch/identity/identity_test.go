@@ -67,13 +67,18 @@ type testPeopleStore struct {
 }
 
 // testPerson is one person's row in testPeopleStore: ConfirmedAt is the store clock's time of
-// the last confirmation, zero for none, and Kind the member kind the last sign-in or confirmation
-// wrote.
+// the last confirmation, zero for none, Kind the member kind the last sign-in or confirmation
+// wrote, HostedDomain the `hd` it recorded, Held a recorded hold, SignedOut a sign-out or an
+// EndKeep that kept the refresh token, and SignedInAt the store clock's time of the last sign-in.
 type testPerson struct {
 	RefreshToken string
 	Subject      string
 	ConfirmedAt  time.Time
 	Kind         model.MemberKind
+	HostedDomain string
+	Held         bool
+	SignedOut    bool
+	SignedInAt   time.Time
 }
 
 func newTestPeopleStore(sessions *testSessionStore) *testPeopleStore {
@@ -101,11 +106,12 @@ func (s *testPeopleStore) SignIn(_ context.Context, email, refreshToken string) 
 	defer s.mu.Unlock()
 	person := s.people[email]
 	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), model.MemberFull
+	person.SignedInAt, person.Held, person.SignedOut = s.clock(), false, false
 	s.people[email] = person
 	return nil
 }
 
-func (s *testPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken string, kind model.MemberKind) error {
+func (s *testPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken, hostedDomain string, kind model.MemberKind) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, existed := s.people[email]
@@ -115,7 +121,8 @@ func (s *testPeopleStore) SignInSubject(ctx context.Context, email, subject, ref
 		}
 	}
 	person.Subject = subject
-	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), kind
+	person.RefreshToken, person.ConfirmedAt, person.Kind, person.HostedDomain = refreshToken, s.clock(), kind, hostedDomain
+	person.SignedInAt, person.Held, person.SignedOut = s.clock(), false, false
 	s.people[email] = person
 	return nil
 }
@@ -124,21 +131,24 @@ func (s *testPeopleStore) Membership(_ context.Context, email string) (auth.Pers
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, found := s.people[email]
-	membership := auth.PersonMembership{RefreshToken: person.RefreshToken, Subject: person.Subject, Kind: person.Kind}
+	membership := auth.PersonMembership{
+		RefreshToken: person.RefreshToken, Subject: person.Subject, Kind: person.Kind, HostedDomain: person.HostedDomain,
+		Held: person.Held, SignedOut: person.SignedOut, SignedInAt: person.SignedInAt, ReadAt: s.clock(),
+	}
 	if !person.ConfirmedAt.IsZero() {
 		membership.Confirmed, membership.ConfirmedAge = true, s.clock().Sub(person.ConfirmedAt)
 	}
 	return membership, found, nil
 }
 
-func (s *testPeopleStore) ConfirmSubject(_ context.Context, email, subject, readToken, refreshToken string, kind model.MemberKind) error {
+func (s *testPeopleStore) ConfirmSubject(_ context.Context, email, subject, readToken, refreshToken, hostedDomain string, kind model.MemberKind) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
 	if person.Subject != subject || person.RefreshToken != readToken {
 		return nil
 	}
-	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), kind
+	person.RefreshToken, person.ConfirmedAt, person.Kind, person.HostedDomain = refreshToken, s.clock(), kind, hostedDomain
 	s.people[email] = person
 	return nil
 }
@@ -147,7 +157,28 @@ func (s *testPeopleStore) End(_ context.Context, email string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if person, found := s.people[email]; found {
-		s.people[email] = testPerson{Subject: person.Subject, Kind: person.Kind}
+		person.RefreshToken, person.ConfirmedAt, person.SignedOut = "", time.Time{}, false
+		s.people[email] = person
+	}
+	return nil
+}
+
+func (s *testPeopleStore) KeepAfterSignOut(_ context.Context, email string, signedInAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if person, found := s.people[email]; found && person.RefreshToken != "" && person.SignedInAt.Equal(signedInAt) {
+		person.SignedOut = true
+		s.people[email] = person
+	}
+	return nil
+}
+
+func (s *testPeopleStore) ForgetAfterSignOut(_ context.Context, email string, signedInAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if person, found := s.people[email]; found && person.SignedInAt.Equal(signedInAt) {
+		person.RefreshToken, person.ConfirmedAt, person.SignedOut = "", time.Time{}, false
+		s.people[email] = person
 	}
 	return nil
 }
@@ -308,7 +339,7 @@ func TestOutsideSignInWriteErrorTellsTheReason(t *testing.T) {
 	}
 }
 
-func (s *testPeopleStore) EndSubject(ctx context.Context, email, subject, refreshToken string) (bool, error) {
+func (s *testPeopleStore) EndSubject(ctx context.Context, email, subject, refreshToken string, mode auth.EndMode) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, found := s.people[email]
@@ -318,6 +349,14 @@ func (s *testPeopleStore) EndSubject(ctx context.Context, email, subject, refres
 	if err := s.sessions.RevokeSessions(ctx, email); err != nil {
 		return false, err
 	}
-	s.people[email] = testPerson{Subject: person.Subject}
+	switch mode {
+	case auth.EndKeep:
+		person.ConfirmedAt, person.SignedOut = s.clock(), true
+	case auth.EndHold:
+		person.RefreshToken, person.ConfirmedAt, person.Held = "", time.Time{}, true
+	default:
+		person.RefreshToken, person.ConfirmedAt = "", time.Time{}
+	}
+	s.people[email] = person
 	return true, nil
 }

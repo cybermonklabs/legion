@@ -53,7 +53,7 @@ func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
 	if err != nil || !membership.Confirmed || membership.ConfirmedAge < 90*time.Minute || membership.ConfirmedAge >= 91*time.Minute {
 		t.Fatalf("membership dated ninety minutes back = %#v err=%v, want confirmed ninety minutes ago", membership, err)
 	}
-	if err := people.ConfirmSubject(ctx, email, "", "refresh-1", "refresh-2", model.MemberFull); err != nil {
+	if err := people.ConfirmSubject(ctx, email, "", "refresh-1", "refresh-2", "", model.MemberFull); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
 	membership, _, err = people.Membership(ctx, email)
@@ -194,7 +194,7 @@ func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return people.ConfirmSubject(ctx, email, read.Subject, read.RefreshToken, token, model.MemberFull)
+			return people.ConfirmSubject(ctx, email, read.Subject, read.RefreshToken, token, "", model.MemberFull)
 		}},
 	} {
 		token := "refresh-" + write.name + "-" + randomDatabaseSuffix(t)
@@ -511,7 +511,7 @@ func TestPgPeopleStoreEndsTheSessionsOfAnAddressAnotherGoogleAccountSignsInTo(t 
 	}
 	logs := captureLogs(t)
 
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", "", model.MemberFull); err != nil {
 		t.Fatalf("first sign-in: %v", err)
 	}
 	if got := membership(); got.Subject != "subject-1" || got.RefreshToken != "refresh-1" {
@@ -525,7 +525,7 @@ func TestPgPeopleStoreEndsTheSessionsOfAnAddressAnotherGoogleAccountSignsInTo(t 
 		t.Fatal(err)
 	}
 
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-2", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-2", "", model.MemberFull); err != nil {
 		t.Fatalf("sign-in under the same subject: %v", err)
 	}
 	if got, _ := sessionGeneration(t, sessions, email); got != generation {
@@ -535,7 +535,7 @@ func TestPgPeopleStoreEndsTheSessionsOfAnAddressAnotherGoogleAccountSignsInTo(t 
 		t.Fatalf("a sign-in under the same subject logged a revoke:\n%s", logs.String())
 	}
 
-	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-3", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-3", "", model.MemberFull); err != nil {
 		t.Fatalf("sign-in under another subject: %v", err)
 	}
 	if got, _ := sessionGeneration(t, sessions, email); got != generation+1 {
@@ -570,7 +570,7 @@ func TestPgPeopleStoreEndsTheSessionsOfAnAddressAnotherGoogleAccountSignsInTo(t 
 	if err := people.Record(ctx, "recorded@example.com"); err != nil {
 		t.Fatal(err)
 	}
-	if err := people.SignInSubject(ctx, "recorded@example.com", "subject-3", "refresh-5", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, "recorded@example.com", "subject-3", "refresh-5", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	if generation, found := sessionGeneration(t, sessions, "recorded@example.com"); !found || generation != 1 {
@@ -586,7 +586,7 @@ func TestPgPeopleStoreRecordsNoSubjectWhoseRevokeFailed(t *testing.T) {
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	sessions := NewPgSessionStore(database.Pool)
 	const email = "a.person@example.com"
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	generation, err := sessions.EnsureSession(ctx, email)
@@ -599,7 +599,7 @@ func TestPgPeopleStoreRecordsNoSubjectWhoseRevokeFailed(t *testing.T) {
 	`); err != nil {
 		t.Fatal(err)
 	}
-	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", model.MemberFull); err == nil || !strings.Contains(err.Error(), "the test refuses every revoke") {
+	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", "", model.MemberFull); err == nil || !strings.Contains(err.Error(), "the test refuses every revoke") {
 		t.Fatalf("a sign-in whose revoke fails: err = %v, want the revoke's error", err)
 	}
 	if membership, _, err := people.Membership(ctx, email); err != nil || membership.Subject != "subject-1" || membership.RefreshToken != "refresh-1" {
@@ -608,7 +608,7 @@ func TestPgPeopleStoreRecordsNoSubjectWhoseRevokeFailed(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `drop trigger refuse_session_revoke on user_sessions`); err != nil {
 		t.Fatal(err)
 	}
-	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", "", model.MemberFull); err != nil {
 		t.Fatalf("the retry: %v", err)
 	}
 	if got, _ := sessionGeneration(t, sessions, email); got != generation+1 {
@@ -634,7 +634,7 @@ func TestPgPeopleStoreEndsTheSessionsOfAConcurrentFirstSignIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := make(chan error, 1)
-	go func() { second <- people.SignInSubject(ctx, email, "subject-2", "refresh-2", model.MemberFull) }()
+	go func() { second <- people.SignInSubject(ctx, email, "subject-2", "refresh-2", "", model.MemberFull) }()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var waiting int
@@ -677,10 +677,10 @@ func TestPgPeopleStoreConfirmKeepsTheRowOfAnotherGoogleAccount(t *testing.T) {
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	const email = "a.person@example.com"
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.Pool.Exec(ctx, `update people set confirmed_at = now() - interval '90 minutes' where email = $1`, email); err != nil {
@@ -694,19 +694,19 @@ func TestPgPeopleStoreConfirmKeepsTheRowOfAnotherGoogleAccount(t *testing.T) {
 		}
 		return membership
 	}
-	if err := people.ConfirmSubject(ctx, email, "subject-1", "refresh-1", "refresh-stale", model.MemberFull); err != nil {
+	if err := people.ConfirmSubject(ctx, email, "subject-1", "refresh-1", "refresh-stale", "", model.MemberFull); err != nil {
 		t.Fatalf("a stale confirmation: %v", err)
 	}
 	if got := membership(); got.RefreshToken != "refresh-2" || got.Subject != "subject-2" || got.ConfirmedAge < 90*time.Minute {
 		t.Fatalf("after subject-1's stale confirmation: %#v, want subject-2's refresh-2 confirmed ninety minutes ago", got)
 	}
-	if err := people.ConfirmSubject(ctx, email, "subject-2", "refresh-2", "refresh-3", model.MemberFull); err != nil {
+	if err := people.ConfirmSubject(ctx, email, "subject-2", "refresh-2", "refresh-3", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	if got := membership(); got.RefreshToken != "refresh-3" || !confirmedJustNow(got) {
 		t.Fatalf("after subject-2's confirmation: %#v, want refresh-3 confirmed just now", got)
 	}
-	if err := people.ConfirmSubject(ctx, email, "", "refresh-3", "refresh-4", model.MemberFull); err != nil {
+	if err := people.ConfirmSubject(ctx, email, "", "refresh-3", "refresh-4", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	if got := membership(); got.RefreshToken != "refresh-3" {
@@ -724,27 +724,27 @@ func TestConfirmSubjectWritesOnlyOverTheSignInItRead(t *testing.T) {
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	const email = "a.person@example.com"
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", model.MemberRestricted); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", "", model.MemberRestricted); err != nil {
 		t.Fatal(err)
 	}
 	read, _, err := people.Membership(ctx, email)
 	if err != nil || read.RefreshToken != "refresh-1" {
 		t.Fatalf("the membership a refresh reads: %#v, %v", read, err)
 	}
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-2", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-2", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.Pool.Exec(ctx, `update people set confirmed_at = now() - interval '90 minutes' where email = $1`, email); err != nil {
 		t.Fatal(err)
 	}
-	if err := people.ConfirmSubject(ctx, email, read.Subject, read.RefreshToken, "refresh-stale", model.MemberRestricted); err != nil {
+	if err := people.ConfirmSubject(ctx, email, read.Subject, read.RefreshToken, "refresh-stale", "", model.MemberRestricted); err != nil {
 		t.Fatalf("a stale confirmation: %v", err)
 	}
 	got, _, err := people.Membership(ctx, email)
 	if err != nil || got.RefreshToken != "refresh-2" || got.Kind != model.MemberFull || got.ConfirmedAge < 90*time.Minute {
 		t.Fatalf("after a confirmation that read refresh-1, the same account having signed in again with refresh-2: %#v, %v; want refresh-2, full, confirmed ninety minutes ago", got, err)
 	}
-	if err := people.ConfirmSubject(ctx, email, "subject-1", "refresh-2", "refresh-3", model.MemberFull); err != nil {
+	if err := people.ConfirmSubject(ctx, email, "subject-1", "refresh-2", "refresh-3", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := people.Membership(ctx, email); got.RefreshToken != "refresh-3" || !confirmedJustNow(got) {
@@ -761,14 +761,14 @@ func TestPgPeopleStoreEndSubjectEndsOnlyTheAccountItNames(t *testing.T) {
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	sessions := NewPgSessionStore(database.Pool)
 	const email = "a.person@example.com"
-	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	generation, err := sessions.EnsureSession(ctx, email)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ended, err := people.EndSubject(ctx, email, "subject-1", "refresh-2"); err != nil || ended {
+	if ended, err := people.EndSubject(ctx, email, "subject-1", "refresh-2", auth.EndForget); err != nil || ended {
 		t.Fatalf("EndSubject under another account: ended %t, %v; want false", ended, err)
 	}
 	if membership, _, _ := people.Membership(ctx, email); membership.RefreshToken != "refresh-2" {
@@ -777,7 +777,7 @@ func TestPgPeopleStoreEndSubjectEndsOnlyTheAccountItNames(t *testing.T) {
 	if got, _ := sessionGeneration(t, sessions, email); got != generation {
 		t.Fatalf("EndSubject under another account moved the generation to %d", got)
 	}
-	if ended, err := people.EndSubject(ctx, email, "subject-2", "refresh-2"); err != nil || !ended {
+	if ended, err := people.EndSubject(ctx, email, "subject-2", "refresh-2", auth.EndForget); err != nil || !ended {
 		t.Fatalf("EndSubject under the row's account: ended %t, %v; want true", ended, err)
 	}
 	if membership, _, _ := people.Membership(ctx, email); membership.RefreshToken != "" || membership.Subject != "subject-2" {
@@ -789,13 +789,13 @@ func TestPgPeopleStoreEndSubjectEndsOnlyTheAccountItNames(t *testing.T) {
 	if err := people.Record(ctx, "recorded@example.com"); err != nil {
 		t.Fatal(err)
 	}
-	if ended, err := people.EndSubject(ctx, "recorded@example.com", "subject-1", ""); err != nil || ended {
+	if ended, err := people.EndSubject(ctx, "recorded@example.com", "subject-1", "", auth.EndForget); err != nil || ended {
 		t.Fatalf("EndSubject of a row with no subject under an account: ended %t, %v; want false", ended, err)
 	}
-	if ended, err := people.EndSubject(ctx, "recorded@example.com", "", ""); err != nil || !ended {
+	if ended, err := people.EndSubject(ctx, "recorded@example.com", "", "", auth.EndForget); err != nil || !ended {
 		t.Fatalf("EndSubject of a row with no subject under none: ended %t, %v; want true", ended, err)
 	}
-	if ended, err := people.EndSubject(ctx, "nobody@example.com", "", ""); err != nil || ended {
+	if ended, err := people.EndSubject(ctx, "nobody@example.com", "", "", auth.EndForget); err != nil || ended {
 		t.Fatalf("EndSubject of no row: ended %t, %v; want false", ended, err)
 	}
 }
@@ -810,21 +810,21 @@ func TestPgPeopleStoreEndSubjectEndsOnlyTheSignInItRead(t *testing.T) {
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	sessions := NewPgSessionStore(database.Pool)
 	const email = "a.person@example.com"
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	read, _, err := people.Membership(ctx, email)
 	if err != nil || read.RefreshToken != "refresh-1" {
 		t.Fatalf("the membership a refresh reads: %#v, %v", read, err)
 	}
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-2", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-2", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	generation, err := sessions.EnsureSession(ctx, email)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ended, err := people.EndSubject(ctx, email, read.Subject, read.RefreshToken); err != nil || ended {
+	if ended, err := people.EndSubject(ctx, email, read.Subject, read.RefreshToken, auth.EndForget); err != nil || ended {
 		t.Fatalf("EndSubject naming refresh-1, after a sign-in of the same account stored refresh-2: ended %t, %v; want false, the newer sign-in kept", ended, err)
 	}
 	if membership, _, _ := people.Membership(ctx, email); membership.RefreshToken != "refresh-2" {
@@ -833,7 +833,7 @@ func TestPgPeopleStoreEndSubjectEndsOnlyTheSignInItRead(t *testing.T) {
 	if got, _ := sessionGeneration(t, sessions, email); got != generation {
 		t.Fatalf("the stale end moved the generation to %d, want %d: the newer sign-in's cookies stand", got, generation)
 	}
-	if ended, err := people.EndSubject(ctx, email, "subject-1", "refresh-2"); err != nil || !ended {
+	if ended, err := people.EndSubject(ctx, email, "subject-1", "refresh-2", auth.EndForget); err != nil || !ended {
 		t.Fatalf("EndSubject naming the token the row holds: ended %t, %v; want true", ended, err)
 	}
 }
@@ -857,20 +857,20 @@ func TestSignInSubjectRecordsTheMemberKind(t *testing.T) {
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	const email = "outsider@other.example"
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", model.MemberRestricted); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", "", model.MemberRestricted); err != nil {
 		t.Fatal(err)
 	}
 	if got := storedMemberKind(t, database, email); got != "restricted" {
 		t.Fatalf("after a restricted sign-in: member_kind = %q, want restricted", got)
 	}
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-2", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-2", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	if got := storedMemberKind(t, database, email); got != "full" {
 		t.Fatalf("after a full sign-in: member_kind = %q, want full", got)
 	}
 	for _, kind := range []model.MemberKind{model.MemberNone, "admin"} {
-		if err := people.SignInSubject(ctx, "refused@other.example", "subject-2", "refresh-3", kind); err == nil || !strings.Contains(err.Error(), "member kind") {
+		if err := people.SignInSubject(ctx, "refused@other.example", "subject-2", "refresh-3", "", kind); err == nil || !strings.Contains(err.Error(), "member kind") {
 			t.Errorf("SignInSubject with member kind %q: err = %v, want a refusal naming the member kind", kind, err)
 		}
 	}
@@ -890,25 +890,25 @@ func TestConfirmSubjectRecordsTheMemberKindOnlyForItsSubject(t *testing.T) {
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	const email = "outsider@other.example"
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", model.MemberRestricted); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", "", model.MemberRestricted); err != nil {
 		t.Fatal(err)
 	}
-	if err := people.ConfirmSubject(ctx, email, "subject-1", "refresh-1", "refresh-2", model.MemberFull); err != nil {
+	if err := people.ConfirmSubject(ctx, email, "subject-1", "refresh-1", "refresh-2", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	if got := storedMemberKind(t, database, email); got != "full" {
 		t.Fatalf("after its own subject's confirmation as full: member_kind = %q, want full", got)
 	}
-	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-3", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-3", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := people.ConfirmSubject(ctx, email, "subject-1", "refresh-2", "refresh-stale", model.MemberRestricted); err != nil {
+	if err := people.ConfirmSubject(ctx, email, "subject-1", "refresh-2", "refresh-stale", "", model.MemberRestricted); err != nil {
 		t.Fatalf("a stale confirmation: %v", err)
 	}
 	if got := storedMemberKind(t, database, email); got != "full" {
 		t.Fatalf("after subject-1's stale confirmation as restricted: member_kind = %q, want subject-2's full", got)
 	}
-	if err := people.ConfirmSubject(ctx, email, "subject-2", "refresh-3", "refresh-4", "admin"); err == nil || !strings.Contains(err.Error(), "member kind") {
+	if err := people.ConfirmSubject(ctx, email, "subject-2", "refresh-3", "refresh-4", "", "admin"); err == nil || !strings.Contains(err.Error(), "member kind") {
 		t.Fatalf("ConfirmSubject with member kind admin: err = %v, want a refusal naming the member kind", err)
 	}
 }
@@ -920,7 +920,7 @@ func TestPoolSignInRecordsAFullMember(t *testing.T) {
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	const email = "a.person@example.com"
-	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", model.MemberRestricted); err != nil {
+	if err := people.SignInSubject(ctx, email, "subject-1", "refresh-1", "", model.MemberRestricted); err != nil {
 		t.Fatal(err)
 	}
 	if err := people.SignIn(ctx, email, "refresh-2"); err != nil {
@@ -932,7 +932,7 @@ func TestPoolSignInRecordsAFullMember(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `update people set member_kind = 'restricted' where email = $1`, email); err != nil {
 		t.Fatal(err)
 	}
-	if err := people.ConfirmSubject(ctx, email, "subject-1", "refresh-2", "refresh-3", model.MemberFull); err != nil {
+	if err := people.ConfirmSubject(ctx, email, "subject-1", "refresh-2", "refresh-3", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	if got := storedMemberKind(t, database, email); got != "full" {
@@ -971,25 +971,25 @@ func TestSignInSubjectConfirmSubjectAndSignInAnnounceAMemberKindChange(t *testin
 		announces bool
 	}{
 		{"a first sign-in as full", func() error {
-			return people.SignInSubject(ctx, email, "subject-1", "refresh-1", model.MemberFull)
+			return people.SignInSubject(ctx, email, "subject-1", "refresh-1", "", model.MemberFull)
 		}, false},
 		{"the confirmation as full", func() error {
-			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-1", "refresh-2", model.MemberFull)
+			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-1", "refresh-2", "", model.MemberFull)
 		}, false},
 		{"the confirmation as restricted", func() error {
-			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-2", "refresh-3", model.MemberRestricted)
+			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-2", "refresh-3", "", model.MemberRestricted)
 		}, true},
 		{"the confirmation as restricted again", func() error {
-			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-3", "refresh-4", model.MemberRestricted)
+			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-3", "refresh-4", "", model.MemberRestricted)
 		}, false},
 		{"a stale confirmation as full, which writes nothing", func() error {
-			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-stale", "refresh-5", model.MemberFull)
+			return people.ConfirmSubject(ctx, email, "subject-1", "refresh-stale", "refresh-5", "", model.MemberFull)
 		}, false},
 		{"a sign-in of the same account as full", func() error {
-			return people.SignInSubject(ctx, email, "subject-1", "refresh-6", model.MemberFull)
+			return people.SignInSubject(ctx, email, "subject-1", "refresh-6", "", model.MemberFull)
 		}, true},
 		{"a sign-in of the same account as restricted", func() error {
-			return people.SignInSubject(ctx, email, "subject-1", "refresh-7", model.MemberRestricted)
+			return people.SignInSubject(ctx, email, "subject-1", "refresh-7", "", model.MemberRestricted)
 		}, true},
 		{"a pool sign-in, which records a full member", func() error {
 			return people.SignIn(ctx, email, "refresh-8")
@@ -1037,13 +1037,13 @@ func TestSignInSubjectRefusesAnOutsideSignInToAFullMembersAddress(t *testing.T) 
 		seed        func(email string) error
 	}{
 		{"a full member under another account", "alice@second.example", func(email string) error {
-			return people.SignInSubject(ctx, email, "member", "refresh-member", model.MemberFull)
+			return people.SignInSubject(ctx, email, "member", "refresh-member", "", model.MemberFull)
 		}},
 		{"a full member recorded under no account", "recorded@second.example", func(email string) error {
 			return people.Record(ctx, email)
 		}},
 		{"a full member holding a plain refresh token", "plain@second.example", func(email string) error {
-			if err := people.SignInSubject(ctx, email, "member", "refresh-member", model.MemberFull); err != nil {
+			if err := people.SignInSubject(ctx, email, "member", "refresh-member", "", model.MemberFull); err != nil {
 				return err
 			}
 			_, err := database.Pool.Exec(ctx, `update people set refresh_token = $2 where email = $1`, email, "plain-member")
@@ -1059,7 +1059,7 @@ func TestSignInSubjectRefusesAnOutsideSignInToAFullMembersAddress(t *testing.T) 
 				t.Fatal(err)
 			}
 			before := rowOf(t, database, held.email)
-			err = people.SignInSubject(ctx, held.email, "outsider", "refresh-outsider", model.MemberRestricted)
+			err = people.SignInSubject(ctx, held.email, "outsider", "refresh-outsider", "", model.MemberRestricted)
 			if !errors.Is(err, auth.ErrAddressHeldByMember) || !strings.Contains(err.Error(), held.email) {
 				t.Fatalf("an outside sign-in to the address of %s: err = %v, want auth.ErrAddressHeldByMember naming %s", held.name, err, held.email)
 			}
@@ -1098,7 +1098,7 @@ func TestSignInSubjectRefusesAnOutsideSignInRacingAMembersFirstSignIn(t *testing
 	}
 	outsider := make(chan error, 1)
 	go func() {
-		outsider <- people.SignInSubject(ctx, email, "outsider", "refresh-outsider", model.MemberRestricted)
+		outsider <- people.SignInSubject(ctx, email, "outsider", "refresh-outsider", "", model.MemberRestricted)
 	}()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -1160,7 +1160,7 @@ func TestSignInSubjectTakesEveryAddressNoOtherFullMemberHolds(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			generation := int64(0)
 			if test.held != "" {
-				if err := people.SignInSubject(ctx, test.email, test.holder, "refresh-holder", test.held); err != nil {
+				if err := people.SignInSubject(ctx, test.email, test.holder, "refresh-holder", "", test.held); err != nil {
 					t.Fatalf("seed %s: %v", test.email, err)
 				}
 				var err error
@@ -1168,7 +1168,7 @@ func TestSignInSubjectTakesEveryAddressNoOtherFullMemberHolds(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := people.SignInSubject(ctx, test.email, test.subject, "refresh-new", test.kind); err != nil {
+			if err := people.SignInSubject(ctx, test.email, test.subject, "refresh-new", "", test.kind); err != nil {
 				t.Fatalf("%s: %v, want the sign-in recorded", test.name, err)
 			}
 			membership, _, err := people.Membership(ctx, test.email)
@@ -1262,7 +1262,7 @@ func TestSignInSubjectRevokesThePersonalTokensOfTheAccountItReplaces(t *testing.
 				if err := people.Record(ctx, test.email); err != nil {
 					t.Fatal(err)
 				}
-			} else if err := people.SignInSubject(ctx, test.email, test.holder, "refresh-holder", test.held); err != nil {
+			} else if err := people.SignInSubject(ctx, test.email, test.holder, "refresh-holder", "", test.held); err != nil {
 				t.Fatalf("seed %s: %v", test.email, err)
 			}
 			generation, err := sessions.EnsureSession(ctx, test.email)
@@ -1278,7 +1278,7 @@ func TestSignInSubjectRevokesThePersonalTokensOfTheAccountItReplaces(t *testing.
 			others := storedToken(t, database, test.other, "another address's agent", nil)
 			logs.Reset()
 
-			if err := people.SignInSubject(ctx, test.email, test.subject, "refresh-new", test.kind); err != nil {
+			if err := people.SignInSubject(ctx, test.email, test.subject, "refresh-new", "", test.kind); err != nil {
 				t.Fatalf("the sign-in of %s under %s: %v", test.email, test.subject, err)
 			}
 			if got, _ := sessionGeneration(t, sessions, test.email); got != generation+1 {
@@ -1320,12 +1320,12 @@ func TestSignInSubjectUnderTheSameAccountRevokesNoToken(t *testing.T) {
 		{"a full member's own account from outside the Workspace", "same@second.example", model.MemberFull, model.MemberRestricted},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := people.SignInSubject(ctx, test.email, "subject-1", "refresh-1", test.held); err != nil {
+			if err := people.SignInSubject(ctx, test.email, "subject-1", "refresh-1", "", test.held); err != nil {
 				t.Fatalf("seed %s: %v", test.email, err)
 			}
 			id := storedToken(t, database, test.email, "an agent", nil)
 			logs.Reset()
-			if err := people.SignInSubject(ctx, test.email, "subject-1", "refresh-2", test.kind); err != nil {
+			if err := people.SignInSubject(ctx, test.email, "subject-1", "refresh-2", "", test.kind); err != nil {
 				t.Fatalf("the sign-in of %s under subject-1 again: %v", test.email, err)
 			}
 			if got := tokenRevokedAt(t, database, id); got != nil {

@@ -137,6 +137,23 @@ func TestTheHubAdmitsASessionThroughTheService(t *testing.T) {
 	}
 }
 
+// Through the service, the hub refuses the connection of a session whose person Dispatch holds,
+// whose token the broker's introspection answers live and held, and admits a session whose person
+// it does not hold, on the same hub at the same time: a held person's broker token opens no NATS
+// connection, as it opens no broker route.
+func TestTheHubRefusesASessionWhosePersonDispatchHolds(t *testing.T) {
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	served, held := newSession(t, "ses_served", 15*time.Minute), newSession(t, "ses_held", 15*time.Minute)
+	held.answer.Held = true
+	startService(t, url, keys, Deps{Introspect: introspector(served, held)}, Decide)
+
+	_, err := connectSession(t, url, held, nil)
+	require.ErrorIs(t, err, nats.ErrAuthorization, "the hub admitted a session whose person Dispatch holds")
+	_, err = connectSession(t, url, served, nil)
+	require.NoError(t, err, "the hub refused a session whose person Dispatch does not hold")
+}
+
 // Each authorization request the hub sends is sealed to the service's curve key: a second client
 // holding the service's NATS user, but not that key, reads bytes that are no JWT. The control is a
 // hub configured with no curve key, whose requests that client reads in the clear, and which the

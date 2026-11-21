@@ -10,6 +10,7 @@ import (
 
 	"authelia.com/provider/oauth2"
 
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
@@ -46,6 +47,13 @@ import (
 // A token that records none, one minted before the broker recorded the account on the token among
 // them, answers none, which a resource server reads as "the broker cannot say which account this
 // is".
+//
+// A live token naming a person, as its person or, for a machine login's own token, as the login's
+// operator, is answered held when the hold gate (ExchangeConfig.Hold) says Dispatch holds that
+// person: still active, since a hold revokes nothing, and refused by the resource server after its
+// own checks. A person the gate serves until a deadline is answered with that deadline
+// (not_held_until, Unix seconds rounded down), past which the resource server keeps no such answer.
+// A gate that cannot tell is *HoldUncheckableError, never an answer.
 func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Introspection, error) {
 	if p.strategy.Enigma.Validate(ctx, token) != nil {
 		return oauthwire.Introspection{}, nil
@@ -97,7 +105,7 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 			// token, which no exchange decided, carries neither claim.
 			return oauthwire.Introspection{}, nil
 		}
-		return answer, nil
+		return p.withHold(ctx, answer, session)
 	}
 	// The stored claim is the list's space-joined spelling (ClaimProjects), which the store
 	// hands back as the string it wrote; one that is not a string or does not parse is a row this
@@ -113,8 +121,51 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 		return oauthwire.Introspection{}, fmt.Errorf("%w: %s stores projects that do not parse: %w", ErrStoredClaimMalformed, malformedClaimOwner(session, answer.Session), err)
 	}
 	answer.Projects = projects
+	return p.withHold(ctx, answer, session)
+}
+
+// withHold is answer with Held set when Dispatch holds the person it names, its person or, for a
+// machine login's own token, which names none, the login's operator (session's extraOperator), and
+// with NotHeldUntil set to the deadline the gate serves a person it does not hold until, in Unix
+// seconds rounded down so no reader keeps the answer later than the gate serves it. A gate that
+// cannot tell (hold.ErrUncheckable, tested first, so a held answer it could not keep is no answer
+// either) is *HoldUncheckableError.
+func (p *Provider) withHold(ctx context.Context, answer oauthwire.Introspection, session *oauthstore.ExchangeSession) (oauthwire.Introspection, error) {
+	person := answer.Person
+	if person == "" {
+		person, _ = session.Extra[extraOperator].(string)
+	}
+	if person == "" {
+		return answer, nil
+	}
+	until, err := p.exchange.Hold.CheckUntil(ctx, person)
+	switch {
+	case err == nil:
+		if !until.IsZero() {
+			answer.NotHeldUntil = until.Unix()
+		}
+	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
+		return oauthwire.Introspection{}, &HoldUncheckableError{Person: person, Err: err}
+	default:
+		answer.Held = true
+	}
 	return answer, nil
 }
+
+// HoldUncheckableError is Introspect's failure when the hold gate cannot tell whether Dispatch
+// holds the person a live token names. Its text is the one the introspection route answers 503
+// HOLD_UNCHECKABLE with, naming the person and why in hold.Reason's fixed words; Err is the gate's
+// own error, for the log alone, which it wraps.
+type HoldUncheckableError struct {
+	Person string
+	Err    error
+}
+
+func (e *HoldUncheckableError) Error() string {
+	return "whether Dispatch holds " + e.Person + " cannot be read: " + hold.Reason(e.Err)
+}
+
+func (e *HoldUncheckableError) Unwrap() error { return e.Err }
 
 // unixSeconds reads a Unix time a session's extras hold, as the exchange wrote it (an int64) or as
 // it reads back out of the stored request's JSON (a float64), and 0 for anything else.

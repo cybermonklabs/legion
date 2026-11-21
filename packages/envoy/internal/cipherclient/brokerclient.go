@@ -193,9 +193,11 @@ func (e *RefusedError) Unwrap() error { return &e.answer }
 //
 // `membership_held` (oauthwire.MembershipHeld): Dispatch holds the person this credential
 // names, because Google refused their Dispatch sign-in, or no refresh has confirmed them for 24
-// hours. A hold revokes nothing, and the person's next Dispatch sign-in, or the next refresh that
-// confirms them, ends it, so the identity this client trades is served again then with no new
-// login. A client that stopped on it would need a restart after every hold.
+// hours, or, behind Identity-Aware Proxy, the Workspace Directory no longer confirms their
+// account. A hold revokes nothing, and the person's next Dispatch sign-in, the next refresh that
+// confirms them, or the Directory's next active answer ends it, so the identity this client trades
+// is served again then with no new login. A client that stopped on it would need a restart after
+// every hold.
 func (e *RefusedError) Permanent() bool {
 	switch {
 	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered(),

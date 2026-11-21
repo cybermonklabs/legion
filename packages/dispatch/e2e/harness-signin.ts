@@ -20,8 +20,8 @@
  * project's access list names, as a restricted member. Each server answers at a second origin,
  * `googleOutsideOrigin` of its canonical one (`DISPATCH_OUTSIDE_ORIGIN`). The issuer signs in
  * nobody of its own: a spec queues each person, with the claims Google gives that account, at the
- * issuer's `/_dev/sign-in-as`. Only `e2e/outside-sign-in.e2e.ts` runs then, with one process or
- * two.
+ * issuer's `/_dev/sign-in-as` (`e2e/google-signin.ts`). Only `e2e/outside-sign-in.e2e.ts`
+ * and `e2e/leaver-hold.e2e.ts` run then, with one process or two.
  *
  * Any other value is refused naming the allowed ones, as `e2e/harness-processes.ts` refuses its
  * own, and `e2e/run-server.sh` refuses it the same way.

@@ -107,11 +107,11 @@ async function main(): Promise<void> {
     );
   }
   // It signs people in at the dev sign-in route, which a server under DISPATCH_E2E_SIGNIN=google
-  // does not mount (e2e/harness-signin.ts); that mode's one spec signs its own people in.
+  // does not mount (e2e/harness-signin.ts); that mode's specs sign their own people in.
   if (harnessSignIn !== "dev") {
     throw new Error(
       "unset DISPATCH_E2E_SIGNIN: this command signs people in through dev sign-in; " +
-        "`DISPATCH_E2E_SIGNIN=google bun run e2e` runs the outside sign-in spec"
+        "`DISPATCH_E2E_SIGNIN=google bun run e2e` runs the Google sign-in specs"
     );
   }
   const given = process.env.DATABASE_URL?.trim();

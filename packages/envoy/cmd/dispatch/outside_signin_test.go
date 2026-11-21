@@ -229,11 +229,14 @@ func TestOutsideSignInRefusesAnUnlistedAccountWithThePage(t *testing.T) {
 }
 
 // Once no list names the account, the hourly confirmation ends its sign-in: the next request past
-// the hour is 401 NO_IDENTITY saying why (NOT_LISTED, naming the account), every request after it
-// says the same, and the stored refresh token is gone.
+// the hour is 401 NO_IDENTITY saying why (NOT_LISTED, naming the account), and every request after
+// it says the same. The account is not held: its row keeps the stored refresh token for membership
+// checks, and reads signed out. The router reads the database's own sessions (routerWithSessions):
+// with the token kept, the session generation the end advanced is what refuses the cookie after.
 func TestOutsideSignInEndsAtTheNextHourlyCheckOnceNoListNamesIt(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
-	response := s.signInAs(t, s.handler, outsiderEmail)
+	handler := s.routerWithSessions(t)
+	response := s.signInAs(t, handler, outsiderEmail)
 	if response.Code != http.StatusFound || !sessionCookieSet(response) {
 		t.Fatalf("the callback answered %d, want a signed-in redirect", response.Code)
 	}
@@ -241,32 +244,34 @@ func TestOutsideSignInEndsAtTheNextHourlyCheckOnceNoListNamesIt(t *testing.T) {
 	ageConfirmation(t, s.people, outsiderEmail)
 	want := signedOutAnswer{Code: "NO_IDENTITY", Reason: "NOT_LISTED", Login: outsiderEmail}
 	for _, read := range []string{"the whoami that ran the hourly check", "the whoami after it"} {
-		if got := signedOutOf(t, read, requestWith(s.handler, http.MethodGet, "/auth/whoami", response)); got != want {
+		if got := signedOutOf(t, read, requestWith(handler, http.MethodGet, "/auth/whoami", response)); got != want {
 			t.Fatalf("%s, past the hour after the delisting: %+v, want %+v", read, got, want)
 		}
 	}
 	membership, _, err := s.people.Membership(context.Background(), outsiderEmail)
-	if err != nil || membership.RefreshToken != "" {
-		t.Fatalf("the delisted account's membership %+v (%v), want its refresh token gone", membership, err)
+	if err != nil || membership.RefreshToken == "" || !membership.SignedOut || membership.Held {
+		t.Fatalf("the delisted account's membership %+v (%v), want its refresh token kept, the row signed out and not held", membership, err)
 	}
 }
 
 // The dashboard asks several things at once, and whichever of them finds the hour lapsed runs the
 // check: an API read that ends the sign-in says why, and the whoami after it, which finds a session
-// another request ended, says the same.
+// another request ended, says the same. The router reads the database's own sessions, as
+// TestOutsideSignInEndsAtTheNextHourlyCheckOnceNoListNamesIt says why.
 func TestOutsideSignInSaysWhyWhicheverRequestEndedIt(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
-	response := s.signInAs(t, s.handler, outsiderEmail)
+	handler := s.routerWithSessions(t)
+	response := s.signInAs(t, handler, outsiderEmail)
 	if response.Code != http.StatusFound || !sessionCookieSet(response) {
 		t.Fatalf("the callback answered %d, want a signed-in redirect", response.Code)
 	}
 	s.unlist(t, "PRIV", outsiderEmail)
 	ageConfirmation(t, s.people, outsiderEmail)
 	want := signedOutAnswer{Code: "NO_IDENTITY", Reason: "NOT_LISTED", Login: outsiderEmail}
-	if got := signedOutOf(t, "GET /api/v1/projects", requestWith(s.handler, http.MethodGet, "/api/v1/projects", response)); got != want {
+	if got := signedOutOf(t, "GET /api/v1/projects", requestWith(handler, http.MethodGet, "/api/v1/projects", response)); got != want {
 		t.Fatalf("the API read that ran the hourly check: %+v, want %+v", got, want)
 	}
-	if got := signedOutOf(t, "whoami", requestWith(s.handler, http.MethodGet, "/auth/whoami", response)); got != want {
+	if got := signedOutOf(t, "whoami", requestWith(handler, http.MethodGet, "/auth/whoami", response)); got != want {
 		t.Fatalf("the whoami after it: %+v, want %+v", got, want)
 	}
 }
@@ -318,21 +323,26 @@ func TestOutsideSignInIsRefusedWithTheSettingOff(t *testing.T) {
 
 // Turning outside sign-in off ends a restricted member's sign-in at its next hourly confirmation,
 // and the 401 says why (OUTSIDE_SIGNIN_OFF, naming the account) there and at every request after.
+// Both servers read the database's own sessions, as
+// TestOutsideSignInEndsAtTheNextHourlyCheckOnceNoListNamesIt says why; the end keeps the token.
 func TestOutsideSignInTurnedOffEndsARestrictedSessionAtTheHourlyCheck(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
-	response := s.signInAs(t, s.handler, outsiderEmail)
+	response := s.signInAs(t, s.routerWithSessions(t), outsiderEmail)
 	if response.Code != http.StatusFound || !sessionCookieSet(response) {
 		t.Fatalf("the callback answered %d, want a signed-in redirect", response.Code)
 	}
 	off := s.boot
 	off.SignInOutside = false
-	turnedOff := s.router(t, off)
+	turnedOff := s.routerWithSessionsFor(t, off)
 	ageConfirmation(t, s.people, outsiderEmail)
 	want := signedOutAnswer{Code: "NO_IDENTITY", Reason: "OUTSIDE_SIGNIN_OFF", Login: outsiderEmail}
 	for _, read := range []string{"the whoami that ran the hourly check", "the whoami after it"} {
 		if got := signedOutOf(t, read, requestWith(turnedOff, http.MethodGet, "/auth/whoami", response)); got != want {
 			t.Fatalf("%s, on a server with outside sign-in off: %+v, want %+v", read, got, want)
 		}
+	}
+	if membership, _, err := s.people.Membership(context.Background(), outsiderEmail); err != nil || membership.RefreshToken == "" || !membership.SignedOut || membership.Held {
+		t.Fatalf("the restricted member's membership %+v (%v), want its refresh token kept, the row signed out and not held", membership, err)
 	}
 }
 

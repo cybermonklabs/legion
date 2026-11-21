@@ -249,6 +249,23 @@ type Introspection struct {
 	// what lets a resource server tell which account a token is: a token whose account no longer
 	// holds the person's address is the replaced account's, however its person reads.
 	AccountSubject string `json:"account_subject,omitempty"`
+	// Held is whether Dispatch holds the person this token names until they sign in to Dispatch
+	// again, or until a refresh confirms them with Google: Google refused their Dispatch sign-in,
+	// or no refresh has confirmed them for 24 hours. The broker's introspection writes it, from
+	// its hold gate (internal/cipher/hold), for an active token naming a person, as `person` or,
+	// for a machine login's own token, as its operator; Dispatch and the Envoy listener read it
+	// (ciphertoken.Caller.Held) after their own checks and refuse the token 401 MEMBERSHIP_HELD.
+	// A held token is still active: a hold revokes nothing, and the token works again once the
+	// hold ends. It is false for a token naming no person.
+	Held bool `json:"held,omitempty"`
+	// NotHeldUntil is when the broker's answer that the person this token names is not held stops
+	// being good, in seconds since the epoch, rounded down: the deadline an IAP deployment's
+	// Dispatch put on that answer (its not_held_until), which the broker's hold gate serves until
+	// and not at (hold.Gate.CheckUntil). The broker's introspection writes it beside a not-held
+	// answer that has one; Dispatch and the Envoy listener keep the answer no later than it
+	// (ciphertoken.Caller.NotHeldUntil), and refuse the token as unavailable once it has passed. It
+	// is 0, and absent, for a held answer, a token naming no person, and every answer outside IAP.
+	NotHeldUntil int64 `json:"not_held_until,omitempty"`
 	// CredentialCreatedAt is when the credential behind a token naming a person was made, as Unix
 	// seconds from the broker database's own clock: the person's sign-in on a machine, or the
 	// machine login the token was exchanged from, not the token's own iat, which a refresh renews.

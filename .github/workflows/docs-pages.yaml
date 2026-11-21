@@ -246,6 +246,7 @@ on:
       - 'packages/envoy/internal/cipher/enroll/*'
       - 'packages/envoy/internal/cipher/exchange/*'
       - 'packages/envoy/internal/cipher/helper/*'
+      - 'packages/envoy/internal/cipher/hold/*'
       - 'packages/envoy/internal/cipher/judge/*'
       - 'packages/envoy/internal/cipher/leasetime/*'
       - 'packages/envoy/internal/cipher/machine/*'

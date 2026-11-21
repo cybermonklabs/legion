@@ -400,6 +400,16 @@ type Config struct {
 	// asks and not at boot, through ciphertoken.AccountToken, which reads the file again once what
 	// it last read is 30 seconds old. Set with BROKER_PROJECT_ACCESS_URL or not at all.
 	ProjectAccessTokenFile string
+	// BROKER_HOLD_REQUIRES_DEADLINE: true on the broker of a deployment whose Dispatch runs behind
+	// Identity-Aware Proxy (DISPATCH_IDENTITY=iap), and unset or false everywhere else. With it
+	// true, the hold of refused people (internal/cipher/hold) serves Dispatch's answer that a
+	// person is not held only with the deadline such a Dispatch puts on it (not_held_until), so an
+	// answer naming none is refused 503 HOLD_UNCHECKABLE, and refuses a person of whom the broker
+	// keeps no answer while Dispatch cannot be asked instead of serving them unchecked; and the
+	// hold's refusals say that the Workspace Directory, not a sign-in, ends a hold. It needs
+	// BROKER_PROJECT_ACCESS_URL, which builds the hold: true without it, the start is refused, since
+	// that broker would hold nobody. Anything strconv.ParseBool does not read is refused.
+	HoldRequiresDeadline bool
 	// BROKER_AZURE_TOKEN_FILE: the path of the broker pod's projected ServiceAccount token for
 	// azure-login releases, default /var/run/secrets/azure/tokens/azure-identity-token. Read only
 	// on release, not at boot, and read anew each time so the rotated token is used. The token's
@@ -1810,11 +1820,12 @@ func parseAirlockTestAzureAuthority(value string) (string, error) {
 	return host, nil
 }
 
-// testOnlySwitch reads one of the local stack's test-only switches, the airlock's two and
-// the judge's one: unset is off, and anything strconv.ParseBool does not read is refused rather
-// than taken as off, since a misspelled value would otherwise turn a negative control into the
-// ordinary run it is meant to be compared against.
-func testOnlySwitch(setting, value string) (bool, error) {
+// onOffSetting reads an on/off setting: the local stack's test-only switches, the airlock's two
+// and the judge's one, and BROKER_HOLD_REQUIRES_DEADLINE. Unset is off, and anything
+// strconv.ParseBool does not read is refused rather than taken as off, since a misspelled value
+// would otherwise turn a negative control into the ordinary run it is meant to be compared
+// against, or serve an IAP deployment's people on answers that name no deadline.
+func onOffSetting(setting, value string) (bool, error) {
 	text := strings.TrimSpace(value)
 	if text == "" {
 		return false, nil
@@ -2019,16 +2030,16 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.AirlockTestResolve, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestKeepValues, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {
+	if cfg.AirlockTestKeepValues, testSwitchErr = onOffSetting("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestNoKind, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
+	if cfg.AirlockTestNoKind, testSwitchErr = onOffSetting("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AirlockTestAzureAuthority, testSwitchErr = parseAirlockTestAzureAuthority(getenv("BROKER_AIRLOCK_TEST_AZURE_AUTHORITY")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.JudgeTestSkipChecks, testSwitchErr = testOnlySwitch("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {
+	if cfg.JudgeTestSkipChecks, testSwitchErr = onOffSetting("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AzureLoginSecret != "" {
@@ -2198,6 +2209,15 @@ func Load(getenv func(string) string) (Config, error) {
 		if err := httpURLSetting("BROKER_PROJECT_ACCESS_URL", cfg.ProjectAccessURL); err != nil {
 			return Config{}, err
 		}
+	}
+	if cfg.HoldRequiresDeadline, err = onOffSetting("BROKER_HOLD_REQUIRES_DEADLINE", getenv("BROKER_HOLD_REQUIRES_DEADLINE")); err != nil {
+		return Config{}, err
+	}
+	// The deadline rule rules the hold, which BROKER_PROJECT_ACCESS_URL builds: a broker that asks
+	// no Dispatch holds nobody, so the rule beside no URL is an IAP deployment that meant to hold
+	// its people and holds none, refused as every setting that configures nothing is.
+	if cfg.HoldRequiresDeadline && cfg.ProjectAccessURL == "" {
+		return Config{}, errors.New("BROKER_HOLD_REQUIRES_DEADLINE is true and BROKER_PROJECT_ACCESS_URL is not set: the deadline rules the hold of refused people, which a broker builds only when it has a Dispatch to ask, so with no URL it holds nobody; set BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE, or unset BROKER_HOLD_REQUIRES_DEADLINE")
 	}
 	switch cfg.SecretsStore {
 	case secrets.StoreAWS:

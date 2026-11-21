@@ -15,6 +15,20 @@ import (
 // nothing.
 var ErrAddressHeldByMember = errors.New("the address is a full member's, under another Google account")
 
+// EndMode is what an end of a sign-in does beside ending its sessions.
+type EndMode int
+
+const (
+	// EndForget forgets the refresh token and confirmation, as on main.
+	EndForget EndMode = iota
+	// EndHold does all that EndForget does and records a hold: held_since = clock_timestamp().
+	EndHold
+	// EndKeep keeps the refresh token, records the confirmation (Google answered for the
+	// account; only the rule's list refused it) and marks the row signed out:
+	// confirmed_at = clock_timestamp(), signed_out_at = clock_timestamp().
+	EndKeep
+)
+
 // PersonMembership is what Dispatch holds to confirm that a person signed in through the sign-in
 // issuer may still use it: the issuer's refresh token for them and how long ago their membership
 // was last confirmed. A person recorded any other way (the local/test identity header, the local
@@ -22,16 +36,43 @@ var ErrAddressHeldByMember = errors.New("the address is a full member's, under a
 // not open (store.PgPeopleStore keeps it sealed under the signing key), holds neither: an empty
 // RefreshToken and Confirmed false. ConfirmedAge is the confirmation's age as the store's clock
 // measures it (the database's now() minus the time it recorded), never a server process's clock,
-// so every process judges a confirmation's age alike; it is zero when Confirmed is false. Subject
-// is the Google account (`sub`) that last signed in to the address with Google for a Workspace
-// domain; empty for an address no such sign-in recorded. Ending a sign-in keeps it, and keeps Kind,
-// the member kind the address's last sign-in or confirmation recorded.
+// so every process judges a confirmation's age alike; it is zero when Confirmed is false, but for
+// an Unopenable row, whose confirmation's age it still holds so that the unopenable rule
+// (identity.Membership.Standing) can judge it. Subject is the Google account (`sub`) that last
+// signed in to the address with Google for a Workspace domain; empty for an address no such
+// sign-in recorded. Ending a sign-in keeps it, and keeps Kind, the member kind the address's last
+// sign-in or confirmation recorded.
+//
+// Held is a recorded hold (held_since later than signed_in_at), and SignedOut a sign-out that kept
+// the refresh token for membership checks (signed_out_at later than signed_in_at): a sign-in by any
+// build, which sets signed_in_at, releases both. HostedDomain is the Workspace domain (`hd`) the
+// last sign-in's or confirmation's ID token carried, empty for none. SignedInAt is the row's
+// signed_in_at. Unopenable is a stored refresh token that does not open, which RefreshToken reads
+// as none. ReadAt is the database's now() in the read, for a person with no row too.
+//
+// The Directory fields are what the IAP Directory check (DISPATCH_IDENTITY=iap) stores, each
+// empty outside IAP. DirectoryHeld is a recorded hold later than the last active Directory answer,
+// or a recorded hold on a row with no active answer (held_since later than directory_confirmed_at,
+// or held_since set and directory_confirmed_at null). DirectoryConfirmedAt is that last active
+// answer, NotHeldUntil the deadline it fixed 24 hours later, after which a not-held answer is no
+// longer served, and DirectoryUserID the Directory user's id the first active answer stored, which
+// later answers are compared with.
 type PersonMembership struct {
-	RefreshToken string
-	Confirmed    bool
-	ConfirmedAge time.Duration
-	Subject      string
-	Kind         model.MemberKind
+	RefreshToken         string
+	Confirmed            bool
+	ConfirmedAge         time.Duration
+	Subject              string
+	Kind                 model.MemberKind
+	Held                 bool
+	SignedOut            bool
+	HostedDomain         string
+	SignedInAt           time.Time
+	Unopenable           bool
+	ReadAt               time.Time
+	DirectoryHeld        bool
+	DirectoryConfirmedAt *time.Time
+	NotHeldUntil         *time.Time
+	DirectoryUserID      string
 }
 
 // PeopleStore persists the people who have signed in to Dispatch, keyed by lowercase email: the
@@ -45,44 +86,53 @@ type PeopleStore interface {
 	// stored in plain text, the sign-in retires it first.
 	SignIn(ctx context.Context, email, refreshToken string) error
 	// SignInSubject records a sign-in for a Workspace domain, confirmed now: subject is the Google
-	// account's `sub`, and kind the member kind the sign-in rule named (model.MemberFull or
-	// model.MemberRestricted; any other kind is refused before any write). Recording a subject
-	// email's row did not record, a fresh row's first included, ends every session of email in the
-	// same statement (the database does, migration 20261118041916), and when the row recorded
-	// another subject, which the sign-in replaces, it revokes every personal token of email too,
-	// whatever member kind the row held, and records that Dispatch owes the secrets broker a
-	// revocation of every credential that account holds under email, of either member kind (a
-	// restricted account can have made broker credentials while it was full, under the same
-	// subject); all of these happen in one transaction, so a revoke that fails leaves the old
-	// subject for the next sign-in to revoke again. It is the one write that changes the subject an
-	// address records, so no cookie or token of a replaced account acts as the new one. When kind
-	// is not the member kind the row held, the same transaction announces the change to every
-	// process (store.AccessChangedChannel).
+	// account's `sub`, hostedDomain the ID token's `hd` (empty for none), and kind the member kind
+	// the sign-in rule named (model.MemberFull or model.MemberRestricted; any other kind is refused
+	// before any write). The sign-in releases a recorded hold and a sign-out that kept the refresh
+	// token. Recording a subject email's row did not record, a fresh row's first included, ends
+	// every session of email in the same statement (the database does, migration
+	// 20261118041916), and when the row recorded another subject, which the sign-in replaces, it
+	// revokes every personal token of email too, whatever member kind the row held, and records
+	// that Dispatch owes the secrets broker a revocation of every credential that account holds
+	// under email, of either member kind (a restricted account can have made broker credentials
+	// while it was full, under the same subject); all of these happen in one transaction, so a
+	// revoke that fails leaves the old subject for the next sign-in to revoke again. It is the one
+	// write that changes the subject an address records, so no cookie or token of a replaced
+	// account acts as the new one. When kind is not the member kind the row held, the same
+	// transaction announces the change to every process (store.AccessChangedChannel).
 	// When email already holds a refresh token stored in plain text, the sign-in retires it
 	// first. A restricted sign-in to an address whose row records a full member under another
 	// subject, or none, is ErrAddressHeldByMember and writes nothing, so the member's sessions,
 	// tokens and refresh token stand.
-	SignInSubject(ctx context.Context, email, subject, refreshToken string, kind model.MemberKind) error
+	SignInSubject(ctx context.Context, email, subject, refreshToken, hostedDomain string, kind model.MemberKind) error
 	// Membership reads email's membership; found is false for a person who never signed in.
 	Membership(ctx context.Context, email string) (membership PersonMembership, found bool, err error)
 	// ConfirmSubject records a refresh that confirmed email's membership now, as kind (refused as
-	// SignInSubject refuses it), with refreshToken to use next: a Google sign-in's under its
-	// subject, a sign-in pool's under the empty subject its row records. The write happens only
+	// SignInSubject refuses it), with refreshToken to use next and hostedDomain, the refreshed ID
+	// token's `hd` (empty for none): a Google sign-in's under its subject, a sign-in pool's under
+	// the empty subject its row records. The write happens only
 	// while the row still records subject (empty: records none), the account the refresh read, and
 	// still holds readToken, the refresh token the refresh read, so a refresh that began before
 	// another account, or the same person again, signed in to the address cannot overwrite the new
 	// sign-in's token or member kind. A write that changes the member kind announces it to every
 	// process in the same transaction (store.AccessChangedChannel), so the person's open document
 	// sockets and live views stop carrying a project they no longer read.
-	ConfirmSubject(ctx context.Context, email, subject, readToken, refreshToken string, kind model.MemberKind) error
+	ConfirmSubject(ctx context.Context, email, subject, readToken, refreshToken, hostedDomain string, kind model.MemberKind) error
 	// EndSubject ends email's sign-in only while its row still records subject (an
 	// empty subject: records none) and still holds refreshToken (an empty one: holds none), the
 	// refresh token the failed confirmation read. In one transaction it advances email's session
-	// generation and forgets the refresh token and confirmation, and ended reports that it did; a
-	// row another Google account has signed in to since, or the same account again with a new
-	// refresh token, is left as it is, so a failed refresh that began before a sign-in never ends
-	// that sign-in's sessions.
-	EndSubject(ctx context.Context, email, subject, refreshToken string) (ended bool, err error)
-	// End forgets email's refresh token and confirmation, keeping the person and their subject.
+	// generation and does what mode says (EndForget, EndHold or EndKeep), and ended reports that it
+	// did; a row another Google account has signed in to since, or the same account again with a
+	// new refresh token, is left as it is, so a failed refresh that began before a sign-in never
+	// ends that sign-in's sessions.
+	EndSubject(ctx context.Context, email, subject, refreshToken string, mode EndMode) (ended bool, err error)
+	// End forgets email's refresh token and confirmation, keeping the person and their subject,
+	// and ends a sign-out that kept the token.
 	End(ctx context.Context, email string) error
+	// KeepAfterSignOut sets signed_out_at = clock_timestamp() and keeps refresh_token and confirmed_at,
+	// only while signed_in_at is still signedInAt, the one the sign-out read before it asked the broker.
+	KeepAfterSignOut(ctx context.Context, email string, signedInAt time.Time) error
+	// ForgetAfterSignOut forgets refresh_token and confirmed_at, as End does, only while signed_in_at is
+	// still signedInAt.
+	ForgetAfterSignOut(ctx context.Context, email string, signedInAt time.Time) error
 }

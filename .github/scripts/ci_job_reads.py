@@ -785,6 +785,9 @@ RULES = {
     f"{ENVOY}/cmd/cipherd/outage_test.go": [
         run(ENVOY, ["./cmd/cipher"], "cmd/cipherd/outage_test.go:323-325 cmdtest.BuildCommand . in ../cipher", mode="build")],
     f"{ENVOY}/cmd/cipherd/multiprocess_test.go": reads((f"{ENVOY}/internal/cipher/store/migrations/*", "cmd/cipherd/multiprocess_test.go:501-502 countMigrations globs ../../internal/cipher/store/migrations/*.up.sql")),
+    f"{ENVOY}/cmd/dispatch/leaver_hold_clients_test.go": [
+        run(ENVOY, ["./cmd/cipher"], "cmd/dispatch/leaver_hold_clients_test.go:70 cmdtest.BuildCommand . in ../cipher", mode="build"),
+        run(ENVOY, ["./cmd/cipher-helper"], "cmd/dispatch/leaver_hold_clients_test.go:71 cmdtest.BuildCommand . in ../cipher-helper", mode="build")],
     f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:822")),
     # The two-build suite's CLI half runs this tree's dispatch command with bun (currentCLI,
     # :42-46), which loads bin/dispatch.ts and its imports: envoy-client's sources and
@@ -2260,7 +2263,7 @@ BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
-BROWSER_MP_OUTSIDE = "Browser-test outside sign-in at a second origin"
+BROWSER_MP_GOOGLE = "Browser-test Google sign-in, outside sign-in and the leaver hold"
 BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
@@ -2291,7 +2294,7 @@ BROWSER_VISUAL_REVERSE_SPECS = "Browser-test dispatch dashboard against its base
 BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
     f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}, "
-    f"{at_browser(BROWSER_MP_OUTSIDE, BROWSER_MP)}, "
+    f"{at_browser(BROWSER_MP_GOOGLE, BROWSER_MP)}, "
     f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)}, "
     f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} and "
     f"{at_browser(BROWSER_VISUAL_REVERSE_SPECS, BROWSER_VISUAL)}"

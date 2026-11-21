@@ -22,8 +22,8 @@ var _ SignInRule = GroupRule{}
 
 // Person names the person by the email the username a federated provider issued carries,
 // `<provider>_<email>` for a provider the token's identities name, and never from the email
-// claim, which a person can write. A member of the group is a full member; a person outside it is
-// ErrNotMember.
+// claim, which a person can write. A member of the group is a full member, with the token's `hd`
+// (a pool's token carries none, so it is most often empty); a person outside it is ErrNotMember.
 func (r GroupRule) Person(_ context.Context, claims oidc.Claims) (SignedIn, error) {
 	email, ok := providerEmail(claims)
 	if !ok {
@@ -32,7 +32,7 @@ func (r GroupRule) Person(_ context.Context, claims oidc.Claims) (SignedIn, erro
 	if !slices.Contains(claims.Groups, r.Group) {
 		return SignedIn{Email: email}, fmt.Errorf("%s: %w", email, ErrNotMember)
 	}
-	return SignedIn{Email: email, Kind: model.MemberFull}, nil
+	return SignedIn{Email: email, Kind: model.MemberFull, HostedDomain: claims.HostedDomain}, nil
 }
 
 // AdmitsRestricted is ErrOutsideSignInOff: a group signs in nobody from outside a domain, so no
@@ -71,6 +71,12 @@ func (r GroupRule) CanRefresh(stored string) bool {
 	return true
 }
 
+// Holds is false: a sign-in pool's refusal holds nobody, so every end under a group forgets the
+// refresh token, as it always has, and Membership.Standing answers not held.
+func (r GroupRule) Holds() bool {
+	return false
+}
+
 // ConfirmSubject always records no subject under a group.
 func (r GroupRule) ConfirmSubject(claims oidc.Claims, stored string) (string, error) {
 	return "", nil
@@ -78,9 +84,10 @@ func (r GroupRule) ConfirmSubject(claims oidc.Claims, stored string) (string, er
 
 // End ends email's sessions and forgets their refresh token only while the row still holds the
 // sign-in read names (endSubject, auth.PeopleStore.EndSubject under the pool row's empty subject),
-// so the refusal of a refresh that began before the person signed in again ends nothing.
-func (r GroupRule) End(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string) error {
-	return endSubject(ctx, people, email, read, reason, "dispatch: sign-in ended: the sign-in pool did not confirm the person's membership")
+// so the refusal of a refresh that began before the person signed in again ends nothing. It ends
+// with auth.EndForget whatever mode it is given: a group holds nobody (Holds).
+func (r GroupRule) End(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string, _ auth.EndMode) (bool, error) {
+	return endSubject(ctx, people, email, read, reason, auth.EndForget, "dispatch: sign-in ended: the sign-in pool did not confirm the person's membership")
 }
 
 // SignedOutReason tells no reason under a group, and reads nothing: a pool's members are all full
@@ -103,9 +110,10 @@ func (r GroupRule) WriteSignIn(ctx context.Context, people auth.PeopleStore, per
 
 // WriteConfirm records a refresh that confirmed person's membership as a full member, only while
 // the row still holds the sign-in read names (auth.PeopleStore.ConfirmSubject under the pool row's
-// own subject, empty since a pool records none); subject, always empty under a group, is unused.
+// own subject, empty since a pool records none), with the `hd` Person named; subject, always empty
+// under a group, is unused.
 func (r GroupRule) WriteConfirm(ctx context.Context, people auth.PeopleStore, read auth.PersonMembership, person SignedIn, subject, refreshToken string) error {
-	return people.ConfirmSubject(ctx, person.Email, read.Subject, read.RefreshToken, refreshToken, model.MemberFull)
+	return people.ConfirmSubject(ctx, person.Email, read.Subject, read.RefreshToken, refreshToken, person.HostedDomain, model.MemberFull)
 }
 
 // providerEmail is the email a federated provider's username carries, the Cognito sign-in pool's

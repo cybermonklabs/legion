@@ -117,10 +117,14 @@ that admits a person is Dispatch's own.
 Either way, Dispatch keeps the issuer's refresh token, sealed, and confirms the person with it at
 least hourly: the first request after the hour refreshes the sign-in and applies the same rule to
 the refreshed ID token. A person the rule no longer admits loses every browser session, and so
-does anyone whose refresh token the issuer refuses as expired or revoked. A refresh the issuer
-does not answer, as in an outage at the issuer, signs nobody out: that request is refused with
-`503 SIGNIN_UNAVAILABLE`, and the person's first request after the issuer answers again refreshes
-and goes through. Logout ends Dispatch's session only, not the issuer's.
+does anyone whose refresh token the issuer refuses as expired or revoked. Through the pool,
+Dispatch then forgets the refresh token; with Google directly, it also holds the person's agent
+tokens and broker credentials until they sign in again
+([A person Google refuses](#a-person-google-refuses)). A refresh the issuer does not answer, as in
+an outage at the issuer, signs nobody out: that request is refused with `503 SIGNIN_UNAVAILABLE`,
+and the person's first request after the issuer answers again refreshes and goes through. Logout
+ends Dispatch's session only, not the issuer's; with Google directly, Dispatch can keep the
+refresh token after it, for these checks alone.
 
 Dispatch does not need the issuer to start. It reads the issuer's settings in the background,
 retrying until the issuer answers, and until then a sign-in answers `503 SIGNIN_UNAVAILABLE` while
@@ -299,6 +303,139 @@ settle a later `superseded` row with
 `envoy-dispatch clear-broker-revocation '<address>' '<subject>:<generation>'`, naming it as the
 command's list prints it.
 
+### A person Google refuses
+
+With Google directly (`DISPATCH_SIGNIN_DOMAIN`, with or without `DISPATCH_SIGNIN_OUTSIDE=1`), a
+person whose sign-in the hourly refresh ends is also **held**: Dispatch refuses their agent tokens,
+and the broker tokens that name them, with `401 MEMBERSHIP_HELD`, and the secrets broker refuses
+each credential that names them, until they sign in to Dispatch again. A hold revokes nothing.
+After the sign-in, every token, machine login and session still within its own lifetime works
+again, at Dispatch at once and at the broker within 40 seconds, with no new token, login or
+approval. When someone reports `MEMBERSHIP_HELD`, tell them to sign in to Dispatch.
+
+Every refusal of the refresh holds: Google refusing the refresh token (`invalid_grant`, whatever
+Google's reason), a refreshed sign-in that names another Google account or another address, one
+whose email Google has not verified, and one the rule no longer admits, such as one of your people
+whose `hd` is no longer the domain. A person from outside the domain whom the access lists no
+longer admit ([People from outside the domain](#people-from-outside-the-domain)) is not held:
+their tokens follow the lists at each use, and Dispatch keeps their refresh token, so Google's
+later refusal still holds them.
+
+While Google cannot be reached, nobody is held for 24 hours after their last confirmation; after
+that, a person whose refresh still fails is held until a refresh confirms them, and works again
+then with no sign-in. A refresh token Dispatch cannot open (one sealed under a key removed from
+`DISPATCH_SIGNING_KEY`, say) is the same: served for 24 hours after the last confirmation, then
+held until the person signs in again, or the key is back and Google confirms them.
+
+Dispatch checks everyone who has a stored refresh token about once an hour, whether or not they
+use Dispatch: its maintenance, once a minute on one server, refreshes up to 20 of the tokens whose
+last confirmation or attempt is more than an hour old, and logs
+`dispatch: membership pass confirmed=<n> held=<n> kept=<n> unasked=<n> forgotten=<n>` for each
+run that checked one. A request with an agent token whose owner was confirmed more than an hour
+ago refreshes in that request too, which can add up to 2 seconds to it.
+
+**Signing out.** A sign-out ends the person's browser sessions and changes nothing else they hold.
+While they still hold an agent token, a machine login of their own, a sign-in on a machine
+(`agent-secrets login`), or an entry of the broker's exchange settings that names them, Dispatch
+keeps their refresh token after the sign-out, for these checks alone, so Google's later refusal
+still holds them; the kept token signs nobody in. Dispatch forgets it at the sign-out when they
+hold none of these, and otherwise at the first hourly check after the last one ends. It asks the
+broker at each sign-out and at each such check, and while the broker cannot be asked it keeps the
+token. With no broker configured, it counts agent tokens alone.
+
+**Who is not checked.** A person for whom Dispatch stores no refresh token and records no hold
+keeps their credentials: one who signed out holding nothing that outlives the browser, one whose
+sign-in an earlier release ended, and one who never signed in. At every boot Dispatch logs
+`dispatch: people census checkable=<n> held=<n> uncheckable=<n>`, and `uncheckable` counts those
+people's rows. Read it after the first deploy. A person's next sign-in stores their refresh token,
+and they are checked from then on.
+
+**The broker's part.** The broker refuses a held person's credentials only where its
+`BROKER_PROJECT_ACCESS_URL` and `BROKER_PROJECT_ACCESS_TOKEN_FILE` are set and Dispatch lists the
+broker's account in `DISPATCH_ACCESS_ACCOUNTS`
+([A person Dispatch holds](/legion/broker/operate/#a-person-dispatch-holds)). Without the URL the
+broker holds nobody and the Envoy listener serves every broker token; Dispatch still refuses a
+broker token whose person it has recorded as held.
+
+### Changing the Workspace domain
+
+With Google directly, each sign-in and each hourly confirmation records the Workspace domain its
+ID token carried. Dispatch refuses to start when at least one of your people's rows holds a
+refresh token and records a domain, and none records `DISPATCH_SIGNIN_DOMAIN`, compared byte for
+byte: a mistyped domain would hold every member at their next hourly check. The error, logged as
+`dispatch: check the sign-in domain against the people`, names the domain it was given, the
+domains the rows record, and `envoy-dispatch forget-hosted-domains`. Correct the setting to the
+recorded domain the error names. A row records its domain at its next confirmation, so until
+then the check has nothing to compare it with.
+
+For an intended change of domain: stop every Dispatch process; once Google gives the new `hd`,
+run `envoy-dispatch forget-hosted-domains` once; then start every process with the new domain. A
+process that runs with the old domain after Google's change holds each of your people whose
+refresh it runs, and each must then sign in again. If the change also changes your people's
+addresses, each credential that names an old address stays held: issue new ones under the new
+address.
+
+### Ending a person's access
+
+A hold stops a person's credentials only until they sign in again, and nothing ends them by
+itself, so when someone leaves, end what they hold. Behind Identity-Aware Proxy this is also how an
+address created again for someone else is confirmed for its new person
+([Checking people through the Workspace Directory](#checking-people-through-the-workspace-directory)).
+A person holds four kinds of access that outlive the browser, the ones a sign-out asks about:
+
+- **Agent tokens.** Revoke every token of the address on Dispatch's database; each answers
+  `401 TOKEN_REVOKED` from then on.
+- **Machine logins of their own** and **sign-ins on a machine** (`agent-secrets login`), at the
+  broker. Revoke each with the calls the reset's broker block makes
+  ([After a restore](/legion/dispatch/after-a-restore/)), filtered to the person: a machine login
+  as its approver, and a sign-in as its person. A service's machine login the person
+  approved is the service's, and is left.
+- **Exchange entries** that name the person: remove each from the broker's
+  `BROKER_EXCHANGE_ACCOUNTS`, `BROKER_EXCHANGE_WORKFLOWS` and `BROKER_VM_EXCHANGE_ACCOUNTS`, and
+  roll the broker's pods.
+
+The block does the first two and then prints what the broker still counts for the person
+(`GET /v1/person-access`), with the address as Dispatch holds it and a token of Dispatch's own
+ServiceAccount, kept off every command line as the reset's block keeps it. Each call that fails
+prints `NOT REVOKED <id>` after the broker's answer:
+
+```sh
+(
+umask 077
+set -o pipefail
+person='<address>'
+header=$(mktemp) || exit 1
+trap 'rm -f "$header"' EXIT
+broker_url='<the URL in DISPATCH_AGENT_SECRETS_URL>'
+token=$(kubectl -n '<the namespace Dispatch runs in>' create token '<the ServiceAccount Dispatch runs as>' --audience '<the audience in BROKER_K8S_OIDC_AUDIENCE>' --duration 1h) || { echo 'no token was minted'; exit 1; }
+printf 'Authorization: Bearer %s\n' "$token" >"$header"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email="$person" <<'SQL' || { echo 'NOT REVOKED: the agent tokens'; exit 1; }
+update agent_tokens set revoked_at = now() where canonical_login(owner) = :'email' and revoked_at is null;
+SQL
+signins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person="$person" <<'SQL'
+select id from person_signins where person = :'person' and revoked_at is null order by id;
+SQL
+}
+logins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person="$person" <<'SQL'
+select c.id from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null and r.approver = :'person' order by c.id;
+SQL
+}
+signins | while read -r id; do
+  curl -sS --fail-with-body -w '\n' -X POST -H @"$header" -d "{\"person\":\"$person\"}" "$broker_url/v1/person-signins/$id/revoke" || echo "NOT REVOKED $id"
+done
+logins | while read -r id; do
+  curl -sS --fail-with-body -w '\n' -X POST -H @"$header" -d "{\"approver\":\"$person\"}" "$broker_url/v1/launcher-credentials/$id/revoke-by-approver" || echo "NOT REVOKED $id"
+done
+curl -sS --fail-with-body -w '\n' -G -H @"$header" --data-urlencode "person=$person" "$broker_url/v1/person-access"
+)
+```
+
+Done is an answer whose counts read `"machine_logins":0,"signins":0,"exchange_entries":0`; a count
+above zero is what is left, an exchange entry to remove or a call the `NOT REVOKED` lines name, so
+fix it and run the block again. A broker database the block cannot read lists nothing, so read the
+last answer, not the absence of `NOT REVOKED`. A machine login revoked as its approver also ends
+every session it enrolled.
+
 ### After a restore
 
 A Dispatch database restored or made again alone, a broker database restored or made again alone,
@@ -408,6 +545,60 @@ reopens about every ten minutes: the live socket shows nothing of it, and a docu
 as it does after any close the server makes, its sync restoring whatever was in flight. Only an
 assertion IAP signed counts as expired: one IAP's keys no longer verify, or whose person the domain
 no longer admits, is refused, and the socket closes as it does when its person signs out.
+
+### Checking people through the Workspace Directory
+
+IAP keeps no refresh token, so Google's refusal of a refresh cannot reach Dispatch. Instead,
+Dispatch reads each of your people's Workspace accounts through the Directory API (`users.get` for
+the person's address) about once an hour, held and idle people included. An answer that the
+person's own account is active confirms them, releases a hold with no sign-in, and keeps them
+served for 24 hours. An answer that the account is suspended, a `404`, or an answer for another
+address's account (the address made an alias of a colleague's account) holds them: their agent
+tokens and broker tokens are refused `401 MEMBERSHIP_HELD`, and the secrets broker refuses their
+credentials. Any other result changes nothing. A valid IAP assertion releases nothing. After 24
+hours with no active answer, a person's agent tokens answer `503 IDENTITY_UNAVAILABLE`, and their
+broker tokens `503 BROKER_UNAVAILABLE`, until the Directory answers again, so an outage of the
+Directory longer than a day stops everyone's tokens; a person IAP admits for the first time is in
+that state until their first check.
+
+An address the Workspace deleted and created again for someone else answers with the new
+account. Dispatch's row for the address still belongs to the earlier person, and so does every
+credential that names it, so the new account is confirmed only once the address holds nothing that
+outlives the browser, the same question a sign-out asks: no unrevoked agent token, and at the
+broker no live machine login, no sign-in on a machine and no exchange entry that names it. Until
+then, or while that question cannot be answered, the address stays held. End the earlier person's
+access ([Ending a person's access](#ending-a-persons-access)), and the next hourly check confirms
+the new person, with no sign-in and no command. A Dispatch with `DISPATCH_AGENT_SECRETS_URL` unset
+asks no broker and counts agent tokens alone, so there the new account confirms with no check of
+what the earlier person still holds at the broker.
+
+Two settings configure the reads, both required with `DISPATCH_IDENTITY=iap` and refused without
+it: `DISPATCH_DIRECTORY_ACCOUNT`, the email of a service account with no key and no project role,
+on which Dispatch's own workload identity holds `roles/iam.serviceAccountTokenCreator`, so
+Dispatch signs through it and no key leaves Google; and `DISPATCH_DIRECTORY_ADMIN`, the email of
+the Workspace user the reads act as. A server that cannot build its reader, with no Application
+Default Credentials say, logs `dispatch: build the request identity` and exits at boot. The
+secrets broker of such a deployment sets `BROKER_HOLD_REQUIRES_DEADLINE=true`
+([A person Dispatch holds](/legion/broker/operate/#a-person-dispatch-holds)). On `envoy-infra`'s
+`gcp:Dispatch`, set `directoryAccount` and `directoryAdmin` beside `iapAudience`
+(`packages/envoy/infra/README.md`).
+
+Before IAP admits anyone, a Workspace super administrator makes two changes once: give the
+delegated user an administrator role whose only privilege is Users > Read; and, in the Admin
+console under Security, Access and data control, API controls, Manage Domain Wide Delegation,
+authorize the service account's numeric client ID for exactly
+`https://www.googleapis.com/auth/admin.directory.user.readonly`. Google states that the grant can
+take up to 24 hours to take effect. Then run, with the two settings, an active account and a
+suspended or deleted one:
+
+```sh
+envoy-dispatch directory-check --active '<an active login>' --held '<a suspended or deleted login>' --scope-probe https://www.googleapis.com/auth/admin.directory.user
+```
+
+It exits 0 only when the first login is `Active`, the second `Held`, and Google refuses the probe
+scope with `unauthorized_client`, so the grant reads users and gives nothing more; the command's
+section of `packages/envoy/cmd/dispatch/README.md` ("Checking the Directory reads") gives its
+output. A run that fails at the token exchange soon after the grant may pass later.
 
 ## Changing the session key
 

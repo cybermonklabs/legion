@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -23,7 +24,10 @@ import (
 // was issued is invalid_grant. A code whose authorization request carried a
 // PKCE challenge is exchanged only with the code_verifier whose S256 is that
 // challenge (RFC 7636 section 4.6); a missing or wrong verifier is
-// invalid_grant, and spends the code like any refusal.
+// invalid_grant, and spends the code like any refusal. Before it reads the
+// grant the endpoint waits as DelayToken says; the failure FailToken or
+// DropToken set then answers every grant, and the one RefuseRefresh or
+// FailRefreshFor set answers a refresh of that person's refresh tokens.
 func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		tokenError(w, http.StatusBadRequest, "invalid_request")
@@ -48,18 +52,7 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		if r.PostForm.Get("grant_type") == "refresh_token" {
 			flow.refreshes++
 		}
-		switch {
-		case failure.drop:
-			if hijacker, ok := w.(http.Hijacker); ok {
-				if conn, _, err := hijacker.Hijack(); err == nil {
-					_ = conn.Close()
-				}
-			}
-		case failure.code == "":
-			http.Error(w, http.StatusText(failure.status), failure.status)
-		default:
-			tokenError(w, failure.status, failure.code)
-		}
+		failure.answer(w)
 		return
 	}
 	clientID, clientSecret, basic, err := basicCredentials(r)
@@ -108,6 +101,12 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		if !ok || grant.revoked || grant.clientID != clientID {
 			tokenError(w, http.StatusBadRequest, "invalid_grant")
 			return
+		}
+		if email, _ := grant.claims["email"].(string); email != "" {
+			if failure, set := flow.refreshFailures[strings.ToLower(email)]; set {
+				failure.answer(w)
+				return
+			}
 		}
 		claims = maps.Clone(grant.claims)
 	case deviceCodeGrantType:
@@ -236,11 +235,7 @@ func (i *Issuer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if status != 0 {
-		if code == "" {
-			http.Error(w, http.StatusText(status), status)
-		} else {
-			tokenError(w, status, code)
-		}
+		tokenFailure{status: status, code: code}.answer(w)
 		return
 	}
 	i.mu.Lock()

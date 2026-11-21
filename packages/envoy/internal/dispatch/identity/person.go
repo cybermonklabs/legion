@@ -53,12 +53,15 @@ type RestrictedAdmission interface {
 	AdmitsRestricted(ctx context.Context, email string) error
 }
 
-// SignedIn is the person a sign-in rule admits: Email, their lowercase email, and Kind, how they
-// belong to the deployment (model.MemberFull or model.MemberRestricted). A refusal that names the
+// SignedIn is the person a sign-in rule admits: Email, their lowercase email, Kind, how they
+// belong to the deployment (model.MemberFull or model.MemberRestricted), and HostedDomain, the
+// Workspace domain (`hd`) the ID token carried, empty for none, which the sign-in and each
+// confirmation record (auth.PeopleStore.SignInSubject, ConfirmSubject). A refusal that names the
 // person returns their Email alone, Kind left model.MemberNone.
 type SignedIn struct {
-	Email string
-	Kind  model.MemberKind
+	Email        string
+	Kind         model.MemberKind
+	HostedDomain string
 }
 
 // SignInRule is who may sign in to Dispatch and how Dispatch treats their sign-in: GroupRule for
@@ -97,20 +100,25 @@ type SignInRule interface {
 	// (auth.PersonMembership.Subject, empty when it records none), lets this rule confirm it
 	// without asking the issuer first.
 	CanRefresh(stored string) bool
+	// Holds says whether a refusal under this rule can hold a person (Membership.Standing): true
+	// for the two Google rules, DomainRule and OutsideRule, and false for GroupRule, whose ends
+	// always forget.
+	Holds() bool
 	// ConfirmSubject is the subject Membership.Confirm should record for a refresh whose verified
 	// claims, and whose membership's stored subject, are given.
 	ConfirmSubject(claims oidc.Claims, stored string) (string, error)
-	// End ends email's sign-in under this rule, returning ErrNoIdentity once it no longer stands.
-	// read is the membership the failed confirmation read: every rule ends only while the row
-	// still records its subject and holds its refresh token, advancing the session generation in
-	// that transaction (auth.PeopleStore.EndSubject).
-	End(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string) error
+	// End ends email's sign-in under this rule in mode (auth.EndMode), returning ErrNoIdentity
+	// once it no longer stands, and ended, whether the store's guarded end wrote. read is the
+	// membership the failed confirmation read: every rule ends only while the row still records
+	// its subject and holds its refresh token, advancing the session generation in that
+	// transaction (auth.PeopleStore.EndSubject).
+	End(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string, mode auth.EndMode) (ended bool, err error)
 	// SignedOutReason is the reason a 401 tells the person whose session for email has ended
 	// (SignedOut.Reason), read from people and whatever else the rule reads, or "" for none. A
 	// rule tells one only while no sign-in of the address stands (endedRestricted: its refresh
-	// token is gone) and only for a person it no longer admits, so a full member, and a person
-	// whose sign-in another account took or who signed in again, is told none; GroupRule tells
-	// none at all.
+	// token is gone, or a sign-out or an EndKeep kept it with the row signed out) and only for a
+	// person it no longer admits, so a full member, and a person whose sign-in another account
+	// took or who signed in again, is told none; GroupRule tells none at all.
 	SignedOutReason(ctx context.Context, people auth.PeopleStore, email string) (string, error)
 	// WriteSignIn records person's sign-in under this rule (auth.PeopleStore.SignIn or
 	// .SignInSubject), with the member kind Person named, given the subject this rule's own

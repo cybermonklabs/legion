@@ -76,7 +76,7 @@ func newRestrictableRig(t *testing.T, heartbeat time.Duration) *restrictableRig 
 	}
 	people := store.NewPgPeopleStore(rig.database.Pool, testSigningKey, nil)
 	sessions := store.NewPgSessionStore(rig.database.Pool)
-	if err := people.SignInSubject(ctx, kindChangeEmail, "member-subject", signIn.RefreshToken, model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, kindChangeEmail, "member-subject", signIn.RefreshToken, "", model.MemberFull); err != nil {
 		t.Fatalf("record the sign-in: %v", err)
 	}
 	generation, err := sessions.EnsureSession(ctx, kindChangeEmail)
@@ -378,7 +378,7 @@ func TestADeliveryViewStopsCarryingAProjectOnceTheHourlyConfirmationRestrictsIts
 	ctx := context.Background()
 	seed := seedPrivateProject(t)
 	people := store.NewPgPeopleStore(seed.database.Pool, testSigningKey, nil)
-	if err := people.SignInSubject(ctx, dave, "dave-subject", "refresh-dave", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, dave, "dave-subject", "refresh-dave", "", model.MemberFull); err != nil {
 		t.Fatalf("record dave's sign-in: %v", err)
 	}
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/people/"+dave, nil, http.StatusOK)
@@ -399,7 +399,7 @@ func TestADeliveryViewStopsCarryingAProjectOnceTheHourlyConfirmationRestrictsIts
 		return note.what == "readers rechecked"
 	})
 
-	if err := people.ConfirmSubject(ctx, dave, "dave-subject", "refresh-dave", "refresh-dave-confirmed", model.MemberRestricted); err != nil {
+	if err := people.ConfirmSubject(ctx, dave, "dave-subject", "refresh-dave", "refresh-dave-confirmed", "", model.MemberRestricted); err != nil {
 		t.Fatalf("dave's hourly confirmation as a restricted member: %v", err)
 	}
 	public := hubPR(7, now.Add(-time.Hour))

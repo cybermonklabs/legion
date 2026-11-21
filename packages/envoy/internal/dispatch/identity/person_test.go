@@ -74,11 +74,11 @@ func googleAccount() oidc.Claims {
 }
 
 // Under the domain rule a person is the lowercased email of a token whose hd is the domain and
-// whose email Google has verified.
+// whose email Google has verified, a full member with that hd.
 func TestPersonUnderTheDomainIsTheVerifiedEmailOfTheDomain(t *testing.T) {
 	person, err := workspace.Person(context.Background(), googleAccount())
-	if err != nil || person != (SignedIn{Email: "a.person@example.com", Kind: model.MemberFull}) {
-		t.Fatalf("Person = %+v, %v; want a.person@example.com as a full member", person, err)
+	if err != nil || person != (SignedIn{Email: "a.person@example.com", Kind: model.MemberFull, HostedDomain: "example.com"}) {
+		t.Fatalf("Person = %+v, %v; want a.person@example.com as a full member of example.com", person, err)
 	}
 }
 

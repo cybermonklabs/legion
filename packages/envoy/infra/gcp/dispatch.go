@@ -253,13 +253,38 @@ type DispatchArgs struct {
 	// /projects/<project number>/global/backendServices/<backend service id>
 	// (https://cloud.google.com/iap/docs/signed-headers-howto), and may be another resource's
 	// output, such as one built from the backend service's own id. It needs publicOrigin, the
-	// origin that load balancer serves, and signInDomain, the Workspace domain whose accounts may
+	// origin that load balancer serves, signInDomain, the Workspace domain whose accounts may
 	// use Dispatch, rendered as DISPATCH_SIGNIN_DOMAIN, which Dispatch holds the signed header's hd
-	// claim to; it is refused beside signInClientId, signInClientSecret, signInWorkspaceDomains,
-	// signInOutside, signInPasskey and outsideOrigin: IAP signs a person in, and a browser reaches
-	// Dispatch through it alone. Unset renders none of the three variables, and Dispatch keeps its
-	// default identity.
+	// claim to, and directoryAccount and directoryAdmin, the Workspace Directory reads Dispatch
+	// checks each person through behind this door; it is refused beside signInClientId,
+	// signInClientSecret, signInWorkspaceDomains, signInOutside, signInPasskey and outsideOrigin: IAP
+	// signs a person in, and a browser reaches Dispatch through it alone. Unset renders none of the
+	// five variables, and Dispatch keeps its default identity.
 	IapAudience pulumi.StringInput `pulumi:"iapAudience,optional"`
+	// DirectoryAccount is the email of the service account Dispatch reads the Google Workspace
+	// Directory through behind the IAP door, rendered as DISPATCH_DIRECTORY_ACCOUNT beside
+	// DISPATCH_IDENTITY=iap. Behind that door Dispatch keeps no Google refresh token, so it checks
+	// each full member's Workspace account through the Directory API once an hour instead, and holds
+	// a person whose account is suspended or gone. The account has no key and no project role: the
+	// app's own workload principal holds roles/iam.serviceAccountTokenCreator on it and calls IAM
+	// signJwt on it, so no key leaves Google. The person steps come before IAP admits anyone: a
+	// Workspace super administrator gives directoryAdmin an administrator role whose only privilege
+	// is Users > Read, and authorizes this account's numeric client ID for Domain-wide Delegation
+	// with exactly the scope https://www.googleapis.com/auth/admin.directory.user.readonly, which
+	// Google states can take up to 24 hours to take effect. It may be another resource's or stack's
+	// output, such as the export of the program that declares the account, and is judged once it
+	// resolves: a blank value, which Dispatch reads as unset, or one holding an nkey seed is refused
+	// naming directoryAccount. iapAudience requires it, since Dispatch refuses to boot behind the IAP
+	// door without it, and it is refused without iapAudience.
+	DirectoryAccount pulumi.StringInput `pulumi:"directoryAccount,optional"`
+	// DirectoryAdmin is the email of the Workspace user Dispatch's Directory reads act as, through
+	// directoryAccount's Domain-wide Delegation, rendered as DISPATCH_DIRECTORY_ADMIN beside
+	// DISPATCH_IDENTITY=iap: a user whose only administrator privilege is Users > Read, which the
+	// person steps directoryAccount names give it. It may be another resource's output or secret
+	// configuration, whose secrecy the rendered variable keeps, and is judged once it resolves, as
+	// directoryAccount is: a blank value or one holding an nkey seed is refused naming
+	// directoryAdmin. iapAudience requires it, and it is refused without iapAudience.
+	DirectoryAdmin pulumi.StringInput `pulumi:"directoryAdmin,optional"`
 	// LoadBalancerSourceRanges are the CIDRs the deployment's load balancer reaches the app's pods
 	// from, such as Google's health-check and proxy ranges, which the component renders as ipBlock
 	// peers on 8766 in the app's own NetworkPolicy, beside allowedNamespaces' peers, so one policy
@@ -1079,10 +1104,21 @@ func dispatchSignInInputs(args *DispatchArgs) []dispatchInput {
 	}
 }
 
+// dispatchDirectoryInputs is the Directory group: the signer and the delegated Workspace user
+// Dispatch's Workspace Directory reads sign as and act as behind the IAP door. Both with
+// iapAudience, which refuses to run without either (refuseDispatchIAP), and neither without it.
+// Written here alone, as the other groups are.
+func dispatchDirectoryInputs(args *DispatchArgs) []dispatchInput {
+	return []dispatchInput{
+		{"directoryAccount", args.DirectoryAccount != nil},
+		{"directoryAdmin", args.DirectoryAdmin != nil},
+	}
+}
+
 // dispatchDatabaseInputs are the four inputs that configure the Cloud SQL instance the component
 // makes, in the order a refusal judges them in: newDispatchExistingDatabaseInstance refuses each
 // beside existingDatabaseInstance, which replaces that instance, and dispatchClusterOnlyRefusals
-// takes them from here. Written here alone, as the two groups are.
+// takes them from here. Written here alone, as the three groups are.
 func dispatchDatabaseInputs(args *DispatchArgs) []dispatchInput {
 	return []dispatchInput{
 		{"databaseVersion", args.DatabaseVersion != nil},
@@ -1101,12 +1137,12 @@ func dispatchDatabaseInputs(args *DispatchArgs) []dispatchInput {
 // true is the only value that leaves the cluster this mode makes a subnetwork. existingCluster and
 // existingDatabaseInstance are among the refused: one names the cluster Dispatch runs in and the
 // other the database instance it uses, and clusterOnly runs no Dispatch, always makes its own
-// cluster and uses no database. The eight inputs of the two groups and the four database inputs
-// come from their own definitions (dispatchTailnetInputs, dispatchSignInInputs and
-// dispatchDatabaseInputs), so an input any of them gains is refused here without being written
-// down a second time.
+// cluster and uses no database. The ten inputs of the three groups and the four database inputs
+// come from their own definitions (dispatchTailnetInputs, dispatchSignInInputs,
+// dispatchDirectoryInputs and dispatchDatabaseInputs), so an input any of them gains is refused
+// here without being written down a second time.
 func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
-	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
+	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), dispatchDirectoryInputs(args), []dispatchInput{
 		{"outsideOrigin", args.OutsideOrigin != ""},
 		{"signInOutside", args.SignInOutside},
 		{"signInPasskey", args.SignInPasskey},
@@ -1338,14 +1374,18 @@ func refuseDispatchPublicOrigin(args *DispatchArgs, signInOn bool) (*url.URL, er
 // no request through the tailnet front door or into the sandbox carries IAP's signed header. It
 // needs signInDomain, the Workspace domain whose accounts may use Dispatch, which Dispatch holds
 // the signed header's hd claim to by the membership rule its own sign-in uses, and which it
-// refuses to boot without under IAP. And it refuses the Google client (signInClientId,
-// signInClientSecret), signInWorkspaceDomains, signInOutside, signInPasskey and outsideOrigin: IAP
-// signs a person in and a browser reaches Dispatch through it alone, so Dispatch runs no sign-in of
-// its own, by Google or by passkey, and serves no second origin for outside sign-in. Each is
-// refused by its own name, signInPasskey before outsideOrigin, which a consumer sets for it, and
-// all of them before the sign-in group's own checks, which the IAP door does not run, so a client
-// input sent beside IAP is refused for being sent at all. The audience's own value may be another
-// resource's output, so it is judged once it resolves (dispatchIAPAudience).
+// refuses to boot without under IAP. It needs directoryAccount and directoryAdmin: behind this door
+// Dispatch keeps no Google refresh token, so it checks each person's Workspace account through the
+// Directory API instead, signing as the one and reading as the other, and refuses to boot without
+// either. And it refuses the Google client (signInClientId, signInClientSecret),
+// signInWorkspaceDomains, signInOutside, signInPasskey and outsideOrigin: IAP signs a person in and
+// a browser reaches Dispatch through it alone, so Dispatch runs no sign-in of its own, by Google or
+// by passkey, and serves no second origin for outside sign-in. Each is refused by its own name,
+// signInPasskey before outsideOrigin, which a consumer sets for it, and all of them before the
+// sign-in group's own checks, which the IAP door does not run, so a client input sent beside IAP is
+// refused for being sent at all. The audience's and the Directory inputs' own values may be other
+// resources' outputs, so each is judged once it resolves (dispatchIAPAudience,
+// dispatchDirectorySetting).
 func refuseDispatchIAP(args *DispatchArgs) error {
 	if args.PublicOrigin == "" {
 		return core.InputErrorf("iapAudience", "iapAudience needs publicOrigin: IAP runs on the deployment's own load balancer, which serves Dispatch at that origin, and no request through the tailnet front door or into the sandbox carries IAP's signed header; set publicOrigin, or unset iapAudience")
@@ -1371,6 +1411,11 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 	}
 	if !dispatchDomainName(args.SignInDomain) {
 		return core.InputErrorf("signInDomain", "signInDomain %q must be a lowercase DNS name with iapAudience: the Workspace domain whose accounts may use Dispatch, which Dispatch holds IAP's signed header's hd claim to and refuses to boot without", args.SignInDomain)
+	}
+	for _, in := range dispatchDirectoryInputs(args) {
+		if !in.set {
+			return core.InputErrorf(in.input, "iapAudience needs %s: behind the IAP door Dispatch checks each person's Google Workspace account through the Directory API, signing as directoryAccount and reading as directoryAdmin, and refuses to boot without either; set %s, or unset iapAudience", in.input, in.input)
+		}
 	}
 	return nil
 }
@@ -1699,7 +1744,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// is set, and what the sandbox cannot by a fourth while both are unset. The IAP door is judged
 	// first, so a sign-in input sent beside it is refused for being sent at all; it takes
 	// signInDomain alone of the sign-in group and runs no Google sign-in, so the group is off
-	// beside it.
+	// beside it. The Directory group configures reads Dispatch makes only behind that door, so
+	// either of its inputs without iapAudience is refused by its own name.
 	tailnetGroup, signInGroup := dispatchTailnetInputs(args), dispatchSignInInputs(args)
 	frontDoor, signInOn := dispatchGroupSet(tailnetGroup), dispatchGroupSet(signInGroup)
 	if args.IapAudience != nil {
@@ -1707,6 +1753,12 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, err
 		}
 		signInOn = false
+	} else {
+		for _, in := range dispatchDirectoryInputs(args) {
+			if in.set {
+				return dispatchSettings{}, core.InputErrorf(in.input, "%s is refused without iapAudience: Dispatch reads the Google Workspace Directory only behind the IAP door, and refuses the setting at boot outside it; unset %s, or set iapAudience", in.input, in.input)
+			}
+		}
 	}
 	if err := refuseDispatchEntrance(args); err != nil {
 		return dispatchSettings{}, err

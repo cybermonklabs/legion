@@ -190,6 +190,14 @@ func (b *brokerTokens) verify(r *http.Request) (ciphertoken.Caller, error) {
 	return verifier.Verify(r.Context(), r)
 }
 
+// lapsed reports whether caller, one verify answered, is a not-held answer whose deadline has
+// passed by the verifier's own clock (ciphertoken.Verifier.Lapsed), which apiAuth refuses as
+// unavailable.
+func (b *brokerTokens) lapsed(caller ciphertoken.Caller) bool {
+	verifier := b.verifier.Load()
+	return verifier != nil && verifier.Lapsed(caller)
+}
+
 // retryAfter is the wait a rate-limited caller is given, in seconds.
 func (b *brokerTokens) retryAfter() int {
 	if verifier := b.verifier.Load(); verifier != nil {

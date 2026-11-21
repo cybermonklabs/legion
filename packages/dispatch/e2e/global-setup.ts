@@ -40,7 +40,7 @@
  *  in on B: without one cookie key (run-server.sh's DISPATCH_DEV_SIGNIN_SHARED_KEY) every page
  *  would sign its person out at the first request B answers. Under DISPATCH_E2E_SIGNIN=oidc or
  *  google (`e2e/harness-signin.ts`) the servers have no dev sign-in to check that with; there the
- *  one spec each runs signs its people in through the issuer and asks who they are.
+ *  specs each mode runs sign their people in through the issuer and ask who they are.
  */
 import { existsSync } from "node:fs";
 import { chromium, type FullConfig, type FullProject, firefox, webkit } from "@playwright/test";

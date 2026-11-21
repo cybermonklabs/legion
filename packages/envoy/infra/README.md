@@ -1057,18 +1057,41 @@ audience that header's token carries for a backend service,
 `/projects/<project number>/global/backendServices/<backend service id>`, both numbers, and may
 come from another resource or stack, such as one built from the backend service's own id; once it
 resolves, a value of any other form is refused naming `iapAudience`, and one holding an nkey seed
-is refused without echoing it. It needs `publicOrigin`, the origin that load balancer serves, and
+is refused without echoing it. It needs `publicOrigin`, the origin that load balancer serves,
 `signInDomain`, the Workspace domain whose accounts may use Dispatch, which Dispatch holds the
-token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`,
-`signInOutside`, `signInPasskey` and `outsideOrigin`, since IAP signs a person in and a browser
-reaches Dispatch through it alone. It renders `DISPATCH_IDENTITY=iap`,
-`DISPATCH_IAP_AUDIENCE=<iapAudience>` and `DISPATCH_SIGNIN_DOMAIN=<signInDomain>` on the app's
-container, in the place the sign-in variables hold, right before `DISPATCH_SERVER_URL`, and no
-other `DISPATCH_SIGNIN_*` variable; the Secret
-holds no client secret. Its `envoyImage` must be built from a cybermonklabs/legion `main` commit
-whose `envoy-dispatch` takes `DISPATCH_IDENTITY=iap`: an older one refuses that identity mode at
-boot, so the app's pods never start. With `iapAudience` unset none of the three variables
-renders, and Dispatch keeps its default identity.
+token's `hd` claim to, and `directoryAccount` and `directoryAdmin` (below); it refuses
+`signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`, `signInOutside`, `signInPasskey`
+and `outsideOrigin`, since IAP signs a person in and a browser reaches Dispatch through it alone.
+It renders `DISPATCH_IDENTITY=iap`, `DISPATCH_IAP_AUDIENCE=<iapAudience>`,
+`DISPATCH_SIGNIN_DOMAIN=<signInDomain>`, `DISPATCH_DIRECTORY_ACCOUNT=<directoryAccount>` and
+`DISPATCH_DIRECTORY_ADMIN=<directoryAdmin>` on the app's container, in that order, in the place the
+sign-in variables hold, right before `DISPATCH_SERVER_URL`, and no other `DISPATCH_SIGNIN_*`
+variable; the Secret holds no client secret. Its `envoyImage` must be built from a
+cybermonklabs/legion `main` commit whose `envoy-dispatch` takes `DISPATCH_IDENTITY=iap`: an older
+one refuses that identity mode at boot, so the app's pods never start. A build that takes it but
+predates the two Directory settings ignores them, as it ignores every variable its settings table
+does not list, and checks nobody through the Directory. With `iapAudience` unset none of the five
+variables renders, and Dispatch keeps its default identity.
+
+`directoryAccount` and `directoryAdmin`, both unset by default, are required with `iapAudience`
+and refused without it, each by its own name. Behind the IAP door Dispatch keeps no Google refresh
+token, so it checks each full member's Google Workspace account through the Directory API once an
+hour instead, and holds a person whose account is suspended or gone. `directoryAccount` is the
+email of the service account those reads sign as: one with no key and no project role, on which
+the app's Workload Identity principal (the form of the `principal` output, below) holds
+`roles/iam.serviceAccountTokenCreator`, so Dispatch calls IAM `signJwt` on it and no key leaves
+Google. `directoryAdmin` is the email of the Workspace user the reads act as, through that
+account's Domain-wide Delegation. Either may come from another resource or stack, such as the
+export of the program that declares the account, and a secret `directoryAdmin` stays secret in
+the rendered pod; once each resolves, a blank value, which Dispatch reads as unset, or one holding
+an nkey seed is refused naming the input and never echoing it. Before IAP admits anyone, a
+Workspace super administrator makes two person steps: give the delegated user an administrator
+role whose only privilege is Users > Read, and, in the Admin console under Security, Access and
+data control, API controls, Manage Domain Wide Delegation, authorize the signer's numeric client
+ID for exactly `https://www.googleapis.com/auth/admin.directory.user.readonly`. Google states that
+the grant can take up to 24 hours to take effect. `envoy-dispatch directory-check`
+(`packages/envoy/cmd/dispatch/README.md`) then checks the reads and that the grant gives nothing
+more, before IAP admits anyone.
 
 IAP guards only the requests that come through the load balancer. The pods of `allowedNamespaces`,
 and the addresses of `loadBalancerSourceRanges`, reach the app's Service on 8766 directly, without
@@ -1620,12 +1643,13 @@ refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is
 a set `oidcAccounts` leaves out, a `projectOwnerFallback` that is not a lowercase email (the three
 refusals Dispatch would otherwise make at boot), an `outsideOrigin` that breaks the rule the
 paragraph on it above states, a `publicOrigin` that breaks the rule its own paragraph states or is
-set beside the tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or beside
-`signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`, `signInOutside`, `signInPasskey`
-or `outsideOrigin`, and, once it resolves, an `iapAudience` of another form than a backend
-service's, a `signInOutside` without the sign-in inputs, a `signInPasskey` without `outsideOrigin`
-or the sign-in inputs or beside `signInOutside`, a `signInWorkspaceDomains` without the sign-in
-inputs or with an entry Dispatch would refuse, an
+set beside the tailnet inputs, an `iapAudience` without `publicOrigin`, `signInDomain`,
+`directoryAccount` or `directoryAdmin` or beside `signInClientId`, `signInClientSecret`,
+`signInWorkspaceDomains`, `signInOutside`, `signInPasskey` or `outsideOrigin`, a `directoryAccount`
+or `directoryAdmin` without `iapAudience`, and, once it resolves, an `iapAudience` of another form
+than a backend service's, a `signInOutside` without the sign-in inputs, a `signInPasskey` without
+`outsideOrigin` or the sign-in inputs or beside `signInOutside`, a `signInWorkspaceDomains` without
+the sign-in inputs or with an entry Dispatch would refuse, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
@@ -1640,12 +1664,14 @@ sign-in is shared; and, of the answerer's group, any `azureChat` input without
 `azureChatDeployment` or without the keyless sign-in, a `chatEndpoint` without `chatTokenSecret`
 or `chatModel`, and an empty `azureChatApiVersion`, `azureChatScope` or `chatModel`.
 Once each Pulumi input resolves, before any child takes it, it refuses a seed in
-`tailnetAuthKey`, `signInClientSecret`, `natsSeedSecret`, `databaseWaitsFor`, `azureEmbedEndpoint`,
-`azureEmbedDeployment`, `azureEmbedKeySecret`, `azureTenantId`, `azureClientId`,
-`azureChatEndpoint`, `azureChatDeployment`, `chatEndpoint`, `chatTokenSecret` and
-`existingDatabaseInstance`; a blank or
-whitespace-only `tailnetAuthKey` or `signInClientSecret`, neither of which can work blank (the
-front door cannot join the tailnet, Dispatch refuses a blank sign-in secret at boot) — each a
+`tailnetAuthKey`, `signInClientSecret`, `natsSeedSecret`, `databaseWaitsFor`, `directoryAccount`,
+`directoryAdmin`, `azureEmbedEndpoint`, `azureEmbedDeployment`, `azureEmbedKeySecret`,
+`azureTenantId`, `azureClientId`, `azureChatEndpoint`, `azureChatDeployment`, `chatEndpoint`,
+`chatTokenSecret` and `existingDatabaseInstance`; a blank or whitespace-only `tailnetAuthKey` or
+`signInClientSecret`, neither of which can work blank (the front door cannot join the tailnet,
+Dispatch refuses a blank sign-in secret at boot), and a blank or whitespace-only
+`directoryAccount` or `directoryAdmin`, which Dispatch reads as unset, so it would not boot behind
+the IAP door — each a
 refusal naming the input and never echoing it; and a `natsUrl` that holds a seed, is local
 (without `natsInCluster` the pods reach NATS only through the front door's SOCKS5 proxy, and
 with it they dial the URL themselves, so a loopback address would have them dial themselves), is
@@ -2352,7 +2378,9 @@ a stack that ran sign-in before included.
 
 A stack behind the IAP door sets no tailnet input and no Google client, and sets `publicOrigin`,
 the origin its own load balancer serves, `iapAudience`, the audience of that load balancer's
-backend service, and `signInDomain`, the domain whose accounts may use Dispatch:
+backend service, `signInDomain`, the domain whose accounts may use Dispatch, and
+`directoryAccount` and `directoryAdmin`, the signer and the delegated user its Workspace Directory
+reads sign as and act as:
 
 ```yaml
 resources:
@@ -2373,6 +2401,8 @@ resources:
       publicOrigin: https://dispatch.example.com
       iapAudience: /projects/<project number>/global/backendServices/${backendService.generatedId}
       signInDomain: example.com
+      directoryAccount: dispatch-directory@example-project.iam.gserviceaccount.com
+      directoryAdmin: directory-reader@example.com
       allowedNamespaces: [example-agents]
     options:
       providers:
@@ -2381,8 +2411,10 @@ resources:
 ```
 
 Its `url` output is `https://dispatch.example.com`, and its app carries `DISPATCH_IDENTITY=iap`,
-`DISPATCH_IAP_AUDIENCE` and `DISPATCH_SIGNIN_DOMAIN=example.com` and no other `DISPATCH_SIGNIN_*`
-setting. The load balancer, its backend service with IAP on, its certificate and the
+`DISPATCH_IAP_AUDIENCE`, `DISPATCH_SIGNIN_DOMAIN=example.com`, `DISPATCH_DIRECTORY_ACCOUNT` and
+`DISPATCH_DIRECTORY_ADMIN` and no other `DISPATCH_SIGNIN_*` setting. The person steps of
+`directoryAccount`'s paragraph come before IAP admits anyone. The load balancer, its backend
+service with IAP on, its certificate and the
 NetworkPolicy that admits its ranges to the app's port 8766 are the stack's own ([Inputs](#inputs-1)).
 A stack that runs Google sign-in at its own origin instead sets the sign-in group in place of
 `iapAudience`, and its Google client lists `https://dispatch.example.com/auth/callback`.

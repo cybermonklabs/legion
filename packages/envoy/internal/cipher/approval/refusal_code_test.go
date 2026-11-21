@@ -27,7 +27,7 @@ import (
 func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
-	r := newRig(t)
+	r := newHoldRig(t)
 	enrollmentID, key := r.benSession(t, "ben-box")
 	a := r.request(t, enrollmentID, key, "deploy", nil, "", "TEST_SECRET")
 	page := "/approve/" + a.recordID
@@ -104,6 +104,11 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			form.Set("record", later.recordID)
 			return b.FromPage(t, "/approve", form)
 		}, http.StatusForbidden, "RECORD_NOT_PRINTED"},
+		{"a decision by an approver Dispatch holds", func(t *testing.T) ciphertest.Response {
+			r.hold(ada)
+			defer r.release(ada)
+			return b.FromPage(t, "/approve", decision(formA, "approve"))
+		}, http.StatusForbidden, "MEMBERSHIP_HELD"},
 		{"a decision from another origin", func(t *testing.T) ciphertest.Response {
 			return b.Post(t, "/approve", decision(formA, "approve"), elsewhere)
 		}, http.StatusForbidden, "ORIGIN_REFUSED"},
@@ -177,8 +182,8 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			}
 		})
 	}
-	if driven != 18 {
-		t.Fatalf("the table drove %d of the page's 18 refusals", driven)
+	if driven != 19 {
+		t.Fatalf("the table drove %d of the page's 19 refusals", driven)
 	}
 
 	// The page that answers a sign-out refuses nothing, and prints no answer id.

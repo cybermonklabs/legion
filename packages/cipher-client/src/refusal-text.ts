@@ -262,9 +262,11 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   `Refused: this pod's registration for session '${SESSION_SLOT}' was released; a pod trades only under a registration its registrar has not released\\.`,
   `The session name '${SESSION_SLOT}' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds\\.`,
   `The session name '${SESSION_SLOT}' is bound to no daemon: a pod trades only under a session name the daemon that registered it holds\\.`,
-  // Dispatch's hold of a person (`membership_held`), as the wire corpus's own sentence writes it:
-  // the same person each time.
+  // Dispatch's hold of a person (`membership_held`), as the wire corpus's own sentences write it:
+  // the same person each time. The second is an Identity-Aware Proxy deployment's broker's
+  // (`BROKER_HOLD_REQUIRES_DEADLINE`), where the Workspace Directory, not a sign-in, ends the hold.
   `${PERSON_SLOT}'s credentials are held by Dispatch; they work again when \\k<person> signs in to Dispatch, or when Dispatch can confirm \\k<person> with Google again`,
+  `Google's Workspace Directory no longer confirms ${PERSON_SLOT}; their credentials work again once it does`,
   ...POLICY_REFUSAL_PATTERNS,
 ].map((source) => new RegExp(`^${source}$`));
 

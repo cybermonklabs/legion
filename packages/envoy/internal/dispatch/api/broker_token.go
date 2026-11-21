@@ -65,7 +65,11 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 // ciphertoken.Verifier.Live, and, for a token naming a person, whether that person may still act
 // and the token's account is still theirs (brokerPersonAdmitted), as every request under the
 // token asks: so a socket a replaced account's broker token opened closes at its next heartbeat
-// after the replacing sign-in commits. It answers the person the token names as the caller's owner,
+// after the replacing sign-in commits. Then, as brokerTokenActor, a held introspection answer
+// (ciphertoken.Caller.Held) is 401 MEMBERSHIP_HELD (brokerTokenHeld), so a socket closes at its
+// next heartbeat after the broker answers its person held, and a not-held answer past its deadline
+// (ciphertoken.Verifier.Lapsed) is 503 BROKER_UNAVAILABLE, so a socket closes at its next heartbeat
+// after that deadline. It answers the person the token names as the caller's owner,
 // and, as the caller's viewer, only whether that person is a restricted member, which its admission
 // read in its one statement (broker true: a broker-issued token names its one project, or none,
 // for its whole life, so no grant is compared). The heartbeat holds the connection to that
@@ -85,11 +89,42 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 		if err != nil {
 			return model.Actor{}, true, err
 		}
+		switch {
+		case live.Held:
+			return model.Actor{}, true, s.brokerTokenHeld(live.Person)
+		case s.deps.BrokerTokens.Lapsed(live):
+			return model.Actor{}, true, errBrokerTokenLapsed()
+		}
 		person := live.Person
 		return model.Actor{Owner: &person, Viewer: &model.Viewer{Person: person, Restricted: admission.Restricted}}, true, nil
 	}
 	caller, _, err = s.optionalActor(r)
 	return caller, false, err
+}
+
+// brokerTokenHeld is the refusal of a broker token whose introspection answered its person held
+// (ciphertoken.Caller.Held), 401 MEMBERSHIP_HELD in words that say what ends the hold. Under IAP
+// identity (Standing.ChecksDirectory) a sign-in releases nothing and the Workspace Directory's next
+// active answer does, so the token gets the words a personal token gets there, from the one
+// constant both read (membershipHeldDirectoryText). Under every other rule it gets the broker's own
+// words, naming the person, since the answer carries no rule of its own.
+func (s *server) brokerTokenHeld(person string) error {
+	if s.deps.Standing != nil && s.deps.Standing.ChecksDirectory() {
+		return errMembershipHeld(membershipHeldDirectoryText)
+	}
+	return errMembershipHeld(fmt.Sprintf("%[1]s's credentials are held by Dispatch; they work again when %[1]s signs in to Dispatch, or when Dispatch can confirm %[1]s with Google again", person))
+}
+
+// errBrokerTokenLapsed is the refusal of a broker token whose introspection answered its person
+// not held only until a deadline that has passed (ciphertoken.Verifier.Lapsed): an IAP deployment's
+// Dispatch has had no active Workspace Directory answer for that person in 24 hours. It is 503
+// BROKER_UNAVAILABLE with Retry-After 60, as its words ask, never a refusal of the token, which
+// works again at the next active answer.
+func errBrokerTokenLapsed() error {
+	refusal := errorf(http.StatusServiceUnavailable, "BROKER_UNAVAILABLE",
+		"whether this token's person may still act could not be read; try again in a minute")
+	refusal.retryAfter = 60
+	return refusal
 }
 
 // brokerPersonAdmitted holds a broker-issued token naming a person (caller.Person) to the rule
@@ -143,17 +178,26 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 // service and no person is not asked. The admission answers whether the person is restricted,
 // which a live socket's heartbeat holds it to. A broker token never mints or decides
 // (brokerPersonScopes), so nothing past the admission reads its account.
+//
+// Last, where a Google rule signs people in (Deps.Standing set), the same statement reads whether
+// Dispatch records a hold of the person (recordedHoldSQL), which is 401 MEMBERSHIP_HELD in the
+// words for what ends it (recordedHoldRefusal), whatever the token's project scope: an operator
+// entry's token names the person too. It asks Standing nothing: the broker's hold gate already
+// asked the person route, and its introspection's held answer, which a caller reads after this
+// admission (ciphertoken.Caller.Held), carries every hold this read cannot see. With Standing nil
+// a recorded hold holds nobody.
 func (s *server) brokerPersonAdmitted(ctx context.Context, caller ciphertoken.Caller) (brokerAdmission, error) {
 	var kind string
-	var replaced, named bool
+	var replaced, named, recorded bool
 	subject, foreign := s.brokerTokenSubject(caller), s.brokerForeignAccount(caller)
 	held := s.deps.SignInIssuer != "" && caller.ProjectScope != ciphertoken.ProjectScopeNamed
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select coalesce((select member_kind from people where email = $1), ''),
 			`+brokerAccountReplaced("$1", "$2::text", "$5::boolean", "$3::timestamptz", "$4::boolean")+`,
-			`+brokerAccountNamed("$1", "$2::text")+`
+			`+brokerAccountNamed("$1", "$2::text")+`,
+			`+recordedHoldSQL("$1")+`
 	`, model.CanonicalLogin(caller.Person), subject, timeOrNull(caller.CredentialCreatedAt), held, foreign).
-		Scan(&kind, &replaced, &named)
+		Scan(&kind, &replaced, &named, &recorded)
 	if err != nil {
 		slog.Warn("dispatch: a broker token naming a person was refused: their member kind and recorded account could not be read", "error", err)
 		return brokerAdmission{}, errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
@@ -163,10 +207,35 @@ func (s *server) brokerPersonAdmitted(ctx context.Context, caller ciphertoken.Ca
 		return brokerAdmission{}, brokerReplacedRefusal(subject == "", named)
 	}
 	admission := brokerAdmission{Restricted: model.MemberKind(kind) == model.MemberRestricted}
-	if !admission.Restricted {
-		return admission, nil
+	if admission.Restricted {
+		if err := s.restrictedOwnerAdmitted(ctx, caller.Person); err != nil {
+			return brokerAdmission{}, err
+		}
 	}
-	return admission, s.restrictedOwnerAdmitted(ctx, caller.Person)
+	if recorded && s.deps.Standing != nil {
+		return brokerAdmission{}, s.recordedHoldRefusal()
+	}
+	return admission, nil
+}
+
+// recordedHoldRefusal is the refusal of a credential whose person people records a hold of, read
+// in the credential's own statement (recordedHoldSQL), where a Google rule signs people in
+// (Deps.Standing set): 401 MEMBERSHIP_HELD in the words for what ends the hold. Under IAP identity
+// (Standing.ChecksDirectory) the Workspace Directory recorded it and only its next active answer
+// ends it, so the words are the Directory's (membershipHeldDirectoryText), as brokerTokenHeld's and
+// a personal token's are there; under a Google sign-in rule a sign-in ends it (membershipHeldText).
+func (s *server) recordedHoldRefusal() error {
+	if s.deps.Standing.ChecksDirectory() {
+		return errMembershipHeld(membershipHeldDirectoryText)
+	}
+	return errMembershipHeld(membershipHeldText)
+}
+
+// recordedHoldSQL is the SQL expression that people records a hold of the person address names
+// (held_since later than signed_in_at, which a sign-in by any build releases), false for an
+// address no row holds.
+func recordedHoldSQL(address string) string {
+	return "coalesce((select held_since > signed_in_at from people where email = " + address + "), false)"
 }
 
 // brokerCredentialMargin is how long after people recorded an address's Google account a broker
@@ -383,7 +452,13 @@ var brokerPersonScopes = []string{model.ScopePerson}
 // BROKER_TOKEN_NOT_ACTIVE, as a token the broker no longer holds live is; a token of another
 // account no revocation names is 401 BROKER_ACCOUNT_NOT_SIGNED_IN; and a token recording no
 // account Dispatch can name, whose credential was made before people recorded its person's account
-// or within brokerCredentialMargin after, is 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT.
+// or within brokerCredentialMargin after, is 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT. Last, a person
+// Dispatch holds is 401 MEMBERSHIP_HELD: a hold Dispatch records (brokerPersonAdmitted), and then
+// one the broker's introspection answered (ciphertoken.Caller.Held), in the words brokerTokenHeld
+// gives under the rule that signs people in. So a revocation and the admission rule answer before
+// a hold. A not-held answer whose deadline has passed (ciphertoken.Verifier.Lapsed, an IAP
+// deployment's person with no active Workspace Directory answer in 24 hours) is 503
+// BROKER_UNAVAILABLE, saying whether the token's person may still act could not be read.
 func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if s.deps.BrokerTokens == nil {
 		return model.Actor{}, false, errNoBrokerConfigured()
@@ -422,6 +497,12 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		if _, err = s.brokerPersonAdmitted(r.Context(), caller); err != nil {
 			return model.Actor{}, false, err
 		}
+	}
+	switch {
+	case caller.Held:
+		return model.Actor{}, false, s.brokerTokenHeld(caller.Person)
+	case s.deps.BrokerTokens.Lapsed(caller):
+		return model.Actor{}, false, errBrokerTokenLapsed()
 	}
 	// A token the broker scoped to its person holds the person scope: that token is the person's
 	// own agent acting for them, so it reads, writes and answers their questions as they do. No

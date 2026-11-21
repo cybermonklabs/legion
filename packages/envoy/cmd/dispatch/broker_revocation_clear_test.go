@@ -64,7 +64,7 @@ func TestTheBrokerRevocationMetricsCountTheOwedAndAgeTheOldest(t *testing.T) {
 
 	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil, store.WithBrokerRevocations("https://accounts.google.com"))
 	for _, subject := range []string{firstHolder, secondHolder} {
-		if err := people.SignInSubject(ctx, reassignedEmail, subject, "refresh", model.MemberFull); err != nil {
+		if err := people.SignInSubject(ctx, reassignedEmail, subject, "refresh", "", model.MemberFull); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -10,7 +10,7 @@
  *   two-process mode starts neither (`e2e/harness-processes.ts`);
  * - the spec signs people in through dev sign-in, so only a run under it selects it, and a run
  *   under `DISPATCH_E2E_SIGNIN=oidc` or `google` (`e2e/harness-signin.ts`), which runs its own
- *   spec alone, starts neither. Their dev OIDC issuer and this one never run together.
+ *   specs alone, starts neither. Their dev OIDC issuer and this one never run together.
  *
  * `bun run dispatch:local` (`e2e/local-instance.ts`) runs one Dispatch process and leaves the
  * broker switch as the shell set it, so it starts both rows whenever it starts the fake broker, as

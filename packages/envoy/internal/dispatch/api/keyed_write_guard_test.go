@@ -54,6 +54,13 @@ var keyedWriteGuardStops = map[string]string{
 	// (repo, number) and hold what GitHub says, so a repeat after a takeover writes exactly the
 	// same rows; a failure is only logged, and the result is never undone for it.
 	"api.server.readThroughPullRequests": "stores what GitHub says about a commit's pull requests, after the result marked its key",
+	// A Workspace Directory check of a person under IAP identity, which a decision's re-read of
+	// its caller can start (approverStanding, personalTokenHeld, identity.Membership.Standing):
+	// the person's one check, shared with the membership pass and run on a context of its own
+	// (identity.Membership.directoryFlight), records the person's Directory outcome, never the
+	// request's work. Its bare writes mark no key, rightly, and a repeat after a takeover only
+	// records a later answer.
+	"identity.Membership.checkDirectory": "records the person's Directory outcome, which is no write of the request's",
 	// The pool itself: its statement methods are what the guard looks for at their call sites.
 	"store.Pool.Exec": "", "store.Pool.Query": "", "store.Pool.QueryRow": "", "store.Pool.SendBatch": "",
 	"store.Pool.CopyFrom": "", "store.Pool.Begin": "", "store.Pool.BeginTx": "", "store.Pool.begin": "",

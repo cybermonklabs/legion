@@ -370,7 +370,7 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	const unapplied, noAccount, takeback, owed, kept, alias, outside = "unapplied@example.com", "noaccount@example.com", "takeback@example.com", "owedrow@example.com", "kept@example.com", "alias@example.com", "outside@example.com"
 
 	// unapplied@: Dispatch, restored, records A; A's credentials at the broker are live.
-	if err := r.people.SignInSubject(ctx, unapplied, "a-unapplied", "refresh-a", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, unapplied, "a-unapplied", "refresh-a", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	token := r.personalToken(t, unapplied, "a-unapplied")
@@ -384,7 +384,7 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	// noaccount@: no Dispatch row; the broker refuses X.
 	r.revoke(t, noAccount, "x-noaccount", "h-noaccount", 3)
 	// takeback@: Dispatch records the stale S; the broker refuses H and N.
-	if err := r.people.SignInSubject(ctx, takeback, "s-takeback", "refresh-s", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, takeback, "s-takeback", "refresh-s", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	r.revoke(t, takeback, "h-takeback", "s-takeback", 4)
@@ -392,10 +392,10 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	// owedrow@: the broker applied X's revoke before the backup, but restored Dispatch still owes
 	// it. X then took the address back without that history reaching the broker, so the directory
 	// clears X. The first block must settle the restored row before Dispatch starts again.
-	if err := r.people.SignInSubject(ctx, owed, "x-owed", "refresh-x", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, owed, "x-owed", "refresh-x", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.people.SignInSubject(ctx, owed, "y-owed", "refresh-y", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, owed, "y-owed", "refresh-y", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	owedRows, err := r.revocations.Owing(ctx, owed)
@@ -406,10 +406,10 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	// kept@: broker T is refused already, while restored Dispatch still owes S's revoke naming T.
 	// The directory names H, so it keeps T's refusal. A stale first pass would apply S's revoke
 	// and delete T's refusal; the reset's settlement makes that impossible.
-	if err := r.people.SignInSubject(ctx, kept, "s-kept", "refresh-s", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, kept, "s-kept", "refresh-s", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.people.SignInSubject(ctx, kept, "t-kept", "refresh-t", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, kept, "t-kept", "refresh-t", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	keptRows, err := r.revocations.Owing(ctx, kept)
@@ -507,7 +507,7 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	for _, holder := range []struct{ email, account string }{
 		{unapplied, "b-unapplied"}, {noAccount, "h-noaccount"}, {takeback, "h-takeback"},
 	} {
-		if err := r.people.SignInSubject(ctx, holder.email, holder.account, "refresh-"+holder.account, model.MemberFull); err != nil {
+		if err := r.people.SignInSubject(ctx, holder.email, holder.account, "refresh-"+holder.account, "", model.MemberFull); err != nil {
 			t.Fatalf("%s's sign-in at %s after the reset: %v", holder.account, holder.email, err)
 		}
 	}
@@ -637,11 +637,11 @@ func TestTheRefusalsOfAnAddressesRecordedAccountAreFound(t *testing.T) {
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const holder, other = "holder-cleared@example.com", "other-refused@example.com"
-	if err := r.people.SignInSubject(ctx, holder, "h-recorded", "refresh-h", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, holder, "h-recorded", "refresh-h", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	for _, account := range []string{"o-replaced", "o-recorded"} {
-		if err := r.people.SignInSubject(ctx, other, account, "refresh-"+account, model.MemberFull); err != nil {
+		if err := r.people.SignInSubject(ctx, other, account, "refresh-"+account, "", model.MemberFull); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -942,7 +942,7 @@ func TestTheResetClosesOnlyAnHourAfterItsStartOnACleanRead(t *testing.T) {
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "close@example.com"
-	if err := r.people.SignInSubject(ctx, email, "a-close", "refresh-a", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "a-close", "refresh-a", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	signIn := r.signInMachine(t, email, "a-close", strings.Repeat("c", 43))
@@ -1236,7 +1236,7 @@ func TestTheResetsBoundsFollowTheMarksOrderNotTheirClock(t *testing.T) {
 	r := newRecoveryRig(t)
 	const email = "clock-back@example.com"
 	for _, account := range []string{"a-clock", "b-clock"} {
-		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, model.MemberFull); err != nil {
+		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, "", model.MemberFull); err != nil {
 			t.Fatal(err)
 		}
 	}

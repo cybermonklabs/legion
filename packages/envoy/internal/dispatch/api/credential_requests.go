@@ -18,6 +18,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -242,6 +243,16 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 // request deadline, which brokerCredentialMargin covers. A caller who lost the address is refused
 // as their next request is: 401 NO_IDENTITY for a cookie, 401 TOKEN_REVOKED for a personal token;
 // a read that fails is 503 IDENTITY_UNAVAILABLE. It writes nothing.
+//
+// The same statement reads whether Dispatch holds the caller, as each credential's own check does,
+// and a held caller is then 401 MEMBERSHIP_HELD, so a person held between the request's start and
+// its relay approves and denies nothing: for a personal token, Standing's steps on its owner's
+// people row, asking Standing for a confirmation older than an hour (personalTokenHeld) once the
+// transaction has ended, since Standing reads through the pool itself; for a cookie, the session
+// generation a hold advances. Under IAP identity (Standing.ChecksDirectory) a person deciding at
+// their browser presents only the assertion IAP signs for the request, which no hold ends, so their
+// standing is read from Standing once the transaction has ended (browserDeciderHeld). A revocation
+// answers before a hold.
 func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject string, generation int64, err error) {
 	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
 	var tokenID *string
@@ -249,10 +260,11 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 		tokenID = &actor.Act.TokenID
 	}
 	var cookieGone, tokenGone bool
+	var owner *string
+	var hold ownerHold
 	unread := func(err error) (string, int64, error) {
 		slog.Warn("dispatch: a credential decision was refused: whether its caller still holds the address could not be read", "error", err)
-		return "", 0, errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
-			"whether this caller may still decide could not be read; try again in a minute")
+		return "", 0, errDeciderUnreadable()
 	}
 	tx, err := s.deps.Store.Pool.Begin(r.Context())
 	if err != nil {
@@ -267,9 +279,23 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 			exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
 				where agent_tokens.id = $4::uuid and (agent_tokens.revoked_at is not null or `+tokenAccountReplaced("$5::boolean")+`)),
 			coalesce(`+credentialSubjectSQL("$1::text", "$2::text", "$4::uuid", "$5::boolean")+`, ''),
-			coalesce((select generation from user_sessions where login = $1::text), 0)
+			coalesce((select generation from user_sessions where login = $1::text), 0),
+			owner.login, coalesce(owner.recorded, false), coalesce(owner.stored, false), owner.age
+		from (select 1) as one
+		left join (
+			select canonical_login(agent_tokens.owner) as login, `+ownerHoldColumns+`
+			from agent_tokens
+			left join people on people.email = canonical_login(agent_tokens.owner)
+			where agent_tokens.id = $4::uuid
+		) as owner (login, recorded, stored, age) on true
 	`, actor.ID, cookieLogin, cookieGeneration, tokenID, s.deps.SignInIssuer != "").
-		Scan(&cookieGone, &tokenGone, &subject, &generation); err != nil {
+		Scan(&cookieGone, &tokenGone, &subject, &generation,
+			&owner, &hold.recorded, &hold.stored, &hold.age); err != nil {
+		return unread(err)
+	}
+	// The read is done: end the transaction, and its lock, before Standing, which takes a pooled
+	// connection of its own (store.ErrNestedAcquire).
+	if err := tx.Rollback(r.Context()); err != nil {
 		return unread(err)
 	}
 	switch {
@@ -278,7 +304,55 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 	case tokenGone:
 		return "", 0, errTokenRevoked()
 	}
+	if owner != nil {
+		if err := s.personalTokenHeld(r.Context(), *owner, hold); err != nil {
+			return "", 0, err
+		}
+	}
+	if err := s.browserDeciderHeld(r.Context(), actor); err != nil {
+		return "", 0, err
+	}
 	return subject, generation, nil
+}
+
+// errDeciderUnreadable is a decision, a mint or a scope change whose caller's standing could not
+// be read: the statement of approverStanding failed, or under IAP identity Standing failed or
+// answered unavailable (browserDeciderHeld). It is never an accept.
+func errDeciderUnreadable() error {
+	return errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
+		"whether this caller may still decide could not be read; try again in a minute")
+}
+
+// browserDeciderHeld answers nil while actor may act at their browser on what outlives it: decide
+// a credential request (approverStanding), mint a personal token (createAgentToken) or change a
+// token's scopes (updateAgentTokenScopes). It reads anything only under IAP identity
+// (Standing.ChecksDirectory) and only for a person at their browser (actor.Act nil). IAP signs a
+// fresh assertion for each request and keeps no session that a hold could end, and the Directory,
+// not a sign-in, records and ends a hold, so the request asks Standing, as a personal token's use
+// does there (personalTokenHeld): a held answer is 401 MEMBERSHIP_HELD in the Directory's words,
+// and one it cannot give, or an unavailable one (identity.Standing.Unavailable: no Active Directory
+// answer in 24 hours), 503 IDENTITY_UNAVAILABLE. IAP itself still admits the person's browser;
+// only the request is refused. A credential's caller is held by its own check (personalTokenHeld,
+// brokerPersonAdmitted), and outside IAP a hold ends a cookie's session, so for either it reads
+// nothing. Each caller asks once the request's body has been read, which a browser may hold back
+// as long as it likes, and outside any transaction, since Standing takes a pooled connection of
+// its own (store.ErrNestedAcquire).
+func (s *server) browserDeciderHeld(ctx context.Context, actor model.Actor) error {
+	if actor.Act != nil || s.deps.Standing == nil || !s.deps.Standing.ChecksDirectory() {
+		return nil
+	}
+	standing, err := s.deps.Standing.Standing(ctx, actor.ID)
+	if err != nil {
+		slog.Warn("dispatch: a decision, a mint or a scope change at a browser was refused: whether Dispatch holds its caller could not be read", "error", err)
+		return errDeciderUnreadable()
+	}
+	switch {
+	case standing.Unavailable():
+		return errDeciderUnreadable()
+	case standing.Held:
+		return errMembershipHeld(membershipHeldDeciderDirectoryText)
+	}
+	return nil
 }
 
 func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {

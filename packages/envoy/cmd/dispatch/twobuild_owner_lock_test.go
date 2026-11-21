@@ -178,7 +178,7 @@ const rowModeLine = "owner locks now take the owner's row too"
 // named application, and returns once it answers /healthz.
 func (b *twoBuilds) startNamed(t *testing.T, previous bool, application string) *dispatchProcess {
 	t.Helper()
-	options := b.options(nil)
+	options := b.options(nil, nil)
 	url := b.databaseURL(t) + "&application_name=" + application
 	if previous {
 		options.Binary, options.WebDist = b.build.path("envoy-dispatch"), b.build.path("web")
@@ -521,7 +521,7 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, currentLabelWrite, 20*time.Second)
 	t.Logf("this build's PATCH waits in %q", waitingOn)
 
-	options := builds.options(nil)
+	options := builds.options(nil, nil)
 	options.Binary, options.WebDist = builds.build.path("envoy-dispatch"), builds.build.path("web")
 	started := time.Now()
 	builds.a = startDispatchProcessWith(t, builds.databaseURL(t)+"&application_name="+previousApplication, options)
@@ -711,7 +711,7 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 
 	noDashboard := t.TempDir()
 	startPrevious := func() *dispatchProcess {
-		options := builds.options(nil)
+		options := builds.options(nil, nil)
 		options.Binary, options.WebDist = builds.build.path("envoy-dispatch"), noDashboard
 		builds.a = startDispatchProcessWith(t, builds.databaseURL(t)+"&application_name="+previousApplication, options)
 		return builds.a

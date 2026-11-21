@@ -221,7 +221,14 @@ func Current(t testing.TB, store *secrets.Local, services ...string) *policy.Cur
 // (policy.NewUnservableSecrets).
 func MeteredCurrent(t testing.TB, store *secrets.Local, registry *metrics.Registry, services ...string) *policy.Current {
 	t.Helper()
-	loader := Loader(store, services...)
+	return Metered(t, Loader(store, services...), registry)
+}
+
+// Metered is loader's policy with the policy's two metrics on registry, as MeteredCurrent says,
+// for a caller that sets more of the loader than Loader does, as cmd/cipherd/main.go sets its
+// ProjectChecks.
+func Metered(t testing.TB, loader policy.Loader, registry *metrics.Registry) *policy.Current {
+	t.Helper()
 	loader.StoreReads = policy.NewStoreReads(registry)
 	cur := current(t, loader)
 	policy.NewUnservableSecrets(registry, cur)

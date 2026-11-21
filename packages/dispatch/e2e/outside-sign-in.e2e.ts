@@ -1,10 +1,10 @@
 import { baseUrl, e2eAgentToken, sessionCookieName } from "./api";
-import { harnessPorts } from "./harness-ports";
+import { expectSignedIn, queueGoogleSignIn, signInFromTheSignInPage } from "./google-signin";
 import { googleOutsideOrigin, googleSignIn } from "./harness-signin";
 import { sql } from "./psql";
 import { conversationTurn } from "./reference-surfaces";
 import { sqlLiteral } from "./seed";
-import { type BrowserContext, expect, type Page, type Response, test } from "./test";
+import { type BrowserContext, expect, type Page, test } from "./test";
 
 /**
  * A person from outside the sign-in domain signs in to Dispatch at its second origin as a
@@ -29,44 +29,6 @@ const alice = `alice@${googleSignIn.domain}`;
 const outsider = "outsider@other.example";
 /** A personal Google account outside the domain, which no access list names. */
 const stranger = "stranger@other.example";
-
-/** Queues `email` as the person the issuer signs in at its next authorization, with the ID token
- *  claims Google gives that account: the address as its subject, as the issuer's own default
- *  person has, a verified email, and `hd` for a Workspace account alone. */
-async function queueSignIn(email: string, hostedDomain?: string): Promise<void> {
-  const claims = {
-    email,
-    email_verified: true,
-    sub: email,
-    ...(hostedDomain === undefined ? {} : { hd: hostedDomain }),
-  };
-  const issuer = `http://127.0.0.1:${harnessPorts().signinIssuer.port}`;
-  const queued = await fetch(`${issuer}/_dev/sign-in-as`, {
-    body: JSON.stringify(claims),
-    method: "POST",
-  });
-  expect(queued.status, `the issuer queued ${email}: ${await queued.text()}`).toBe(204);
-}
-
-/** Opens Dispatch at `origin` signed out, presses its sign-in link, and returns what
- *  `/auth/callback` answered once the issuer sent the browser back there. */
-async function signInFromTheSignInPage(page: Page, origin: string): Promise<Response> {
-  await page.goto(`${origin}/`);
-  const callback = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/auth/callback"
-  );
-  await page.getByRole("link", { name: "Sign in with Google" }).click();
-  return callback;
-}
-
-/** Requires `answered` to be the callback's redirect into Dispatch, which sets the session. */
-async function expectSignedIn(answered: Response, email: string): Promise<void> {
-  // A redirect's body cannot be read; any other answer's body says why the sign-in stopped.
-  const why = answered.status() === 302 ? "" : ` ${await answered.text()}`;
-  expect(answered.status(), `/auth/callback for ${email} answered ${answered.status()}${why}`).toBe(
-    302
-  );
-}
 
 /** `GET /auth/whoami` as `page`'s own script asks it: from the page's origin, with its cookie. */
 function whoami(page: Page): Promise<{ body: unknown; status: number }> {
@@ -115,7 +77,7 @@ test.describe("outside sign-in", () => {
 
       const { priv, pub } =
         await test.step("alice signs in at the canonical origin, makes PRIV and PUB, and lists the outsider on PRIV", async () => {
-          await queueSignIn(alice, googleSignIn.domain);
+          await queueGoogleSignIn(alice, googleSignIn.domain);
           await expectSignedIn(await signInFromTheSignInPage(alicePage, canonical), alice);
           await expect(alicePage).toHaveURL(`${canonical}/`);
           await expect(alicePage.getByText(`Signed in as ${alice}`)).toBeVisible();
@@ -152,7 +114,7 @@ test.describe("outside sign-in", () => {
 
       await test.step("the outsider signs in at the outside origin as a restricted member, and PRIV's issue opens", async () => {
         // No hd: a personal Google account, outside every Workspace.
-        await queueSignIn(outsider);
+        await queueGoogleSignIn(outsider);
         await expectSignedIn(await signInFromTheSignInPage(outsiderPage, outside), outsider);
         await expect(outsiderPage).toHaveURL(`${outside}/`);
         await expect(outsiderPage.getByText(`Signed in as ${outsider}`)).toBeVisible();
@@ -196,7 +158,7 @@ test.describe("outside sign-in", () => {
 
       await test.step("an account no access list names is refused at the outside origin", async () => {
         const strangerPage = await strangerContext.newPage();
-        await queueSignIn(stranger);
+        await queueGoogleSignIn(stranger);
         const answered = await signInFromTheSignInPage(strangerPage, outside);
         // The page first, so a sign-in that should have been refused fails quoting what it reached
         // instead: the dashboard, signed in, where a status alone would say only 302.

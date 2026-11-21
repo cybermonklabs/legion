@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/judge"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
@@ -348,9 +349,13 @@ func main() {
 	// every projected token here goes through, so a rotation needs no restart. config.Load holds
 	// the two settings to both or neither. Built before the loader, which serves a tagged secret
 	// only when this broker can ask whether its project is private (policy.Loader.ProjectChecks).
+	// projectClient is the same client as itself, for the hold gate below, which reads its person
+	// answers (hold.Config.Access) from the cache the token exchange fills.
 	var projectAccess projectaccess.Access
+	var projectClient *projectaccess.Client
 	if cfg.ProjectAccessURL != "" {
-		projectAccess = projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		projectClient = projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		projectAccess = projectClient
 	}
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
 	// policy version is the one it has today.
@@ -522,7 +527,7 @@ func main() {
 		// The key set discoverVerifiers read for Google, for the same reason the cluster's is
 		// shared: BROKER_GOOGLE_OIDC_AUDIENCE is what made it read one, so this is never nil.
 		exchangeConfig.Google = oauth.IssuerConfig{Issuer: cfg.GoogleOIDCIssuer, Audience: cfg.GoogleOIDCAudience, Keys: discovered.GoogleKeys}
-		exchangeConfig.MachineCredentials = machineCredentials(enr)
+		exchangeConfig.MachineCredentials = enr.MachineCredentials()
 	}
 	if cfg.SignInDeviceAudience != "" {
 		// A person signs in through Google, which is also the issuer of the machine's actor
@@ -530,7 +535,7 @@ func main() {
 		// share the key set read above. What a person may be is BROKER_SIGNIN_DOMAIN's to say,
 		// which the exchange's policy already holds.
 		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
-		exchangeConfig.PersonSignIns = personSignIns()
+		exchangeConfig.PersonSignIns = enroll.PersonSignIns()
 		slog.Info("google person sign-in", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
 	}
 	if cfg.ExchangeGitHubIssuer != "" {
@@ -540,12 +545,22 @@ func main() {
 		fatal(err)
 		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
 	}
+	// The hold of refused people (internal/cipher/hold) asks Dispatch through the exchange's own
+	// client, so the two share one cache of person answers and one call per person, and keeps
+	// each answer in person_standing for when Dispatch cannot be asked. With no Dispatch to ask
+	// the broker builds no gate and holds nobody, as before the hold. An IAP deployment's broker
+	// sets BROKER_HOLD_REQUIRES_DEADLINE, so the gate serves a person only on an answer with a
+	// deadline (hold.Config.RequireDeadline).
+	var holdGate *hold.Gate
 	if projectAccess != nil {
 		exchangeConfig.Projects = projectAccess
+		holdGate = hold.New(hold.Config{Access: projectClient, Store: st, Log: slog.Default(), Metrics: registry, RequireDeadline: cfg.HoldRequiresDeadline})
+		exchangeConfig.Hold = holdGate
 		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
 	} else {
 		slog.Info("project access check", "state", "off",
 			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a person's trade or session naming one is refused, and a secret tagged with a project is refused project-unchecked")
+		slog.Info("hold of refused people", "state", "off", "reason", "BROKER_PROJECT_ACCESS_URL is not set")
 	}
 	if cfg.ExchangeK8sAudience == "" && cfg.ExchangeGitHubIssuer == "" && cfg.GoogleOIDCAudience == "" {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
@@ -609,7 +624,7 @@ func main() {
 	if !cfg.SignInOff {
 		page, err = approval.New(approval.Config{
 			SignIn: cfg.SignIn, PublicURL: cfg.PublicURL, MachineLoginURL: cfg.MachineLoginURL,
-			Store: st, Machine: reqMachine,
+			Store: st, Machine: reqMachine, Hold: holdGate,
 		})
 		fatal(err)
 	}
@@ -687,6 +702,8 @@ func main() {
 		GoogleExchangeAudience: googleExchangeAudience(cfg),
 		TrustedProxyHeader:     cfg.TrustedProxyHeader,
 		Approval:               page,
+		Hold:                   holdGate,
+		Exchange:               exchangePolicy,
 		Draining:               draining.Load,
 		NotifyReread: func(ctx context.Context, name string) {
 			// This pod reread the name itself and merged what it read (the reread route's
@@ -721,6 +738,7 @@ func main() {
 		proxyServer = proxy.New(proxy.Options{
 			Rules:  rules,
 			Grants: reqMachine,
+			Hold:   holdGate,
 			CA:     airlockCA,
 			Idle:   time.Duration(cfg.AirlockIdleSeconds) * time.Second,
 			Log:    slog.Default(),
@@ -1445,73 +1463,6 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 	// metadata server already hands it.
 	found.GoogleIdentities = oidc.NewWithKeys(cfg.GoogleOIDCIssuer, cfg.GoogleOIDCAudience, googleKeys)
 	return found, nil
-}
-
-// machineCredentials is oauth.ExchangeConfig.MachineCredentials over the enrollment service: the
-// launcher credential a trade mints or moves, written in the exchange's own transaction
-// (enroll.Service.IssueTokenLoginTx), so the credential and the access token that names it land
-// together. Both trades that mint one come through here — a machine's own, which carries its
-// fleet's service and no person, and a person's sign-in on such a machine, which carries that
-// person as its operator — so there is one way a credential is minted and not two. A key
-// another live credential holds is oauth.ErrMachineKeyTaken, which the exchange answers
-// invalid_grant.
-func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
-	return func(ctx context.Context, cred oauth.MachineCredential) (string, error) {
-		tx, ok := oauthstore.TxFrom(ctx)
-		if !ok {
-			return "", errors.New("broker: a machine's launcher credential is minted in the exchange's transaction")
-		}
-		id, err := enr.IssueTokenLoginTx(ctx, tx, enroll.TokenLogin{
-			Subject:      cred.Subject,
-			Service:      cred.Service,
-			Host:         cred.Host,
-			Operator:     cred.Operator,
-			TokenExpires: cred.Expires,
-			Thumbprint:   cred.Thumbprint,
-			JWK:          cred.JWK,
-			Expires:      cred.Expires,
-		})
-		if store.IsUniqueViolation(err) {
-			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
-		}
-		if err != nil {
-			return "", err
-		}
-		return id.String(), nil
-	}
-}
-
-// personSignIns is oauth.ExchangeConfig.PersonSignIns over the broker's store: the sign-in a
-// person's trade belongs to, written in the exchange's own transaction
-// (enroll.RecordPersonSignIn, which ends a sign-in recording no account and everything it held
-// before it writes the trade's own), so the sign-in and the access token minted under it land
-// together. An account that no longer holds the person's address is
-// store.ErrSignInSubjectReplaced, a box key that person has revoked store.ErrSignInRevoked, and
-// one whose sign-in was made on another machine or by another account
-// store.ErrSignInMachineChanged or store.ErrSignInSubjectChanged; the exchange answers each
-// invalid_grant saying which.
-func personSignIns() oauth.PersonSignIns {
-	return func(ctx context.Context, in oauth.PersonSignIn) error {
-		tx, ok := oauthstore.TxFrom(ctx)
-		if !ok {
-			return errors.New("broker: a person's sign-in is recorded in the exchange's transaction")
-		}
-		err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
-			Person: in.Person, Thumbprint: in.Thumbprint, MachineAccount: in.Machine,
-			Account: store.IssuerSubject{Issuer: in.Issuer, Subject: in.Subject},
-		})
-		switch {
-		case errors.Is(err, store.ErrSignInSubjectReplaced):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectReplaced, err)
-		case errors.Is(err, store.ErrSignInRevoked):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInRevoked, err)
-		case errors.Is(err, store.ErrSignInMachineChanged):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInMachineChanged, err)
-		case errors.Is(err, store.ErrSignInSubjectChanged):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectChanged, err)
-		}
-		return err
-	}
 }
 
 // issuerKeys reads issuer's published signing keys: the source a token's own key is resolved

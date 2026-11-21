@@ -180,8 +180,8 @@ func TestOutsideSignInRuleAdmitsAListedVerifiedAccountAsRestricted(t *testing.T)
 func TestOutsideSignInRuleKeepsTheDomainsPeopleFullWithoutReadingTheList(t *testing.T) {
 	lister := &stubLister{}
 	person, err := outsideRule(lister).Person(context.Background(), googleAccount())
-	if err != nil || person != (SignedIn{Email: "a.person@example.com", Kind: model.MemberFull}) {
-		t.Fatalf("Person = %+v, %v; want a.person@example.com as a full member", person, err)
+	if err != nil || person != (SignedIn{Email: "a.person@example.com", Kind: model.MemberFull, HostedDomain: "example.com"}) {
+		t.Fatalf("Person = %+v, %v; want a.person@example.com as a full member of example.com", person, err)
 	}
 	if asked := lister.calls(); len(asked) != 0 {
 		t.Fatalf("the lister was asked %q for a member of the domain, want no call", asked)
@@ -273,8 +273,8 @@ func TestOutsideSignInRuleRefusesAnAddressOnAnyDomainTheWorkspaceOwns(t *testing
 	// itself: a full member, and the lists are never read.
 	lister := &stubLister{}
 	person, err := rule(lister).Person(context.Background(), oidc.Claims{Subject: "g-6", Email: "alice@second.example", EmailVerified: true, HostedDomain: "example.com"})
-	if err != nil || person != (SignedIn{Email: "alice@second.example", Kind: model.MemberFull}) || len(lister.calls()) != 0 {
-		t.Fatalf("Person of the Workspace account at alice@second.example = %+v, %v, the lists asked %q; want a full member, no list read", person, err, lister.calls())
+	if err != nil || person != (SignedIn{Email: "alice@second.example", Kind: model.MemberFull, HostedDomain: "example.com"}) || len(lister.calls()) != 0 {
+		t.Fatalf("Person of the Workspace account at alice@second.example = %+v, %v, the lists asked %q; want a full member of example.com, no list read", person, err, lister.calls())
 	}
 }
 

@@ -60,7 +60,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One person's member kind as the membership answer spells it: {person, member_kind} for ?person= (full, restricted, or none for a login nobody has signed in with), and holder for a question naming the account the credential being checked records (&account_issuer=&account_subject=), as the project answer carries it; no person, or half an account, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    /** @description One person's member kind as the membership answer spells it: {person, member_kind, held, as_of, not_held_until} for ?person= (full, restricted, or none for a login nobody has signed in with), and holder for a question naming the account the credential being checked records (&account_issuer=&account_subject=), as the project answer carries it; held is whether Dispatch holds the person's personal tokens and broker credentials until they sign in again (false for a login nobody has signed in with, and left out, with status 200 and member_kind still answered, when that could not be read), and as_of the database time of the read the answer rests on; under DISPATCH_IDENTITY=iap alone, every answer that is not held carries not_held_until, the time it stops being served (the last active Workspace Directory answer plus 24 hours), which is as_of itself for a person no active answer confirmed in 24 hours or no row holds, and a held answer carries none; no person, or half an account, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
     get: operations["getApiV1AccessPerson"];
     put?: never;
     post?: never;
@@ -6165,9 +6165,14 @@ export interface components {
       title?: null | string;
     };
     PersonAnswer: {
+      /** Format: date-time */
+      as_of: string;
+      held?: boolean;
       holder?: boolean;
       /** @enum {string} */
       member_kind: "full" | "restricted" | "none";
+      /** Format: date-time */
+      not_held_until?: string;
       person: string;
     };
     PersonNode: {

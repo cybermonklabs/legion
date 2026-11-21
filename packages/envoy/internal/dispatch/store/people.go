@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -205,13 +206,16 @@ func signInMemberKind(email string, kind model.MemberKind) error {
 // (announceMemberKindChange). A revoke that fails rolls the sign-in back, leaving the old subject
 // for the next sign-in to revoke again; one that commits is logged at WARN with the address, and
 // with how many tokens it revoked when it replaced an account or revoked another account's tokens.
+// The sign-in records hostedDomain, the ID token's `hd`, in hosted_domain (null for none), and
+// sets held_since and signed_out_at to null, so it releases a recorded hold and ends a sign-out
+// that kept the refresh token.
 //
 // A restricted sign-in (an account outside the Workspace) never takes a full member's address
 // (takesAMembersAddress): it writes nothing and returns auth.ErrAddressHeldByMember, read once
 // before the plain token's retirement (refuseAMembersAddress), so the member's token is never
 // revoked, and again under the row's lock, so a member's sign-in that commits in between is
 // refused too. A full sign-in reads and writes what it always did.
-func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken string, kind model.MemberKind) error {
+func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken, hostedDomain string, kind model.MemberKind) error {
 	if err := signInMemberKind(email, kind); err != nil {
 		return err
 	}
@@ -265,9 +269,10 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	// sign-in under the account the row already records leaves both.
 	if _, err := tx.Exec(ctx, `
 		update people
-		set signed_in_at = now(), refresh_token = $2, confirmed_at = now(), sub = $3, member_kind = $4
+		set signed_in_at = now(), refresh_token = $2, confirmed_at = now(), sub = $3, member_kind = $4,
+			hosted_domain = nullif($5, ''), held_since = null, signed_out_at = null
 		where email = $1
-	`, email, s.seal.seal(email, refreshToken), subject, string(kind)); err != nil {
+	`, email, s.seal.seal(email, refreshToken), subject, string(kind), hostedDomain); err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
 	if err := announceMemberKindChange(ctx, tx, storedKind, kind); err != nil {
@@ -423,22 +428,44 @@ func (s *PgPeopleStore) refuseAMembersAddress(ctx context.Context, email, subjec
 // process's clock takes part and every process judges a confirmation alike. A refresh token that
 // does not open (sealed under no key of the signing key set, for another person, or stored in plain
 // text) is no refresh token: the read answers none, so the person signs in again, and logs that
-// without the value. The read writes nothing: the next boot retires a token stored in plain text
+// without the value; it answers Unopenable, with the confirmation's age, so the unopenable rule
+// can judge the row. The read writes nothing: the next boot retires a token stored in plain text
 // (RetirePlainRefreshTokens), and the person's next sign-in replaces whatever the row holds. The
-// subject and the member kind are read whatever the refresh token holds.
+// subject, the member kind, the recorded hold (held_since later than signed_in_at), the sign-out
+// that kept the token (signed_out_at later than signed_in_at), the hosted domain, signed_in_at and
+// the Directory columns (DirectoryHeld: held_since later than directory_confirmed_at, or set where
+// that is null) are read whatever the refresh token holds. ReadAt is the database's now() in the
+// one statement, read for a person with no row too, so an answer that rests on the read can carry
+// its time.
 func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.PersonMembership, bool, error) {
+	var found bool
 	var sealed *string
 	var age *time.Duration
+	var signedInAt *time.Time
 	var kind string
 	membership := auth.PersonMembership{}
-	err := s.pool.QueryRow(ctx, `select refresh_token, now() - confirmed_at, coalesce(sub, ''), member_kind from people where email = $1`, email).Scan(&sealed, &age, &membership.Subject, &kind)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return auth.PersonMembership{}, false, nil
-	}
+	err := s.pool.QueryRow(ctx, `
+		select p.email is not null, p.refresh_token, now() - p.confirmed_at, coalesce(p.sub, ''),
+			coalesce(p.member_kind, ''), coalesce(p.held_since > p.signed_in_at, false),
+			coalesce(p.signed_out_at > p.signed_in_at, false), coalesce(p.hosted_domain, ''),
+			p.signed_in_at, now(),
+			coalesce(p.held_since > p.directory_confirmed_at, p.held_since is not null),
+			p.directory_confirmed_at, p.not_held_until, coalesce(p.directory_user_id, '')
+		from (select 1) as one
+		left join people p on p.email = $1
+	`, email).Scan(&found, &sealed, &age, &membership.Subject, &kind, &membership.Held,
+		&membership.SignedOut, &membership.HostedDomain, &signedInAt, &membership.ReadAt,
+		&membership.DirectoryHeld, &membership.DirectoryConfirmedAt, &membership.NotHeldUntil, &membership.DirectoryUserID)
 	if err != nil {
 		return auth.PersonMembership{}, false, fmt.Errorf("read membership of %q: %w", email, err)
 	}
+	if !found {
+		return auth.PersonMembership{ReadAt: membership.ReadAt}, false, nil
+	}
 	membership.Kind = model.MemberKind(kind)
+	if signedInAt != nil {
+		membership.SignedInAt = *signedInAt
+	}
 	// people's check pairs the two: a row holds both or neither.
 	if sealed == nil {
 		return membership, true, nil
@@ -446,6 +473,7 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 	refreshToken, err := s.seal.open(email, *sealed)
 	if err != nil {
 		slog.Warn("dispatch: a stored refresh token did not open; the person signs in again", "email", email, "reason", err.Error())
+		membership.Unopenable, membership.ConfirmedAge = true, *age
 		return membership, true, nil
 	}
 	membership.RefreshToken, membership.Confirmed, membership.ConfirmedAge = refreshToken, true, *age
@@ -453,7 +481,8 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 }
 
 // ConfirmSubject records a refresh that confirmed email's membership at the database's now(), as
-// kind, with refreshToken to use next, refused as SignInSubject refuses it
+// kind, with refreshToken to use next and hostedDomain, the refreshed ID token's `hd`, in
+// hosted_domain (null for none), refused as SignInSubject refuses it
 // (auth.PeopleStore.ConfirmSubject): a Google sign-in's under its subject, and a sign-in pool's
 // under the empty subject, since a pool's row records none. It writes only while the row, under its
 // lock, still records subject (empty for none) and still holds readToken, the refresh token the
@@ -467,7 +496,7 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 // rule restricts a member whose account left the Workspace, or admits a restricted one as full), it
 // announces the change in the same transaction (announceMemberKindChange), so a person the
 // confirmation restricts keeps no open socket or live view of a project that does not name them.
-func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, readToken, refreshToken string, kind model.MemberKind) error {
+func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, readToken, refreshToken, hostedDomain string, kind model.MemberKind) error {
 	if err := signInMemberKind(email, kind); err != nil {
 		return err
 	}
@@ -488,7 +517,7 @@ func (s *PgPeopleStore) ConfirmSubject(ctx context.Context, email, subject, read
 	if stored != subject || !s.holds(email, sealed, readToken) {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `update people set refresh_token = $2, confirmed_at = now(), member_kind = $3 where email = $1`, email, s.seal.seal(email, refreshToken), string(kind)); err != nil {
+	if _, err := tx.Exec(ctx, `update people set refresh_token = $2, confirmed_at = now(), member_kind = $3, hosted_domain = nullif($4, '') where email = $1`, email, s.seal.seal(email, refreshToken), string(kind), hostedDomain); err != nil {
 		return fmt.Errorf("confirm membership of %q: %w", email, err)
 	}
 	if err := announceMemberKindChange(ctx, tx, storedKind, kind); err != nil {
@@ -513,10 +542,33 @@ func (s *PgPeopleStore) holds(email string, sealed *string, refreshToken string)
 	return subtle.ConstantTimeCompare([]byte(held), []byte(refreshToken)) == 1
 }
 
-// End forgets email's refresh token and confirmation, keeping the person.
+// End forgets email's refresh token and confirmation, keeping the person, and ends a sign-out that
+// kept the token (signed_out_at).
 func (s *PgPeopleStore) End(ctx context.Context, email string) error {
-	if _, err := s.pool.Exec(ctx, `update people set refresh_token = null, confirmed_at = null where email = $1`, email); err != nil {
+	if _, err := s.pool.Exec(ctx, `update people set refresh_token = null, confirmed_at = null, signed_out_at = null where email = $1`, email); err != nil {
 		return fmt.Errorf("end membership of %q: %w", email, err)
+	}
+	return nil
+}
+
+// KeepAfterSignOut marks email's row signed out (signed_out_at = clock_timestamp()) and keeps its
+// refresh token and confirmation for membership checks (auth.PeopleStore.KeepAfterSignOut), only
+// while the row still holds a refresh token and its signed_in_at is still signedInAt, the one the
+// sign-out read before it asked whether the person has access that outlives the browser: a sign-in
+// that committed meanwhile keeps its token and is not signed out.
+func (s *PgPeopleStore) KeepAfterSignOut(ctx context.Context, email string, signedInAt time.Time) error {
+	if _, err := s.pool.Exec(ctx, `update people set signed_out_at = clock_timestamp() where email = $1 and refresh_token is not null and signed_in_at = $2`, email, signedInAt); err != nil {
+		return fmt.Errorf("keep the refresh token of %q after its sign-out: %w", email, err)
+	}
+	return nil
+}
+
+// ForgetAfterSignOut forgets email's refresh token and confirmation, as End does, only while its
+// signed_in_at is still signedInAt (auth.PeopleStore.ForgetAfterSignOut): a sign-in that committed
+// while the sign-out asked the broker keeps its token.
+func (s *PgPeopleStore) ForgetAfterSignOut(ctx context.Context, email string, signedInAt time.Time) error {
+	if _, err := s.pool.Exec(ctx, `update people set refresh_token = null, confirmed_at = null, signed_out_at = null where email = $1 and signed_in_at = $2`, email, signedInAt); err != nil {
+		return fmt.Errorf("forget the refresh token of %q after its sign-out: %w", email, err)
 	}
 	return nil
 }
@@ -585,12 +637,16 @@ var _ auth.PeopleStore = (*PgPeopleStore)(nil)
 // EndSubject ends email's domain-mode sign-in only while its row records subject, empty meaning
 // none, and holds refreshToken, empty meaning none (auth.PeopleStore.EndSubject). It locks the row,
 // compares its subject and its refresh token, opened as Membership opens it (one that does not open
-// is none), and only then advances the session generation (revokeSessionsSQL) and forgets the
-// refresh token and confirmation, all in one transaction, so a sign-in cannot land between the
-// check and the writes. Comparing the token as well as the subject keeps a failed refresh that read
-// the row before the same account signed in again, and was refused after (a stale invalid_grant),
-// from ending that newer sign-in: its refresh token is not the one the refresh read.
-func (s *PgPeopleStore) EndSubject(ctx context.Context, email, subject, refreshToken string) (bool, error) {
+// is none), and only then advances the session generation (revokeSessionsSQL) and writes what mode
+// says (endSubjectSQL), all in one transaction, so a sign-in cannot land between the check and the
+// writes. Comparing the token as well as the subject keeps a failed refresh that read the row
+// before the same account signed in again, and was refused after (a stale invalid_grant), from
+// ending, or holding, that newer sign-in: its refresh token is not the one the refresh read.
+func (s *PgPeopleStore) EndSubject(ctx context.Context, email, subject, refreshToken string, mode auth.EndMode) (bool, error) {
+	update, ok := endSubjectSQL[mode]
+	if !ok {
+		return false, fmt.Errorf("end the sign-in of %q: no end mode %d", email, mode)
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("end the sign-in of %q: %w", email, err)
@@ -611,11 +667,144 @@ func (s *PgPeopleStore) EndSubject(ctx context.Context, email, subject, refreshT
 	if _, err := tx.Exec(ctx, revokeSessionsSQL, email); err != nil {
 		return false, fmt.Errorf("end the sessions of %q: %w", email, err)
 	}
-	if _, err := tx.Exec(ctx, `update people set refresh_token = null, confirmed_at = null where email = $1`, email); err != nil {
+	if _, err := tx.Exec(ctx, update, email); err != nil {
 		return false, fmt.Errorf("end membership of %q: %w", email, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("end the sign-in of %q: %w", email, err)
 	}
 	return true, nil
+}
+
+// endSubjectSQL is EndSubject's write of $1's row for each auth.EndMode. EndForget forgets the
+// refresh token and confirmation, as on main. EndHold does that and records a hold at the
+// database's clock_timestamp(), which is later than the signed_in_at of every sign-in committed
+// before it (a sign-in's now() is its transaction's start). EndKeep keeps the refresh token, and
+// sets the confirmation and signed_out_at to one clock_timestamp(), the end's time: Google answered
+// for the account and only the rule's list refused it, so the 24-hour rule measures from that
+// answer, and the row reads signed out.
+var endSubjectSQL = map[auth.EndMode]string{
+	auth.EndForget: `update people set refresh_token = null, confirmed_at = null where email = $1`,
+	auth.EndHold:   `update people set refresh_token = null, confirmed_at = null, held_since = clock_timestamp() where email = $1`,
+	auth.EndKeep:   `update people set confirmed_at = ended.at, signed_out_at = ended.at from (select clock_timestamp() as at) as ended where email = $1`,
+}
+
+// ClaimOverdueConfirmation stamps confirm_tried_at = clock_timestamp() on one row that has a
+// stored refresh token and is due: greatest(confirmed_at, confirm_tried_at), which ignores a null,
+// is older than age (coalesce the result to '-infinity'). The row due longest is taken first
+// (order by that greatest value). It answers its email; ok is false when none is due, which ends
+// the membership pass's refresh step. One statement, whose inner select locks the row it picks and
+// skips a row another transaction holds, so two passes never claim one row, and a row is stamped
+// only when the pass is about to refresh it.
+func (s *PgPeopleStore) ClaimOverdueConfirmation(ctx context.Context, age time.Duration) (email string, ok bool, err error) {
+	err = s.pool.QueryRow(ctx, `
+		update people set confirm_tried_at = clock_timestamp()
+		where email = (
+			select email from people
+			where refresh_token is not null
+				and coalesce(greatest(confirmed_at, confirm_tried_at), '-infinity') < now() - make_interval(secs => $1)
+			order by coalesce(greatest(confirmed_at, confirm_tried_at), '-infinity'), email
+			limit 1
+			for update skip locked
+		)
+		returning email
+	`, age.Seconds()).Scan(&email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("claim a person whose membership confirmation is due: %w", err)
+	}
+	return email, true, nil
+}
+
+// ClaimSignedOutHolder stamps outliving_checked_at = clock_timestamp() on one row that is signed
+// out (signed_out_at later than signed_in_at), has a refresh token, and whose outliving_checked_at
+// is null or older than age, nulls first, then oldest first, and answers its email and the
+// signed_out_at and signed_in_at it read; ok is false when none is due, which ends the membership
+// pass's sign-out step. It claims as ClaimOverdueConfirmation does, so two passes never claim one
+// row.
+func (s *PgPeopleStore) ClaimSignedOutHolder(ctx context.Context, age time.Duration) (email string, signedOutAt, signedInAt time.Time, ok bool, err error) {
+	err = s.pool.QueryRow(ctx, `
+		update people set outliving_checked_at = clock_timestamp()
+		where email = (
+			select email from people
+			where signed_out_at > signed_in_at
+				and refresh_token is not null
+				and (outliving_checked_at is null or outliving_checked_at < now() - make_interval(secs => $1))
+			order by outliving_checked_at nulls first, email
+			limit 1
+			for update skip locked
+		)
+		returning email, signed_out_at, signed_in_at
+	`, age.Seconds()).Scan(&email, &signedOutAt, &signedInAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", time.Time{}, time.Time{}, false, nil
+	}
+	if err != nil {
+		return "", time.Time{}, time.Time{}, false, fmt.Errorf("claim a signed-out person whose kept refresh token is due a check: %w", err)
+	}
+	return email, signedOutAt, signedInAt, true, nil
+}
+
+// ForgetSignedOut forgets email's refresh token and confirmation only while its row's
+// signed_out_at and signed_in_at are still the ones the claim read (ClaimSignedOutHolder), and the
+// row still reads signed out; a sign-in (an older build's sets only signed_in_at) or another
+// sign-out since leaves the row as it is. It answers whether it forgot the token: false when that
+// guard missed.
+func (s *PgPeopleStore) ForgetSignedOut(ctx context.Context, email string, signedOutAt, signedInAt time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		update people set refresh_token = null, confirmed_at = null, signed_out_at = null
+		where email = $1 and signed_out_at = $2 and signed_in_at = $3 and signed_out_at > signed_in_at
+	`, email, signedOutAt, signedInAt)
+	if err != nil {
+		return false, fmt.Errorf("forget the kept refresh token of %q: %w", email, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ForgetHostedDomains sets every hosted_domain to null and answers how many rows it changed: an
+// intended change of the Workspace's domain (envoy-dispatch forget-hosted-domains), after which
+// the boot's domain check has no recorded domain to compare until each row's next confirmation.
+func (s *PgPeopleStore) ForgetHostedDomains(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `update people set hosted_domain = null where hosted_domain is not null`)
+	if err != nil {
+		return 0, fmt.Errorf("forget every recorded hosted domain: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// BootPeople is the boot's one read of people (PgPeopleStore.BootPeople).
+type BootPeople struct {
+	// Checkable has a stored refresh token, whether or not it opens, and a recorded Google account
+	// (a subject); Held has a recorded hold; Uncheckable is every other row. Each row is in one
+	// count: a row with a recorded hold is Held, whatever else it holds.
+	Checkable, Held, Uncheckable int
+	// FullMemberDomains is each distinct hosted_domain of a full member's row that has a
+	// refresh token, sorted byte for byte.
+	FullMemberDomains []string
+}
+
+// BootPeople is the boot's one read of people, in one statement: the three counts of the people
+// census and the domains full members' rows that hold a refresh token record, which the boot's
+// domain check compares with DISPATCH_SIGNIN_DOMAIN.
+func (s *PgPeopleStore) BootPeople(ctx context.Context) (BootPeople, error) {
+	var census BootPeople
+	err := s.pool.QueryRow(ctx, `
+		select
+			count(*) filter (where not coalesce(held_since > signed_in_at, false)
+				and refresh_token is not null and coalesce(sub, '') <> ''),
+			count(*) filter (where coalesce(held_since > signed_in_at, false)),
+			count(*) filter (where not coalesce(held_since > signed_in_at, false)
+				and not (refresh_token is not null and coalesce(sub, '') <> '')),
+			coalesce(array_agg(distinct hosted_domain order by hosted_domain)
+				filter (where member_kind = 'full' and refresh_token is not null and hosted_domain is not null), '{}')
+		from people
+	`).Scan(&census.Checkable, &census.Held, &census.Uncheckable, &census.FullMemberDomains)
+	if err != nil {
+		return BootPeople{}, fmt.Errorf("read the people census: %w", err)
+	}
+	// The database's collation may order letters across case; the domain check compares bytes.
+	slices.Sort(census.FullMemberDomains)
+	return census, nil
 }

@@ -64,19 +64,19 @@ var _ SignInRule = OutsideRule{}
 // admits nobody from inside. An address on a domain the Workspace owns that WorkspaceDomains does
 // not name is guarded where the sign-in is recorded (WriteSignIn): when the address's row is a
 // full member's under another account, the transaction that would take the address refuses it
-// (auth.ErrAddressHeldByMember).
+// (auth.ErrAddressHeldByMember). Either member it admits carries the token's `hd`.
 func (r OutsideRule) Person(ctx context.Context, claims oidc.Claims) (SignedIn, error) {
 	email, err := oidc.VerifiedLogin(claims)
 	if err != nil {
 		return SignedIn{Email: email}, googleRefusal(email, claims, err)
 	}
 	if r.Domain != "" && claims.HostedDomain == r.Domain {
-		return SignedIn{Email: email, Kind: model.MemberFull}, nil
+		return SignedIn{Email: email, Kind: model.MemberFull, HostedDomain: claims.HostedDomain}, nil
 	}
 	if err := r.admitsOutsider(ctx, email, claims.HostedDomain); err != nil {
 		return SignedIn{Email: email}, err
 	}
-	return SignedIn{Email: email, Kind: model.MemberRestricted}, nil
+	return SignedIn{Email: email, Kind: model.MemberRestricted, HostedDomain: claims.HostedDomain}, nil
 }
 
 // AdmitsRestricted asks of email, a restricted member's address, the question Person asks of an
@@ -239,8 +239,8 @@ func (r OutsideRule) OffersAccountChooser() bool {
 // from outside the domain was never admitted by a Workspace membership, so "Google did not confirm
 // the person's membership of the domain" would misname why it ended. The reason names what the
 // hourly confirmation found: most often, for such a person, that no project names them any more.
-func (r OutsideRule) End(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string) error {
-	return endSubject(ctx, people, email, read, reason, "dispatch: sign-in ended: the hourly confirmation no longer admits the person")
+func (r OutsideRule) End(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string, mode auth.EndMode) (bool, error) {
+	return endSubject(ctx, people, email, read, reason, mode, "dispatch: sign-in ended: the hourly confirmation no longer admits the person")
 }
 
 // SignedOutReason is the reason a restricted member whose sign-in no longer stands

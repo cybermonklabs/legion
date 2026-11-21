@@ -333,6 +333,12 @@ func (p *Provider) DeviceAuthorize(w http.ResponseWriter, r *http.Request, onReq
 	writeOAuthJSON(w, http.StatusOK, body)
 }
 
+// extraOperator is the key of a machine login's session extra naming the person who approved the
+// login (machine.Service.decideDevice writes it): the login's subject (ApproveDevice), the person
+// the device-code grant asks the hold of, and the person introspection answers a machine login's
+// own token held for.
+const extraOperator = "operator"
+
 // ApproveDevice records a person's decision on the device login userCode names (as typed:
 // NormalizeUserCode applies), in the transaction ctx carries when it carries one. An approval
 // grants the machine scope and gives the login's session extra, whose "operator" is its subject
@@ -366,7 +372,7 @@ func (p *Provider) ApproveDevice(ctx context.Context, userCode string, approved 
 		request.GrantScope(oauthwire.Scope)
 	}
 	request.SetStatus(status)
-	operator, _ := extra["operator"].(string)
+	operator, _ := extra[extraOperator].(string)
 	session := &oauth2.DefaultSession{Subject: operator, Extra: extra}
 	// The decision's session replaces the stored one, so it keeps the stored codes' expiry.
 	if stored, ok := request.GetSession().(*oauth2.DefaultSession); ok {
@@ -386,6 +392,12 @@ func (p *Provider) ApproveDevice(ctx context.Context, userCode string, approved 
 // so a row Before locks stays locked until the new tokens are stored. Validating the request stays
 // outside it: a reused refresh token's family revocation commits on its own though the request is
 // refused.
+//
+// The device code grant asks the hold gate about the login's operator before the transaction
+// begins (heldRefusal), and refuses a held person's grant once hooks.Before has found the login
+// live, so a revoked login gets its own refusal first; the transaction rolls back, issuing
+// nothing and leaving the device code to be redeemed once the hold ends. The refresh grant asks
+// nothing: a machine login refreshes while Dispatch holds its person, so a hold lapses no login.
 func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHooks) {
 	ctx := r.Context()
 	// Read before the library does, because the two kinds of request need different sessions and
@@ -406,6 +418,11 @@ func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHook
 	if session, ok := request.GetSession().(*oauth2.DefaultSession); ok {
 		extra = session.Extra
 	}
+	var held error
+	if grant == oauth2.GrantTypeDeviceCode {
+		operator, _ := extra[extraOperator].(string)
+		held = p.heldRefusal(ctx, operator)
+	}
 	txCtx, err := p.store.BeginTX(ctx)
 	if err != nil {
 		p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
@@ -423,6 +440,10 @@ func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHook
 			refusal = oauth2.ErrInvalidGrant.WithHint("The machine login has ended.")
 		}
 		p.writeError(ctx, w, request, refusal.WithWrap(err).WithDebugError(err))
+		return
+	}
+	if held != nil {
+		p.writeError(ctx, w, request, held)
 		return
 	}
 	resp, err := p.oauth.NewAccessResponse(txCtx, request)

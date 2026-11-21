@@ -328,7 +328,7 @@ func TestTheMaintenanceSweepNamesARowAPrivateProjectWouldAnswerWrongly(t *testin
 				RunMaintenanceSweep(ctx, database.Pool, maintenanceTestInterval, leases, func(context.Context) error {
 					passes.Add(1)
 					return nil
-				}, row.list)
+				}, row.list, nil)
 			})
 			waitUntil(t, 30*time.Second, "three passes of the sweep", func() bool { return passes.Load() >= 3 })
 			incomplete := logged.Lines("issue PRIV-1: missing")

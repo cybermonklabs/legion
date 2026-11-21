@@ -10,12 +10,14 @@
 // Dispatch that is slow to answer holds no lock and no pooled connection of the broker's. The
 // token exchange asks before it opens its transaction (internal/cipher/oauth, exchangeGrant).
 //
-// Answers are cached CacheTTL per project and person and per person, aged from before each
-// question was sent, which bounds how long a person removed from a project's access list goes on
-// passing a check here; Visible and States ask again for an answer that aged past it while a list
-// was read, a caller holding answers across further reads ages them again where it decides
-// (Stale), a question asked under Fresh skips the cache, and a slower answer never replaces one to
-// a question asked later. A failure to reach Dispatch is never cached and is never an answer: each
+// Answers are cached CacheTTL per project and person, and per person: one answer of the person
+// route, which MemberKind and Person both read. Each is aged from before its question was sent,
+// which bounds how long a person removed from a project's access list goes on passing a check
+// here; Visible and States ask again for an answer that aged past it while a list was read, a
+// caller holding answers across further reads ages them again where it decides (Stale), a
+// question asked under Fresh skips the cache, and a slower answer never replaces one to a
+// question asked later. Concurrent asks about one person share one call to Dispatch, but for one
+// asked under Fresh. A failure to reach Dispatch is never cached and is never an answer: each
 // caller decides what an outage means for its own check.
 package projectaccess
 
@@ -31,6 +33,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -104,6 +108,11 @@ var (
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
 	ErrUnchecked = errors.New("projectaccess: dispatch could not be asked, so the empty list is allowed unchecked")
+	// ErrNoHeldField is Person's answer for a person whose answer from Dispatch has no held
+	// field: a Dispatch older than the hold of refused people. It is a failure to ask and never
+	// read as not held, since during a roll such a Dispatch cannot say whether a newer one holds
+	// the person.
+	ErrNoHeldField = errors.New("projectaccess: dispatch's answer for a person names no held")
 )
 
 // NotVisibleError is Visible's refusal: the first project of a list its person may not see, or
@@ -200,7 +209,10 @@ type Client struct {
 
 	mu      sync.Mutex
 	answers map[accessKey]cachedAnswer
-	kinds   map[string]cachedKind
+	people  map[string]cachedPerson
+	// asks makes the concurrent asks about one person, MemberKind's and Person's alike, one call
+	// to Dispatch (askPerson), keyed by the canonical login.
+	asks singleflight.Group
 }
 
 type accessKey struct{ project, person string }
@@ -211,9 +223,16 @@ type cachedAnswer struct {
 	at              time.Time
 }
 
-type cachedKind struct {
-	kind string
-	at   time.Time
+// cachedPerson is one answer of the person route: the member kind, held as Dispatch answered it
+// (nil for an answer with no held field, from a Dispatch older than the hold), the as_of it
+// answered with (zero when it named none), the not_held_until it answered with (zero when it named
+// none), and when it was asked.
+type cachedPerson struct {
+	kind  string
+	held  *bool
+	asOf  time.Time
+	until time.Time
+	at    time.Time
 }
 
 // New is a client of Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL), presenting account
@@ -229,7 +248,7 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *
 		http:    httpClient,
 		now:     time.Now,
 		answers: map[accessKey]cachedAnswer{},
-		kinds:   map[string]cachedKind{},
+		people:  map[string]cachedPerson{},
 	}
 }
 
@@ -301,46 +320,148 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	return answer, nil
 }
 
-// MemberKind is the person's member kind, from the cache while it is younger than CacheTTL, unless
-// ctx is one Fresh made: one of MemberFull, MemberRestricted and MemberNone. Any other answer, an
-// empty one included, is ErrUnknownMemberKind naming it, never kept and never a failure to ask.
+// MemberKind is the person's member kind, from the cached person answer while it is younger than
+// CacheTTL, unless ctx is one Fresh made, whether or not that answer has held (Person), so a
+// Dispatch older than the hold still answers it: one of MemberFull, MemberRestricted and
+// MemberNone. Any other answer, an empty one included, is ErrUnknownMemberKind naming it, and
+// never a failure to ask.
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
 	person = record.CanonicalLogin(person)
 	if person == "" {
 		return "", errors.New("projectaccess: a member kind is asked of a person, and none was named")
 	}
-	c.mu.Lock()
-	cached, ok := c.kinds[person]
-	c.mu.Unlock()
-	if ok && !fresh(ctx) && c.now().Sub(cached.at) < CacheTTL {
-		return cached.kind, nil
-	}
-	asked := c.now()
-	var answer struct {
-		MemberKind string `json:"member_kind"`
-	}
-	status, err := c.get(ctx, personPath, url.Values{"person": {person}}, &answer)
+	answer, err := c.personAnswer(ctx, person, func(cachedPerson) time.Duration { return CacheTTL })
 	if err != nil {
 		return "", err
 	}
-	if status == http.StatusNotFound {
-		return "", fmt.Errorf("projectaccess: dispatch answered %d with no member kind for %s", status, person)
-	}
-	switch answer.MemberKind {
+	switch answer.kind {
 	case MemberFull, MemberRestricted, MemberNone:
-	default:
-		return "", fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, answer.MemberKind, person)
+		return answer.kind, nil
 	}
+	return "", fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, answer.kind, person)
+}
+
+// PersonAnswer is Dispatch's answer on its person route for one person, as Person reads it.
+type PersonAnswer struct {
+	// MemberKind is the member kind Dispatch answered, passed on whatever it is: MemberKind is
+	// the check of it.
+	MemberKind string
+	// Held is whether Dispatch holds the person's credentials until they sign in again.
+	Held bool
+	// AsOf is the database time of the read Dispatch's answer rests on (as_of): the clock by
+	// which a later answer is told from an earlier one, whichever broker process asked.
+	AsOf time.Time
+	// NotHeldUntil is the deadline an IAP deployment's Dispatch puts on an answer that is not held
+	// (not_held_until): the last active Workspace Directory answer plus 24 hours, or AsOf itself
+	// once that passed. Past it the answer is no longer served (hold.Gate.CheckUntil). It is the
+	// zero time for an answer naming none, as every answer outside IAP and every held one.
+	NotHeldUntil time.Time
+	// AskedAt is when the question this answers was asked, by the client's clock, read before it
+	// was sent. Every read of one cached answer carries the same AskedAt.
+	AskedAt time.Time
+}
+
+// noHeldRetry is how long Person answers ErrNoHeldField from a cached answer with no held before
+// it asks Dispatch again, while MemberKind goes on reading that answer for its CacheTTL. It is the
+// hold gate's memory of a failure to ask (internal/cipher/hold), so a Dispatch that starts
+// answering held is read at the gate's next ask.
+const noHeldRetry = 5 * time.Second
+
+// Person is Dispatch's answer for person: their member kind, whether Dispatch holds them, the
+// time its answer rests on, and the deadline an IAP deployment's Dispatch puts on a not-held
+// answer, as Dispatch spelled it. It reads the cached person answer MemberKind reads, while it is
+// younger than CacheTTL, whatever its deadline: the gate judges that at each use
+// (hold.Gate.CheckUntil). An answer with no held, from a Dispatch older than the hold, is
+// ErrNoHeldField, answered from the cache for noHeldRetry and asked again after; an answer with
+// held and no as_of is a failure too, since no later answer could be told from it. Neither is
+// ever read as not held. A member kind the broker does not know is still an answer here, since
+// its held decodes. Dispatch refusing the broker's own account is ErrBrokerRefused, as for
+// MemberKind, and every other failure is a failure to ask.
+func (c *Client) Person(ctx context.Context, person string) (PersonAnswer, error) {
+	person = record.CanonicalLogin(person)
+	if person == "" {
+		return PersonAnswer{}, errors.New("projectaccess: a person's answer is asked of a person, and none was named")
+	}
+	answer, err := c.personAnswer(ctx, person, func(cached cachedPerson) time.Duration {
+		if cached.held == nil || cached.asOf.IsZero() {
+			return noHeldRetry
+		}
+		return CacheTTL
+	})
+	switch {
+	case err != nil:
+		return PersonAnswer{}, err
+	case answer.held == nil:
+		return PersonAnswer{}, fmt.Errorf("%w: %s", ErrNoHeldField, person)
+	case answer.asOf.IsZero():
+		return PersonAnswer{}, fmt.Errorf("projectaccess: dispatch's answer for %s names held and no as_of", person)
+	}
+	return PersonAnswer{MemberKind: answer.kind, Held: *answer.held, AsOf: answer.asOf, NotHeldUntil: answer.until, AskedAt: answer.at}, nil
+}
+
+// personAnswer is the cached answer for person while it is younger than keep says for it, and
+// else the one a call to Dispatch answers. Concurrent callers share that call (c.asks), which runs
+// apart from any one caller's context and is bounded by requestTimeout: a caller whose own
+// context ends stops waiting, and the call goes on for every caller still waiting and for the
+// cache.
+func (c *Client) personAnswer(ctx context.Context, person string, keep func(cachedPerson) time.Duration) (cachedPerson, error) {
 	c.mu.Lock()
-	if len(c.kinds) >= maxCached {
+	cached, ok := c.people[person]
+	c.mu.Unlock()
+	if fresh(ctx) {
+		// A question asked under Fresh is Dispatch's to answer now: it reads no cached answer and
+		// shares no call already in flight, which was asked before it.
+		return c.askPerson(ctx, person)
+	}
+	if ok && c.now().Sub(cached.at) < keep(cached) {
+		return cached, nil
+	}
+	call := c.asks.DoChan(person, func() (any, error) {
+		return c.askPerson(context.WithoutCancel(ctx), person)
+	})
+	select {
+	case result := <-call:
+		if result.Err != nil {
+			return cachedPerson{}, result.Err
+		}
+		return result.Val.(cachedPerson), nil
+	case <-ctx.Done():
+		return cachedPerson{}, fmt.Errorf("projectaccess: ask dispatch about %s: %w", person, ctx.Err())
+	}
+}
+
+// askPerson asks the person route about person and keeps the answer unless the cache already
+// holds one to a question asked later. A 404, whatever its code, is no answer about a person.
+func (c *Client) askPerson(ctx context.Context, person string) (cachedPerson, error) {
+	asked := c.now()
+	var answer struct {
+		MemberKind   string    `json:"member_kind"`
+		Held         *bool     `json:"held"`
+		AsOf         time.Time `json:"as_of"`
+		NotHeldUntil time.Time `json:"not_held_until"`
+	}
+	status, err := c.get(ctx, personPath, url.Values{"person": {person}}, &answer)
+	if err != nil {
+		return cachedPerson{}, err
+	}
+	if status == http.StatusNotFound {
+		return cachedPerson{}, fmt.Errorf("projectaccess: dispatch answered %d with no answer for %s", status, person)
+	}
+	entry := cachedPerson{kind: answer.MemberKind, held: answer.Held, asOf: answer.AsOf, until: answer.NotHeldUntil, at: asked}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.people) >= maxCached {
 		c.sweepLocked()
 	}
-	if held, ok := c.kinds[person]; (!ok || held.at.Before(asked)) && len(c.kinds) < maxCached {
-		c.kinds[person] = cachedKind{kind: answer.MemberKind, at: asked}
+	if kept, ok := c.people[person]; (!ok || kept.at.Before(asked)) && len(c.people) < maxCached {
+		c.people[person] = entry
 	}
-	c.mu.Unlock()
-	return answer.MemberKind, nil
+	return entry, nil
 }
+
+// UseClock makes c read now instead of the wall clock, for every answer's age and AskedAt, so a
+// test moves an answer past CacheTTL rather than waiting it out. It is set before c is first used.
+func (c *Client) UseClock(now func() time.Time) { c.now = now }
 
 // States answers each of projects as it is to a question naming no person, and Missing for each
 // Dispatch does not hold. Any other failure is the whole answer's.
@@ -413,9 +534,9 @@ func (c *Client) sweepLocked() {
 			delete(c.answers, key)
 		}
 	}
-	for person, cached := range c.kinds {
+	for person, cached := range c.people {
 		if now.Sub(cached.at) >= CacheTTL {
-			delete(c.kinds, person)
+			delete(c.people, person)
 		}
 	}
 }

@@ -27,6 +27,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"google.golang.org/api/option"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -122,6 +123,16 @@ type bootConfig struct {
 	// oidc.IAPKeySetURL, which no setting changes: a test points it at a key set it serves.
 	IAPAudience  string
 	IAPKeySetURL string
+	// DirectoryAccount and DirectoryAdmin are DISPATCH_DIRECTORY_ACCOUNT and
+	// DISPATCH_DIRECTORY_ADMIN under DISPATCH_IDENTITY=iap, both required there and refused under
+	// any other identity: the signer service account and the delegated Workspace user the Directory
+	// reader checks each person's account through (identity.NewDirectoryReader). DirectoryOptions
+	// are the options that reader reaches Google with, which no setting changes: none in a
+	// deployment, whose Application Default Credentials call signJwt; a test points them at the
+	// Google hosts it serves (directorytest).
+	DirectoryAccount string
+	DirectoryAdmin   string
+	DirectoryOptions []option.ClientOption
 	// SignInIssuer, SignInClientID and SignInClientSecret, with exactly one of SignInGroup and
 	// SignInDomain, configure Google sign-in (DISPATCH_SIGNIN_*): through a Cognito sign-in pool
 	// for a group, or with Google directly for a Workspace domain; empty means no sign-in.
@@ -572,15 +583,28 @@ func main() {
 		os.Exit(1)
 	}
 	retirePlainRefreshTokens(ctx, people, plainRefreshTokenRetireTimeout)
+	// Under DISPATCH_SIGNIN_DOMAIN, the people census, and the refusal of a domain no full member's
+	// sign-in records, which would hold every member (checkPeopleAtBoot). It reads people after the
+	// retirement above, so a retired row counts as one Dispatch cannot check, and refuses before
+	// the server serves.
+	if err := checkPeopleAtBoot(ctx, people, rule, boot.SignInDomain); err != nil {
+		slog.Error("dispatch: check the sign-in domain against the people", "error", err)
+		os.Exit(1)
+	}
 	sessions := store.NewPgSessionStore(database.Pool)
 
 	if boot.IdentityHeader != "" {
 		slog.Warn("dispatch: using test/local header identity", "header", boot.IdentityHeader)
 	}
 	if boot.IAPAudience != "" {
-		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain)
+		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain,
+			"directory_account", boot.DirectoryAccount, "directory_admin", boot.DirectoryAdmin)
 	}
-	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn, rule)
+	requestIdentity, membership, err := requestIdentityFor(ctx, boot, signingKey, people, sessions, signIn, rule)
+	if err != nil {
+		slog.Error("dispatch: build the request identity", "error", err)
+		os.Exit(1)
+	}
 
 	broker := events.NewBroker()
 	documentService := newDocumentService(boot, serverURL, docs.Deps{
@@ -685,8 +709,11 @@ func main() {
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
-	appCtx, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
-
+	// Under a Google rule, whether a person's personal tokens and broker credentials are held
+	// (identity.Membership.Standing), asked by the API and answered on the person route; nil, which
+	// holds nobody, under any other rule. The membership is handed the router's check of access
+	// that outlives the browser here, before anything is served (buildAppContext).
+	appCtx, err := buildAppContext(boot, rule, built, membership)
 	if err != nil {
 		slog.Error("dispatch: build app context", "error", err)
 		os.Exit(1)
@@ -742,7 +769,8 @@ func main() {
 	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
 	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
 	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
-	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
+	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute, whose
+	//     last work under a Google rule is the membership pass, identity.MembershipPass), the
 	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
 	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
 	//     from a tick at start, whose first pass of a display parser version runs until every
@@ -1214,16 +1242,24 @@ func main() {
 	// suggestion_outcome_cursor row for update, which is what keeps two processes from judging one
 	// page twice.
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
-	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
-	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
-	// timer and not a woken loop because no commit announces either, and it starts here because
-	// it resumes those deliveries through the API server built just above. With a list of private
-	// projects, it checks the store once as it starts, beside the serving process, then hourly.
+	// The Idempotency-Keys past their 24 hours, the deliveries a process that died left owed and,
+	// under a Google rule, the membership pass (identity.MembershipPass), once a minute across the
+	// processes under the suggestion-outcomes lease. It is a timer and not a woken loop because no
+	// commit announces any of these, and it starts here because it resumes those deliveries
+	// through the API server built just above. With a list of private projects, it checks the
+	// store once as it starts, beside the serving process, then hourly. The membership pass asks
+	// the Membership the router's Standing asks, and the sign-out's check of access that outlives
+	// the browser (routes.AppContext.Outliving); under IAP identity, whose rule is the domain's and
+	// whose Membership follows the Workspace Directory, it checks each full member's account there.
 	maintenanceInterval := api.MaintenanceSweepInterval
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
-	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries, boot.PrivateProjects)
+	var confirmMemberships func(context.Context) error
+	if standingFor(rule, membership) != nil {
+		confirmMemberships = identity.MembershipPass{Membership: membership, People: people, Outliving: appCtx.Outliving()}.Run
+	}
+	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries, boot.PrivateProjects, confirmMemberships)
 	// The credentials at the secrets broker of a Google account another account took the
 	// address of are revoked there with one call naming that account, woken by each revocation a
 	// sign-in records and retried until the broker confirms. It takes no lease: each pass claims the
@@ -1674,6 +1710,11 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 		boot.DevSignIn = true
+	}
+	// The Directory settings are IAP identity's alone (K12), read after the dev sign-in fence, so
+	// dev sign-in beside IAP identity is refused for the identity first.
+	if boot.DirectoryAccount, boot.DirectoryAdmin, err = directorySettings(env, boot.IAPAudience != ""); err != nil {
+		return bootConfig{}, err
 	}
 	return boot, nil
 }

@@ -15,7 +15,9 @@ type routeAuth int
 const (
 	authNone routeAuth = iota
 	authLauncher
+	authLauncherEnd
 	authProof
+	authProofEnd
 	authRenewProof
 	authAccount
 	authService
@@ -40,6 +42,10 @@ type caller struct {
 	// signIn is the broker sign-in session a request to the approval page carries, the zero
 	// approval.Session when it carries none that is live.
 	signIn approval.Session
+	// proved marks a caller authenticate refused after its credential proved it: a session or a
+	// machine login the hold refused (refuseHeld). The answer's record then names that caller,
+	// where every other refusal raised in authentication names none.
+	proved bool
 }
 
 // power is one authority over the broker a caller of an accountAuth route may hold: one bit, so
@@ -136,16 +142,40 @@ func public(h func(*server, http.ResponseWriter, *http.Request)) routeHandler {
 
 // launcherAuth is a route for a machine's launcher (agent-secrets-helper, or the Legion daemon),
 // which signs each call's Proof header with the key its machine login's credential is bound to.
+// Once the proof and the credential check, authenticate asks the hold gate (Deps.Hold) about the
+// person the credential names as its operator: one Dispatch holds is refused 403
+// MEMBERSHIP_HELD, and every person is 503 HOLD_UNCHECKABLE while the gate cannot decide. A
+// service's login names no operator and is asked nothing.
 func launcherAuth(h func(*server, http.ResponseWriter, *http.Request, enroll.Credential)) routeHandler {
 	return routeHandler{auth: authLauncher, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.launcher)
 	}}
 }
 
+// launcherEndAuth is launcherAuth without the hold, for the routes that only end access or list
+// what to end: a person Dispatch holds may call them, because they only end or list access.
+func launcherEndAuth(h func(*server, http.ResponseWriter, *http.Request, enroll.Credential)) routeHandler {
+	return routeHandler{auth: authLauncherEnd, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+		h(s, w, r, who.launcher)
+	}}
+}
+
 // sessionAuth is a route for an enrolled agent session, which signs each call's Proof header with
-// its own key, and which acts only on its own enrollment, requests and grants.
+// its own key, and which acts only on its own enrollment, requests and grants. Once the proof
+// checks, authenticate asks the hold gate (Deps.Hold) about the person the session's enrollment
+// names as its operator: one Dispatch holds is refused 403 MEMBERSHIP_HELD, and every person is
+// 503 HOLD_UNCHECKABLE while the gate cannot decide. A pod's enrollment names no operator and is
+// asked nothing.
 func sessionAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
 	return routeHandler{auth: authProof, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+		h(s, w, r, who.enrollment)
+	}}
+}
+
+// sessionEndAuth is sessionAuth without the hold, for the routes that only end access: a session
+// whose person Dispatch holds may call them, because they only end access.
+func sessionEndAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
+	return routeHandler{auth: authProofEnd, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.enrollment)
 	}}
 }
@@ -153,7 +183,8 @@ func sessionAuth(h func(*server, http.ResponseWriter, *http.Request, string)) ro
 // renewAuth is session authentication for the one route that gives an ended enrollment a distinct
 // refusal. A skewed/malformed proof remains PROOF_INVALID; only proof.ErrNotLive is
 // ENROLLMENT_NOT_LIVE so the pod renewer can stop rather than retry an enrollment that cannot
-// recover.
+// recover. It asks no hold: a session renews its lease while Dispatch holds its person, so a hold
+// ends no session.
 func renewAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
 	return routeHandler{auth: authRenewProof, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.enrollment)
@@ -252,7 +283,7 @@ func routes() []apiRoute {
 		{http.MethodPost, "/v1/enrollments", launcherAuth((*server).createEnrollment)},
 		// Revoke an enrollment made under the caller's machine credential's operator, or a pod
 		// enrollment the caller's own machine credential made.
-		{http.MethodDelete, "/v1/enrollments/{id}", launcherAuth((*server).deleteEnrollment)},
+		{http.MethodDelete, "/v1/enrollments/{id}", launcherEndAuth((*server).deleteEnrollment)},
 		// Answer which pod enrollments the caller's account launched still carry something for the
 		// named sessions, so a Legion daemon frees a session id it holds only once the answer is
 		// empty. The body names 1 to 4096 session ids of 1 to 255 bytes each (400
@@ -321,7 +352,7 @@ func routes() []apiRoute {
 		// Cancel a pending request the calling session's owner made, by the same rule as the read,
 		// its 404 NOT_FOUND for a request of a private project the session cannot see and its 503
 		// PROJECT_ACCESS_UNAVAILABLE included; neither cancels anything.
-		{http.MethodPost, "/v1/requests/{id}/cancel", sessionAuth((*server).cancelRequest)},
+		{http.MethodPost, "/v1/requests/{id}/cancel", sessionEndAuth((*server).cancelRequest)},
 		// Release a live grant's values to the session that holds it. Every other session is 403
 		// NOT_YOURS, but one the grant's private project hides it from, as the read's rule says, is
 		// answered 403 GRANT_NOT_LIVE, as for an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE
@@ -331,7 +362,7 @@ func routes() []apiRoute {
 		// grant's private project hides it from, as the read's rule says, is answered 404 NOT_FOUND,
 		// as for an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while Dispatch cannot say;
 		// neither revokes anything.
-		{http.MethodPost, "/v1/grants/{id}/revoke", sessionAuth((*server).revokeGrant)},
+		{http.MethodPost, "/v1/grants/{id}/revoke", sessionEndAuth((*server).revokeGrant)},
 		// List the undecided requests and machine logins the named person is asked to decide, each
 		// with its state, pending or expired, and its deadline, and each secret request with the
 		// broker's own page where it is decided. A request for a shared secret is listed for the
@@ -445,6 +476,15 @@ func routes() []apiRoute {
 		// the caller's word, which does more than take power away: naming the holder lifts the
 		// refusal an earlier revoke recorded for that account, and nothing else.
 		{http.MethodPost, "/v1/person-subjects/revoke", accountAuth(relaysDecisions, (*server).revokePersonSubject)},
+		// Count what the named person holds here that outlives their browser session: their own
+		// machine logins that are not revoked and are unexpired or expired with a session still
+		// running (a service's login they approved is not theirs), their sign-ins on a machine
+		// that are not revoked, and the entries of the token exchange's configuration that name
+		// them. Dispatch's server asks it when the person signs out, and about once an hour after
+		// that while it keeps their refresh token, to decide whether it still keeps that token so
+		// that Google's later refusal of them still holds those credentials. The person is the
+		// one the caller names; naming none is 400 PERSON_REQUIRED.
+		{http.MethodGet, "/v1/person-access", accountAuth(relaysDecisions, (*server).personAccess)},
 		// Read the broker's grant log for one closed period, for a quarterly access review:
 		// every audit row between ?since and ?until (RFC 3339, half-open), oldest first, each
 		// naming the session that wrote it, that session's person, the service the broker
@@ -459,18 +499,18 @@ func routes() []apiRoute {
 		// page lists them, without the service logins that page also lists. This route, the machine
 		// revoke below and the two grant routes refuse a person's pod login 403 PERSON_POD_LOGIN
 		// and a service's login 403 SERVICE_CREDENTIAL (operatorOf). The retire refuses neither.
-		{http.MethodGet, "/v1/operator/machines", launcherAuth((*server).listOperatorMachines)},
+		{http.MethodGet, "/v1/operator/machines", launcherEndAuth((*server).listOperatorMachines)},
 		// End one of the operator's own logins: no proof signed with it authenticates again
 		// and every session it enrolled ends. A service's login is not found here, like an unknown
 		// id. Revoking the calling machine's own login ends this machine's access.
-		{http.MethodPost, "/v1/operator/machines/{id}/revoke", launcherAuth((*server).revokeOperatorMachine)},
+		{http.MethodPost, "/v1/operator/machines/{id}/revoke", launcherEndAuth((*server).revokeOperatorMachine)},
 		// Retire the calling machine login after its machine logged in again: it enrolls nothing
 		// more and cannot refresh, while the sessions it enrolled keep running and renewing with their
 		// own keys. {id} must be the calling credential.
-		{http.MethodPost, "/v1/operator/machines/{id}/retire", launcherAuth((*server).retireOperatorMachine)},
+		{http.MethodPost, "/v1/operator/machines/{id}/retire", launcherEndAuth((*server).retireOperatorMachine)},
 		// List the live grants of the operator's sessions and those the operator approved, exactly as
 		// Dispatch's Live grants page lists them.
-		{http.MethodGet, "/v1/operator/grants", launcherAuth((*server).listOperatorGrants)},
+		{http.MethodGet, "/v1/operator/grants", launcherEndAuth((*server).listOperatorGrants)},
 		// End a grant as the operator: the revocation Dispatch's page offers, which also withholds an
 		// automatic grant's secrets from its session. It answers as the person's own revoke of the
 		// grant does: a grant whose approver is the operator, or whose enrollment acts for the
@@ -481,7 +521,7 @@ func routes() []apiRoute {
 		// them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A grant an adoption
 		// moved to another box each time the revoke read it, three times in a row, is 409
 		// GRANT_MOVING. Each of these revokes nothing.
-		{http.MethodPost, "/v1/operator/grants/{id}/revoke", launcherAuth((*server).revokeOperatorGrant)},
+		{http.MethodPost, "/v1/operator/grants/{id}/revoke", launcherEndAuth((*server).revokeOperatorGrant)},
 		// The store, the namespace prefix, the agent-secrets key and the account or project it is
 		// in, and the Google exchange audience: what the CLI needs so it and the broker never
 		// disagree about which secret a name means. It needs no credential, because a machine's

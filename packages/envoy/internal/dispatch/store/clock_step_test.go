@@ -453,7 +453,7 @@ func TestAClaimMadeBeforeAClockStepBackLetsTheNextRecordingThrough(t *testing.T)
 			// own revocation and records account-b's, both writes of the claimed row.
 			signInAll(t, people, row.email, "account-a", "account-b")
 			stamp(t, row.email, row.at)
-			if err := people.SignInSubject(ctx, row.email, "account-a", "refresh-a2", model.MemberFull); err != nil {
+			if err := people.SignInSubject(ctx, row.email, "account-a", "refresh-a2", "", model.MemberFull); err != nil {
 				t.Errorf("the sign-in taking %s back over a claim stamped now() %s answered %v; want it recorded", row.email, row.at, err)
 			}
 			var sub string

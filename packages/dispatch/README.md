@@ -407,7 +407,9 @@ list names (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_OUTSIDE=1`). Each server 
 second origin, `http://localhost:<port>` (`DISPATCH_OUTSIDE_ORIGIN`), beside its canonical
 `http://127.0.0.1:<port>`. The issuer signs in nobody of its own: a spec queues each person, with
 the claims Google gives that account, at the issuer's `POST /_dev/sign-in-as`. Only
-`e2e/outside-sign-in.e2e.ts` runs then, with one server process or two:
+`e2e/outside-sign-in.e2e.ts` and `e2e/leaver-hold.e2e.ts`, which holds a person's personal token
+once the issuer refuses their refresh as Google refuses an account it no longer confirms, run then,
+with one server process or two:
 
 ```bash
 DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslmode=disable' \

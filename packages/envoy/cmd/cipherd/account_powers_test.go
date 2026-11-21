@@ -1,10 +1,10 @@
 // account_powers_test.go drives the REAL compiled broker with three accounts in
 // BROKER_API_ACCOUNTS — one calling as dispatch, one as listener, one as access-review — over
 // HTTP, on a real Postgres, against a local OpenID issuer standing in for the cluster's. Being
-// listed is not being allowed: the caller's name says which of the broker's fourteen
+// listed is not being allowed: the caller's name says which of the broker's sixteen
 // named-caller routes that account reaches, so the introspection-only caller is refused every
 // route Dispatch's server relays a person's decisions through, the review caller reads the
-// grant log and is refused the other thirteen, and the dispatch caller reaches all thirteen of
+// grant log and is refused the other fifteen, and the dispatch caller reaches all fifteen of
 // its own and is refused the review's. Nothing here is a unit test — the binary is the one
 // cmd/cipherd builds and every request crosses a socket.
 package main
@@ -58,13 +58,14 @@ const (
 
 // TestAListedAccountReachesOnlyItsOwnRoutes lists three callers and drives every route
 // accountAuth authenticates from each of them. The listener caller, listed for introspection
-// alone, is refused each of the thirteen relay routes — approve, deny, dismiss, both
-// revoke-by-approver, the RFC 7009 token revocation, both person sign-in routes and the replaced
-// account's revoke among them — and the grant log too, 403 ACCOUNT_LACKS_POWER naming itself and
-// the route, and still reads a token back. The access-review caller reads the grant log and is
-// refused the other fourteen the same way. The dispatch caller reaches all fourteen of its own,
-// the introspection route included, and is refused the grant log: the broker's audit trail is not
-// another of the powers the name that decides already holds.
+// alone, is refused each of the fourteen relay routes — approve, deny, dismiss, both
+// revoke-by-approver, the RFC 7009 token revocation, both person sign-in routes, the replaced
+// account's revoke and the count of what a person holds among them — and the grant log too, 403
+// ACCOUNT_LACKS_POWER naming itself and the route, and still reads a token back. The
+// access-review caller reads the grant log and is refused the other fifteen the same way. The
+// dispatch caller reaches all fifteen of its own, the introspection route included, and is
+// refused the grant log: the broker's audit trail is not another of the powers the name that
+// decides already holds.
 func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster := oidctest.New(t)
@@ -128,6 +129,9 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 		// refuses 400 before it writes anything.
 		{method: http.MethodPost, pattern: "/v1/person-subjects/revoke", path: "/v1/person-subjects/revoke",
 			contentType: "application/json", body: `{"person":"` + powersApprover + `","issuer":"https://accounts.google.com","subject":"1","holder_subject":"1"}`, caller: dispatchCaller},
+		// A person this broker holds nothing of is answered zero counts, which is the route's
+		// answer and not a refusal.
+		{method: http.MethodGet, pattern: "/v1/person-access", path: "/v1/person-access?person=" + powersApprover, caller: dispatchCaller},
 		// The review's own route, called for a period that closed long ago, so the answer the
 		// review gets here is a page of the grant log rather than a refusal of its period.
 		{method: http.MethodGet, pattern: grantLogRoute, path: grantLogQuery, caller: reviewCaller},

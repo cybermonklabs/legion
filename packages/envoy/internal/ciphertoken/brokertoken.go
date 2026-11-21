@@ -204,6 +204,20 @@ type Caller struct {
 	// act for Person.
 	AccountIssuer  string
 	AccountSubject string
+	// Held is the broker's introspection answer's `held` (Introspection.Held): Dispatch holds
+	// Person until they sign in again, or until a refresh confirms them. The Verifier sets it from
+	// the answer and keeps it as long as it keeps any affirmative answer
+	// (AffirmativeCacheTTL). Dispatch reads it after its own revocation and admission checks,
+	// and the Envoy listener after its own checks, and each refuses a held caller 401
+	// MEMBERSHIP_HELD.
+	Held bool
+	// NotHeldUntil is the broker's introspection answer's `not_held_until`
+	// (Introspection.NotHeldUntil): when its answer that Person is not held stops being good, the
+	// deadline an IAP deployment's Dispatch put on it. The zero time for an answer naming none, a
+	// held one and every answer outside IAP. The Verifier keeps a not-held answer no later than
+	// it, and Dispatch and the Envoy listener refuse a not-held caller as unavailable once it is not
+	// after the Verifier's clock (Verifier.Lapsed).
+	NotHeldUntil time.Time
 	// CredentialCreatedAt is when the token's credential was made at the broker, from the broker
 	// database's clock (Introspection's CredentialCreatedAt): its sign-in on a machine, or the
 	// machine login it was exchanged from. The zero time for a token naming no person and for one
@@ -422,6 +436,16 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) 
 func (v *Verifier) Live(ctx context.Context, r *http.Request) (Caller, error) {
 	_, _, caller, err := v.live(ctx, r)
 	return caller, err
+}
+
+// Lapsed reports whether caller, a Caller this verifier answered, is not held and its NotHeldUntil
+// is set and not after this verifier's clock: the deadline an IAP deployment's Dispatch put on its
+// answer that the person is not held has passed, so whether they may still act cannot be read,
+// and each reader refuses the caller as unavailable rather than serving it. A held caller is never
+// lapsed: it is refused as held. The verifier's clock is the one its cache keeps the answer by, so
+// a kept answer and a fresh one are judged alike.
+func (v *Verifier) Lapsed(caller Caller) bool {
+	return !caller.Held && !caller.NotHeldUntil.IsZero() && !caller.NotHeldUntil.After(v.now())
 }
 
 // live is the broker's half of both checks: the token r presents, the broker's answer about it,

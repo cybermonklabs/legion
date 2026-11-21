@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -167,6 +168,10 @@ type AppContextOptions struct {
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
 	BrokerTokens *ciphertoken.Verifier
+	// Standing answers whether Dispatch holds a person's personal tokens and broker credentials
+	// until they sign in again (identity.Membership.Standing); nil where no Google rule signs
+	// people in (SignInRule's Holds). See api.DepsInput.
+	Standing api.PersonStanding
 	// PrivateProjects are the keys of the projects the deployment has provisioned as private
 	// (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS), and BusProjects the writer of the private-projects
 	// record. See api.DepsInput.
@@ -299,6 +304,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDCAccounts:           opts.OIDCAccounts,
 		AccessAccounts:         opts.AccessAccounts,
 		RestrictedAdmission:    restricted,
+		Standing:               opts.Standing,
 		BrokerTokens:           opts.BrokerTokens,
 		PrivateProjects:        opts.PrivateProjects,
 		BusProjects:            opts.BusProjects,
@@ -368,6 +374,12 @@ func (ctx *AppContext) Architecture() *architecture.Importer {
 // their own calls as the same App rather than loading credentials a second time.
 func (ctx *AppContext) GitHub() *githubapp.Client {
 	return ctx.apiDeps.GitHub
+}
+
+// Outliving is the check the sign-out asks whether a person has access that outlives the browser
+// (api.Deps.Outliving), so Dispatch's membership pass asks the same database and broker client.
+func (ctx *AppContext) Outliving() cipher.OutlivingAccess {
+	return ctx.apiDeps.Outliving
 }
 
 // oauthStateTTL is how long a sign-in may take between /auth/start and the issuer's callback.
@@ -615,10 +627,32 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 	return true
 }
 
+// authLogout ends the person's browser sessions (RevokeSessions) and clears the cookie. Under the
+// sign-in pool's rule, and with no rule, it then forgets their refresh token (People.End). Under a
+// Google rule (SignInRule's Holds) it reads the row's signed_in_at before ending the sessions, then
+// asks whether the person has access that outlives the browser (api.Deps.Outliving): an unrevoked
+// personal token, or a live broker credential or an exchange entry that names them. When they
+// have, or that cannot be asked, it keeps the refresh token, for membership checks only, and marks
+// the row signed out (People.KeepAfterSignOut), so Google's later refusal still holds them; else it
+// forgets the token (People.ForgetAfterSignOut). Either write applies only while signed_in_at is
+// still the one it read, so a sign-in that commits while the broker is asked keeps its own token.
+// Once the sessions have ended, the ask and the write go on if the browser goes away, so a sign-out
+// the person started finishes as it would have; the broker's ask is bounded by its client's window.
 func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 	email, ok := r.login(w, req)
 	if !ok {
 		return
+	}
+	googleRule := r.ctx.SignInRule != nil && r.ctx.SignInRule.Holds()
+	var signedInAt time.Time
+	if googleRule {
+		membership, _, err := r.ctx.People.Membership(req.Context(), email)
+		if err != nil {
+			slog.Warn("dispatch: read the sign-in a sign-out ends failed", "email", email, "error", err)
+			writeError(w, http.StatusInternalServerError, "read sign-in")
+			return
+		}
+		signedInAt = membership.SignedInAt
 	}
 	if r.ctx.Sessions != nil {
 		if err := r.ctx.Sessions.RevokeSessions(req.Context(), email); err != nil {
@@ -627,7 +661,20 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
-	if err := r.ctx.People.End(req.Context(), email); err != nil {
+	if googleRule {
+		ctx := context.WithoutCancel(req.Context())
+		outlives, err := r.ctx.apiDeps.Outliving.Holds(ctx, email)
+		if err != nil {
+			slog.Warn("dispatch: a sign-out could not ask whether the person has access that outlives the browser; keeping their refresh token", "email", email, "error", err)
+		}
+		if outlives || err != nil {
+			if err := r.ctx.People.KeepAfterSignOut(ctx, email, signedInAt); err != nil {
+				slog.Warn("dispatch: keep the signed-out person's refresh token failed", "email", email, "error", err)
+			}
+		} else if err := r.ctx.People.ForgetAfterSignOut(ctx, email, signedInAt); err != nil {
+			slog.Warn("dispatch: forget the sign-in's refresh token failed", "email", email, "error", err)
+		}
+	} else if err := r.ctx.People.End(req.Context(), email); err != nil {
 		slog.Warn("dispatch: forget the sign-in's refresh token failed", "email", email, "error", err)
 	}
 	w.Header().Set("Set-Cookie", auth.ClearSessionCookie(!r.ctx.InsecureCookie))

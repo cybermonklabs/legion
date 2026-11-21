@@ -26,6 +26,7 @@ import (
 	"golang.org/x/net/http/httpguts"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/fold"
@@ -263,6 +264,13 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// which a grant that moved since no longer is.
 	info.grant = connection
 	r = r.WithContext(withCaller(r.Context(), connection))
+	// The person the grant's session acts for, asked of the hold for this request as for the
+	// CONNECT, and before any value is read: a request on a connection opened before Dispatch
+	// held them stops here, the values this pod holds for the grant left unread (holdRefusal).
+	if status, code, why := s.holdRefusal(r.Context(), connection.Operator); status != 0 {
+		s.refuse(w, r, info.callFor(pair{}), status, code, why)
+		return
+	}
 	request := &proxyrules.Request{
 		ConnectHost: info.host,
 		// The port the CONNECT named, which is 443 for every connection the proxy decrypts
@@ -721,18 +729,28 @@ func cutJoined(cut *cutConn, c net.Conn) {
 }
 
 // carryRefusal is why the grant behind a carried call no longer carries it, and nil while it
-// does: the grant's own expiry, the connection read's refusals, the name the call was decided for
-// going out of the grant, which is how a name an operator withholds reaches a call that reads no
-// request again, and the slot it was decided for no longer released (slotReleased), the rule a
-// new call of that slot is refused by - a github-app installation gone since the release. The
-// second read is the one every other request makes for the values it is handled for (valuesFor):
-// it answers from what this pod holds unless the live policy version has moved or the name has
-// been reread, which is a pointer read, so it costs a carried call nothing on the common path and
-// reads the grant again exactly when a policy change could have ended it - a retag, a raised tier,
-// a narrowed requesters list - which the connection read never sees. Any error of either read
-// that is no refusal of this grant leaves the call alone, with the error logged where
-// grantRefusal logs one: a read that failed says nothing about the grant, and a database failover
-// must cut no WebSocket and no stream the airlock carries.
+// does: the grant's own expiry, the connection read's refusals, the person the grant's session
+// acts for held by Dispatch, the name the call was decided for going out of the grant, which is
+// how a name an operator withholds reaches a call that reads no request again, and the slot it
+// was decided for no longer released (slotReleased), the rule a new call of that slot is refused
+// by - a github-app installation gone since the release. The second read is the one every other
+// request makes for the values it is handled for (valuesFor): it answers from what this pod holds
+// unless the live policy version has moved or the name has been reread, which is a pointer read,
+// so it costs a carried call nothing on the common path and reads the grant again exactly when a
+// policy change could have ended it - a retag, a raised tier, a narrowed requesters list - which
+// the connection read never sees. Any error of either read that is no refusal of this grant
+// leaves the call alone, with the error logged where grantRefusal logs one: a read that failed
+// says nothing about the grant, and a database failover must cut no WebSocket and no stream the
+// airlock carries.
+//
+// The hold is read as a request reads it (holdRefusal) but for two things: any answer that holds
+// the person ends the call, a held answer the broker could not keep among them, since that answer
+// still says Dispatch holds them; and of the checks that decide nothing, one whose person's last
+// not-held answer has passed its deadline (hold.ErrDeadlinePassed) ends the call too, 503
+// HOLD_UNCHECKABLE in hold.Reason's fixed words, since that deadline is the bound the broker
+// serves the person to and a call opened before it must not outlive it. Every other check that
+// decides nothing - Dispatch refusing the broker's own account, an answer the broker can neither
+// ask for nor read - leaves the call to the reads after it, logged, as a read that failed does.
 func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *cutCall {
 	if expires := info.grant.Expires; expires != nil && !s.now().Before(*expires) {
 		return &cutCall{http.StatusProxyAuthRequired, codeGrantNotLive, "this grant expired while the proxy carried this call"}
@@ -740,6 +758,17 @@ func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *
 	grant, err := s.grants.AirlockConnection(ctx, info.password)
 	if err != nil {
 		return s.carryRead("connection", err)
+	}
+	if grant.Operator != "" {
+		switch err := s.hold.Check(ctx, grant.Operator); {
+		case errors.Is(err, hold.ErrHeld):
+			return &cutCall{http.StatusForbidden, "MEMBERSHIP_HELD", s.hold.HeldWords(grant.Operator)}
+		case errors.Is(err, hold.ErrDeadlinePassed):
+			s.log.Error(holdUnreadable, "person", grant.Operator, "error", err)
+			return &cutCall{http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", "whether Dispatch holds " + grant.Operator + " cannot be read: " + hold.Reason(err)}
+		case err != nil:
+			s.log.Error(holdUnreadable, "person", grant.Operator, "error", err)
+		}
 	}
 	if _, carried := grant.Names[chosen.name]; !carried {
 		return &cutCall{http.StatusForbidden, codeNoBoundName, chosen.name + " is no longer a name of this grant"}

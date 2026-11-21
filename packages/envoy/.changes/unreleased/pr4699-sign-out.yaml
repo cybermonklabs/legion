@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  Under `DISPATCH_SIGNIN_DOMAIN`, a sign-out keeps the person's refresh token, for membership
+  checks only, while they have access that outlives the browser: an unrevoked personal token, or
+  at the secrets broker a live machine login of their own, an unrevoked sign-in on a machine, or an
+  exchange entry that names them, which the broker counts on its new route
+  `GET /v1/person-access`. Google's later refusal then still holds them. The kept token signs
+  nobody in, and the membership pass forgets it once the access is gone; while the broker cannot
+  be asked, a 404 from a broker without the route included, Dispatch keeps it. The sign-in pool
+  forgets the token at a sign-out, as before.
+time: 2026-11-20T20:31:13Z
+custom:
+    Issue: pr4699

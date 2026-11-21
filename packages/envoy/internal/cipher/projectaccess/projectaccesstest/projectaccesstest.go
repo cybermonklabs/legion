@@ -1,9 +1,10 @@
 // Package projectaccesstest is a stand-in for Dispatch's two project-access routes, the ones the
 // broker's projectaccess client asks: whether a person may see a project, and what kind of member
-// a person is. It answers from rows a test gives it, holds every caller to the one bearer it
-// mints, counts the calls it answers, and can be made to fail, so a test can show what the broker
-// does when Dispatch cannot be reached. It is an ordinary package rather than a _test.go file so
-// every broker package's tests, and the real binary's, can serve it.
+// a person is and whether Dispatch holds them. It answers from rows a test gives it, holds every
+// caller to the one bearer it mints, counts the calls it answers, and can be made to fail, so a
+// test can show what the broker does when Dispatch cannot be reached. It is an ordinary package
+// rather than a _test.go file so every broker package's tests, and the real binary's, can serve
+// it.
 //
 // It spells the wire on its own, field by field, rather than encoding the client's own type: a
 // client that read a field under a name Dispatch does not send would then disagree with this
@@ -20,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The paths of Dispatch's two project-access routes, as projectaccess asks them.
@@ -63,6 +65,14 @@ type Server struct {
 	mu    sync.Mutex
 	calls int
 	down  bool
+	held  map[string]bool
+	// until is the not_held_until the person route answers each person with while it answers them
+	// not held, as an IAP deployment's Dispatch does; a person with none is answered with none.
+	until map[string]time.Time
+	// asOf is the as_of of the person route's last answer: each answer's is the wall clock at
+	// Postgres's microsecond, moved past the last one's when the clock has not moved, as the times
+	// of Dispatch's reads only move forward.
+	asOf time.Time
 }
 
 // StaticAccount is a bearer that never rotates: a ciphertoken.Account for a test.
@@ -80,7 +90,7 @@ func NewServer(t testing.TB, rows map[string]Row, people map[string]string) *Ser
 	if _, err := rand.Read(bearer[:]); err != nil {
 		t.Fatalf("mint the stand-in's bearer: %v", err)
 	}
-	s := &Server{Token: "dispatch-access-" + hex.EncodeToString(bearer[:]), rows: map[string]Row{}, people: map[string]string{}}
+	s := &Server{Token: "dispatch-access-" + hex.EncodeToString(bearer[:]), rows: map[string]Row{}, people: map[string]string{}, held: map[string]bool{}, until: map[string]time.Time{}}
 	for key, row := range rows {
 		row.Listed, row.SlackChannels = slices.Clone(row.Listed), slices.Clone(row.SlackChannels)
 		s.rows[key] = row
@@ -109,6 +119,46 @@ func (s *Server) SetDown(down bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.down = down
+}
+
+// SetHeld makes the person route answer person (a lowercase login) held, or not held, as Dispatch
+// does once it records a hold of them or their next sign-in. Every person starts not held.
+func (s *Server) SetHeld(person string, held bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.held[person] = held
+}
+
+// SetNotHeldUntil makes the person route answer person (a lowercase login), while it answers them
+// not held, with not_held_until, as an IAP deployment's Dispatch answers every not-held person
+// with the last active Workspace Directory answer plus 24 hours, or with as_of itself once that
+// passed; the zero time answers none again, as Dispatch does outside IAP. A held answer names no
+// deadline whatever this says, as Dispatch's names none.
+func (s *Server) SetNotHeldUntil(person string, until time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if until.IsZero() {
+		delete(s.until, person)
+		return
+	}
+	s.until[person] = until
+}
+
+// standing is whether person is held, the as_of of this answer, later than every as_of the
+// stand-in answered before, and the not_held_until it answers a not-held person with (the zero
+// time for none).
+func (s *Server) standing(person string) (bool, time.Time, time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	asOf := time.Now().UTC().Truncate(time.Microsecond)
+	if !asOf.After(s.asOf) {
+		asOf = s.asOf.Add(time.Microsecond)
+	}
+	s.asOf = asOf
+	if s.held[person] {
+		return true, asOf, time.Time{}
+	}
+	return false, asOf, s.until[person]
 }
 
 // SetRow makes Dispatch hold row for key from the next request on, as an owner's change of a
@@ -145,7 +195,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "INVALID_QUERY", "error": "person is required"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"person": person, "member_kind": s.kind(person)})
+		held, asOf, until := s.standing(person)
+		answer := map[string]any{"person": person, "member_kind": s.kind(person), "held": held, "as_of": asOf.Format(time.RFC3339Nano)}
+		if !until.IsZero() {
+			answer["not_held_until"] = until.UTC().Format(time.RFC3339Nano)
+		}
+		writeJSON(w, http.StatusOK, answer)
 	case strings.HasPrefix(r.URL.Path, projectPath):
 		key := strings.TrimPrefix(r.URL.Path, projectPath)
 		s.mu.Lock()

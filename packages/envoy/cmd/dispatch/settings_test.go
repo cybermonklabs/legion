@@ -39,6 +39,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -244,8 +246,12 @@ func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.App
 	if err != nil {
 		return nil, err
 	}
-	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
-	return routes.BuildAppContext(appContextOptions(boot, rule, built))
+	var membership *identity.Membership
+	built.Identity, membership, err = requestIdentityFor(built.Lifetime, boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	if err != nil {
+		return nil, err
+	}
+	return buildAppContext(boot, rule, built, membership)
 }
 
 // testPeople is a people store over a fresh test database, with the pool it writes through, so a
@@ -545,7 +551,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			t.Run("iap router", func(t *testing.T) {
 				keys, signing := iapKeySet(t)
 				people := peopleStore(t)
-				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: people, Store: storetest.Open(t)})
+				handler := routerFor(t, iapBoot(t, keys, directorytest.ServeGoogle(t), nil), routes.AppContextOptions{People: people, Store: storetest.Open(t)})
 				member := iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "example.com"), nil)
 				if member.Code != http.StatusOK || !strings.Contains(member.Body.String(), `"login":"a.person@example.com"`) {
 					t.Errorf("DISPATCH_IDENTITY=iap: a member's assertion: GET /auth/whoami answered %d %s, want a.person@example.com", member.Code, member.Body.String())
@@ -574,7 +580,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			// another backend service is refused, the same assertion for this one admitted.
 			t.Run("router", func(t *testing.T) {
 				keys, signing := iapKeySet(t)
-				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)})
+				handler := routerFor(t, iapBoot(t, keys, directorytest.ServeGoogle(t), nil), routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)})
 				if response := iapWhoami(handler, iapAssertion(t, keys, signing, "/projects/123456789012/global/backendServices/1", "example.com"), nil); response.Code != http.StatusUnauthorized {
 					t.Errorf("an assertion for another audience: GET /auth/whoami answered %d %s, want 401", response.Code, response.Body.String())
 				}
@@ -582,6 +588,32 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					t.Errorf("the same assertion for DISPATCH_IAP_AUDIENCE: GET /auth/whoami answered %d %s, want 200", response.Code, response.Body.String())
 				}
 			})
+		},
+		// directory-check reads both, trimmed: the signer is the account each signJwt names, and
+		// the delegated user the subject of each JWT it asks IAM to sign. The server reads both
+		// under IAP identity alone, trimmed, into the Directory reader it builds at boot
+		// (TestIAPReleaseNeedsNoAssertion follows them to signJwt), and refuses either elsewhere.
+		"DISPATCH_DIRECTORY_ACCOUNT": func(t *testing.T) {
+			for _, sign := range directoryCheckReaches(t, map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": " " + directoryCheckSigner + " ", "DISPATCH_DIRECTORY_ADMIN": directoryCheckAdmin}) {
+				if sign.Principal != directoryCheckSigner || sign.Issuer != directoryCheckSigner {
+					t.Errorf("signJwt on %q with iss %q, want the trimmed DISPATCH_DIRECTORY_ACCOUNT", sign.Principal, sign.Issuer)
+				}
+			}
+			if iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": " table@example.com "}))); err != nil || iap.DirectoryAccount != "table@example.com" {
+				t.Errorf("iap: DirectoryAccount = %q, %v", iap.DirectoryAccount, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": directoryCheckSigner}, "DISPATCH_DIRECTORY_ACCOUNT is read only with DISPATCH_IDENTITY=iap")
+		},
+		"DISPATCH_DIRECTORY_ADMIN": func(t *testing.T) {
+			for _, sign := range directoryCheckReaches(t, map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": directoryCheckSigner, "DISPATCH_DIRECTORY_ADMIN": " " + directoryCheckAdmin + " "}) {
+				if sign.Subject != directoryCheckAdmin {
+					t.Errorf("a JWT for %q, want the trimmed DISPATCH_DIRECTORY_ADMIN", sign.Subject)
+				}
+			}
+			if iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_DIRECTORY_ADMIN": " table@example.com "}))); err != nil || iap.DirectoryAdmin != "table@example.com" {
+				t.Errorf("iap: DirectoryAdmin = %q, %v", iap.DirectoryAdmin, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_DIRECTORY_ADMIN": directoryCheckAdmin}, "DISPATCH_DIRECTORY_ADMIN is read only with DISPATCH_IDENTITY=iap")
 		},
 		"DISPATCH_SIGNIN_ISSUER": func(t *testing.T) {
 			pool := signInPool(t, "dispatch-client", "client-secret")

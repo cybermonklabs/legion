@@ -14,10 +14,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -153,6 +156,15 @@ type Deps struct {
 	// Its routes, every one under /approve and /signin/, are mounted only when it is set, so a
 	// broker that signs nobody in, and a test rig that wires no page, answer each of them 404.
 	Approval *approval.Page
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Check), which cmd/cipherd builds where BROKER_PROJECT_ACCESS_URL is set, on
+	// the Dispatch client the token exchange asks. Nil is a broker with no Dispatch to ask, which
+	// holds nobody.
+	Hold *hold.Gate
+	// Exchange is the token exchange's entries, the one set cmd/cipherd builds from its exchange
+	// settings and gives the OAuth provider. GET /v1/person-access counts the entries that name a
+	// person (exchange.Set.EntriesNaming). Nil is a broker with no entries, which names nobody.
+	Exchange *exchange.Set
 	// Draining reports whether this process has begun stopping, which GET /healthz answers 503
 	// SHUTTING_DOWN for while every other route goes on being served; nil means it never does.
 	//
@@ -248,8 +260,14 @@ func Register(mux *http.ServeMux, deps Deps) {
 			recorder := answer.FromContext(r.Context())
 			who, ok := s.authenticate(w, r, route)
 			if !ok {
-				// A refusal raised in authentication, before any caller was established.
-				recorder.NoteCaller(answer.CallerUnauthenticated, "")
+				// A refusal raised in authentication names no caller, none having been
+				// established, but for one raised after the credential proved its caller (the
+				// hold's, and the reads it makes), which names that caller.
+				if who.proved {
+					recorder.NoteCaller(who.answerCaller(route.Handler))
+				} else {
+					recorder.NoteCaller(answer.CallerUnauthenticated, "")
+				}
 				return
 			}
 			recorder.NoteCaller(who.answerCaller(route.Handler))
@@ -279,6 +297,11 @@ const (
 // row declares, and a service's token must name an account BROKER_SERVICE_LOGINS lists and
 // BROKER_POD_OPERATORS does not map (serviceCaller). The approval page's routes spend that same
 // bucket, for the same reason: see the authSignIn case.
+// A session route and a launcher route then ask the hold gate about the person the credential
+// names (refuseHeld), after the credential's own checks and before the route runs, so the route
+// opens no transaction and takes no lock for a person Dispatch holds; the routes that only end
+// access or list what to end, and the lease renewal, ask nothing (sessionEndAuth,
+// launcherEndAuth, renewAuth).
 func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiRoute) (caller, bool) {
 	auth := route.Handler.auth
 	switch auth {
@@ -326,40 +349,28 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 		session, ok := s.deps.Approval.Authenticate(w, r)
 		return caller{signIn: session}, ok
 	case authLauncher:
-		subject, err := s.proofSubject(r)
-		switch {
-		case errors.Is(err, proof.ErrInvalid), errors.Is(err, proof.ErrNotLive):
-			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
-			return caller{}, false
-		case err != nil:
-			writeUnavailable(w, "DATABASE_UNAVAILABLE", "verify launcher proof", err)
+		who, ok := s.launcherCaller(w, r)
+		if !ok {
 			return caller{}, false
 		}
-		if subject.LauncherID == "" {
-			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "this route needs a launcher proof, not a session proof")
-			return caller{}, false
+		if s.refuseHeld(w, r, derefOr(who.launcher.Operator, "")) {
+			who.proved = true
+			return who, false
 		}
-		// By the key the proof proved and not by the launcher id alone: a login writes its
-		// own key and pod uid onto the credential row (enroll.Service.IssueTokenLoginTx),
-		// so a login landing between the proof's own lookup and this read moves the row out
-		// from under the proof, and a read by id alone would hand the handler whatever
-		// identity the row then holds. A login bound to no pod takes one row per subject on
-		// either schema, and a pod's own re-login moves its own row under the same id, so
-		// the pair is right on either (enroll.Service.CredentialForKey).
-		cred, err := s.deps.Enroll.CredentialForKey(r.Context(), subject.LauncherID, subject.Thumbprint)
-		switch {
-		case errors.Is(err, enroll.ErrNoCredential):
-			// The key that proved this request holds the row no longer, so it authenticates
-			// nothing — the same answer this call site gives every credential that is not
-			// valid, rather than the 503 of a store that cannot answer.
-			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
-			return caller{}, false
-		case err != nil:
-			writeUnavailable(w, "DATABASE_UNAVAILABLE", "read launcher credential", err)
-			return caller{}, false
-		}
-		return caller{launcher: cred}, true
+		return who, true
+	case authLauncherEnd:
+		return s.launcherCaller(w, r)
 	case authProof:
+		who, ok := s.sessionCaller(w, r, "PROOF_INVALID", "proof invalid: not live")
+		if !ok {
+			return caller{}, false
+		}
+		if s.refuseHeldSession(w, r, who.enrollment) {
+			who.proved = true
+			return who, false
+		}
+		return who, true
+	case authProofEnd:
 		return s.sessionCaller(w, r, "PROOF_INVALID", "proof invalid: not live")
 	case authRenewProof:
 		return s.sessionCaller(w, r, "ENROLLMENT_NOT_LIVE", "enrollment is not live")
@@ -376,9 +387,9 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 // class over this one (tokenLogin, and rereadSecret for a session's proof).
 func (c caller) answerCaller(route routeHandler) (class, id string) {
 	switch route.auth {
-	case authLauncher:
+	case authLauncher, authLauncherEnd:
 		return answer.CallerLauncher, c.launcher.ID.String()
-	case authProof, authRenewProof:
+	case authProof, authProofEnd, authRenewProof:
 		return answer.CallerSession, c.enrollment
 	case authAccount:
 		return answer.CallerAccount, c.account.Name
@@ -411,6 +422,43 @@ func refuseWithoutPower(w http.ResponseWriter, who Account, needs power, route s
 	return true
 }
 
+// launcherCaller authenticates a launcher proof for authenticate, answering the machine login's
+// credential the proof's key holds: what launcherAuth's and launcherEndAuth's routes take.
+func (s *server) launcherCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
+	subject, err := s.proofSubject(r)
+	switch {
+	case errors.Is(err, proof.ErrInvalid), errors.Is(err, proof.ErrNotLive):
+		writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
+		return caller{}, false
+	case err != nil:
+		writeUnavailable(w, "DATABASE_UNAVAILABLE", "verify launcher proof", err)
+		return caller{}, false
+	}
+	if subject.LauncherID == "" {
+		writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "this route needs a launcher proof, not a session proof")
+		return caller{}, false
+	}
+	// By the key the proof proved and not by the launcher id alone: a login writes its own key
+	// and pod uid onto the credential row (enroll.Service.IssueTokenLoginTx), so a login landing
+	// between the proof's own lookup and this read moves the row out from under the proof, and a
+	// read by id alone would hand the handler whatever identity the row then holds. A login bound
+	// to no pod takes one row per subject on either schema, and a pod's own re-login moves its own
+	// row under the same id, so the pair is right on either (enroll.Service.CredentialForKey).
+	cred, err := s.deps.Enroll.CredentialForKey(r.Context(), subject.LauncherID, subject.Thumbprint)
+	switch {
+	case errors.Is(err, enroll.ErrNoCredential):
+		// The key that proved this request holds the row no longer, so it authenticates nothing —
+		// the same answer this call site gives every credential that is not valid, rather than the
+		// 503 of a store that cannot answer.
+		writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
+		return caller{}, false
+	case err != nil:
+		writeUnavailable(w, "DATABASE_UNAVAILABLE", "read launcher credential", err)
+		return caller{}, false
+	}
+	return caller{launcher: cred}, true
+}
+
 // sessionCaller authenticates a session proof, for authenticate on every session route and for
 // the reread route's handler on a call that carries a Proof header (rereadSecret), answering a
 // proof whose enrollment is no longer live with notLiveCode and notLiveMessage: PROOF_INVALID on
@@ -434,6 +482,51 @@ func (s *server) sessionCaller(w http.ResponseWriter, r *http.Request, notLiveCo
 		return caller{}, false
 	}
 	return caller{enrollment: subject.EnrollmentID}, true
+}
+
+// refuseHeldSession is refuseHeld for a session proof, whose proof row names no operator: it reads
+// the enrollment's own, by its id, in one statement, and only when the broker has a gate to ask.
+// An enrollment gone since its proof verified is refused as a proof that is not live, and a pod's
+// enrollment names no operator, so it is asked nothing.
+func (s *server) refuseHeldSession(w http.ResponseWriter, r *http.Request, enrollmentID string) bool {
+	if s.deps.Hold == nil {
+		return false
+	}
+	var operator string
+	err := s.deps.Enroll.Store.Pool.QueryRow(r.Context(), `select coalesce(operator, '') from enrollments where id = $1`, enrollmentID).Scan(&operator)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		writeError(w, http.StatusUnauthorized, "PROOF_INVALID", "proof invalid: not live")
+		return true
+	case err != nil:
+		writeUnavailable(w, "DATABASE_UNAVAILABLE", "read the enrollment's operator", err)
+		return true
+	}
+	return s.refuseHeld(w, r, operator)
+}
+
+// refuseHeld asks the hold gate (Deps.Hold) whether Dispatch holds person, the operator a
+// session's enrollment or a machine login's credential names, and writes the refusal when it does
+// or cannot tell, reporting whether it refused: 403 MEMBERSHIP_HELD naming the person in the gate's
+// words (hold.Gate.HeldWords), or 503 HOLD_UNCHECKABLE, tested first, so a held answer the gate
+// could not keep is a 503. The 503 says why in hold.Reason's fixed words, and the gate's own error
+// goes to the log alone. No person (a pod's enrollment, a service's login) is asked nothing, and
+// neither is anyone on a broker with no gate.
+func (s *server) refuseHeld(w http.ResponseWriter, r *http.Request, person string) bool {
+	if person == "" {
+		return false
+	}
+	err := s.deps.Hold.Check(r.Context(), person)
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
+		slog.Error("broker: whether Dispatch holds a person cannot be read, so their credential is refused", "person", person, "error", err)
+		writeError(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", fmt.Sprintf("whether Dispatch holds %s cannot be read: %s", person, hold.Reason(err)))
+	default:
+		writeError(w, http.StatusForbidden, "MEMBERSHIP_HELD", s.deps.Hold.HeldWords(person))
+	}
+	return true
 }
 
 // GoogleVerifier verifies a caller's own Google identity token and reads the identity claims of

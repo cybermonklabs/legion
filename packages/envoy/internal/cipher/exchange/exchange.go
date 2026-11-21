@@ -50,6 +50,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/principal"
 )
@@ -707,6 +708,26 @@ func (s *Set) ProjectsForAccount(account string) ([]string, bool) {
 	}
 	_, projects, ok := s.MappedProjects(principal)
 	return projects, ok
+}
+
+// EntriesNaming is how many entries give person as the person their tokens act for, each person
+// read as record.CanonicalLogin spells it, as the hold reads the person a token names: account,
+// workflow and Google entries alike. A read entry and a Google entry naming no person name
+// nobody, and an empty person is named by no entry. The broker answers it to Dispatch (GET
+// /v1/person-access), which keeps the refresh token of a person whom an entry names when they sign
+// out, since the entry goes on minting tokens that name them.
+func (s *Set) EntriesNaming(person string) int {
+	person = record.CanonicalLogin(person)
+	if person == "" {
+		return 0
+	}
+	n := 0
+	for _, entry := range s.mapped {
+		if record.CanonicalLogin(entry.person) == person {
+			n++
+		}
+	}
+	return n
 }
 
 // entryProjects is the list a token an operator's entry maps carries: that entry's one project,

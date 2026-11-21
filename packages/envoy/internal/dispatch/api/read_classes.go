@@ -227,7 +227,7 @@ var readClasses = map[string]readEntry{
 
 	// The membership answer the secrets broker reads.
 	"GET /api/v1/access/projects/{key}":   reads("the membership answer for one project and person, read by the broker's service account alone", byProject, readclass.AccessAccount),
-	"GET /api/v1/access/person":           reads("one person's member kind, read by the broker's service account alone", nil, readclass.AccessAccount),
+	"GET /api/v1/access/person":           reads("one person's member kind and whether Dispatch holds them, read by the broker's service account alone", nil, readclass.AccessAccount),
 	"GET /api/v1/access/private-projects": reads("every private project's Slack channels and when each list changed, read by the broker's service account alone", nil, readclass.AccessAccount),
 
 	// The test hooks, mounted only where a deployment turns them on.

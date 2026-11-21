@@ -30,7 +30,7 @@ func TestSignInSubjectRecordsWhenItChangesTheAccount(t *testing.T) {
 	}
 	signIn := func(email, subject string) {
 		t.Helper()
-		if err := people.SignInSubject(ctx, email, subject, "refresh-"+subject, model.MemberFull); err != nil {
+		if err := people.SignInSubject(ctx, email, subject, "refresh-"+subject, "", model.MemberFull); err != nil {
 			t.Fatalf("the sign-in of %s under %s: %v", email, subject, err)
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -44,15 +45,19 @@ func Answer(ctx context.Context, q Querier, key, person string) (model.AccessAns
 	return answer, nil
 }
 
-// PersonAnswer is one person's member kind as the membership answer spells it.
+// PersonAnswer is one person's member kind as the membership answer spells it, and AsOf, the
+// database's now() read in the same statement: the time an answer whose hold the caller could not
+// read (Standing nil or failing) rests on. Held is left for the caller to fill in. Its error names
+// the read that failed and never the person, as MemberKind's does.
 func PersonAnswer(ctx context.Context, q Querier, person string) (model.PersonAnswer, error) {
 	login := model.CanonicalLogin(person)
-	kind, err := MemberKind(ctx, q, login)
-	if err != nil {
-		return model.PersonAnswer{}, err
+	var kind string
+	var asOf time.Time
+	if err := q.QueryRow(ctx, `select coalesce((select member_kind from people where email = $1), ''), now()`, login).Scan(&kind, &asOf); err != nil {
+		return model.PersonAnswer{}, fmt.Errorf("read a person's member kind: %w", err)
 	}
-	answer := model.PersonAnswer{Person: login, MemberKind: string(kind)}
-	if kind == model.MemberNone {
+	answer := model.PersonAnswer{Person: login, MemberKind: kind, AsOf: asOf}
+	if model.MemberKind(kind) == model.MemberNone {
 		answer.MemberKind = model.MemberAnswerNone
 	}
 	return answer, nil

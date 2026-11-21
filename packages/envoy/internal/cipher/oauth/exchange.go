@@ -18,6 +18,7 @@ import (
 	"authelia.com/provider/oauth2/token/jwt"
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
@@ -219,6 +220,10 @@ type ExchangeConfig struct {
 	// trade that names one, since nothing could say the person may see it; an entry's token it
 	// mints as before, the operator's own setting having chosen its project.
 	Projects projectaccess.Access
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Check), built on the Dispatch client Projects is, so the two share one
+	// cache of person answers. Nil is a broker with no Dispatch to ask, which holds nobody.
+	Hold *hold.Gate
 }
 
 // validate refuses a configuration the exchange could not serve.
@@ -471,6 +476,13 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // (registeredPodSession). The claim on the session name is made
 // for every type once the library has built the answer, because that is when the issued token's
 // expiry is set, and the claim must not end before the token it is made for.
+//
+// The hold of the token's person (heldRefusal) is asked in the first half, before projectAccess,
+// so the gate rather than projectAccess's member kind normally fetches Dispatch's answer for the
+// person and keeps it, and before the transaction, so a slow Dispatch holds no row lock. Its
+// answer is applied in the second half, once the credential's own checks have passed
+// (liveCredential, personSignIn): a revoked or ended credential gets its own refusal first, and a
+// held person's trade then rolls back, minting nothing.
 func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := p.reserveSessions(ctx); err != nil {
@@ -495,6 +507,7 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	held := p.heldRefusal(ctx, personOf(session))
 	if err := p.projectAccess(ctx, subjectTokenType, session); err != nil {
 		p.writeError(ctx, w, request, err)
 		return
@@ -553,6 +566,10 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 			p.writeError(ctx, w, request, err)
 			return
 		}
+	}
+	if held != nil {
+		p.writeError(ctx, w, request, held)
+		return
 	}
 	if err := p.registeredPodSession(txCtx, session); err != nil {
 		p.writeError(ctx, w, request, err)
@@ -805,6 +822,42 @@ func unknownMemberKind(err error) error {
 // names a project, which a client asks again on.
 func dispatchUnreachable(err error) error {
 	return oauth2.ErrTemporarilyUnavailable.WithHint("Dispatch could not be asked whether the token's person sees the projects it names; try again.").WithWrap(err).WithDebugError(err)
+}
+
+// personOf is the person the token decide wrote onto session names, "" for one naming none: a
+// machine login's token names the person its stored session names as the login's operator, a
+// sign-in trade its person, and an exchange entry the person it lists.
+func personOf(session *oauthstore.ExchangeSession) string {
+	person, _ := session.Extra[ClaimPerson].(string)
+	return person
+}
+
+// heldRefusal is the token endpoint's answer for a credential of person, whose hold the gate
+// (ExchangeConfig.Hold) is asked here and the caller applies once the credential's own checks have
+// passed: nil for a person Dispatch does not hold, for no person and on a broker with no gate;
+// membership_held, naming the person in the gate's words (hold.Gate.HeldWords), for a held one; and
+// server_error while the gate cannot tell (hold.ErrUncheckable), tested first, so a held answer the
+// gate could not keep is server_error. That one is refusedByDispatch when Dispatch refused the
+// broker's own account, and otherwise says why in hold.Reason's fixed words; the gate's own error
+// goes to the log alone.
+func (p *Provider) heldRefusal(ctx context.Context, person string) error {
+	if person == "" {
+		return nil
+	}
+	err := p.exchange.Hold.Check(ctx, person)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, projectaccess.ErrBrokerRefused):
+		return refusedByDispatch(err)
+	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
+		return oauth2.ErrServerError.WithHintf("whether Dispatch holds %s cannot be read: %s", person, hold.Reason(err)).WithWrap(err).WithDebugError(err)
+	}
+	return (&oauth2.RFC6749Error{
+		ErrorField:       oauthwire.MembershipHeld,
+		DescriptionField: p.exchange.Hold.HeldWords(person),
+		CodeField:        http.StatusBadRequest,
+	}).WithWrap(err).WithDebugError(err)
 }
 
 // projectAccess holds the claims decide wrote onto session to what Dispatch says, before the
