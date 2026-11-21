@@ -33,6 +33,25 @@ func projectedTokenVolume(name, audience string) corev1.VolumeArgs {
 	}}}
 }
 
+// In the required privacy mode the listener presents its own account's projected token for the
+// broker's audience at dispatchListenerBrokerTokenFile, which ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE
+// names: the volume envoy-broker-token, mounted read-only at dispatchListenerBrokerMount, beside and
+// never inside the NATS credential's mount (TestNoMountNestsInAnother).
+const (
+	dispatchListenerBrokerMount     = "/var/run/secrets/envoy-broker"
+	dispatchListenerBrokerTokenName = "envoy-broker-token"
+	dispatchListenerBrokerTokenFile = dispatchListenerBrokerMount + "/token"
+)
+
+// dispatchListenerBrokerToken is the listener's mount and volume of its own account's projected
+// token for audience, the broker's, minted for serviceTokenSeconds and rewritten in place.
+func dispatchListenerBrokerToken(audience string) (corev1.VolumeMountArgs, corev1.VolumeArgs) {
+	return corev1.VolumeMountArgs{Name: pulumi.String(dispatchListenerBrokerTokenName), MountPath: pulumi.String(dispatchListenerBrokerMount), ReadOnly: pulumi.Bool(true)},
+		corev1.VolumeArgs{Name: pulumi.String(dispatchListenerBrokerTokenName), Projected: &corev1.ProjectedVolumeSourceArgs{Sources: corev1.VolumeProjectionArray{
+			corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{Audience: pulumi.String(audience), ExpirationSeconds: pulumi.Int(serviceTokenSeconds), Path: pulumi.String("token")}},
+		}}}
+}
+
 // dispatchNATSCredential is the NATS credential the app's envoy-dispatch and the listener's
 // envoy-listener connect with, prepared once (newDispatchNATSCredential) and consumed whole by
 // both pods: each mounts volume at mount, and each names the file in its environment.

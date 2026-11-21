@@ -622,6 +622,13 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// account's grant rather than racing IAM on the first deployment: the listener here, the app
 	// below (dispatchNATSCredential's grants). With natsAudience there is no grant to wait for.
 	seedGrant := pulumi.DependsOn(nats.listenerGrants)
+	// In the required privacy mode the listener also mounts its own account's projected token for
+	// the broker (listenerPrivacySource), beside the NATS credential.
+	listenerMounts, listenerVolumes := corev1.VolumeMountArray{nats.mount}, corev1.VolumeArray{nats.volume}
+	if s.privacy != nil {
+		mount, volume := dispatchListenerBrokerToken(s.privacy.brokerAudience)
+		listenerMounts, listenerVolumes = append(listenerMounts, mount), append(listenerVolumes, volume)
+	}
 
 	// The listener runs under its own ServiceAccount, <hostname>-listener, which is what mounts
 	// the NATS seed through Workload Identity or presents its projected token for natsAudience,
@@ -646,11 +653,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		ServiceAccountName: pulumi.String(listenerName), TerminationGracePeriodSeconds: pulumi.Int(40), EnableServiceLinks: pulumi.Bool(false),
 		Containers: corev1.ContainerArray{
 			corev1.ContainerArgs{
-				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: corev1.VolumeMountArray{nats.mount},
+				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: listenerMounts,
 				Lifecycle: sleepPreStop(5), StartupProbe: answersProbe(core.DefaultListenerPort, 5, 60), LivenessProbe: answersProbe(core.DefaultListenerPort, 10, 3), ReadinessProbe: readyProbe(core.DefaultListenerPort, 5, 6, 2),
 			},
 		},
-		Volumes: corev1.VolumeArray{nats.volume},
+		Volumes: listenerVolumes,
 	}, frontDoor, seedGrant); err != nil {
 		return err
 	}
@@ -843,6 +850,15 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		// an operator reaches it through kubectl port-forward.
 		appEnv = append(appEnv, valueEnv("DISPATCH_PPROF_PORT", strconv.Itoa(s.pprofPort)))
 	}
+	if len(s.privateHubs) > 0 {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_HUBS", strings.Join(s.privateHubs, ",")))
+	}
+	if s.projectPrivacyRequired {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PROJECT_PRIVACY_REQUIRED", "true"))
+	}
+	if err := dispatchHubsNeedTheirToken(appEnv); err != nil {
+		return err
+	}
 	// cloud-sql-proxy serves its health endpoints on 9801 (--health-check): /startup once its
 	// listener is up, which gates envoy-dispatch's start, and /liveness while the process answers,
 	// so a hung proxy is restarted rather than leaving the pod unready for ever. The kubelet probes
@@ -921,6 +937,26 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		ingressFrom(core.DefaultListenerPort, networkingv1.NetworkPolicyPeerArray{podPeer(s.hostname)}),
 	}); err != nil {
 		return err
+	}
+	return nil
+}
+
+// dispatchHubsNeedTheirToken refuses, at preview, an app environment that names hubs to prove
+// (DISPATCH_PRIVATE_HUBS) and no token to prove them with (DISPATCH_HUB_ADMISSION_TOKEN_FILE): the
+// pair Dispatch's own boot refuses, caught here before an apply replaces the running pod with one
+// that cannot start. It reads the environment as assembled, not an input, so it holds whichever
+// change renders the token's mount and its variable.
+func dispatchHubsNeedTheirToken(env corev1.EnvVarArray) error {
+	named := map[string]bool{}
+	for _, entry := range env {
+		if variable, ok := entry.(corev1.EnvVarArgs); ok {
+			if name, ok := variable.Name.(pulumi.String); ok {
+				named[string(name)] = true
+			}
+		}
+	}
+	if named["DISPATCH_PRIVATE_HUBS"] && !named["DISPATCH_HUB_ADMISSION_TOKEN_FILE"] {
+		return core.InputErrorf("privateHubs", "privateHubs renders DISPATCH_PRIVATE_HUBS, and this render mounts no hub-admission token and sets no DISPATCH_HUB_ADMISSION_TOKEN_FILE: Dispatch refuses to start with hubs to prove and no token to prove them with")
 	}
 	return nil
 }

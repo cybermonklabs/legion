@@ -193,6 +193,24 @@ type DispatchArgs struct {
 	// connection presents one credential, and nothing of the seed is mounted, classed or granted;
 	// unset, natsSeedSecret is required.
 	NatsAudience string `pulumi:"natsAudience,optional"`
+	// PrivateHubs are the NATS URLs of the hubs that serve private projects, in production the
+	// clustered hub alone and never the VM hub, Dispatch's own first: each switch to private proves
+	// that every one of them admits Dispatch before it commits. It renders DISPATCH_PRIVATE_HUBS in
+	// the order given and each URL once at its first place; empty or unset renders nothing. A
+	// rendered DISPATCH_PRIVATE_HUBS beside no DISPATCH_HUB_ADMISSION_TOKEN_FILE, the token each
+	// proof presents, is an input error at preview (dispatchHubsNeedTheirToken).
+	PrivateHubs []string `pulumi:"privateHubs,optional"`
+	// ListenerPrivacySource puts Dispatch's listener in the required privacy mode: it reads each
+	// decision's private projects from the secrets broker at brokerUrl (the broker's base URL,
+	// https with no path; the listener appends its route), presenting a projected token of its own
+	// account, <hostname>-listener, for brokerAudience (the broker's BROKER_K8S_OIDC_AUDIENCE), and
+	// serves every project's sessions to Dispatch's own account (ENVOY_ALL_PROJECTS_ACCOUNTS). It
+	// needs natsAudience, and privateHubs needs it. Unset, the listener renders as today.
+	ListenerPrivacySource *DispatchListenerPrivacySourceArgs `pulumi:"listenerPrivacySource,optional"`
+	// ProjectPrivacyRequired renders DISPATCH_PROJECT_PRIVACY_REQUIRED=true on the app, which reads
+	// each role resolution's privacy in the required mode, as the listener does. It needs
+	// listenerPrivacySource; unset, the app's environment is today's.
+	ProjectPrivacyRequired bool `pulumi:"projectPrivacyRequired,optional"`
 
 	SignInClientId     string             `pulumi:"signInClientId,optional"`
 	SignInClientSecret pulumi.StringInput `pulumi:"signInClientSecret,optional" provider:"secret"`
@@ -535,6 +553,22 @@ type DispatchClusterArgs struct {
 // gives.
 func (c *DispatchClusterArgs) Annotate(a infer.Annotator) { a.SetToken("gcp", "DispatchCluster") }
 
+// DispatchListenerPrivacySourceArgs are listenerPrivacySource's two fields: the secrets broker's
+// base URL, which the listener reads each decision's privacy from and introspects broker tokens
+// at, and the audience of the projected token the listener presents there.
+type DispatchListenerPrivacySourceArgs struct {
+	// BrokerUrl is the secrets broker's base URL: https, a host, and no path, query or fragment.
+	BrokerUrl string `pulumi:"brokerUrl"`
+	// BrokerAudience is the audience the broker verifies on every route (BROKER_K8S_OIDC_AUDIENCE).
+	BrokerAudience string `pulumi:"brokerAudience"`
+}
+
+// Annotate names the type gcp:DispatchListenerPrivacySource in the schema, for the reason
+// NATSUserArgs's gives.
+func (p *DispatchListenerPrivacySourceArgs) Annotate(a infer.Annotator) {
+	a.SetToken("gcp", "DispatchListenerPrivacySource")
+}
+
 // dispatchSeededInput names the first plain string input that holds an nkey seed. No component
 // input takes an nkey seed here: each value reaches a cloud resource, a Kubernetes object, or the
 // pod configuration, so a seed would be disclosed or used as the wrong credential. An int input,
@@ -568,6 +602,16 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 	} {
 		if bus.HoldsSeed(value.value) {
 			return value.input, true
+		}
+	}
+	if source := args.ListenerPrivacySource; source != nil {
+		for _, value := range []struct{ input, value string }{
+			{"listenerPrivacySource.brokerUrl", source.BrokerUrl},
+			{"listenerPrivacySource.brokerAudience", source.BrokerAudience},
+		} {
+			if bus.HoldsSeed(value.value) {
+				return value.input, true
+			}
 		}
 	}
 	for i, tag := range args.Tags {
@@ -706,6 +750,9 @@ type dispatchSettings struct {
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	natsAudience                                string
+	privateHubs                                 []string
+	privacy                                     *dispatchListenerPrivacy
+	projectPrivacyRequired                      bool
 	oidcAudience, oidcIssuer                    string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
@@ -1047,6 +1094,9 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"natsUrl", args.NatsUrl != nil},
 		{"natsSeedSecret", args.NatsSeedSecret != nil},
 		{"natsAudience", args.NatsAudience != ""},
+		{"privateHubs", len(args.PrivateHubs) > 0},
+		{"listenerPrivacySource", args.ListenerPrivacySource != nil},
+		{"projectPrivacyRequired", args.ProjectPrivacyRequired},
 		{"agentSecretsUrl", args.AgentSecretsUrl != ""},
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
@@ -1488,6 +1538,62 @@ func newDispatchExistingDatabaseInstance(args *DispatchArgs) (bool, error) {
 	return true, nil
 }
 
+// dispatchListenerPrivacy is listenerPrivacySource once resolved: the broker's base URL, with no
+// trailing slash, and the audience of the listener's token for it.
+type dispatchListenerPrivacy struct {
+	brokerURL, brokerAudience string
+}
+
+// resolveDispatchListenerPrivacy resolves listenerPrivacySource and the inputs that depend on it,
+// each refusal a core.InputError naming its input: privateHubs without it, since a listener beside
+// hubs that serve private projects must read each decision's privacy; it without natsAudience,
+// since the required mode needs the auth service natsAudience moves both connections behind;
+// projectPrivacyRequired without it; a blank brokerUrl or brokerAudience; a brokerUrl that is not
+// https with a host and no path, query, fragment or user, since the listener appends its own route
+// to it; and a brokerAudience holding whitespace or a control character. Unset, it answers nil.
+func resolveDispatchListenerPrivacy(args *DispatchArgs) (*dispatchListenerPrivacy, error) {
+	source := args.ListenerPrivacySource
+	if source == nil {
+		if len(dispatchPrivateHubs(args.PrivateHubs)) > 0 {
+			return nil, core.InputErrorf("listenerPrivacySource", "privateHubs names hubs that serve private projects, and listenerPrivacySource is unset: Dispatch's listener reads each decision's privacy in the required mode beside them, so set listenerPrivacySource")
+		}
+		if args.ProjectPrivacyRequired {
+			return nil, core.InputErrorf("projectPrivacyRequired", "projectPrivacyRequired is set without listenerPrivacySource: Dispatch reads privacy in the required mode only beside a listener that does, so set listenerPrivacySource or unset projectPrivacyRequired")
+		}
+		return nil, nil
+	}
+	if args.NatsAudience == "" {
+		return nil, core.InputErrorf("listenerPrivacySource", "listenerPrivacySource is set without natsAudience: the listener's required mode needs the auth service, which natsAudience moves both NATS connections behind")
+	}
+	brokerURL, audience := strings.TrimSuffix(strings.TrimSpace(source.BrokerUrl), "/"), strings.TrimSpace(source.BrokerAudience)
+	if brokerURL == "" {
+		return nil, core.InputErrorf("listenerPrivacySource.brokerUrl", "listenerPrivacySource.brokerUrl is blank: set the secrets broker's base URL")
+	}
+	if audience == "" {
+		return nil, core.InputErrorf("listenerPrivacySource.brokerAudience", "listenerPrivacySource.brokerAudience is blank: set the audience the secrets broker verifies (BROKER_K8S_OIDC_AUDIENCE)")
+	}
+	if parsed, err := url.Parse(brokerURL); err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return nil, core.InputErrorf("listenerPrivacySource.brokerUrl", "listenerPrivacySource.brokerUrl %q must be the secrets broker's base URL: https, a host, and no path, query, fragment or user, since the listener appends its own route to it", brokerURL)
+	}
+	if err := core.CheckEnvValue("listenerPrivacySource.brokerAudience", "a projected ServiceAccount token's audience", audience); err != nil {
+		return nil, err
+	}
+	return &dispatchListenerPrivacy{brokerURL: brokerURL, brokerAudience: audience}, nil
+}
+
+// dispatchPrivateHubs is privateHubs as DISPATCH_PRIVATE_HUBS renders it: each URL trimmed, empty
+// ones dropped, in the order given and each once at its first place, so Dispatch's own hub, which
+// the stack names first, stays first.
+func dispatchPrivateHubs(entries []string) []string {
+	var hubs []string
+	for _, entry := range entries {
+		if entry = strings.TrimSpace(entry); entry != "" && !slices.Contains(hubs, entry) {
+			hubs = append(hubs, entry)
+		}
+	}
+	return hubs
+}
+
 // dispatchDeletionProtection resolves deletionProtection, true when the consumer sets nothing. It
 // guards what the component makes: its own cluster, its own Cloud SQL instance and the database
 // dispatch on it, and the Tailscale Service. A cluster existingCluster names and an instance
@@ -1650,6 +1756,10 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	} else if args.NatsSeedSecret == nil {
 		return dispatchSettings{}, core.InputErrorf("natsSeedSecret", "natsSeedSecret is required unless natsAudience is set")
 	}
+	privacy, err := resolveDispatchListenerPrivacy(args)
+	if err != nil {
+		return dispatchSettings{}, err
+	}
 	// agentSecretsAudience and oidcAudience are read as their verifiers read them, trimmed
 	// (dispatchAudience), and either set to whitespace alone is refused by name.
 	for _, in := range []struct{ input, value string }{
@@ -1761,6 +1871,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.agentSecretsURL = agentSecretsURL
 	s.agentSecretsAudience = agentSecretsAudience
 	s.natsAudience = args.NatsAudience
+	s.privateHubs = dispatchPrivateHubs(args.PrivateHubs)
+	s.privacy, s.projectPrivacyRequired = privacy, args.ProjectPrivacyRequired
 	s.oidcAudience = oidcAudience
 	s.oidcIssuer = args.OidcIssuer
 	s.appClientID = args.AppClientId

@@ -1305,6 +1305,33 @@ Each unset renders nothing, and the binaries then keep one copy and set no byte 
 stream keeping the one it has. Both are independent of `natsInCluster`: a hub outside
 this cluster can be clustered too.
 
+`privateHubs` (a list of NATS URLs) is the hubs that serve private projects, in production the
+clustered hub alone and never the VM hub, Dispatch's own first: each switch to private proves that
+every one of them admits Dispatch through the auth callout before it commits. It renders
+`DISPATCH_PRIVATE_HUBS=<url>,<url>` in the order given, each URL once at its first place; empty or
+unset renders nothing. Dispatch refuses to start with hubs to prove and no
+`DISPATCH_HUB_ADMISSION_TOKEN_FILE`, the token each proof presents, so a render whose environment
+holds `DISPATCH_PRIVATE_HUBS` and not that file is an input error at `pulumi preview` naming
+`privateHubs`; this component renders no hub-admission token yet, so every non-empty `privateHubs`
+is refused until the change that mounts it.
+
+`listenerPrivacySource` (`{brokerUrl, brokerAudience}`), unset by default, puts the listener in
+the required privacy mode, beside `natsAudience`, which that mode needs: the listener reads each
+decision's private projects from the secrets broker at `brokerUrl`, the broker's base URL (https,
+a host and no path; the listener appends its route), and introspects broker tokens there,
+presenting a projected token of its own account, `<hostname>-listener`, for `brokerAudience` (the
+broker's `BROKER_K8S_OIDC_AUDIENCE`), mounted read-only at `/var/run/secrets/envoy-broker/token`.
+Its environment gains `ENVOY_PROJECT_PRIVACY_URL` and `ENVOY_AGENT_SECRETS_URL` (both `brokerUrl`),
+`ENVOY_PROJECT_PRIVACY_REQUIRED=true`, `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, `ENVOY_PUBLIC_URL`
+(its own Service address, the one origin its DPoP callers sign for) and
+`ENVOY_ALL_PROJECTS_ACCOUNTS` naming Dispatch's account, so Dispatch is an all-projects caller of
+it; `gcp/testdata/dispatch-listener-pod-private.golden` is the pod. The component refuses, naming
+the input, a non-empty `privateHubs` without it, it without `natsAudience`, a blank or malformed
+`brokerUrl`, a blank `brokerAudience`, and a render the listener's privacy rule
+(`core.CheckPrivacySource`) refuses. `projectPrivacyRequired` (a bool) renders
+`DISPATCH_PROJECT_PRIVACY_REQUIRED=true` on the app and is refused without `listenerPrivacySource`.
+Unset, both pods render as before.
+
 `natsAudience` (plain), unset by default, moves both NATS clients onto the NATS auth service the
 secrets broker runs: the app's `envoy-dispatch` and the listener's `envoy-listener` each connect
 as user `service` with a projected token of their own pod's ServiceAccount for this audience, the

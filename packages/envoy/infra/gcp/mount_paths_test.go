@@ -98,7 +98,7 @@ func TestNoMountNestsInAnother(t *testing.T) {
 		"dispatch-pod.golden", "dispatch-listener-pod.golden", "dispatch-tailnet-pod.golden",
 		"dispatch-pod-with-service-identity.golden", "dispatch-listener-pod-with-service-identity.golden",
 		"clustered-hub-listener-pod.golden", "clustered-hub-listener-pod-service-identity.golden",
-		"clustered-hub-tailnet-pod.golden", "production-render.golden",
+		"clustered-hub-tailnet-pod.golden", "production-render.golden", "dispatch-listener-pod-private.golden",
 	} {
 		require.True(t, slices.Contains(withContainers, pod), "%s was read and holds containers; read: %v", pod, withContainers)
 	}

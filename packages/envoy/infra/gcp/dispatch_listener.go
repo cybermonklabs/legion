@@ -6,6 +6,7 @@ package gcp
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
@@ -35,7 +36,7 @@ func dispatchListenerEnv(s dispatchSettings, nats dispatchNATSCredential, listen
 	if s.natsInCluster && bus.LocalNATSURL(url) {
 		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
 	}
-	env, err := (core.ListenerConfig{
+	config := core.ListenerConfig{
 		MachineID:               s.hostname,
 		Port:                    core.DefaultListenerPort,
 		ListenHost:              "0.0.0.0",
@@ -45,7 +46,21 @@ func dispatchListenerEnv(s dispatchSettings, nats dispatchNATSCredential, listen
 		SenderMessagesPerMinute: s.senderMessagesPerMinute,
 		SenderMessageBurst:      s.senderMessageBurst,
 		ServiceTokenFile:        nats.serviceTokenFile,
-	}).Env([]string{url})
+	}
+	// With listenerPrivacySource the listener runs in the required privacy mode: it reads each
+	// decision's privacy from the broker's base URL, introspects broker tokens there presenting
+	// its own account's projected token, takes its own Service address as the one origin its DPoP
+	// callers sign for, and serves every project's sessions to Dispatch's own account. What is
+	// about to be rendered is held to that mode before anything registers, so a render that drops
+	// a piece is refused naming the piece; without it, no privacy setting renders.
+	if s.privacy != nil {
+		config.AgentSecretsURL, config.BrokerTokenFile, config.PublicURL = s.privacy.brokerURL, dispatchListenerBrokerTokenFile, dispatchListenerURL(s)
+		config.PrivacySourceURL, config.PrivacyRequired, config.AllProjectsAccounts = s.privacy.brokerURL, true, []string{dispatchServiceAccountSubject(s)}
+	}
+	if err := core.CheckPrivacySource("listenerPrivacySource", config, s.privacy != nil); err != nil {
+		return nil, err
+	}
+	env, err := config.Env([]string{url})
 	if err != nil {
 		var input *core.InputError
 		if errors.As(err, &input) && input.Input == "socks5Proxy" {
@@ -64,6 +79,13 @@ func dispatchListenerEnv(s dispatchSettings, nats dispatchNATSCredential, listen
 // ENVOY_DISPATCH_PRINCIPAL.
 func dispatchServiceAccountSubject(s dispatchSettings) string {
 	return "system:serviceaccount:" + s.namespace + ":" + s.hostname
+}
+
+// dispatchListenerURL is the listener's own Service address, the one URL every caller reaches it
+// at: the app's ENVOY_URL, the audience of the app's projected token for it (ENVOY_OIDC_AUDIENCE),
+// and, in the required privacy mode, its ENVOY_PUBLIC_URL.
+func dispatchListenerURL(s dispatchSettings) string {
+	return "http://" + clusterLocal(s.hostname+"-listener", s.namespace) + ":" + strconv.Itoa(core.DefaultListenerPort)
 }
 
 // dispatchAccountTokenDir is where envoy-dispatch mounts its projected token for the listener's

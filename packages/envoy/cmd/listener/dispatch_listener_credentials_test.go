@@ -22,6 +22,7 @@ import (
 var dispatchListenerGoldens = []struct{ read, path string }{
 	{"../../infra/gcp/testdata/dispatch-listener-pod.golden", "packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden"},
 	{"../../infra/gcp/testdata/dispatch-listener-pod-with-service-identity.golden", "packages/envoy/infra/gcp/testdata/dispatch-listener-pod-with-service-identity.golden"},
+	{"../../infra/gcp/testdata/dispatch-listener-pod-private.golden", "packages/envoy/infra/gcp/testdata/dispatch-listener-pod-private.golden"},
 }
 
 // dispatchListenerGoldenEnv reads the envoy-listener container's environment out of the pod golden at

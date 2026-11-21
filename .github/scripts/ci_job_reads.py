@@ -825,7 +825,9 @@ RULES = {
     f"{ENVOY}/cmd/listener/dispatch_listener_credentials_test.go": reads(
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/dispatch_listener_credentials_test.go:23"),
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod-with-service-identity.golden",
-         "cmd/listener/dispatch_listener_credentials_test.go:24")),
+         "cmd/listener/dispatch_listener_credentials_test.go:24"),
+        (f"{INFRA}/gcp/testdata/dispatch-listener-pod-private.golden",
+         "cmd/listener/dispatch_listener_credentials_test.go:25")),
     f"{ENVOY}/cmd/spec-check/cifiles_test.go": reads(
         (f"{ENVOY}/.changes/unreleased/pr4183-Added-20261116-091606.yaml",
          "cmd/spec-check/cifiles_test.go:641 reads that one fragment under ../..")),
