@@ -42,8 +42,9 @@ type HeldCommand struct {
 // rerun. Then, on the operator's connection under the held grant: its admission (holdrecord.Admit:
 // the row held under the hold id, c's command admitted in the workflow, its intent written), the
 // protected streams read, c's change, the postcheck (Postcheck) against what the change says it
-// did, and its done entry. A step after the intent that fails writes a stop entry naming why, so
-// the command's rerun is admitted. The hold stays set: `envoy-infra hold release` ends it.
+// did, and its done entry. A step after the intent that fails writes a stop entry naming why when
+// the command is Stoppable, and else leaves its intent pending; either way the command's rerun is
+// admitted. The hold stays set: `envoy-infra hold release` ends it.
 func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c HeldCommand, now func() time.Time, stdout io.Writer) (string, error) {
 	op.ExpectedAbsent = c.Absent
 	id := c.HoldID
@@ -80,7 +81,12 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 	if _, err := records.Admit(ctx, id, holdrecord.Request{Command: c.Command}, c.Inputs); err != nil {
 		return id, err
 	}
+	// A Stoppable command's failure after its intent writes a stop entry; any other leaves its
+	// intent pending, and the table admits its rerun (holdrecord.Stoppable).
 	stop := func(cause error) error {
+		if !holdrecord.Stoppable(c.Workflow, c.Command) {
+			return cause
+		}
 		if err := records.AppendStop(ctx, id, c.Command, cause.Error()); err != nil {
 			return errors.Join(cause, err)
 		}

@@ -3,6 +3,7 @@ package buckets
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -462,6 +463,8 @@ func TestHoldBackupAndRestoreThroughJsm(t *testing.T) {
 // chunk ($JS.SNAPSHOT.RESTORE.<stream>.<n>), cuts times in all: a restore cut part way.
 type cutDialer struct {
 	cuts atomic.Int32
+	// logf records each cut, the test's own log.
+	logf func(format string, args ...any)
 }
 
 func (d *cutDialer) Dial(network, address string) (net.Conn, error) {
@@ -476,12 +479,21 @@ type cutConn struct {
 	net.Conn
 	d      *cutDialer
 	chunks int
+	// cut says this connection is cut: each later write fails, and spends no further cut.
+	cut bool
 }
 
 func (c *cutConn) Write(p []byte) (int, error) {
+	if c.cut {
+		return 0, net.ErrClosed
+	}
 	c.chunks += bytes.Count(p, []byte("PUB $JS.SNAPSHOT.RESTORE."))
 	if c.chunks >= 2 && c.d.cuts.Load() > 0 {
-		c.d.cuts.Add(-1)
+		c.cut = true
+		left := c.d.cuts.Add(-1)
+		if c.d.logf != nil {
+			c.d.logf("cut a connection after %d restore chunks (%d cuts left)", c.chunks, left)
+		}
 		_ = c.Conn.Close()
 		return 0, net.ErrClosed
 	}
@@ -498,10 +510,12 @@ func (h *heldBuckets) bigBucket(bucket string, keys int) uint64 {
 	}
 	defer nc.Close()
 	js, _ := jetstream.New(nc)
-	value := bytes.Repeat([]byte("0123456789abcdef"), 256)
+	value := make([]byte, 4096)
 	for i := range keys {
-		// A key's value of its own, so the archive does not compress to one chunk.
-		copy(value, fmt.Sprintf("%08d", i*7919))
+		// Random bytes, so the archive does not compress to one chunk.
+		if _, err := rand.Read(value); err != nil {
+			h.t.Fatal(err)
+		}
 		if _, err := js.Publish(context.Background(), fmt.Sprintf("$KV.%s.k%d", bucket, i), value); err != nil {
 			h.t.Fatalf("write key %d: %v", i, err)
 		}
@@ -521,7 +535,7 @@ func TestHoldTheRestoresOneRerun(t *testing.T) {
 	if err != nil || m.Buckets[bus.KnownSessionBucket].Messages != keys {
 		t.Fatalf("the backup: %v %+v, want %d messages", err, m, keys)
 	}
-	cut := &cutDialer{}
+	cut := &cutDialer{logf: t.Logf}
 	op := *h.op
 	op.Connect = func(context.Context) (*natsgo.Conn, error) {
 		return natsgo.Connect(h.s.Cluster.URL(), append(h.s.OperatorCredential(), natsgo.SetCustomDialer(cut),
@@ -561,10 +575,17 @@ func TestHoldTheRestoresOneRerun(t *testing.T) {
 	cut.cuts.Store(2)
 	code, stdout, stderr = h.run("restore", "--bucket", bus.KnownSessionBucket, "--from", dir)
 	if code == 0 || !strings.Contains(stderr, "restore "+bus.KnownSessionBucket+" stopped") || !strings.Contains(stderr, "run 1") || !strings.Contains(stderr, "run 2") {
-		t.Fatalf("a restore cut twice = %d, want it stopped naming the bucket and both runs\n%s%s", code, stdout, stderr)
+		t.Fatalf("a restore cut twice = %d (cuts left %d), want it stopped naming the bucket and both runs\n%s%s", code, cut.cuts.Load(), stdout, stderr)
 	}
 	if _, ok := msgs(); ok {
 		t.Fatalf("a restore cut twice left %s", stream)
+	}
+	// A buckets restore is not Stoppable (holdrecord's table), so its intent stays pending and
+	// release is refused until the restore's own rerun, under the same hold, completes it.
+	id := h.row().HoldID
+	code, stdout, stderr = h.run("restore", "--hold", id, "--bucket", bus.KnownSessionBucket, "--from", dir)
+	if n, ok := msgs(); code != 0 || !ok || n != keys {
+		t.Fatalf("the restore's rerun under the same hold = %d, %d messages (present %t), want %d\n%s%s", code, n, ok, keys, stdout, stderr)
 	}
 	h.release()
 
@@ -616,6 +637,20 @@ func TestHoldPreflightAnInterruptedRestore(t *testing.T) {
 	if _, err := h.s.Records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, row.HoldID, "the control's end"); err != nil {
 		t.Fatal(err)
 	}
+	// The control's other absence goes: KV_envoy_roles made again under a hold of no steps, so the
+	// restore's reading below finds only its own target absent.
+	id = h.s.Prepare(t, holdrecord.WorkflowBucketsCreate)
+	h.s.HoldWithoutTheSteps(t, id)
+	nc, err = h.s.ConnectOperator(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, _ = jetstream.New(nc)
+	if _, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: 3}); err != nil {
+		t.Fatalf("make %s again: %v", bus.RoleClaimBucket, err)
+	}
+	nc.Close()
+	h.s.Release(t, id)
 
 	// The restore, killed after it removed its target: its hold set, its intent, the target gone,
 	// and no entry after.

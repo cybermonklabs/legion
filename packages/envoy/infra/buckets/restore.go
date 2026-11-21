@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/jsm.go"
@@ -180,7 +181,7 @@ func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string
 	changes, outputs := map[string]writerhold.Change{}, map[string]string{}
 	for _, bucket := range buckets {
 		archive := m.Buckets[bucket]
-		if err := restoreOne(ctx, nc, bucket, filepath.Join(dir, bucket), archive, runs); err != nil {
+		if err := restoreOne(ctx, nc, stdout, bucket, filepath.Join(dir, bucket), archive, runs); err != nil {
 			return nil, nil, err
 		}
 		fmt.Fprintf(stdout, "restored %s: %d messages to seq %d\n", bucket, archive.Messages, archive.LastSeq)
@@ -196,7 +197,7 @@ func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string
 // times in all, each after the cut's leftover is gone; a cut on the last run stops the command,
 // naming the bucket and each run's error, with the leftover deleted, so no partial stream stays.
 // A restored stream whose state is not the archive's stops it too.
-func restoreOne(ctx context.Context, nc *nats.Conn, bucket, bucketDir string, archive Archive, runs int) error {
+func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bucketDir string, archive Archive, runs int) error {
 	stream := "KV_" + bucket
 	js, err := nc.JetStream(nats.Context(ctx))
 	if err != nil {
@@ -207,7 +208,7 @@ func restoreOne(ctx context.Context, nc *nats.Conn, bucket, bucketDir string, ar
 	}
 	var errs []error
 	for run := 1; run <= runs; run++ {
-		state, err := startRestore(ctx, nc, stream, bucketDir)
+		state, err := startRestore(ctx, nc, stdout, stream, bucketDir)
 		if err == nil {
 			if state.LastSeq != archive.LastSeq || state.Msgs != archive.Messages {
 				errs = append(errs, fmt.Errorf("run %d restored %d messages to seq %d, and the archive holds %d to seq %d", run, state.Msgs, state.LastSeq, archive.Messages, archive.LastSeq))
@@ -216,6 +217,7 @@ func restoreOne(ctx context.Context, nc *nats.Conn, bucket, bucketDir string, ar
 			return nil
 		}
 		errs = append(errs, fmt.Errorf("run %d: %w", run, err))
+		fmt.Fprintf(stdout, "restore of %s: run %d of %d stopped part way: %v\n", bucket, run, runs, err)
 		if run == runs {
 			break
 		}
@@ -230,17 +232,16 @@ func restoreOne(ctx context.Context, nc *nats.Conn, bucket, bucketDir string, ar
 	return fmt.Errorf("restore %s stopped, and %s is deleted: %w", bucket, stream, errors.Join(errs...))
 }
 
-// startRestore runs one restore of stream, retrying its start, before any chunk lands, through a
-// cut restore's leftover: 10130 (the leftover deleted first), 10049 and "no responders", within
-// restoreStart. Any other error, or one after chunks were sent, is the run's.
-func startRestore(ctx context.Context, nc *nats.Conn, stream, bucketDir string) (streamState, error) {
+// startRestore runs one restore of stream, retrying its start, before the server accepts it,
+// through a cut restore's leftover: 10130 (the leftover deleted first), 10049 and "no responders",
+// within restoreStart. Any other error, or any once the server accepted the restore, is the run's.
+func startRestore(ctx context.Context, nc *nats.Conn, stdout io.Writer, stream, bucketDir string) (streamState, error) {
 	deadline := time.Now().Add(restoreStart)
 	for {
-		progress, state, err := restoreRun(ctx, nc, stream, bucketDir)
+		started, state, err := restoreRun(ctx, nc, stream, bucketDir)
 		if err == nil {
 			return streamState{Msgs: state.Msgs, LastSeq: state.LastSeq}, nil
 		}
-		started := progress != nil && progress.ChunksSent() > 0
 		if started || time.Now().After(deadline) {
 			return streamState{}, err
 		}
@@ -257,6 +258,7 @@ func startRestore(ctx context.Context, nc *nats.Conn, stream, bucketDir string) 
 		default:
 			return streamState{}, err
 		}
+		fmt.Fprintf(stdout, "restore of %s: its start was refused (%v); it starts again\n", stream, err)
 		select {
 		case <-ctx.Done():
 			return streamState{}, ctx.Err()
@@ -268,8 +270,11 @@ func startRestore(ctx context.Context, nc *nats.Conn, stream, bucketDir string) 
 // restoreRun is one restore of stream through jsm.go, on a connection of its own made with nc's
 // options (its credential, its inbox prefix, its dialer) and no reconnect: a restore whose
 // connection is cut part way must end then, not resume its chunks on a reconnected connection that
-// the server's restore no longer answers, whose last request jsm.go waits an hour for.
-func restoreRun(ctx context.Context, nc *nats.Conn, stream, bucketDir string) (jsm.RestoreProgress, *api.StreamState, error) {
+// the server's restore no longer answers, whose last request jsm.go waits an hour for. started
+// says the server accepted the restore (jsm.go's first progress notice comes after its
+// STREAM.RESTORE is answered and before its first chunk), so an error after it is a cut restore,
+// whose leftover must go before a rerun, and never a start to retry.
+func restoreRun(ctx context.Context, nc *nats.Conn, stream, bucketDir string) (started bool, state *api.StreamState, err error) {
 	opts := nc.Opts
 	opts.AllowReconnect = false
 	opts.MaxReconnect = 0
@@ -277,14 +282,16 @@ func restoreRun(ctx context.Context, nc *nats.Conn, stream, bucketDir string) (j
 	opts.DisconnectedErrCB, opts.ReconnectedCB, opts.ClosedCB = nil, nil, nil
 	conn, err := opts.Connect()
 	if err != nil {
-		return nil, nil, fmt.Errorf("connect for the restore of %s: %w", stream, err)
+		return false, nil, fmt.Errorf("connect for the restore of %s: %w", stream, err)
 	}
 	defer conn.Close()
 	mgr, err := jsm.New(conn, jsm.WithTimeout(30*time.Second))
 	if err != nil {
-		return nil, nil, err
+		return false, nil, err
 	}
-	return mgr.RestoreSnapshotFromDirectory(ctx, stream, bucketDir)
+	var notified atomic.Bool
+	_, state, err = mgr.RestoreSnapshotFromDirectory(ctx, stream, bucketDir, jsm.RestoreNotify(func(jsm.RestoreProgress) { notified.Store(true) }))
+	return notified.Load(), state, err
 }
 
 // streamState is the part of a restored stream's state restoreOne compares.

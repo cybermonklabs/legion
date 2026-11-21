@@ -32,11 +32,11 @@ type connz struct {
 // It connects as the user the environment names (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED) and reads
 // each of the buckets' streams (STREAM.INFO KV_<bucket>). With every one there it changes nothing
 // and exits 0, so every `up` of the single-node compose file after its first passes while the
-// listener serves. With every one missing, it reads each --connz server's connection list and
-// refuses while it lists any client but this command's own connection, so no listener runs at the
-// create; then it creates each, with its copied-bucket configuration at replicas copies, after one
-// line on standard error naming the operator, the server, the bucket and that the run is
-// break-glass. Some there and some missing, or a read that answers anything but "not found",
+// listener serves. With any missing, it reads each --connz server's connection list and refuses
+// while it lists any client but this command's own connection, so no listener runs at the create;
+// then it creates each missing one, with its copied-bucket configuration at replicas copies, after
+// one line on standard error naming the operator, the server, the bucket and that the run is
+// break-glass, and leaves each one there as it is. A read that answers anything but "not found"
 // refuses the run, and no bucket is created.
 //
 // It only creates: each create is bus.CreateMissingCopiedBucket's, which answers
@@ -52,10 +52,12 @@ func breakGlassCreate(ctx context.Context, stdout, stderr io.Writer, o options, 
 	defer nc.Close()
 	js := nc.JS()
 	var refusals, present []string
+	exists := map[string]bool{}
 	for _, bucket := range o.buckets {
 		stream := "KV_" + bucket
 		if _, err := js.StreamInfo(stream); err == nil {
 			present = append(present, stream)
+			exists[bucket] = true
 		} else if !errors.Is(err, nats.ErrStreamNotFound) {
 			refusals = append(refusals, fmt.Sprintf("STREAM.INFO %s did not answer that it is missing: %v", stream, err))
 		}
@@ -64,18 +66,21 @@ func breakGlassCreate(ctx context.Context, stdout, stderr io.Writer, o options, 
 		fmt.Fprintf(stdout, "every bucket named exists (%s): nothing to create\n", strings.Join(o.buckets, ", "))
 		return 0
 	}
-	for _, stream := range present {
-		refusals = append(refusals, stream+" exists")
-	}
 	if len(refusals) > 0 {
-		fmt.Fprintln(stderr, "envoy-infra buckets create --break-glass: refused: it creates only buckets the server reports missing, and none at all while any --bucket is there or unread")
+		fmt.Fprintln(stderr, "envoy-infra buckets create --break-glass: refused: it creates only buckets the server reports missing, and none at all while any --bucket's read is not whole")
 		for _, refusal := range refusals {
 			fmt.Fprintf(stderr, "  refused: %s\n", refusal)
 		}
 		return 1
 	}
+	sawOwn := false
 	for _, url := range o.connz {
-		refusals = append(refusals, otherClients(ctx, client, url, nc.Conn)...)
+		others, ownServer := otherClients(ctx, client, url, nc.Conn)
+		refusals = append(refusals, others...)
+		sawOwn = sawOwn || ownServer
+	}
+	if !sawOwn {
+		refusals = append(refusals, fmt.Sprintf("no --connz list is server %s's, the one the command is connected to, so the command cannot see its own connection there: name every server's monitoring URL", nc.Conn.ConnectedServerId()))
 	}
 	if len(refusals) > 0 {
 		fmt.Fprintln(stderr, "envoy-infra buckets create --break-glass: refused: it creates only while the server has no client but this one, so no listener runs at the create")
@@ -86,6 +91,10 @@ func breakGlassCreate(ctx context.Context, stdout, stderr io.Writer, o options, 
 	}
 	hub := bus.NATSURLWithoutUserinfo(natsURL)
 	for _, bucket := range o.buckets {
+		if exists[bucket] {
+			fmt.Fprintf(stdout, "%s exists; left as it is\n", bucket)
+			continue
+		}
 		fmt.Fprintf(stderr, "envoy-infra buckets: break-glass: operator %s creates %s on %s, as the environment's NATS user\n", o.operator, bucket, hub)
 		if _, err := bus.CreateMissingCopiedBucket(ctx, nc.Conn, js, bucket, o.replicas); errors.Is(err, bus.ErrBucketExists) {
 			fmt.Fprintf(stderr, "envoy-infra buckets create --break-glass: refused: KV_%s was made by another client after the read, and is left as it is: %v\n", bucket, err)
@@ -100,48 +109,46 @@ func breakGlassCreate(ctx context.Context, stdout, stderr io.Writer, o options, 
 }
 
 // otherClients reads the connection list at url and names each connection that is not own's, the
-// command's connection, by its server id and client id. A list that cannot be read whole, or that
-// is another server's than own's, is named too: a server that cannot show it is alone refuses.
-func otherClients(ctx context.Context, client *http.Client, url string, own *nats.Conn) []string {
+// command's connection: on the server own is connected to, every connection but own's; on any other
+// server (each member of a cluster, read through its own --connz), every connection. It reports
+// whether the list is own server's, which must list own's connection. A list that cannot be read
+// whole is named too: a server that cannot show it is alone refuses.
+func otherClients(ctx context.Context, client *http.Client, url string, own *nats.Conn) (others []string, ownServer bool) {
 	base := strings.TrimSuffix(url, "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/connz?auth=1&limit=%d", base, connzPage), nil)
 	if err != nil {
-		return []string{fmt.Sprintf("%s: %v", url, err)}
+		return []string{fmt.Sprintf("%s: %v", url, err)}, false
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return []string{fmt.Sprintf("%s: the connection list could not be read: %v", url, err)}
+		return []string{fmt.Sprintf("%s: the connection list could not be read: %v", url, err)}, false
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var list connz
 	if resp.StatusCode != http.StatusOK {
-		return []string{fmt.Sprintf("%s: the connection list answered %d", url, resp.StatusCode)}
+		return []string{fmt.Sprintf("%s: the connection list answered %d", url, resp.StatusCode)}, false
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&list); err != nil {
-		return []string{fmt.Sprintf("%s: the connection list does not decode: %v", url, err)}
+		return []string{fmt.Sprintf("%s: the connection list does not decode: %v", url, err)}, false
 	}
 	if list.Total > len(list.Connections) {
-		return []string{fmt.Sprintf("%s: the connection list holds %d connections, more than one page of %d", url, list.Total, connzPage)}
+		return []string{fmt.Sprintf("%s: the connection list holds %d connections, more than one page of %d", url, list.Total, connzPage)}, false
 	}
-	serverID := own.ConnectedServerId()
 	cid, err := own.GetClientID()
 	if err != nil {
-		return []string{fmt.Sprintf("the command's own client id cannot be read: %v", err)}
+		return []string{fmt.Sprintf("the command's own client id cannot be read: %v", err)}, false
 	}
-	if list.ServerID != serverID {
-		return []string{fmt.Sprintf("%s is server %s's list, and the command is connected to %s: it cannot see its own connection there", url, list.ServerID, serverID)}
-	}
-	var others []string
+	ownServer = list.ServerID == own.ConnectedServerId()
 	seen := false
 	for _, c := range list.Connections {
-		if c.CID == cid {
+		if ownServer && c.CID == cid {
 			seen = true
 			continue
 		}
 		others = append(others, fmt.Sprintf("connection %d (name %q, user %q) on server %s", c.CID, c.Name, c.AuthorizedUser, list.ServerID))
 	}
-	if !seen {
+	if ownServer && !seen {
 		others = append(others, fmt.Sprintf("%s does not list the command's own connection %d: the list cannot show the server is alone", url, cid))
 	}
-	return others
+	return others, ownServer
 }

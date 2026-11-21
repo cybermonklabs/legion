@@ -79,7 +79,12 @@ names already there changes nothing and needs no hold.
 
 One machine with no auth service or hold (the single-node compose file) makes its missing buckets
 with `envoy-infra buckets create --break-glass` ([One machine](#one-machine-create---break-glass)),
-which creates only while no other client is connected.
+which creates only while no other client is connected. Until the writer hold runs on the clustered
+hub, a lost bucket there is made the same way, once every writer is scaled to zero, in the order
+[docs/nats-hub.md](docs/nats-hub.md#a-lost-bucket-on-the-clustered-hub-before-the-writer-hold-runs-there)
+gives: the in-cluster listener (`envoy/envoy-listener`), the hub's session listener
+(`envoy/envoy-nats-listener`), Dispatch (`dispatch/<hostname>`) and Dispatch's listener
+(`dispatch/<hostname>-listener`), scaled back in the reverse order after the create.
 
 A test or a dev rig that starts a listener on a NATS server of its own provisions that server
 first, with the one fixture helper: `internal/bus/bustest` in Go (`Provision` or `ProvisionURL`, or

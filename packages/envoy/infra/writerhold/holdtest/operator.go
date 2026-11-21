@@ -154,11 +154,19 @@ func (s *Stack) SeedProtectedStreams(t testing.TB) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Replicas: 3}); err != nil {
+	// Each create's own minute: an R3 create on a loaded box can take past jetstream's 5 s default.
+	create := func() (context.Context, context.CancelFunc) { return context.WithTimeout(ctx, time.Minute) }
+	createCtx, cancel := create()
+	_, err = js.CreateStream(createCtx, jetstream.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}, Replicas: 3})
+	cancel()
+	if err != nil {
 		t.Fatalf("holdtest: create %s: %v", bus.Stream, err)
 	}
 	for _, bucket := range ProtectedBuckets() {
-		if _, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Replicas: 3}); err != nil {
+		createCtx, cancel := create()
+		_, err := js.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Replicas: 3})
+		cancel()
+		if err != nil {
 			t.Fatalf("holdtest: create bucket %s: %v", bucket, err)
 		}
 	}

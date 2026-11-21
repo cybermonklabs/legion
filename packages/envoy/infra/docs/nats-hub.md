@@ -802,40 +802,59 @@ A hub that comes up on a new, empty data disk (a new `hostname` or `zone` above)
 bucket, and no listener creates one ([the module README](../README.md#envoy-infra-buckets)).
 Every listener that reaches it answers 503 to each write and names the missing buckets on
 `/healthz` until the operator creates them: a running one as 200 `degraded`, and one that starts
-meanwhile as 503 `waiting`, since its start serves no route, so its health check fails. And
-`envoy-infra buckets` refuses while any listener runs, the hub's own included. So:
+meanwhile as 503 `waiting`, since its start serves no route, so its health check fails. The VM hub
+runs no writer hold, so the buckets are made with `envoy-infra buckets create --break-glass`, which
+creates only while the hub's connection list shows no client but its own. So:
 
 1. Before `pulumi up`, stop every listener and envoy-dispatch that reaches the hub.
 2. `pulumi up`. The new VM starts its own listener with the VM (`envoy-listener.service`), which
    waits for its buckets; stop it on the VM: `sudo systemctl stop envoy-listener.service`.
-3. Confirm on each host that its listener has ended, then run `envoy-infra buckets create --nats
-   nats://<h>.<tailnetDnsName>:4222` with the inventory of every writer (`--host` for each machine,
-   the hub's VM included). Its check is best effort; your stop in steps 1 and 2 is what it confirms.
+3. Run the create as the in-cluster `gke` listener's NATS user, its seed `envoy-nats-seed-gke` read
+   from Secret Manager for that run alone, through a pipe, and never written to disk, with
+   `--connz` the hub's monitoring URL (port 8222):
+
+   ```sh
+   NATS_NKEY_SEED_FILE=<(gcloud secrets versions access latest --secret=envoy-nats-seed-gke \
+       --project=<the deployment's project>) \
+     envoy-infra buckets create --break-glass --operator <you> --bucket envoy_interests \
+     --bucket envoy_roles --bucket envoy_sessions --bucket envoy_known_sessions \
+     --bucket envoy_ci_state --nats nats://<h>.<tailnetDnsName>:4222 --connz http://<h>:8222
+   ```
+
+   It refuses, naming each, while any other client is connected, so step 1's stop is what lets
+   it run.
 4. Start the hub's listener (`sudo systemctl start envoy-listener.service`), then every other.
 
-A first deployment of a hub is the same from step 2: its VM's listener starts with the VM and
-creates the `ENVOY_NOTIFICATIONS` stream at its first connect, so run `create` without
-`--first-deployment`. A replacement that keeps the disk (`recreate-instances`, a new template)
-keeps every bucket, and needs none of this.
+A first deployment of a hub is the same from step 2. A replacement that keeps the disk
+(`recreate-instances`, a new template) keeps every bucket, and needs none of this.
 
-Until the auth service's operator kind lets the operator connect through the auth service, no
-hub has the buckets user's key, so step 3 cannot run as written. Create each missing bucket with
-the break-glass flag instead, as the in-cluster `gke` listener's NATS user. Read its seed,
-`envoy-nats-seed-gke`, from Secret Manager for that run alone, through a pipe, and never write it
-to disk:
+### A lost bucket on the clustered hub, before the writer hold runs there
 
-```sh
-NATS_NKEY_SEED_FILE=<(gcloud secrets versions access latest --secret=envoy-nats-seed-gke \
-    --project=<the deployment's project>) \
-  envoy-infra buckets create --break-glass --operator <you> --bucket envoy_interests \
-  --bucket envoy_roles --bucket envoy_sessions --bucket envoy_known_sessions \
-  --bucket envoy_ci_state --nats nats://<h>.<tailnetDnsName>:4222
-```
+On the clustered hub a lost bucket is made inside the writer hold (`envoy-infra buckets create`),
+once the auth service that refuses every client but the operator during a hold runs there. Until
+then, make it with `create --break-glass` once every writer of the buckets is scaled to zero, so
+`--connz` shows no client but the command's own:
 
-It creates only buckets the hub reports missing, takes no writer proof and needs no listener
-stopped: a missing bucket only gains a create, so steps 1, 2 and 4 are not needed for it
-([the module README](../README.md#until-the-cutover-create---break-glass)). The pull request that
-removes the listener users' create grant at the cutover deletes the flag and this paragraph.
+1. Note each Deployment's replica count, then scale them to 0 in this order: the in-cluster
+   listener (`kubectl -n envoy scale deployment/envoy-listener --replicas=0`, the deployment repository's
+   `envoy-cluster/listener.go`), the hub's session listener
+   (`kubectl -n envoy scale deployment/envoy-nats-listener --replicas=0`, `gcp:ClusteredNatsHub`'s
+   `<release>-listener`), Dispatch (`kubectl -n dispatch scale deployment/<hostname> --replicas=0`,
+   `gcp:Dispatch`'s app, container `envoy-dispatch`) and Dispatch's listener
+   (`kubectl -n dispatch scale deployment/<hostname>-listener --replicas=0`). Run no `pulumi up` of
+   either program until step 4: it would scale them back.
+2. Wait until no pod of any of them is left (`kubectl -n envoy get pods`, `kubectl -n dispatch get
+   pods`).
+3. Port-forward each hub server's client and monitoring ports
+   (`kubectl -n envoy port-forward pod/envoy-nats-<i> <port>:4222 <port>:8222`), and run the create
+   as the `gke` listener's NATS user, as above, with `--nats` one server's forwarded client port and
+   one `--connz` for every server's forwarded monitoring port.
+   The create names every other connection it sees, not only a writer's: the legion daemons'
+   (`legion-daemon`), the measure probe's (`envoy-measure`) and the auth service's, where they run.
+   Stop each one it names, and run it again.
+4. Scale them back to the counts noted in step 1, in the reverse order: Dispatch's listener,
+   Dispatch, the hub's session listener, the in-cluster listener, and start each other client you
+   stopped.
 
 ## What a first Google Cloud deployment proves
 
@@ -1026,22 +1045,14 @@ VM rendered, with `ListenerPermissions(envoy-hub)`, and its durable is the VM li
 `listener-envoy-hub`, so a durable restored with the streams is the one the new listener binds.
 The hub runs one listener, in a pod of its own, as that machine id.
 
-A move that restores the VM hub's streams into the clustered hub (`nats stream restore`) restores
-each key-value bucket from its snapshot, a bucket created again, so every writer of the buckets
-must have ended first: a write the old hub acknowledged after the snapshot is in no restored bucket
-(the module README's [`envoy-infra buckets`](../README.md#envoy-infra-buckets)). In this order:
-
-1. Stop every listener and envoy-dispatch that reaches either hub, the clustered hub's own listener
-   included (scale it to 0), and confirm on each host that it has ended.
-2. Run `envoy-infra buckets check` with the inventory of every writer; it must hold.
-3. Restore.
-4. While every writer is still at zero, run `envoy-infra buckets create` with the same inventory:
-   it creates any copied bucket the restore did not bring, and leaves the others.
-5. Start them.
-
-Nothing holds the state `check` found through the restore: a writer that starts between steps 2
-and 5 gets past it, the "unheld restore" the command warns of on every run, until
-the coming server-side hold lands, which leaves no writer but the operator a connection.
+A move that restores the VM hub's streams into the clustered hub restores each key-value bucket
+from its snapshot, a bucket created again, so every writer of the buckets must have ended first: a
+write the old hub acknowledged after the snapshot is in no restored bucket (the module README's
+[`envoy-infra buckets`](../README.md#envoy-infra-buckets)). Back each bucket up on the old hub with
+`envoy-infra buckets backup --to <dir>` and restore it with `envoy-infra buckets restore --from
+<dir> --bucket <B>`, which runs inside the writer hold on the clustered hub, so no writer of either
+hub's clients can write it from the hold's start to its release. Never restore one with `nats stream
+restore`, which nothing holds.
 
 The rendered `auth.conf` is a key of the chart's ConfigMap `<n>-config`, beside `nats.conf`, which
 includes it; like the VM's metadata, the ConfigMap holds it in the clear, public keys only.

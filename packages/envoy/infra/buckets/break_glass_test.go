@@ -84,9 +84,10 @@ func TestBreakGlassCreatesAMissingBucketAsAListenersUser(t *testing.T) {
 
 // A break-glass create only creates. With the session bucket there, holding a key, it changes
 // nothing and exits 0 (an upgrade's `up`), sending the bucket's stream one read and nothing else;
-// with a missing bucket named beside it, it refuses and creates neither. Either way the stream stays
-// as it was: the same stream, configuration, messages and key. --break-glass with recreate is
-// refused as a usage error before it connects, and sends the stream nothing.
+// with a missing bucket named beside it and another client connected, it refuses and creates
+// neither. Either way the stream stays as it was: the same stream, configuration, messages and key.
+// --break-glass with recreate is refused as a usage error before it connects, and sends the stream
+// nothing.
 func TestBreakGlassRefusesABucketThatExistsAndChangesNothing(t *testing.T) {
 	t.Setenv(bus.ReplicasEnvVar, "")
 	uri, monitor, seed := listenerUserServer(t)
@@ -111,22 +112,29 @@ func TestBreakGlassRefusesABucketThatExistsAndChangesNothing(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		args []string
+		// raw reads the server's own connection list, the test's watcher on it, where the others
+		// read it with the watcher left out.
+		raw  bool
 		code int
 		says string
 		sent []string
 	}{
 		{"create of the bucket that exists", []string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket},
-			0, "nothing to create", []string{"INFO." + stream}},
-		{"create of a missing bucket beside it", []string{"create", "--break-glass", "--operator", "op", "--bucket", bus.RoleClaimBucket, "--bucket", bus.SessionBucket},
-			1, "refused: " + stream + " exists", []string{"INFO." + missing, "INFO." + stream}},
+			false, 0, "nothing to create", []string{"INFO." + stream}},
+		{"create of a missing bucket beside it, another client connected", []string{"create", "--break-glass", "--operator", "op", "--bucket", bus.RoleClaimBucket, "--bucket", bus.SessionBucket},
+			true, 1, "no client but this one", []string{"INFO." + missing, "INFO." + stream}},
 		{"recreate", []string{"recreate", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket},
-			2, "--break-glass is create's alone", nil},
+			false, 2, "--break-glass is create's alone", nil},
 		{"--break-glass before recreate", []string{"--break-glass", "recreate", "--operator", "op", "--bucket", bus.SessionBucket},
-			2, "usage: envoy-infra buckets", nil},
+			false, 2, "usage: envoy-infra buckets", nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			requests.take(t) // the test's own reads of the streams, after the run before
-			code, stdout, stderr := runCommand(t, noHold(t), append(c.args, "--nats", uri, "--connz", connz)...)
+			list := connz
+			if c.raw {
+				list = monitor
+			}
+			code, stdout, stderr := runCommand(t, noHold(t), append(c.args, "--nats", uri, "--connz", list)...)
 			if code != c.code || !strings.Contains(stdout+stderr, c.says) || strings.Contains(stdout, "created") {
 				t.Fatalf("%v = %d, want %d saying %q and nothing created\n%s%s", c.args, code, c.code, c.says, stdout, stderr)
 			}
