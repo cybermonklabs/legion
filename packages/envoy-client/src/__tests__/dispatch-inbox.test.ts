@@ -503,7 +503,7 @@ describe("dispatch inbox", () => {
             ref: "/issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
             subject: "",
             deleted_at: "2026-11-02T08:00:00Z",
-            deleted_by: { kind: "user", id: "alice@theorem.dev" },
+            deleted_by: { kind: "user", id: "alice@example.com" },
           },
           ...rows,
         ],
@@ -520,7 +520,7 @@ describe("dispatch inbox", () => {
     expect(
       threadLine(stdout, "/issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
     ).toStartWith(
-      "- DSP-6 · comment · Deleted by user alice@theorem.dev at 2026-11-02T08:00:00Z · "
+      "- DSP-6 · comment · Deleted by user alice@example.com at 2026-11-02T08:00:00Z · "
     );
     expect(
       threadLine(stdout, "/issues/DSP-6/comments/66666666-6666-4666-8666-666666666666")
