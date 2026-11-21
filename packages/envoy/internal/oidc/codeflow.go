@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
@@ -291,10 +290,12 @@ func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string
 	if err != nil {
 		return Session{}, err
 	}
-	answered, last := f.answeredContext(ctx)
-	token, err := issuer.config.Exchange(answered, code, append(redirectTo(redirectURL), options...)...)
+	answered := &oauthrefusal.Recorder{}
+	token, err := issuer.config.Exchange(oauthrefusal.Record(f.tokenContext(ctx), answered), code, append(redirectTo(redirectURL), options...)...)
 	if err != nil {
-		switch status := last.status(); {
+		// The recorder reads the status of the answer an error came from, an answer x/oauth2
+		// reports in no *oauth2.RetrieveError among them (a 2xx with no token).
+		switch status := answered.Status; {
 		case status != 0 && !oauthrefusal.Outage(status):
 			return Session{}, fmt.Errorf("oidc: exchange code: %w", err)
 		case status == 0 && callerGone(ctx, err):
@@ -514,37 +515,3 @@ func jsonString(value json.RawMessage) string {
 func (f *CodeFlow) tokenContext(ctx context.Context) context.Context {
 	return context.WithValue(ctx, oauth2.HTTPClient, f.http)
 }
-
-// answeredContext hands oauth2 a copy of the bounded client tokenContext does, whose transport keeps
-// the status of the last answer it carried (lastAnswer), so a caller reads the status of the
-// answer an error came from, an answer x/oauth2 reports in no *oauth2.RetrieveError among them (a
-// 2xx with no token, or one whose body did not read).
-func (f *CodeFlow) answeredContext(ctx context.Context) (context.Context, *lastAnswer) {
-	client := *f.http
-	last := &lastAnswer{base: client.Transport}
-	if last.base == nil {
-		last.base = http.DefaultTransport
-	}
-	client.Transport = last
-	return context.WithValue(ctx, oauth2.HTTPClient, &client), last
-}
-
-// lastAnswer is a transport that keeps the status of the last answer its base carried, and zero
-// while a request has no answer: each request starts it at zero, so after a request that failed
-// unanswered it reads no earlier answer's status.
-type lastAnswer struct {
-	base http.RoundTripper
-	code atomic.Int64
-}
-
-func (l *lastAnswer) RoundTrip(request *http.Request) (*http.Response, error) {
-	l.code.Store(0)
-	response, err := l.base.RoundTrip(request)
-	if response != nil {
-		l.code.Store(int64(response.StatusCode))
-	}
-	return response, err
-}
-
-// status is the last answer's status, zero for none.
-func (l *lastAnswer) status() int { return int(l.code.Load()) }
