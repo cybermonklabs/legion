@@ -135,9 +135,9 @@ var thisBranchsMigrations = []int{
 // step record (20261117000528), the count of starts of each step (20261117004117) and its roll
 // forward (20261117064152), the kind list with the plan record (20261117023932),
 // dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
-// dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717 and the durable consumers' selection records'
-// 20261121001600. That is why
+// the conflict's second read and merge forward's 20261119003157, the resume generation's
+// 20261120042902, the issue copy's value sequences' 20261120055717 and the durable consumers'
+// selection records' 20261121001600. That is why
 // the loop below holds the list rather than
 // counting it, so that a version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
