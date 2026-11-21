@@ -299,10 +299,14 @@ func pauseLabelWrite(t *testing.T, database *store.Store, pid uint32) pgx.Tx {
 // build's label is added to the PATCH's. Without the gate the arrival goes through at once, the
 // earlier build's label is written while the PATCH waits, and the PATCH then writes the labels it
 // read over it. A write of this build after the arrival takes the issue's row in its read phase.
+// The race starts once the seeded spec owes no settlement and no backend holds the gate
+// (awaitTheGateFree): the arrival's insert waits for the gate at most 5 s, and that wait must be
+// the PATCH's alone, not a settlement of the spec the fixture seeded.
 func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing.T) {
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			fixture := newItemRowFixture(t, testServerOptions{}, "Arrived meanwhile", "A spec.\n")
+			awaitTheGateFree(t, fixture.database, fixture.artifactID)
 			ctx := context.Background()
 			handler, pid := oneConnectionHandler(t, fixture.deps)
 			pause := pauseLabelWrite(t, fixture.database, pid)
@@ -425,6 +429,33 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				t.Errorf("the issue's labels after the second race are %v, want both second labels", labels)
 			}
 		})
+	}
+}
+
+// awaitTheGateFree waits until document owes no settlement and no backend holds or waits for the
+// owner lock gate: an earlier build's arrival made then waits on the gate for nothing the test did
+// not start itself. It waits until the test binary's deadline less throughputWaitMargin, for the
+// failed test's cleanups, or without end when the binary has no deadline.
+func awaitTheGateFree(t *testing.T, database *store.Store, document string) {
+	t.Helper()
+	deadline, bounded := t.Deadline()
+	for {
+		var owed, held bool
+		if err := database.Pool.QueryRow(context.Background(), `
+			select exists (select from doc_settlements_pending where artifact_id = $1::uuid),
+			       exists (select from pg_locks
+			               where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())
+			                 and classid::bigint = $2 and objid::bigint = $3 and objsubid = 2)`,
+			document, store.OwnerLockGateNamespace, store.OwnerLockGateKey).Scan(&owed, &held); err != nil {
+			t.Fatalf("read the document's settlement and the owner lock gate: %v", err)
+		}
+		if !owed && !held {
+			return
+		}
+		if bounded && time.Now().After(deadline.Add(-throughputWaitMargin)) {
+			t.Fatalf("by the test binary's deadline the document still owed a settlement (%t) or a backend still held the owner lock gate (%t)", owed, held)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
