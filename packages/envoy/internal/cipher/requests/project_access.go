@@ -699,12 +699,15 @@ type accessMemoKey struct{}
 // question the memo asks runs on (start). slots holds the list to MaySeeAtOnce questions of
 // Dispatch at a time, whichever of its rows ask them: a slot is held only while a question is in
 // flight, and a row waiting on another row's question holds none, so a project Dispatch does not
-// answer holds one slot however many rows name it, and costs the list only those rows.
+// answer holds one slot however many rows name it, and costs the list only those rows. joined, nil
+// but in a test, is called each time a read is about to wait on a question another read asked, so
+// a test can ask its next question once the waiters wait, as projectaccess.Client's joined is.
 type accessMemo struct {
 	list    context.Context
 	mu      sync.Mutex
 	entries map[accessMemoQuestion]*accessMemoEntry
 	slots   chan struct{}
+	joined  func()
 }
 
 type accessMemoQuestion struct{ project, person string }
@@ -761,6 +764,9 @@ func (m *Machine) access(ctx context.Context, project, person string) (projectac
 			return entry.answer, entry.err
 		}
 		memo.mu.Unlock()
+		if memo.joined != nil {
+			memo.joined()
+		}
 		if !entry.wait(ctx) {
 			return projectaccess.Answer{}, ctx.Err()
 		}

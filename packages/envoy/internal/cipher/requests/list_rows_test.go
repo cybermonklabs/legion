@@ -176,11 +176,12 @@ func stalledRowsFirst(t *testing.T, m *Machine, list listUnderTest, stalled int)
 
 // TestRowsWaitingOnAStalledProjectHoldNoQuestionSlot: 20 rows whose reasons name SLOW, which
 // Dispatch does not answer, are read first, and after them one row whose reason names TEAM,
-// public. The list asks SLOW once, and the 19 rows that wait on that question hold none of the
+// public. The list asks SLOW once, and the rows that wait on that question hold none of the
 // list's MaySeeAtOnce question slots, so the TEAM row's question takes one and is answered: the
 // TEAM row is listed, every SLOW row is left off, and the list answers inside the time Dispatch
-// gives it. Were a waiting row to hold a slot, the SLOW rows would hold all 16 until the list's
-// clock ran out, and the TEAM row would be left off with them.
+// gives it. The list reads its rows at once, so the order in which they reach the memo is not
+// fixed, and this row cannot tell on its own whether a waiting row holds a slot:
+// TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot does, on the memo itself.
 func TestRowsWaitingOnAStalledProjectHoldNoQuestionSlot(t *testing.T) {
 	for _, c := range listsUnderTest {
 		t.Run(c.name, func(t *testing.T) {
@@ -207,6 +208,62 @@ func TestRowsWaitingOnAStalledProjectHoldNoQuestionSlot(t *testing.T) {
 				t.Errorf("the list took %s; want it inside the %s Dispatch gives it", took, dispatchListWindow)
 			}
 		})
+	}
+}
+
+// publicAnswers is a projectaccess.Access that answers every access question as a public project
+// the reader may see, asked now, and once its caller's context has ended answers that context's
+// error, as the client does for a question its cache does not hold.
+type publicAnswers struct{}
+
+func (publicAnswers) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	if err := ctx.Err(); err != nil {
+		return projectaccess.Answer{}, err
+	}
+	return projectaccess.Answer{Project: project, Person: person, Visibility: projectaccess.VisibilityPublic, Visible: true, AskedAt: time.Now()}, nil
+}
+
+func (publicAnswers) MemberKind(context.Context, string) (string, error) {
+	return projectaccess.MemberFull, nil
+}
+
+func (publicAnswers) States(context.Context, []string) (map[string]projectaccess.Answer, error) {
+	return nil, errors.New("the stand-in answers no state question")
+}
+
+// TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot: on one list's memo, under its 3 s clock, 20
+// rows name SLOW, which Dispatch holds until the clock ends. The first row asks it, in one of the
+// list's MaySeeAtOnce (16) slots, and the others wait on its question. Once 15 of them wait (the
+// memo's joined hook says so), a row naming TEAM asks: a waiting row holds no slot, so TEAM's
+// question takes one of the 15 left and the row is shown at once, while SLOW is still asked once.
+// Were a waiting row to take a slot, the 15 would hold every slot the question leaves, TEAM's
+// question could take none before the clock ran out, and the row would be
+// ErrProjectAccessUnavailable.
+func TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot(t *testing.T) {
+	stall := &stallFor{inner: publicAnswers{}, project: stalledProject, hold: time.Hour}
+	m := &Machine{Projects: stall}
+	clock, cancel := context.WithTimeout(t.Context(), listOwnRowsBound)
+	defer cancel()
+	list := withAccessMemo(clock)
+	joined := make(chan struct{}, 32)
+	list.Value(accessMemoKey{}).(*accessMemo).joined = func() { joined <- struct{}{} }
+	var slow sync.WaitGroup
+	for range 20 {
+		slow.Go(func() { _, _, _ = m.maySee(list, outsider, nil, stalledProject+"-1: rotate the slow key") })
+	}
+	for range MaySeeAtOnce - 1 {
+		<-joined
+	}
+
+	shown, _, err := m.maySee(list, outsider, nil, teamProject+"-1: rotate the deploy key")
+	cancel()
+	slow.Wait()
+
+	if !shown || err != nil {
+		t.Errorf("maySee(the row naming TEAM-1) while 15 rows wait on SLOW = %v, %v; want true, nil: a waiting row holds no slot", shown, err)
+	}
+	if n := stall.stalled.Load(); n != 1 {
+		t.Errorf("Dispatch was asked about SLOW %d times; want once, however many rows name it", n)
 	}
 }
 
