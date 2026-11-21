@@ -923,8 +923,10 @@ variable is an error that names both.
 While a sign-in record is on the machine, the client never trades the machine in its place. An
 error while it chooses, reads or trades the sign-in fails the call. Each refusal that a new
 sign-in cures names `agent-secrets login`. Some refusals are final (`isFinalRefusal`): the broker
-refused the sign-in, or the issuer answered `invalid_grant`. The process keeps a final refusal
-against that sign-in, the person and the box key's thumbprint, for the session it was refused to.
+refused the sign-in, or the issuer answered the renewal of the sign-in 400 or 401 `invalid_grant`.
+An issuer's 403, 429 or 5xx is an outage that a later call asks again about, whatever its body
+names. The process keeps a final refusal against that sign-in, the person and the box key's
+thumbprint, for the session it was refused to.
 A later call of that session in that process fails with the same words and sends nothing to the
 issuer or the broker. This stops when the store no longer holds that sign-in: a new
 `agent-secrets login` makes a new sign-in, with a new box key. A new process, such as the next

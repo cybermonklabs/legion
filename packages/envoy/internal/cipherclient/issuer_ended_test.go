@@ -4,17 +4,18 @@
 // kept refresh token is refused 400 invalid_grant, which DeviceFlow.Refresh answers as
 // ErrSignInEnded to the PersonIdentity every trade of that sign-in reads. That is as final as the
 // broker's permanent refusal, whatever the client still holds: Token drops the token in hand
-// though it is still live, Run stops rather than waiting to trade again, and SignInAuthority
-// remembers the sign-in as refused, so the box enrols under its own machine. The controls are the
-// failures a later trade can cure, which keep the token in hand and the loop trading: an issuer
-// that is down, one that is down and names invalid_grant in its body
+// though it is still live, Run stops rather than waiting to trade again and drops it too, and
+// SignInAuthority remembers the sign-in as refused, so the box enrols under its own machine. The
+// controls are the failures a later trade can cure, which keep the token in hand and the loop
+// trading: an issuer that is down, one that is down and names invalid_grant in its body
 // (TestOnlyTheIssuersRefusalEndsASignIn), and the broker answering that Dispatch holds the person
 // (membership_held).
 //
 // The named reverts: drop ErrSignInEnded from finalRefusal (brokerclient.go), and Token answers
 // the live token in hand, Current the person's credential with nothing remembered, and Run waits
 // to trade again, so each of the three tests below fails on its first row; read invalid_grant at
-// any status as the end of the sign-in (device.go), and each fails on its third.
+// any status as the end of the sign-in (device.go), and each fails on its third; keep the token
+// in hand when Run stops, and the Run test's Token after Run fails on its first row.
 
 package cipherclient
 
@@ -58,9 +59,10 @@ var renewalFailures = []renewalFailure{
 
 // newRenewalRig is a box with endedPerson signed in, whose broker mints access tokens that live a
 // minute: inside DefaultRenewBefore, so every Token and every renewal of Run asks the issuer for a
-// fresh identity token first, and live for the whole test, so the token in hand is one Token
-// could still answer. Under f.held, the broker refuses every trade after the first
-// membership_held.
+// fresh identity token first. Its clients' clock stands still (the authority's now, which
+// personClient's clients read too), so the token in hand stays one Token could still answer
+// however long the box takes between two calls. Under f.held, the broker refuses every trade
+// after the first membership_held.
 func newRenewalRig(t *testing.T, f renewalFailure) (*signInRig, SignInRecord) {
 	t.Helper()
 	rig := newSignInRig(t, func(n int, _ url.Values) (int, map[string]any) {
@@ -71,6 +73,8 @@ func newRenewalRig(t *testing.T, f renewalFailure) (*signInRig, SignInRecord) {
 		answer["expires_in"] = 60
 		return 200, answer
 	})
+	start := time.Now()
+	rig.authority.now = func() time.Time { return start }
 	return rig, rig.signIn(t, endedPerson)
 }
 
@@ -84,7 +88,7 @@ func (f renewalFailure) apply(rig *signInRig) {
 
 // personClient is the client `agent-secrets login` and SignInAuthority build for record: its
 // subject the person's own identity, renewed through the rig's device flow, and this machine as
-// the actor.
+// the actor, on the rig's clock.
 func personClient(t *testing.T, rig *signInRig, record SignInRecord, after func(time.Duration) <-chan time.Time) *Client {
 	t.Helper()
 	client, err := New(Config{
@@ -93,6 +97,7 @@ func personClient(t *testing.T, rig *signInRig, record SignInRecord, after func(
 		Subject:   &PersonIdentity{Flow: rig.flow, RefreshToken: record.RefreshToken, Person: record.Person},
 		Actor:     rig.authority.Machine,
 		Session:   SessionFor(record),
+		Now:       rig.authority.now,
 		After:     after,
 	})
 	if err != nil {
@@ -138,9 +143,11 @@ func TestASignInTheIssuerEndedIsNotServedFromTheTokenInHand(t *testing.T) {
 }
 
 // TestASignInTheIssuerEndedStopsTheRenewalLoop: Run renews a person's sign-in at the issuer, and
-// once the issuer ends it Run returns ErrSignInEnded at once, with no wait to trade again. A
-// failure a later trade can cure is waited out from defaultRetryWait, the loop ending with no
-// error when its context does.
+// once the issuer ends it Run returns ErrSignInEnded at once, with no wait to trade again, and
+// drops the token in hand as Token does: a Token on the same client after Run returns asks the
+// issuer again and answers the refusal, though the token the ended sign-in traded for is still
+// fresh. A failure a later trade can cure is waited out from defaultRetryWait, the loop ending
+// with no error when its context does, and the token in hand stays the one Token answers.
 func TestASignInTheIssuerEndedStopsTheRenewalLoop(t *testing.T) {
 	for _, f := range renewalFailures {
 		t.Run(f.name, func(t *testing.T) {
@@ -161,6 +168,9 @@ func TestASignInTheIssuerEndedStopsTheRenewalLoop(t *testing.T) {
 				cancel()
 				return make(chan time.Time)
 			})
+			// A token that is not yet in its renewal window, so a Token after Run answers the
+			// token in hand without asking the issuer, unless Run dropped it.
+			client.renewBefore = 10 * time.Second
 			landed := 0
 			err := client.Run(ctx, func(context.Context, *Token) error {
 				landed++
@@ -178,6 +188,16 @@ func TestASignInTheIssuerEndedStopsTheRenewalLoop(t *testing.T) {
 			}
 			if trades := len(rig.broker.Requests()); trades != f.trades {
 				t.Errorf("the broker saw %d trades; want %d", trades, f.trades)
+			}
+			token, err := client.Token(context.Background())
+			switch {
+			case f.final && (token != nil || !errors.Is(err, ErrSignInEnded)):
+				t.Errorf("Token after Run stopped on the ended sign-in = %+v, %v; want no token and ErrSignInEnded: Run drops the token the ended sign-in traded for", token, err)
+			case !f.final && (err != nil || token == nil || token.AccessToken != "access-token-1"):
+				t.Errorf("Token after Run ended once %s = %+v, %v; want the token in hand, access-token-1, which is still live: a later trade can cure this", f.name, token, err)
+			}
+			if trades := len(rig.broker.Requests()); trades != f.trades {
+				t.Errorf("after Token, the broker saw %d trades; want %d: Token answers from the token in hand or the issuer's refusal, not a trade", trades, f.trades)
 			}
 		})
 	}

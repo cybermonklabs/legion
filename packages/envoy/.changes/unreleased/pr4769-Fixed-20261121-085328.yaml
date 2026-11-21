@@ -1,12 +1,13 @@
 kind: Fixed
 body: |-
-  A person's sign-in that the issuer has ended (the issuer answers its refresh `400 invalid_grant`)
-  is now final in the Go broker client, also while the client still holds a live token for it.
-  `agent-secrets-helper` enrols the next session under this machine and remembers the refusal, and
-  the client's renewal loop stops rather than trading again. Before, the token in hand hid the
-  refusal until it lapsed. An issuer's 429, 5xx or 403 is now an issuer failure that a later
-  refresh may cure, even when its body names `invalid_grant`, so it no longer ends the sign-in;
-  the TypeScript broker client reads a 403 or 429 the same way.
+  A person's sign-in that the issuer has ended (the issuer answers its refresh 400 or 401
+  `invalid_grant`) is now final in the Go broker client, also while the client still holds a live
+  token for it: `Client.Token` drops that token and answers the refusal, and `Client.Run` drops it
+  and stops rather than trading again. So `agent-secrets-helper` enrols the next session under
+  this machine and remembers the refusal. Before, the token in hand hid the refusal until it
+  lapsed. An issuer's 403, 429 or 5xx is now an issuer failure that a later refresh may cure, even
+  when its body names `invalid_grant`, so it no longer ends the sign-in; the TypeScript broker
+  client reads a 403 or 429 the same way.
 time: 2026-11-21T08:53:28Z
 custom:
     Issue: pr4769

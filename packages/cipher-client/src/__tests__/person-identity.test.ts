@@ -158,9 +158,11 @@ test("an issuer that is down is an ordinary error, and the next read asks again"
 });
 
 // Only the issuer's 400 or 401 invalid_grant (RFC 6749 section 5.2) ends a sign-in, the rule the
-// Go client's DeviceFlow.Refresh and Dispatch's own refresh read by: a 429 or a 5xx is the issuer
-// busy or down, and a 403 no refusal of the grant, whatever the body names, and reading one as the
-// end would drop a live token and stop the client over an outage.
+// Go client's DeviceFlow.Refresh and Dispatch's own refresh read by: a 429 is the issuer busy, and
+// a 403 no refusal of the grant, whatever the body names, and reading one as the end would drop a
+// live token and stop the client over an outage. The 500 and 503 rows passed before the rule
+// too, since the library reads no error body from a 5xx; they keep a library that starts to from
+// ending a sign-in over an outage.
 test.each([
   [400, true],
   [401, true],
