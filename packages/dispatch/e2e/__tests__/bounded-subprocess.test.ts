@@ -13,9 +13,11 @@ import {
   masked,
   maxReads,
   named,
+  readListed,
   rowLimit,
   runBounded,
   stopTree,
+  stopTreeSync,
   whether,
 } from "./bounded-subprocess";
 
@@ -223,17 +225,19 @@ const sibling: Listed = {
   unknown: false,
 };
 
-/** `stopTree` of `scriptedChild`, standing as `child` says, driven over `tables`, a scripted
+/** `stopTreeSync` of `scriptedChild`, standing as `child` says, driven over `tables`, a scripted
  *  process table: read n answers `tables[n - 1]`, and each read after the last answers the last
- *  again. `procfs` tells the kill whether its table comes from `/proc`, so a row runs either path
- *  whatever this machine has, and the signal of a pid in `gone` throws, as `process.kill` throws
- *  for a process that has ended. It answers what the kill did, in order: each call of `read`,
- *  `pause`, `signal` and `child.kill`, written as the stand-in's name and then every argument it
- *  was given. So `read` and `pause`, which are given none, write their name alone, a signal
- *  writes `signal <pid>`, and the kill of a running child writes `child.kill SIGKILL`. No clock
- *  runs and no process is started or signalled: the pause, the signal and `child.kill` only
- *  record, and act on no process. Its loop is synchronous, so a loop that lost its `maxReads`
- *  bound would spin past every row clock; a read past `maxReads` throws instead. */
+ *  again. Each read yields one turn first, as a read of `/proc` does between its parts, which
+ *  `stopTreeSync` skips. `procfs` tells the kill whether its table comes from `/proc`, so a row
+ *  runs either path whatever this machine has, and the signal of a pid in `gone` throws, as
+ *  `process.kill` throws for a process that has ended. It answers what the kill did, in order:
+ *  each call of `read`, `pause`, `signal` and `child.kill`, written as the stand-in's name and
+ *  then every argument it was given. So `read` and `pause`, which are given none, write their
+ *  name alone, a signal writes `signal <pid>`, and the kill of a running child writes
+ *  `child.kill SIGKILL`. No clock runs and no process is started or signalled: the pause, the
+ *  signal and `child.kill` only record, and act on no process. Its loop is synchronous, so a loop
+ *  that lost its `maxReads` bound would spin past every row clock; a read past `maxReads` throws
+ *  instead. */
 function scriptedKill(
   tables: readonly (readonly Listed[] | undefined)[],
   {
@@ -248,7 +252,7 @@ function scriptedKill(
     did.push([name, ...args].map(String).join(" "));
   };
   let reads = 0;
-  stopTree(
+  stopTreeSync(
     {
       child: {
         ...child,
@@ -261,12 +265,13 @@ function scriptedKill(
     {
       pause: (...args: unknown[]) => record("pause", args),
       procfs,
-      read: (...args: unknown[]) => {
+      read: function* (...args: unknown[]) {
         reads += 1;
         if (reads > maxReads) {
           throw new Error(`the kill read the table ${reads} times, past maxReads of ${maxReads}`);
         }
         record("read", args);
+        yield "turn";
         return tables[Math.min(reads, tables.length) - 1];
       },
       signal: (pid: number, ...more: unknown[]) => {
@@ -391,6 +396,73 @@ test("a kill takes a running child through child.kill, and what it started by pa
   ).toEqual(["read", "child.kill SIGKILL", `signal ${ended}`, `signal ${left}`, "read"]);
 });
 
+test("a child the runtime reaps while the first read runs seeds nothing by its pid, its entry read before the reap is never signalled, and a process that took its pid is signalled by its token alone", () => {
+  // `stopTree` hands the event loop its turns while it reads the table, and the runtime may reap
+  // the child then: this child runs when the kill begins and has exited 0 by the end of read 1.
+  // Its pid is listed with a process below it. Where the entry is the child's own, read before
+  // the reap with the child's start and token, the pid may name another process by the time the
+  // kill signals, so it is never signalled, while the process below it is. Where another process
+  // holds the pid, listed with another start, and carries no token, neither it nor the process
+  // below it is signalled, and the child gets no `child.kill`; where it carries the child's
+  // token, as one of the child's own processes would, it and the process below it are signalled
+  // as any others.
+  const below: Listed = {
+    pid: process.pid + 2,
+    ppid: scriptedChild.pid,
+    start: scriptedChild.start + 3,
+    tokens: [],
+    unknown: false,
+  };
+  const stranger: Listed = {
+    pid: scriptedChild.pid,
+    ppid: 1,
+    start: scriptedChild.start + 2,
+    tokens: [],
+    unknown: false,
+  };
+  const ofTheChild: Listed = { ...stranger, tokens: [outerToken, scriptedChild.token] };
+  const original: Listed = { ...ofTheChild, ppid: process.pid, start: scriptedChild.start };
+  const kill = (holder: Listed): string[] => {
+    const did: string[] = [];
+    let exitCode: number | null = null;
+    stopTreeSync(
+      {
+        child: {
+          get exitCode() {
+            return exitCode;
+          },
+          kill: () => did.push("child.kill"),
+          pid: scriptedChild.pid,
+          signalCode: null,
+        },
+        start: scriptedChild.start,
+        token: scriptedChild.token,
+      },
+      {
+        pause: () => did.push("pause"),
+        procfs: true,
+        read: function* () {
+          did.push("read");
+          yield "turn";
+          exitCode = 0;
+          return [init, holder, below, sibling];
+        },
+        signal: (pid) => did.push(`signal ${pid}`),
+      }
+    );
+    return did;
+  };
+  expect({
+    original: kill(original),
+    stranger: kill(stranger),
+    ofTheChild: kill(ofTheChild),
+  }).toEqual({
+    original: ["read", `signal ${below.pid}`, "read"],
+    stranger: ["read"],
+    ofTheChild: ["read", `signal ${scriptedChild.pid}`, `signal ${below.pid}`, "read"],
+  });
+});
+
 test("a child that has ended is found by its token alone, though a process holds its pid", () => {
   // Once the runtime reaped the child, one of the child's own processes took its pid; it carries
   // the token, and the kill signals it as it would any other. The child itself gets nothing. The
@@ -484,14 +556,14 @@ test("a kill never signals this process, even where its table reads it as one of
 });
 
 test("a kill with its own signal and pause sends SIGKILL through process.kill and waits execPause", () => {
-  // Every scripted row above hands `stopTree` a stand-in `signal` and `pause`, so none of them
-  // reaches the defaults, which call `process.kill` and `Bun.sleepSync`. The setsid row above
-  // reaches them through `runBounded`, but its `sleep` dies of SIGTERM as of SIGKILL. This row
-  // hands `read` and `procfs` alone, and stands in for those two globals while the kill runs,
-  // each recording every argument it is given. Its table is that of the first scripted row: a
-  // process started since the child, unknown at read 1 and carrying the child's token at read
-  // 2, here between an unknown process older than the child and a process of the sibling. Every
-  // pid its table lists is above 2 ** 22, Linux's `PID_MAX_LIMIT` and the most
+  // Every scripted row above hands `stopTreeSync` a stand-in `signal` and `pause`, so none of
+  // them reaches the defaults, which call `process.kill` and `Bun.sleepSync`. The setsid row
+  // above reaches `process.kill` through `runBounded`, but its `sleep` dies of SIGTERM as of
+  // SIGKILL. This row hands `read` and `procfs` alone, and stands in for those two globals while
+  // the kill runs, each recording every argument it is given. Its table is that of the first
+  // scripted row: a process started since the child, unknown at read 1 and carrying the child's
+  // token at read 2, here between an unknown process older than the child and a process of the
+  // sibling. Every pid its table lists is above 2 ** 22, Linux's `PID_MAX_LIMIT` and the most
   // `/proc/sys/kernel/pid_max` can hold, so no process holds one, and a stand-in that failed to
   // take its global's place would signal nothing real.
   const pid = 2 ** 30 + 2;
@@ -529,7 +601,7 @@ test("a kill with its own signal and pause sends SIGKILL through process.kill an
     Object.assign(Bun, { sleepSync: (...args: unknown[]) => sleeps.push(args) });
     expect(process.kill, "process.kill is not the stand-in").not.toBe(realKill);
     expect(Bun.sleepSync, "Bun.sleepSync is not the stand-in").not.toBe(realSleep);
-    stopTree(
+    stopTreeSync(
       {
         child: {
           ...exitedByCode,
@@ -541,11 +613,12 @@ test("a kill with its own signal and pause sends SIGKILL through process.kill an
       },
       {
         procfs: true,
-        read: (...args: unknown[]) => {
+        read: function* (...args: unknown[]) {
           reads.push(args);
           if (reads.length > maxReads) {
             throw new Error(`the kill read the table ${reads.length} times, past maxReads`);
           }
+          yield "turn";
           return tables[Math.min(reads.length, tables.length) - 1];
         },
       }
@@ -562,6 +635,100 @@ test("a kill with its own signal and pause sends SIGKILL through process.kill an
   });
 });
 
+test("a kill beside the event loop hands it a turn at each turn its read asks for, and waits execPause with Bun.sleep", async () => {
+  // `stopTree`, which `runBounded` runs, over the table of the row above, whose every read here
+  // asks for one turn between two parts, as a read of `/proc` does after each `partSize`
+  // processes. Before it asks, each read sets an immediate, which runs at the turn the kill hands
+  // over, between the two parts of that read; a kill that awaited only a settled promise there,
+  // or held the loop, would end the read first. This row hands `read` and `procfs` alone, and
+  // stands in for `process.kill` and `Bun.sleep` while the kill runs, as the row above does for
+  // `process.kill` and `Bun.sleepSync`, over pids no process holds.
+  const pid = 2 ** 30 + 2;
+  const older: Listed = {
+    pid: 2 ** 30 + 1,
+    ppid: 1,
+    start: scriptedChild.start - 1,
+    tokens: [],
+    unknown: true,
+  };
+  const execing: Listed = { ...older, pid, start: scriptedChild.start };
+  const loaded: Listed = {
+    ...execing,
+    tokens: [outerToken, scriptedChild.token],
+    unknown: false,
+  };
+  const ofSibling: Listed = { ...sibling, pid: 2 ** 30 + 3 };
+  const tables = [
+    [older, execing, ofSibling],
+    [older, loaded, ofSibling],
+  ];
+  const did: string[] = [];
+  const kills: unknown[][] = [];
+  const sleeps: unknown[][] = [];
+  const realKill = process.kill;
+  const realSleep = Bun.sleep;
+  let reads = 0;
+  try {
+    Object.assign(process, {
+      kill: (...args: unknown[]) => {
+        kills.push(args);
+        did.push(`kill ${args[0]}`);
+        return true;
+      },
+    });
+    Object.assign(Bun, {
+      sleep: async (...args: unknown[]) => {
+        sleeps.push(args);
+        did.push("sleep");
+      },
+    });
+    expect(process.kill, "process.kill is not the stand-in").not.toBe(realKill);
+    expect(Bun.sleep, "Bun.sleep is not the stand-in").not.toBe(realSleep);
+    await stopTree(
+      {
+        child: { ...exitedByCode, kill: () => did.push("child.kill"), pid: scriptedChild.pid },
+        start: scriptedChild.start,
+        token: scriptedChild.token,
+      },
+      {
+        procfs: true,
+        read: function* () {
+          reads += 1;
+          if (reads > maxReads) {
+            throw new Error(`the kill read the table ${reads} times, past maxReads`);
+          }
+          const read = reads;
+          did.push(`read ${read} begins`);
+          setImmediate(() => did.push(`turn of read ${read}`));
+          yield "turn";
+          did.push(`read ${read} ends`);
+          return tables[Math.min(reads, tables.length) - 1];
+        },
+      }
+    );
+  } finally {
+    Object.assign(process, { kill: realKill });
+    Object.assign(Bun, { sleep: realSleep });
+  }
+  expect({ did, kills, sleeps }).toEqual({
+    did: [
+      "read 1 begins",
+      "turn of read 1",
+      "read 1 ends",
+      "sleep",
+      "read 2 begins",
+      "turn of read 2",
+      "read 2 ends",
+      `kill ${pid}`,
+      "read 3 begins",
+      "turn of read 3",
+      "read 3 ends",
+    ],
+    kills: [[pid, "SIGKILL"]],
+    sleeps: [[execPause]],
+  });
+});
+
 /** The pid, parent and start time of the process the rows of `listedOf` below read. */
 const readProcess = { pid: 4_242, ppid: 4_200, start: 9_183_936 };
 
@@ -570,10 +737,21 @@ const readProcess = { pid: 4_242, ppid: 4_200, start: 9_183_936 };
 const ordinaryFlags = 0x00400100;
 
 /** The text Linux gives for the `/proc/<pid>/stat` of `readProcess`, named `name`, in `state`,
- *  with `flags`: its pid, its name in parentheses, and fields 3 to 52 of proc(5), each 0 but the
- *  state, the parent, the flags and the start time. So each of the four, read one place off,
- *  reads something other than its own value. */
-function statText({ flags = ordinaryFlags, name = "sleep", state = "R" } = {}): string {
+ *  with `flags`, and with `environment` as its fields 50 and 51, the start and the end of its
+ *  environment: its pid, its name in parentheses, and fields 3 to 52 of proc(5), each 0 but the
+ *  state, the parent, the flags, the start time and those two. So each of the four, read one
+ *  place off, reads something other than its own value. */
+function statText({
+  environment = [0, 0],
+  flags = ordinaryFlags,
+  name = "sleep",
+  state = "R",
+}: {
+  environment?: readonly [number, number];
+  flags?: number;
+  name?: string;
+  state?: string;
+} = {}): string {
   const fields: Record<number, string> = {
     1: String(readProcess.pid),
     2: `(${name})`,
@@ -581,9 +759,19 @@ function statText({ flags = ordinaryFlags, name = "sleep", state = "R" } = {}): 
     4: String(readProcess.ppid),
     9: String(flags),
     22: String(readProcess.start),
+    50: String(environment[0]),
+    51: String(environment[1]),
   };
   return `${Array.from({ length: 52 }, (_, index) => fields[index + 1] ?? "0").join(" ")}\n`;
 }
+
+/** The start and the end of a loaded program's environment, 184 bytes long, as the stat of a
+ *  `gvisor_sentry` process recorded them on 2026-11-21; another such place, where a program an
+ *  exec loaded next would stand; and the one address an `env -i` program's environment starts
+ *  and ends at. */
+const place = [140_722_924_691_254, 140_722_924_691_438] as const;
+const elsewhere = [140_733_398_794_119, 140_733_398_794_161] as const;
+const oneAddress = [place[0], place[0]] as const;
 
 /** The text of a `/proc/<pid>/environ` holding `variables`, each one ended by a NUL. */
 function environText(...variables: string[]): string {
@@ -597,13 +785,159 @@ function listedWith(...variables: string[]): Listed | undefined {
 }
 
 test("the table lists a process whose environment reads empty, in state R and no kernel thread, as unknown", () => {
-  // As a process in the middle of its exec reads, or one that is exiting, or one `env -i` started.
+  // As a process in the middle of its exec reads, or one that is exiting: its stat records no
+  // place for its environment, and it is read once.
   expect(listedOf(readProcess.pid, statText(), "")).toEqual({
     ...readProcess,
     tokens: [],
     unknown: true,
   });
 });
+
+test("the table lists a loaded program whose environment reads empty for good, between two stats that hold it, as not unknown", () => {
+  // Both stats record the environment at one nonzero place, so one program held the process
+  // across the environ read. A gVisor sandbox's `gvisor_sentry`, whose environment holds 184
+  // bytes that cannot be read, here running at both stats; and an `env -i` program, whose
+  // environment starts and ends at one address, in a state no exec reads at the second stat, the
+  // one read after the environ: asleep at both, gone to sleep by the second, and stopped.
+  const at = (state: string, environment: readonly [number, number] = oneAddress) =>
+    statText({ environment, state });
+  const listed = (stat: string, again: string) => listedOf(readProcess.pid, stat, "", again);
+  const loaded = { ...readProcess, tokens: [], unknown: false };
+  expect({
+    unreadable: listed(at("R", place), at("R", place)),
+    asleep: listed(at("S"), at("S")),
+    goneToSleep: listed(at("R"), at("S")),
+    stopped: listed(at("T"), at("T")),
+  }).toEqual({
+    unreadable: loaded,
+    asleep: loaded,
+    goneToSleep: loaded,
+    stopped: loaded,
+  });
+});
+
+test("the table lists a process whose empty environment its two stats do not show a loaded program holding as unknown", () => {
+  // An environment at one address in a state an exec reads at the second stat, `R` or `D`,
+  // whatever the first read, as an exec reads while it walks the environment it was given: the
+  // first stat's state is read before its place is, so one asleep there may have entered its exec
+  // by then. An exec between the two stats, which places the environment elsewhere, and second
+  // stats whose environment starts or ends elsewhere alone; a process that lost its memory after
+  // the first stat, or whose exec recorded its environment only after it; and a process whose
+  // stat was read once, a loaded program's and an asleep `env -i` program's alike.
+  const at = (state: string, environment: readonly [number, number] = oneAddress) =>
+    statText({ environment, state });
+  const listed = (stat: string, again?: string) => listedOf(readProcess.pid, stat, "", again);
+  const unknown = { ...readProcess, tokens: [], unknown: true };
+  expect({
+    walking: listed(at("R"), at("R")),
+    walkingFaulted: listed(at("R"), at("D")),
+    woken: listed(at("S"), at("R")),
+    wokenFaulted: listed(at("S"), at("D")),
+    faultedWalking: listed(at("D"), at("R")),
+    faulted: listed(at("D"), at("D")),
+    moved: listed(at("R", place), at("R", elsewhere)),
+    startMoved: listed(at("R", place), at("R", [place[0] - 8, place[1]])),
+    endMoved: listed(at("R", place), at("R", [place[0], place[1] + 8])),
+    goneAfter: listed(at("R", place), at("R", [0, 0])),
+    recordedAfter: listed(at("R", [0, 0]), at("R", place)),
+    readOnce: listed(at("R", place)),
+    asleepReadOnce: listed(at("S")),
+  }).toEqual({
+    walking: unknown,
+    walkingFaulted: unknown,
+    woken: unknown,
+    wokenFaulted: unknown,
+    faultedWalking: unknown,
+    faulted: unknown,
+    moved: unknown,
+    startMoved: unknown,
+    endMoved: unknown,
+    goneAfter: unknown,
+    recordedAfter: unknown,
+    readOnce: unknown,
+    asleepReadOnce: unknown,
+  });
+});
+
+test("a read of one process reads its stat, its environ, and its stat again only where the environ read empty", () => {
+  // `listedOf` reads an empty environ against a stat read before it and one read after it, so
+  // this order is what it rests on. Each scripted read answers its file's next text in turn, and
+  // records the file's name.
+  const loaded = statText({ environment: place });
+  const reading = (answers: Record<"environ" | "stat", (string | undefined)[]>) => {
+    const read: string[] = [];
+    const listed = readListed(readProcess.pid, (file) => {
+      read.push(file);
+      return answers[file].shift();
+    });
+    return { listed, read };
+  };
+  const settled = { ...readProcess, tokens: [], unknown: false };
+  expect(reading({ environ: [""], stat: [loaded, loaded] }), "an empty environ").toEqual({
+    listed: settled,
+    read: ["stat", "environ", "stat"],
+  });
+  expect(
+    reading({ environ: [environText("DISPATCH_E2E_BOUNDED_TOKENS=outer inner")], stat: [loaded] }),
+    "an environ that holds the tokens"
+  ).toEqual({
+    listed: { ...settled, tokens: ["outer", "inner"] },
+    read: ["stat", "environ"],
+  });
+  expect(reading({ environ: [undefined], stat: [loaded] }), "an environ not read").toEqual({
+    listed: settled,
+    read: ["stat", "environ"],
+  });
+  expect(reading({ environ: [], stat: [undefined] }), "a process gone").toEqual({
+    listed: undefined,
+    read: ["stat"],
+  });
+});
+
+// Under `/proc` alone: `ps` lists no environment.
+test.skipIf(!existsSync("/proc/self/stat"))(
+  "an asleep program started with an empty environment reads as not unknown where this `/proc` records where environments lie",
+  async () => {
+    // What keeps a kill from reading again for an `env -i` program (`killing`): its stat records
+    // its environment at one address, on a `/proc` that records environments' places at all, as
+    // this process's own stat tells, and it sleeps, a state no exec reads. gVisor's `/proc`
+    // records none, and there it reads unknown, and a kill waits on it until `maxReads`, as the
+    // kills before this one did everywhere.
+    const seconds = `${rowLimit("short") / 1000}.${randomInt(10_000_000, 100_000_000)}`;
+    const sleeper = Bun.spawn(["env", "-i", "sleep", seconds], {
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "ignore",
+    });
+    const read = (file: "environ" | "stat") => {
+      try {
+        return readFileSync(`/proc/${sleeper.pid}/${file}`, "utf8");
+      } catch {
+        return undefined;
+      }
+    };
+    try {
+      // Its exec has ended once it sleeps in `sleep`'s own wait, state S.
+      expect(
+        await whether(() => read("stat")?.includes("(sleep) S ") ?? false),
+        `the env -i sleep did not sleep inside the short bound of ${bounds.short} ms`
+      ).toBe(true);
+      const own = readFileSync("/proc/self/stat", "utf8");
+      const recordsPlaces = Number(own.slice(own.lastIndexOf(")") + 2).split(" ")[47]) > 0;
+      const first = readListed(sleeper.pid, read);
+      const second = readListed(sleeper.pid, read);
+      expect({
+        tokens: [first?.tokens, second?.tokens],
+        unknown: [first?.unknown, second?.unknown],
+      }).toEqual({ tokens: [[], []], unknown: [!recordsPlaces, !recordsPlaces] });
+    } finally {
+      sleeper.kill("SIGKILL");
+    }
+  },
+  // The wait for the sleep to sleep, which the short bound ends.
+  rowLimit("short")
+);
 
 test("the table lists a zombie whose environment reads empty as not unknown", () => {
   expect(listedOf(readProcess.pid, statText({ state: "Z" }), "")).toEqual({
