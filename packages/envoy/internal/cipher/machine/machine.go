@@ -106,9 +106,10 @@ func deref(s *string) string {
 }
 
 // verifyLauncherRequest verifies a machine request object for a launcher credential at now: its
-// signature and freshness (record.VerifyRequestObject), exactly one launcher_credential detail,
-// then the caller's own check, then its jti, which it records, so a replayed request is refused.
-// Every refusal but check's own is record.ErrRequestInvalid.
+// signature and freshness (record.VerifyRequestObject), exactly one launcher_credential detail, a
+// reason naming no more projects than a new request may (record.CheckReasonProjects), then the
+// caller's own check, then its jti, which it records, so a replayed request is refused. Every
+// refusal but check's own is record.ErrRequestInvalid.
 func (s *Service) verifyLauncherRequest(ctx context.Context, compact string, now time.Time, check func(record.RequestObject) error) (record.RequestObject, error) {
 	obj, err := record.VerifyRequestObject(compact, s.Audience, s.Skew, now)
 	if err != nil {
@@ -116,6 +117,9 @@ func (s *Service) verifyLauncherRequest(ctx context.Context, compact string, now
 	}
 	if len(obj.Details) != 1 || obj.Details[0].Type != record.KindLauncherCredential {
 		return record.RequestObject{}, fmt.Errorf("%w: exactly one launcher_credential detail is required", record.ErrRequestInvalid)
+	}
+	if err := record.CheckReasonProjects(obj.Reason); err != nil {
+		return record.RequestObject{}, err
 	}
 	if err := check(obj); err != nil {
 		return record.RequestObject{}, err
@@ -254,7 +258,8 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 	if err != nil {
 		return "", "", err
 	}
-	login, err = body.ApproverLogin(record.KindLauncherCredential, obj.Service(), login)
+	// A machine login's approver is never a group, so no group reader is asked.
+	login, err = body.ApproverLogin(record.KindLauncherCredential, obj.Service(), login, nil)
 	if err != nil {
 		return "", "", err
 	}

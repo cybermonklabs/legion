@@ -85,7 +85,8 @@ list|revoke` and `grant list` to a process inside a registered session's process
 run inside a session is the session's own revoke instead, which `agent-secrets revoke` makes too:
 it signs as the broker identity the session's use command takes, and the broker ends only a grant
 of that identity's enrollment and refuses any other (`NOT_YOURS`), which stays its holder's, its
-operator's or its approver's to end. Processes that sign as one enrollment share its grants: each
+operator's or its approver's to end; a private project's grant the session does not name is
+answered as an unknown grant (`NOT_FOUND`). Processes that sign as one enrollment share its grants: each
 session of a person who ran `agent-secrets login` on the machine signs as that sign-in's one
 enrollment, and processes that share one key dir sign as its enrollment, so each can end the
 others' grants. The machine-command check covers that tree only: a process a
@@ -114,6 +115,12 @@ writer are spent alike. Where the rule changes nothing, the client still removes
 final line feed, which it has always done, so `echo` and a file that ends in a newline store the
 value without one.
 
+`--type` names what the broker mints a release from rather than releasing the stored value as it
+is: `github-app`, `google-login`, `azure-login`, `google-service-account` or
+`anthropic-federation`, or `none` for a stored secret. The docs site's
+[Concepts](https://cybermonklabs.github.io/legion/broker/concepts/#requests-and-grants) page says
+what each type's value holds and what its release returns.
+
 A type secret's value is checked before it is written, by the decoder the broker's minter for that
 type reads it with: `secret create --type` checks the value it stores, `secret set` checks it under
 the type tag the secret holds, and `secret retag` checks the value the secret holds when it
@@ -128,6 +135,34 @@ a type needs a broker that reads the `type` tag, one whose `GET /v1/settings` an
 legion-envoy-v16.0.0 on would serve the secret's stored key as its value, it exits 1 before it
 writes anything, naming the release to move the broker to. After the write, `create`, `set` and
 `retag` each exit 1 when the reread names another type than the secret holds.
+
+A secret can belong to one Dispatch project: its `dispatch-project` tag names the project's key.
+A secret of a private project goes only to a session whose credential names that project.
+`agent-secrets secret create --project KEY` writes the tag, `secret retag --project KEY|none`
+changes it or removes it, `secret show` prints it as a `project:` line, `secret list` prints it as
+a `PROJECT` column, and `--json` carries it as `project`, null for a secret of no project. A key
+in lower case, two keys and `none` on create are refused before anything is written. A broker
+that cannot ask Dispatch whether a project is private refuses a tagged secret
+`project-unchecked`, which the write's reread prints, exiting 1.
+
+A Slack bot token can carry the `project-channels` tag, whose one value is `slack`. A session whose
+credential names a private project then gets the token only behind the airlock, and the airlock's
+proxy carries only a post to a Slack channel that project's owner named in Dispatch; it refuses any
+other call `CHANNEL_NOT_ALLOWED`. `agent-secrets secret create --project-channels slack` writes the
+tag, `secret retag --project-channels slack|none` writes it or removes it, `secret show` prints it
+as a `project_channels:` line, `secret list` prints it as a `PROJECT_CHANNELS` column, and `--json`
+carries it as `project_channels`, null for a secret without it. Any other value, and `none` on
+create, is refused before anything is written, naming `project-channels-malformed`.
+
+Beside either tag, `create` and `retag` also write the entry `rollback-guard:project-tags` into the
+secret's `requesters` tag, after any list it holds, and remove it when neither tag remains. This
+broker ignores the entry; a broker from legion-envoy-v29.23.0, the first to read `requesters`, up to
+the release before the project tags refuses the secret (`requesters-malformed`) rather than serve it
+by owner and tier alone, and a broker older than legion-envoy-v29.23.0 reads no `requesters` tag
+and serves it. `secret show` prints the
+list without it and a `rollback_guard: yes|-` line, and `--json` a `rollback_guard` field. A tag
+written in the store's own console carries no guard: the rule for a rollback is in the broker's
+operate guide, "Rolling back past the project tags".
 
 On a machine that runs agents directly, `agent-secrets-helper` (`../cipher-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in
@@ -231,6 +266,12 @@ An enrolment the broker refuses leaves the key — a new key while the old enrol
 refused `ALREADY_ENROLLED` — and records what the broker said in `<out>/enrollment.error`, which
 every later `agent-secrets` call in that directory reads out to the caller. A run that succeeds
 removes it.
+
+A pod whose account the broker's `BROKER_POD_OPERATORS` maps to a person acts for that person, and
+names its Dispatch projects as that person's session does: `enroll --pod` sends the list
+`AGENT_SECRETS_PROJECTS` holds, or `--projects` over it. The broker takes the list only when
+Dispatch says the person may see every project on it, and a restricted member's pod must name at
+least one. Any other pod names no project: the broker refuses its list `PROJECTS_NEED_A_PERSON`.
 
 **Nothing in the pod ends its enrollment.** `unenroll` goes through the machine's
 `agent-secrets-helper`, which a pod has not, so a pod cannot end its own; and the broker is never
@@ -341,6 +382,16 @@ against a helper from before this (one that would pin the ended command), it ref
 and says to relaunch the session under `register --exec -- omp …`, rather than print `enrolled`
 for an identity nothing can use; upgrade the helper before the client.
 
+A session that works on a private Dispatch project names it when it starts, so the broker
+releases that project's secrets to it: set `AGENT_SECRETS_PROJECTS` to the project keys, separated
+by spaces (`AGENT_SECRETS_PROJECTS="PRIV CORE"`), or pass `register --projects` (and
+`enroll --helper --projects` for a box, or `enroll --pod --projects` for a person's pod). The
+session's token trade reads the same variable. The
+broker takes the list only when Dispatch says your person may see every project on it, and the
+list is fixed for the session's life. `agent-secrets self` prints it as a `projects:` line. A
+request for a private project's secret from a session that does not name the project is denied
+`project-not-named`, and the denial says how to name it.
+
 A Kubernetes pod or a Google Cloud VM does not use the helper or a person's approval: the Legion
 daemon enrolls its pods with their service-account tokens, and a VM enrolls itself (above). The
 docs site's [Log a machine in](https://cybermonklabs.github.io/legion/broker/guides/log-a-machine-in/)
@@ -351,7 +402,10 @@ guide covers each step in full.
 Each grant is for one session, and lasts until that session ends or for `--ttl`. What happens to a
 request depends on the secret's `owner` and `tier` tags. Your own `tier=agent` secret is granted at
 once to a session on a machine you logged in, and goes to you for approval from any other session.
-Your own `tier=human` secret always goes to you for approval. A `shared` agent-tier secret is
+Your own `tier=human` secret always goes to you for approval. A secret a Google group owns
+(`owner=group:<address>`) is each member's as if it were their own: its `tier=agent` secret is
+granted at once to a member's own session, and every other request for it waits for any member's
+approval. A `shared` agent-tier secret is
 granted at once; a `shared` human-tier one waits for anyone who signs in to the broker. A
 service's secret goes only to that service's pods and VMs. Approvals happen on the broker's
 approval page, which the approver's Dispatch Inbox links to. The docs site's
@@ -408,12 +462,14 @@ source it used (`using …`) before its first store call, and a store refusal na
 choose another from that source. The store's IAM decides what each may do. `--owner me` is the
 email of the person that credential names, and is refused where it names none (a machine's role,
 a service account, a token without an email scope); `--owner <email>` names the owning person
-outright:
+outright, and `--owner group:<email>` a Google group by its lowercase email, each member of which
+decides the secret's requests as the one owner would:
 
 ```sh
 agent-secrets secret list
 agent-secrets secret show NAME
 agent-secrets secret create NAME --owner me --tier agent
+agent-secrets secret create NAME --owner group:approvers@example.com --tier human
 agent-secrets secret set NAME
 agent-secrets secret retag NAME --tier human
 agent-secrets secret delete NAME
@@ -421,9 +477,13 @@ agent-secrets secret restore NAME
 ```
 
 `--requesters` lists who may ask for a secret at all — people by their lowercase sign-in email,
-services by their registered name, separated by spaces — and a secret carrying such a list bounds
-its grants to an hour, so give it `--max-grant 1h` or less; `--requesters none` removes the list
-on retag. `secret create` and `secret retag` check those rules before they write, but neither can
+Google groups as `group:` and the group's lowercase email, which admits each member's sessions,
+and services by their registered name, separated by spaces; `--requesters none` removes the list
+on retag. The list bounds no grant by itself. A `google-service-account` or
+`anthropic-federation` secret names its owner in the list exactly once, beside the registered
+services a human-tier one may list: `--owner <email> --requesters <email>` for a person, and
+`--owner group:<email> --requesters group:<email>`, with no person, for a group. `secret create`
+and `secret retag` check those rules before they write, but neither can
 check whether an entry naming a service is one your deployment registers: this CLI holds no list
 of registered services, so only the broker knows. The reread that follows the write is what
 catches an unregistered name — the broker's refusal prints with its reason and the command exits

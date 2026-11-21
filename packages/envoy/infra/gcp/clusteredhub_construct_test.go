@@ -210,6 +210,7 @@ func TestClusteredNatsHubRefusesABlankOrSeededSecretOnceItResolves(t *testing.T)
 				}))
 				require.EqualError(t, awaited, "envoy-infra:gcp:ClusteredNatsHub example-clustered-hub: "+row.want)
 				require.NotContains(t, strings.ToUpper(awaited.Error()), seed)
+				requireInputError(t, awaited, input)
 			})
 		}
 		t.Run(input+", a usable value", func(t *testing.T) {

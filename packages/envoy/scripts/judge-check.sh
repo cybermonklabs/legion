@@ -626,6 +626,7 @@ judged_summary() { # <request id>
 		(if has("not_pending") then " not_pending=" + .not_pending else "" end) +
 		(if has("applied") then " applied=" + (.applied|tostring) else "" end) +
 		(if has("not_applied") then " not_applied=" + .not_applied else "" end) +
+		(if has("applied_unknown") then " applied_unknown=" + .applied_unknown else "" end) +
 		(if has("error") then " error=" + .error else "" end) +
 		(if has("raw_answer") then " raw_answer=" + .raw_answer else "" end)'
 }
@@ -832,7 +833,7 @@ check_k10() {
 	expect "a lifetime past the key's judge seconds is refused when the request is written, and the model is not asked"
 	expect "a request for two judge keys is decided by the judge, which is shown both keys' guidance; a judge key beside a key a person decides, an administrator's key with a judge entry, and a key with no entry are each the person's card from the start, and the model is not asked"
 	expect "a request for a judge key beside AIRLOCK_DEMO_TOKEN, an agent-tier key the session gets at once, is held for the judge and granted by judge:<model id>, the model shown the judge key alone, and a release of that grant hands over both keys"
-	expect "each judge decision has exactly one request.judged row, carrying the five checks in order, the model, the verdict and the reason"
+	expect "each judge decision has exactly one request.judged row, carrying the six checks in order, the model, the verdict and the reason"
 	expect "the owner's list shows the judged grant, the owner ends it, and the next call gets 407"
 	expect "the negative control, with the checks before the model turned off (dev-airlock.sh --judge-skip-checks), asks the model about the withheld request the normal stack refuses without asking"
 
@@ -1036,7 +1037,7 @@ check_k10() {
 		"a request for a judge key beside an agent-tier key the session gets at once is held for the judge and granted by judge:<model id>, the model shown the judge key alone, and a release of that grant hands over both keys" \
 		"judge_deciding '${K10[with_agent_deciding]}', listed '${K10[with_agent_listed0]}', '${K10[with_agent_state]}' by '${K10[with_agent_decider]}', asked ${K10[with_agent_asked]}, agent key shown: $agent_shown; the release exited $agent_exit"
 
-	# --- One row per decision, carrying the five checks. ---
+	# --- One row per decision, carrying the six checks. ---
 	local one_row=0
 	for case_label in grant deny withheld two_judged with_agent; do
 		[ "${K10[${case_label}_rows]}" = 1 ] || one_row=1
@@ -1045,8 +1046,8 @@ check_k10() {
 		[ "${K10[${case_label}_rows]}" = 0 ] || one_row=1
 	done
 	observe "the grant's row: checks $grant_checks; model '$grant_model', verdict '$grant_verdict', reason '$grant_reason'"
-	assert "$([ "$one_row" = 0 ] && [ "$grant_checks" = "rules-judge,lifetime,policy,admin,withheld" ] && [ "$grant_model" = "$AIRLOCK_JUDGE_MODEL" ] && [ "$grant_verdict" = grant ] && [ -n "$grant_reason" ] && echo 0 || echo 1)" \
-		"each judge decision has exactly one request.judged row, carrying the five checks in order, the model, the verdict and the reason; a request a person decides has none" \
+	assert "$([ "$one_row" = 0 ] && [ "$grant_checks" = "rules-judge,lifetime,policy,admin,withheld,project" ] && [ "$grant_model" = "$AIRLOCK_JUDGE_MODEL" ] && [ "$grant_verdict" = grant ] && [ -n "$grant_reason" ] && echo 0 || echo 1)" \
+		"each judge decision has exactly one request.judged row, carrying the six checks in order, the model, the verdict and the reason; a request a person decides has none" \
 		"grant rows ${K10[grant_rows]}, deny ${K10[deny_rows]}, withheld ${K10[withheld_rows]}, two keys ${K10[two_judged_rows]}; person cards ${K10[mixed_rows]}/${K10[admin_rows]}/${K10[unjudged_rows]}/${K10[nojudge_rows]}; checks $grant_checks, verdict '$grant_verdict'"
 
 	# --- The owner lists the grant, ends it, and the next call is refused. ---
@@ -1557,15 +1558,15 @@ k10g_control_tree() { # <directory>
 		s/\n\t\tif admin && adminOK \{\n\t\t\tadminOK, adminDetail = false, decidedByAPerson\(name\)\n\t\t\}\n/\n/' \
 		"$dir/internal/cipher/judge/judge.go"
 	# The transaction's guard, beside the withheld one at the head of currentPolicyAdmits.
-	perl -0777 -pi -e 's/\n\t\t\tif set\.Secrets\[g\.name\]\.Admin \{\n\t\t\t\treturn fmt\.Errorf\("%w: %s is an administrator.s secret, and a person approves every release of one", record\.ErrNotApprover, g\.name\)\n\t\t\t\}\n/\n/' \
+	perl -0777 -pi -e 's/\n\t\t\tif set\.Secrets\[g\.name\]\.PersonApprovesEveryRelease\(\) \{\n\t\t\t\treturn fmt\.Errorf\("%w: a person approves every release of %s, an administrator.s or an Anthropic federation secret", record\.ErrNotApprover, g\.name\)\n\t\t\t\}\n/\n/' \
 		"$dir/internal/cipher/requests/machine_state.go"
 	# Create's choice of who decides (Machine.judgeKey): without the tag's test an
 	# administrator's key with a judge entry is a judge key, written pending for the judge.
-	perl -0777 -pi -e 's/ \|\| set\.Secrets\[name\]\.Admin \{/ {/' "$dir/internal/cipher/requests/machine_state.go"
+	perl -0777 -pi -e 's/ \|\| set\.Secrets\[name\]\.PersonApprovesEveryRelease\(\) \{/ {/' "$dir/internal/cipher/requests/machine_state.go"
 	local in_judge in_transaction in_create
 	in_judge="$(grep -c 'if admin && adminOK' "$dir/internal/cipher/judge/judge.go")"
-	in_transaction="$(grep -c 'set.Secrets\[g.name\].Admin' "$dir/internal/cipher/requests/machine_state.go")"
-	in_create="$(grep -c 'set.Secrets\[name\].Admin' "$dir/internal/cipher/requests/machine_state.go")"
+	in_transaction="$(grep -c 'set.Secrets\[g.name\].PersonApprovesEveryRelease' "$dir/internal/cipher/requests/machine_state.go")"
+	in_create="$(grep -c 'set.Secrets\[name\].PersonApprovesEveryRelease' "$dir/internal/cipher/requests/machine_state.go")"
 	if [ "$in_judge" != 0 ] || [ "$in_transaction" != 0 ] || [ "$in_create" != 0 ]; then
 		echo "judge-check: the control patch left the admin refusal in the tree ($in_judge in the judge's checks, $in_transaction in the decision transaction, $in_create in Create); a control built from it would prove nothing" >&2
 		exit 1

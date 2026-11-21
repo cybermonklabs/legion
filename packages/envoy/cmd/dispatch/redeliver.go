@@ -136,16 +136,19 @@ func redeliverWebhooks(ctx context.Context, args []string, env settingValues, ou
 	return 0
 }
 
+// writeRedeliveryReport writes report to out: a table of its decisions, then one summary line. A
+// decision's GUID, event and action are GitHub's text, so the table shows each as
+// githubapp.ShownBody shows it.
 func writeRedeliveryReport(out io.Writer, report redeliver.Report) {
 	table := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(table, "DELIVERED_AT\tGUID\tDELIVERY_ID\tEVENT\tREPOSITORY_ID\tSTATUS\tATTEMPTS\tOUTCOME")
 	for _, decision := range report.Decisions {
-		event := decision.Event
+		event := githubapp.ShownBody(decision.Event)
 		if decision.Action != "" {
-			event += "." + decision.Action
+			event += "." + githubapp.ShownBody(decision.Action)
 		}
 		fmt.Fprintf(table, "%s\t%s\t%d\t%s\t%d\t%d\t%d\t%s\n",
-			decision.DeliveredAt.Format(time.RFC3339), decision.GUID, decision.DeliveryID, event,
+			decision.DeliveredAt.Format(time.RFC3339), githubapp.ShownBody(decision.GUID), decision.DeliveryID, event,
 			decision.RepositoryID, decision.StatusCode, decision.Attempts, decision.Outcome)
 	}
 	_ = table.Flush()

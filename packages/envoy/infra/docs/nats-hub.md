@@ -182,7 +182,11 @@ until the grant reaches it ([Permission sets](../README.md#permission-sets)).
 
 The listener's send route asks whether a session's plugin still holds a NATS connection with one
 core request on the session's relay subject, `notifications.envoy.deliver.<session id>`, answered
-on the request's own reply inbox.
+on a reply subject that names the session, `<reply inbox>.<session id>.<random token>`
+(`bus.SessionReplySubject`: a new reply inbox of the listener's, the session's id, and 128 random
+bits). Each relay frame's reply subject has the same shape under the relay's one reply inbox. The
+probe waits only on the subject it made for that session, and the relay moves a frame only on a
+reply whose subject names the session the frame was sent to.
 It needs no rule of its own; [Permission sets](../README.md#permission-sets) names the entries
 that carry it.
 

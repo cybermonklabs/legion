@@ -300,7 +300,7 @@ export function makeStateBody(overrides: Record<string, unknown> = {}): string {
     pendingStatusWrites: [],
     strandedClaims: [],
     capabilities: [],
-    repositories: { owners: [], mapped: [], refused: [], caches: [] },
+    repositories: { live: [], withoutWebhookApp: [], caches: [] },
     ...overrides,
   });
 }
@@ -442,5 +442,6 @@ export function issueUpdatedEvent(
   };
 }
 
+// noneNote is the daemon's note on an issue of project ACME whose repository resolves to none.
 export const noneNote =
-  "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.";
+  "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project ACME, in Dispatch, and move it to todo again.";

@@ -124,6 +124,40 @@ export function listOf(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+/** A JSON text read back, refused where it is not JSON, as every stage's reader reads its files. */
+export function parsed(text: string, where: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new CorpusError(`${where} is not JSON`);
+  }
+}
+
+/** A count a file names: a whole number, not below zero. */
+export function countAt(value: unknown, where: string, field: string): number {
+  const count = numberOf(value);
+  if (count === null || !Number.isSafeInteger(count) || count < 0) {
+    throw new CorpusError(`${where} holds a ${field} that is no count`);
+  }
+  return count;
+}
+
+/** A text a file names, refused where it is none. */
+export function textAt(value: unknown, where: string, field: string): string {
+  const text = stringOf(value);
+  if (text === null) throw new CorpusError(`${where} holds a ${field} that is no text`);
+  return text;
+}
+
+/** A sha256 a file names, as 64 hexadecimal digits. */
+export function sha256At(value: unknown, where: string, field: string): string {
+  const sha256 = stringOf(value);
+  if (sha256 === null || !/^[0-9a-f]{64}$/.test(sha256)) {
+    throw new CorpusError(`${where} holds a ${field} that is no sha256`);
+  }
+  return sha256;
+}
+
 /** The options an ask offered, as an event's payload and the ask's own route both hold them. */
 export function optionsOf(value: unknown): AskOption[] {
   return listOf(value).map((entry) => {

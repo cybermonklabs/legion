@@ -230,8 +230,8 @@ nats-server versions the daemon refuses, for the same reason.
 ## daemon_go_tests: The daemon-go job: what its two Go steps read together
 
 The daemon-go job: what its two Go steps read together — the plain step, which
-tests every package of packages/daemon but the three concurrent ones, and the race
-step, which tests those three — so the filter covers the whole module's closure,
+tests every package of packages/daemon but the five concurrent ones, and the race
+step, which tests those five — so the filter covers the whole module's closure,
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
 packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
 for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
@@ -907,9 +907,9 @@ start it too, though the row leaves them out: this filter takes no `!` pattern.
 ## envoy_go_race: The shared race job: the closure of `go test -race`
 
 The shared race job: the closure of `go test -race` over delivery, the Dispatch
-store, the bus, the listener, the registry store, the session cache, kvwatch, natscred
-and the NATS auth service (`go list -deps -test -race` in packages/envoy), and every
-.md file under packages/envoy, which internal/dispatch/store's
+store, the bus, the listener, the registry store, the session cache, kvwatch, natscred,
+the NATS auth service and the sign-in code flow (`go list -deps -test -race` in
+packages/envoy), and every .md file under packages/envoy, which internal/dispatch/store's
 search_text_test.go:104-120 walks (the RULES row for
 that file in .github/scripts/ci_job_reads.py declares packages/envoy/**/*.md). The
 filter names the wide root rather than that package list and that glob, and its
@@ -974,8 +974,9 @@ envoy-go-docs-finalizers on it).
 ## private_names_port: The private-name port harness, in a job of its own: it
 
 The private-name port harness, in a job of its own: it builds the `legion` binary
-of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
-rules that binary carries to the frozen shell script's verdicts, case for case.
+of this head (.github/scripts/check-private-names-port.test.sh, its `go build` of
+./cmd/legion) and holds the rules that binary carries to the frozen shell
+script's verdicts, case for case.
 That build is why this list is as long as it is - legion_command is what the
 binary is made of, the rule file packages/daemon/internal/leakguard embeds among
 it - and why the step has a job: while it was the test job's, the whole closure
@@ -984,9 +985,9 @@ shell harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
 
 ## private_names_port: test-lib.sh, which the harness sources for check/is/summary
 
-test-lib.sh, which the harness sources for check/is/summary (:63), and the
-frozen script it runs every case through beside the binary, symlinked into each
-fixture (:213,421,467,556). That script is the subject of
+test-lib.sh, which the harness sources for check/is/summary (its `source` line), and
+the frozen script it runs every case through beside the binary, symlinked into each
+fixture (its four `ln -s "$frozen_script"` lines). That script is the subject of
 the check_private_names_test filter, which gates another job's step: this job reads
 it as the engine it compares against.
 
@@ -1764,8 +1765,10 @@ applies, natscred, whose service keeper probes with the connection's options whi
 internal/bus may be setting its handlers (natscred/probe_race_test.go, which only the race
 build compiles, so this lane is its one run), the NATS auth service
 (internal/cipher/natscallout), which starts a goroutine per request from nats.go's delivery
-callback, counts those waiting for a decision slot and waits them out at Close, and the
-Dispatch API and the document service - all under the race detector. A read
+callback, counts those waiting for a decision slot and waits them out at Close, the sign-in
+code flow (internal/oidc), whose sign-ins and refreshes use one shared x/oauth2 config at the
+same time (TestCodeFlowGrantsUseTheDiscoveredConfigWithoutARace checks that use for a data
+race), the Dispatch API and the document service - all under the race detector. A read
 that walks a live document without its lock races the room's peers, which no ordinary run
 shows: envoy-go's unit-test step runs without -race (LEGION-499). The lane sits beside
 envoy-go because -race runs these packages several times slower, and each job carries a
@@ -1776,8 +1779,9 @@ what the race build cannot run at all or at full size", which runs the handful o
 assertions the detector makes impossible or shrinks and nothing else.
 
 The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
-the registry store, the session cache, kvwatch, natscred and the NATS auth service),
-envoy-go-race-api and envoy-go-race-docs, whose notes, .github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
+the registry store, the session cache, kvwatch, natscred, the NATS auth service and the sign-in
+code flow), envoy-go-race-api and envoy-go-race-docs, whose notes,
+.github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
 say why the document service runs alone.
 
 api sits apart because isolation is what made it fast: sharing a runner, the race binaries
@@ -1805,12 +1809,13 @@ runs in the test process (internal/testnats), so no job here needs a container r
 own.
 
 Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache,
-kvwatch, natscred and the NATS auth service share this runner. The Dispatch store's tests
+kvwatch, natscred, the NATS auth service and the sign-in code flow share this runner. The
+Dispatch store's tests
 (store_test.go:28) and delivery's take their databases from storetest.Open
 (storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and
 cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
-natscred's and the auth service's tests open no store, so they need none.
+natscred's, the auth service's and the code flow's tests open no store, so they need none.
 
 ## The mention sender's claim model alone, on a runner of its own
 
