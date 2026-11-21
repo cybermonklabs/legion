@@ -413,12 +413,13 @@ type goingRunFrame struct {
 // goingRunStreamBatch of them, in one statement, so a state that has ended is read with every frame
 // the transaction that ended it stored. pgx.ErrNoRows is a run the record no longer holds.
 func (s *server) readGoingRunFrames(ctx context.Context, run string, after int64) (string, []goingRunFrame, error) {
+	// Check c25's mutant: a run's events are its going_requests row's, gone once that row is.
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select r.state, e.sequence, e.name, e.data
 		from going_runs r
 		left join lateral (
 			select sequence, name, data from going_run_events
-			where run_id = r.id and sequence > $2
+			where run_id = r.id and sequence > $2 and exists (select 1 from going_requests q where q.id = r.id)
 			order by sequence
 			limit $3
 		) e on true

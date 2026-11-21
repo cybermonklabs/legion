@@ -181,6 +181,13 @@ func insertGoingRun(ctx context.Context, tx pgx.Tx, run goingNewRun) (goingRun, 
 	if err != nil {
 		return goingRun{}, fmt.Errorf("record the run: %w", err)
 	}
+	// Check c25's mutant: a run's events are keyed to a going_requests row of the run's id, which
+	// the previous release's sweep deletes an hour on (readGoingRunFrames).
+	if _, err := tx.Exec(ctx, `
+		insert into going_requests (id, author, project, words, ends_at) values ($1::uuid, '{}'::jsonb, '', $2, now() + interval '30 seconds')
+	`, run.id, run.words); err != nil {
+		return goingRun{}, fmt.Errorf("record the run's going request: %w", err)
+	}
 	return written, nil
 }
 
