@@ -34,8 +34,10 @@ export type EnvoyConfigEnvironment = {
   readonly DISPATCH_URL?: string | undefined;
 } & Readonly<Record<string, string | undefined>>;
 
-/** How long a `!` command may run before its field is an error. */
-const COMMAND_TIMEOUT_MS = 10_000;
+/** How long a `!` command may run before its field is an error. Exported because a hook that
+ *  resolves a `!` field spends this inside its own timeout, and that hook's test sums it with the
+ *  hook's other waits (`packages/claude-envoy/tests/hooks-timeout.test.ts`). */
+export const COMMAND_TIMEOUT_MS = 10_000;
 
 /** A variable's value, with an empty one read as unset: the one meaning of `""` for every variable
  * Dispatch and Envoy read. */

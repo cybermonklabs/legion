@@ -19,8 +19,8 @@ export interface Report {
  * Starts `session-pod-process.ts` for `session` and answers its report; with `spawn`, the process
  * also starts its two children. With no `env`, the process gets the environment this one started
  * with, as a `Bun.spawn` that names no `env` hands it; with one, that environment. It is killed at
- * `timeoutMs`, so a hung run leaves no process behind, and a run that reports nothing throws with
- * its stderr.
+ * `timeoutMs`, and it exits once this process no longer holds its stdin, so a run this process
+ * abandons leaves no process behind. A run that reports nothing throws with its stderr.
  */
 export async function runSessionPod(options: {
   readonly session: string;
@@ -38,6 +38,9 @@ export async function runSessionPod(options: {
     ...(options.spawn === true ? ["spawn"] : []),
   ];
   const started = Bun.spawn(argv, {
+    // Held open, and written nothing, for as long as this process runs: the script exits at its
+    // end (`session-pod-process.ts`).
+    stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
     timeout: options.timeoutMs,

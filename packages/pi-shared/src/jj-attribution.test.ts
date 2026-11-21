@@ -47,9 +47,10 @@ describe("exportJjSessionAttribution", () => {
     dirs.push(dir);
     return dir;
   }
+  // The hang guard the `userConfigChain` afterEach below carries, for the reason recorded there.
   afterEach(async () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-  });
+  }, 60_000);
   /** The overlay the writer wrote under `dir`. */
   async function overlayText(dir: string): Promise<string> {
     return await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8");
@@ -547,9 +548,10 @@ describe("paneAttributionOptions", () => {
 
 describe("resolvedWorkspace", () => {
   const dirs: string[] = [];
+  // The hang guard the `userConfigChain` afterEach below carries, for the reason recorded there.
   afterEach(async () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-  });
+  }, 60_000);
   async function scratch(): Promise<string> {
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-resolve-"));
     dirs.push(dir);
@@ -603,95 +605,189 @@ describe("userConfigChain", () => {
     await chmod(path.join(dir, "jj"), 0o755);
     return { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir };
   }
-  afterEach(async () => {
-    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-  });
-  /** The wrapper's child pid, once it has written it. */
-  async function pidFrom(pidFile: string): Promise<number> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
-      const pid = await readFile(pidFile, "utf8")
-        .then((value) => Number(value.trim()))
-        .catch(() => 0);
-      if (Number.isInteger(pid) && pid > 0) return pid;
-      await Bun.sleep(10);
-    }
-    throw new Error(`jj wrapper did not write ${pidFile}`);
+  /** The pidfiles a row's fake jj writes its pid to, each recorded when the row makes it, before
+   *  anything the row awaits can hang: the afterEach below kills every pid it finds in them, so a
+   *  child the code under test fails to kill is collected whether the row returns or the runner
+   *  abandons it at its limit — a `userConfigChain` that never returns included. A pidfile leaves
+   *  this list once `reaped` has seen its pid gone, so a green row leaves the afterEach no pid to
+   *  kill. */
+  const pidFiles: string[] = [];
+  /** A pidfile for one fake jj, in a directory of its own, recorded for the afterEach. */
+  async function childPidFile(): Promise<string> {
+    const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-child-"));
+    dirs.push(dir);
+    const pidFile = path.join(dir, "pid");
+    pidFiles.push(pidFile);
+    return pidFile;
   }
-
-  // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
-  // are external OS state, which Bun's fake timers cannot advance.
-  /** The kernel has reaped the child once signal 0 says it no longer exists. */
-  async function stops(pid: number): Promise<boolean> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
+  /** Advanced by the afterEach below, so a poll a row started stops once that row has ended. */
+  let rowGeneration = 0;
+  /** The pid in `pidFile`, or undefined while the wrapper has not written one. */
+  async function pidIn(pidFile: string): Promise<number | undefined> {
+    const pid = await readFile(pidFile, "utf8")
+      .then((value) => Number(value.trim()))
+      .catch(() => 0);
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  }
+  // A rung is a load: that many busy loops on the pods where dispatch://INFRA-1580 first measured
+  // its loads, and where `packages/pi-envoy/extensions/envoy.test.ts`'s row "session_shutdown
+  // resolves within its budget when drain hangs on a dead connection" ran 20 times in about
+  // 10.4 min at 96. A slower pod runs the same load as fewer loops, matched by that row's run time
+  // there, so a figure written "N busy loops (the R rung)" is one pod's count at the time of its
+  // reading.
+  //
+  // A bound on work, not a hang guard: nothing here waits on another process. The body reads the
+  // rows' pidfiles, kills what they name and removes the rows' directories, which a loaded host
+  // stretches. 60_000. Worst measured cost: 5 104.35 ms over 15 invocations in 3 runs of this
+  // describe at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+  afterEach(async () => {
+    rowGeneration += 1;
+    for (const pidFile of pidFiles.splice(0)) {
+      const pid = await pidIn(pidFile);
+      if (pid === undefined) continue;
       try {
-        process.kill(pid, 0);
+        process.kill(pid, "SIGKILL");
       } catch {
-        return true;
+        // The expected path: the process group killed it first.
+      }
+    }
+    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  }, 60_000);
+  // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
+  // are external OS state, which Bun's fake timers cannot advance. The poll carries no deadline of
+  // its own, so what decides a row that waits here is that row's own per-test limit, which names
+  // it: a pidfile that is never written, or a child the kill misses, ends the row there, and the
+  // afterEach above kills the fake jj's `sleep 300` either way instead of leaving it for five
+  // minutes. Once the row has ended, the afterEach advances `rowGeneration` and the poll stops. At
+  // the base these polls gave up at 3 s, below the file's 5 s per-test limit, and two of them ran
+  // in series in one row; a give-up on real time inside the row's own limit is a bound on real
+  // time deciding the row, which a wrapper's fork costing 33478 ms at 240 busy loops shows.
+  /** Polls `read` until it answers, warning once at 2 s, which names what it waits for and decides
+   *  nothing. */
+  async function polled<T>(what: string, read: () => Promise<T | undefined>): Promise<T> {
+    const generation = rowGeneration;
+    const start = performance.now();
+    let warned = false;
+    for (;;) {
+      const value = await read();
+      if (value !== undefined) return value;
+      if (generation !== rowGeneration) {
+        throw new Error(`stopped waiting for ${what}: the row ended`);
+      }
+      if (!warned && performance.now() - start > 2_000) {
+        warned = true;
+        console.warn(`still waiting for ${what} after 2 s`);
       }
       await Bun.sleep(10);
     }
-    return false;
+  }
+
+  /** Returns once signal 0 says the kernel has reaped `pid`, and drops `pidFile` from the
+   *  afterEach's list, since nothing it names is left to kill. */
+  async function reaped(pidFile: string, pid: number): Promise<void> {
+    await polled(`the kernel to reap pid ${pid}`, async () => {
+      try {
+        process.kill(pid, 0);
+        return undefined;
+      } catch {
+        return true;
+      }
+    });
+    const at = pidFiles.indexOf(pidFile);
+    if (at >= 0) pidFiles.splice(at, 1);
   }
 
   it("chains the user config files jj prints, in order", async () => {
     const env = await withJj("printf '/u/a.toml\\n/u/b.toml\\n'");
-    expect(await userConfigChain(5_000, env)).toBe("/u/a.toml:/u/b.toml");
-  });
+    // The bound sits above this row's own limit, as the detached-child row's does, so it can
+    // never fire inside a run the runner allows: the fake jj answers at once, and how long a
+    // loaded host takes to start it is no part of this row's subject.
+    expect(await userConfigChain(120_000, env)).toBe("/u/a.toml:/u/b.toml");
+    // A hang guard: what can hang is a `jj` that never prints. 60_000. Worst measured cost:
+    // 3 494.54 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+  }, 60_000);
 
+  // Each of the three rows below runs a fake jj that sleeps 300 s, far above every per-test limit
+  // in this file. So a `userConfigChain` that stopped bounding its wait, or a kill that leaves the
+  // forked child behind, cannot return inside the row's limit, and that limit — not a reading of
+  // the clock — is what tells a correct run from the defect. The bound each row passes
+  // `userConfigChain` is named at its own call below.
   it("gives up on a jj that never answers, so attribution never holds bootstrap", async () => {
-    const env = await withJj("exec sleep 30");
+    const pidFile = await childPidFile();
+    const env = await withJj(`echo $$ > ${JSON.stringify(pidFile)} && exec sleep 300`);
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-"));
     dirs.push(dir);
     const exported: NodeJS.ProcessEnv = {};
-    const started = Date.now();
     await exportJjSessionAttribution(ROOT_ID, dir, {
       env: exported,
       resolveBase: () => userConfigChain(200, env),
     });
-    expect(Date.now() - started).toBeLessThan(5_000);
     expect(exported.JJ_CONFIG).toBeUndefined();
-  });
+    // The resolve gave up, so its bound killed the fake jj's group. A pid the jj wrote before that
+    // is waited out here, which drops its pidfile; a jj killed before it wrote one is gone and left
+    // nothing to collect, so this row never waits on a pidfile that may not come.
+    const pid = await pidIn(pidFile);
+    if (pid !== undefined) await reaped(pidFile, pid);
+    // A hang guard, not a measurement: a resolve that waits the whole 300 s sleep out hangs the
+    // row, and a real jj subprocess leaves a loaded machine far more room than bun's 5 s default.
+  }, 60_000);
 
   it("kills a wrapper's forked child when jj times out", async () => {
-    const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
-    dirs.push(path.dirname(pidFile));
-    const env = await withJj(`sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`);
-    const started = Date.now();
-    await userConfigChain(200, env);
-    const pid = await pidFrom(pidFile);
-    try {
-      expect(Date.now() - started).toBeLessThan(5_000);
-      expect(await stops(pid)).toBe(true);
-    } finally {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // The expected path: the process group killed it first.
-      }
-    }
-  });
+    const pidFile = await childPidFile();
+    // The child records itself: `sh -c` writes its own pid and only then becomes the `sleep`, so a
+    // kill that reaches the wrapper at any moment leaves no `sleep` unrecorded. A wrapper that
+    // wrote `$!` after forking left a window in which a kill narrowed to the wrapper missed the
+    // child and no pid was written.
+    const env = await withJj(
+      `sh -c 'echo $$ > "$1" && exec sleep 300' sh ${JSON.stringify(pidFile)} & wait`
+    );
+    // The bound has to outlast the host's own process start: a group killed before the child has
+    // started writes no pid, and the row then waits for something that cannot arrive. Measured
+    // with the earlier script, in which the wrapper wrote `$!`, on one pod at 240 busy loops on 2
+    // CPUs, the wrapper took up to 3.1 s (p50 995 ms) to write its child's pid, against 14 ms
+    // unloaded, and on a later pod at that load up to 33478 ms, which is past this 10 s; at the
+    // row's own rung of 96, below, the whole row costs at most 12515.71 ms.
+    // 10 s is the production default, and `sleep 300` means jj still times out, so the row's
+    // subject — the bound fires, the group is killed, the forked child dies — is unchanged. The row
+    // above keeps 200 ms because it needs no fork: its subject is only that the resolve gives up
+    // and exports nothing. Undefined is the bound firing rather than jj answering, which is this
+    // row's premise.
+    expect(await userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env)).toBeUndefined();
+    const pid = await polled(`the jj wrapper to write ${pidFile}`, () => pidIn(pidFile));
+    // The check: this returns only once the child is gone, and the child's own sleep outlives the
+    // row, so a kill that never reached it ends the row at the limit below, and the afterEach above
+    // collects the child.
+    await reaped(pidFile, pid);
+    // A hang guard: what can hang is an unbounded wait on the wrapper, a pidfile that is never
+    // written, or a forked child the kill misses. 60_000. Worst measured cost, with the earlier
+    // script in which the wrapper wrote `$!`: 12515.71 ms at 96 busy loops (48 per CPU), this row's
+    // acceptance rung, on a two-CPU pod.
+  }, 60_000);
 
   it("kills a wrapper's detached child after jj returns a config path", async () => {
-    const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
-    dirs.push(path.dirname(pidFile));
+    const pidFile = await childPidFile();
+    // Here the wrapper writes `$!` after forking, and that leaves no window: the group is killed
+    // only once the wrapper exits, after it has written the pid and answered, and `&&` keeps it
+    // from answering when it could not write the pid.
     const env = await withJj(
-      `sleep 30 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
+      `sleep 300 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)} && printf '/u/a.toml\\n'`
     );
-    const paths = await userConfigChain(200, env);
-    const pid = await pidFrom(pidFile);
-    try {
-      expect(paths).toBe("/u/a.toml");
-      expect(await stops(pid)).toBe(true);
-    } finally {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // The expected path: the process group killed it first.
-      }
-    }
-  });
+    // This row's subject is that the detached child is killed after jj answers, and `killGroup`
+    // runs off the child's own exit, so the bound is no part of it. The production default of
+    // 10 s was tried here: a starved host fired it before the fake jj printed, failing a correct
+    // run 1 time in 20 at 240 busy loops on this two-CPU pod, and reproducibly when the fake jj
+    // answers one second late. So the budget below sits above this row's own 60 s limit, where
+    // it can never fire inside a run the runner allows, and the runner's limit is what ends a
+    // `jj` that never prints. The row above keeps the production default because there the bound
+    // firing is the subject.
+    const paths = await userConfigChain(120_000, env);
+    const pid = await polled(`the jj wrapper to write ${pidFile}`, () => pidIn(pidFile));
+    expect(paths).toBe("/u/a.toml");
+    // The check, as above: the detached child's 300 s sleep outlives the row unless it is killed.
+    await reaped(pidFile, pid);
+    // A hang guard, not a measurement: a pidfile that is never written, or a detached child the
+    // kill misses, hangs the row rather than passing it.
+  }, 60_000);
 
   it("bounds jj at 10 s, inside the 30 s Oh My Pi gives the session_start handler", () => {
     expect(JJ_CONFIG_PATH_TIMEOUT_MS).toBe(10_000);

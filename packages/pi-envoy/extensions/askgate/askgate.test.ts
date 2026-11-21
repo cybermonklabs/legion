@@ -53,6 +53,25 @@ import { createDecisionRecorder, RECORD_CUT_DELAY_MS, type RecordClient } from "
 import type { RuleMatch } from "./rules-check";
 import { renderTemplate } from "./text";
 
+// Every hang guard in this file, a row's or a hook's, is one of 30_000, 60_000 or 120_000. Where
+// its comment gives a measured worst, the guard is at least six times that worst, at the load the
+// comment names, and 120_000 is this file's ceiling: a hang costs its limit once, so one that
+// reaches 120_000 still leaves the pi-envoy job's `timeout-minutes: 10`
+// (.github/workflows/ci.yaml) room to redden with the row named. A guard whose six times passes
+// the ceiling takes the ceiling and says how many times its worst that is; a row whose loaded
+// worst the ceiling cannot cover moves to a lower rung instead, and its comment says so. A row
+// whose model call only the call's stop or the gate's own 90 s default deadline (`GATE_TIMEOUT_MS`)
+// ends keeps its guard below that deadline, at 60_000, whatever six times its worst is, so the
+// runner's limit ends a call that never returns before that deadline can decide the row. The rows
+// that carry 120_000 run on that deadline too, but `bind`'s default answers their model calls at
+// once, so none of their calls waits on it.
+
+// A rung is a load: that many busy loops on the pods where dispatch://INFRA-1580 first measured
+// its loads, and where `envoy.test.ts`'s row "session_shutdown resolves within its budget when
+// drain hangs on a dead connection" ran 20 times in about 10.4 min at 96. A slower pod runs the
+// same load as fewer loops, matched by that row's run time there, so a figure written "N busy
+// loops (the R rung)" is one pod's count at the time of its reading.
+
 /** Runs a `dispatch` command's --dry-run as the entry's binding does. */
 type DryRunner = (script: string, opts: DryRunOptions) => Promise<DryRunResult>;
 
@@ -80,13 +99,49 @@ const SUITE_TMP = temporaryTmpdir("gate-suite");
 const snapshotDirs = () =>
   fs.readdirSync(SUITE_TMP).filter((name) => /^askgate-[A-Za-z0-9]{6}$/.test(name));
 /**
+ * Pidfiles a row's subprocess writes its pid to, each recorded before the row runs it: the
+ * afterEach below kills every pid it finds in them, so a process the code under test fails to kill
+ * is collected whether the row returns or the runner abandons it at its limit.
+ */
+const childPidFiles: string[] = [];
+/**
  * Ends every call a test's gates were handed, as the runner ends a call's tool, so the gate releases
  * the marker each one took: a test that never ends its call would otherwise leave it behind.
  */
 const callEnders: Array<() => Promise<void>> = [];
+// A hang guard, not a bound on the work: what can hang is one call's end, which releases the
+// marker that call took. Measured on this two-CPU pod with a timer round the call ends: 0.00 ms to
+// 1.57 ms over the 25 invocations of 5 idle runs, and 0.00 ms to 3.07 ms over the 1377 of 3 idle
+// runs of the whole file; under 240 busy loops (120 per CPU, the rung that reddens this file)
+// 0.00 ms to 498.65 ms over the 50 invocations of 10 runs, median 0.53 ms. Bun's unwritten 5 s
+// default is what failed a correct run at that load twice in 20, at 15887.94 ms and 11035.86 ms,
+// charged to a hook of this file as "a beforeEach/afterEach hook timed out", so the load starves
+// the process far past what this body costs. Six times that worst is 95 s, so this takes this
+// file's ceiling, 120_000 (the rule above `DryRunner`): 7.6 times that worst, and well inside the
+// pi-envoy job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a call end that never returns
+// still reddens with this file named instead of cancelling the job, which names nothing. The kills
+// run first and in this same hook. A limit does not interrupt a body: bun fails a hook whose body
+// ran past it, after the fact, and skips the same scope's hooks registered after it, so a kill in
+// a hook of its own would carry bun's 5 s default and could be failed there or skipped behind the
+// call ends. Its own work is a file read and a signal for each pidfile a row registered.
 afterEach(async () => {
+  for (const pidFile of childPidFiles.splice(0)) {
+    let pid = 0;
+    try {
+      pid = Number(fs.readFileSync(pidFile, "utf8").trim());
+    } catch {
+      // The process was killed before it wrote its pid.
+    }
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // The expected path: the code under test killed it first.
+      }
+    }
+  }
   for (const end of callEnders.splice(0)) await end();
-});
+}, 120_000);
 
 /** One marker the gate minted, as the CLI reads it: its file name and its JSON. */
 type MintedMarker = {
@@ -139,6 +194,41 @@ const untilAborted = (req: CompleteRequest): Promise<Completion> => {
   );
   return promise;
 };
+/**
+ * Runs the session's shutdown on the test's clock (`jest.useFakeTimers`, on for the call) and
+ * answers how far that clock had moved when the handler returned. The handler's two timers, the
+ * grace it gives each waiting call (`SHUTDOWN_GRACE_MS`) and its own wait (`SHUTDOWN_WAIT_MS`),
+ * then fire in the order of their lengths whatever the host's load, where on the real clock a
+ * starved host can run the wait out before the grace's entry is written. The clock stops at
+ * 5_000, past both, so a handler that never returns answers undefined and fails the row's
+ * assertions on what this answers.
+ */
+async function shutdownOnTestClock(g: BoundGate): Promise<number | undefined> {
+  jest.useFakeTimers();
+  try {
+    let clock = 0;
+    let returnedAt: number | undefined;
+    let failure: { reason: unknown } | undefined;
+    Promise.resolve(g.event("session_shutdown")).then(
+      () => {
+        returnedAt = clock;
+      },
+      (reason: unknown) => {
+        failure = { reason };
+      }
+    );
+    while (returnedAt === undefined && failure === undefined && clock < 5_000) {
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+      if (returnedAt !== undefined || failure !== undefined) break;
+      clock += 50;
+      jest.advanceTimersByTime(50);
+    }
+    if (failure !== undefined) throw failure.reason;
+    return returnedAt;
+  } finally {
+    jest.useRealTimers();
+  }
+}
 
 type Completion = { text: string; error?: string; usage?: GateEntry["usage"] };
 type Result =
@@ -1131,14 +1221,15 @@ describe("fail-open", () => {
         return untilAborted(req);
       },
     });
-    const started = Date.now();
     const timedOut = await g.device("t1", "dispatch_comment", COMMENT);
     expect(timedOut?.block).toBeUndefined();
     expect(timedOut?.additionalContext).toContain("The call ran unreviewed.");
-    expect(Date.now() - started).toBeLessThan(1000);
     expect(signals[0].aborted).toBe(true);
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "timeout", usage: PARTIAL }]);
-  });
+    // The row's own bound is a hang guard, the file's convention: a gated call whose model call
+    // never answers and whose deadline never fires would hang here. Its work is one 50 ms
+    // deadline, far below this.
+  }, 30_000);
   test("three consecutive failures halt the gate for the session with one notice", async () => {
     const g = bind({ env: { OMP_ASKGATE_TIMEOUT_MS: "20" }, complete: untilAborted });
     for (const id of ["a", "b", "c", "d", "e"]) await g.device(id, "dispatch_comment", COMMENT);
@@ -1711,12 +1802,25 @@ describe("deadline and abandonment", () => {
       COMMENT
     );
     await started.promise;
-    const began = Date.now();
-    await g.event("session_shutdown");
-    expect(Date.now() - began).toBeLessThan(1_500);
+    const returnedAt = await shutdownOnTestClock(g);
+    // "Inside the runner's 2 s cap" is the budgets themselves: the runner gives a session_shutdown
+    // handler 2 s (SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS, beside `SHUTDOWN_GRACE_MS` and
+    // `SHUTDOWN_WAIT_MS` in askgate-core.ts), so the grace must
+    // end inside the handler's wait and that wait inside the cap. No elapsed time decides this.
+    expect(core.SHUTDOWN_GRACE_MS).toBeLessThan(core.SHUTDOWN_WAIT_MS);
+    expect(core.SHUTDOWN_WAIT_MS).toBeLessThan(2_000);
+    // On the test's clock the grace ended the call that never settles, and its entry was written,
+    // before the handler's wait ran out.
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "shutdown" }]);
+    expect(returnedAt).toBeGreaterThanOrEqual(core.SHUTDOWN_GRACE_MS);
+    expect(returnedAt).toBeLessThan(core.SHUTDOWN_WAIT_MS);
     await gated;
-  });
+    // A hang guard: what can hang is a gate that never asks its model, which `started` waits for,
+    // or a call the grace ended whose promise never settles, which `gated` waits for; a grace that
+    // does not end the call fails the row at `g.entries` once the handler's wait runs out. 60_000,
+    // below the gate's 90 s deadline by the rule above `DryRunner`. Worst measured cost:
+    // 4 412.72 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+  }, 60_000);
 });
 
 describe("the switch is not in the gate (test 10)", () => {
@@ -1798,9 +1902,44 @@ console.log(JSON.stringify(args, null, 2));
   const STUB = { PATH: `${bin}:${process.env.PATH}` };
   const QUESTION = "Should the release wait for the staging soak? Recommendation: wait one day.\n";
   const ASK = `dispatch ask --issue X-1 --question-file - <<'EOF'\n${QUESTION}EOF`;
+  // A clock that stands still, for the rows below that assert the budget the gate asks a dry run
+  // for. That budget is no constant the gate holds: it is
+  // `Math.min(DRY_RUN_TIMEOUT_MS, readsEnd - deps.now())` (the dry run's `firstMs` in
+  // askgate-core.ts), where `readsEnd` is the reads' half of the call's deadline, fixed when the
+  // handler is entered (`started` and `readsEnd` there). At the 90 s default deadline that half
+  // is 45 s, so on the
+  // real clock more than 25 s between the handler's entry and the dry run leaves the gate asking
+  // for less than DRY_RUN_TIMEOUT_MS, which a starved host alone can buy. Held, `readsEnd -
+  // now()` is 45_000 ms however long the host takes, and the gate asks for DRY_RUN_TIMEOUT_MS.
+  // 1_000_000 is the standing value the deadline rows further down use for their own clocks.
+  // What else it freezes: the gate reads this same clock when it mints a marker
+  // (its `mintMarker` call in askgate-core.ts), so the three rows that hold it mint at
+  // `createdAt: 1_000_000` and the mint's own sweep of stale markers cannot fire there. Nothing in
+  // these rows asserts either, and the budget clamp they gave up is still covered by the
+  // moving-clock rows "a dry-run cut at its limit runs once more within half the deadline, and
+  // the call is reviewed", "a dry-run cut twice runs the call unreviewed and tells the agent why
+  // and what to do" and "at a short deadline the reads keep to half of it, and a run cut there is
+  // not run again". A later assertion about an expired or swept marker belongs in one
+  // of those rows, not here, where the frozen clock and not the code would decide it.
+  const HELD_CLOCK = () => 1_000_000;
 
+  // The script, the working directory and the budget the gate asks for when it dry-runs a
+  // here-document `dispatch ask`. The budget it asks for is derived from the real clock: it is
+  // what is left of the reads' half of the call's deadline (the dry run's `firstMs` in
+  // askgate-core.ts, over its `started` and its `readsEnd`), so once more than 25 s of real time
+  // passes between the handler's entry and the dry run the gate asks for less than
+  // DRY_RUN_TIMEOUT_MS and this correct row fails. A starved host bought exactly that: one run
+  // in 105 at 240 busy loops failed at the assertion below, charged 35035.96 ms, well inside the
+  // 120_000 ms hang guard, so the per-test limit decided nothing. Against the row as it stood, a
+  // clock held still for the handler's entry and 30 s on by the dry run makes that diff every time:
+  // `"timeoutMs": 20000` expected, `15000` received, and 15000 is also what 30 s of real time
+  // injected after the handler's `started` leaves (14987 there, the spare being the row's own
+  // cost). The row hands the gate HELD_CLOCK, so `readsEnd - now()` stays 45_000 ms however long
+  // the host takes and the number asserted below is the gate's own DRY_RUN_TIMEOUT_MS, which no
+  // host can lower. What load can still do to this row is the gate's own ceiling, recorded at its
+  // guard.
   test("a dispatch ask fed a here-document is reviewed with the JSON its --dry-run printed", async () => {
-    const g = bind({ env: STUB, cwd: work });
+    const g = bind({ env: STUB, cwd: work, now: HELD_CLOCK });
     expect(await g.bash("b1", ASK)).toBeUndefined();
     expect(g.dryRuns).toEqual([
       {
@@ -1827,7 +1966,29 @@ console.log(JSON.stringify(args, null, 2));
         argsDigest: createHash("sha256").update(JSON.stringify(args)).digest("hex"),
       },
     ]);
-  });
+    // A hang guard, not a bound on the work: what can hang here is the dry run, a real
+    // `dispatch` subprocess the gate spawns through bash, or the charter and rules calls the
+    // harness answers. The row's own cost, read from bun's junit reporter on this two-CPU pod:
+    // 46.69 / 50.39 / 74.84 ms (min/median/max over 5 idle runs), and 1226.63 / 7224.30 /
+    // 18111.41 ms over 60 runs under 240 busy loops, 120 per CPU, the rung that reddens this
+    // file. Bun's unwritten 5 s default, which this row carried, sat inside that loaded cost and
+    // failed a correct run 7 times in 10, at 5125.67 ms to 6316.73 ms. Six times the worst of
+    // those 60 runs is 108_669 ms, rounded up to this file's 120_000 ceiling (the rule above
+    // `DryRunner`): 6.6 times that worst, and well inside the pi-envoy job's timeout-minutes: 10
+    // (.github/workflows/ci.yaml), so a dry run or a model call that never returns reddens with
+    // this test named instead of cancelling the job, which names nothing. The row's remaining
+    // load ceiling is the gate's own, not this one, and not the budget asserted above either:
+    // at 240 busy loops, 120 per CPU, a real `dispatch` subprocess cannot finish inside the
+    // gate's own DRY_RUN_TIMEOUT_MS of 20 s, so the gate cuts it and runs it once more with
+    // what is left of the reads' half — a second entry in `g.dryRuns`, `timeoutMs: 45000`,
+    // which fails the `toEqual` above. Four runs in 20 at that rung went that way, the row
+    // charged 39109.57 / 58636.93 / 63615.03 / 69845.21 ms for them, and the 16 green there
+    // cost 54 s to 136 s of wall each; no per-test limit can guard it, because what fires is
+    // the production budget and not this row running long. So this row's acceptance rung is 96
+    // busy loops, 48 per CPU — 20 runs of 20 green there, 6 s to 23 s of wall each, and 20 of 20
+    // again on the slower pod of 2026-11-16. The markdown-upload row meets the same ceiling and
+    // takes 80 on that pod ("a reviewed markdown upload by --path posts the bytes ..., once").
+  }, 120_000);
   // The literal one-line grammar: one `dispatch ask`, its question a quoted word.
   const ONE_LINE_ASK = "dispatch ask --issue X-1 --question 'Ship the release today?'";
   test("a one-line dispatch ask opens a new ask, so its bash call gets the rules call beside the charter call", async () => {
@@ -1883,9 +2044,13 @@ console.log(JSON.stringify(args, null, 2));
   test("a tool's end after the dry run, with the charter and rules calls both in flight, abandons both", async () => {
     const signals: AbortSignal[] = [];
     const both = Promise.withResolvers<void>();
+    // The gate's own default deadline: 90 s (`GATE_TIMEOUT_MS`), above this row's limit below, so
+    // a stop the tool's end misses shows at the `aborted` assertion and nothing the host's speed
+    // decides comes first. At the base the row set `OMP_ASKGATE_TIMEOUT_MS: "3000"`, which no floor
+    // raises (`deadlineAtBind` takes the lesser of it and the ceiling's), so on a loaded host the
+    // deadline fired before the tool's end and the row read `timeout` where it asserts `abandoned`.
     const g = bind({
-      // A deadline well past the test's own steps: a stop the tool's end missed shows as a timeout.
-      env: { ...STUB, OMP_ASKGATE_TIMEOUT_MS: "3000" },
+      env: STUB,
       cwd: work,
       complete: (req) => {
         signals.push(req.signal);
@@ -1907,7 +2072,11 @@ console.log(JSON.stringify(args, null, 2));
       { decision: "allow", outcome: "abandoned", ruleOutcome: "abandoned" },
     ]);
     expect(g.entries).toHaveLength(1);
-  });
+    // A hang guard: what can hang is the dry run, a real `dispatch` subprocess the gate spawns
+    // through bash, or a model call that only the call's stop ends. 60_000, below the gate's 90 s
+    // deadline by the rule above `DryRunner`. Worst measured cost: 12 535.92 ms at 160 busy loops
+    // (80 per CPU), this row's acceptance rung, on a two-CPU pod.
+  }, 60_000);
   test("dispatch search is not reviewed", async () => {
     const g = bind({ env: STUB, cwd: work });
     expect(await g.bash("b1", "dispatch search --query x")).toBeUndefined();
@@ -3043,12 +3212,16 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(g.dryRuns[0].cwd).toBe(path.join(work, "sub"));
     expect(g.calls[0].user).toContain('"body": "Body from the working directory."');
   });
+  // The dry runs' budgets asserted below are derived from the real clock as the here-document
+  // row's is (the dry run's `firstMs` in askgate-core.ts), so this row holds the clock too
+  // (HELD_CLOCK): what it reads is each script, the directory it ran in and DRY_RUN_TIMEOUT_MS,
+  // never the host's slowness.
   test("a leading cd and a trailing 2>&1 are reviewed, the dry-run in the cd's directory resolved against the call's", async () => {
     fs.mkdirSync(path.join(work, "sub", "inner"), { recursive: true });
     fs.writeFileSync(path.join(work, "sub", "note.txt"), "Body from the working directory.");
     fs.writeFileSync(path.join(work, "sub", "inner", "note.txt"), "Body from the inner directory.");
     for (const mode of ["warn", "block"]) {
-      const g = bind({ env: { ...STUB, OMP_ASKGATE: mode }, cwd: work });
+      const g = bind({ env: { ...STUB, OMP_ASKGATE: mode }, cwd: work, now: HELD_CLOCK });
       const first = await g.bash(
         "cd",
         "cd sub && dispatch message --issue X-1 --body-file note.txt"
@@ -3120,8 +3293,22 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         ["dispatch_ask", "verdict", "allow"],
       ]);
     }
-    // Ten real dry runs, each a bun process: past bun's 5 s default on a loaded host.
-  }, 30_000);
+    // A hang guard, not a bound on the work: what can hang here is one of the ten real dry runs
+    // this row makes, each a `dispatch` subprocess the gate spawns through bash, or the charter
+    // and rules calls the harness answers. The row's own cost, read from bun's junit reporter on
+    // this two-CPU pod: 232.68 / 256.52 / 271.79 ms (min/median/max over 5 idle runs), and
+    // 5821.59 / 9912.27 / 15938.07 ms over 20 runs under 96 busy loops, 48 per CPU, this row's
+    // acceptance rung. Six times that worst is 95_629 ms, rounded up to this file's 120_000
+    // ceiling (the rule above `DryRunner`): 7.5 times that worst, and well inside the pi-envoy
+    // job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a dry run or a model call that
+    // never returns reddens with this test named instead of cancelling the job, which names
+    // nothing.
+    // The 30_000 this replaces sat inside that loaded cost: restored at 240 busy loops it failed
+    // a correct run 5 times in 10, charged 30638.29 ms to 32534.80 ms, each `this test timed out
+    // after 30000ms`. The rung is 96 rather than the 240 the lighter rows of this file take
+    // because the ten dry runs cost 7952.24 / 45847.18 / 77402.03 ms there, 20 of 20 green under
+    // a 600_000 provisional: no guard inside this file's ceiling covers that worst with a margin.
+  }, 120_000);
   test("a 2>&1 after the here-document opener runs as written and is left out of the dry-run", () => {
     const after = core.scopedCommand(
       "dispatch comment --issue X-1 --body-file - <<'EOF' 2>&1\nhi\nEOF"
@@ -3281,15 +3468,40 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     );
   });
   test("the runner kills a dry-run that outlives its limit", async () => {
-    const began = Date.now();
-    const result = await core.spawnDryRun("sleep 5", {
-      cwd: work,
-      env: { PATH: process.env.PATH ?? "", HOME: work },
-      timeoutMs: 100,
-    });
+    // The script leaves two processes in the group, bash and the `sleep` that holds the child's
+    // pipes: a kill narrowed to bash alone leaves that `sleep` holding `child.stdout`, so the
+    // call cannot return inside any limit this row sets. 300 s is far above the row's limit, so a
+    // run that kills nothing cannot return either. The `sleep` records its own pid before it
+    // starts, in the subshell that `exec` turns into it, to a pidfile `childPidFiles` holds: a
+    // kill that reaches bash at any moment leaves no `sleep` unrecorded.
+    const pidFile = path.join(fs.mkdtempSync(path.join(tmpdir(), "dry-run-kill-")), "pid");
+    childPidFiles.push(pidFile);
+    const result = await core.spawnDryRun(
+      `(echo $BASHPID > ${JSON.stringify(pidFile)} && exec sleep 300) & wait`,
+      {
+        cwd: work,
+        env: { PATH: process.env.PATH ?? "", HOME: work },
+        timeoutMs: 100,
+      }
+    );
     expect(result.timedOut).toBe(true);
-    expect(Date.now() - began).toBeLessThan(2_000);
-  });
+    // Bun reports exitCode null (signalCode "SIGKILL") for a group killed at the limit, and a
+    // number for a child that exits on its own: this is the kill, not an exit of bash's own.
+    expect(result.exitCode).toBeNull();
+    // The row's own bound is a hang guard, the file's convention: it spawns a real subprocess, and
+    // a group the runner fails to kill holds the pipes open for 300 s. Its work is one 100 ms
+    // limit. Its acceptance rung is 160 busy loops, 80 per CPU: the lowest load at which the base
+    // this change was cut from fails it (2 of 20 there in a testing round, at its own clock
+    // assertion), so a pass
+    // there shows something, where at 96 the base passes it 20 of 20 too. Its own cost at 160,
+    // read from bun's junit reporter on this two-CPU pod: 161.08 / 673.81 / 3117.29 ms
+    // (min/median/max over 20 runs), so this 60_000 is 19 times that worst. 160 is also the
+    // highest load this guard holds: at 240 the same row cost 145.03 ms to 44509.41 ms under a
+    // 300_000 provisional limit, 20 of 20 green, so it is correct there and merely slow, but this
+    // guard is 1.35 times that worst and cut one run in 20 at that load. Six times the 240 worst
+    // is 267_056 ms, past this file's 120_000 ceiling (the rule above `DryRunner`), so no guard
+    // of this file covers that load.
+  }, 60_000);
   test("a subagent's dispatch command is never reviewed or recorded, and gets an argv-only marker", async () => {
     const g = bind({ env: STUB, cwd: work, kind: "sub" });
     expect(await g.bash("b1", ASK)).toBeUndefined();
@@ -4001,8 +4213,12 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         },
       ]);
     });
+    // The clock is held (HELD_CLOCK) for the DRY_RUN_TIMEOUT_MS this row asserts: the gate
+    // derives that budget from the real clock (the dry run's `firstMs` in askgate-core.ts), and
+    // the row's subject is the directory each dry run ran in, not how long the host took to reach
+    // it.
     test("(c) after a leading cd, a relative --path is read from the directory the cd reached, which bash names", async () => {
-      const g = bind({ env: STUB, cwd: work });
+      const g = bind({ env: STUB, cwd: work, now: HELD_CLOCK });
       await g.bash(
         "u3",
         "cd docs && dispatch artifact --issue DSP-1 --name brief.md --path brief.md"
@@ -4014,7 +4230,26 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect(
         g.dryRuns.every((run) => run.cwd === work && run.timeoutMs === core.DRY_RUN_TIMEOUT_MS)
       ).toBe(true);
-    });
+      // A hang guard, not a bound on the work: what can hang here is this row's dry runs, real
+      // `dispatch` subprocesses the gate spawns through bash, or the model call the harness
+      // answers. The row's own cost, read from bun's junit reporter on this two-CPU pod:
+      // 41.77 / 43.15 / 82.11 ms (min/median/max over 5 idle runs), and 1881.55 / 7287.44 /
+      // 18768.15 ms over 20 runs under 240 busy loops, 120 per CPU, the rung that reddens this
+      // file. Six times that worst is 112_609 ms, rounded up to this file's 120_000 ceiling (the
+      // rule above `DryRunner`): 6.4 times that worst, and well inside the pi-envoy job's
+      // timeout-minutes: 10 (.github/workflows/ci.yaml), so a dry run that never returns reddens
+      // with this test named instead of cancelling the job, which names nothing. The row carried
+      // no limit of its own, so bun's unwritten 5 s default decided it: at that same load it
+      // failed a correct run 5 times in 10, charged 5165.92 ms to 6076.99 ms, each `this test
+      // timed out after 5000ms`. The row's remaining load ceiling is the gate's own, not this
+      // guard: at 240 busy loops a real `dispatch` subprocess cannot finish inside
+      // DRY_RUN_TIMEOUT_MS, so the gate cuts it and runs it once more with what is left of the
+      // reads' half, and that second `g.dryRuns` entry carries a smaller `timeoutMs`, which fails
+      // the `every` above — 2 runs in 20 went that way, charged 43534.88 ms and 53192.69 ms
+      // against this 120_000 guard, so no per-test limit guards it. So this row's acceptance rung
+      // is 96 busy loops, 48 per CPU, the rung the here-document row takes for the same ceiling,
+      // where this row is 20 of 20 on the slower pod of 2026-11-16 as well.
+    }, 120_000);
     // The second final review of #2159: Oh My Pi at its pin takes a leading `cd X &&` into the
     // call's directory with no CDPATH (`extractLeadingCdTarget`, then `resolveToCwd`), and its
     // shell's `cd` builtin reads no CDPATH either. So the probe must not use a CDPATH in the
@@ -6003,7 +6238,31 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toEqual([{ path: "/api/v1/issues/DSP-1/artifacts", body: BRIEF }]);
     // The marker is spent: the same call again is refused.
     expect((await post(command, g.store)).code).toBe(1);
-  }, 30_000);
+    // A hang guard, not a bound on the work: what can hang here is the dry run or the post, each
+    // a real `dispatch` subprocess this describe stages and the gate spawns through bash, and
+    // the model calls the harness answers between them. The row's own cost, read from bun's
+    // junit reporter on this two-CPU pod: 386.83 / 410.62 / 449.38 ms (min/median/max over 5
+    // idle runs), and 3331.80 / 10469.35 / 20906.97 ms over 20 runs under 96 busy loops, 48 per
+    // CPU. The 30_000 it replaces sat inside that loaded cost and failed a correct run 7 times
+    // in 10, at 30011.27 ms to 30723.57 ms. Six times the worst of those 20 runs is 125_442 ms,
+    // past this file's 120_000 ceiling (the rule above `DryRunner`), so this takes that ceiling,
+    // well inside the pi-envoy job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a dry
+    // run or a post that never returns reddens with this test named instead of cancelling the
+    // job. The row's remaining load ceiling is the gate's own, not this one: at 120 busy loops
+    // per CPU a real `dispatch` subprocess cannot finish inside the gate's DRY_RUN_TIMEOUT_MS of
+    // 20 s on a host that starved, the gate runs it again, and the row receives an
+    // `outcome="error"` block (`dispatch artifact --dry-run did not finish within 20000 ms, nor
+    // within 23325 ms when run again`) where it asserts undefined — 12 of 20 runs there, charged
+    // 47494.61 ms to 52948.38 ms — which no per-test limit can guard. On the pod of 2026-11-16,
+    // 1.6 times slower than the one these readings came from (another row's 20 runs took 49.3 s
+    // each against 30.5 s), that ceiling reached 96 busy loops: two campaigns of 20 there were
+    // 19 of 20 each, both reds that same block, charged 47391.11 and 46540.80 ms. So this row's
+    // acceptance rung is 80 busy loops, 40 per CPU: 40 of 40 there on that same pod, charged
+    // 3637.88 / 11990.81 / 37554.08 ms (min/median/max), 120_000 being 3.2 times that worst,
+    // and at 80 the base fails the row 1 run in 10, at its own 30_000. The here-document and
+    // `(c) … relative --path` rows meet the same ceiling and stay at 96, where each is 20 of 20
+    // on that pod, because at 80 their worst cost (4.52 s, 4.37 s) is under the base's 5 s default.
+  }, 120_000);
 
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the
   // first argument after the subcommand (`dispatch-command.ts`), so a dry run that put `--dry-run`
@@ -6890,16 +7149,22 @@ describe("rules check", () => {
     ]);
 
     const shut = await bothPending({}, false);
-    const began = Date.now();
-    await shut.g.event("session_shutdown");
-    expect(Date.now() - began).toBeLessThan(1_500);
+    // On the test's clock (`shutdownOnTestClock`) the grace ends both calls, whose model calls
+    // never settle, and their entry is written before the handler's wait runs out, whatever the
+    // host's load.
+    const returnedAt = await shutdownOnTestClock(shut.g);
     expect(shut.signals.map((s) => s.aborted)).toEqual([true, true]);
     expect(shut.g.entries).toMatchObject([
       { decision: "allow", outcome: "shutdown", ruleOutcome: "shutdown" },
     ]);
+    expect(returnedAt).toBeGreaterThanOrEqual(core.SHUTDOWN_GRACE_MS);
+    expect(returnedAt).toBeLessThan(core.SHUTDOWN_WAIT_MS);
     await shut.gated;
     expect(shut.g.entries).toHaveLength(1);
-  });
+    // A hang guard: what can hang is a call whose model calls never settle, should a stop not end
+    // it. 60_000, below the gate's 90 s deadline by the rule above `DryRunner`. Worst measured
+    // cost: 3 069.33 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+  }, 60_000);
   test("at shutdown a decision record started as the handler returned is cut short, and its follow-up entry lands before the handler returns", async () => {
     // Fake timers, and a clock that moves with them: the shutdown grace and wait run their full
     // length without the test waiting for them.
