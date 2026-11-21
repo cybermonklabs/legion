@@ -2,11 +2,8 @@ package testnats
 
 import (
 	"fmt"
-	"math/rand/v2"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nkeys"
 )
@@ -135,54 +132,42 @@ func StartWithCallout(t testing.TB, keys CalloutKeys, static ...StaticUser) (url
 
 // StartWithCalloutServer runs the server StartWithCallout runs and returns it with its client URL,
 // for a test that stops, starts or restarts it under connected clients. Its relay and its own
-// client port listen on a loopback address of their own (calloutHost).
+// client port listen on a loopback address of their own, as every server start makes does.
+//
+// A test of the auth service counts what its hub sends the service, and the hub sends it a
+// request for every client that reaches it. In the envoy-go-race step a client another test left
+// behind, with no credential, reached a callout test's hub through a port the kernel had given out
+// again, and its replica counted three dropped requests where the test had sent one; while the
+// server's own client port listened on 127.0.0.1, such a client still reached the hub there, and
+// TestAClosingReplicaLogsWhatItCountedSinceItsLastLine/drops counted five drops after its first
+// line where its two connects made two (job 135649687816). The address of its own (start) puts the
+// hub out of such a client's reach, whichever port it gets.
 func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser) (*Server, string) {
 	t.Helper()
-	server := startOn(t, calloutHost(), CalloutConfig(keys, static...), []string{"-js"})
+	server := start(t, CalloutConfig(keys, static...), []string{"-js"})
 	awaitSeed(t, server.URL(), keys.ServiceSeed)
 	return server, server.URL()
 }
 
-// calloutHost is the address a callout server's relay and the server's own client port listen on:
-// on Linux, where every address of 127.0.0.0/8 is the loopback, one chosen at random, and
-// elsewhere 127.0.0.1.
-//
-// A test of the auth service counts what its hub sends the service, and the hub sends it a
-// request for every client that reaches it. A relay holds its port only for its own test's life.
-// A client that test leaves behind keeps dialing the port (a bus client reconnects forever), and
-// the kernel can give the same port to a later server's relay, in this test binary or in another
-// binary go test runs beside it. In the envoy-go-race step a client with no credential reached a
-// callout test's hub that way, and its replica counted three dropped requests where the test had
-// sent one. Such a client dials the address its own server had, so a hub on an address of its own
-// is out of its reach, whichever port it gets. The server's own client port reaches the hub as
-// its relay does, and the kernel gives that port from the same range: while it listened on
-// 127.0.0.1, such a client could still reach the hub there, and
-// TestAClosingReplicaLogsWhatItCountedSinceItsLastLine/drops counted five drops after its first
-// line where its two connects made two (job 135649687816). So both listen on this address.
-func calloutHost() string {
-	if runtime.GOOS != "linux" {
-		return "127.0.0.1"
-	}
-	return fmt.Sprintf("127.%d.%d.%d", 1+rand.IntN(254), rand.IntN(256), 1+rand.IntN(254))
-}
-
-// awaitSeed waits, within connectTimeout, for the server at uri to admit the nkey user whose seed
-// is seed: the proof it speaks the client protocol and enforces its configured users. A server
-// with an auth callout cannot be probed with a client that has no credential, as awaitAuth probes
-// one, because the server holds such a client for its authorization timeout while it waits for an
-// answer no service gives yet.
+// awaitSeed waits, until testDeadline, for the server at uri to admit the nkey user whose seed is
+// seed, each connect's dials cut to what is left (waitEnd): the proof it speaks the client
+// protocol and enforces its configured users. A server with an auth callout cannot be probed with a
+// client that has no credential, as awaitAuth probes one, because the server holds such a client
+// for its authorization timeout while it waits for an answer no service gives yet.
 func awaitSeed(t testing.TB, uri, seed string) {
 	t.Helper()
-	deadline := time.Now().Add(connectTimeout)
-	var err error
-	for time.Now().Before(deadline) {
-		conn, connectErr := ConnectSeed(t, uri, seed)
+	bound := boundOf(t)
+	for {
+		options, retire := bound.dial()
+		conn, connectErr := ConnectSeed(t, uri, seed, options...)
 		if connectErr == nil {
+			retire()
 			conn.Close()
 			return
 		}
-		err = connectErr
-		time.Sleep(retryInterval)
+		if bound.over() {
+			t.Fatalf("NATS at %s did not admit the auth service's user by %s, short of the test's deadline: %v", uri, bound, connectErr)
+		}
+		bound.pause()
 	}
-	t.Fatalf("NATS at %s did not admit the auth service's user within %s: %v", uri, connectTimeout, err)
 }

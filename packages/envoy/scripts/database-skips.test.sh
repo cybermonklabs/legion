@@ -5,7 +5,7 @@
 # five controls. Each control must fail as it states, or this test fails; each beside it a run
 # the counter must pass, so a counter that fails everything fails here too:
 #
-#   1. a skipped test planted in ./internal/broker/api/, ./cmd/broker/ and
+#   1. a skipped test planted in ./internal/cipher/api/, ./cmd/cipherd/ and
 #      ./internal/dispatch/api/, one at a time, through a Go overlay (GOFLAGS=-overlay) that adds
 #      zz_planted_skip_test.go, is printed as `SKIP <package> TestPlantedSkip` and fails the
 #      counter; the same run without the overlay passes;
@@ -21,9 +21,9 @@
 #      passes in the other has its failure's lines printed, whichever run failed, and none of the
 #      passing run's own, and one that passed in the first run and was running when the second
 #      timed out is printed as unfinished; a package spelled other than canonically
-#      (`./cmd/./broker/`, `.//cmd/broker/`, `./cmd/broker/../broker/`) is still counted; and a
+#      (`./cmd/./cipherd/`, `.//cmd/cipherd/`, `./cmd/cipherd/../cipherd/`) is still counted; and a
 #      report of the broker's tests whose only skips are the expected ones passes;
-#   4. --timeout 1s on ./internal/broker/api/, beside a planted parallel test that runs three
+#   4. --timeout 1s on ./internal/cipher/api/, beside a planted parallel test that runs three
 #      seconds and one that passes first, ends the package's binary on its timeout: the counter
 #      prints a go_test_exit that is not 0, the timeout's panic (which test2json files under the
 #      passed test) and the unfinished test, and fails; without --timeout the same run passes;
@@ -109,7 +109,7 @@ said() { grep -qF -- "$2" "$WORK/$1.err"; }
 # table_tests PACKAGE: the tests EXPECTED_SKIPS lists for PACKAGE, read off the counter's own
 # table, one per line.
 table_tests() { sed -n "s|^\(EXPECTED_SKIPS='\)\{0,1\}$1 \([A-Za-z0-9_]*\) .*|\2|p" "$COUNTER"; }
-airlock="$MODULE/internal/broker/airlock"
+airlock="$MODULE/internal/cipher/proxyrules"
 api_expected="$(table_tests "$API" | paste -sd '|')"
 airlock_expected="$(table_tests "$airlock" | paste -sd '|')"
 if [ -z "$api_expected" ] || [ -z "$airlock_expected" ]; then
@@ -140,8 +140,8 @@ func TestPlantedQuick(t *testing.T) { t.Parallel(); time.Sleep(100 * time.Millis
 echo "database-skips.test.sh: control 1, a planted skip in each of three packages" >&2
 # Each package's -run names the planted test and a test the package passes with the database set
 # (the API package's, the tests its table excuses), so the run without the overlay holds tests.
-for row in "internal/broker/api ^(TestPlantedSkip|TestHealthzIsPublic)$" \
-  "cmd/broker ^(TestPlantedSkip|TestBootBindsOnlyAfterTheCatchUp)$" \
+for row in "internal/cipher/api ^(TestPlantedSkip|TestHealthzIsPublic)$" \
+  "cmd/cipherd ^(TestPlantedSkip|TestBootBindsOnlyAfterTheCatchUp)$" \
   "internal/dispatch/api ^(TestPlantedSkip|$API_ANCHOR|$api_expected)$"; do
   read -r dir run <<<"$row"
   name="planted-${dir//\//-}"
@@ -175,10 +175,10 @@ judge "$([ "$(code empty)" = 1 ] && [ "$(out empty)" = 'database_skips=UNKNOWN' 
   "control 2: with BROKER_TEST_DATABASE_URL empty the counter prints UNKNOWN naming it and runs no test" "$(seen empty)"
 
 echo "database-skips.test.sh: control 3, reports" >&2
-# airlock_skips: a skip event of each test EXPECTED_SKIPS lists for the airlock package.
+# airlock_skips: a skip event of each test EXPECTED_SKIPS lists for the proxyrules package.
 airlock_skips() { table_tests "$airlock" | while IFS= read -r test; do ev skip "$airlock" "$test"; done; }
-brokerapi="$MODULE/internal/broker/api"
-cmdbroker="$MODULE/cmd/broker"
+brokerapi="$MODULE/internal/cipher/api"
+cmdbroker="$MODULE/cmd/cipherd"
 # ev ACTION PACKAGE [TEST]: one event of a go test -json report.
 ev() {
   if [ $# -eq 3 ]; then
@@ -195,7 +195,7 @@ unknown_report() {
 { ev pass "$MODULE/internal/dispatch/store" TestElsewhere; ev skip "$MODULE/internal/dispatch/store" TestSkippedElsewhere
   ev pass "$MODULE/internal/dispatch/store"; } >"$WORK/elsewhere.json"
 count elsewhere bash "$COUNTER" --report "$WORK/elsewhere.json"
-unknown_report elsewhere 'holds no test of a package under ./internal/broker/... ./cmd/broker/ that passed or failed' \
+unknown_report elsewhere 'holds no test of a package under ./internal/cipher/... ./cmd/cipherd/ that passed or failed' \
   "a report holding no test of a package the patterns name is UNKNOWN"
 : >"$WORK/empty.json"
 count empty-report bash "$COUNTER" --report "$WORK/empty.json"
@@ -204,19 +204,19 @@ judge "$([ "$(code empty-report)" = 1 ] && [ "$(out empty-report)" = 'database_s
   [ "$(code missing-report)" = 1 ] && [ "$(out missing-report)" = 'database_skips=UNKNOWN' ] && echo 0 || echo 1)" \
   "control 3: an empty and a missing report are UNKNOWN" "empty: $(seen empty-report); missing: $(seen missing-report)"
 { airlock_skips; ev pass "$airlock"; } >"$WORK/all-expected.json"
-count all-expected bash "$COUNTER" --report "$WORK/all-expected.json" ./internal/broker/airlock/
-unknown_report all-expected 'holds no test of a package under ./internal/broker/airlock/ that passed or failed' \
+count all-expected bash "$COUNTER" --report "$WORK/all-expected.json" ./internal/cipher/proxyrules/
+unknown_report all-expected 'holds no test of a package under ./internal/cipher/proxyrules/ that passed or failed' \
   "a report whose only tests are expected skips is UNKNOWN"
 { ev pass "$brokerapi" TestHealthzIsPublic; ev pass "$brokerapi"; ev pass "$cmdbroker"; } >"$WORK/silent.json"
-count silent bash "$COUNTER" --report "$WORK/silent.json" ./internal/broker/api/ ./cmd/broker/
+count silent bash "$COUNTER" --report "$WORK/silent.json" ./internal/cipher/api/ ./cmd/cipherd/
 unknown_report silent "holds no test that passed or failed in $cmdbroker, which has test files" \
   "a package that passed with no test, beside one whose tests ran, is UNKNOWN"
 { ev pass "$brokerapi" TestHealthzIsPublic; ev pass "$brokerapi"; } >"$WORK/partial.json"
-count partial bash "$COUNTER" --report "$WORK/partial.json" ./internal/broker/api/ ./cmd/broker/
+count partial bash "$COUNTER" --report "$WORK/partial.json" ./internal/cipher/api/ ./cmd/cipherd/
 unknown_report partial "holds no test that passed or failed in $cmdbroker, which has test files" \
   "a named package the report does not hold, beside one whose tests ran, is UNKNOWN"
 { ev pass "$brokerapi" TestHealthzIsPublic; ev fail "$brokerapi" TestABrokenTest; ev fail "$brokerapi"; } >"$WORK/failed.json"
-count failed bash "$COUNTER" --report "$WORK/failed.json" ./internal/broker/api/
+count failed bash "$COUNTER" --report "$WORK/failed.json" ./internal/cipher/api/
 judge "$([ "$(code failed)" = 1 ] && [ "$(out failed)" = 'database_skips=0' ] && said failed "FAIL $brokerapi TestABrokenTest" && echo 0 || echo 1)" \
   "control 3: a report holding a failed test fails, naming it" "$(seen failed)"
 # A data race report the detector prints after a subtest's `--- PASS` is filed under that passed
@@ -229,11 +229,11 @@ oev() { jq -nc --arg p "$brokerapi" --arg t "$1" --arg o "$2" '{Action: "output"
   oev TestRaced/sub 'WARNING: DATA RACE'$'\n'; oev TestRaced/sub 'Write at 0x00c000 by goroutine 7:'$'\n'
   oev TestRaced '    testing.go:1617: race detected during execution of test'$'\n'; oev TestRaced '--- FAIL: TestRaced (0.01s)'$'\n'
   ev fail "$brokerapi" TestRaced; ev fail "$brokerapi"; } >"$WORK/raced.json"
-count raced bash "$COUNTER" --report "$WORK/raced.json" ./internal/broker/api/
+count raced bash "$COUNTER" --report "$WORK/raced.json" ./internal/cipher/api/
 judge "$([ "$(code raced)" = 1 ] && said raced 'WARNING: DATA RACE' && said raced 'Write at 0x00c000 by goroutine 7:' &&
   ! said raced 'a line TestPassedBeside printed itself' && echo 0 || echo 1)" \
   "control 3: a data race report filed under a subtest that passed is printed, and a passed test's own output is not" "$(seen raced)"
-# A test the binary runs twice under one name, as internal/broker/airlockproxy's TestMain runs its
+# A test the binary runs twice under one name, as internal/cipher/proxy's TestMain runs its
 # whole suite once per protocol: test2json reports both runs under that name. The run that failed
 # has its failure's lines printed though the other run passed, whichever run failed, and the run
 # that passed has none of its own lines printed; read by the name alone, the counter printed none
@@ -257,7 +257,7 @@ twice() { # FAILED_RUN: TestTwice in two runs of one binary, failing in run FAIL
 }
 for failed_run in 1 2; do
   twice "$failed_run" >"$WORK/twice-$failed_run.json"
-  count "twice-$failed_run" bash "$COUNTER" --report "$WORK/twice-$failed_run.json" ./internal/broker/api/
+  count "twice-$failed_run" bash "$COUNTER" --report "$WORK/twice-$failed_run.json" ./internal/cipher/api/
   judge "$([ "$(code "twice-$failed_run")" = 1 ] && said "twice-$failed_run" "FAIL $brokerapi TestTwice" &&
     said "twice-$failed_run" "log_masking_test.go:282: the failure of run $failed_run" &&
     ! said "twice-$failed_run" 'a line TestTwice printed in the run that passed' && echo 0 || echo 1)" \
@@ -268,19 +268,19 @@ done
   ev pass "$brokerapi" TestSlow; pev 'PASS'$'\n'
   ev run "$brokerapi" TestSlow; oev TestSlow '=== RUN   TestSlow'$'\n'; oev TestSlow 'panic: test timed out after 1s'$'\n'
   ev fail "$brokerapi"; } >"$WORK/twice-unfinished.json"
-count twice-unfinished bash "$COUNTER" --report "$WORK/twice-unfinished.json" ./internal/broker/api/
+count twice-unfinished bash "$COUNTER" --report "$WORK/twice-unfinished.json" ./internal/cipher/api/
 judge "$([ "$(code twice-unfinished)" = 1 ] && said twice-unfinished "UNFINISHED $brokerapi TestSlow" &&
   said twice-unfinished 'panic: test timed out after 1s' && echo 0 || echo 1)" \
   "control 3: a test that passed in the first run and was running when the second run's binary timed out is printed as unfinished" \
   "$(seen twice-unfinished); stderr $(tr '\n' '|' <"$WORK/twice-unfinished.err")"
 { ev pass "$cmdbroker" TestBootBindsOnlyAfterTheCatchUp; ev skip "$cmdbroker" TestPlantedSkip; ev pass "$cmdbroker"; } >"$WORK/spelled.json"
-for spelling in ./cmd/./broker/ .//cmd/broker/ ./cmd/broker/../broker/; do
+for spelling in ./cmd/./cipherd/ .//cmd/cipherd/ ./cmd/cipherd/../cipherd/; do
   count spelled bash "$COUNTER" --report "$WORK/spelled.json" "$spelling"
   judge "$([ "$(code spelled)" = 1 ] && grep -qxF "SKIP $cmdbroker TestPlantedSkip" "$WORK/spelled.out" &&
     grep -qxF 'database_skips=1' "$WORK/spelled.out" && echo 0 || echo 1)" \
     "control 3: a skip in a package spelled $spelling is counted" "$(seen spelled)"
 done
-QUIET=(./internal/broker/api/ ./cmd/broker/ ./internal/broker/airlock/)
+QUIET=(./internal/cipher/api/ ./cmd/cipherd/ ./internal/cipher/proxyrules/)
 { ev pass "$brokerapi" TestHealthzIsPublic; ev pass "$brokerapi"
   ev pass "$cmdbroker" TestBootBindsOnlyAfterTheCatchUp; ev pass "$cmdbroker"
   ev pass "$airlock" TestAnAirlockTestThatRan; airlock_skips
@@ -294,14 +294,14 @@ unknown_report stale "EXPECTED_SKIPS names $airlock FuzzAirlock" \
   "an EXPECTED_SKIPS line whose test a report of its package does not hold is UNKNOWN"
 
 echo "database-skips.test.sh: control 4, --timeout" >&2
-plant wait internal/broker/api "$WAIT_BODY"
+plant wait internal/cipher/api "$WAIT_BODY"
 wait_run='-run=^(TestPlantedWait|TestPlantedQuick)$'
-count timeout env GOFLAGS="-overlay=$WORK/wait.overlay $wait_run" bash "$COUNTER" --timeout 1s ./internal/broker/api/
+count timeout env GOFLAGS="-overlay=$WORK/wait.overlay $wait_run" bash "$COUNTER" --timeout 1s ./internal/cipher/api/
 judge "$([ "$(code timeout)" = 1 ] && grep -qE '^go_test_exit=[1-9]' "$WORK/timeout.out" &&
-  said timeout 'panic: test timed out after 1s' && said timeout "UNFINISHED $MODULE/internal/broker/api TestPlantedWait" &&
+  said timeout 'panic: test timed out after 1s' && said timeout "UNFINISHED $MODULE/internal/cipher/api TestPlantedWait" &&
   echo 0 || echo 1)" \
   "control 4: --timeout 1s ends the binary of a package whose test runs three seconds, fails the counter and prints the timeout's panic though a passed test's line came last" "$(seen timeout)"
-count no-timeout env GOFLAGS="-overlay=$WORK/wait.overlay $wait_run" bash "$COUNTER" ./internal/broker/api/
+count no-timeout env GOFLAGS="-overlay=$WORK/wait.overlay $wait_run" bash "$COUNTER" ./internal/cipher/api/
 judge "$([ "$(code no-timeout)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/no-timeout.out" &&
   grep -qxF 'go_test_exit=0' "$WORK/no-timeout.out" && echo 0 || echo 1)" \
   "control 4: the same run without --timeout passes" "$(seen no-timeout)"

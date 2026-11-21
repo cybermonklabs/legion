@@ -23,7 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
@@ -83,7 +83,12 @@ type testServerOptions struct {
 	// is, because the verifier's DPoP replay store is a table of it (store.NewDPoPProofs); nil
 	// is the deployment with no broker, which is every test but broker_token_test.go's and
 	// project_scope_test.go's, and answers such a presentation 401 UNAUTHORIZED.
-	brokerTokens func(*store.Store) *brokertoken.Verifier
+	brokerTokens func(*store.Store) *ciphertoken.Verifier
+	// agentSecretsURL points Deps' broker relay for the credential pages at a fake secrets broker
+	// (DISPATCH_AGENT_SECRETS_URL), and the server presents the account token
+	// credentialTestAccountToken there from a file newRegisteredTestServer writes, as envoyURL's
+	// is; empty is the deployment with no broker, whose credential routes answer FEATURE_OFF.
+	agentSecretsURL string
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
 	identity identity.Identity
@@ -265,7 +270,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.persistence != nil {
 		documentPersistence = options.persistence(database)
 	}
-	var brokerTokens *brokertoken.Verifier
+	var brokerTokens *ciphertoken.Verifier
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
@@ -286,6 +291,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		agentPublisher = nil
 	case agentPublisher == nil:
 		agentPublisher = NewAgentPublishRecorder()
+	}
+	agentSecretsTokenFile := ""
+	if options.agentSecretsURL != "" {
+		agentSecretsTokenFile = accountTokenFile(t, credentialTestAccountToken)
 	}
 	deps, err := NewDeps(DepsInput{
 		Store:            database,
@@ -312,19 +321,21 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
-		HorizonStallAfter: horizontest.StallWarning,
-		HorizonWarnEvery:  horizontest.StallWarning,
-		OIDC:              options.oidc,
-		BrokerTokens:      brokerTokens,
-		AgentStream:       options.agentStream,
-		AgentPublisher:    agentPublisher,
-		Embedder:          options.embedder,
-		Answerer:          options.answerer,
-		Files:             options.files,
-		DashboardEntry:    options.dashboardEntry,
-		BuildCommit:       options.buildCommit,
-		OutboxPublishes:   options.outboxPublishes,
-		Metrics:           options.metrics,
+		HorizonStallAfter:     horizontest.StallWarning,
+		HorizonWarnEvery:      horizontest.StallWarning,
+		OIDC:                  options.oidc,
+		BrokerTokens:          brokerTokens,
+		AgentSecretsURL:       options.agentSecretsURL,
+		AgentSecretsTokenFile: agentSecretsTokenFile,
+		AgentStream:           options.agentStream,
+		AgentPublisher:        agentPublisher,
+		Embedder:              options.embedder,
+		Answerer:              options.answerer,
+		Files:                 options.files,
+		DashboardEntry:        options.dashboardEntry,
+		BuildCommit:           options.buildCommit,
+		OutboxPublishes:       options.outboxPublishes,
+		Metrics:               options.metrics,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

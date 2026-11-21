@@ -103,7 +103,7 @@ type hubContainer interface {
 	Stop(ctx context.Context, timeout *time.Duration) error
 	CopyToContainer(ctx context.Context, fileContent []byte, containerFilePath string, fileMode int64) error
 	Start(ctx context.Context) error
-	ConnectionString(ctx context.Context) (string, error)
+	testnats.ImageServer
 }
 
 // startHub runs the hub's image on the rig's authorization without its callout, which a client with
@@ -125,9 +125,7 @@ func (r *calloutRig) reconfigure(t *testing.T, ctr hubContainer, config string) 
 	require.NoError(t, ctr.Stop(ctx, &stop))
 	require.NoError(t, ctr.CopyToContainer(ctx, []byte(config), "/etc/nats/nats-server.conf", 0o644))
 	require.NoError(t, ctr.Start(ctx))
-	uri, err := ctr.ConnectionString(ctx)
-	require.NoError(t, err)
-	return uri
+	return testnats.ImageURL(t, ctr)
 }
 
 // connectWhenUp connects to server as the nkey user whose seed is seed, with options, retrying for

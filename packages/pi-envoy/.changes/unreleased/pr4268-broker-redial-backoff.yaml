@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+  A session that presents its broker token (`NATS_AUTH=broker`) redials a hub that dropped or
+  refuses it on a jittered backoff rather than every 2 s: at once when it loses a connection that
+  lived a minute or more past its last dial, then after waits drawn between half and all of 4 s,
+  8 s, 16 s and then 20 s for good (`@legion/envoy-client`'s `brokerRedialDelays`); a connection
+  lost sooner keeps its place in the backoff. A token it has yet to present goes out within about a
+  second, in the middle of a wait too: a session switch's whatever the wait, and a renewal's at most
+  once between two planned redials while the hub refuses, and once more after each admission. A
+  first dial the hub refuses waits on the same backoff, and a token it refuses twice is dropped and
+  another trade started at once, once for the session until a dial is admitted, however many passes
+  the hub refuses; a log line says so at the drop. A hub that refuses every session at once, as the
+  NATS auth service's cutover and a maintenance window do, is asked again about 73 times a second
+  by 1,100 sessions rather than 550, and each session's next redial comes within 20 s of the hub
+  admitting again. A seed or no credential keeps the flat 2 s.
+time: 2026-11-17T03:56:08Z
+custom:
+  Issue: pr4268

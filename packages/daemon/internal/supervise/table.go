@@ -421,12 +421,9 @@ type RequestReady struct {
 
 // RequestSuspend stops the claim's process and keeps its session. Reason is why, for the line the
 // suspension logs; By is who asks, which the suspended claim records (Claim.SuspendedBy) and every
-// suspension must name. Deadline, when set, is when a suspension held for a turn stops the process
-// mid-turn if the turn has not ended by then (holdSuspension); a daemon's suspension without one
-// waits for the turn however long it takes. The daemon sets one for a carried child's role still
-// running in its old tree, at the old root's linger expiry, where that tree's close would have
-// ended it (the daemon's outbox, stopElsewhere). The operator's suspension sets none: it is bounded
-// at the stop timeout from its arrival.
+// suspension must name. For a daemon suspension, Deadline, when set, stops a hold at that moment
+// when its turn has not ended (holdSuspension); without one, the hold waits for the turn's end. An
+// operator suspension always uses the stop timeout from its arrival, whatever Deadline says.
 //
 // NeverHold is a suspension that may not be held: one a caller posts only because it read the
 // claim in no turn, and whose refusal it reports to its own caller as nothing having happened. A
@@ -2953,9 +2950,15 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
 // topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
 // the outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk):
-// an ask that reached none marks nothing, so a later sweep asks again. A claim whose process is
-// suspended or released is not revived for the ask: if no ask has reached it, the sweep asks it
-// once its agent is ready again, and the round ends at its bound whether or not the role answers.
+// an ask that reached none marks nothing, so a later sweep asks again. A suspended claim is not
+// revived for the ask, and its machine records the round all the same. A suspension by the daemon
+// itself (Claim.PassedOverByRound) takes the claim out of the round's ask and out of its wait: the
+// sweep asks it nothing and the round does not wait for its answer (internal/daemon's roundAsks,
+// dispatch://INFRA-4109 R1). The one exception is a claim a project's pause stopped, while the
+// daemon's podHolds.owes in internal/daemon holds (internal/daemon's roundClock.passesOver). An
+// operator's suspension leaves the claim in both: if no ask has reached it, the sweep asks it once
+// its agent is ready again, and the round waits for the operator whatever its bound
+// (dispatch://INFRA-2981 R5).
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.
 // The answer the worker gives carries the round its own ask named (PodUpdateSignalled), so an

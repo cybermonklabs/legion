@@ -11,6 +11,13 @@ deploy/compose/nats/nats-*.conf
 /broker
 /broker-refgen
 /agent-secrets
+# The same commands' binaries as a bare go build names them, after each command's directory.
+/cipherd
+/cipher
+/cipher-helper
+/cipher-refgen
+/cipher-devrelay
+/dev-proxy-stands
 # The Dispatch e2e harness's server binary and its build lock (packages/dispatch/e2e/run-server.sh)
 /dispatch-e2e
 /.dispatch-e2e.lock

@@ -239,7 +239,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends jq python3 make
 COPY package.json bun.lock ./
 COPY patches patches
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY packages/broker-client/package.json packages/broker-client/package.json
+COPY packages/cipher-client/package.json packages/cipher-client/package.json
 COPY packages/envoy-client/package.json packages/envoy-client/package.json
 COPY packages/pi-envoy/package.json packages/pi-envoy/package.json
 COPY packages/pi-legion/package.json packages/pi-legion/package.json
@@ -298,7 +298,7 @@ RUN mkdir -p /out \
     && /out/codegraph/node --version > /out/codegraph-node-version
 WORKDIR /repo
 COPY packages/contracts packages/contracts
-COPY packages/broker-client packages/broker-client
+COPY packages/cipher-client packages/cipher-client
 COPY packages/envoy-client packages/envoy-client
 COPY packages/pi-shared packages/pi-shared
 COPY packages/pi-envoy packages/pi-envoy
@@ -466,7 +466,7 @@ WORKDIR /src/packages/daemon
 # (which decides them, with the GOARCH this stage builds for); fails the build when one's license
 # cannot be determined.
 RUN mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
-    ./cmd/legion github.com/sjawhar/envoy/cmd/agent-secrets
+    ./cmd/legion github.com/sjawhar/envoy/cmd/cipher
 # Declared here, after the dependency layers, so a new commit re-runs only the compile.
 ARG LEGION_REVISION
 ARG PI_LEGION_VERSION
@@ -475,7 +475,7 @@ RUN test -n "$LEGION_REVISION" \
     && ldflags="-X main.revision=${LEGION_REVISION}" \
     && if [ -n "$PI_LEGION_VERSION" ] && [ -n "$PI_ENVOY_VERSION" ]; then ldflags="$ldflags -X main.piLegionVersion=${PI_LEGION_VERSION} -X main.piEnvoyVersion=${PI_ENVOY_VERSION}"; fi \
     && CGO_ENABLED=0 go build -ldflags "$ldflags" -o /out/legion ./cmd/legion \
-    && CGO_ENABLED=0 go -C /src/packages/envoy build -o /out/agent-secrets ./cmd/agent-secrets
+    && CGO_ENABLED=0 go -C /src/packages/envoy build -o /out/agent-secrets ./cmd/cipher
 
 # ------------------------------------------------------------------------------------------------
 # toolchain: what a worker needs to work a repository that is not Legion's, specific to none: uv (which
@@ -1411,7 +1411,7 @@ COPY --from=notices /out/THIRD_PARTY_NOTICES /usr/share/doc/legion/THIRD_PARTY_N
 # links the commit), so a new commit rebuilds only the layers from here down, never the probe layer and
 # its natives.
 COPY --from=go /out/legion /opt/legion/bin/legion
-# agent-secrets (packages/envoy/cmd/agent-secrets): the pod's secrets client — the shim
+# agent-secrets (packages/envoy/cmd/cipher): the pod's secrets client — the shim
 # runs `keygen` before its hello and `renew` after its enrollment, and the agent's tools call it
 # from PATH, which /opt/legion/bin leads in the image and in every worker container (the PATH
 # mainEnvironment sets in packages/daemon/internal/runtime/sandbox/manifest.go). The daemon's

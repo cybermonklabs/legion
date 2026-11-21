@@ -72,7 +72,7 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// ReadOnly is a broker-issued token that holds only the scope read (brokertoken.ScopeRead):
+	// ReadOnly is a broker-issued token that holds only the scope read (ciphertoken.ScopeRead):
 	// one the secrets broker minted from a read entry, naming a service and a session and no
 	// person and no project. Dispatch serves it on the routes its read list names
 	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
@@ -301,15 +301,22 @@ var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepS
 // State is `live` or `gone` — a delete writes `gone` and removes no row, so a reader of a
 // priority somebody deleted is told that rather than told nothing. MadeAt and MadeBy stay as
 // the first write left them however often the priority is written again.
+//
+// DescriptionTree is the ProseMirror tree Description is shown as, present only for a caller
+// that sent `Dispatch-Trees: 1` and only for a description that is not empty. It stands on this
+// row rather than on a read shape of the api package's own (display_trees.go), because no event
+// payload carries a priority: `priority.updated` names the id and the change alone
+// (PriorityEventPayload).
 type Priority struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Owner       string    `json:"owner"`
-	Rank        string    `json:"rank"`
-	State       string    `json:"state"`
-	MadeAt      time.Time `json:"made_at"`
-	MadeBy      Actor     `json:"made_by"`
+	ID              string      `json:"id"`
+	Title           string      `json:"title"`
+	Description     string      `json:"description"`
+	DescriptionTree DisplayTree `json:"description_tree,omitempty"`
+	Owner           string      `json:"owner"`
+	Rank            string      `json:"rank"`
+	State           string      `json:"state"`
+	MadeAt          time.Time   `json:"made_at"`
+	MadeBy          Actor       `json:"made_by"`
 }
 
 // PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history

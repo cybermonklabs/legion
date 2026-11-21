@@ -86,11 +86,25 @@
 #      other job of the run; a job CI_OK_EXEMPT names that does report to ci-ok, or that
 #      CI_OK_SELECTED_BY also maps, or
 #      that is no job of the file at all; a job named for a check main's ruleset requires (ci-ok
-#      and pr-title) that is not the job of that name, and either of those two jobs renamed by a
-#      `name:`, since a job posts its own check under its display name and a skipped one posts a
-#      pass; a pr-title job that is missing, since nothing else reports that check on a pull
-#      request or a merge group; a ci-ok job — the verdict, whose own check run is the other
-#      check that ruleset requires — that is missing, that CI_OK_EXEMPT does not name, or whose
+#      and pr-title), or named by an expression that can evaluate to one, that is not the job of
+#      that name; ci-ok carrying any `name:` but `${{ github.event_name == 'workflow_dispatch' &&
+#      needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}`, pr-title
+#      any but `${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' ||
+#      'pr-title' }}`, since a job posts its own check under its display name, a skipped one posts
+#      a pass, and a dispatch of any ref but exactly refs/heads/main tests that ref's tree and
+#      lands its check runs on the branch's head, a pull request's head, beside the pull
+#      request's own, where a reader by name takes the newer; the ci-ok job's step "Set every
+#      other ci-ok on this head to this job's conclusion" carrying any `if:` but `${{ always() &&
+#      (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true')
+#      }}`, since on any other dispatch it would set a pull request's ci-ok check runs to that
+#      run's verdict; the changes job lacking the output `ref_is_main: ${{
+#      steps.ref.outputs.is_main }}` or its one step `ref`, whose `run:` is exactly `if [
+#      "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >>
+#      "$GITHUB_OUTPUT"` with no `if:`, since an expression's `==` and `!=` ignore case and read
+#      refs/heads/Main as main where the shell's `=` does not; a pr-title job that is missing, since nothing else
+#      reports that check on a pull request or a merge group; a ci-ok job — the verdict, whose own
+#      check run is the other check that ruleset requires — that is missing, that CI_OK_EXEMPT
+#      does not name, or whose
 #      needs: is not every job of the file but itself and the exempt ones, since a job outside
 #      that list ends after a verdict that says nothing about it; and a job of the file that is
 #      in none of ci-ok's three classes, or in two of them: CI_OK_SELECTED_BY maps it to the
@@ -200,7 +214,7 @@
 #      every Bun job and this check holds every filter gating such a job to all of them. What the
 #      rule prevents is exactly that: a workspace missing from the table is a manifest no filter
 #      has to select, so a change to it starts no job. It prevents nothing else, and
-#      packages/broker-client is the case that shows the difference - it was outside the table
+#      packages/cipher-client is the case that shows the difference - it was outside the table
 #      from the day it was added, and its own typecheck and tests ran in no job for a second
 #      reason no rule reads, that no step ran them. The other way round is a read every Bun job
 #      declares of a manifest no install reads. The manifest is read as
@@ -213,7 +227,7 @@
 #      sources are another matter, which this rule says nothing about either: a job can compile a
 #      package whose filter never selects it, which is why ci_job_reads.py's envoy_client_dep
 #      declares, in one place for every gate whose job compiles @legion/envoy-client, that it
-#      compiles @legion/broker-client with it.
+#      compiles @legion/cipher-client with it.
 #  14. a workflow of .github/workflows other than ci.yaml that runs on `merge_group`, naming the
 #      file: ci-ok-report.sh POSTs the failing ci-ok of a merge-group run the reporting job's
 #      own result decides, so the queue learns a group is doomed without waiting for the ci-ok

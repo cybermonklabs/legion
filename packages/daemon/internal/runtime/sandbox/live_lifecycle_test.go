@@ -45,7 +45,7 @@ func (r *liveRig) checkRootReady() error {
 	if err := r.recordSandbox(cache); err != nil {
 		return err
 	}
-	r.mapRepository(r.env.repo)
+	r.cacheRepository(r.env.repo)
 	root := r.claim("root")
 	since := time.Now()
 	loc, err := r.spawn(root, true)
@@ -1311,9 +1311,9 @@ func (r *liveRig) checkIndependentProvision() error {
 // `legion git-credential` helper, lists LEGION_E2E_REPO's refs; and GitHub serves the credential
 // that helper hands out for LEGION_E2E_REPO the receive-pack advertisement (200), the answer it
 // gives a token that may write. What a role reaches is its App's installations: an issue of one
-// owner's repository holds a token that writes another owner's. The run maps both repositories
-// (mapRepository, here and before the root's launch), so this proves reach across owners and
-// nothing about a repository no mapping names.
+// owner's repository holds a token that writes another owner's. The run's cache set holds both
+// repositories (cacheRepository, here and before the root's launch), so this proves reach across
+// owners and nothing about a repository no live record names.
 // The advertisement is the request a `git push` opens with and writes nothing,
 // where a real push would leave a branch on a repository every run shares and nothing here would
 // delete it. That repository's cache is its own: the issue's launch makes it (its
@@ -1324,7 +1324,7 @@ func (r *liveRig) checkSecondOwner() error {
 	if err := r.recordSandbox(cache); err != nil {
 		return err
 	}
-	r.mapRepository(c.repo)
+	r.cacheRepository(c.repo)
 	since := time.Now()
 	if _, err := r.spawn(c, true); err != nil {
 		return err

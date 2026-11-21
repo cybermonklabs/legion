@@ -8,8 +8,8 @@ name: Docs (main)
 #
 # A `workflow_dispatch` run starts this workflow on any branch. The build job runs as it does on
 # main, with the `upload-pages-artifact` step that no other caller of docs-site.yaml asks for, so
-# a dispatch of a branch proves that step before the merge. The deploy job runs on main alone
-# (`github.ref`), so a dispatch of a branch deploys nothing to the live site.
+# a dispatch of a branch proves that step before the merge. The deploy job runs on main alone (the
+# `ref` job's exact test of the ref), so a dispatch of a branch deploys nothing to the live site.
 #
 # A workflow of its own, so a push to main builds and deploys the site at all: ci.yaml has no
 # `push:` trigger, and its docs job runs on pull requests and merge groups alone. Of the pushes
@@ -37,7 +37,7 @@ on:
       - 'package.json'
       - 'bun.lock'
       - 'patches/**'
-      - 'packages/broker-client/package.json'
+      - 'packages/cipher-client/package.json'
       - 'packages/contracts/package.json'
       - 'packages/envoy-client/package.json'
       - 'packages/pi-envoy/package.json'
@@ -67,7 +67,7 @@ on:
       - 'packages/daemon/cmd/legion/*'
       - 'packages/daemon/cmd/legion/tls-fixtures/*'
       - 'packages/daemon/internal/admit/*'
-      - 'packages/daemon/internal/agentsecrets/*'
+      - 'packages/daemon/internal/cipher/*'
       - 'packages/daemon/internal/api/*'
       - 'packages/daemon/internal/appauth/*'
       - 'packages/daemon/internal/backoff/*'
@@ -130,10 +130,10 @@ on:
       - 'packages/daemon/internal/wakepace/*'
       - 'packages/daemon/internal/workflow/*'
       - 'packages/daemon/internal/workspace/*'
-      - 'packages/envoy/brokeraddr/*'
-      - 'packages/envoy/brokerclient/*'
+      - 'packages/envoy/cipheraddr/*'
+      - 'packages/envoy/cipherclient/*'
       - 'packages/envoy/dispatchbody/*'
-      - 'packages/envoy/internal/brokerclient/*'
+      - 'packages/envoy/internal/cipherclient/*'
       - 'packages/envoy/internal/contracts/*'
       - 'packages/envoy/internal/ctxlock/*'
       - 'packages/envoy/internal/dispatch/itemblocks/*'
@@ -156,7 +156,7 @@ on:
       - 'packages/envoy/internal/cistore/*'
       - 'packages/envoy/internal/contracts/*'
       - 'packages/envoy/internal/dispatch/accesslog/*'
-      - 'packages/envoy/internal/dispatch/agentsecrets/*'
+      - 'packages/envoy/internal/dispatch/cipher/*'
       - 'packages/envoy/internal/dispatch/agentstream/*'
       - 'packages/envoy/internal/dispatch/api/*'
       - 'packages/envoy/internal/dispatch/architecture/*'
@@ -201,6 +201,7 @@ on:
       - 'packages/envoy/internal/dispatch/text/*'
       - 'packages/envoy/internal/dispatch/texttreefill/*'
       - 'packages/envoy/internal/dispatch/texttrees/*'
+      - 'packages/envoy/internal/dispatch/textversions/*'
       - 'packages/envoy/internal/dispatch/workflowstore/*'
       - 'packages/envoy/internal/envconf/*'
       - 'packages/envoy/internal/fold/*'
@@ -215,6 +216,7 @@ on:
       - 'packages/envoy/internal/pglisten/*'
       - 'packages/envoy/internal/pgmigrate/*'
       - 'packages/envoy/internal/redact/*'
+      - 'packages/envoy/internal/tlsalert/*'
       - 'packages/envoy/internal/redirects/*'
       - 'packages/envoy/internal/roles/*'
       - 'packages/envoy/internal/routing/*'
@@ -224,49 +226,52 @@ on:
       - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
       # The docs filter's own:
-      # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
+      # agentloop: the model loop cmd/cipherd's judge runs a model and its tools through.
       - 'packages/envoy/agentloop/*'
-      - 'packages/envoy/cmd/agent-secrets/*'
-      - 'packages/envoy/cmd/agent-secrets-helper/*'
-      - 'packages/envoy/cmd/broker/*'
-      - 'packages/envoy/cmd/broker-refgen/*'
-      - 'packages/envoy/internal/broker/airlock/*'
-      - 'packages/envoy/internal/broker/airlockproxy/*'
-      - 'packages/envoy/internal/broker/answer/*'
-      - 'packages/envoy/internal/broker/api/*'
+      - 'packages/envoy/cmd/cipher/*'
+      - 'packages/envoy/cmd/cipher-helper/*'
+      - 'packages/envoy/cmd/cipherd/*'
+      - 'packages/envoy/cmd/cipher-refgen/*'
+      - 'packages/envoy/internal/cipher/proxyrules/*'
+      - 'packages/envoy/internal/cipher/proxy/*'
+      - 'packages/envoy/internal/cipher/answer/*'
+      - 'packages/envoy/internal/cipher/api/*'
       # The approval page's own files, its embedded templates and stylesheet included.
-      - 'packages/envoy/internal/broker/approval/**'
-      - 'packages/envoy/internal/broker/config/*'
-      - 'packages/envoy/internal/broker/enroll/*'
-      - 'packages/envoy/internal/broker/exchange/*'
-      - 'packages/envoy/internal/broker/helper/*'
-      - 'packages/envoy/internal/broker/judge/*'
-      - 'packages/envoy/internal/broker/leasetime/*'
-      - 'packages/envoy/internal/broker/machine/*'
-      - 'packages/envoy/internal/broker/netaddr/*'
-      - 'packages/envoy/internal/broker/oauth/*'
-      - 'packages/envoy/internal/broker/oauthstore/*'
-      - 'packages/envoy/internal/broker/oauthwire/*'
-      - 'packages/envoy/internal/broker/policy/*'
-      - 'packages/envoy/internal/broker/projectaccess/*'
-      - 'packages/envoy/internal/broker/proof/*'
-      - 'packages/envoy/internal/broker/record/*'
-      - 'packages/envoy/internal/broker/requests/*'
-      - 'packages/envoy/internal/broker/reread/*'
-      - 'packages/envoy/internal/broker/secrets/*'
-      - 'packages/envoy/internal/broker/store/*'
-      - 'packages/envoy/internal/broker/store/migrations/**'
-      - 'packages/envoy/internal/broker/wake/*'
-      - 'packages/envoy/internal/broker/natscallout/*'
+      - 'packages/envoy/internal/cipher/approval/**'
+      - 'packages/envoy/internal/cipher/config/*'
+      - 'packages/envoy/internal/cipher/enroll/*'
+      - 'packages/envoy/internal/cipher/exchange/*'
+      - 'packages/envoy/internal/cipher/groups/*'
+      - 'packages/envoy/internal/cipher/helper/*'
+      - 'packages/envoy/internal/cipher/judge/*'
+      - 'packages/envoy/internal/cipher/leasetime/*'
+      - 'packages/envoy/internal/cipher/machine/*'
+      - 'packages/envoy/internal/cipher/netaddr/*'
+      - 'packages/envoy/internal/cipher/oauth/*'
+      - 'packages/envoy/internal/cipher/oauthstore/*'
+      - 'packages/envoy/internal/cipher/oauthwire/*'
+      - 'packages/envoy/internal/cipher/policy/*'
+      - 'packages/envoy/internal/cipher/dispatchread/*'
+      - 'packages/envoy/internal/cipher/projectaccess/*'
+      - 'packages/envoy/internal/cipher/projectrepos/*'
+      - 'packages/envoy/internal/cipher/proof/*'
+      - 'packages/envoy/internal/cipher/record/*'
+      - 'packages/envoy/internal/cipher/requests/*'
+      - 'packages/envoy/internal/cipher/reread/*'
+      - 'packages/envoy/internal/cipher/secrets/*'
+      - 'packages/envoy/internal/cipher/store/*'
+      - 'packages/envoy/internal/cipher/store/migrations/**'
+      - 'packages/envoy/internal/cipher/wake/*'
+      - 'packages/envoy/internal/cipher/natscallout/*'
       - 'packages/envoy/natsgrant/*'
       - 'packages/envoy/natscred/*'
-      - 'packages/envoy/internal/broker/wire/*'
-      - 'packages/envoy/internal/brokertoken/*'
+      - 'packages/envoy/internal/cipher/wire/*'
+      - 'packages/envoy/internal/ciphertoken/*'
       - 'packages/envoy/internal/buildversion/*'
       - 'packages/envoy/internal/fileowner/*'
       - 'packages/envoy/internal/ratelimit/*'
-      - 'packages/envoy/internal/broker/rulehost/*'
-      - 'packages/envoy/internal/broker/logmask/*'
+      - 'packages/envoy/internal/cipher/rulehost/*'
+      - 'packages/envoy/internal/cipher/logmask/*'
       - 'packages/envoy/internal/weborigin/*'
       - 'packages/dispatch/**'
       - 'scripts/e2e/lib/held-port.py'
@@ -328,12 +333,28 @@ jobs:
     secrets:
       PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
+  # Says whether the run is on main, for deploy's `if:`, which cannot test that itself: GitHub
+  # compares `github.ref` with a string ignoring case, so a branch named `Main` would deploy.
+  # .github/ci-notes/release.md#why-the-ref-job-and-not-githubref-decides-main says more. It holds
+  # no permission and checks nothing out.
+  ref:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      main: ${{ steps.ref.outputs.main }}
+    steps:
+      - id: ref
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then main=true; else main=false; fi
+          echo "main=$main" >> "$GITHUB_OUTPUT"
+
   # No concurrency of its own: the workflow's group already holds the next run until this one's
   # deploy ends. The if: holds the deployment to main: a workflow_dispatch of a branch builds the
   # site and uploads the artifact, and publishes nothing to the live site.
   deploy:
-    needs: build
-    if: github.ref == 'refs/heads/main'
+    needs: [build, ref]
+    if: needs.ref.outputs.main == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     # Publishes the built site to GitHub Pages: pages: write performs the deployment, id-token:

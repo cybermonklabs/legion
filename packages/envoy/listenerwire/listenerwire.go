@@ -4,7 +4,7 @@
 // /v1/sessions, GET /v1/registry/<session_id>, GET /v1/interests/, GET /v1/roles/<role>, the GET
 // routes of /v1/legion/agents and DELETE /v1/sessions/<session_id>, and the envelope and the
 // states they carry. The listener (cmd/listener) writes and reads these types, and so does each of
-// its Go clients: the broker's wake (internal/broker/wake), Dispatch's client
+// its Go clients: the broker's wake (internal/cipher/wake), Dispatch's client
 // (internal/dispatch/envoy), the load-test harness's listener client (loadtest/listenerclient),
 // the refill rig (internal/testnats/cmd/refillrig), and the Legion daemon's publisher and
 // controller probe, which is another module and so needs this package public.
@@ -234,6 +234,11 @@ type PublishResponse struct {
 	// naming its holder. An older client reads neither field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
+	// Warnings names a role send's role when its topic named it in the old form, the role alone,
+	// with its new form, project first ("<old> is the old form of <new>; name <new>",
+	// store.Registry.ReadRole), as the subscribe and claim routes name an old form; it is left out
+	// when the topic named the role in the new form, and from every answer that is no role send.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // SessionInfo is the joined view of a session's interest record (topics, dir, machine) and its
