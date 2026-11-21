@@ -22,13 +22,17 @@ import (
 // token's list: one project's owner, visibility and Slack channels, and whether one person sees
 // it, one person's member kind and whether Dispatch holds them (personStanding), which the
 // broker's hold gate reads, and every private project's Slack channels. It names no
-// repositories. It is plain data read outside any transaction. Only a Kubernetes service account
-// the deployment names in DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected token. Before
-// anything is read, a caller with no credential, or one whose credential does not verify, is
-// refused as every route refuses it (401 NO_IDENTITY for none: optionalActor's error,
-// writeAuthenticationError), and every other caller, a person included, is 403
-// ACCESS_ACCOUNT_REQUIRED (the read class accessAccount, which withinReadScope holds the three
-// routes to). A deployment that names no such account answers every caller so.
+// repositories. It is plain data read outside any transaction. Only a service the deployment names
+// in DISPATCH_ACCESS_ACCOUNTS reads it (accessAccountOf): the secrets broker, with a read token it
+// issued to itself from its own read entry, bound to its DPoP key, whose service is its Kubernetes
+// account, and, where the deployment turns on Dispatch's own check of projected tokens
+// (DISPATCH_OIDC_*), a pod presenting such a token of a listed account. Before anything is read, a
+// caller with no credential, or one whose credential does not verify, is refused as every route
+// refuses it (401 NO_IDENTITY for none: optionalActor's error, writeAuthenticationError); another
+// service's read token is refused 403 READ_ONLY_TOKEN by the read-only gate further out
+// (refuseReadOnlyToken); and every other caller, a person included, is 403 ACCESS_ACCOUNT_REQUIRED
+// (the read class accessAccount, which withinReadScope holds the three routes to). A deployment
+// that names no such account answers every caller so.
 //
 // A question that names a person may also say which Google account the credential being checked
 // records, and the answer then says whether that credential's account holds the person's address
@@ -43,18 +47,39 @@ import (
 // and visible as the project's rule reads it. Every broker before this one asks that way, and a
 // broker asks it for an operator entry's token, which no account made (brokerPersonAdmitted).
 
-// accessAccountOf answers the service-account subject a request's verified projected token names,
-// and false for every other credential: a broker-issued token that names a fleet as its service
-// proved a session, not a pod's account, so it is not one.
+// accessAccountOf answers the service a request's verified credential names as one that may read
+// the membership answer, and false for every other credential. Two credentials name one. The
+// secrets broker's read token (model.Credential.ReadOnly), which the broker-token check marks only
+// for the scope read beside the project scope none, a service and no person and no project
+// (brokertoken.Caller.ReadOnly), and whose service is the account its read entry names; it is
+// checked here again for no person and no project, so a token naming a person never reads the
+// answer it exists to gate. And a pod's projected token, which Dispatch verifies itself where
+// DISPATCH_OIDC_* turns that check on: a service and nothing else. Every other broker-issued token
+// names a fleet as its service and proved a session, not a pod's account, so it is not one.
 func accessAccountOf(actor model.Actor) (string, bool) {
-	if actor.Service == nil || actor.Kind != "" || actor.Credential == nil ||
-		actor.Credential.Session != "" || actor.Credential.TokenID != "" {
+	switch {
+	case actor.Service == nil || actor.Credential == nil:
+		return "", false
+	case actor.Credential.ReadOnly:
+		if actor.Owner != nil || len(actor.Credential.Projects) > 0 {
+			return "", false
+		}
+		return *actor.Service, true
+	case actor.Kind != "" || actor.Credential.Session != "" || actor.Credential.TokenID != "":
 		return "", false
 	}
 	return *actor.Service, true
 }
 
-// requireAccessAccount admits a request only from a service account DISPATCH_ACCESS_ACCOUNTS names:
+// isAccessAccount reports whether actor's credential names a service DISPATCH_ACCESS_ACCOUNTS
+// lists (accessAccountOf): the one rule both requireAccessAccount and the read-only gate
+// (refuseReadOnlyToken) read.
+func (s *server) isAccessAccount(actor model.Actor) bool {
+	subject, ok := accessAccountOf(actor)
+	return ok && slices.Contains(s.deps.AccessAccounts, subject)
+}
+
+// requireAccessAccount admits a request only from a service DISPATCH_ACCESS_ACCOUNTS names:
 // withinReadScope's check of every row of the read class accessAccount.
 func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bool {
 	actor, _, err := s.optionalActor(r)
@@ -62,7 +87,7 @@ func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bo
 		s.writeAuthenticationError(w, err)
 		return false
 	}
-	if subject, ok := accessAccountOf(actor); ok && slices.Contains(s.deps.AccessAccounts, subject) {
+	if s.isAccessAccount(actor) {
 		return true
 	}
 	writeError(w, "ACCESS_ACCOUNT_REQUIRED", http.StatusForbidden,

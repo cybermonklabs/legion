@@ -37,8 +37,9 @@ import (
 // a JSON error, a closed socket — and reaches this decision through optionalActor as it always
 // has. A request presenting no such token passes straight through and is resolved where it
 // always was. The one layer that reads the decision without resolving anything is the read-only
-// gate inside it (refuseReadOnlyToken), which answers a read-only token on every route the read
-// list does not name.
+// gate inside it (refuseReadOnlyToken), which answers a read-only token on every route it may not
+// call: those the read list does not name, or, for a service DISPATCH_ACCESS_ACCOUNTS names, those
+// outside the access-account class.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := brokertoken.Presented(r); !presented {
@@ -425,7 +426,9 @@ func errNoBrokerConfigured() *apiError {
 // read-only (model.Credential.ReadOnly) and holds no OAuth scope, and refuseReadOnlyToken answers
 // it 403 READ_ONLY_TOKEN on every route the read list does not name (readScopeRoutes), ahead of
 // the scope gate, the sign-in check and everything else the route does. On a listed route it is
-// the session it names, reading as that session does.
+// the session it names, reading as that session does. The read token of a service
+// DISPATCH_ACCESS_ACCOUNTS names, the secrets broker's own, is held to the access-account class
+// instead, where requireAccessAccount admits it by that service (accessAccountOf).
 //
 // Each refusal is its own code, and none of them repeats the token the caller presented:
 //

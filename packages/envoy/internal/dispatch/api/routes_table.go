@@ -580,7 +580,9 @@ var routeScopes = map[string]routeScopeSet{
 // and a session and no person and no project (model.Credential.ReadOnly). Every other row of the
 // table, and GET /ws/live beside it, answers such a token 403 READ_ONLY_TOKEN before anything
 // else the route does (refuseReadOnlyToken), so a route added later stays closed to it until it
-// is listed here.
+// is listed here. The one exception is the read token of a service DISPATCH_ACCESS_ACCOUNTS names,
+// the secrets broker's own: it calls the rows of the read class accessAccount (accessRoutes) and
+// none of this list, so it reads the membership answer and nothing else.
 //
 // A route is listed only when, for such a caller, it writes nothing but the row that records its
 // DPoP proof as spent (store.DPoPProofs) and caches Dispatch rebuilds from what it already holds:
@@ -660,9 +662,10 @@ type routeRow struct {
 // (project_scope.go); every GET row carries Reads, and a mutating row carries none
 // (read_classes.go); OAuthScopes is empty on every row any authenticated caller may reach;
 // ReadScope is true on the rows the read list names and on no other, and only the read-only gate
-// reads it (refuseReadOnlyToken), never the route index or the OpenAPI document; the row's own
-// five columns are read through it by promotion. What the route takes and answers is
-// routeShapes', which only the OpenAPI emitter reads, so no row carries it.
+// reads it (refuseReadOnlyToken), as it reads Reads for the access-account class, never the route
+// index or the OpenAPI document; the row's own five columns are read through it by promotion. What
+// the route takes and answers is routeShapes', which only the OpenAPI emitter reads, so no row
+// carries it.
 type apiRoute struct {
 	routeRow
 	Scope       writeScope

@@ -151,11 +151,13 @@ type Deps struct {
 	// handler reads a row (serviceTokenActor). Empty admits every verified subject of the issuer
 	// and audience, as a deployment that names none always did.
 	OIDCAccounts []string
-	// AccessAccounts are the service-account subjects that may read the membership answer (GET
-	// /api/v1/access/projects/{key}, GET /api/v1/access/person and GET
-	// /api/v1/access/private-projects; cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS). A caller with no
-	// credential, or one whose credential does not verify, is refused there as every route refuses
-	// it (401 NO_IDENTITY for none), and every other caller is 403 ACCESS_ACCOUNT_REQUIRED.
+	// AccessAccounts are the services that may read the membership answer, the access-account
+	// class's routes (GET /api/v1/access/projects/{key}, GET /api/v1/access/person and GET
+	// /api/v1/access/private-projects; cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS): the service of a
+	// broker-issued read token, which then calls those routes and no other (refuseReadOnlyToken),
+	// or the subject of a projected token where OIDC verifies one. A caller with no credential, or
+	// one whose credential does not verify, is refused there as every route refuses it (401
+	// NO_IDENTITY for none), and every other caller is 403 ACCESS_ACCOUNT_REQUIRED.
 	AccessAccounts []string
 	// RestrictedAdmission is the sign-in rule's own answer to whether a restricted member would
 	// be signed in now (identity.SignInRule's AdmitsRestricted; cmd/dispatch hands the router its
@@ -324,7 +326,7 @@ type DepsInput struct {
 	GitHubAPIBase string
 	OIDC          ServiceTokenVerifier
 	// OIDCAccounts and AccessAccounts are Deps.OIDCAccounts and Deps.AccessAccounts; cmd/dispatch
-	// has checked each subject's form and that every access account is also admitted.
+	// has checked each subject's form.
 	OIDCAccounts   []string
 	AccessAccounts []string
 	// RestrictedAdmission is Deps.RestrictedAdmission: the sign-in rule, which a restricted
@@ -538,7 +540,11 @@ type server struct {
 	// builds it once, before it wraps the first row, so the rows share one text rather than each
 	// holding a copy of its own. A server register did not build has none, and
 	// refuseReadOnlyToken wraps no route of one rather than answer an empty message.
-	readOnlyRefusal string
+	// accessReadOnlyRefusal is its counterpart for the read token of a service
+	// DISPATCH_ACCESS_ACCOUNTS names, which every route outside the access-account class answers:
+	// that class as register read it off the table (accessRoutes), in words.
+	readOnlyRefusal       string
+	accessReadOnlyRefusal string
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
 	going           GoingCatalogue
@@ -924,9 +930,13 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table's read list names a route that is not a GET row the table mounts: " + strings.Join(refused, "; "))
 	}
 	// After the check above, so the list it names is one the table mounts, and before the first
-	// row is wrapped, since every row the list does not name answers it (refuseReadOnlyToken).
+	// row is wrapped, since every row the list does not name answers it (refuseReadOnlyToken). The
+	// read token of a service DISPATCH_ACCESS_ACCOUNTS names is held to the access-account class
+	// instead, read off the table itself (accessRoutes), and is told so in words of its own.
 	s.readOnlyRefusal = "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
 		strings.Join(readScopeRoutes, ", ") + "): nothing ran"
+	s.accessReadOnlyRefusal = "this request's credential is the read-only token of a service DISPATCH_ACCESS_ACCOUNTS names, which may call only Dispatch's access routes (" +
+		strings.Join(accessRoutes(routes), ", ") + "): nothing ran"
 	going, err := buildGoingCatalogue(routes)
 	if err != nil {
 		// A catalogue entry naming a row this table does not hold or does not class as a write,
@@ -1046,14 +1056,14 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// told to continue is handled as it is for every other early answer.
 		handler = s.gateRouteScopes(route.OAuthScopes, handler)
 	}
-	// Outside the scope gate and every layer inside it, so a read-only token on a row the read
-	// list does not name is refused before anything the row does: before the row's own scopes,
-	// which would name a scope to ask for where no scope makes the row its to call; before the
-	// sign-in check, which would tell it to sign a person in; and before a Dispatch-Login check,
-	// an id prefix's lookup, the project and session checks and the Idempotency-Key, none of
-	// which it reaches, so it claims no key. It is inside the drain, as the scope gate is, so a
-	// client that asked to be told to continue is handled as for every other early answer.
-	handler = s.refuseReadOnlyToken(route.ReadScope, handler)
+	// Outside the scope gate and every layer inside it, so a read-only token on a row it may not
+	// call is refused before anything the row does: before the row's own scopes, which would name
+	// a scope to ask for where no scope makes the row its to call; before the sign-in check, which
+	// would tell it to sign a person in; and before a Dispatch-Login check, an id prefix's lookup,
+	// the project and session checks and the Idempotency-Key, none of which it reaches, so it
+	// claims no key. It is inside the drain, as the scope gate is, so a client that asked to be
+	// told to continue is handled as for every other early answer.
+	handler = s.refuseReadOnlyToken(route, handler)
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
 	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
 	// trees an answer written for a reader without them. It is outside the scope gate and the
@@ -1093,15 +1103,15 @@ const liveSocketPattern = "/ws/live"
 // reach (read_only_token_test.go): one place for the order, as routeHandler is for a row.
 //
 // The read-only gate sits just inside decideBrokerToken, whose decision it reads, and ahead of
-// the upgrade: no read list names the socket, since a socket delivers whatever its views carry,
-// so a read-only token is answered 403 READ_ONLY_TOKEN before a socket is ever opened for it. The
-// socket is admitted by whichever credential optionalActor resolves - a bearer, a broker-issued
-// token or a sign-in cookie - so its heartbeat resolves that same credential again
-// (callerStillResolves), and compares the grant it holds now with the one it opened under
-// (sameCredentialGrant).
+// the upgrade: the socket is no row, so neither the read list nor the access-account class names
+// it (apiRoute{}), since a socket delivers whatever its views carry, and a read-only token is
+// answered 403 READ_ONLY_TOKEN before a socket is ever opened for it. The socket is admitted by
+// whichever credential optionalActor resolves - a bearer, a broker-issued token or a sign-in
+// cookie - so its heartbeat resolves that same credential again (callerStillResolves), and
+// compares the grant it holds now with the one it opened under (sameCredentialGrant).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, true, s.decideBrokerToken(
-		s.refuseReadOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
+		s.refuseReadOnlyToken(apiRoute{}, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1702,12 +1712,15 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 	}
 }
 
-// refuseReadOnlyToken is the one place a read-only token is held to the read list: register wraps
-// every row of the table in it, listed being the row's apiRoute.ReadScope, and GET /ws/live with
-// listed false. On a route the list does not name (readScopeRoutes), a caller decideBrokerToken
-// resolved to a read-only credential (model.Credential.ReadOnly) is answered 403 READ_ONLY_TOKEN
-// and next does not run; every other request runs next as it always did. A row the list names is
-// handed back as it is, so it pays nothing for the gate.
+// refuseReadOnlyToken is the one place a read-only token is held to the routes it may call:
+// register wraps every row of the table in it, and GET /ws/live as a row of no list and no class.
+// A caller decideBrokerToken resolved to a read-only credential (model.Credential.ReadOnly) whose
+// service DISPATCH_ACCESS_ACCOUNTS names (isAccessAccount) may call the rows of the access-account
+// class, read off route itself (apiRoute.Reads), and no other; every other read-only caller may
+// call the rows the read list names (apiRoute.ReadScope), and no other. A read-only caller on any
+// other route is answered 403 READ_ONLY_TOKEN and next does not run; every other request runs next
+// as it always did. So the broker's own read token calls the three access routes and nothing of
+// the read list, and another read service's token calls the read list and no access route.
 //
 // It reads the decision decideBrokerToken carried (resolvedCallerKey) and resolves nothing of its
 // own: a second verification would present the request's DPoP proof twice, and a proof is single
@@ -1718,24 +1731,29 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // The refusal carries no WWW-Authenticate challenge, unlike a missing scope's
 // (refuseMissingScope): RFC 6750 Section 3.1 has the challenge name the scope a request needs, and
 // no scope makes such a route the token's to call. Its code is the contract a client reads. Its
-// message is the server's one readOnlyRefusal, which register built before it wrapped a row; a
-// server with none was not built by register, and wrapping a route of it panics rather than
-// answering a refusal that says nothing.
-func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.HandlerFunc {
-	if listed {
-		return next
-	}
-	refusal := s.readOnlyRefusal
-	if refusal == "" {
+// message is the server's readOnlyRefusal, or accessReadOnlyRefusal for a listed service, which
+// register built before it wrapped a row; a server with neither was not built by register, and
+// wrapping a route of it panics rather than answering a refusal that says nothing.
+func (s *server) refuseReadOnlyToken(route apiRoute, next http.HandlerFunc) http.HandlerFunc {
+	refusal, accessRefusal := s.readOnlyRefusal, s.accessReadOnlyRefusal
+	if refusal == "" || accessRefusal == "" {
 		panic("api: refuseReadOnlyToken wraps a route of a server register did not build, which holds no read-only refusal to answer")
 	}
+	accessRoute := slices.Contains(route.Reads, readclass.AccessAccount)
 	return func(w http.ResponseWriter, r *http.Request) {
-		if caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided && caller.err == nil &&
-			caller.actor.Credential != nil && caller.actor.Credential.ReadOnly {
-			writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, refusal)
+		caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
+		if !decided || caller.err != nil || caller.actor.Credential == nil || !caller.actor.Credential.ReadOnly {
+			next(w, r)
 			return
 		}
-		next(w, r)
+		switch access := s.isAccessAccount(caller.actor); {
+		case access && accessRoute, !access && route.ReadScope:
+			next(w, r)
+		case access:
+			writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, accessRefusal)
+		default:
+			writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, refusal)
+		}
 	}
 }
 

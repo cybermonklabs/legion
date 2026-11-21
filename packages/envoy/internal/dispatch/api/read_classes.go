@@ -240,9 +240,11 @@ var readClasses = map[string]readEntry{
 // withinReadScope runs the read check in front of one GET row's handler, decided once at mount
 // from the row's classes (apiRoute.Reads), as withinProjectScope decides a write's:
 //
-//   - accessAccount: only a service account DISPATCH_ACCESS_ACCOUNTS names reads the row
-//     (requireAccessAccount); every other caller is 403 ACCESS_ACCOUNT_REQUIRED before anything
-//     is read.
+//   - accessAccount: only a service DISPATCH_ACCESS_ACCOUNTS names reads the row
+//     (requireAccessAccount): the secrets broker's own read token, which the read-only gate lets
+//     reach this class's rows and no other (refuseReadOnlyToken), or a listed pod's projected
+//     token where DISPATCH_OIDC_* turns that check on; every other caller is 403
+//     ACCESS_ACCOUNT_REQUIRED before anything is read.
 //   - project, graph, people, agents and deployment need the viewer: the caller is resolved once
 //     (withCallerResolved) and its reader once (readerOf), and both are put in the request's
 //     context, where every read of the row finds them, so no handler verifies the credential or
@@ -279,6 +281,20 @@ func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.
 		}
 		handler(w, r.WithContext(withReader(r.Context(), reader)))
 	}
+}
+
+// accessRoutes names, by "<method> <pattern>" and in the table's order, every row of routes the
+// read class accessAccount holds: the access routes, which the read token of a service
+// DISPATCH_ACCESS_ACCOUNTS names may call and no other (refuseReadOnlyToken). The class is the one
+// statement of that set; this reads it, for the words a refusal names it in.
+func accessRoutes(routes []apiRoute) []string {
+	var names []string
+	for _, route := range routes {
+		if slices.Contains(route.Reads, readclass.AccessAccount) {
+			names = append(names, route.Method+" "+route.Pattern)
+		}
+	}
+	return names
 }
 
 // readRefusal is how a read refuses its caller before anything is read: its code and message,

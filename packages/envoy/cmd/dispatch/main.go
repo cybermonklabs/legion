@@ -18,7 +18,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -92,10 +91,12 @@ type bootConfig struct {
 	RepoProjects   string
 	DefaultProject string
 	// OIDCAccounts and AccessAccounts are DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS: the
-	// Kubernetes service-account subjects whose tokens the API admits (none named admits every
-	// account of the issuer and audience), and those of them that read the membership answer.
-	// resolveBootConfig has held each to the subject's form, refused either without
-	// DISPATCH_OIDC_AUDIENCE, and refused an access account a non-empty admitted list leaves out.
+	// Kubernetes service-account subjects whose projected tokens the API admits (none named admits
+	// every account of the issuer and audience), and the services that read the membership answer,
+	// the secrets broker's own account above all, whose broker-issued read token names it.
+	// resolveBootConfig has held each to the subject's form, refused the first without
+	// DISPATCH_OIDC_AUDIENCE, and refused the second with neither DISPATCH_AGENT_SECRETS_URL nor
+	// DISPATCH_OIDC_AUDIENCE, since neither credential could name a listed service then.
 	OIDCAccounts   []string
 	AccessAccounts []string
 	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK, a lowercase email: the full member
@@ -1641,9 +1642,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if err != nil {
 		return bootConfig{}, err
 	}
-	if err := checkAccessSettings(boot); err != nil {
-		return bootConfig{}, err
-	}
 
 	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
 	if agentSecretsURL != "" {
@@ -1656,6 +1654,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if boot.AgentSecretsTokenFile == "" {
 			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
+	}
+	// After DISPATCH_AGENT_SECRETS_URL, which DISPATCH_ACCESS_ACCOUNTS is read beside.
+	if err := checkAccessSettings(boot); err != nil {
+		return bootConfig{}, err
 	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
@@ -1711,13 +1713,22 @@ func commaList(env settingValues, name string) []string {
 	return entries
 }
 
-// checkAccessSettings refuses what boot's access settings cannot mean. Each list of service
-// accounts names accounts of the verifier DISPATCH_OIDC_AUDIENCE turns on, so either set without it
-// would configure nothing, and each entry is a service account's subject. An account that reads
-// the membership answer must be one the deployment admits, which every account is while
-// DISPATCH_OIDC_ACCOUNTS names none. The owner fallback is a person as Dispatch stores one, a
-// lowercase email; the refusal does not repeat it, as DISPATCH_SIGNIN_DOMAIN's does not.
+// checkAccessSettings refuses what boot's access settings cannot mean. DISPATCH_OIDC_ACCOUNTS names
+// accounts of the verifier DISPATCH_OIDC_AUDIENCE turns on, so it is refused without it.
+// DISPATCH_ACCESS_ACCOUNTS names the services that read the membership answer: the service of the
+// secrets broker's read token, which Dispatch checks at the broker DISPATCH_AGENT_SECRETS_URL names,
+// or the subject of a projected token where DISPATCH_OIDC_AUDIENCE turns that check on; it takes no
+// DISPATCH_OIDC_* setting, and is refused only with neither, where no credential could name a
+// listed service. Each entry of either list is a service account's subject. The owner fallback is a
+// person as Dispatch stores one, a lowercase email; the refusal does not repeat it, as
+// DISPATCH_SIGNIN_DOMAIN's does not.
 func checkAccessSettings(boot bootConfig) error {
+	if len(boot.OIDCAccounts) > 0 && boot.OIDCAudience == "" {
+		return errors.New("DISPATCH_OIDC_ACCOUNTS is set but DISPATCH_OIDC_AUDIENCE is not: it names accounts of the service-account verifier the audience turns on, so without one it would configure nothing")
+	}
+	if len(boot.AccessAccounts) > 0 && boot.AgentSecretsURL == "" && boot.OIDCAudience == "" {
+		return errors.New("DISPATCH_ACCESS_ACCOUNTS is set but neither DISPATCH_AGENT_SECRETS_URL nor DISPATCH_OIDC_AUDIENCE is: it names the service of a read token the secrets broker at DISPATCH_AGENT_SECRETS_URL issued, or of a projected token the verifier DISPATCH_OIDC_AUDIENCE turns on checks, so with neither it would configure nothing")
+	}
 	for _, list := range []struct {
 		name     string
 		accounts []string
@@ -1725,22 +1736,12 @@ func checkAccessSettings(boot bootConfig) error {
 		{"DISPATCH_OIDC_ACCOUNTS", boot.OIDCAccounts},
 		{"DISPATCH_ACCESS_ACCOUNTS", boot.AccessAccounts},
 	} {
-		if len(list.accounts) > 0 && boot.OIDCAudience == "" {
-			return fmt.Errorf("%s is set but DISPATCH_OIDC_AUDIENCE is not: it names accounts of the service-account verifier the audience turns on, so without one it would configure nothing", list.name)
-		}
 		for index, account := range list.accounts {
 			if account == "" {
 				return fmt.Errorf("%s entry %d of %d is empty", list.name, index+1, len(list.accounts))
 			}
 			if !principal.ServiceAccountSubject.MatchString(account) {
 				return fmt.Errorf("%s entry %d of %d is not a Kubernetes service account's subject, system:serviceaccount:<namespace>:<name>", list.name, index+1, len(list.accounts))
-			}
-		}
-	}
-	if len(boot.OIDCAccounts) > 0 {
-		for _, account := range boot.AccessAccounts {
-			if !slices.Contains(boot.OIDCAccounts, account) {
-				return fmt.Errorf("DISPATCH_ACCESS_ACCOUNTS names %s, which DISPATCH_OIDC_ACCOUNTS does not admit: an account that reads the membership answer must be one the deployment admits", account)
 			}
 		}
 	}
@@ -2334,8 +2335,10 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 //
 // It serves a read-only token (brokertoken.Options.ServesReadOnly): the scope read alone, which
 // the broker mints from a read entry. Dispatch is the one service that asks for it, because its
-// route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
-// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
+// route table holds the routes such a token may call: the read list (readScopeRoutes in
+// internal/dispatch/api), or, for the token of a service DISPATCH_ACCESS_ACCOUNTS names, the
+// secrets broker's own, the access-account class; every other route answers it 403
+// READ_ONLY_TOKEN before anything of the route runs.
 //
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been

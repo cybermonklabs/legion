@@ -1676,9 +1676,14 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, verifying(nil)); boot.AccessAccounts != nil {
 				t.Errorf("unset: AccessAccounts = %q, want none", boot.AccessAccounts)
 			}
-			refusedWith(t, map[string]string{"DISPATCH_ACCESS_ACCOUNTS": broker}, "DISPATCH_ACCESS_ACCOUNTS is set but DISPATCH_OIDC_AUDIENCE is not")
-			refusedWith(t, verifying(map[string]string{"DISPATCH_OIDC_ACCOUNTS": reader, "DISPATCH_ACCESS_ACCOUNTS": broker}),
-				"DISPATCH_ACCESS_ACCOUNTS names "+broker+", which DISPATCH_OIDC_ACCOUNTS does not admit")
+			// The list names a read token's service as well as a projected token's subject, so it
+			// needs a broker or the verifier the audience turns on, and an account
+			// DISPATCH_OIDC_ACCOUNTS leaves out is still one the broker's read token can name
+			// (TestBrokerAccessAccountBootsWithoutOIDC).
+			refusedWith(t, map[string]string{"DISPATCH_ACCESS_ACCOUNTS": broker}, "DISPATCH_ACCESS_ACCOUNTS is set but neither DISPATCH_AGENT_SECRETS_URL nor DISPATCH_OIDC_AUDIENCE is")
+			if boot := resolveWith(t, verifying(map[string]string{"DISPATCH_OIDC_ACCOUNTS": reader, "DISPATCH_ACCESS_ACCOUNTS": broker})); !slices.Equal(boot.AccessAccounts, []string{broker}) {
+				t.Errorf("DISPATCH_OIDC_ACCOUNTS=%s: AccessAccounts = %q, want %q", reader, boot.AccessAccounts, []string{broker})
+			}
 			refusedWith(t, verifying(map[string]string{"DISPATCH_ACCESS_ACCOUNTS": "envoy-broker"}), "DISPATCH_ACCESS_ACCOUNTS entry 1 of 1 is not a Kubernetes service account's subject")
 			refusedWith(t, verifying(map[string]string{"DISPATCH_ACCESS_ACCOUNTS": broker + ","}), "DISPATCH_ACCESS_ACCOUNTS entry 2 of 2 is empty")
 		},

@@ -219,10 +219,13 @@ A JWT the verifier rejects is `401 OIDC_TOKEN_INVALID` naming the reason class; 
 `DISPATCH_OIDC_ACCOUNTS` names the service accounts the deployment admits, comma-separated subjects such as `system:serviceaccount:dispatch:envoy-broker`:
 a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, before any handler reads or writes a row, on every route that reads a credential and on both sockets.
 Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so, `dispatch: DISPATCH_OIDC_ACCOUNTS is unset, …`, with `issuer` and `audience`.
-`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`), the secrets broker's own account in production;
-a caller with no credential, or one whose credential does not verify, is refused there as every route refuses it (`401 NO_IDENTITY` for none);
+`DISPATCH_ACCESS_ACCOUNTS` names the services that read the membership answer, Dispatch's access routes: the routes of the read class `accessAccount` in the route table, `GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`.
+In production it names the secrets broker's own account, and needs no `DISPATCH_OIDC_*` setting: the broker calls those routes with a read token it issues to itself from its read entry in `BROKER_EXCHANGE_READ_ACCOUNTS`, whose service is that account, bound to the broker's DPoP key and verified at `DISPATCH_AGENT_SECRETS_URL` like every broker-issued token, its proof against `DISPATCH_SERVER_URL`.
+That token calls the access routes and no other route, the read list's included (`403 READ_ONLY_TOKEN`), and another service's read token calls none of the access routes (`403 READ_ONLY_TOKEN`).
+Where `DISPATCH_OIDC_AUDIENCE` turns on the projected-token check above, a listed account's projected token reads them too.
+A caller with no credential, or one whose credential does not verify, is refused there as every route refuses it (`401 NO_IDENTITY` for none);
 every other caller is `403 ACCESS_ACCOUNT_REQUIRED`.
-The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>` (naming its position), and an access account that a set `DISPATCH_OIDC_ACCOUNTS` does not list.
+The boot refuses `DISPATCH_OIDC_ACCOUNTS` without `DISPATCH_OIDC_AUDIENCE`, `DISPATCH_ACCESS_ACCOUNTS` with neither `DISPATCH_AGENT_SECRETS_URL` nor `DISPATCH_OIDC_AUDIENCE`, and an entry of either that is empty or is not `system:serviceaccount:<namespace>:<name>` (naming its position).
 
 With `DISPATCH_AGENT_SECRETS_URL` set, an access token the secrets broker issued is a fifth credential, and the only one that proves a session of its own.
 It is presented under RFC 9449's DPoP scheme
@@ -257,7 +260,8 @@ Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` p
 A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
 `brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
-Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
+Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture`, `GET /api/v1/issues/{key}/steps` and `GET /api/v1/projects/{key}/plans`.
+The token of a service `DISPATCH_ACCESS_ACCOUNTS` names, the secrets broker's own, is served on the access routes instead, the rows of the read class `accessAccount`, and on none of the read list (above).
 Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz` and `/livez` take no broker token at all.
