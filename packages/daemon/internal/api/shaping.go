@@ -974,8 +974,8 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the next to last number of answers.go's
-// SupportedContracts, which names the constant rather than its number for that reason.
+// with this change's own number, and answers.go's SupportedContracts names the constant rather
+// than its number for that reason.
 const repositoriesLiveContract = 202
 
 // intakeGiveUpsContract is the daemon contract that added the intake's give-ups (version.go's

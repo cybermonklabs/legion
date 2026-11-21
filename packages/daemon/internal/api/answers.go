@@ -47,13 +47,11 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193 is the constant rather than its number, because the entry that added the shaped answers
-// names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The next to last
-// is repositoriesLiveContract rather than its number for the same reason: it is
-// dispatch://INFRA-4401's contract, and a renumber of that change moves the constant and this
-// list with it. The last, intakeGiveUpsContract, is the constant for the same reason: this
-// change's entry names it, so a renumber of this change moves that constant and this list with it.
+// shapedAnswersContract (version.go's 193), repositoriesLiveContract (dispatch://INFRA-4401's 202)
+// and intakeGiveUpsContract (dispatch://INFRA-1575's 207) are named rather than written as numbers,
+// because the entry that added each names its constant: a renumber of one of those changes moves
+// its constant and this list with it, and moving one of the two alone would describe a shape at a
+// contract no entry declares.
 var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, intakeGiveUpsContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes

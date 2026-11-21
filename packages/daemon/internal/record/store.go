@@ -1558,7 +1558,9 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 // however late, and the workflow records such an event only when it is newer than that clock
 // (workflow's pullRequestOpened, ClearedPullRequestClock). The row is never deleted: a pull
 // request recorded again is fenced by its own row from then on. The one-time rename pass moves it
-// to a configured rename's new name with the issue's other rows (RenameIssueRepository).
+// to a configured rename's new name with the issue's other rows, and where it merges the moved row
+// into one the new name already holds, that row names the moved row's issue
+// (RenameIssueRepository).
 func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
 	if _, err := tx.Exec(ctx, `with cleared as (
 			delete from pull_requests where `+where+` and state <> 'open' returning issue, repo, number, head_updated_at)

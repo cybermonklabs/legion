@@ -26,9 +26,10 @@
 -- cleared_pull_requests keeps, for each pull request whose row a new generation's clear deleted,
 -- the newest lifecycle clock the record applied (head_updated_at), so a late opened or reopened
 -- event of that pull request no newer than that clock records nothing, whatever its head
--- (record's clearGeneration, workflow's pullRequestOpened). It keeps the issue whose row the clear
--- deleted too, which is how the one-time rename pass reads and writes it with the issue's other
--- rows that name a repository (record's RenameCandidates and RenameIssueRepository).
+-- (record's clearGeneration, workflow's pullRequestOpened). It keeps an issue too: the issue whose
+-- row the latest clear deleted, or, after the one-time rename pass merged a moved row into it, the
+-- moved row's, which is how that pass reads and writes it with the issue's other rows that name a
+-- repository (record's RenameCandidates and RenameIssueRepository).
 --
 -- pull_request_settled_heads keeps, for each of the last heads a CI settlement of a pull request
 -- applied on, that head's check fence as the last settlement applied on it left it: the newest run
