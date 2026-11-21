@@ -407,9 +407,9 @@ func TestTheImageProbeHoldsThePluginToTheContractItIsGiven(t *testing.T) {
 
 // The pi.agents probe: a pass needs the capability marker and a clean exit; an answer — the
 // `missing` marker, a clean exit without a marker, a launch that fails before Oh My Pi — is
-// refused at once; Oh My Pi dying after it answered, or a probe the budget cut off before it
-// answered, is waited out. A pass slower than a second or two passes on the first attempt that
-// answers, as it does on a loaded machine.
+// refused at once; Oh My Pi dying after it answered is waited out, as is a probe the budget cut
+// off before it answered (TestTheImageProbeGivesUpAfterItsAttempts). A pass slower than a second
+// or two passes on the first attempt that answers, as it does on a loaded machine.
 func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 	for _, testCase := range []struct {
 		plan     []string
@@ -422,12 +422,10 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 		{[]string{"denied"}, 1, []string{"does not expose pi.agents", "secrets: ANTHROPIC_API_KEY was denied"}},
 		{[]string{"missing-then-hang"}, 1, []string{"does not expose pi.agents", "LEGION_OMP_AGENTS=missing"}},
 		{[]string{"available-then-die", "available-then-die", "available-slowly", "available"}, 3, nil},
-		{[]string{"hang"}, 3, []string{"never completed within its retry budget (3 attempts)", "timed out after"}},
 	} {
 		t.Run(strings.Join(testCase.plan, ","), func(t *testing.T) {
 			f := newImageOmp(t, testCase.plan, []string{"yes"}, []string{"refuses"})
 			gate, logged := imageGateUnder(t, f, contractCurrent, 0)
-			hangsUnder(&gate, testCase.plan, testCase.attempts)
 
 			err := gate.verifyImage(context.Background())
 
@@ -442,7 +440,7 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 			if testCase.refusal != nil && !strings.Contains(err.Error(), f.path) {
 				t.Errorf("the refusal does not name the launch command %s: %v", f.path, err)
 			}
-			if n := f.attempts(t, "agents"); n > testCase.attempts || (n < testCase.attempts && !slices.Contains(testCase.plan, "hang")) {
+			if n := f.attempts(t, "agents"); n != testCase.attempts {
 				t.Errorf("the pi.agents probe ran %d times, want %d", n, testCase.attempts)
 			}
 			if got, want := strings.Count(logged.String(), "failed transiently"), testCase.attempts-1; got != want {
