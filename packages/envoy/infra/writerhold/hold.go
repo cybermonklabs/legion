@@ -441,7 +441,7 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 	if err := probeRefused(ctx, op, strings.Join(op.URLs, ","), "the hub"); err != nil {
 		return nil, stop(err)
 	}
-	if _, err := TakeCensus(ctx, nc, present); err != nil {
+	if err := op.wholeCensus(ctx, nc, present); err != nil {
 		return nil, stop(err)
 	}
 
@@ -466,14 +466,13 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 	// Step 5: the meta barrier, with the writer census again inside it, since the restart.
 	barrier := MetaBarrier{Hub: op.Hub, Declared: after, HoldID: holdID}
 	if err := barrier.Run(ctx, nc, func(ctx context.Context) error {
-		_, err := TakeCensus(ctx, nc, present)
-		return err
+		return op.wholeCensus(ctx, nc, present)
 	}); err != nil {
 		return nil, stop(err)
 	}
 
-	// Step 6: the report.
-	report := Report{Hub: op.Hub, Declared: after, AuthUser: render.AuthUser, Wait: op.Wait}
+	// Step 6: the report, against step 1's server ids: every server must have restarted since.
+	report := Report{Hub: op.Hub, Declared: declared, AuthUser: render.AuthUser, Wait: op.Wait}
 	reading, err := report.Run(ctx, nc)
 	if err != nil {
 		return nil, stop(err)
@@ -496,6 +495,34 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 		return nil, err
 	}
 	return reading, nil
+}
+
+// censusReadings bounds how many times the writer census is read while its answer is not whole,
+// and censusPause is the pause between two readings.
+const (
+	censusReadings = 10
+	censusPause    = 3 * time.Second
+)
+
+// wholeCensus is the writer census (TakeCensus) read until one answer is whole: a server just
+// restarted lists a stream whose leader it has not heard yet under `missing`, which is a reading
+// that is not whole, never a clean one, so it is read again, censusReadings times at most, after
+// which the step is UNKNOWN. A finding stops the hold at once.
+func (op *Operator) wholeCensus(ctx context.Context, nc *nats.Conn, present []string) error {
+	var err error
+	for range censusReadings {
+		if _, err = TakeCensus(ctx, nc, present); err == nil {
+			return nil
+		}
+		var unknown *Unknown
+		if !errors.As(err, &unknown) {
+			return err
+		}
+		if waitErr := op.wait(ctx, censusPause); waitErr != nil {
+			return errors.Join(err, waitErr)
+		}
+	}
+	return err
 }
 
 // probeRefused connects the probe to url and requires the refusal: an error wrapping
@@ -656,5 +683,5 @@ func proveServers(ctx context.Context, op *Operator, holdID string, bindings map
 	if err := (MetaBarrier{Hub: op.Hub, Declared: after, HoldID: holdID}).Run(ctx, nc, nil); err != nil {
 		return nil, err
 	}
-	return Report{Hub: op.Hub, Declared: after, AuthUser: render.AuthUser, Wait: op.Wait}.Run(ctx, nc)
+	return Report{Hub: op.Hub, Declared: declared, AuthUser: render.AuthUser, Wait: op.Wait}.Run(ctx, nc)
 }
