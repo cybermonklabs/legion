@@ -70,7 +70,7 @@ jobs:
       # package runs through packages/envoy/scripts/database-skips.sh, which runs it with -json
       # and counts that run's skips: it fails on any skip but those its EXPECTED_SKIPS names for
       # this package (measurements and replays that need a database, a corpus or a variable no CI
-      # run sets, and a subprocess helper), prints database_skips=UNKNOWN and runs nothing when either
+      # run sets), prints database_skips=UNKNOWN and runs nothing when either
       # database variable above is unset, and on a failed run prints the failed tests' output, a
       # timed-out binary's goroutine dump among it.
       - name: Race-test the Dispatch API

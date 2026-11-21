@@ -1,11 +1,10 @@
-// Package cputest reads this process's own CPU time, the measure every growth test in this module
-// times a call by. A call's wall time counts every moment the scheduler leaves the process off a
-// core, so a loaded machine stretches it on either side of a comparison without the call doing more
-// work; CPU time leaves that out. It is not immune to load: a busy machine still slows the
-// process's own CPU time through shared caches and clock frequency, so a comparison still samples
-// each side more than once. pmdoc's linear-time tests and the api's save ladders both time calls
-// this way, so it lives here once; it is an ordinary package rather than a _test.go file because
-// Go cannot share test-only code across packages (see internal/stacktest's identical reasoning).
+// Package cputest reads this process's own CPU time, the measure pmdoc's growth tests time a call
+// by. A call's wall time counts every moment the scheduler leaves the process off a core, so a
+// loaded machine stretches it on either side of a comparison without the call doing more work;
+// CPU time leaves that out. It is not immune to load: a busy machine still slows the process's
+// own CPU time through shared caches and clock frequency, so a comparison still samples each side
+// more than once. It is an ordinary package rather than a _test.go file because Go cannot share
+// test-only code across packages (see internal/stacktest's identical reasoning).
 package cputest
 
 import (
