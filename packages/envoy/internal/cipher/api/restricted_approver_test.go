@@ -523,6 +523,71 @@ func TestARevokeWhoseCallerHungUpWritesNothingAndNoErrorLine(t *testing.T) {
 	}
 }
 
+// hangsUpAfterKinds is a projectaccess.Access whose member-kind read is answered, and whose
+// caller hangs up just after: hangUp runs once the answer is in hand, before the read returns.
+// Every other question it answers as answers does.
+type hangsUpAfterKinds struct {
+	answers projectaccess.Access
+	hangUp  func()
+}
+
+func (h hangsUpAfterKinds) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	return h.answers.Access(ctx, project, person)
+}
+
+func (h hangsUpAfterKinds) States(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
+	return h.answers.States(ctx, projects)
+}
+
+func (h hangsUpAfterKinds) MemberKind(ctx context.Context, person string) (string, error) {
+	kind, err := h.answers.MemberKind(ctx, person)
+	h.hangUp()
+	return kind, err
+}
+
+// TestARevokeWhoseCallerHungUpAfterTheMemberKindReadWritesNoErrorLine: Dispatch's server relays
+// the revoke of a grant by the person it names as its approver, Dispatch answers that the person
+// is a full member, and Dispatch's server hangs up just after, before the revoke's transaction
+// begins. A caller that hung up says nothing of the broker or of Dispatch, so the revoke writes no
+// ERROR line and is counted cancelled (answer.Recorder.NoteCallerEnded), as a hang-up during the
+// read is; it ends nothing, since its transaction never began.
+func TestARevokeWhoseCallerHungUpAfterTheMemberKindReadWritesNoErrorLine(t *testing.T) {
+	ts := newTestServer(t)
+	box, boxKey := ts.newSessionEnrollment(t, "hang-up-after-box-"+t.Name(), "operator@example.com")
+	grant := ts.approveAs(t, ts.requestAs(t, boxKey, box, "DEEL_API_KEY"), testApprover)
+	before := ts.writtenRows(t)
+	ctx, hangUp := context.WithCancel(t.Context())
+	stand := projectaccesstest.NewServer(t, nil, map[string]string{testApprover: projectaccess.MemberFull})
+	ts.machine.Projects = hangsUpAfterKinds{answers: projectaccess.New(stand.URL, stand.Account, nil), hangUp: hangUp}
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/grants/"+grant+"/revoke-by-approver", strings.NewReader(`{"approver":"`+testApprover+`"}`))
+	request.Header.Set("Authorization", "Bearer "+ts.uiToken)
+	request.Header.Set("Content-Type", "application/json")
+	ts.handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	if stand.Calls() == 0 {
+		t.Fatal("the member kind was never read: the row is blind to a hang-up after it")
+	}
+	for _, rec := range capture.Records() {
+		if rec.Level >= slog.LevelError {
+			t.Errorf("the revoke whose caller hung up after the member-kind read wrote the ERROR line %q; want none", rec.Message)
+		}
+	}
+	if got := ts.column(t, `select (revoked_at is null)::text from grants where id=$1`, grant); !slices.Equal(got, []string{"true"}) {
+		t.Fatalf("grant %s live after the revoke whose caller hung up = %v; want true", grant, got)
+	}
+	if after := ts.writtenRows(t); !slices.Equal(after, before) {
+		t.Fatalf("rows written = %v after the revoke whose caller hung up, want %v as before", after, before)
+	}
+	scrape := httptest.NewRecorder()
+	ts.registry.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if want := `broker_answers_total{outcome="cancelled"`; !strings.Contains(scrape.Body.String(), want) {
+		t.Fatalf("the revoke whose caller hung up after the member-kind read was not counted cancelled:\n%s", scrape.Body.String())
+	}
+}
+
 // stalledKinds is a projectaccess.Access whose member-kind reads, once stall is set, Dispatch never
 // answers: each waits until its caller's context ends, and records how long that context had left.
 // A read whose context has no deadline would wait as long as its caller, so it is answered at once
