@@ -535,7 +535,10 @@ func (h *deliveryHub) catchUpNow() {
 	}
 }
 
-// liveRefusal is the error frame refusing sub with code.
+// liveRefusal is the error frame refusing sub with code. The live socket is no /api route, so a
+// frame names a code apicode declares by the name /api/v1 gives it (Code.V1Name), and a refusal
+// of the socket's own, which no /api route answers and apicode declares no constant for, by its
+// own name: INVALID_FRAME and TOO_MANY_SUBSCRIPTIONS.
 func liveRefusal(sub, code, message string) LiveError {
 	return LiveError{Type: "error", Sub: sub, Code: code, Message: message}
 }

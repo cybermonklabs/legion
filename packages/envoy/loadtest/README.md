@@ -1648,6 +1648,11 @@ one action of one kind:
 | ask opened, answered, resolved; issue claimed | `ask-open`, `ask-answer`, `ask-resolve`, `claim` | `POST /issues/{key}/asks`; `GET /asks/{id}` -> `POST /asks/{id}/answer` as the answering person (`X-Dispatch-User`, with the ask's `edited_at`); `POST /asks/{id}/resolve`; `POST /issues/{key}/claim` |
 | `child.status`, `comment.anchor_refreshed`, `comment.reopened`, `issue.closed` beside its `issue.updated`, `message.delivery`/`accepted`, `user_state.*` | not sent | derived by the server |
 
+A file or an image whose recorded name gives a role document's slug (`plan.md`, `Verification.MD`,
+`decisions-md`) is seeded, adopted and sent under that name with ` (replayed file)` added
+(`replayFileName`), since Dispatch refuses a file there (`400 ARTIFACT_ROLE_NAME`, R15 of
+dispatch://INFRA-4071/spec); its bytes, size and type stay as recorded.
+
 All paths are under `/api/v1`. The client keeps each document's text (the build's own text, below;
 its own edits; the created documents), so an upload sends the current text with no read. Every edit
 holds to what `POST /artifacts/{id}/edits` accepts at Dispatch 35efd326 (`replay_edit.go` names

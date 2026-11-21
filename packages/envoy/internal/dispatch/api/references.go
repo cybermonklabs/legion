@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -82,18 +83,34 @@ const referencesSinceWait = time.Second
 func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 	_, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.ServerURL)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	answer, ok := s.readReferences(w, r, query, ref, unknownKinds, human)
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusOK, answer)
+}
+
+// readReferences is the read of one node's edges both versions of the references route make once
+// each has read its own query into query, ref and unknownKinds (parseReferencesQuery, and
+// listReferencesV2's): the node, every edge of it the query names, and the excerpts of the
+// mentions a document wrote, as getReferences describes them. It writes a refusal itself and
+// answers false, so each route writes only what it answers.
+func (s *server) readReferences(
+	w http.ResponseWriter, r *http.Request, query refs.Query, ref text.Ref, unknownKinds []string, human bool,
+) (graphReferencesRead, bool) {
+	var err error
 	if query.Direction == "in" {
 		resolved, ok := s.wholeReference(w, r, ref, refs.Viewer{Human: human})
 		if !ok {
-			return
+			return graphReferencesRead{}, false
 		}
 		ref = resolved
 		target, _ := refs.TargetOf(ref)
@@ -107,8 +124,8 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			node, err = s.blockReferenceNode(r.Context(), query, ref)
 		}
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return graphReferencesRead{}, false
 		}
 		if node.Pin != nil && node.Pin.State == "removed" {
 			// The graph lists no link to a block no current version holds.
@@ -116,29 +133,28 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []model.GraphEdge{}, UnknownKinds: unknownKinds}
 			answer.Node.shape(reader)
 			reader.resolve()
-			WriteJSON(w, http.StatusOK, answer)
-			return
+			return answer, true
 		}
 	} else {
 		if query.Direction == "out" && ref.Kind == "artifact" {
 			if err := s.deps.Store.Pool.QueryRow(r.Context(), `select id::text from artifacts where ref_key = $1`, query.ID).Scan(&query.ID); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
-					s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", query.ID))
-					return
+					s.writeHandlerError(w, r, errorf(apicode.NotFound, "no document at %s", query.ID))
+					return graphReferencesRead{}, false
 				}
-				s.writeHandlerError(w, err)
-				return
+				s.writeHandlerError(w, r, err)
+				return graphReferencesRead{}, false
 			}
 		}
 		var found bool
 		node, found, err = refs.Node(r.Context(), s.deps.Store.Pool, query.Kind, query.ID, query.Direction == "in")
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return graphReferencesRead{}, false
 		}
 		if !found {
-			s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "no %s at %s", query.Kind, query.ID))
-			return
+			s.writeHandlerError(w, r, errorf(apicode.NotFound, "no %s at %s", query.Kind, query.ID))
+			return graphReferencesRead{}, false
 		}
 	}
 	// When this build knows none of the kinds the caller named, no edge is of them; refs.Edges
@@ -148,28 +164,28 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		if query.Since != nil {
 			safe, err := s.sinceHorizon(r.Context())
 			if err != nil {
-				s.writeHandlerError(w, err)
-				return
+				s.writeHandlerError(w, r, err)
+				return graphReferencesRead{}, false
 			}
 			query.Through = &safe
 		}
 		edges, err = refs.Edges(r.Context(), s.deps.Store.Pool, query)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return graphReferencesRead{}, false
 		}
 	}
 	if query.Direction == "in" {
 		if err := s.documentMentionExcerpts(r.Context(), query, edges); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return graphReferencesRead{}, false
 		}
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges, UnknownKinds: unknownKinds}
 	answer.Node.shape(reader)
 	reader.resolve()
-	WriteJSON(w, http.StatusOK, answer)
+	return answer, true
 }
 
 // wholeReference is ref with its item id, or its block id, written whole where the request
@@ -193,7 +209,7 @@ func (s *server) wholeReference(w http.ResponseWriter, r *http.Request, ref text
 	// A prefix nothing carries is "" and no error, which this route leaves as written.
 	whole, err := s.wholeID(r.Context(), kind, scope, written, viewer)
 	if err != nil {
-		s.writeIDPrefixError(w, err)
+		s.writeIDPrefixError(w, r, err)
 		return ref, false
 	}
 	if whole == "" {
@@ -246,27 +262,40 @@ var questionSourceKinds = []string{"artifact", "ask", "comment", "message"}
 func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 	_, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	if !slices.Contains(questionSourceKinds, kind) {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_KIND",
+		s.writeHandlerError(w, r, errorf(apicode.InvalidKind,
 			"kind %q is not one of %s", kind, strings.Join(questionSourceKinds, ", ")))
 		return
 	}
 	id := strings.TrimSpace(r.URL.Query().Get("id"))
 	if id == "" {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_QUERY", "id is required"))
+		s.writeHandlerError(w, r, errorf(apicode.InvalidQuery, "id is required"))
 		return
 	}
+	answer, ok := s.readQuestionMap(w, r, kind, id, human)
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusOK, answer)
+}
+
+// readQuestionMap is the question map of the source kind and id name, as getReferenceQuestions
+// describes it: the id resolved where it is written short, the document the source's text belongs
+// to, and that document's question blocks by block id. GET /api/v1/references/questions and the
+// source filter of GET /api/v2/asks (listAsksV2) both read it, once each has read kind and id off
+// its own query. It writes a refusal itself and answers false.
+func (s *server) readQuestionMap(w http.ResponseWriter, r *http.Request, kind, id string, human bool) (referenceQuestions, bool) {
 	if text.IsIDPrefix(id) {
 		// A prefix nothing carries is left as written, and the read below answers this route's
 		// own 404 for a source whose text belongs to no document.
 		whole, err := s.wholeID(r.Context(), kind, refs.Scope{}, id, refs.Viewer{Human: human})
 		if err != nil {
-			s.writeIDPrefixError(w, err)
-			return
+			s.writeIDPrefixError(w, r, err)
+			return referenceQuestions{}, false
 		}
 		if whole != "" {
 			id = whole
@@ -274,18 +303,18 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 	}
 	document, err := refs.ScopeOf(r.Context(), s.deps.Store.Pool, kind, id)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return referenceQuestions{}, false
 	}
 	if document == "" {
-		s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND",
+		s.writeHandlerError(w, r, errorf(apicode.NotFound,
 			"the text of %s %s belongs to no document", kind, id))
-		return
+		return referenceQuestions{}, false
 	}
 	questions, err := refs.QuestionMap(r.Context(), s.deps.Store.Pool, document)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return referenceQuestions{}, false
 	}
 	answer := referenceQuestions{Document: document, Questions: make([]referenceQuestion, 0, len(questions))}
 	for blockID, ask := range questions {
@@ -296,7 +325,7 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 	slices.SortFunc(answer.Questions, func(left, right referenceQuestion) int {
 		return strings.Compare(left.BlockID, right.BlockID)
 	})
-	WriteJSON(w, http.StatusOK, answer)
+	return answer, true
 }
 
 // sinceHorizon is the horizon a since read caps at: H once an observation taken after the call is
@@ -335,7 +364,7 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 		return model.GraphNode{}, err
 	}
 	if !found {
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", documentKey)
+		return model.GraphNode{}, errorf(apicode.NotFound, "no document at %s", documentKey)
 	}
 	node, current, err := refs.Node(ctx, pool, "block", query.ID, true)
 	if err != nil {
@@ -343,7 +372,7 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 	}
 	if ref.Pin == 0 {
 		if !current {
-			return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
+			return model.GraphNode{}, errorf(apicode.NotFound, "no block %q in %s", ref.Block, document.Ref)
 		}
 		node.Text, err = refs.CurrentBlockText(ctx, pool, document.ID, ref.Block)
 		return node, err
@@ -354,13 +383,13 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 	}
 	switch {
 	case !at.Exists:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no version %d of %s", ref.Pin, document.Ref)
+		return model.GraphNode{}, errorf(apicode.NotFound, "no version %d of %s", ref.Pin, document.Ref)
 	case !at.Indexed && at.Earliest == 0:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "version %d of %s has no record of its blocks; no version of it has one yet", ref.Pin, document.Ref)
+		return model.GraphNode{}, errorf(apicode.NotFound, "version %d of %s has no record of its blocks; no version of it has one yet", ref.Pin, document.Ref)
 	case !at.Indexed:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "version %d of %s has no record of its blocks; the earliest is version %d", ref.Pin, document.Ref, at.Earliest)
+		return model.GraphNode{}, errorf(apicode.NotFound, "version %d of %s has no record of its blocks; the earliest is version %d", ref.Pin, document.Ref, at.Earliest)
 	case at.Text == nil:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s at version %d", ref.Block, document.Ref, ref.Pin)
+		return model.GraphNode{}, errorf(apicode.NotFound, "no block %q in %s at version %d", ref.Block, document.Ref, ref.Pin)
 	}
 	blockRef := refs.BlockRef(document.Ref, ref.Block)
 	pin := &model.BlockPin{Version: ref.Pin, Ref: blockRef + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
@@ -403,7 +432,7 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, r
 		return model.GraphNode{}, err
 	}
 	if !found {
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %s", ref.Item, ref.ID)
+		return model.GraphNode{}, errorf(apicode.NotFound, "no %s %s", ref.Item, ref.ID)
 	}
 	node, current, err := refs.Node(ctx, pool, query.Kind, query.ID, true)
 	if err != nil {
@@ -416,7 +445,7 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, r
 	}
 	if ref.Pin == 0 {
 		if !current {
-			return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %q in %s %s", noun, ref.Block, ref.Item, item.ID)
+			return model.GraphNode{}, errorf(apicode.NotFound, "no %s %q in %s %s", noun, ref.Block, ref.Item, item.ID)
 		}
 		return node, nil
 	}
@@ -426,9 +455,9 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, r
 	}
 	switch {
 	case ref.Pin > at.Current:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no revision %d of %s %s; its current revision is %d", ref.Pin, ref.Item, item.ID, at.Current)
+		return model.GraphNode{}, errorf(apicode.NotFound, "no revision %d of %s %s; its current revision is %d", ref.Pin, ref.Item, item.ID, at.Current)
 	case at.Text == nil:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %q in %s %s at revision %d", noun, ref.Block, ref.Item, item.ID, ref.Pin)
+		return model.GraphNode{}, errorf(apicode.NotFound, "no %s %q in %s %s at revision %d", noun, ref.Block, ref.Item, item.ID, ref.Pin)
 	}
 	pin := &model.BlockPin{Version: ref.Pin, Ref: refs.BlockRef(item.Ref, ref.Block) + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
@@ -437,7 +466,7 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, r
 			return model.GraphNode{}, err
 		}
 		if !held {
-			return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %q in %s %s", noun, ref.Block, ref.Item, item.ID)
+			return model.GraphNode{}, errorf(apicode.NotFound, "no %s %q in %s %s", noun, ref.Block, ref.Item, item.ID)
 		}
 		pin.State, pin.RemovedVersion = "removed", at.RemovedRevision
 		removed.Pin = pin
@@ -485,9 +514,9 @@ func parseRequestRef(raw, serverURL string) (text.Ref, error) {
 		return ref, nil
 	}
 	if pinsAMessageBlock(raw, serverURL) {
-		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
+		return text.Ref{}, errorf(apicode.InvalidReference, "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
 	}
-	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+	return text.Ref{}, errorf(apicode.InvalidReference, "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
 }
 
 // parseReferencesQuery turns ?to=|?from=, ?kind=, and ?since= into an edge query addressed the
@@ -498,9 +527,27 @@ func parseRequestRef(raw, serverURL string) (text.Ref, error) {
 // the ?kind= values that are no edge kind of this build.
 func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, []string, error) {
 	values := r.URL.Query()
-	to, from := strings.TrimSpace(values.Get("to")), strings.TrimSpace(values.Get("from"))
+	query, ref, unknownKinds, err := referencesQueryFor(values.Get("to"), values.Get("from"), values.Get("kind"), serverURL)
+	if err != nil {
+		return refs.Query{}, text.Ref{}, nil, err
+	}
+	if since := strings.TrimSpace(values.Get("since")); since != "" {
+		value, err := strconv.ParseInt(since, 10, 64)
+		if err != nil || value < 0 {
+			return refs.Query{}, text.Ref{}, nil, errorf(apicode.InvalidSince, "since must be an event id")
+		}
+		query.Since = &value
+	}
+	return query, ref, unknownKinds, nil
+}
+
+// referencesQueryFor is the edge query parseReferencesQuery describes, from the values a request
+// gave to, from and kind (a comma list), with no since: each version of the references route
+// reads its own position parameter into the query's Since (listReferencesV2 reads after).
+func referencesQueryFor(to, from, kinds, serverURL string) (refs.Query, text.Ref, []string, error) {
+	to, from = strings.TrimSpace(to), strings.TrimSpace(from)
 	if (to == "") == (from == "") {
-		return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "exactly one of to or from is required")
+		return refs.Query{}, text.Ref{}, nil, errorf(apicode.InvalidReference, "exactly one of to or from is required")
 	}
 	raw, direction := to, "in"
 	if from != "" {
@@ -515,7 +562,7 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	target, _ := refs.TargetOf(ref)
 	query := refs.Query{Direction: direction, Kind: target.Kind, ID: target.ID}
 	var unknownKinds []string
-	if kinds := strings.TrimSpace(values.Get("kind")); kinds != "" {
+	if kinds := strings.TrimSpace(kinds); kinds != "" {
 		linkKinds := pmdoc.LinkKinds()
 		for _, kind := range strings.Split(kinds, ",") {
 			kind = strings.TrimSpace(kind)
@@ -540,13 +587,6 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 		case ref.Kind == "artifact" || ref.Kind == "ask" || ref.Kind == "comment" || ref.Kind == "message":
 			query.ExcludeKinds = []string{"part_of"}
 		}
-	}
-	if since := strings.TrimSpace(values.Get("since")); since != "" {
-		value, err := strconv.ParseInt(since, 10, 64)
-		if err != nil || value < 0 {
-			return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_SINCE", "since must be an event id")
-		}
-		query.Since = &value
 	}
 	return query, ref, unknownKinds, nil
 }
@@ -584,7 +624,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 	}
 	versionsValues := r.URL.Query()["versions"]
 	if len(versionsValues) > 1 {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_QUERY", "versions must be given once, as all or latest"))
+		s.writeHandlerError(w, r, errorf(apicode.InvalidQuery, "versions must be given once, as all or latest"))
 		return
 	}
 	var latestOnly bool
@@ -594,46 +634,14 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		case "latest":
 			latestOnly = true
 		default:
-			s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_QUERY", "versions must be all or latest"))
+			s.writeHandlerError(w, r, errorf(apicode.InvalidQuery, "versions must be all or latest"))
 			return
 		}
 	}
-	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
+	issue, members, truncated, err := s.issueReferenceMembers(r.Context(), r.PathValue("key"), latestOnly)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
-	}
-	closure, truncated, err := s.boundedClosure(r.Context(), issue.Key)
-	if err != nil {
-		if closureBoundHit(err) {
-			s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "REFERENCES_TIMEOUT",
-				"the issue's reference closure ran past its %s bound, so no reference was read; try again later", referencesClosureBound))
-			return
-		}
-		s.writeHandlerError(w, err)
-		return
-	}
-	refKeys := make([]string, len(closure))
-	for index, member := range closure {
-		refKeys[index] = member.RefKey
-	}
-	artifacts, err := s.loadArtifactsByRefKey(r.Context(), s.deps.Store.Pool, refKeys, latestOnly)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	members := make([]model.ReferenceMember, 0, len(closure))
-	for _, closureMember := range closure {
-		artifact, ok := artifacts[closureMember.RefKey]
-		if !ok {
-			s.writeHandlerError(w, fmt.Errorf("reference target %q disappeared while loading closure", closureMember.RefKey))
-			return
-		}
-		members = append(members, model.ReferenceMember{
-			Artifact: *artifact,
-			Depth:    closureMember.Depth,
-			Via:      closureMember.Via,
-		})
 	}
 	etag := referencesETag(issue.LastSeq, members, truncated, latestOnly)
 	w.Header().Set("ETag", etag)
@@ -642,6 +650,45 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, model.IssueReferences{Members: members, Truncated: truncated})
+}
+
+// issueReferenceMembers is the issue key names and its reference closure as GET
+// /api/v1/issues/{key}/references answers it: each document in the closure with its depth and the
+// node it was reached via, every version of each or with latestOnly its latest alone, and whether
+// the closure was cut at its depth bound (/api/v2 reads its own, issueReferenceMembersV2). A key
+// no issue carries answers loadIssue's refusal.
+func (s *server) issueReferenceMembers(
+	ctx context.Context, key string, latestOnly bool,
+) (model.Issue, []model.ReferenceMember, bool, error) {
+	issue, err := s.loadIssue(ctx, s.deps.Store.Pool, key)
+	if err != nil {
+		return model.Issue{}, nil, false, err
+	}
+	closure, truncated, err := s.issueClosure(ctx, issue.Key)
+	if err != nil {
+		return model.Issue{}, nil, false, err
+	}
+	refKeys := make([]string, len(closure))
+	for index, member := range closure {
+		refKeys[index] = member.RefKey
+	}
+	artifacts, err := s.loadArtifactsByRefKey(ctx, s.deps.Store.Pool, refKeys, latestOnly)
+	if err != nil {
+		return model.Issue{}, nil, false, err
+	}
+	members := make([]model.ReferenceMember, 0, len(closure))
+	for _, closureMember := range closure {
+		artifact, ok := artifacts[closureMember.RefKey]
+		if !ok {
+			return model.Issue{}, nil, false, fmt.Errorf("reference target %q disappeared while loading closure", closureMember.RefKey)
+		}
+		members = append(members, model.ReferenceMember{
+			Artifact: *artifact,
+			Depth:    closureMember.Depth,
+			Via:      closureMember.Via,
+		})
+	}
+	return issue, members, truncated, nil
 }
 
 // referencesClosureBound bounds refs.Closure's walk for one GET of an issue's references, as the
@@ -685,23 +732,36 @@ func closureBoundHit(err error) bool {
 	return errors.As(err, &pgError) && pgError.Code == "57014" // query_canceled
 }
 
+// issueClosure is the issue's reference closure both versions' reads of it answer
+// (issueReferenceMembers, issueReferenceMembersV2), walked under referencesClosureBound
+// (boundedClosure): a walk past the bound reads nothing and is refused 503 REFERENCES_TIMEOUT, to
+// be asked again later.
+func (s *server) issueClosure(ctx context.Context, issueKey string) ([]refs.Member, bool, error) {
+	closure, truncated, err := s.boundedClosure(ctx, issueKey)
+	if err != nil && closureBoundHit(err) {
+		return nil, false, errorf(apicode.ReferencesTimeout,
+			"the issue's reference closure ran past its %s bound, so no reference was read; try again later", referencesClosureBound)
+	}
+	return closure, truncated, err
+}
+
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	outgoing, err := refs.Outgoing(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, artifact.RefKey)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, model.ArtifactReferences{Outgoing: outgoing, ReferencedBy: referencedBy})

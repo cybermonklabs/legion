@@ -15,9 +15,9 @@ import "github.com/sjawhar/envoy/internal/dispatch/model"
 // packages/envoy/cmd/dispatch/README.md and routes_table.go.
 // From the repository root, grep for `pi-envoy 17[.]1[.]0|Currency` in packages/envoy and
 // packages/contracts to find the compatibility code, tests and documentation together.
-// Regenerate packages/contracts/schemas/dispatch-openapi.json with
-// `go run ./cmd/dispatch openapi --out ../contracts/schemas/dispatch-openapi.json` from
-// packages/envoy, then packages/contracts/src/dispatch-api.generated.ts with
+// Regenerate packages/contracts/schemas/dispatch-openapi.json and dispatch-openapi-v2.json
+// with `go run ./cmd/dispatch openapi` from packages/envoy, then
+// packages/contracts/src/dispatch-api.generated.ts and dispatch-api-v2.generated.ts with
 // `bun run gen:api` from packages/contracts. Keep standingCommit: the gate uses it.
 
 // answerCompatibilityCurrency adds only the field older clients print. A read that names a

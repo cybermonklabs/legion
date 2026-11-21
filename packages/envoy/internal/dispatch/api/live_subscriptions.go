@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -205,7 +206,7 @@ func (s *server) subscribeLive(socket *liveSocket, frame LiveSubscribe) {
 	if err != nil {
 		// The read loop holds no pooled connection, so this is a bug, not the page's frame.
 		slog.Error("dispatch: live socket could not mark a subscription's context for the pool", "error", err)
-		socket.Send(liveRefusal(sub, codeInternal, "the subscription could not start"))
+		socket.Send(liveRefusal(sub, apicode.InternalError.V1Name(), "the subscription could not start"))
 		return
 	}
 	stream := &liveSubscriptionStream{socket: socket}
@@ -219,7 +220,7 @@ func (s *server) subscribeLive(socket *liveSocket, frame LiveSubscribe) {
 		// A kind must start the subscription or refuse it; one that did neither is a bug, and the
 		// socket holds nothing it could never stop.
 		slog.Error("dispatch: a live view kind neither started nor refused a subscription", "kind", kind)
-		socket.Send(liveRefusal(sub, codeInternal, "the subscription could not start"))
+		socket.Send(liveRefusal(sub, apicode.InternalError.V1Name(), "the subscription could not start"))
 		return
 	}
 	socket.subs[sub] = &liveSub{streamed: &streamedLiveSub{running: running, stream: stream}}

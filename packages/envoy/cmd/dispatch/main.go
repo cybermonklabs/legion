@@ -229,6 +229,9 @@ type bootConfig struct {
 	// WebDist is DISPATCH_WEB_DIST: the dashboard directory to serve, or empty to find it from
 	// the binary (defaultWebDistDir).
 	WebDist string
+	// APIV1End is DISPATCH_API_V1_END, the instant /api/v1 ends, which the router holds every
+	// /api/v1 path to (routes.AppContextOptions.APIV1End); zero, unset, is no end.
+	APIV1End time.Time
 	// SigningKey is DISPATCH_SIGNING_KEY: the session cookie keys, the current one first, or the
 	// empty set to keep one key in the data dir (sessionSigningKey).
 	SigningKey auth.SigningKeys
@@ -1362,6 +1365,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.RoleHolderWindows, err = roleHolderWindows(env); err != nil {
 		return bootConfig{}, err
 	}
+	if boot.APIV1End, err = apiV1End(env); err != nil {
+		return bootConfig{}, err
+	}
 	for _, setting := range []struct {
 		name   string
 		target *time.Duration
@@ -1828,6 +1834,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
+	built.APIV1End = boot.APIV1End
 	return built
 }
 
@@ -1887,6 +1894,22 @@ func positiveSetting(env settingValues, name string) (int, error) {
 		return 0, fmt.Errorf("%s=%q (expected a positive integer)", name, raw)
 	}
 	return value, nil
+}
+
+// apiV1End reads DISPATCH_API_V1_END, the instant /api/v1 ends, as time.RFC3339 parses it (and
+// as envoy-infra's gcp:Dispatch checks its apiV1End input before it renders the variable), with
+// whitespace at either end ignored; unset or empty, it is the zero time, no end. A value it cannot
+// read refuses startup, since serving on would keep /api/v1 past the end the deployment set.
+func apiV1End(env settingValues) (time.Time, error) {
+	raw := strings.TrimSpace(env.get("DISPATCH_API_V1_END"))
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	end, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("DISPATCH_API_V1_END=%q is not an RFC 3339 time, such as 2027-01-01T00:00:00Z; leave it unset for no end of /api/v1", raw)
+	}
+	return end, nil
 }
 
 // openFileStore is the uploaded-file store boot names (files.Open: gs://<bucket> is a Cloud

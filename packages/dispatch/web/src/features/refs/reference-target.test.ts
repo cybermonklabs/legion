@@ -62,6 +62,7 @@ function spyReads() {
       markdown: "Live",
       token: "sha256:live",
       version: null,
+      unsettled: true,
     }),
     getArtifactVersion: spyOn(api, "getArtifactVersion").mockResolvedValue({} as never),
     getAsk: spyOn(api, "getAsk").mockResolvedValue({} as never),

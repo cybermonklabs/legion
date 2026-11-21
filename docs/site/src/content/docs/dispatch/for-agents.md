@@ -379,9 +379,22 @@ text before its body, or `Re: block <id> (removed)` once an edit removed it.
 ## The HTTP API
 
 The `dispatch` commands cover everyday work. For anything else, the [HTTP API reference](/legion/dispatch/reference/api/)
-lists every route, and so does `GET /api/v1` on the server, with no credential: each route's
-method, who may call it, and what it does. An agent calls the API with its token as
-`Authorization: Bearer <token>`.
+lists every route of `/api/v2`, the version to call from the first `legion-envoy` release that
+carries pull request #4274, and so does `GET /api/v2` on the server, with no credential: each
+route's method, who may call it, what it serves, how a list pages, and what it does. An agent calls
+the API with its token as `Authorization: Bearer <token>`.
+
+On `/api/v2` every list answers `{items, total, limit, offset}` and every refusal `{code, error}`,
+its code one of those `packages/contracts/schemas/dispatch-openapi-v2.json` declares for the route.
+A query key the route does not declare is refused `400 QUERY_KEY_UNKNOWN`, naming the key and every
+key the route declares, so a misspelt filter is never read as no filter.
+
+`/api/v1` is deprecated. Its routes keep their answers, each answer names the `/api/v2` route that
+answers for it in a `Link` header (`rel="successor-version"`), and a deployment ends it on a date it
+sets, after which every `/api/v1` path answers `410 API_V1_ENDED`
+([HTTP API v1](/legion/dispatch/reference/api-v1/)). The `dispatch` command still calls `/api/v1`
+at that release, and names itself and its release in its `User-Agent`
+(`dispatch/<version> (<plugin>)`), which Dispatch's access log records.
 
 Every `POST` and `PATCH` an agent makes through `dispatch` is keyed: each write a command makes
 carries an `Idempotency-Key` header of its own, and the command asks again under that key when an
@@ -403,12 +416,21 @@ landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a firs
 to keep), the command exits 0 and says it was made: read it back to see it. When an attempt may
 have reached Dispatch and the command got no answer Dispatch's keyed layer gave (no attempt
 answered, a page something in Dispatch's place wrote, a 2xx that is empty, not typed JSON or not
-JSON, but a bodiless 204 or 205), the command says the write may or may not have taken effect:
-read it back before you run the command again, since a new command is a new key. Reads, and the
-`PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, carry no key. Each goes
-once, and again only where Dispatch did nothing with it: once more after Dispatch calls the token
-it presented dead, and on an old build's "no route" during a rolling release. A script that calls
-the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
-`_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
-each key's answer for 24 hours; the same key with a different request is refused
-`422 KEY_REUSED`.
+JSON, but a bodiless 204 or 205), or the last answer was Dispatch's own 5xx, which it sends when a
+write fails and can send after the write committed, the command says the write may or may not have
+taken effect: read it back before you run the command again, since a new command is a new key. A
+refusal Dispatch decided, such as a 4xx with its code, prints that refusal and none of those words:
+the write did not take effect. Reads, and the `PUT` and `DELETE` of `dispatch follow` and
+`dispatch claim --release`, carry no key. Each goes once, and again only where Dispatch did nothing
+with it: once more after Dispatch calls the token it presented dead, and on an old build's "no
+route" during a rolling release. Such a `PUT` or `DELETE` that fails in transport after it went
+out, reaches the command's deadline or gets Dispatch's own 5xx may or may not have taken effect
+too, and the command says so and to check whether it did before retrying it. The markdown round
+trip `dispatch artifact` asks before it uploads inline text, and the search `dispatch related`
+runs, are `POST`s that store nothing: they are keyed and asked again like a write, but a failure of
+either is told as a read's, with none of those words. A script that calls the API directly can
+send its own key on any `POST`, `PATCH`, `PUT` or `DELETE` of `/api/v2`, and on any `POST` or
+`PATCH` of `/api/v1`: 1 to 128 letters, digits, `.`, `_`, `:` and `-`, the same on every retry of
+one write and new for every new write. Dispatch keeps each key's answer for 24 hours; the same key
+with a different request is refused `422 KEY_REUSED`, and so is one key sent to a `/api/v1` route
+and then to its `/api/v2` route, which are two routes and so two requests.

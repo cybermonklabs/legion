@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -21,15 +22,19 @@ import (
 // names its session in actor.
 
 // listArchitectureSources answers every source of every project, by project and then in the
-// order each project's sources were added.
+// order each project's sources were added. Its /api/v2 route is one project's list, so its
+// /api/v1 answer links each project it holds (dispatch://INFRA-4071/spec R3.1).
 func (s *server) listArchitectureSources(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	sources, err := querySources(r.Context(), s.deps.Store.Pool, `order by project_key, id`)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
+	}
+	for _, source := range sources {
+		successorValue(r, "key", source.Project)
 	}
 	WriteJSON(w, http.StatusOK, sources)
 }
@@ -45,12 +50,12 @@ func (s *server) listProjectArchitectureSources(w http.ResponseWriter, r *http.R
 	key := r.PathValue("key")
 	sources, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 order by id`, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if len(sources) == 0 {
 		if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -70,12 +75,12 @@ func (s *server) getArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	slog.Warn("dispatch: GET /api/v1/projects/{key}/architecture-source called by a dispatch client older than this release; upgrade it, the route will be removed", "project", key)
 	sources, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 order by id limit 1`, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if len(sources) == 0 {
 		if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		WriteJSON(w, http.StatusOK, nil)
@@ -104,53 +109,75 @@ type putArchitectureSourceInput struct {
 // the branch of the source it already is. A re-save keeps the source's id and its components and
 // resets its sync bookkeeping, so the next sync re-imports from the new branch.
 func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
-	key := r.PathValue("key")
 	var input putArchitectureSourceInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.putArchitectureSourceFrom(w, r, input, nil)
+}
+
+// putArchitectureSourceFrom saves the source input names, the work both versions' PUT does once
+// each has read its body. unchanged is /api/v2's no-op rule (dispatch://INFRA-4071/spec R8,
+// architectureSourceSaveChangesNothing), asked of the source the project already has from the
+// path's repository, read on the pool before the access check, with input as this save holds it,
+// its branch trimmed: where it answers true, the source is answered as it stands and nothing is
+// written - no access check, no reset of its bookkeeping, no event. /api/v1 passes nil, and
+// re-saves it.
+func (s *server) putArchitectureSourceFrom(w http.ResponseWriter, r *http.Request, input putArchitectureSourceInput, unchanged func(stored model.ArchitectureSource, input putArchitectureSourceInput) bool) {
+	key := r.PathValue("key")
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
 	owner, name, err := sourcePathRepo(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	branch := strings.TrimSpace(input.Branch)
-	if branch == "" {
-		writeError(w, "SOURCE_INPUT", http.StatusBadRequest, "branch is required")
+	input.Branch = strings.TrimSpace(input.Branch)
+	if input.Branch == "" {
+		writeError(w, r, apicode.SourceInput, "branch is required")
 		return
 	}
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
+	}
+	if unchanged != nil {
+		stored, err := querySources(r.Context(), s.deps.Store.Pool, `where project_key = $1 and repo = $2`, key, owner+"/"+name)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		if len(stored) == 1 && unchanged(stored[0], input) {
+			WriteJSON(w, http.StatusOK, stored[0])
+			return
+		}
 	}
 
 	// The access check, of the repository and of the branch, runs before any write: a value that
 	// is not exactly the name of a branch the repository has (a commit SHA, a relative ref such as
 	// main~1, HEAD, a refs/ path) is refused like a missing branch, and a failed re-PUT leaves the
 	// stored source untouched.
-	installationID, err := s.checkArchitectureSource(r.Context(), owner, name, branch)
+	installationID, err := s.checkArchitectureSource(r.Context(), owner, name, input.Branch)
 	if err != nil {
 		if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead) || errors.Is(err, githubapp.ErrNoBranch) {
-			writeError(w, "SOURCE_ACCESS", http.StatusConflict, err.Error())
+			writeError(w, r, apicode.SourceAccess, err.Error())
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -167,20 +194,20 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 			last_tree_sha = null,
 			last_error = null
 		returning `+architecture.SourceColumns,
-		key, owner+"/"+name, branch, installationID, actorJSON))
+		key, owner+"/"+name, input.Branch, installationID, actorJSON))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(key).event(
 		"settings.architecture_source.updated", actor, map[string]any{"source": source, "deleted": false},
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -221,16 +248,23 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	s.deleteArchitectureSourceAs(w, r, actor)
+}
+
+// deleteArchitectureSourceAs removes the path's source as actor, the work both versions' DELETE
+// does once each has settled who sends it: 204, or 404 SOURCE_NOT_FOUND for a source the project
+// does not have.
+func (s *server) deleteArchitectureSourceAs(w http.ResponseWriter, r *http.Request, actor model.Actor) {
 	key := r.PathValue("key")
 	owner, name, err := sourcePathRepo(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	repo := owner + "/" + name
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -240,25 +274,25 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 		key, repo))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeSourceNotFound(w, key, repo)
+			writeSourceNotFound(w, r, key, repo)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := architecture.DeleteOrphanComponentFacts(r.Context(), tx, source.Project); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(key).event(
 		"settings.architecture_source.updated", actor, map[string]any{"source": source, "deleted": true},
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -277,7 +311,7 @@ func (s *server) syncArchitectureSource(w http.ResponseWriter, r *http.Request) 
 	key := r.PathValue("key")
 	owner, name, err := sourcePathRepo(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	repo := owner + "/" + name
@@ -286,13 +320,13 @@ func (s *server) syncArchitectureSource(w http.ResponseWriter, r *http.Request) 
 	case err == nil:
 		WriteJSON(w, http.StatusOK, source)
 	case errors.Is(err, architecture.ErrNoSource):
-		writeSourceNotFound(w, key, repo)
+		writeSourceNotFound(w, r, key, repo)
 	case source.Project == "":
 		// Sync could not even record the failure on the row: the database, not
 		// the model or GitHub, is what broke.
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 	case architecture.IsAccessFailure(err):
-		writeError(w, "SOURCE_ACCESS", http.StatusConflict, err.Error())
+		writeError(w, r, apicode.SourceAccess, err.Error())
 	default:
 		WriteJSON(w, http.StatusOK, source)
 	}
@@ -350,17 +384,17 @@ func (s *server) syncProjectSources(w http.ResponseWriter, r *http.Request) ([]m
 	key := r.PathValue("key")
 	results, err := s.deps.Architecture.SyncProject(r.Context(), key)
 	if errors.Is(err, architecture.ErrNoSource) || (err == nil && len(results) == 0) {
-		writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source configured for "+key)
+		writeError(w, r, apicode.SourceNotFound, "no architecture source configured for "+key)
 		return nil, false
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return nil, false
 	}
 	sources := make([]model.ArchitectureSource, 0, len(results))
 	for _, result := range results {
 		if result.Err != nil && result.Source.Project == "" {
-			s.writeHandlerError(w, result.Err)
+			s.writeHandlerError(w, r, result.Err)
 			return nil, false
 		}
 		sources = append(sources, result.Source)
@@ -368,8 +402,8 @@ func (s *server) syncProjectSources(w http.ResponseWriter, r *http.Request) ([]m
 	return sources, true
 }
 
-func writeSourceNotFound(w http.ResponseWriter, key, repo string) {
-	writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source from "+repo+" configured for "+key)
+func writeSourceNotFound(w http.ResponseWriter, r *http.Request, key, repo string) {
+	writeError(w, r, apicode.SourceNotFound, "no architecture source from "+repo+" configured for "+key)
 }
 
 // sourcePathRepo reads the {owner}/{repo} path segments as parseSourceRepo reads a repository.
@@ -386,7 +420,7 @@ func sourcePathRepo(r *http.Request) (owner, name string, err error) {
 func parseSourceRepo(raw string) (owner, name string, err error) {
 	owner, name, err = refs.ParseGitHubRepo(strings.TrimSpace(raw))
 	if err != nil {
-		return "", "", errorf(http.StatusBadRequest, "SOURCE_INPUT", "repository must be owner/name, got %q", raw)
+		return "", "", errorf(apicode.SourceInput, "repository must be owner/name, got %q", raw)
 	}
 	return owner, name, nil
 }

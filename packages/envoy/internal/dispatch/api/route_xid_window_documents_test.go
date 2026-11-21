@@ -69,6 +69,13 @@ var documentRouteXidWindows = []routeXidWindowCase{
 		name: "the project document upload route", route: "POST /api/v1/projects/{key}/artifacts on a document it has (storeArtifact)",
 		ready: readyProjectDocumentUpload, window: storetest.XidBatchedWindow,
 	},
+	// A Markdown upload under the name of a role document the issue holds as a picture makes it
+	// that document (storeArtifact): the conversion's update joins the version's batch, so the
+	// seed's parse and render of the large spec run before the window opens.
+	{
+		name: "the upload converting a picture into its role's document", route: "POST /api/v1/issues/{key}/artifacts onto a picture under verification.md (storeArtifact, SeedText)",
+		ready: readyConvertingUpload, window: storetest.XidBatchedWindow,
+	},
 	// A version written under an open approval request moves the request to it
 	// (docs.MoveApprovalAsk): the rewording's reads - its references' plan, its parts' plan and
 	// its edit time (docs.RewriteApprovalAsk) - run in the read phase, and its update, index,
@@ -166,6 +173,35 @@ func readyProjectDocumentUpload(t *testing.T, base routeFixture) lockedItemWrite
 			if uploaded := decodeBody[uploadedArtifact](t, answer); uploaded.Artifact.ID != document.ID || uploaded.Version.Number != 2 {
 				t.Fatalf("the upload wrote version %d of %s, want version 2 of %s",
 					uploaded.Version.Number, uploaded.Artifact.ID, document.ID)
+			}
+		})
+}
+
+// readyConvertingUpload drives POST /api/v1/issues/{key}/artifacts storing the harness's large spec
+// under verification.md, which the issue holds as a picture: the upload makes the picture the
+// issue's Verification document, as its version 2 (storeArtifact's conversion, then SeedText).
+func readyConvertingUpload(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Converting upload")
+	picture := seedRoleDocumentAsFile(t, fixture.database, fixture.issueKey, "verification.md", "image", "image/png",
+		pngBytes("the Verification document, drawn"))
+	return fixture.routeWrite(t, "the Verification document the picture becomes",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+fixture.issueKey+"/artifacts", map[string]any{
+				"name": "verification.md", "content": base.spec,
+			}, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated {
+				t.Fatalf("upload the Verification document onto the picture: status=%d body=%s", answer.Code, answer.Body.String())
+			}
+			uploaded := decodeBody[uploadedArtifact](t, answer)
+			if uploaded.Artifact.ID != picture || uploaded.Artifact.Kind != "doc" || uploaded.Version.Number != 2 {
+				t.Fatalf("the upload wrote version %d of %s, a %s, want version 2 of %s, the issue's Verification document",
+					uploaded.Version.Number, uploaded.Artifact.ID, uploaded.Artifact.Kind, picture)
+			}
+			if converted := fixture.rowCount(t, `select count(*) from artifacts where id = $1 and kind = 'doc' and role = 'verification'`, picture); converted != 1 {
+				t.Fatalf("the picture %s is not the issue's Verification document after the upload", picture)
 			}
 		})
 }

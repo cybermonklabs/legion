@@ -849,6 +849,7 @@ test("a document's card shows its owner, name, latest version and text from its 
     markdown: "Restart the **pod** first.",
     token: "sha256:runbook",
     version: null,
+    unsettled: true,
   });
   const getProjectArtifact = spyOn(api, "getProjectArtifact");
   jest.useFakeTimers();

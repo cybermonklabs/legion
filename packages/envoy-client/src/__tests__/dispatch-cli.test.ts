@@ -1,11 +1,18 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
+import {
+  cliRefusals,
+  DISPATCH_COMMAND_SOURCE_USER_AGENT,
+  dispatchCommandUserAgent,
+  fitOutput,
+  runDispatchCli,
+} from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
@@ -23,6 +30,8 @@ const TOKEN = fixtureSecret("dsp");
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
+/** Each request's `User-Agent`, in the order the requests came. */
+const userAgents: (string | null)[] = [];
 let triage = false;
 /** The length of the reply body the long message thread carries. */
 let replyLength = 1;
@@ -285,6 +294,7 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const { pathname, search, searchParams } = new URL(request.url);
+    userAgents.push(request.headers.get("user-agent"));
     // An upload is multipart where it carries a file and JSON where it carries inline content,
     // as the route takes both: a file's part is recorded as the text it carried, since the
     // recorder below parses every body as JSON and would throw on those bytes
@@ -531,6 +541,7 @@ afterAll(() => server.stop(true));
 let stateDir = "";
 beforeEach(() => {
   requests.length = 0;
+  userAgents.length = 0;
   triage = false;
   blocksServer = { tableRows: true };
   eventLog = { last: 40, served: 40, queries: [] };
@@ -969,7 +980,7 @@ describe("the dispatch CLI", () => {
       expect(code, call.join(" ")).toBe(2);
       expect(stdout.split("\n").slice(0, 2)).toEqual([
         "dispatch artifact was not called: 1 problem",
-        `- a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged; a document takes a name ending in .md or .markdown or with no extension.`,
+        `- a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, when neither the name nor the path ends in .md or .markdown (a name that ends in .md or .markdown makes the upload Markdown whatever its path); a document takes a name ending in .md or .markdown or with no extension.`,
       ]);
     }
     expect(requests).toEqual([]);
@@ -1695,11 +1706,13 @@ describe("the dispatch CLI", () => {
 describe("the dispatch entry as its own process", () => {
   const entry = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 
-  /** The entry run as the shell runs it, under the same Bun as this test. */
+  /** The entry (the source's `bin/dispatch.ts`, or a bundle of it) run as the shell runs it, under
+   *  the same Bun as this test. */
   async function spawnDispatch(
-    argv: readonly string[]
+    argv: readonly string[],
+    script = entry
   ): Promise<{ code: number; stdout: string; stderr: string }> {
-    const child = Bun.spawn([process.execPath, entry, ...argv], {
+    const child = Bun.spawn([process.execPath, script, ...argv], {
       cwd: stateDir,
       env: {
         PATH: process.env.PATH,
@@ -1795,6 +1808,71 @@ describe("the dispatch entry as its own process", () => {
       expect(stdout, command).toContain(decisionBlockRefusal(2));
     }
   }, 30_000);
+
+  // The 30 s limits below are hang guards, as on the rows above: each runs the entry as a child
+  // process, and the second builds the bundle first.
+  test("run from source, it names itself as no release in every request's User-Agent", async () => {
+    const { code, stdout } = await spawnDispatch(["message", "--issue", "DSP-1", "--body", "hi"]);
+
+    expect(code, stdout).toBe(0);
+    expect(userAgents.length).toBeGreaterThan(0);
+    expect(new Set(userAgents)).toEqual(new Set([DISPATCH_COMMAND_SOURCE_USER_AGENT]));
+  }, 30_000);
+
+  // The bundle a host plugin ships, built as both hosts build it, under a manifest of its own: the
+  // name it sends is the plugin's beside the bundle, never envoy-client's, which it was built from.
+  // A record's dry run (`dispatch result --dry-run`) runs through a call of its own, so it is
+  // checked beside the record's.
+  test("a host plugin's bundle names the plugin and its release in every request's User-Agent", async () => {
+    const plugin = makeDirectory();
+    writeFileSync(
+      join(plugin, "package.json"),
+      JSON.stringify({ name: "@example/host-plugin", version: "9.8.7" })
+    );
+    const build = Bun.spawnSync([
+      join(import.meta.dir, "..", "..", "scripts", "build-dispatch-cli.sh"),
+      join(plugin, "dist"),
+    ]);
+    expect(build.exitCode, build.stderr.toString()).toBe(0);
+    const bundle = join(plugin, "dist", "dispatch.js");
+
+    for (const argv of [
+      ["message", "--issue", "DSP-1", "--body", "hi"],
+      [...RESULT_ARGV, "--dry-run"],
+    ]) {
+      userAgents.length = 0;
+      const { code, stdout } = await spawnDispatch(argv, bundle);
+
+      expect(code, `${argv[0]}: ${stdout}`).toBe(0);
+      expect(userAgents.length, argv[0]).toBeGreaterThan(0);
+      expect(new Set(userAgents), argv.join(" ")).toEqual(
+        new Set(["dispatch/9.8.7 (@example/host-plugin)"])
+      );
+    }
+  }, 30_000);
+});
+
+describe("dispatchCommandUserAgent", () => {
+  test("a bundle whose manifest gives no name and version a header can carry names no release", () => {
+    const bundle = (manifest: string | undefined): string => {
+      const plugin = makeDirectory();
+      if (manifest !== undefined) writeFileSync(join(plugin, "package.json"), manifest);
+      return dispatchCommandUserAgent(pathToFileURL(join(plugin, "dist", "dispatch.js")).href);
+    };
+
+    expect(bundle(JSON.stringify({ name: "@example/host-plugin", version: "1.2.3" }))).toBe(
+      "dispatch/1.2.3 (@example/host-plugin)"
+    );
+    for (const manifest of [
+      undefined,
+      "not json",
+      JSON.stringify({ name: "@example/host-plugin" }),
+      JSON.stringify({ name: "@example/host-plugin", version: "1.2.3\r\nX-Injected: 1" }),
+      JSON.stringify({ name: "", version: "1.2.3" }),
+    ]) {
+      expect(bundle(manifest), String(manifest)).toBe(DISPATCH_COMMAND_SOURCE_USER_AGENT);
+    }
+  });
 });
 
 describe("the dispatch CLI's envoy.json", () => {

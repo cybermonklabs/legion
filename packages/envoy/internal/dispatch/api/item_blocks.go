@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -17,7 +18,7 @@ import (
 // getCommentBlocks answers GET /api/v1/comments/{id}/blocks: the comment's current blocks, read as
 // GET /api/v1/comments/{id} reads the comment (itemBlocks).
 func (s *server) getCommentBlocks(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment") {
+	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment", apicode.CommentIDInput) {
 		return
 	}
 	s.writeItemBlocks(w, r, refs.ItemComment)
@@ -36,7 +37,7 @@ func (s *server) getMessageBlocks(w http.ResponseWriter, r *http.Request) {
 func (s *server) writeItemBlocks(w http.ResponseWriter, r *http.Request, kind refs.ItemKind) {
 	answer, err := s.itemBlocks(r.Context(), kind, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, answer)

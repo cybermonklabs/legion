@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -536,7 +536,7 @@ func parseRouteStatusFilter(raw string) (string, error) {
 	case "", model.RouteLive, model.RouteHolderUnresponsive, model.RouteNoHolder, model.RouteUnknown:
 		return value, nil
 	}
-	return "", errorf(http.StatusBadRequest, "INVALID_ROUTE_STATUS",
+	return "", errorf(apicode.InvalidRouteStatus,
 		"route_status must be %s, %s, %s or %s, got %q",
 		model.RouteLive, model.RouteHolderUnresponsive, model.RouteNoHolder, model.RouteUnknown, raw)
 }

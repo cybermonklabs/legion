@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -79,17 +80,17 @@ func (s *server) setNewIssueSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	var input newIssueSettingsInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	set, problem := newIssueSettingsFrom(input.Label, input.Session)
 	switch problem {
 	case "label":
-		writeError(w, "INVALID_BODY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidBody,
 			"label must be a label an issue may carry, or empty for none")
 		return
 	case "session":
-		writeError(w, "INVALID_BODY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidBody,
 			"session must be a session id, or empty for no conversation")
 		return
 	}

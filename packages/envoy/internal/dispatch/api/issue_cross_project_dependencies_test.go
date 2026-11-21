@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -324,8 +325,8 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 			t.Fatalf("a scoped caller linking across projects: status=%d body=%s, want 403", refused.Code, refused.Body.String())
 		}
 		refusal := decodeBody[refusalAnswer](t, refused)
-		if refusal.Code != codeProjectScope {
-			t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
+		if refusal.Code != apicode.ProjectScope.V1Name() {
+			t.Fatalf("refusal = %+v, want %s", refusal, apicode.ProjectScope.V1Name())
 		}
 		if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "OTH") {
 			t.Fatalf("refusal %q names neither the project the credential covers (%s) nor the target's (OTH)",

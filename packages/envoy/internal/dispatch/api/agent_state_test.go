@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -68,10 +69,10 @@ func TestPerUserAgentStateRoundTripsAndIsIsolated(t *testing.T) {
 		}},
 	} {
 		session := agentRequest(t, handler, probe.method, probe.path, probe.body, "agent-token")
-		if session.Code != http.StatusForbidden || !strings.Contains(session.Body.String(), `"code":"`+codeScopeRequired+`"`) ||
+		if session.Code != http.StatusForbidden || !strings.Contains(session.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) ||
 			!strings.Contains(session.Body.String(), model.ScopePerson) {
 			t.Fatalf("%s %s as the shared token: status=%d body=%s, want 403 %s naming the %s scope",
-				probe.method, probe.path, session.Code, session.Body.String(), codeScopeRequired, model.ScopePerson)
+				probe.method, probe.path, session.Code, session.Body.String(), apicode.OAuthScopeRequired.V1Name(), model.ScopePerson)
 		}
 	}
 	own := agentRequest(t, handler, http.MethodGet, "/api/v1/me/agents/state", nil,

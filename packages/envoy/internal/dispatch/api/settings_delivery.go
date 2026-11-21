@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -24,7 +25,7 @@ func (s *server) getDeliverySettings(w http.ResponseWriter, r *http.Request) {
 			WriteJSON(w, http.StatusOK, nil)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, settings)
@@ -60,7 +61,7 @@ type deliverySettingsInput struct {
 func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	var input deliverySettingsInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -69,7 +70,7 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	}
 	repoOwner, repoName, err := parseSourceRepo(input.DeployRepo)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	for name, value := range map[string]string{
@@ -77,17 +78,17 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 		"pr_checks_workflow_path": input.PRChecksWorkflowPath,
 	} {
 		if strings.TrimSpace(value) == "" {
-			writeError(w, "DELIVERY_SETTINGS_INPUT", http.StatusBadRequest, name+" is required")
+			writeError(w, r, apicode.DeliverySettingsInput, name+" is required")
 			return
 		}
 	}
 	if len(input.PopulationAuthors) == 0 {
-		writeError(w, "DELIVERY_SETTINGS_INPUT", http.StatusBadRequest, "population_authors must name at least one author")
+		writeError(w, r, apicode.DeliverySettingsInput, "population_authors must name at least one author")
 		return
 	}
 	productionJobNames, refusal := trimmedProductionJobNames(input.ProductionJobNames)
 	if refusal != "" {
-		writeError(w, "DELIVERY_SETTINGS_INPUT", http.StatusBadRequest, refusal)
+		writeError(w, r, apicode.DeliverySettingsInput, refusal)
 		return
 	}
 
@@ -95,10 +96,10 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	// untouched, matching putArchitectureSource's own ordering.
 	if _, err := s.deps.GitHub.CheckSource(r.Context(), repoOwner, repoName); err != nil {
 		if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead) {
-			writeError(w, "DELIVERY_SETTINGS_ACCESS", http.StatusConflict, err.Error())
+			writeError(w, r, apicode.DeliverySettingsAccess, err.Error())
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -115,7 +116,7 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 		PRChecksRollupJobName:   optionalJobName(input.PRChecksRollupJobName),
 	}, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, settings)

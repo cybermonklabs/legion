@@ -1,0 +1,11 @@
+kind: Added
+custom:
+  Issue: pr4274
+body: |-
+  `schemas/dispatch-openapi-v2.json`, the OpenAPI document of Dispatch's `/api/v2`, and its
+  TypeScript module, exported as `@legion/contracts/dispatch-api-v2` and never from the
+  `dispatch-api.ts` barrel, since the two documents share schema names: the paths and the request
+  and answer shapes of every `/api/v2` route, each operation's refusal codes, and every code
+  `/api/v2` can answer. The `/api/v1` document's text reads (`ArtifactText` and the two slug text
+  reads) gain the required `unsettled`, true when the markdown answered equals no stored version's
+  markdown, so a value of those types built without it no longer type-checks.

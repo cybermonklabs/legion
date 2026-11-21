@@ -1,0 +1,10 @@
+kind: Added
+custom:
+  Issue: pr4274
+body: |-
+  The plugin's Dispatch requests name it in their `User-Agent`: the channel server as
+  `claude-envoy/<version>`, the Codex server as `codex-envoy/<version>` and the Codex session hook
+  as `codex-envoy-hooks/<version>` (each the release of `@sjawhar/codex-envoy`), the session hooks
+  as `claude-envoy-hooks/<version>`, and the bundled `dispatch` command as
+  `dispatch/<version> (@sjawhar/claude-envoy)`, so Dispatch's access log tells them from every
+  other client's. The calls still go to `/api/v1`, which Dispatch now marks deprecated.

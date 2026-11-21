@@ -40,15 +40,6 @@ type adviceDeclinedAsk struct {
 	Note     string `json:"note"`
 }
 
-// The routes of the two writes whose author may be about to put a question to a person: the ask
-// route, and a document edit, whose ops can add the ask blocks that settle into asks. Each names
-// itself in its own writeAdvice call, which is where the log line of an omitted advice query
-// gets its route, and routeEditDocument names the same write to supersededApprovalAdvice.
-const (
-	routeOpenAsk      = "POST /api/v1/issues/{key}/asks"
-	routeEditDocument = "POST /api/v1/artifacts/{id}/edits"
-)
-
 type writeAdvice struct {
 	IssueStatus             string      `json:"issue_status"`
 	SessionWritesSinceHuman int         `json:"session_writes_since_human"`

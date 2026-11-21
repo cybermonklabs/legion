@@ -106,6 +106,27 @@ func TestAPlanIsANodePartOfItsIssue(t *testing.T) {
 	}
 }
 
+// PlanOfIssue reads the plan an issue holds under an id as the write answered it, and no plan for
+// an id no plan has, nor for the id of another issue's plan.
+func TestPlanOfIssueReadsThePlanItsIssueHolds(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	id := uuid.NewString()
+	written := putPlan(t, pool, defaultPlan(id, "LEG-1", 1), minute(0))
+
+	held, found, err := PlanOfIssue(context.Background(), pool, "LEG-1", id)
+	if err != nil || !found || planText(held) != planText(written) {
+		t.Fatalf("the read of %s of LEG-1 answers %s (found %t, error %v), want %s", id, planText(held), found, err, planText(written))
+	}
+	for name, read := range map[string]struct{ issue, id string }{
+		"the plan of another issue": {"LEG-2", id},
+		"an id no plan has":         {"LEG-1", uuid.NewString()},
+	} {
+		if held, found, err := PlanOfIssue(context.Background(), pool, read.issue, read.id); err != nil || found {
+			t.Errorf("the read of %s answers %s (found %t, error %v), want no plan", name, planText(held), found, err)
+		}
+	}
+}
+
 // Each field of a plan is written once: a later write of the same id with another generation,
 // another source and other tasks is taken, changes nothing and appends nothing. An owner's plan
 // names its document and version.

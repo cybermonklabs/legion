@@ -260,6 +260,12 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	require.Equal(t, "integer", dispatch.InputProperties["pprofPort"].Type)
 	require.False(t, dispatch.InputProperties["pprofPort"].Secret)
 	require.NotContains(t, dispatch.RequiredInputs, "pprofPort")
+	// The end of /api/v1 is an optional plain string, an RFC 3339 time a program knows when it
+	// runs, and no secret: a consumer's SDK sends it as a value, and leaves it out to set no end.
+	require.Equal(t, "string", dispatch.InputProperties["apiV1End"].Type)
+	require.True(t, dispatch.InputProperties["apiV1End"].Plain)
+	require.False(t, dispatch.InputProperties["apiV1End"].Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "apiV1End")
 	// The app pod's container sizes, envoy-dispatch's and cloud-sql-proxy's, are six optional
 	// plain strings, Kubernetes quantities.
 	for _, input := range []string{"appCpu", "appMemory", "proxyCpu", "proxyMemory", "appEphemeralStorage", "proxyEphemeralStorage"} {

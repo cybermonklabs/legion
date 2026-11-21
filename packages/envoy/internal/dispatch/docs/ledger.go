@@ -969,7 +969,16 @@ func collectVersionText(ctx context.Context, artifactID, markdown string) {
 // returns the first such error unchanged. When the commit itself returns an error its outcome is
 // unknown, so the rooms the transaction wrote are failed and reload the durable document.
 func (l *Ledger) Commit(ctx context.Context) error {
-	if err := l.commit(ctx); err != nil {
+	return l.CommitReading(ctx, nil)
+}
+
+// CommitReading is Commit with read run on the ledger's transaction between its write phase and
+// its commit: a route that answers rows its own queued writes make reads them there, once the
+// write phase has run them and while a read that fails still rolls them back (api's
+// askReadBack). A read that fails ends the transaction as a failed statement of the write phase
+// does, and CommitReading returns its error unchanged. A nil read is Commit.
+func (l *Ledger) CommitReading(ctx context.Context, read func(context.Context, pgx.Tx) error) error {
+	if err := l.commitReading(ctx, read); err != nil {
 		return err
 	}
 	l.publish()
@@ -1025,7 +1034,17 @@ func (l *Ledger) storeVersionTrees(ctx context.Context) {
 // commit is Commit up to the publish. Another transaction can run between the two, and tests
 // call them apart to hold that window open.
 func (l *Ledger) commit(ctx context.Context) error {
-	if err := l.runQueue(ctx, l.commitWrites); err != nil {
+	return l.commitReading(ctx, nil)
+}
+
+// commitReading is commit with read, where there is one, run on the transaction once the write
+// phase has (CommitReading).
+func (l *Ledger) commitReading(ctx context.Context, read func(context.Context, pgx.Tx) error) error {
+	err := l.runQueue(ctx, l.commitWrites)
+	if err == nil && read != nil {
+		err = read(ctx, l.tx)
+	}
+	if err != nil {
 		// The transaction rolls back, so its writes reached neither the store nor a room: what it
 		// leaves behind is what a transaction that never committed leaves (Discard).
 		_ = l.tx.Rollback(context.Background())
@@ -1058,7 +1077,7 @@ func (l *Ledger) commit(ctx context.Context) error {
 	// such a cursor already names (catchUpRoom). A commit that fails fails these rooms (fail), so
 	// the instance holding such a cursor is dropped with them.
 	l.takeRoomCursors()
-	err := l.service.commitConsuming(ctx, l.tx, captures, func(error) {
+	err = l.service.commitConsuming(ctx, l.tx, captures, func(error) {
 		// The transaction has ended whichever way the commit went, so a rebuild's room reads the
 		// history the commit left from here.
 		l.endRebuilds()

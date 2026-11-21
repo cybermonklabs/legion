@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -55,7 +58,7 @@ func (s *server) listProjectDefaultAssignees(w http.ResponseWriter, r *http.Requ
 		order by key
 	`)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defaults, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (projectDefaultAssignee, error) {
@@ -64,7 +67,7 @@ func (s *server) listProjectDefaultAssignees(w http.ResponseWriter, r *http.Requ
 		return entry, err
 	})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, defaults)
@@ -96,29 +99,59 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 	key := r.PathValue("key")
 	var input projectDefaultAssigneeInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	// encoding/json leaves the string empty for an absent key and for a null alike, and both
-	// are the same refusal: a project names a person or the write does not happen.
-	if strings.TrimSpace(input.Assignee) == "" {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest,
-			"assignee is required: a project always names the person its unowned work lands on, "+
-				"so give a person's email; the default cannot be cleared")
-		return
-	}
-	assignee, err := s.allowedLogin(r.Context(), input.Assignee)
-	if err != nil {
-		s.writeHandlerError(w, err)
+	assignee, ok := s.allowedDefaultAssignee(w, r, "assignee", input.Assignee)
+	if !ok {
 		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
+	event, err := s.writeProjectDefaultAssignee(r.Context(), tx, actor, key, assignee)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	s.publish(r.Context(), event)
+	WriteJSON(w, http.StatusOK, projectDefaultAssignee{Project: key, Assignee: assignee})
+}
+
+// allowedDefaultAssignee is the login a write of a project's default assignee stores for the
+// value it was sent in member, or false once it has written the refusal: a value that is blank is
+// 400 INVALID_PROJECT, and one that is no person who has signed in 400 ASSIGNEE_NOT_ALLOWED
+// (allowedLogin). PUT /api/v1/projects/{key}/default-assignee (assignee) and PATCH
+// /api/v2/projects/{key} (default_assignee) hold the value to it alike.
+func (s *server) allowedDefaultAssignee(w http.ResponseWriter, r *http.Request, member, sent string) (string, bool) {
+	// encoding/json leaves the string empty for an absent key and for a null alike, and both
+	// are the same refusal: a project names a person or the write does not happen.
+	if strings.TrimSpace(sent) == "" {
+		writeError(w, r, apicode.InvalidProject,
+			member+" is required: a project always names the person its unowned work lands on, "+
+				"so give a person's email; the default cannot be cleared")
+		return "", false
+	}
+	assignee, err := s.allowedLogin(r.Context(), sent)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return "", false
+	}
+	return assignee, true
+}
+
+// writeProjectDefaultAssignee moves the project key's default assignee to assignee in tx and
+// appends settings.project_default_assignee.updated, answering the event for the caller to publish
+// once tx commits. An unknown project is pgx.ErrNoRows, before anything is written.
+func (s *server) writeProjectDefaultAssignee(ctx context.Context, tx pgx.Tx, actor model.Actor, key, assignee string) (model.Event, error) {
 	// The project's owner lock before its row's update, as every projects writer takes them
 	// (createIssue, lockEventOwner): taking the row first and the lock at the append below would
 	// wait, holding the row, on a create that holds the lock and waits for the row. The default
@@ -126,34 +159,21 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 	// (store.LockOwnerAndRead), in the transaction that replaces it: every writer of the default
 	// takes this lock first, so two of these at once name the pair each really moved, and no row
 	// lock is taken for it - the lock assigns no transaction id, and the update below is the
-	// first statement that writes. An unknown project is 404 NOT_FOUND here (pgx.ErrNoRows,
-	// writeHandlerError), before anything is written.
+	// first statement that writes. An unknown project is 404 NOT_FOUND on /api/v1 (pgx.ErrNoRows,
+	// writeHandlerError).
 	var previous string
-	if err := store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(key), `
+	if err := store.LockOwnerAndRead(ctx, tx, store.ProjectOwner(key), `
 		select default_assignee from projects where key = $1
 	`, []any{key}, &previous); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return model.Event{}, err
 	}
-	if _, err := tx.Exec(r.Context(), `update projects set default_assignee = $2 where key = $1`, key, assignee); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if _, err := tx.Exec(ctx, `update projects set default_assignee = $2 where key = $1`, key, assignee); err != nil {
+		return model.Event{}, err
 	}
-	stored := projectDefaultAssignee{Project: key, Assignee: assignee}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(key).event(
+	return s.appendEvent(ctx, tx, projectOwner(key).event(
 		"settings.project_default_assignee.updated", actor, projectDefaultAssigneeUpdated{
-			projectDefaultAssignee: stored,
+			projectDefaultAssignee: projectDefaultAssignee{Project: key, Assignee: assignee},
 			ThreadLogins:           movedLogins(nil, previous, assignee),
 		},
 	))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusOK, stored)
 }

@@ -1,5 +1,7 @@
 // settings_legion.go serves a project's Legion daemon (dispatch://INFRA-1077), a named
-// sub-resource of the project it serves: GET, PUT and DELETE /api/v1/projects/{key}/legion/daemon.
+// sub-resource of the project it serves: GET, PUT and DELETE /api/v1/projects/{key}/legion/daemon,
+// served at the same path under /api/v2 too, since they are rows of the INFRA-979 tree
+// (v2Infra979Rows, OfINFRA979).
 // No route lists every project's daemon: R26 of dispatch://INFRA-979's spec permits one
 // cross-project read, and this is not it, so a page that shows every daemon reads each project's.
 //
@@ -7,8 +9,8 @@
 // (internal/dispatch/legion). The path names the project, but writing one belongs to the
 // deployment rather than to that project — it points Dispatch at a host, which a credential that
 // may write one project's issues has no business doing — so the PUT and the DELETE are classed
-// scopeDeployment beside the repository-mapping rows, not scopeProject (routes_table.go,
-// writeClasses).
+// scopeDeployment beside the repository-mapping rows, not scopeProject (v2Infra979Rows, the rows'
+// Scope).
 //
 // Unlike putRepoProject, and like putDeliverySettings, these write no event. The write belongs to
 // the deployment, so there is no project whose event it would be, and events/broker.go's
@@ -23,6 +25,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -44,7 +47,7 @@ func (s *server) getLegionSetting(w http.ResponseWriter, r *http.Request) {
 			WriteJSON(w, http.StatusOK, nil)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, settings)
@@ -65,7 +68,7 @@ type putLegionSettingInput struct {
 func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 	var input putLegionSettingInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -74,7 +77,7 @@ func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 	}
 	stateURL, refusal := legionStateURL(input.StateURL)
 	if refusal != "" {
-		writeError(w, "LEGION_SETTING_INPUT", http.StatusBadRequest, refusal)
+		writeError(w, r, apicode.LegionSettingInput, refusal)
 		return
 	}
 	project, ok := s.legionProject(w, r)
@@ -83,7 +86,7 @@ func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 	}
 	settings, err := legion.PutSettings(r.Context(), s.deps.Store.Pool, project, stateURL, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// An open Legion board of this project was told LEGION_NOT_CONFIGURED and otherwise waits for
@@ -108,11 +111,11 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted, err := legion.DeleteSettings(r.Context(), s.deps.Store.Pool, project)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !deleted {
-		writeError(w, "NOT_FOUND", http.StatusNotFound, "this project has no Legion daemon configured")
+		writeError(w, r, apicode.NotFound, "this project has no Legion daemon configured")
 		return
 	}
 	if err := legion.NotifyRead(r.Context(), s.deps.Store.Pool, project); err != nil {
@@ -129,11 +132,11 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, bool) {
 	project := strings.TrimSpace(r.PathValue("key"))
 	if !projectKeyPattern.MatchString(project) {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
+		writeError(w, r, apicode.InvalidProject, projectKeyProblem("project", project))
 		return "", false
 	}
 	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return "", false
 	}
 	return project, true

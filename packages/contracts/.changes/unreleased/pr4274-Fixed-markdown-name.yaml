@@ -1,0 +1,7 @@
+kind: Fixed
+custom:
+  Issue: pr4274
+body: |-
+  The `dispatch artifact` rule texts (`PATH_KEEPS_BYTES`, `ARTIFACT_CONTENT_NAME_RULE`) say that a
+  name ending in `.md` or `.markdown` makes a `--path` upload Markdown whatever the path, and that
+  under any other name a path that does not end in `.md` or `.markdown` is stored as its bytes.

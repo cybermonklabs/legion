@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -78,7 +78,7 @@ func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemp
 	}
 	holder, err := s.deps.Envoy.Role(ctx, parsed.ID)
 	if errors.Is(err, dispatchenvoy.ErrUnavailable) {
-		return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
+		return verdict, errorf(apicode.EnvoyUnavailable,
 			"the Envoy listener did not say who holds %s, so Dispatch cannot tell whether %s may answer this delivery: %s", route, actor.ID, err.Error())
 	}
 	verdict.holder = err == nil && holder.SessionID == actor.ID && holder.State == dispatchenvoy.StateLive

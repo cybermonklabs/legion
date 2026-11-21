@@ -42,7 +42,7 @@ function documentPath(owner: DocumentOwner, slug: string): string {
  * The document of `owner` that already holds `title`, or undefined while none does. The write
  * compares the title with each of the owner's artifacts by `$2 in (name, slug)`, byte for byte,
  * and prefers the one whose slug it is (`artifactByNameOrSlugSQL`), so this reads the same two
- * fields the same way rather than holding a second copy of the server's `artifactSlug` here.
+ * fields the same way rather than holding a second copy of the server's `model.ArtifactSlug` here.
  */
 function documentHolding(documents: readonly Artifact[], title: string): Artifact | undefined {
   return (

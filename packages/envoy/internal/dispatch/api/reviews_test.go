@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -613,9 +614,11 @@ func TestAReviewNamingNoVersionOfTheDocumentIsRefusedWithNothingWritten(t *testi
 // that names no person, or a personal token holding no scope - and a person's broker token, which
 // holds the person scope and never approve (brokerTokenActor), are each refused 403
 // OAUTH_SCOPE_REQUIRED by the row's scope gate (gateRouteScopes), which runs before the handler.
-// A personal token of the same person holding approve passes that gate and is refused 400
-// INVALID_REVIEW, so the number check is live for the callers the 403 turned away. None of them
-// writes a review.
+// The person's broker token is refused the same on POST /api/v2/artifacts/{id}/reviews, the
+// /api/v2 route that answers this one, with the version in its body, before its decoder reads it:
+// /api/v2 grants nothing /api/v1 refuses. A personal token of the same person holding approve
+// passes that gate and is refused 400 INVALID_REVIEW, so the number check is live for the callers
+// the 403 turned away. None of them writes a review.
 func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -644,6 +647,11 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 
 	for _, number := range []string{"0", "two"} {
 		path := versionReviewPath(artifactID, number)
+		// The /api/v2 review names the version in its body, as JSON spells number there.
+		var version any = number
+		if whole, err := strconv.Atoi(number); err == nil {
+			version = whole
+		}
 		for _, row := range []struct {
 			caller string
 			send   func() *httptest.ResponseRecorder
@@ -654,21 +662,29 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 				send: func() *httptest.ResponseRecorder {
 					return rig.serve(caller.presenting(t, http.MethodPost, path, machineToken, body))
 				},
-				code: codeScopeRequired,
+				code: apicode.OAuthScopeRequired.V1Name(),
 			},
 			{
 				caller: "a personal token holding no scope",
 				send: func() *httptest.ResponseRecorder {
 					return agentRequest(t, rig.handler, http.MethodPost, path, body, unscoped)
 				},
-				code: codeScopeRequired,
+				code: apicode.OAuthScopeRequired.V1Name(),
 			},
 			{
 				caller: "a person's broker token, which never holds approve",
 				send: func() *httptest.ResponseRecorder {
 					return rig.serve(caller.presenting(t, http.MethodPost, path, personToken, body))
 				},
-				code: codeScopeRequired,
+				code: apicode.OAuthScopeRequired.V1Name(),
+			},
+			{
+				caller: "a person's broker token on the /api/v2 route that answers this one",
+				send: func() *httptest.ResponseRecorder {
+					return rig.serve(caller.presenting(t, http.MethodPost, "/api/v2/artifacts/"+artifactID+"/reviews", personToken,
+						map[string]any{"state": "approved", "version": version}))
+				},
+				code: apicode.OAuthScopeRequired.V1Name(),
 			},
 		} {
 			refused := row.send()

@@ -379,8 +379,7 @@ func TestAGoingTerminalWriteForAMissingRunLeavesItsBatchStanding(t *testing.T) {
 }
 
 // jsonEqual reports whether got and want are the same JSON value, whatever order their keys were
-// written in. It lived beside the delivery hub's own tests on main (api/delivery_live_events_test.go),
-// which this branch replaced, so it sits with its one caller now.
+// written in.
 func jsonEqual(t *testing.T, got json.RawMessage, want string) bool {
 	t.Helper()
 	var a, b any

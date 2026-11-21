@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -142,13 +143,13 @@ func TestProjectDefaultAssigneeRoutesNeedThePersonScope(t *testing.T) {
 	createDefaultAssigneeProject(t, handler, "CORE", "Core")
 
 	listed := agentRequest(t, handler, http.MethodGet, "/api/v1/settings/project-default-assignees", nil, "agent-token")
-	if listed.Code != http.StatusForbidden || !strings.Contains(listed.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token lists defaults: status=%d body=%s, want 403 %s", listed.Code, listed.Body.String(), codeScopeRequired)
+	if listed.Code != http.StatusForbidden || !strings.Contains(listed.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token lists defaults: status=%d body=%s, want 403 %s", listed.Code, listed.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 	put := agentRequest(t, handler, http.MethodPut, "/api/v1/projects/CORE/default-assignee",
 		map[string]any{"assignee": "bob", "actor": sessionActor()}, "agent-token")
-	if put.Code != http.StatusForbidden || !strings.Contains(put.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token sets a default: status=%d body=%s, want 403 %s", put.Code, put.Body.String(), codeScopeRequired)
+	if put.Code != http.StatusForbidden || !strings.Contains(put.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token sets a default: status=%d body=%s, want 403 %s", put.Code, put.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 
 	token := personalTokenHolding(t, database, model.ScopePerson)

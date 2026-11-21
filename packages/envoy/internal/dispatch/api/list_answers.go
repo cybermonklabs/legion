@@ -51,11 +51,13 @@ const listAnswerCacheBytes = 64 << 20
 // caller chooses takes, and that flood is all entry and no answer.
 const listAnswerEntryBytes = 256
 
-// The two lists kept here, each named by its route, so one issue's comment list and its activity
-// feed never share an entry.
+// The lists kept here, each named by its route, so one issue's comment list and its activity
+// feed never share an entry, and the comment list of /api/v1, a bare array, and of /api/v2, one
+// page of an envelope, never answer for each other: each version's route is the key's own.
 const (
-	commentListRoute = http.MethodGet + " /api/v1/issues/{key}/comments"
-	eventFeedRoute   = http.MethodGet + " /api/v1/issues/{key}/events"
+	commentListRoute   = http.MethodGet + " /api/v1/issues/{key}/comments"
+	commentListV2Route = http.MethodGet + " /api/v2/issues/{key}/comments"
+	eventFeedRoute     = http.MethodGet + " /api/v1/issues/{key}/events"
 )
 
 // listAnswerKey is everything that decides one list answer's bytes. The ETag carries what the

@@ -101,7 +101,10 @@ test("ProofDocument hands its decision blocks the indexed ask; the hosted card a
   const queryClient = createQueryClient();
   queryClient.setQueryData(["asks", "CORE-1"], [blockAsk]);
   issueAskRows = [{ ...blockAsk, last_reply: null }];
-  queryClient.setQueryData(["artifact", "artifact-1", "text"], { markdown: "stale" });
+  queryClient.setQueryData(["artifact", "artifact-1", "text"], {
+    markdown: "stale",
+    unsettled: true,
+  });
   const getAsk = spyOn(api, "getAsk").mockResolvedValue({
     ask: blockAsk,
     answers: [],

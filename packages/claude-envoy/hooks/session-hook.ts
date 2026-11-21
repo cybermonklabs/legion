@@ -115,6 +115,7 @@ import {
   userConfigChain,
 } from "@legion/pi-shared/jj-attribution"
 import { z } from "zod"
+import { version as packageVersion } from "../package.json" with { type: "json" }
 import { claudeProjectDirectory, configuredValue } from "../src/claude-session"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { recordChosenTitle } from "../src/session-state"
@@ -123,6 +124,10 @@ import { parseHookArguments } from "./hook-arguments"
 // Every line this hook writes, the context Claude Code hands the model on stdout included, passes
 // the scrub of the secrets it holds (`@legion/contracts/held-secrets`).
 scrubProcessStreams()
+
+/** What every Dispatch request of these hooks names them as: the program and the package's
+ *  release. The MCP server and the `dispatch` command name themselves apart. */
+const HOOKS_USER_AGENT = `claude-envoy-hooks/${packageVersion}`
 
 const OPEN_ASKS_TIMEOUT_MS = 3_000
 const OpenAsksInput = z.object({
@@ -324,6 +329,7 @@ async function openAsks(raw: unknown): Promise<void> {
     try {
       const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
         deadlineMs: OPEN_ASKS_TIMEOUT_MS,
+        userAgent: HOOKS_USER_AGENT,
       }).openAsks(input.session_id)
       process.stdout.write(
         `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, linkBaseOf(dispatch.publicUrl ?? dispatch.url))}\n`,
@@ -520,6 +526,7 @@ async function answersMessage(
     dispatch,
     dispatchUrl,
     env: process.env,
+    userAgent: HOOKS_USER_AGENT,
     // The read itself always gets the least wait, so a start-up and a resolution that spent the
     // budget on a loaded host never cost a list Dispatch answers at once.
     deadlineMs: Math.max(ANSWERS_LEAST_WAIT_MS, remainingUntil(by)),
@@ -601,6 +608,7 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
         session,
         dispatch,
         env: process.env,
+        userAgent: HOOKS_USER_AGENT,
         deadlineMs: REFRESH_READ_MS,
       })
       const outcome: z.infer<typeof RefreshOutcome> = {

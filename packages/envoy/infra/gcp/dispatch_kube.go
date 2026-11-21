@@ -853,6 +853,12 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		// an operator reaches it through kubectl port-forward.
 		appEnv = append(appEnv, valueEnv("DISPATCH_PPROF_PORT", strconv.Itoa(s.pprofPort)))
 	}
+	if s.apiV1End != "" {
+		// The end of /api/v1, which Dispatch holds each /api/v1 request to: a Sunset header while
+		// it is ahead, 410 API_V1_ENDED once it has passed. It renders last, and only when set, so
+		// a deployment that leaves it unset renders the pod it always had.
+		appEnv = append(appEnv, valueEnv("DISPATCH_API_V1_END", s.apiV1End))
+	}
 	// cloud-sql-proxy serves its health endpoints on 9801 (--health-check): /startup once its
 	// listener is up, which gates envoy-dispatch's start, and /liveness while the process answers,
 	// so a hung proxy is restarted rather than leaving the pod unready for ever. The kubelet probes

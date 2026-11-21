@@ -1,0 +1,7 @@
+kind: Added
+custom:
+  Issue: pr4274
+body: |-
+  Every Dispatch request the plugin makes, the handoff record's read among them, names it in its
+  `User-Agent` as `pi-legion/<version>`, so Dispatch's access log tells this plugin's calls from
+  every other client's. The calls still go to `/api/v1`, which Dispatch now marks deprecated.

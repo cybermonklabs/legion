@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -83,12 +84,12 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	options, err := parseEventListOptions(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	lastSeq, createdAt, issueHeld, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
@@ -102,7 +103,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	events, err := s.readEvents(r.Context(), issueOwner(r.PathValue("key")), options)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// One pass over the page: the reader takes each payload's texts as the shaping registers
@@ -112,7 +113,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	reader.resolve()
 	encoded, err := encodeListAnswer(events)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.writeListAnswer(w, key, encoded, issueHeld)
@@ -184,22 +185,22 @@ func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	after, err := parseNonNegativeInt(query.Get("after"), "after")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	limit, err := parseEventLimit(query.Get("limit"), maxEventReplay)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	through, err := s.sinceHorizon(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	events, err := s.readEventsAfterID(r.Context(), after, through, limit)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, events)
@@ -209,7 +210,7 @@ func parseEventListOptions(r *http.Request) (eventListOptions, error) {
 	query := r.URL.Query()
 	hasBefore := query.Has("before")
 	if hasBefore && strings.TrimSpace(query.Get("before")) == "" {
-		return eventListOptions{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "before must be a non-negative integer")
+		return eventListOptions{}, errorf(apicode.InvalidQuery, "before must be a non-negative integer")
 	}
 	after, err := parseNonNegativeInt(query.Get("after"), "after")
 	if err != nil {
@@ -232,7 +233,7 @@ func parseEventListOptions(r *http.Request) (eventListOptions, error) {
 		return eventListOptions{}, err
 	}
 	if query.Has("after") && (hasBefore || descending) {
-		return eventListOptions{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "after cannot be combined with before or order=desc")
+		return eventListOptions{}, errorf(apicode.InvalidQuery, "after cannot be combined with before or order=desc")
 	}
 	return eventListOptions{
 		after:      after,
@@ -261,7 +262,7 @@ func (s *server) readEvents(ctx context.Context, owner owner, options eventListO
 	case owner.ArtifactID != nil:
 		predicate, ownerValue = "e.artifact_id = $1", *owner.ArtifactID
 	default:
-		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return nil, errorf(apicode.OwnerInvalid, "owner requires exactly one issue or artifact")
 	}
 	if len(options.ids) > 0 {
 		return s.readEventRows(ctx, eventSelect+`
@@ -619,7 +620,7 @@ func parseNonNegativeInt(raw, field string) (int64, error) {
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
-		return 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s must be a non-negative integer", field)
+		return 0, errorf(apicode.InvalidQuery, "%s must be a non-negative integer", field)
 	}
 	return value, nil
 }
@@ -631,7 +632,7 @@ func parseEventLimit(raw string, most int) (int, error) {
 	}
 	limit, err := strconv.Atoi(raw)
 	if err != nil || limit < 1 || limit > most {
-		return 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be between 1 and %d", most)
+		return 0, errorf(apicode.InvalidQuery, "limit must be between 1 and %d", most)
 	}
 	return limit, nil
 }
@@ -643,7 +644,7 @@ func parseEventOrder(raw string) (bool, error) {
 	case "desc":
 		return true, nil
 	default:
-		return false, errorf(http.StatusBadRequest, "INVALID_QUERY", "order must be asc or desc")
+		return false, errorf(apicode.InvalidQuery, "order must be asc or desc")
 	}
 }
 
@@ -653,13 +654,13 @@ func parseEventIDs(raw string) ([]int64, error) {
 	}
 	parts := strings.Split(raw, ",")
 	if len(parts) > 50 {
-		return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "ids must include at most 50 values")
+		return nil, errorf(apicode.InvalidQuery, "ids must include at most 50 values")
 	}
 	ids := make([]int64, len(parts))
 	for index, part := range parts {
 		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
 		if err != nil || id < 1 {
-			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "ids must be positive integers")
+			return nil, errorf(apicode.InvalidQuery, "ids must be positive integers")
 		}
 		ids[index] = id
 	}

@@ -7,6 +7,7 @@ import { deliveryIdentity } from "../src/channel-topics"
 import {
   type ChannelSession,
   type ChannelToolRuntime,
+  CLAUDE_ENVOY_USER_AGENT,
   createChannelDelivery,
   executeEnvoyTool,
   startChannelSession,
@@ -51,6 +52,7 @@ test("createChannelDelivery (envoy-channel-server.ts enqueue: renderInbound, the
       identity: new SessionIdentity(SESSION, "/tmp"),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      userAgent: CLAUDE_ENVOY_USER_AGENT,
     })
     expect(await delivery.enqueue({ subject: AGENT, raw: JSON.stringify(envelope) })).toBe(true)
     return { notifications: notifier.notifications, inbox: delivery.inbox() }

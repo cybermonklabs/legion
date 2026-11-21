@@ -11,11 +11,13 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 )
 
 // flakyIdentity fails its next `failures` lookups with a 503, as an identity read that met a
-// database restart does, then answers as inner does.
+// database restart does, then answers as inner does. The 503 is the identity layer's own
+// (SIGNIN_UNAVAILABLE), since a refusal names a code of apicode's list.
 type flakyIdentity struct {
 	inner    identity.Identity
 	failures atomic.Int32
@@ -23,7 +25,7 @@ type flakyIdentity struct {
 
 func (f *flakyIdentity) Login(r *http.Request) (string, error) {
 	if f.failures.Add(-1) >= 0 {
-		return "", errorf(http.StatusServiceUnavailable, "STORE_UNAVAILABLE", "the identity lookup failed for a moment")
+		return "", errorf(apicode.SigninUnavailable, "the identity lookup failed for a moment")
 	}
 	return f.inner.Login(r)
 }
@@ -64,7 +66,7 @@ func newLookupRig(t *testing.T) *lookupRig {
 
 func (rig *lookupRig) write(_ int32, w http.ResponseWriter, r *http.Request) {
 	if _, _, err := rig.server.optionalActor(r); err != nil {
-		rig.server.writeHandlerError(w, err)
+		rig.server.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusCreated, map[string]int32{"stored": rig.stored.Add(1)})
@@ -80,12 +82,13 @@ func (rig *lookupRig) write(_ int32, w http.ResponseWriter, r *http.Request) {
 //   - the declared body was past the route's limit (ContentLength): the layer answers the route's
 //     413 itself.
 //   - a body that declared no length ran past the limit as it was spooled (body.size): the same.
-//   - every POST and PATCH row of the table, each a row of the walk: whether its chain held a
-//     handler back from a failed lookup was up to the layer that looked first. A row that names
-//     OAuth scopes was held back by its scope gate (gateRouteScopes), which resolves the caller
-//     ahead of the keyed layer and refuses one it cannot; every other row ran its handler and left
-//     the refusal to it, and a handler that never looks up its caller would have written with no
-//     key. The layer's own refusal now holds every row back, whatever its handler does.
+//   - every write row of the table the keyed layer keys (keyedMethod), each a row of the walk:
+//     whether its chain held a handler back from a failed lookup was up to the layer that looked
+//     first. A row that names OAuth scopes was held back by its scope gate (gateRouteScopes),
+//     which resolves the caller ahead of the keyed layer and refuses one it cannot; every other
+//     row ran its handler and left the refusal to it, and a handler that never looks up its
+//     caller would have written with no key. The layer's own refusal now holds every row back,
+//     whatever its handler does.
 //
 // A write with no key runs unkeyed by design and is no path of this census. Each row's control is
 // a subtest of its own, so a row that fails still runs it.
@@ -156,7 +159,8 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 		})
 	}
 
-	// Every POST and PATCH row of the table, each through the chain register mounts it behind
+	// Every write row of the table the keyed layer keys (keyedMethod: every POST and PATCH, and
+	// the PUT and DELETE of /api/v2), each through the chain register mounts it behind
 	// (routeHandler), with its handler replaced by a recorder that resolves no caller, as the
 	// read-only walk builds them (read_only_token_test.go): a keyed write whose caller lookup fails
 	// runs no handler, whichever layer of the row looks first, and its resend under the key, once
@@ -174,7 +178,6 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 		createArtifactIssue(t, handler)
 		flaky := &flakyIdentity{inner: served.deps.Identity}
 		served.deps.Identity = flaky
-		replays := served.keyedReplays()
 		t.Run("control", func(t *testing.T) {
 			// A write row mounted with its handler bare, as register would mount one it forgot to
 			// wrap, answers the malformed key with its handler's own answer, not the keyed layer's.
@@ -192,7 +195,7 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 		})
 		walked, handedOn := 0, 0
 		for row, route := range readOnlyTable() {
-			if !keyedMethod(route.Method) {
+			if !keyedMethod(route) {
 				continue
 			}
 			name := route.Method + " " + route.Pattern
@@ -204,11 +207,17 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 			}
 			// On a mux of its own, as register mounts it, so the path's values reach every layer.
 			alone := http.NewServeMux()
-			alone.HandleFunc(name, served.routeHandler(route, replays[name]))
+			alone.HandleFunc(name, served.routeHandler(route))
+			// The row's probe path, a mark's {kind} the arm its probe body names: a union keyed by
+			// a mark's kind reads the kind from the path (unionProbe).
+			path := routeProbePath(route.Pattern)
+			if _, member, arm, union := unionProbe(route, nil); union && member == "kind" {
+				path = strings.ReplaceAll(path, "{kind}", arm)
+			}
 			// send sends the row's probe under key, none when key is empty, with every caller
 			// lookup failing while failing is set.
 			send := func(key string, failing bool) *httptest.ResponseRecorder {
-				request := httptest.NewRequest(route.Method, routeProbePath(route.Pattern), strings.NewReader(routeProbeBody(route)))
+				request := httptest.NewRequest(route.Method, path, strings.NewReader(routeProbeBody(route)))
 				request.Header.Set("Content-Type", "application/json")
 				request.Header.Set("X-Dispatch-User", "alice")
 				if key != "" {
@@ -246,7 +255,7 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 					t.Fatalf("resend: handler runs=%d status=%d body=%s, want one", ran.Load()-before, response.Code, response.Body.String())
 				}
 
-				mounted := httptest.NewRequest(route.Method, routeProbePath(route.Pattern), strings.NewReader(routeProbeBody(route)))
+				mounted := httptest.NewRequest(route.Method, path, strings.NewReader(routeProbeBody(route)))
 				mounted.Header.Set("Content-Type", "application/json")
 				mounted.Header.Set("X-Dispatch-User", "alice")
 				mounted.Header.Set(contracts.IdempotencyKeyHeader, "not a key")
@@ -258,18 +267,18 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 				}
 			})
 		}
-		// The count is held to the rows the registered server mounts (its route index), as the
-		// read-only walk's is, so a walk that skipped a row, or walked none, fails.
+		// The count is held to the keyed rows the registered server mounts (its own table), so a
+		// walk that skipped a row, or walked none, fails.
 		mounted := 0
-		for _, entry := range served.routeIndex {
-			if keyedMethod(entry.Method) {
+		for _, route := range served.routes() {
+			if keyedMethod(route) {
 				mounted++
 			}
 		}
 		if walked == 0 || walked != mounted || handedOn == 0 {
 			t.Fatalf("walked %d write rows (%d handed on with no key), want every one of the %d the server mounts and some handed on", walked, handedOn, mounted)
 		}
-		t.Logf("walked %d POST and PATCH rows of the table (test hooks in): %d ran a write handed on with no key, %d were held by their scope gate",
+		t.Logf("walked %d keyed write rows of the table (test hooks in): %d ran a write handed on with no key, %d were held by their scope gate",
 			walked, handedOn, walked-handedOn)
 	})
 }

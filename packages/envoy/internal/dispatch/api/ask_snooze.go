@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -51,23 +52,47 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	}
 	askID, err := parseAskID(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var input askSnoozeInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.SnoozedUntil == nil {
-		writeError(w, "SNOOZE_INPUT", http.StatusBadRequest, "snoozed_until is required")
+		writeError(w, r, apicode.SnoozeInput, "snoozed_until is required")
 		return
 	}
 	snoozedUntil, err := time.Parse(time.RFC3339, *input.SnoozedUntil)
 	if err != nil {
-		writeError(w, "SNOOZE_INPUT", http.StatusBadRequest, "snoozed_until must be an RFC3339 timestamp")
+		writeError(w, r, apicode.SnoozeInput, "snoozed_until must be an RFC3339 timestamp")
 		return
 	}
+	tx, err := s.begin(r.Context())
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	stored, event, err := s.snoozeAskIn(r.Context(), tx, actor, askID, snoozedUntil)
+	if err == nil {
+		err = s.commitAskSnooze(r.Context(), tx, event)
+	}
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, userAskSnooze{SnoozedUntil: timestampValue(stored)})
+}
+
+// snoozeAskIn folds, in tx, the ask askID names away from actor's Inbox until snoozedUntil,
+// replacing the snooze it held, and answers the snooze as stored and, where it moved, the event
+// that announces it (askSnoozeEvent), for its caller to append: the work of PUT
+// /api/v1/me/asks/{id}/snooze and of an ask mark's write under /api/v2 once each has read the
+// moment. A moment that has passed is 400 SNOOZE_INPUT and an ask that does not exist 404
+// NOT_FOUND, each writing nothing.
+func (s *server) snoozeAskIn(ctx context.Context, tx pgx.Tx, actor model.Actor, askID string, snoozedUntil time.Time) (time.Time, *model.Event, error) {
 	// A snooze that has already passed would fold nothing away, so it is refused. "Passed" is
 	// judged against the database's now(), in the statement that stores the snooze: each
 	// process's host keeps its own clock, and the Inbox compares a snooze with now when it reads
@@ -77,15 +102,9 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	// stores nothing and reads as absent - a 404 - instead of the foreign key's 500; a past moment
 	// is refused first, whatever ask it names. previous is read from the statement's own snapshot,
 	// before the write, so a snooze to the moment the row already holds is known to move nothing.
-	tx, err := s.begin(r.Context())
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	defer tx.Rollback(r.Context())
 	var future bool
 	var stored, previous *time.Time
-	if err := tx.QueryRow(r.Context(), `
+	if err := tx.QueryRow(ctx, `
 		with previous as (
 			select snoozed_until from user_ask_snooze where login = $1 and ask_id = $2
 		), snoozed as (
@@ -96,26 +115,22 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 		)
 		select $3::timestamptz > now(), (select snoozed_until from snoozed), (select snoozed_until from previous)
 	`, model.CanonicalLogin(actor.ID), askID, snoozedUntil).Scan(&future, &stored, &previous); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return time.Time{}, nil, err
 	}
 	if !future {
-		writeError(w, "SNOOZE_INPUT", http.StatusBadRequest, "snoozed_until must be in the future")
-		return
+		return time.Time{}, nil, errorf(apicode.SnoozeInput, "snoozed_until must be in the future")
 	}
 	if stored == nil {
-		writeError(w, "NOT_FOUND", http.StatusNotFound, "no ask "+askID)
-		return
+		return time.Time{}, nil, errorf(apicode.NotFound, "no ask %s", askID)
 	}
-	if previous == nil || !previous.Equal(*stored) {
-		if !s.announceAskSnooze(w, r, tx, actor, askID) {
-			return
-		}
-	} else if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if previous != nil && previous.Equal(*stored) {
+		return *stored, nil, nil
 	}
-	WriteJSON(w, http.StatusOK, userAskSnooze{SnoozedUntil: timestampValue(*stored)})
+	event, err := s.askSnoozeEvent(ctx, tx, actor, askID)
+	if err != nil {
+		return time.Time{}, nil, err
+	}
+	return *stored, &event, nil
 }
 
 // DELETE /api/v1/me/asks/{id}/snooze
@@ -126,50 +141,59 @@ func (s *server) deleteAskSnooze(w http.ResponseWriter, r *http.Request) {
 	}
 	askID, err := parseAskID(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	// Un-snoozing a row that is not snoozed is the state the caller asked for, so it answers
-	// the same 204 rather than a 404 the reader could do nothing with, and announces nothing.
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	removed, err := tx.Exec(r.Context(), `
-		delete from user_ask_snooze where login = $1 and ask_id = $2
-	`, model.CanonicalLogin(actor.ID), askID)
+	event, err := s.unsnoozeAskIn(r.Context(), tx, actor, askID)
+	if err == nil {
+		err = s.commitAskSnooze(r.Context(), tx, event)
+	}
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if removed.RowsAffected() == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if !s.announceAskSnooze(w, r, tx, actor, askID) {
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// announceAskSnooze appends the snooze's event in tx, commits, and publishes it. It answers false
-// after writing the error response when any step fails.
-func (s *server) announceAskSnooze(w http.ResponseWriter, r *http.Request, tx pgx.Tx, actor model.Actor, askID string) bool {
-	event, err := s.askSnoozeEvent(r.Context(), tx, actor, askID)
-	if err == nil {
-		event, err = s.appendEvent(r.Context(), tx, event)
+// unsnoozeAskIn ends, in tx, actor's snooze of the ask askID names, and answers the event that
+// announces it where there was one: the work of DELETE /api/v1/me/asks/{id}/snooze and of an ask
+// mark's write under /api/v2 that writes snoozed_until null. Un-snoozing a row that is not snoozed
+// is the state the caller asked for, so it is no refusal, and it announces nothing.
+func (s *server) unsnoozeAskIn(ctx context.Context, tx pgx.Tx, actor model.Actor, askID string) (*model.Event, error) {
+	removed, err := tx.Exec(ctx, `
+		delete from user_ask_snooze where login = $1 and ask_id = $2
+	`, model.CanonicalLogin(actor.ID), askID)
+	if err != nil || removed.RowsAffected() == 0 {
+		return nil, err
 	}
+	event, err := s.askSnoozeEvent(ctx, tx, actor, askID)
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
+// commitAskSnooze ends a snooze's or an un-snooze's own transaction: it appends event in tx where
+// the write moved anything, commits, and publishes the event.
+func (s *server) commitAskSnooze(ctx context.Context, tx pgx.Tx, event *model.Event) error {
+	if event == nil {
+		return tx.Commit(ctx)
+	}
+	written, err := s.appendEvent(ctx, tx, *event)
 	if err == nil {
-		err = tx.Commit(r.Context())
+		err = tx.Commit(ctx)
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return false
+		return err
 	}
-	s.publish(r.Context(), event)
-	return true
+	s.publish(ctx, written)
+	return nil
 }
 
 // askSnoozeEvent is the `user_state.updated` a snooze or an un-snooze of askID appends, owned

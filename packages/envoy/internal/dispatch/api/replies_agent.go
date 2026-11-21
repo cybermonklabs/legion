@@ -13,12 +13,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The Agent rows of GET /api/v1/me/replies: the statements each state reads them through, the
-// statement picker, the row read and the session names the page shows. The route itself, the Reply
-// rows and everything both halves share - the kinds, the states, the paging, the cursor and
-// listMyReplies, which merges the two - are api/replies.go's.
+// The Agent rows of GET /api/v1/me/replies and GET /api/v2/me/threads: the statements each state
+// reads them through, the statement picker, the row read and the session names the page shows. The
+// routes themselves, the Reply rows and everything both halves share - the kinds, the states, the
+// paging, the cursor and readMyReplies, which merges the two - are api/replies.go's.
 //
-// It is a file of its own because the two halves share nothing but that route. A Reply row is a
+// It is a file of its own because the two halves share nothing but that read. A Reply row is a
 // user_threads row read through one of three partial indexes; an Agent row is built from the
 // messages themselves, one walk per root, under unread_replies.go's definition of an unread reply,
 // and the pair of them in one file ran to twelve hundred lines of which no reader needed both.
@@ -269,8 +269,8 @@ var (
 
 // myAgentRowColumns is what a list read answers for one row, and myAgentRowsOrder the order the
 // Inbox's own two states answer in. The Dismissed view needs no order of its own: its roots are cut
-// in the order it answers in, and the route sorts the two kinds of row together (listMyReplies)
-// whatever order each half read them in.
+// in the order it answers in, and readMyReplies sorts the two kinds of row together whatever order
+// each half read them in.
 const myAgentRowColumns = `
 	select r.root_id::text, agent.session_id, agent.replied_at, r.dismissed_at, agent.subject,
 	       agent.reply_id::text, agent.reply_author, agent.reply_body, agent.reply_at,
@@ -284,8 +284,9 @@ const myAgentRowsOrder = `
 // own two states: both already read every root the state holds in order to order them, so the
 // count over that set is the window's and costs no second pass over the person's agent threads -
 // one of the two reads a badge refresh used to make, and the more expensive of them at a14's seed.
-// The Dismissed view takes no total at all (listMyReplies), which is what leaves its page free to
-// stop at the rows it answers.
+// The Dismissed view is counted by no statement (readMyReplies): /api/v1 answers the length of its
+// page as its total and /api/v2 answers null (listMyThreadsV2), which is what leaves its page free
+// to stop at the rows it answers.
 const myAgentCountedColumns = myAgentRowColumns + `,
 	       count(*) over ()::int as total`
 

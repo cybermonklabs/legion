@@ -106,6 +106,7 @@ async function executeWrite(
               project: "DSP",
               name: String(body.name),
               slug: "spec",
+              kind: "doc",
               primary: body.name === "spec.md",
             },
             version: { number: 1 },
@@ -582,7 +583,7 @@ describe("Dispatch write advice", () => {
     [
       "dispatch_artifact",
       { issue: "DSP-42", name: "spec.md", content: "# Spec\n" },
-      `Uploaded spec.md as version 1 (artifact slug spec; dispatch://DSP-42/artifact/spec) ${issueSuffix}`,
+      `Uploaded spec.md as version 1, a document (kind doc; artifact slug spec; dispatch://DSP-42/artifact/spec) ${issueSuffix}`,
       { issue: "DSP-42", artifact: "artifact-42", version: 1 },
     ],
     [

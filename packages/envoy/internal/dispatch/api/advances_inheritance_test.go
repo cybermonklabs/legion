@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -309,9 +310,9 @@ func TestAdvancesToAGonePriorityReadAsNone(t *testing.T) {
 	restated := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+root.Key, map[string]any{
 		"advances": []string{kept, dropped}, "advances_revision": rootRevision,
 	}, "alice")
-	if code, text := refusalOf(t, restated); restated.Code != http.StatusBadRequest || code != codeAdvancesInput {
+	if code, text := refusalOf(t, restated); restated.Code != http.StatusBadRequest || code != apicode.AdvancesInput.V1Name() {
 		t.Fatalf("a write naming the gone priority: status=%d code=%s error=%q, want 400 %s",
-			restated.Code, code, text, codeAdvancesInput)
+			restated.Code, code, text, apicode.AdvancesInput.V1Name())
 	}
 
 	// A whole-set write of nothing retracts the live relation, one act, and leaves the tuple that

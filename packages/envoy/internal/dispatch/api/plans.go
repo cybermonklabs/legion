@@ -1,42 +1,42 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
 // The plan each run of an issue ran from, which the Legion daemon of the issue's project writes
-// when the run's work starts (PUT /api/v1/issues/{key}/plans/{id}), and the read of a project's
-// finished issues (GET /api/v1/projects/{key}/plans): each with its plan, the rating each retro
-// gave it with the reason, the time from the first start of its step records to the last end,
-// and its count of failed steps. Both live in internal/dispatch/workflowstore, the one writer of
-// the nodes and tuples that hold the plans and the step records.
+// when the run's work starts (PUT /api/v1/issues/{key}/plans/{id}, and PUT
+// /api/v2/issues/{key}/plans/{id}), and the read of a project's finished issues (GET
+// /api/v1/projects/{key}/plans, and GET /api/v2/projects/{key}/plans): each with its plan, the
+// rating each retro gave it with the reason, the time from the first start of its step records to
+// the last end, and its count of failed steps. Both live in internal/dispatch/workflowstore, the
+// one writer of the nodes and tuples that hold the plans and the step records.
 //
 // The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
 // event and reads the issue with no open check. The read writes nothing, reads the project, then
 // all its finished issues in one statement whatever their number, and a read-only token may call
 // it (readScopeRoutes).
-
+//
 // The refusals of a plan write, beside the step write's STEP_WRITER, the package's own decode
-// error and 404 ISSUE_NOT_FOUND, each the code contracts gives it, which the Legion daemon reads to
-// end a row on.
-const (
-	// codePlanInput is a plan value outside its form, or a plan that does not name its
-	// generation, its source and its tasks; the message names the field
-	// (workflowstore.ErrPlanInput).
-	codePlanInput = contracts.PlanInputCode
-	// codePlanOtherIssue is an id whose plan is the plan of another issue.
-	codePlanOtherIssue = contracts.PlanOtherIssueCode
-)
+// error and 404 ISSUE_NOT_FOUND, are each the code contracts gives it, which the Legion daemon
+// reads to end a row on: apicode.PlanInput, a plan value outside its form, or a plan that does not
+// name its generation, its source and its tasks, the message naming the field
+// (workflowstore.ErrPlanInput); and apicode.PlanOtherIssue, an id whose plan is the plan of another
+// issue.
 
-// planRecordInput is the body PUT /api/v1/issues/{key}/plans/{id} takes: the writer, the run the
-// plan is of, its source, the owner's document and version for the source owner, and its tasks.
+// planRecordInput is the body PUT /api/v1/issues/{key}/plans/{id} and its /api/v2 route take: the
+// writer, the run the plan is of, its source, the owner's document and version for the source
+// owner, and its tasks.
 type planRecordInput struct {
 	Actor      *model.Actor    `json:"actor"`
 	Generation *int64          `json:"generation" required:"true"`
@@ -60,17 +60,40 @@ type planTaskInput struct {
 func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	var input planRecordInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.putIssuePlanFrom(w, r, input, nil)
+}
+
+// putIssuePlanFrom is the write both versions make of the plan of one run of an issue, input its
+// body: the writer held to the issue's daemon's session (requireIssueDaemon), then the write,
+// answering the plan. unchanged is /api/v2's no-op rule (dispatch://INFRA-4071/spec R8), asked of
+// the plan the issue already holds under the id, read on the pool before the write: where it
+// answers true, the plan is answered as it stands and nothing is written. /api/v1 passes nil, and
+// writes.
+func (s *server) putIssuePlanFrom(w http.ResponseWriter, r *http.Request, input planRecordInput, unchanged func(workflowstore.Plan) bool) {
 	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a plan")
 	if !ok {
 		return
 	}
+	if unchanged != nil {
+		if id, err := uuid.Parse(r.PathValue("id")); err == nil {
+			held, found, err := workflowstore.PlanOfIssue(r.Context(), s.deps.Store.Pool, key, id.String())
+			if err != nil {
+				s.writeHandlerError(w, r, err)
+				return
+			}
+			if found && unchanged(held) {
+				WriteJSON(w, http.StatusOK, planRecord(held))
+				return
+			}
+		}
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -93,17 +116,17 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	}, actor, time.Now())
 	switch {
 	case errors.Is(err, workflowstore.ErrPlanInput):
-		writeError(w, codePlanInput, http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.PlanInput, err.Error())
 		return
 	case errors.Is(err, workflowstore.ErrPlanOtherIssue):
-		writeError(w, codePlanOtherIssue, http.StatusConflict, err.Error())
+		writeError(w, r, apicode.PlanOtherIssue, err.Error())
 		return
 	case err != nil:
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, planRecord(written))
@@ -132,20 +155,31 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	}
 	window, err := parsePlansWindow(r.URL.Query())
 	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.InvalidQuery, err.Error())
 		return
 	}
 	key := r.PathValue("key")
 	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, key); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, window)
+	finished, err := projectFinishedIssues(r.Context(), s.deps.Store.Pool, key, window)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	read := model.ProjectPlans{Project: key, Issues: make([]model.FinishedIssue, len(finished))}
+	WriteJSON(w, http.StatusOK, model.ProjectPlans{Project: key, Issues: finished})
+}
+
+// projectFinishedIssues is each finished issue of project whose close is within window, newest
+// close first, as both versions list it: its plan, the rating of each of its retros, the span of
+// its step records and its count of failed steps (workflowstore.ProjectPlans).
+func projectFinishedIssues(ctx context.Context, q workflowstore.Queryer, project string, window workflowstore.Window) ([]model.FinishedIssue, error) {
+	finished, err := workflowstore.ProjectPlans(ctx, q, project, window)
+	if err != nil {
+		return nil, err
+	}
+	issues := make([]model.FinishedIssue, len(finished))
 	for index, issue := range finished {
 		listed := model.FinishedIssue{
 			Issue: issue.Issue, Title: issue.Title, ClosedAt: issue.ClosedAt,
@@ -166,9 +200,9 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 			seconds := int64(issue.EndedAt.Sub(*issue.StartedAt) / time.Second)
 			listed.DurationSeconds = &seconds
 		}
-		read.Issues[index] = listed
+		issues[index] = listed
 	}
-	WriteJSON(w, http.StatusOK, read)
+	return issues, nil
 }
 
 // parsePlansWindow is the plans read's [since, until) window on the close (parseWindow); the read

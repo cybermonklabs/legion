@@ -710,6 +710,46 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	}
 }
 
+// An approval that stands on a file version is an approval of no text, and carries nothing. A
+// document an upload made of a file (the api package's storeArtifact) holds the file's versions
+// before its first document version, each storing bytes and no markdown, and an approval of one
+// stands: a plan review approved version 1 of dispatch://BET-1328/artifact/plan-md while it was a
+// file. Here alice approved the file, and then answers the ask block of the document version
+// written after it: the version her answer reaches carries no approval, and the write that names
+// it is refused nothing.
+func TestAnApprovalOfAFileVersionCarriesNothing(t *testing.T) {
+	database, service, artifactID := seededRegionDocument(t, 20*time.Millisecond)
+	ctx := context.Background()
+	// The document takes the shape the upload's conversion leaves: its text is version 2, and
+	// version 1 is the file it was.
+	if _, err := database.Pool.Exec(ctx, `update artifact_versions set number = 2 where artifact_id = $1 and number = 1`, artifactID); err != nil {
+		t.Fatalf("move the document's text to version 2: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors)
+		values ($1, 1, $2::bytea, 'text/plain', octet_length($2::bytea), encode(sha256($2::bytea), 'hex'), '[{"kind":"user","id":"alice"}]')
+	`, artifactID, []byte("The plan, saved as a text file.\n")); err != nil {
+		t.Fatalf("store the file the document was as its version 1: %v", err)
+	}
+	approveStoredVersion(t, database, artifactID, 1, "alice")
+
+	answerBlockAs(t, service, artifactID, "region", "alice", []string{"East"})
+	joined(t, service, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := service.NamedVersion(ctx, artifactID, "Named by the agent", model.Actor{Kind: "session", ID: "session-0123456789abcdef"})
+		return err
+	})
+	var newest int
+	if err := database.Pool.QueryRow(ctx, `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&newest); err != nil {
+		t.Fatalf("read the newest version: %v", err)
+	}
+	if markdown := storedVersionMarkdown(t, database, artifactID, newest); newest < 3 || !strings.Contains(markdown, `answered_by="alice"`) {
+		t.Fatalf("the newest version is %d holding %q; want a version after 2 holding alice's answer", newest, markdown)
+	}
+	if reviews, approvals := carriedReviews(t, database, artifactID); reviews != 1 || approvals != 0 {
+		t.Fatalf("reviews = %d, artifact.approved events = %d; want alice's approval of the file alone and no event", reviews, approvals)
+	}
+}
+
 // CarriedFromVersion reads the version out of the sentence each carry writes, over those very
 // sentences, and reports nothing for a reason a person wrote. It is driven from carryReason and
 // restoreReason themselves, so a change to either that the parser no longer reads fails here

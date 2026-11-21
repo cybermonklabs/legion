@@ -330,11 +330,12 @@ file of pmdoc/schema itself.
 ## contracts: `bun run check:api` renders schemas/dispatch-openapi.json into
 
 `bun run check:api` renders schemas/dispatch-openapi.json into
-src/dispatch-api.generated.ts and compares, and reads no Go at all
-(scripts/gen-api.ts:6), so the Go that document is emitted from is not named here:
-a change to it is judged by envoy-go-checks' `openapi --check`, whose filter
-(envoy_go_checks) selects both that Go and this document, so either one alone
-starts the job.
+src/dispatch-api.generated.ts and schemas/dispatch-openapi-v2.json into
+src/dispatch-api-v2.generated.ts (scripts/gen-api.ts:49-60) and compares each,
+and reads no Go at all (scripts/gen-api.ts:6), so the Go those documents are
+emitted from is not named here: a change to it is judged by envoy-go-checks'
+`openapi --check`, whose filter (envoy_go_checks) selects both that Go and these
+documents, so any one of them alone starts the job.
 
 ## guide_layout_files: The five guides scripts/semantic-line-breaks.guides.test.ts reads, the checker it
 
@@ -612,11 +613,11 @@ matches no file (its rule 9).
 
 ## text_checks: The text checks of the three Go modules, the Dispatch
 
-The text checks of the three Go modules, the Dispatch API's nine static source
+The text checks of the three Go modules, the Dispatch API's ten static source
 checks, and the two pure pins of packages/daemon's supervise table: the tests whose
 subject is a file's words. Their job runs packages/envoy/internal/textcheck,
 packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
-which the three Go lanes leave out of their own runs, those checks' seventeen tests
+which the three Go lanes leave out of their own runs, those checks' eighteen tests
 by name, and those two pins by name, which the daemon-go plain step skips.
 packages/envoy stays a wide
 root: file_copy_test.go walks every .go file under it (infra included), the API's
@@ -1739,10 +1740,10 @@ compile runs in the lint job's notices step.
 ## The checks whose subject is text: each module's internal/textcheck package, the Dispatch
 
 The checks whose subject is text: each module's internal/textcheck package, the Dispatch API's
-nine static source checks, which read the module's own source, and the two pure pins of
+ten static source checks, which read the module's own source, and the two pure pins of
 packages/daemon's supervise table. None of them opens a database or starts a container, so the
 job carries no service and no `bun install`, and the three Go lanes (daemon-go, envoy-go and envoy-infra-go) leave those
-packages, those seventeen tests and those two pins out of their own runs
+packages, those eighteen tests and those two pins out of their own runs
 (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
 walk, so it is selected often, which is why the job is kept this cheap: five `go test` calls —
 the four that preceded the supervise pins take 4 minutes 4 seconds with an empty build cache,

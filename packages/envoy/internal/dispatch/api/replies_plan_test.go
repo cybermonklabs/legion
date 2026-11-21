@@ -74,7 +74,8 @@ func TestMyRepliesQueriesReadTheirStatesIndex(t *testing.T) {
 		{"one issue's unread set", myRepliesPageQuery, append([]any{"alice", "TEST-1", nil}, &oneIssuesPage), "user_threads_unread", "user_threads", ""},
 		{"the inbox count", myRepliesInboxCountQuery, replyArgs(), "user_threads_inbox", "user_threads", ""},
 		{"every row under state=inbox", myRepliesInboxPageQuery, replyArgs(everyRow), "user_threads_inbox", "user_threads", ""},
-		// The Dismissed view has no count: its total is the page it answers (listMyReplies).
+		// The Dismissed view has no count: its total is the page it answers on /api/v1
+		// (listMyReplies) and null on /api/v2 (listMyThreadsV2).
 		{"the first page under state=dismissed", myRepliesDismissedPageQuery, replyArgs(&dismissedPage), "user_threads_dismissed", "user_threads", ""},
 		{
 			"a page under state=dismissed from its cursor", myRepliesDismissedFromQuery,

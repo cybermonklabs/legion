@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -56,9 +59,19 @@ type updateIssueInput struct {
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	var input updateIssueInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.patchIssueAs(w, r, input, nil)
+}
+
+// patchIssueAs is the write both versions of PATCH issues make of the body each has read. gates,
+// where it is not nil, is the whole set of the issue's design gates, already held to
+// validDesignGates, which PATCH /api/v2/issues/{key} takes as its design_gates member (the route
+// map's row 102): it is stored in the patch's own transaction, appends no event of its own and
+// is taken on a closed issue as PUT /api/v1/issues/{key}/design-gates takes it, so a patch that
+// names nothing else answers the issue as it stands, as a patch that changes nothing does.
+func (s *server) patchIssueAs(w http.ResponseWriter, r *http.Request, input updateIssueInput, gates []issueDesignGate) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -68,7 +81,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		var err error
 		blockers, err = normalizeIssueBlockers(*input.BlockedBy)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -77,18 +90,18 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		var err error
 		advances, err = normalizeIssueAdvances(*input.Advances)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.Title != nil {
 		*input.Title = strings.TrimSpace(*input.Title)
 		if *input.Title == "" {
-			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, "title must not be blank")
+			writeError(w, r, apicode.InvalidIssue, "title must not be blank")
 			return
 		}
 		if length := itemblocks.Units16(*input.Title); length > contracts.IssueTitleMax {
-			capExceeded(w, "title", length, contracts.IssueTitleMax)
+			capExceeded(w, r, "title", length, contracts.IssueTitleMax)
 			return
 		}
 	}
@@ -96,30 +109,43 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Status != nil {
 		status = strings.TrimSpace(*input.Status)
 		if status == "" {
-			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, "status must not be blank")
+			writeError(w, r, apicode.InvalidIssue, "status must not be blank")
 			return
 		}
 		if !model.IsIssueStatus(status) {
-			writeError(w, "INVALID_STATUS", http.StatusBadRequest, "status is not in the Legion lifecycle")
+			writeError(w, r, apicode.InvalidStatus, "status is not in the Legion lifecycle")
 			return
 		}
 	}
 	if input.Route != nil && *input.Route != "" {
 		if _, err := model.ParseRoute(*input.Route); err != nil {
-			writeError(w, "ROUTE_INVALID", http.StatusBadRequest, "invalid route")
+			writeError(w, r, apicode.RouteInvalid, "invalid route")
 			return
 		}
 	}
 	var labels, labelsAdd []string
 	if input.Labels != nil && input.LabelsAdd != nil {
-		writeError(w, "LABELS_INPUT", http.StatusBadRequest, "labels and labels_add cannot both be set")
+		writeError(w, r, apicode.LabelsInput, "labels and labels_add cannot both be set")
 		return
 	}
 	if input.Labels != nil {
-		var err error
-		labels, err = normalizeIssueLabels(*input.Labels)
-		if err != nil {
-			s.writeHandlerError(w, err)
+		// Every label is judged here, before the issue is locked and before it is answered missing or
+		// closed, as it always has been, so a bad label answers 400 first. A repo: label may be the
+		// issue's own, which no caller limit binds (ownRepoLabel), so a replacement naming one reads
+		// which label that is first; a missing issue owns none. The set is judged again against the
+		// issue the row lock reads, below, since a write between the two reads can change it.
+		own := ""
+		if slices.ContainsFunc(*input.Labels, func(value string) bool {
+			return strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), repoLabelPrefix)
+		}) {
+			var err error
+			if own, err = heldOwnRepoLabel(r.Context(), s.deps.Store.Pool, r.PathValue("key")); err != nil {
+				s.writeHandlerError(w, r, err)
+				return
+			}
+		}
+		if _, err := normalizeLabels(*input.Labels, replacementLabelLimit(own)); err != nil {
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -127,33 +153,33 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		var err error
 		labelsAdd, err = normalizeIssueLabels(*input.LabelsAdd)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	priority, priorityProvided, err := parseIssuePriority(input.Priority)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	assignee, assigneeProvided, err := s.parseIssueAssignee(r.Context(), input.Assignee)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	parent, parentProvided, err := parseIssueParent(input.Parent)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	components, componentsProvided, err := parseIssueComponents(input.Components)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	repo, repoProvided, err := parseIssueRepo(input.Repo)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -168,7 +194,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -189,18 +215,18 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if dependencyWrite || input.Rank != nil {
 		var project string
 		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if dependencyWrite {
 			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		}
 		if input.Rank != nil {
 			if err := lockProjectRankAllocation(r.Context(), tx, project); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		}
@@ -232,21 +258,21 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		lock = lockPatchOwnersAndParent
 	}
 	if err := lock(r.Context(), tx, key, named...); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	before, err := s.loadIssue(r.Context(), tx, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
-		writeError(w, "ISSUE_CHANGED", http.StatusConflict, "issue changed since the hand-over read")
+		writeError(w, r, apicode.IssueChanged, "the issue changed since the sequence you read")
 		return
 	}
 	if parentProvided && parent != nil {
 		if err := validateIssueParent(r.Context(), tx, key, before.Project, *parent); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -262,8 +288,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// waits for a reopen.
 		addsLink := input.ExternalLinks != nil && !isExternalLinksSubset(*input.ExternalLinks, before.ExternalLinks)
 		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
-		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
-			writeError(w, "ISSUE_CLOSED", http.StatusConflict, "issue is closed")
+		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil && gates == nil) {
+			writeError(w, r, apicode.IssueClosed, "issue is closed")
 			return
 		}
 	}
@@ -277,7 +303,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Advances != nil {
 		heldAdvances = ownAdvances(before.Advances)
 		if err := refuseAdvancesRevision(heldAdvances, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -292,7 +318,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	var projectDefault string
 	if assigneeProvided && (before.Assignee == nil) != (assignee == nil) {
 		if err := tx.QueryRow(r.Context(), `select default_assignee from projects where key = $1`, before.Project).Scan(&projectDefault); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -327,7 +353,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Rank != nil {
 		issueRank, err := s.rankForInput(r.Context(), tx, before.Project, key, *input.Rank)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		set("rank", issueRank)
@@ -346,14 +372,21 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		set("parent_key", parentValue)
 	}
 	if input.LabelsAdd != nil {
-		labels, err = mergeIssueLabels(before.Labels, labelsAdd)
+		labels, err = mergeIssueLabels(before.Labels, labelsAdd, ownRepoLabel(before.Labels, before.ExternalLinks))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		set("labels", labels)
 	}
 	if input.Labels != nil {
+		// The issue's own repo: label as its row lock read it, which the check before the lock
+		// read without one.
+		labels, err = normalizeLabels(*input.Labels, replacementLabelLimit(ownRepoLabel(before.Labels, before.ExternalLinks)))
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 		set("labels", labels)
 	}
 	if input.Route != nil {
@@ -388,7 +421,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The advice is read here, before the patch's first write, so its queries hold no transaction
@@ -407,7 +440,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Labels != nil || input.LabelsAdd != nil {
 		afterRow.labels = labels
 	}
-	advice := s.writeAdviceBefore(r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, afterStatus, afterRow, adviceAsks{
+	advice := s.writeAdviceBefore(r.Context(), tx, routeName(r.Context()), key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks),
 		opened:   askIDs(reopenedAsks),
 	})
@@ -415,50 +448,50 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
 		if _, err := tx.Exec(r.Context(), `update issues set `+strings.Join(sets, ", ")+` where key = $1`, args...); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if previousClaim != nil {
 		// Closing releases the claim through the one writer of those columns.
 		if err := writeIssueClaim(r.Context(), tx, key, nil); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if componentsProvided {
 		if err := writeIssueComponents(r.Context(), tx, key, before.Project, *components); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.BlockedBy != nil {
 		if err := writeBlockedBy(r.Context(), tx, key, before.Project, callerProject, blockers); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.Advances != nil {
 		if err := writeIssueAdvances(r.Context(), tx, key, heldAdvances, advances, actor, time.Now().UTC()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if parentProvided && parent != nil {
 		if err := assertParentLeavesNoDependencyCycle(r.Context(), tx, key, *parent); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 
 	if input.ExternalLinks != nil {
 		if _, err := tx.Exec(r.Context(), `delete from issue_external_links where issue_key = $1`, key); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		for _, link := range *input.ExternalLinks {
 			if err := validateExternalURL(link.URL); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			kind := link.Kind
@@ -471,28 +504,36 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			var owner string
 			err := tx.QueryRow(r.Context(), `select issue_key from issue_external_links where url = $1`, link.URL).Scan(&owner)
 			if err == nil {
-				writeError(w, "EXTERNAL_LINK_TAKEN", http.StatusConflict, fmt.Sprintf("%s is already linked from %s", link.URL, owner))
+				writeError(w, r, apicode.ExternalLinkTaken, fmt.Sprintf("%s is already linked from %s", link.URL, owner))
 				return
 			}
 			if !errors.Is(err, pgx.ErrNoRows) {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if _, err := tx.Exec(r.Context(), `insert into issue_external_links (issue_key, url, kind) values ($1, $2, $3)`, key, link.URL, kind); err != nil {
 				if isUniqueViolation(err) {
-					writeError(w, "EXTERNAL_LINK_TAKEN", http.StatusConflict, fmt.Sprintf("%s is already linked from another issue", link.URL))
+					writeError(w, r, apicode.ExternalLinkTaken, fmt.Sprintf("%s is already linked from another issue", link.URL))
 					return
 				}
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		}
 		changed = true
 	}
+	if gates != nil {
+		// The issue's row is held already (lock above), which is the row design_gates' key
+		// shares, so the set is written against the issue this patch read.
+		if err := writeDesignGates(r.Context(), tx, key, gates); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+	}
 	if !changed {
 		// Nothing was written, so the row the advice read is the stored one.
 		if err := ledger.Commit(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		WriteJSON(w, http.StatusOK, withAdvice(before, advice))
@@ -525,7 +566,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(owners) > 1 {
 		if err := s.deps.Events.LockOwners(r.Context(), tx, owners...); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -535,7 +576,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	appended := append([]*model.Event{}, restoredEvents...)
 	if closing {
 		if withdrawn, appended, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, key, closingAsks, actor); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -547,7 +588,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// here.
 	after, err := s.loadIssue(r.Context(), tx, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	eventType := "issue.updated"
@@ -561,12 +602,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	changedFields := issueChangedFields(before, after)
 	edgeChanges, err := issueEdgeChanges(r.Context(), tx, before, after, slices.Contains(changedFields, "title"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload, err := newIssueEventPayload(r.Context(), tx, after, edgeChanges, changedFields)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// nil on a write that left the assignee alone, which is what names the status move's logins
@@ -601,14 +642,14 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	event, err := s.queueLoggedEvent(ledger, issueOwner(key).event(eventType, actor, payload), logins, "", "")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	appended = append(appended, event)
 	if previousClaim != nil {
 		released, err := s.queueEvent(ledger, claimEvent("issue.released", key, actor, after, previousClaim, "closed"))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		appended = append(appended, released)
@@ -620,7 +661,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"child_key": after.Key, "from": before.Status, "to": after.Status},
 		))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		appended = append(appended, childEvent)
@@ -631,7 +672,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				"child.removed", actor, map[string]any{"child_key": after.Key},
 			))
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			appended = append(appended, removedEvent)
@@ -641,7 +682,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				"child.added", actor, map[string]any{"child_key": after.Key},
 			))
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			appended = append(appended, addedEvent)
@@ -667,12 +708,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			`, key).QueryRow(func(row pgx.Row) error { return row.Scan(&after.ClosedAt) })
 			return nil
 		}); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	after.LastSeq = appendedIssueLastSeq(key, appended)
@@ -688,6 +729,95 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.sweepClosedIssueAsks(outlivingTheClient(r), key, withdrawn, actor)
 	}
 	WriteJSON(w, http.StatusOK, withAdvice(after, advice))
+}
+
+// githubIssueLink is the link an import records for the GitHub issue it imports (externalURL),
+// its group the repository's <owner>/<repo>.
+var githubIssueLink = regexp.MustCompile(`^https://github\.com/([^/]+/[^/]+)/issues/[0-9]+$`)
+
+// ownRepoLabel is the lower-cased key of the issue's own repo: label, or "" where it holds none:
+// the first of labels equal, case-insensitively, to repoLabelPrefix and the <owner>/<repo> of one
+// of links that names a GitHub issue, the label an import through the default project writes
+// beside the link it records (createIssueFrom). That label is Dispatch's record of the issue's
+// source repository, and no caller limit binds it. An issue can also hold a repo: label a caller
+// set, which is an ordinary label, held to a caller's limits as any other. The web label editor
+// reads the same rule (ownRepoLabelKey, packages/dispatch/web/src/features/issue/IssueLabels.tsx).
+func ownRepoLabel(labels []string, links []model.ExternalLink) string {
+	for _, label := range labels {
+		key := strings.ToLower(label)
+		repo, isRepoLabel := strings.CutPrefix(key, repoLabelPrefix)
+		if !isRepoLabel {
+			continue
+		}
+		for _, link := range links {
+			if match := githubIssueLink.FindStringSubmatch(link.URL); match != nil && strings.ToLower(match[1]) == repo {
+				return key
+			}
+		}
+	}
+	return ""
+}
+
+// heldOwnRepoLabel is ownRepoLabel of the issue key as it stands, read without a lock, and "" for
+// an issue that does not exist.
+func heldOwnRepoLabel(ctx context.Context, q queryer, key string) (string, error) {
+	var labels []string
+	if err := q.QueryRow(ctx, `select labels from issues where key = $1`, key).Scan(&labels); errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	} else if err != nil {
+		return "", err
+	}
+	rows, err := q.Query(ctx, issueExternalLinksStatement, key)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	links, err := scanExternalLinks(rows)
+	if err != nil {
+		return "", err
+	}
+	return ownRepoLabel(labels, links), nil
+}
+
+// replacementLabelLimit holds a labels replacement: the issue's own repo: label (own, its key),
+// which the replacement keeps when it sends it back in any case, counts toward neither of a
+// caller's limits, and every other label meets both.
+func replacementLabelLimit(own string) labelLimit {
+	return func(key string) (int, bool) {
+		if own != "" && key == own {
+			return 0, false
+		}
+		return maxIssueLabel16, true
+	}
+}
+
+// mergeIssueLabels adds labels, already held to a caller's limits, to existing without dropping a
+// concurrent writer's labels. It keeps the labels the issue holds as they are, its own repo: label
+// (own, its key) among them whatever its length, and refuses more than maxIssueLabels counted as
+// c8a44f97 counted them, before a label the issue already holds is folded away: every label it
+// holds and every label added, less its own repo: label, which counts toward no limit (R14).
+func mergeIssueLabels(existing, added []string, own string) ([]string, error) {
+	counted := len(existing) + len(added)
+	if own != "" {
+		counted--
+	}
+	if counted > maxIssueLabels {
+		return nil, countExceededError(apicode.LabelsInput, "labels", counted, maxIssueLabels)
+	}
+	labels := append(make([]string, 0, len(existing)+len(added)), existing...)
+	seen := make(map[string]struct{}, len(existing)+len(added))
+	for _, label := range existing {
+		seen[strings.ToLower(label)] = struct{}{}
+	}
+	for _, label := range added {
+		key := strings.ToLower(label)
+		if _, held := seen[key]; held {
+			continue
+		}
+		seen[key] = struct{}{}
+		labels = append(labels, label)
+	}
+	return labels, nil
 }
 
 // appendedIssueLastSeq is the issue's last_seq once the write phase has run: the sequence of the
@@ -713,12 +843,6 @@ func askIDs(asks []model.Ask) []string {
 		ids = append(ids, ask.ID)
 	}
 	return ids
-}
-
-// mergeIssueLabels adds labels to existing without dropping a concurrent writer's labels. The total
-// still passes through the same cap and de-duplication as a full labels replacement.
-func mergeIssueLabels(existing, added []string) ([]string, error) {
-	return normalizeIssueLabels(append(append([]string{}, existing...), added...))
 }
 
 // isExternalLinksSubset reports whether every URL in requested already belongs to existing. The

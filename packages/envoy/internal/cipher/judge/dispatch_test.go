@@ -6,8 +6,11 @@ package judge
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -21,6 +24,48 @@ func newDispatchClient(t *testing.T, d *dispatchStandIn, token string) Dispatch 
 		BaseURL: d.server.URL,
 		Account: ciphertoken.NewAccountToken(tokenFile(t, token)),
 		HTTP:    d.server.Client(),
+	}
+}
+
+// TestTheReadNamesItself: both reads name the judge and the broker's build in their User-Agent,
+// so Dispatch's access log tells the judge's reads from every other caller's; a broker whose build
+// names no commit sends `(devel)`. The reads stay on /api/v1.
+func TestTheReadNamesItself(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	for _, tc := range []struct{ commit, want string }{
+		{commit, "envoy-broker-judge/" + commit},
+		{"", "envoy-broker-judge/(devel)"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			stand := newDispatch(t, "doing", testSpec)
+			var mu sync.Mutex
+			var sent []string
+			named := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				sent = append(sent, r.URL.Path+" "+r.UserAgent())
+				mu.Unlock()
+				stand.serve(w, r)
+			}))
+			t.Cleanup(named.Close)
+			dispatch := Dispatch{
+				BaseURL: named.URL,
+				Account: ciphertoken.NewAccountToken(tokenFile(t, "projected-token")),
+				HTTP:    named.Client(),
+				Commit:  tc.commit,
+			}
+			if _, err := dispatch.Issue(t.Context(), testIssue); err != nil {
+				t.Fatalf("Issue: %v", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			want := []string{
+				"/api/v1/issues/" + testIssue + " " + tc.want,
+				"/api/v1/issues/" + testIssue + "/artifacts/spec/text " + tc.want,
+			}
+			if !slices.Equal(sent, want) {
+				t.Fatalf("Dispatch got %q; want %q", sent, want)
+			}
+		})
 	}
 }
 

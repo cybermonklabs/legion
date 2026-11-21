@@ -40,9 +40,10 @@ func accountTokenFile(t testing.TB, token string) string {
 }
 
 // newCredentialTestHandler mounts the real routes with AgentSecrets pointed at brokerURL ("" to
-// leave the feature off), on a server that configures nothing else. A test that needs the relay
-// beside another of newTestServer's options, the broker token verifier among them, sets
-// testServerOptions.agentSecretsURL instead (broker_token_approve_test.go).
+// leave the feature off) on a server of its own, holding the people alice and bob and the shared
+// agent token "agent-token", that configures nothing else. A test that needs the relay beside
+// another of newTestServer's options - the route tour, or the broker token verifier
+// (broker_token_approve_test.go) - sets testServerOptions.agentSecretsURL instead.
 func newCredentialTestHandler(t *testing.T, brokerURL string) http.Handler {
 	t.Helper()
 	tokenFile := ""
@@ -84,35 +85,53 @@ func newCredentialTestHandlerReading(t *testing.T, brokerURL, tokenFile string) 
 }
 
 // featureOffRoutes is every credential route that answers 404 FEATURE_OFF without a broker: all of
-// them but the pending list, which answers null (TestListCredentialPendingWithAndWithoutABroker).
+// /api/v1's but its pending list, which answers null (TestListCredentialPendingWithAndWithoutABroker),
+// and every one of /api/v2's, its pending list among them, so a client tells a Dispatch with no
+// broker from one with nothing waiting. body is what the route is sent, {} where it is nil; a
+// state is sent one its union takes, since the decoder refuses any other before the handler runs.
 var featureOffRoutes = []struct {
 	method, path string
+	body         any
 }{
-	{http.MethodPost, "/api/v1/credential-requests/rec1/approve"},
-	{http.MethodPost, "/api/v1/credential-requests/rec1/deny"},
-	{http.MethodPost, "/api/v1/credential-requests/rec1/dismiss"},
-	{http.MethodPost, "/api/v1/credential-requests/machine-lookup"},
-	{http.MethodGet, "/api/v1/credential-grants"},
-	{http.MethodPost, "/api/v1/credential-grants/grant1/revoke"},
-	{http.MethodGet, "/api/v1/machine-logins"},
-	{http.MethodPost, "/api/v1/machine-logins/cred1/revoke"},
-	{http.MethodGet, "/api/v1/signins"},
-	{http.MethodPost, "/api/v1/signins/signin1/revoke"},
+	{http.MethodPost, "/api/v1/credential-requests/rec1/approve", nil},
+	{http.MethodPost, "/api/v1/credential-requests/rec1/deny", nil},
+	{http.MethodPost, "/api/v1/credential-requests/rec1/dismiss", nil},
+	{http.MethodPost, "/api/v1/credential-requests/machine-lookup", nil},
+	{http.MethodGet, "/api/v1/credential-grants", nil},
+	{http.MethodPost, "/api/v1/credential-grants/grant1/revoke", nil},
+	{http.MethodGet, "/api/v1/machine-logins", nil},
+	{http.MethodPost, "/api/v1/machine-logins/cred1/revoke", nil},
+	{http.MethodGet, "/api/v1/signins", nil},
+	{http.MethodPost, "/api/v1/signins/signin1/revoke", nil},
+	{http.MethodGet, "/api/v2/credential-requests", nil},
+	{http.MethodPut, "/api/v2/credential-requests/rec1/state", map[string]any{"state": "approved", "code": "ABCD-1234"}},
+	{http.MethodPut, "/api/v2/credential-requests/rec1/state", map[string]any{"state": "dismissed"}},
+	{http.MethodPost, "/api/v2/machine-login-lookups", map[string]any{"code": "ABCD-1234"}},
+	{http.MethodGet, "/api/v2/credential-grants", nil},
+	{http.MethodDelete, "/api/v2/credential-grants/grant1", nil},
+	{http.MethodGet, "/api/v2/machine-logins", nil},
+	{http.MethodDelete, "/api/v2/machine-logins/cred1", nil},
+	{http.MethodGet, "/api/v2/me/signins", nil},
+	{http.MethodDelete, "/api/v2/me/signins/signin1", nil},
 }
 
 func TestCredentialRoutesAnswerFeatureOffWithNilClient(t *testing.T) {
 	handler := newCredentialTestHandler(t, "")
 	for _, route := range featureOffRoutes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
-			response := dispatchRequest(t, handler, route.method, route.path, map[string]any{}, "alice")
+			body := route.body
+			if body == nil {
+				body = map[string]any{}
+			}
+			response := dispatchRequest(t, handler, route.method, route.path, body, "alice")
 			if response.Code != http.StatusNotFound {
 				t.Fatalf("status = %d, want 404: %s", response.Code, response.Body.String())
 			}
-			body := decodeBody[struct {
+			answer := decodeBody[struct {
 				Code string `json:"code"`
 			}](t, response)
-			if body.Code != "FEATURE_OFF" {
-				t.Fatalf("code = %q, want FEATURE_OFF", body.Code)
+			if answer.Code != "FEATURE_OFF" {
+				t.Fatalf("code = %q, want FEATURE_OFF", answer.Code)
 			}
 		})
 	}

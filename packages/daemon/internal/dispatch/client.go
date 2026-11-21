@@ -18,19 +18,31 @@ import (
 
 const requestTimeout = 10 * time.Second
 
+// unstampedRelease is the release the client names when its caller names none: a build linked
+// with neither a release nor a revision (cmd/legion's dispatchRelease), and a test.
+const unstampedRelease = "(devel)"
+
 // HTTPClient calls Dispatch's native /api/v1 routes with the daemon's bearer token.
 type HTTPClient struct {
 	baseURL    string
 	token      string
+	userAgent  string
 	timeout    time.Duration
 	httpClient *http.Client
 }
 
 // New creates a client for one Dispatch server. The token is sent only as a bearer header.
-func New(baseURL, token string) *HTTPClient {
+// Every request names the daemon and release, the build it runs, in its User-Agent
+// (`legion-daemon/<release>`), so Dispatch's access log tells the daemon's calls from every
+// other client's; a caller that names no release sends `legion-daemon/(devel)`.
+func New(baseURL, token, release string) *HTTPClient {
+	if release == "" {
+		release = unstampedRelease
+	}
 	return &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		token:      token,
+		userAgent:  "legion-daemon/" + release,
 		timeout:    requestTimeout,
 		httpClient: &http.Client{},
 	}
@@ -507,6 +519,7 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("User-Agent", c.userAgent)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

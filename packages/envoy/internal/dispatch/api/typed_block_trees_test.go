@@ -39,10 +39,10 @@ func wholeBlockContent(issueKey, tail string) string {
 		strings.Repeat("Then **ship** it. ", 30) + tail
 }
 
-// wordsOfWholeBlock is blockWords of wholeBlockContent ending on tail: no link text, no
-// reference.
+// wordsOfWholeBlock is blockWords of wholeBlockContent ending on tail: the link's text without
+// its target (R10 of dispatch://INFRA-4071/spec), and no reference.
 func wordsOfWholeBlock(tail string) string {
-	return "Read and first. " + strings.Repeat("Then ship it. ", 30) + tail
+	return "Read the deploy guide and first. " + strings.Repeat("Then ship it. ", 30) + tail
 }
 
 // requireWholeBlockTree fails unless tree is the display tree of wholeBlockContent ending on
@@ -159,7 +159,7 @@ func TestTheCoverageReadCarriesARequirementsContentWhole(t *testing.T) {
 
 	coverage := decodeBody[model.IssueCoverage](t, treesRequest(t, handler, target, true))
 	if got := requirementOf(t, coverage, "r1").Text; got != wordsOfWholeBlock(wholeBlockTail) {
-		t.Errorf("r1's text = %q, want the words it always answered, %q", got, wordsOfWholeBlock(wholeBlockTail))
+		t.Errorf("r1's text = %q, want its words, the link's text kept and its target dropped, %q", got, wordsOfWholeBlock(wholeBlockTail))
 	}
 	for _, id := range []string{"r1", "r3", "r4", "r5"} {
 		member := referenceTargetOf(t, handler, "dispatch://"+issue.Key+"/spec#b-"+id)
@@ -184,7 +184,7 @@ func TestTheResultsReadCarriesAChecksContentWhole(t *testing.T) {
 
 	read := decodeBody[issueResults](t, treesRequest(t, handler, target, true))
 	if got := checkOf(t, read, "k1").Text; got != wordsOfWholeBlock(wholeBlockTail) {
-		t.Errorf("k1's text = %q, want the words it always answered, %q", got, wordsOfWholeBlock(wholeBlockTail))
+		t.Errorf("k1's text = %q, want its words, the link's text kept and its target dropped, %q", got, wordsOfWholeBlock(wholeBlockTail))
 	}
 }
 

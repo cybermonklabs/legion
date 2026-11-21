@@ -5,11 +5,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"sort"
@@ -119,7 +122,7 @@ func withThrowawayToolRoutes(t *testing.T, tool string, rows ...goingToolRoute) 
 // unchanged — and every row an entry names is a write of the table the server mounts.
 func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
-	catalogue, err := buildGoingCatalogue(routes)
+	catalogue, err := buildGoingCatalogue(routes, apiV1)
 	if err != nil {
 		t.Fatalf("build the catalogue of the served table: %v", err)
 	}
@@ -133,7 +136,7 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 	for _, spec := range contracts.DispatchTools {
 		specs[spec.Name] = spec
 	}
-	mutating := mutatingRoutes(routes)
+	mutating := mutatingRoutes(routes, apiV1)
 	held := map[string]bool{}
 	for _, action := range actions {
 		if held[action.Action] {
@@ -169,7 +172,7 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 			Method: http.MethodPost, Pattern: "/api/v1/widgets/{id}/paint",
 			Path: map[string]string{"id": "widget"},
 		})
-		_, err := buildGoingCatalogue(routes)
+		_, err := buildGoingCatalogue(routes, apiV1)
 		if err == nil || !strings.Contains(err.Error(), "dispatch_whoami: POST /api/v1/widgets/{id}/paint is no row of the route table") {
 			t.Fatalf("the build answered %v, want the row named as no row of the table", err)
 		}
@@ -179,7 +182,7 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 		withThrowawayToolRoutes(t, "dispatch_whoami", goingToolRoute{
 			Method: http.MethodGet, Pattern: "/api/v1/projects", Path: map[string]string{},
 		})
-		_, err := buildGoingCatalogue(routes)
+		_, err := buildGoingCatalogue(routes, apiV1)
 		if err == nil || !strings.Contains(err.Error(), "dispatch_whoami: GET /api/v1/projects is no write of the route table") {
 			t.Fatalf("the build answered %v, want the row named as no write", err)
 		}
@@ -189,7 +192,7 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 		withThrowawayToolRoutes(t, "dispatch_paint_widget", goingToolRoute{
 			Method: http.MethodPost, Pattern: "/api/v1/projects", Path: map[string]string{},
 		})
-		_, err := buildGoingCatalogue(routes)
+		_, err := buildGoingCatalogue(routes, apiV1)
 		if err == nil || !strings.Contains(err.Error(), "dispatch_paint_widget: no dispatch tool of that name") {
 			t.Fatalf("the build answered %v, want the tool name refused", err)
 		}
@@ -200,7 +203,7 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/claim",
 			Path: map[string]string{"key": "issue"},
 		})
-		_, err := buildGoingCatalogue(routes)
+		_, err := buildGoingCatalogue(routes, apiV1)
 		if err == nil || !strings.Contains(err.Error(), `dispatch_whoami: {key} is bound to "issue", which is no argument of the tool`) {
 			t.Fatalf("the build answered %v, want the binding refused", err)
 		}
@@ -220,7 +223,7 @@ func TestTheMutatingRoutesNoToolSpecNames(t *testing.T) {
 		}
 	}
 	gap := make([]string, 0, len(routes))
-	for name := range mutatingRoutes(routes) {
+	for name := range mutatingRoutes(routes, apiV1) {
 		if !performed[name] {
 			gap = append(gap, name)
 		}
@@ -235,7 +238,7 @@ func TestTheMutatingRoutesNoToolSpecNames(t *testing.T) {
 // TestEveryGoingActionAcceptsItsExampleAndRefusesAMissingArgument: each entry's schema accepts
 // the call the tool spec carries, and refuses that call with any one required argument left out.
 func TestEveryGoingActionAcceptsItsExampleAndRefusesAMissingArgument(t *testing.T) {
-	catalogue, err := buildGoingCatalogue((&server{}).routes())
+	catalogue, err := buildGoingCatalogue((&server{}).routes(), apiV1)
 	if err != nil {
 		t.Fatalf("build the catalogue: %v", err)
 	}
@@ -392,7 +395,7 @@ func TestAGoingRelationOutsideBothEdgeFamiliesFails(t *testing.T) {
 		Method: http.MethodPost, Pattern: "/api/v1/projects", Path: map[string]string{},
 		Relations: []string{"mentions", "reminds_of"},
 	})
-	_, err := buildGoingCatalogue((&server{}).routes())
+	_, err := buildGoingCatalogue((&server{}).routes(), apiV1)
 	if err == nil || !strings.Contains(err.Error(), `relation "reminds_of" is neither a structural edge kind`) {
 		t.Fatalf("the build answered %v, want the relation in neither family named", err)
 	}
@@ -401,29 +404,221 @@ func TestAGoingRelationOutsideBothEdgeFamiliesFails(t *testing.T) {
 	}
 }
 
-// TestTheGoingCatalogueIsMountedOnTheServedTable: the server builds its catalogue from the table
-// it mounts, so the route serves what the tests above check rather than a copy built elsewhere.
+// TestTheGoingCatalogueIsMountedOnTheServedTable: the server builds each catalogue from the table
+// it mounts, so each route serves what the tests above check rather than a copy built elsewhere:
+// GET /api/v1/going/catalogue the /api/v1 rows, and GET /api/v2/going-actions, read whole by
+// default, the /api/v2 rows with each state route's fixed body.
 func TestTheGoingCatalogueIsMountedOnTheServedTable(t *testing.T) {
 	handler := newTestHandler(t)
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/going/catalogue", nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET the catalogue: status=%d body=%s", response.Code, response.Body.String())
+	t.Run("v1", func(t *testing.T) {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/going/catalogue", nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET the catalogue: status=%d body=%s", response.Code, response.Body.String())
+		}
+		body := decodeBody[goingCatalogueBody](t, response)
+		if body.Total != len(body.Actions) || body.Total != len(goingToolRoutes) {
+			t.Fatalf("the catalogue served %d of %d actions, want the %d tool specs that write", len(body.Actions), body.Total, len(goingToolRoutes))
+		}
+		for _, action := range body.Actions {
+			if action.Action != "dispatch_issue" {
+				continue
+			}
+			if !strings.HasPrefix(action.Description, "Create a native Dispatch issue") {
+				t.Fatalf("the issue create's description is %q, want the tool spec's own", action.Description)
+			}
+			if len(action.Routes) != 1 || action.Routes[0].Method != http.MethodPost || action.Routes[0].Pattern != "/api/v1/issues" {
+				t.Fatalf("the issue create names the routes %v", action.Routes)
+			}
+			return
+		}
+		t.Fatalf("the served catalogue holds no issue create: %d actions", len(body.Actions))
+	})
+	t.Run("v2", func(t *testing.T) {
+		response := dispatchRequest(t, handler, http.MethodGet, goingActionsPath, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET the catalogue: status=%d body=%s", response.Code, response.Body.String())
+		}
+		body := decodeBody[page[goingActionV2]](t, response)
+		if body.Total != len(body.Items) || body.Total != len(goingToolRoutesV2) || body.Limit != body.Total || body.Offset != 0 {
+			t.Fatalf("the catalogue served %d of %d actions at limit %d, want every one of the %d tool specs that write on one page",
+				len(body.Items), body.Total, body.Limit, len(goingToolRoutesV2))
+		}
+		actions := map[string]goingActionV2{}
+		for _, action := range body.Items {
+			actions[action.Action] = action
+		}
+		if routes := actions["dispatch_issue"].Routes; len(routes) != 1 || routes[0].Method != http.MethodPost ||
+			routes[0].Pattern != "/api/v2/issues" || routes[0].Body != nil {
+			t.Fatalf("the issue create names the routes %+v, want POST /api/v2/issues with no fixed body", routes)
+		}
+		resolve := actions["dispatch_resolve_ask"].Routes
+		if len(resolve) != 2 || resolve[0].Method != http.MethodPut || resolve[0].Pattern != "/api/v2/asks/{id}/state" ||
+			resolve[1].Method != http.MethodPut || resolve[1].Pattern != "/api/v2/asks/{id}/state" ||
+			!reflect.DeepEqual(resolve[0].Body, map[string]any{"state": "resolved"}) ||
+			!reflect.DeepEqual(resolve[1].Body, map[string]any{"state": "retracted"}) {
+			t.Fatalf("the ask resolve names the routes %+v, want PUT /api/v2/asks/{id}/state carrying state resolved, then retracted", resolve)
+		}
+	})
+}
+
+// TestTheV2GoingTableIsTheSuccessorsOfTheV1Table: each tool's /api/v2 rows are the routes that
+// answer its /api/v1 rows under /api/v2 (each v1 row's Successor), no more and no fewer, so the two
+// catalogues offer the same actions on the same objects; the /api/v2 catalogue builds on the served
+// table, and a /api/v2 row naming a route of /api/v1, or fixing a body member the tool takes as an
+// argument, fails the build.
+func TestTheV2GoingTableIsTheSuccessorsOfTheV1Table(t *testing.T) {
+	served := &server{}
+	routes := served.routes()
+	successors := map[string]string{}
+	for _, row := range served.v1Rows() {
+		successors[row.Method+" "+row.Pattern] = row.Successor.Method + " /api/v2" + row.Successor.Pattern
 	}
-	body := decodeBody[goingCatalogueBody](t, response)
-	if body.Total != len(body.Actions) || body.Total != len(goingToolRoutes) {
-		t.Fatalf("the catalogue served %d of %d actions, want the %d tool specs that write", len(body.Actions), body.Total, len(goingToolRoutes))
+	if len(goingToolRoutesV2) != len(goingToolRoutes) {
+		t.Fatalf("the /api/v2 table names %d tools, the /api/v1 table %d", len(goingToolRoutesV2), len(goingToolRoutes))
 	}
-	for _, action := range body.Actions {
-		if action.Action != "dispatch_issue" {
+	for tool, rows := range goingToolRoutes {
+		var want, got []string
+		for _, row := range rows {
+			next, named := successors[row.Method+" "+row.Pattern]
+			if !named {
+				t.Fatalf("%s: %s %s is no v1 row", tool, row.Method, row.Pattern)
+			}
+			if !slices.Contains(want, next) {
+				want = append(want, next)
+			}
+		}
+		for _, row := range goingToolRoutesV2[tool] {
+			if name := row.Method + " " + row.Pattern; !slices.Contains(got, name) {
+				got = append(got, name)
+			}
+		}
+		sort.Strings(want)
+		sort.Strings(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s names the /api/v2 rows %v, want the successors of its /api/v1 rows %v", tool, got, want)
+		}
+	}
+	if _, err := buildGoingCatalogue(routes, apiV2); err != nil {
+		t.Fatalf("build the /api/v2 catalogue of the served table: %v", err)
+	}
+
+	t.Run("a v2 row naming a route of /api/v1 fails the build", func(t *testing.T) {
+		goingToolRoutesV2["dispatch_whoami"] = []goingToolRoute{{Method: http.MethodPost, Pattern: "/api/v1/projects", Path: map[string]string{}}}
+		t.Cleanup(func() { delete(goingToolRoutesV2, "dispatch_whoami") })
+		_, err := buildGoingCatalogue(routes, apiV2)
+		if err == nil || !strings.Contains(err.Error(), "dispatch_whoami: POST /api/v1/projects is no row of the route table") {
+			t.Fatalf("the build answered %v, want the v1 row named as no row of the /api/v2 table", err)
+		}
+	})
+	t.Run("a fixed body member the tool takes as an argument fails the build", func(t *testing.T) {
+		goingToolRoutesV2["dispatch_search"] = []goingToolRoute{{
+			Method: http.MethodPost, Pattern: "/api/v2/projects", Path: map[string]string{}, Body: map[string]any{"query": "fixed"},
+		}}
+		t.Cleanup(func() { delete(goingToolRoutesV2, "dispatch_search") })
+		_, err := buildGoingCatalogue(routes, apiV2)
+		if err == nil || !strings.Contains(err.Error(), `fixes the body member "query", which is an argument of the tool`) {
+			t.Fatalf("the build answered %v, want the fixed member refused", err)
+		}
+	})
+}
+
+// handlerDoer performs a caller's request against a handler as a person at a browser, recording
+// the body each request sent.
+type handlerDoer struct {
+	handler http.Handler
+	login   string
+	sent    []map[string]any
+}
+
+func (d *handlerDoer) Do(request *http.Request) (*http.Response, error) {
+	data, err := io.ReadAll(request.Body)
+	if err != nil {
+		return nil, err
+	}
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		return nil, err
+	}
+	d.sent = append(d.sent, body)
+	request.Body = io.NopCloser(bytes.NewReader(data))
+	request.Header.Set("X-Dispatch-User", d.login)
+	response := httptest.NewRecorder()
+	d.handler.ServeHTTP(response, request)
+	answer := response.Result()
+	answer.Request = request
+	return answer, nil
+}
+
+// TestTheV2ClaimFollowAndResolveRunThroughTheCallerAgainstV2: the /api/v2 catalogue's claim and
+// follow actions, both their rows, and the ask resolve with its fixed state, performed by
+// GoingCaller against /api/v2 of a running server, each send the row's method to the path its
+// arguments fill, are answered the status the route answers, and send no body member their route
+// does not declare: the argument that picks the row stays out, and the state is the row's own.
+func TestTheV2ClaimFollowAndResolveRunThroughTheCallerAgainstV2(t *testing.T) {
+	tour := newRouteTour(t)
+	issue := tour.issue(t)
+	ask := tour.ask(t, issue)
+	doer := &handlerDoer{handler: tour.handler, login: "alice"}
+	caller := GoingCaller{Catalogue: tour.served.goingV2, BaseURL: "https://dispatch.invalid", Session: tourRecipient, Doer: doer}
+	for _, call := range []struct {
+		action    string
+		arguments map[string]any
+		route     string
+		path      string
+		status    int
+	}{
+		{"dispatch_claim", map[string]any{"issue": issue.Key}, "PUT /api/v2/issues/{key}/claim", "/api/v2/issues/" + issue.Key + "/claim", http.StatusOK},
+		{"dispatch_claim", map[string]any{"issue": issue.Key, "release": true}, "DELETE /api/v2/issues/{key}/claim", "/api/v2/issues/" + issue.Key + "/claim", http.StatusOK},
+		{"dispatch_follow", map[string]any{"ask": ask, "action": "follow"}, "PUT /api/v2/asks/{id}/followers/{session_id}",
+			"/api/v2/asks/" + ask + "/followers/" + tourRecipient, http.StatusOK},
+		{"dispatch_follow", map[string]any{"ask": ask, "action": "unfollow"}, "DELETE /api/v2/asks/{id}/followers/{session_id}",
+			"/api/v2/asks/" + ask + "/followers/" + tourRecipient, http.StatusNoContent},
+		{"dispatch_resolve_ask", map[string]any{"ask": ask, "kind": "retracted", "reason": "The tour has its answer elsewhere."},
+			"PUT /api/v2/asks/{id}/state", "/api/v2/asks/" + ask + "/state", http.StatusOK},
+	} {
+		method, pattern, _ := strings.Cut(call.route, " ")
+		route := tour.requireMounted(t, method, strings.TrimPrefix(pattern, "/api/v2"))
+		response, err := caller.Do(t.Context(), call.action, call.arguments)
+		if err != nil {
+			t.Fatalf("%s %v: %v", call.action, call.arguments, err)
+		}
+		answer, _ := io.ReadAll(response.Body)
+		if sent := response.Request.Method + " " + response.Request.URL.Path; response.StatusCode != call.status ||
+			sent != route.Method+" "+call.path {
+			t.Fatalf("%s %v: %s answered %d %s, want %s %s answered %d", call.action, call.arguments, sent, response.StatusCode, answer,
+				route.Method, call.path, call.status)
+		}
+		declared := jsonMembersOf(route.Body)
+		for member := range doer.sent[len(doer.sent)-1] {
+			if !declared[member] {
+				t.Errorf("%s %v sent the member %q, which %s does not declare", call.action, call.arguments, member, call.route)
+			}
+		}
+	}
+	var kind string
+	if err := tour.database.Pool.QueryRow(t.Context(), `select resolution->>'kind' from asks where id = $1`, ask).Scan(&kind); err != nil {
+		t.Fatalf("read the ask: %v", err)
+	}
+	if kind != "retracted" {
+		t.Fatalf("the ask's resolution is %q, want retracted by the resolve sent with kind retracted", kind)
+	}
+}
+
+// jsonMembersOf is every top-level JSON member a route's body declares, over its type or each of
+// its union's arms, an embedded struct's members included (membersDeclaredBy).
+func jsonMembersOf(body requestBody) map[string]bool {
+	members := map[string]bool{}
+	types := []any{body.Type}
+	for _, arm := range body.Arms {
+		types = append(types, arm)
+	}
+	for _, value := range types {
+		if value == nil {
 			continue
 		}
-		if !strings.HasPrefix(action.Description, "Create a native Dispatch issue") {
-			t.Fatalf("the issue create's description is %q, want the tool spec's own", action.Description)
+		for name := range membersDeclaredBy(reflect.TypeOf(value)) {
+			members[name] = true
 		}
-		if len(action.Routes) != 1 || action.Routes[0].Method != http.MethodPost || action.Routes[0].Pattern != "/api/v1/issues" {
-			t.Fatalf("the issue create names the routes %v", action.Routes)
-		}
-		return
 	}
-	t.Fatalf("the served catalogue holds no issue create: %d actions", len(body.Actions))
+	return members
 }

@@ -1,0 +1,208 @@
+# The frozen list of the routes /api/v1 alone serves: every row of v1Rows (routes_table.go), one
+# `METHOD path` a line, sorted by path then method as testdata/routes.txt is. Each names its
+# /api/v2 route in its Successor; every route added after /api/v2 began is served in both
+# versions by one declaration (a routeRow), so TestAV1OnlyRowOutsideTheFrozenListFails refuses a
+# row /api/v1 alone serves that this list does not hold, and a line no row of v1Rows is.
+#
+# It holds the 184 rows of c8a44f97's testdata/routes.txt that are no rows of the INFRA-979 tree
+# (v2Infra979Rows: those five are served in both versions), and each row another pull request
+# merged into main before /api/v2's change merged. Such a row is added here at the forward merge
+# that brings it, with its successor and its route-map entry in the same commit, and ends in a
+# ` # ` note naming that pull request: it is outside the bound of 137 /api/v2 routes for the rows
+# of c8a44f97 (TestEveryV1RowNamesItsV2Route).
+GET /api/v1
+GET /api/v1/agents
+GET /api/v1/agents/{session_id}/answers
+POST /api/v1/agents/{session_id}/artifacts
+GET /api/v1/agents/{session_id}/artifacts/{slug}
+GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}
+GET /api/v1/agents/{session_id}/messages
+POST /api/v1/agents/{session_id}/messages
+DELETE /api/v1/artifacts/{id}
+GET /api/v1/artifacts/{id}
+PATCH /api/v1/artifacts/{id}
+POST /api/v1/artifacts/{id}/approval-requests
+GET /api/v1/artifacts/{id}/asks
+POST /api/v1/artifacts/{id}/asks
+GET /api/v1/artifacts/{id}/blocks
+GET /api/v1/artifacts/{id}/blocks/{block_id}
+POST /api/v1/artifacts/{id}/blocks/{block_id}/keep
+GET /api/v1/artifacts/{id}/comments
+POST /api/v1/artifacts/{id}/comments
+POST /api/v1/artifacts/{id}/edits
+GET /api/v1/artifacts/{id}/events
+POST /api/v1/artifacts/{id}/plan-reviews
+POST /api/v1/artifacts/{id}/rebuild
+GET /api/v1/artifacts/{id}/references
+GET /api/v1/artifacts/{id}/reviews
+POST /api/v1/artifacts/{id}/reviews
+GET /api/v1/artifacts/{id}/subscribers
+DELETE /api/v1/artifacts/{id}/subscribers/{session_id}
+GET /api/v1/artifacts/{id}/text
+POST /api/v1/artifacts/{id}/versions
+GET /api/v1/artifacts/{id}/versions/{number}
+POST /api/v1/artifacts/{id}/versions/{number}/reviews
+GET /api/v1/asks/open
+GET /api/v1/asks/{id}
+PATCH /api/v1/asks/{id}
+POST /api/v1/asks/{id}/answer
+PUT /api/v1/asks/{id}/asked-of
+POST /api/v1/asks/{id}/decline
+GET /api/v1/asks/{id}/followers
+DELETE /api/v1/asks/{id}/followers/{session_id}
+PUT /api/v1/asks/{id}/followers/{session_id}
+POST /api/v1/asks/{id}/resolve
+GET /api/v1/block-links
+GET /api/v1/broadcasts
+POST /api/v1/broadcasts
+GET /api/v1/broadcasts/{id}
+GET /api/v1/ci-reconcile/passes
+GET /api/v1/comments/{id}
+PATCH /api/v1/comments/{id}
+POST /api/v1/comments/{id}/accept
+GET /api/v1/comments/{id}/blocks
+POST /api/v1/comments/{id}/deliveries
+POST /api/v1/comments/{id}/reject
+POST /api/v1/comments/{id}/reopen
+POST /api/v1/comments/{id}/reply
+POST /api/v1/comments/{id}/resolve
+GET /api/v1/credential-grants
+POST /api/v1/credential-grants/{id}/revoke
+GET /api/v1/credential-requests
+POST /api/v1/credential-requests/machine-lookup
+POST /api/v1/credential-requests/{id}/approve
+POST /api/v1/credential-requests/{id}/deny
+POST /api/v1/credential-requests/{id}/dismiss # #4374, an expired credential request stays in the Inbox until dismissed
+GET /api/v1/credentials/capabilities
+GET /api/v1/dashboard/builds
+GET /api/v1/delivery/runs/{id}
+POST /api/v1/delivery/session-groups
+DELETE /api/v1/delivery/session-groups/{id}
+PATCH /api/v1/delivery/session-groups/{id}
+GET /api/v1/events/log
+GET /api/v1/github/app-installation/{owner}/{repo}
+GET /api/v1/going/capability
+GET /api/v1/going/catalogue
+POST /api/v1/going/requests
+GET /api/v1/going/requests/{id}/stream
+GET /api/v1/handoffs/{id}
+GET /api/v1/inbox
+GET /api/v1/issues
+POST /api/v1/issues
+GET /api/v1/issues/resolve
+GET /api/v1/issues/{key}
+PATCH /api/v1/issues/{key}
+GET /api/v1/issues/{key}/artifacts
+POST /api/v1/issues/{key}/artifacts
+GET /api/v1/issues/{key}/artifacts/{slug}
+GET /api/v1/issues/{key}/artifacts/{slug}/blocks
+POST /api/v1/issues/{key}/artifacts/{slug}/edits
+GET /api/v1/issues/{key}/artifacts/{slug}/text
+POST /api/v1/issues/{key}/artifacts/{slug}/versions
+GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number}
+GET /api/v1/issues/{key}/asks
+POST /api/v1/issues/{key}/asks
+DELETE /api/v1/issues/{key}/claim
+POST /api/v1/issues/{key}/claim
+GET /api/v1/issues/{key}/collaborators
+GET /api/v1/issues/{key}/comments
+POST /api/v1/issues/{key}/comments
+GET /api/v1/issues/{key}/coverage
+GET /api/v1/issues/{key}/decisions
+PUT /api/v1/issues/{key}/design-gates
+GET /api/v1/issues/{key}/events
+GET /api/v1/issues/{key}/handoffs
+POST /api/v1/issues/{key}/handoffs/{phase}
+GET /api/v1/issues/{key}/handoffs/{phase}/latest
+GET /api/v1/issues/{key}/messages
+POST /api/v1/issues/{key}/messages
+GET /api/v1/issues/{key}/messages/{id}
+PUT /api/v1/issues/{key}/plans/{id} # #4488, each retro rates the plan its issue ran
+GET /api/v1/issues/{key}/references
+GET /api/v1/issues/{key}/results
+POST /api/v1/issues/{key}/results
+POST /api/v1/issues/{key}/results/dry-run # #4517, the pull-request body line a result prints keeps only plain words, with no issue key or private host
+GET /api/v1/issues/{key}/role-holders # #4228, merged after c8a44f97
+PUT /api/v1/issues/{key}/role-holders # #4228, merged after c8a44f97
+GET /api/v1/issues/{key}/steps # #4400, record each phase of an issue as a step
+PUT /api/v1/issues/{key}/steps/{id} # #4400, record each phase of an issue as a step
+PUT /api/v1/issues/{key}/steps/{id}/rating # #4488, each retro rates the plan its issue ran
+GET /api/v1/issues/{key}/subscribers
+DELETE /api/v1/issues/{key}/subscribers/{session_id}
+GET /api/v1/issues/{key}/summary
+GET /api/v1/limits
+GET /api/v1/machine-logins
+POST /api/v1/machine-logins/{id}/revoke
+POST /api/v1/markdown/round-trip
+GET /api/v1/me/agent-tokens
+POST /api/v1/me/agent-tokens
+DELETE /api/v1/me/agent-tokens/{id}
+PATCH /api/v1/me/agent-tokens/{id}
+GET /api/v1/me/agents/state
+PUT /api/v1/me/agents/{session_id}/state
+GET /api/v1/me/answers
+DELETE /api/v1/me/asks/{id}/snooze
+PUT /api/v1/me/asks/{id}/snooze
+GET /api/v1/me/documents/{id}/read
+PUT /api/v1/me/documents/{id}/read
+POST /api/v1/me/inbox/dismiss
+POST /api/v1/me/inbox/read
+PUT /api/v1/me/issues/{key}/state
+GET /api/v1/me/replies
+GET /api/v1/me/state
+PUT /api/v1/me/threads/{id}/read
+GET /api/v1/messages/{id}
+GET /api/v1/messages/{id}/blocks
+POST /api/v1/messages/{id}/deliveries
+POST /api/v1/messages/{id}/deliveries/{attempt}/accept
+POST /api/v1/messages/{id}/reply
+GET /api/v1/near-copy-checks # #4103, merged after c8a44f97
+GET /api/v1/near-copy-checks/{id} # #4103, merged after c8a44f97
+GET /api/v1/priorities
+POST /api/v1/priorities
+DELETE /api/v1/priorities/{id}
+PATCH /api/v1/priorities/{id}
+GET /api/v1/priorities/{id}/history
+GET /api/v1/projects
+POST /api/v1/projects
+GET /api/v1/projects/{key}/architecture
+GET /api/v1/projects/{key}/architecture-source
+POST /api/v1/projects/{key}/architecture-source/sync
+GET /api/v1/projects/{key}/architecture-sources
+POST /api/v1/projects/{key}/architecture-sources/sync
+DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}
+PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}
+POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync
+GET /api/v1/projects/{key}/artifacts
+POST /api/v1/projects/{key}/artifacts
+GET /api/v1/projects/{key}/artifacts/{slug}
+GET /api/v1/projects/{key}/artifacts/{slug}/blocks
+POST /api/v1/projects/{key}/artifacts/{slug}/edits
+GET /api/v1/projects/{key}/artifacts/{slug}/summary
+GET /api/v1/projects/{key}/artifacts/{slug}/text
+POST /api/v1/projects/{key}/artifacts/{slug}/versions
+GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number}
+PUT /api/v1/projects/{key}/default-assignee
+PUT /api/v1/projects/{key}/gated-steps
+GET /api/v1/projects/{key}/plans # #4488, each retro rates the plan its issue ran
+GET /api/v1/projects/{key}/related
+POST /api/v1/projects/{key}/related
+GET /api/v1/reference-targets # #4178, the reads the new issue page needs
+GET /api/v1/references
+GET /api/v1/references/questions
+GET /api/v1/related-checks
+POST /api/v1/results/{id}/retract
+GET /api/v1/schema/blocks
+GET /api/v1/search
+GET /api/v1/search/coverage
+GET /api/v1/search/results
+GET /api/v1/settings/architecture-sources
+GET /api/v1/settings/new-issue
+GET /api/v1/settings/project-default-assignees
+GET /api/v1/settings/repo-projects
+DELETE /api/v1/settings/repo-projects/{owner}/{repo}
+PUT /api/v1/settings/repo-projects/{owner}/{repo}
+GET /api/v1/signins
+POST /api/v1/signins/{id}/revoke
+GET /api/v1/users
+GET /api/v1/whoami

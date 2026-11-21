@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -55,6 +56,33 @@ func settledVersionNumber(ctx context.Context, q queryer, artifactID string) (in
 		return 0, err
 	}
 	return *latest, nil
+}
+
+// versionOfText is the version a read of a document's text names beside markdown, the text it
+// answers: the newest version whose stored markdown is markdown, with unsettled false, so a review
+// naming it approves the text the reader got. The read renders its text first and asks this after,
+// and a version another session writes in between stores other text, so it is not named over the
+// text read before it, however late this runs. Where no version stores markdown - a room holding
+// edits no version holds yet - it is the newest version, with unsettled true: the text holds edits
+// after it; nil, unsettled true, for a document with no version. The match is the markdown alone:
+// the document token is no part of it, since the token covers inline marks the markdown leaves
+// out, and a comment anchored after a version changes the document's token and writes no version,
+// which would leave that version's own text matching no version. Postgres compares two texts'
+// lengths before it reads them, so a version of another length costs the match no read of its
+// markdown. One statement, so the newest version and the match are of one snapshot.
+func versionOfText(ctx context.Context, q queryer, artifactID, markdown string) (version *int, unsettled bool, err error) {
+	var matched, latest *int
+	if err := q.QueryRow(ctx, `
+		select
+			(select number from artifact_versions where artifact_id = $1 and markdown = $2 order by number desc limit 1),
+			(select max(number) from artifact_versions where artifact_id = $1)
+	`, artifactID, markdown).Scan(&matched, &latest); err != nil {
+		return nil, false, fmt.Errorf("read the version of the document's text: %w", err)
+	}
+	if matched != nil {
+		return matched, false, nil
+	}
+	return latest, true, nil
 }
 
 // loadReviews is every review of the document, newest first in the order its events committed
@@ -265,7 +293,7 @@ func (s *server) attachApproval(ctx context.Context, q queryer, artifact *model.
 // reviewFromAnswer maps an approval ask's answer to a review state and reason.
 func reviewFromAnswer(selected []string, text *string) (string, *string, error) {
 	if len(selected) != 1 {
-		return "", nil, errorf(http.StatusBadRequest, "INVALID_ANSWER", "an approval ask takes exactly one of Approve or Request changes")
+		return "", nil, errorf(apicode.InvalidAnswer, "an approval ask takes exactly one of Approve or Request changes")
 	}
 	reason := (*string)(nil)
 	if text != nil && strings.TrimSpace(*text) != "" {
@@ -277,11 +305,11 @@ func reviewFromAnswer(selected []string, text *string) (string, *string, error) 
 		return "approved", reason, nil
 	case docs.ApprovalOptionRequestChanges:
 		if reason == nil {
-			return "", nil, errorf(http.StatusBadRequest, "REASON_REQUIRED", "requesting changes requires a reason")
+			return "", nil, errorf(apicode.ReasonRequired, "requesting changes requires a reason")
 		}
 		return "changes_requested", reason, nil
 	default:
-		return "", nil, errorf(http.StatusBadRequest, "INVALID_ANSWER", "selected answers must be ask option labels")
+		return "", nil, errorf(apicode.InvalidAnswer, "selected answers must be ask option labels")
 	}
 }
 
@@ -292,12 +320,12 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reviews, err := s.loadReviews(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
@@ -342,7 +370,7 @@ func (s *server) createArtifactVersionReview(w http.ResponseWriter, r *http.Requ
 func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, versioned bool) {
 	var input createArtifactReviewInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.actingPerson(w, r)
@@ -353,14 +381,23 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	if versioned {
 		number, err := strconv.Atoi(r.PathValue("number"))
 		if err != nil || number < 1 {
-			writeError(w, "INVALID_REVIEW", http.StatusBadRequest, "version must name a version of the document, 1 or more")
+			writeError(w, r, apicode.InvalidReview, "version must name a version of the document, 1 or more")
 			return
 		}
 		readVersion = &number
 	}
+	s.recordReview(w, r, actor, input, readVersion)
+}
+
+// recordReview records actor's review of the document {id} names, as input asks, once the route
+// has read its body and the version the caller read where it names one (readVersion, nil for
+// none): the work of both /api/v1 review routes (recordArtifactReview) and of POST
+// /api/v2/artifacts/{id}/reviews (createArtifactReviewV2), whose body names the version. It
+// answers the review 201.
+func (s *server) recordReview(w http.ResponseWriter, r *http.Request, actor model.Actor, input createArtifactReviewInput, readVersion *int) {
 	state := strings.TrimSpace(input.State)
 	if state != "approved" && state != "changes_requested" {
-		writeError(w, "INVALID_REVIEW", http.StatusBadRequest, "state must be approved or changes_requested")
+		writeError(w, r, apicode.InvalidReview, "state must be approved or changes_requested")
 		return
 	}
 	var reason *string
@@ -369,20 +406,20 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		reason = &trimmed
 	}
 	if state == "changes_requested" && reason == nil {
-		writeError(w, "REASON_REQUIRED", http.StatusBadRequest, "requesting changes requires a reason")
+		writeError(w, r, apicode.ReasonRequired, "requesting changes requires a reason")
 		return
 	}
 	// Before the open approval request is looked for: a reason answers that request, so it
 	// rides the ask.answered event, and the review it writes carries it too.
 	if reason != nil {
 		if length := itemblocks.Units16(*reason); length > contracts.DispatchEventBodyMax {
-			capExceeded(w, "reason", length, contracts.DispatchEventBodyMax)
+			capExceeded(w, r, "reason", length, contracts.DispatchEventBodyMax)
 			return
 		}
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -392,31 +429,31 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	defer ledger.Discard()
 	artifact, err := s.loadArtifact(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "only documents are reviewed")
+		writeError(w, r, apicode.NotDocument, "only documents are reviewed")
 		return
 	}
 	if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	version, err := settledVersionNumber(r.Context(), tx, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if version == 0 {
-		writeError(w, "NO_VERSION", http.StatusConflict, "the document has no settled version to review yet")
+		writeError(w, r, apicode.NoVersion, "the document has no settled version to review yet")
 		return
 	}
 	// A moved approval ask names this latest version and is answered by this review, keeping its
 	// thread as the review's provenance.
 	open, err := docs.OpenApprovalAsk(r.Context(), tx, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Without a request open, this reviews the document at its latest settled version; with one,
@@ -436,12 +473,12 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	// request names for it, which the caller does not name and this check does not compare.
 	entry := approval.Document(artifact.ID)
 	if entry == nil {
-		s.writeHandlerError(w, fmt.Errorf("the open approval request %s names no entry for the document %s it was found by", open.ID, artifact.ID))
+		s.writeHandlerError(w, r, fmt.Errorf("the open approval request %s names no entry for the document %s it was found by", open.ID, artifact.ID))
 		return
 	}
 	recorded := entry.Version
 	if readVersion != nil && *readVersion != recorded {
-		writeError(w, "REVIEW_VERSION_MOVED", http.StatusConflict, fmt.Sprintf(
+		writeError(w, r, apicode.ReviewVersionMoved, fmt.Sprintf(
 			"the review would record version %d of %s, not version %d: read version %d and review it",
 			recorded, artifact.Name, *readVersion, recorded))
 		return
@@ -455,7 +492,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		}
 		answered, answeredEvents, err := s.closeAskTx(documentCtx, tx, ledger, open.ID, actor, answerTransition(actor, []string{selected}, reason, answerOptions{}))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		appended = append(appended, answeredEvents...)
@@ -463,12 +500,12 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	}
 	review, reviewEvents, err := s.queueApprovalReviews(documentCtx, tx, ledger, artifact, approval.Documents, state, actor, reason, askID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	appended = append(appended, reviewEvents...)
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), appendedEvents(appended...)...)
@@ -563,12 +600,28 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
+	if status, answer, ok := s.requestApproval(w, r, input, nil); ok {
+		WriteJSON(w, status, answer)
+	}
+}
+
+// requestApproval opens, renews or hands back the approval request of the document {id} names,
+// as input asks, once the route has read its body: the work of POST
+// /api/v1/artifacts/{id}/approval-requests (requestArtifactApproval) and of its /api/v2 route
+// (requestArtifactApprovalV2). It answers the status to answer, 201 for a request it wrote and 200
+// for one that stood, and the answer as /api/v1 writes it, for the route to write in the shape of
+// its version; readBack reads on the write's transaction, before it commits, what the /api/v2 route
+// answers of the request's ask. A request it refuses it answers itself, and reports answered
+// false: each bare return below is such a refusal.
+func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input approvalRequestInput, readBack askReadBack) (
+	status int, answer approvalRequestResponse, answered bool,
+) {
 	// A summary is trimmed and must hold text, so "" below means the request named none.
 	var summary string
 	if input.Summary != nil {
 		summary = strings.TrimSpace(*input.Summary)
 		if summary == "" {
-			writeError(w, "SUMMARY_INPUT", http.StatusBadRequest, "summary is blank; say what the human is approving, or omit it")
+			writeError(w, r, apicode.SummaryInput, "summary is blank; say what the human is approving, or omit it")
 			return
 		}
 	}
@@ -578,20 +631,20 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The coverage is read before the transaction opens, and a read that fails leaves the
 	// request recorded all the same (approvalCoverage).
 	coverage, coverageUnread, err := s.approvalCoverage(r.Context(), pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -603,11 +656,11 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	defer ledger.Discard()
 	artifact, err := s.loadArtifact(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "only documents can be approved")
+		writeError(w, r, apicode.NotDocument, "only documents can be approved")
 		return
 	}
 	// A closed owner takes no approval of any kind, a plan review included (createArtifactPlanReview),
@@ -615,12 +668,13 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	// blocker rather than a command that would be refused too.
 	owner := ownerForArtifact(artifact)
 	if err := s.requireOpenOwner(r.Context(), tx, owner); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if documentPlays(artifact, model.ArtifactRolePlan) {
-		writeError(w, "PLAN_APPROVED_BY_REVIEW", http.StatusConflict,
-			"a plan is approved by its plan review, not by a person: record it with dispatch plan-approve (POST /api/v1/artifacts/{id}/plan-reviews)")
+		writeError(w, r, apicode.PlanApprovedByReview, fmt.Sprintf(
+			"a plan is approved by its plan review, not by a person: record it with dispatch plan-approve (POST %s/artifacts/{id}/plan-reviews)",
+			versionPrefix(requestAPIVersion(r))))
 		return
 	}
 	// include_verification asks the human to approve the issue's spec and its Verification
@@ -628,17 +682,17 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	// document itself it would name that document twice, and the one answer would write two
 	// reviews and two artifact.approved events on it.
 	if input.IncludeVerification && !isSpecDocument(artifact) {
-		writeError(w, "NOT_SPEC_DOCUMENT", http.StatusConflict,
+		writeError(w, r, apicode.NotSpecDocument,
 			"include_verification asks for the issue's spec and its Verification document together, and this document is not the issue's spec: request approval of it alone")
 		return
 	}
 	version, err := settledVersionNumber(r.Context(), tx, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if version == 0 {
-		writeError(w, "NO_VERSION", http.StatusConflict, "the document has no settled version to approve yet")
+		writeError(w, r, apicode.NoVersion, "the document has no settled version to approve yet")
 		return
 	}
 	documents := []model.AskApprovalDocument{
@@ -647,7 +701,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if input.IncludeVerification {
 		verification, err := s.verificationDocumentFor(r.Context(), tx, *artifact.IssueKey)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		documents = append(documents, verification)
@@ -655,12 +709,12 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	// A supplied summary is validated even when this request opens no row.
 	question, err := approvalQuestion(documents, summary)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
 	if err := s.attachApproval(r.Context(), tx, &artifact); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// An approval of every document this request names, each at its current version, needs no
@@ -668,17 +722,16 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	settled, err := docs.NamedDocumentsApproved(r.Context(), tx, documents, artifact.ID,
 		artifact.Approval != nil && artifact.Approval.State == "approved")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if settled {
 		// The approval's reason is read where it stands: this answer carries what the request
 		// has just written, and the write beside it stored the tree.
-		WriteJSON(w, http.StatusOK, approvalRequestResponse{Ask: nil, ArtifactID: artifact.ID, Version: version,
+		return http.StatusOK, approvalRequestResponse{Ask: nil, ArtifactID: artifact.ID, Version: version,
 			Approval:       newArtifactApprovalRead(*artifact.Approval, trees),
 			Coverage:       coverage,
-			CoverageUnread: coverageUnread})
-		return
+			CoverageUnread: coverageUnread}, true
 	}
 	// The open request is found by any document this one names, not by the named document
 	// alone: a request already open over the issue's Verification document is renewed to cover
@@ -690,11 +743,11 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	open, err := docs.OpenApprovalAskForDocuments(r.Context(), tx, named)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	// The person this request reaches, named on the answer as the question create names it
-	// (createAskFor in api/asks.go): read here in the read phase, under the owner's lock, through
+	// The person this request reaches, named on the answer as the /api/v1 question create names
+	// it (openAsk in api/asks.go): read here in the read phase, under the owner's lock, through
 	// the rule every read of that person shares, before the insert or the hand-back below is
 	// queued. Neither moves the person: a new request is handed to nobody, and a hand-back
 	// leaves the open request's asked_of, issue and document as they stand. The settled branch
@@ -706,7 +759,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	waitingOnPerson, err := askWaitingOnPerson(r.Context(), tx, reached, askedOf)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	ask := open
@@ -714,12 +767,12 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	var opened *model.Event
 	if open != nil {
 		if appended, err = s.renewApprovalAsk(documentCtx, tx, ledger, open, actor, documents, summary); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	} else {
 		if ask, opened, err = s.openApprovalAsk(documentCtx, tx, ledger, owner, artifact, actor, documents, question); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		appended = []*model.Event{opened}
@@ -728,8 +781,10 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	ask.WaitingOnPerson = waitingOnPerson
 	// The approval as this request leaves it: awaiting, waiting on whom the request now waits on.
 	approval := approvalAfterRequest(*artifact.Approval, *ask)
-	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+	// A /api/v2 route reads its answer between the write phase, which writes the request it
+	// reads, and the commit (askReadBack).
+	if err := readBack.commit(r.Context(), ledger, ask.ID); err != nil {
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if opened != nil {
@@ -747,7 +802,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	// (ask.follower_added, renewApprovalAsk). A rewording is never this route's only write: the
 	// hand-back that follows it appends an event of its own, which is published here, while the
 	// rewording's goes to the ledger and is published by Commit.
-	status := http.StatusOK
+	status = http.StatusOK
 	for _, event := range appended {
 		if event.Type != "ask.follower_added" {
 			status = http.StatusCreated
@@ -762,10 +817,10 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	// The reason, like the question above, is read where it stands: the write beside it stored
 	// its tree. The approval is the one this request's queued writes leave
 	// (approvalAfterRequest), which no read of this transaction could answer from the rows.
-	WriteJSON(w, status, approvalRequestResponse{Ask: askAnswer, ArtifactID: artifact.ID, Version: version,
+	return status, approvalRequestResponse{Ask: askAnswer, ArtifactID: artifact.ID, Version: version,
 		Approval:       newArtifactApprovalRead(approval, trees),
 		Coverage:       coverage,
-		CoverageUnread: coverageUnread})
+		CoverageUnread: coverageUnread}, true
 }
 
 // approvalAfterRequest is the document's approval as this request's writes leave it: the approval
@@ -927,7 +982,7 @@ func (s *server) renewApprovalAsk(
 	var appended []*model.Event
 	switch {
 	case waitingOn == "human" && changed:
-		return nil, errorf(http.StatusConflict, "APPROVAL_WAITS_ON_HUMAN",
+		return nil, errorf(apicode.ApprovalWaitsOnHuman,
 			"the approval request already waits on the human, asking %q, and a different summary or another document would rewrite the card they are reading, so nothing was changed; raise what changed with the human first, in the request's thread or as a decision block in the document, and once they have agreed to every point in it and a reply or a new version leaves the request waiting on you, hand it back with the new summary",
 			open.Question)
 	case waitingOn == "agent":
@@ -1077,14 +1132,14 @@ func (s *server) verificationDocumentFor(ctx context.Context, q queryer, issueKe
 		return model.AskApprovalDocument{}, fmt.Errorf("read the issue's Verification document: %w", err)
 	}
 	if !held {
-		return model.AskApprovalDocument{}, errorf(http.StatusConflict, "NO_VERIFICATION_DOCUMENT", "%s", noVerification)
+		return model.AskApprovalDocument{}, errorf(apicode.NoVerificationDocument, "%s", noVerification)
 	}
 	version, err := settledVersionNumber(ctx, q, verification.ID)
 	if err != nil {
 		return model.AskApprovalDocument{}, err
 	}
 	if version == 0 {
-		return model.AskApprovalDocument{}, errorf(http.StatusConflict, "NO_VERSION",
+		return model.AskApprovalDocument{}, errorf(apicode.NoVersion,
 			"%s has no settled version to approve yet", verification.Name)
 	}
 	return model.AskApprovalDocument{
@@ -1103,20 +1158,27 @@ type createPlanReviewInput struct {
 // A plan is approved by the plan review an agent runs over it, never by a person: this records
 // that approval of one plan version, as a person's answer records theirs, so every read of the
 // document shows it approved and a later version makes it stale. It is refused on any document
-// whose role is not plan, the issue's spec included.
+// whose role is not plan, the issue's spec included, and on a plan stored as a file or an image.
 func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request) {
 	var input createPlanReviewInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.recordPlanReview(w, r, input)
+}
+
+// recordPlanReview records the plan review input names of the plan {id} names, once the route has
+// read its body: the work of POST /api/v1/artifacts/{id}/plan-reviews (createArtifactPlanReview)
+// and of its /api/v2 route (createArtifactPlanReviewV2). It answers the review 201.
+func (s *server) recordPlanReview(w http.ResponseWriter, r *http.Request, input createPlanReviewInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -1126,29 +1188,43 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 	defer ledger.Discard()
 	artifact, err := s.loadArtifact(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !documentPlays(artifact, model.ArtifactRolePlan) {
-		writeError(w, "NOT_PLAN_DOCUMENT", http.StatusConflict,
+		writeError(w, r, apicode.NotPlanDocument,
 			"only an issue's plan document (plan.md) is approved by a plan review")
 		return
 	}
+	// A file or an image stored under the plan's slug reads as the plan to documentPlays, which
+	// asks the slug of a row with no role, but it is no document: its versions hold no text a
+	// plan review read, and the coverage read finds no plan task in it. A Markdown upload under
+	// its name makes it the plan (storeArtifact).
+	if artifact.Kind != "doc" {
+		stored := "a file"
+		if artifact.Kind == "image" {
+			stored = "an image"
+		}
+		writeError(w, r, apicode.NotPlanDocument, fmt.Sprintf(
+			"%s (%s) is %s, not a document: a plan review approves a version of a document; upload its Markdown under %s to make it one",
+			artifact.Name, artifact.Slug, stored, artifact.Name))
+		return
+	}
 	if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	latest, err := settledVersionNumber(r.Context(), tx, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if latest == 0 {
-		writeError(w, "NO_VERSION", http.StatusConflict, "the document has no settled version to review yet")
+		writeError(w, r, apicode.NoVersion, "the document has no settled version to review yet")
 		return
 	}
 	if input.Version < 1 || input.Version > latest {
-		writeError(w, "INVALID_REVIEW", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidReview,
 			fmt.Sprintf("version must name a settled version of the plan, between 1 and %d", latest))
 		return
 	}
@@ -1160,11 +1236,11 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 				review, *reviewEvent = written, event
 			})
 	}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), *reviewEvent)

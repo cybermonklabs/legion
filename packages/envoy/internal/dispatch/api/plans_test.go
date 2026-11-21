@@ -17,6 +17,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -286,13 +288,13 @@ func TestARatingBelongsToARetroRecordAlone(t *testing.T) {
 	rating := map[string]any{"rating": 3, "rating_reason": "The plan was late."}
 
 	step := putRating(t, handler, issue, uuid.NewString(), withFields(stepIdentity(daemon), rating))
-	expectRefusal(t, "a rating of a step", step, http.StatusBadRequest, codeStepInput, "rating")
+	expectRefusal(t, "a rating of a step", step, http.StatusBadRequest, contracts.StepInputCode, "rating")
 	merge := putRating(t, handler, issue, uuid.NewString(), withFields(retroIdentity(daemon, 1), withFields(rating, map[string]any{"kind": "merge"})))
-	expectRefusal(t, "a rating of a merge", merge, http.StatusBadRequest, codeStepInput, "rating")
+	expectRefusal(t, "a rating of a merge", merge, http.StatusBadRequest, contracts.StepInputCode, "rating")
 	held := uuid.NewString()
 	putStepOK(t, handler, issue, held, implementerStart(daemon))
 	asRetro := putRating(t, handler, issue, held, withFields(retroIdentity(daemon, 1), rating))
-	expectRefusal(t, "a rating of a record held as a step", asRetro, http.StatusBadRequest, codeStepInput, "rating")
+	expectRefusal(t, "a rating of a record held as a step", asRetro, http.StatusBadRequest, contracts.StepInputCode, "rating")
 
 	unrated := uuid.NewString()
 	written := putStepOK(t, handler, issue, unrated, withFields(retroIdentity(daemon, 1), withFields(rating, map[string]any{"started_at": stepStart})))
@@ -334,10 +336,10 @@ func TestARatingIsTheDaemonsAlone(t *testing.T) {
 	for _, id := range []string{retro, uuid.NewString()} {
 		path := "/api/v1/issues/" + issue + "/steps/" + id + "/rating"
 		person := dispatchRequest(t, handler, http.MethodPut, path, withFields(retroIdentity(nil, 1), rating), "alice")
-		expectRefusal(t, "a person's rating of "+id, person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		expectRefusal(t, "a person's rating of "+id, person, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 		for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
 			refused := putRating(t, handler, issue, id, withFields(retroIdentity(map[string]any{"kind": "session", "id": session}, 1), rating))
-			expectRefusal(t, "a rating of "+id+" as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+			expectRefusal(t, "a rating of "+id+" as "+session, refused, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 		}
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].ID != retro || steps[0].Rating != nil || steps[0].RatingReason != nil {
@@ -373,9 +375,9 @@ func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 	rating := withFields(retroIdentity(nil, 1), map[string]any{"rating": 2, "rating_reason": "The plan was thin."})
 
 	planned := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/plans/"+plan, defaultPlanBody(nil, 1), writer)
-	expectRefusal(t, "a plan of a person named "+writer, planned, http.StatusForbidden, codeStepWriter, writer, issue)
+	expectRefusal(t, "a plan of a person named "+writer, planned, http.StatusForbidden, contracts.StepWriterCode, writer, issue)
 	rated := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/steps/"+retro+"/rating", rating, writer)
-	expectRefusal(t, "a rating of a person named "+writer, rated, http.StatusForbidden, codeStepWriter, writer, issue)
+	expectRefusal(t, "a rating of a person named "+writer, rated, http.StatusForbidden, contracts.StepWriterCode, writer, issue)
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused writes left %d records, want none", len(steps))
 	}
@@ -435,7 +437,7 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 		before := workflowRows(t, rig.database)
 		refused := rig.serve(caller.presenting(t, http.MethodPut, write.path, elsewhere, write.body))
 		expectRefusal(t, "a "+write.name+" over a credential of "+brokerTestProject, refused, http.StatusForbidden,
-			codeProjectScope, brokerTestProject, "OTH")
+			apicode.ProjectScope.V1Name(), brokerTestProject, "OTH")
 		if after := workflowRows(t, rig.database); after != before {
 			t.Fatalf("the refused %s took the workflow store from %d rows to %d, want none written", write.name, before, after)
 		}
@@ -478,14 +480,14 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 		{"a reason of 2,001 code points", withFields(retro, map[string]any{"rating": 3, "rating_reason": strings.Repeat("é", 2001)}), "rating_reason holds 2001 characters"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			expectRefusal(t, row.name, putRating(t, handler, issue, uuid.NewString(), row.body), http.StatusBadRequest, codeStepInput, row.refusal)
+			expectRefusal(t, row.name, putRating(t, handler, issue, uuid.NewString(), row.body), http.StatusBadRequest, contracts.StepInputCode, row.refusal)
 		})
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused ratings left %d records, want none", len(steps))
 	}
 	fromAgent := putRating(t, handler, issue, uuid.NewString(), withFields(retroIdentity(map[string]any{"kind": "session", "id": "ses_agent"}, 1), map[string]any{"rating_reason": "Why."}))
-	expectRefusal(t, "no rating from an agent's session", fromAgent, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+	expectRefusal(t, "no rating from an agent's session", fromAgent, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 	missing := putRating(t, handler, "LEG-999", uuid.NewString(), noReason)
 	expectRefusal(t, "a rating with no reason of LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
 	if written := putStepOK(t, handler, issue, uuid.NewString(), retro); written.Kind != "retro" || written.Rating != nil {
@@ -844,9 +846,9 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 	path := "/api/v1/issues/" + issue + "/plans/"
 
 	person := dispatchRequest(t, handler, http.MethodPut, path+uuid.NewString(), defaultPlanBody(nil, 1), "alice")
-	expectRefusal(t, "a person's plan", person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+	expectRefusal(t, "a person's plan", person, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 	other := putPlanRecord(t, handler, issue, uuid.NewString(), defaultPlanBody(map[string]any{"kind": "session", "id": legionDaemonSessionPrefix + "OTHER"}, 1))
-	expectRefusal(t, "another daemon's plan", other, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG")
+	expectRefusal(t, "another daemon's plan", other, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG")
 	missing := putPlanRecord(t, handler, "LEG-999", uuid.NewString(), defaultPlanBody(daemonSessionOf("LEG"), 1))
 	expectRefusal(t, "a plan of LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
 
@@ -898,14 +900,14 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			response := putPlanRecord(t, handler, issues[0], uuid.NewString(), row.body)
-			expectRefusal(t, row.name, response, http.StatusBadRequest, codePlanInput, row.field)
+			expectRefusal(t, row.name, response, http.StatusBadRequest, contracts.PlanInputCode, row.field)
 		})
 	}
 	over := strings.Repeat("r", 33)
 	for _, step := range []string{over, over + ":owner"} {
 		response := putPlanRecord(t, handler, issues[0], uuid.NewString(),
 			withFields(plan, map[string]any{"tasks": []map[string]any{{"id": "default", "steps": []string{"planner", step}}}}))
-		expectRefusal(t, "a step of "+step, response, http.StatusBadRequest, codePlanInput, strconv.Quote(step), strconv.Quote(over))
+		expectRefusal(t, "a step of "+step, response, http.StatusBadRequest, contracts.PlanInputCode, strconv.Quote(step), strconv.Quote(over))
 	}
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/issues/"+issues[0]+"/plans/"+uuid.NewString(),
 		bytes.NewReader([]byte(`{"actor":{"kind":"session","id":"legion-daemon:LEG"},"generation":1,"source":"default","tasks":"planner"}`)))
@@ -921,7 +923,7 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	id := uuid.NewString()
 	putPlanRecordOK(t, handler, issues[0], id, plan)
 	other := putPlanRecord(t, handler, issues[1], id, plan)
-	expectRefusal(t, "the plan id of "+issues[0]+" on "+issues[1], other, http.StatusConflict, codePlanOtherIssue, issues[0], issues[1])
+	expectRefusal(t, "the plan id of "+issues[0]+" on "+issues[1], other, http.StatusConflict, contracts.PlanOtherIssueCode, issues[0], issues[1])
 }
 
 // A plan's source is one of the store's sources, which two enum tags restate for the schema: the
@@ -935,8 +937,8 @@ func TestThePlanSourceTagsNameTheStoresSources(t *testing.T) {
 		withFields(defaultPlanBody(daemonSessionOf("LEG"), 1), map[string]any{"source": "no-such-source"}))
 	refusal := decodeBody[refusalAnswer](t, response)
 	_, listed, named := strings.Cut(refusal.Error, "one of ")
-	if response.Code != http.StatusBadRequest || refusal.Code != codePlanInput || !named {
-		t.Fatalf("an unknown source: status=%d body=%s, want 400 %s naming the sources", response.Code, response.Body.String(), codePlanInput)
+	if response.Code != http.StatusBadRequest || refusal.Code != contracts.PlanInputCode || !named {
+		t.Fatalf("an unknown source: status=%d body=%s, want 400 %s naming the sources", response.Code, response.Body.String(), contracts.PlanInputCode)
 	}
 	sources := strings.Split(listed, ", ")
 	for _, shape := range []reflect.Type{reflect.TypeFor[planRecordInput](), reflect.TypeFor[model.PlanRecord]()} {

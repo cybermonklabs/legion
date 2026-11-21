@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -23,25 +23,25 @@ func (s *server) resolveAnchor(ctx context.Context, tx pgx.Tx, owner owner, inpu
 	}
 	artifactRef := strings.TrimSpace(input.Artifact)
 	if artifactRef == "" {
-		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor artifact is required")
+		return nil, "", nil, errorf(apicode.InvalidAnchor, "anchor artifact is required")
 	}
 	quotePath := input.Quote != nil && input.MarkID == nil
 	markPath := input.Quote == nil && input.MarkID != nil && input.Occurrence == nil
 	if !quotePath && !markPath {
-		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor must provide quote with optional occurrence or mark_id")
+		return nil, "", nil, errorf(apicode.InvalidAnchor, "anchor must provide quote with optional occurrence or mark_id")
 	}
 	if input.Quote != nil && *input.Quote == "" {
-		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor quote must not be empty")
+		return nil, "", nil, errorf(apicode.InvalidAnchor, "anchor quote must not be empty")
 	}
 	if input.MarkID != nil && strings.TrimSpace(*input.MarkID) == "" {
-		return nil, "", nil, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor mark_id must not be empty")
+		return nil, "", nil, errorf(apicode.InvalidAnchor, "anchor mark_id must not be empty")
 	}
 	artifact, err := s.loadAnchorArtifact(ctx, tx, owner, artifactRef)
 	if err != nil {
 		return nil, "", nil, err
 	}
 	if artifact.Kind != "doc" {
-		return nil, "", nil, errorf(http.StatusBadRequest, "NOT_DOCUMENT", "anchors require a document artifact")
+		return nil, "", nil, errorf(apicode.NotDocument, "anchors require a document artifact")
 	}
 
 	anchor := model.Anchor{ArtifactID: artifact.ID}
@@ -106,7 +106,7 @@ func (s *server) loadAnchorArtifact(ctx context.Context, tx pgx.Tx, owner owner,
 		`, *owner.IssueKey, artifactRef))
 	}
 	if owner.ArtifactID == nil {
-		return model.Artifact{}, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return model.Artifact{}, errorf(apicode.OwnerInvalid, "owner requires exactly one issue or artifact")
 	}
 	artifact, err := scanArtifact(tx.QueryRow(ctx, `
 		select `+artifactColumns+`
@@ -117,7 +117,7 @@ func (s *server) loadAnchorArtifact(ctx context.Context, tx pgx.Tx, owner owner,
 		return model.Artifact{}, err
 	}
 	if artifactRef != artifact.ID && artifactRef != artifact.Slug {
-		return model.Artifact{}, errorf(http.StatusBadRequest, "INVALID_ANCHOR", "anchor must target this document")
+		return model.Artifact{}, errorf(apicode.InvalidAnchor, "anchor must target this document")
 	}
 	return artifact, nil
 }
@@ -142,18 +142,19 @@ func (s *server) anchorBlock(ctx context.Context, anchor *model.Anchor) (model.A
 	if err == nil {
 		return model.AnchorPosition{AnchorBlock: &path}, nil
 	}
-	code := documentErrorCode(err)
+	code, documentError := documentErrorCode(err)
 	switch {
 	case ctx.Err() != nil:
 		return model.AnchorPosition{}, ctx.Err()
-	case code == codeDocServiceUnavailable:
+	case documentError && code == apicode.DocServiceUnavailable:
 	case errors.Is(err, pmdoc.ErrTargetNotFound):
 		return model.AnchorPosition{}, nil
-	case code == codeDocSchema, code == codeDocNewerContent, code == codeDocumentUnloadable:
+	case documentError:
 	default:
-		code = codeInternal
+		code = apicode.InternalError
 	}
+	// The field names the code by the name both versions give every document code and INTERNAL.
 	slog.Warn("dispatch: answer a comment or ask read without its anchor's block position",
-		"artifact", anchor.ArtifactID, "block", *anchor.BlockID, "anchor_block_error", code, "error", err)
-	return model.AnchorPosition{AnchorBlockError: code}, nil
+		"artifact", anchor.ArtifactID, "block", *anchor.BlockID, "anchor_block_error", code.V1Name(), "error", err)
+	return model.AnchorPosition{AnchorBlockError: code.V1Name()}, nil
 }

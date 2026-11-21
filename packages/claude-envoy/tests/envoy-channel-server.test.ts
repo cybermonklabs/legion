@@ -3,8 +3,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
 import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
+import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
-import { sessionConfigFile } from "@legion/envoy-client/session-settings"
+import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
@@ -19,16 +20,20 @@ import codexHooks from "../codex/hooks/hooks.json" with { type: "json" }
 import codexPkg from "../codex/package.json" with { type: "json" }
 import type { ModCallArguments, ModCallName, ModCallResults } from "../hooks/mod-protocol"
 import pkg from "../package.json" with { type: "json" }
+import { CODEX_ENVOY_USER_AGENT, codexDispatchClient } from "../src/codex/codex-server"
 import {
   type ChannelNotifier,
   type ChannelSession,
+  CLAUDE_ENVOY_USER_AGENT,
   createChannelDelivery,
   MCP_SERVER_INFO,
+  postDispatchReply,
   sessionCapabilities,
   startChannelSession,
 } from "../src/envoy-channel-server"
 import { modSession } from "../src/mod-session"
 import { roleStateFile, SessionIdentity } from "../src/session-identity"
+import type { UserTurnRouterOptions } from "../src/user-turn-router"
 import {
   deliveryRaw,
   directSubject,
@@ -82,6 +87,7 @@ test("writes each Envoy envelope into the session as the rendered card that name
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    userAgent: CLAUDE_ENVOY_USER_AGENT,
   })
 
   await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })
@@ -235,6 +241,7 @@ test("a card Envoy sends again is handed over again, under the one event id", as
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    userAgent: CLAUDE_ENVOY_USER_AGENT,
   })
 
   expect(await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })).toBe(true)
@@ -333,6 +340,7 @@ test("retains only the latest fifty inbound envelope summaries", async () => {
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    userAgent: CLAUDE_ENVOY_USER_AGENT,
   })
 
   for (let index = 0; index < 51; index += 1) {
@@ -373,6 +381,7 @@ test("every frame with no event id is listed, since none of them names a copy", 
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    userAgent: CLAUDE_ENVOY_USER_AGENT,
   })
   const unnamed = (summary: string): string =>
     JSON.stringify({
@@ -667,6 +676,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      userAgent: CLAUDE_ENVOY_USER_AGENT,
     })
 
     // Not handed to Claude Code, so the forwarder releases its claim: Dispatch records the attempt
@@ -686,6 +696,166 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       },
     ])
   } finally {
+    server?.stop(true)
+  }
+})
+
+test("names itself to Dispatch as claude-envoy and its release", async () => {
+  let server: Server<undefined> | undefined
+  try {
+    const sent: Array<{ readonly path: string; readonly userAgent: string | null }> = []
+    server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        sent.push({
+          path: new URL(request.url).pathname,
+          userAgent: request.headers.get("user-agent"),
+        })
+        return Response.json({})
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
+    const delivery = createChannelDelivery({
+      identity: new SessionIdentity("ses_claude", process.cwd()),
+      notifier: new FakeNotifier(),
+      configFile: sessionConfigFile("claude", process.env),
+      userAgent: CLAUDE_ENVOY_USER_AGENT,
+    })
+
+    await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })
+
+    expect(sent).toEqual([
+      {
+        path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
+        userAgent: `claude-envoy/${pkg.version}`,
+      },
+    ])
+  } finally {
+    server?.stop(true)
+  }
+})
+
+test("the Codex server names itself to Dispatch as codex-envoy and its release", async () => {
+  let server: Server<undefined> | undefined
+  try {
+    const sent: Array<{ readonly path: string; readonly userAgent: string | null }> = []
+    server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        sent.push({
+          path: new URL(request.url).pathname,
+          userAgent: request.headers.get("user-agent"),
+        })
+        return Response.json({ kind: "user", login: "alice", scopes: [] })
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
+    const configFile = sessionConfigFile("codex", process.env)
+    const active = activeDispatchSettings(
+      sessionDispatchSettings(configFile, process.env, { cwd: process.cwd() }).dispatch,
+    )
+    if (active === null) throw new Error("Dispatch is off for the test's settings")
+
+    // The client the Codex user-turn router reads with, and the reply it posts to a delivery.
+    await codexDispatchClient(active, 5_000).whoami()
+    await postDispatchReply(
+      new SessionIdentity("ses_codex", process.cwd()),
+      configFile,
+      {
+        resource: "message",
+        id: "44444444-4444-4444-8444-444444444444",
+        attempt: 1,
+        mode: "btw",
+        replyPath: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
+        replyFields: {},
+        issueKey: null,
+        body: "A message Codex was not handed.",
+      },
+      { error: "not handed to Codex" },
+      CODEX_ENVOY_USER_AGENT,
+    )
+
+    expect(CODEX_ENVOY_USER_AGENT).toBe(`codex-envoy/${codexPkg.version}`)
+    expect(sent).toEqual([
+      { path: "/api/v1/whoami", userAgent: `codex-envoy/${codexPkg.version}` },
+      {
+        path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
+        userAgent: `codex-envoy/${codexPkg.version}`,
+      },
+    ])
+  } finally {
+    server?.stop(true)
+  }
+})
+
+// The Codex server starts its session with its own User-Agent (codex-server.ts), so a rejected
+// frame of a Codex session is answered as codex-envoy, and so is every reply its router posts
+// (the `reply` the session hands the router); a session started with none answers as this server.
+test("a session answers Dispatch under the User-Agent it was started with", async () => {
+  let server: Server<undefined> | undefined
+  const sessions: ChannelSession[] = []
+  try {
+    const sent: Array<{ readonly path: string; readonly userAgent: string | null }> = []
+    server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        sent.push({
+          path: new URL(request.url).pathname,
+          userAgent: request.headers.get("user-agent"),
+        })
+        return Response.json({})
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
+    for (const [userAgent, want] of [
+      [CODEX_ENVOY_USER_AGENT, `codex-envoy/${codexPkg.version}`],
+      [undefined, `claude-envoy/${pkg.version}`],
+    ] as const) {
+      sent.length = 0
+      const nats = new FakeNats()
+      const replies: UserTurnRouterOptions["reply"][] = []
+      const session = await startChannelSession({
+        ...sessionOptions(new SessionIdentity("ses_claude", process.cwd()), scratchState(), {
+          connection: nats,
+          notifier: new FakeNotifier(),
+          router: (_state, reply) => {
+            replies.push(reply)
+            return { route: async () => false, observe: () => undefined }
+          },
+        }),
+        ...(userAgent === undefined ? {} : { userAgent }),
+      })
+      sessions.push(session)
+
+      relayed(nats, 1, rejectedFrameRaw)
+      await waitFor(async () => nats.repliesOn("_INBOX.1").includes("done"), "the answer")
+      // The answer the router posts to a delivery it took, through the reply the session built.
+      const reply = replies.at(-1)
+      if (reply === undefined) throw new Error("the session built no router")
+      await reply(
+        {
+          resource: "message",
+          id: "66666666-6666-4666-8666-666666666666",
+          attempt: 1,
+          mode: "btw",
+          replyPath: "/api/v1/messages/66666666-6666-4666-8666-666666666666/reply",
+          replyFields: {},
+          issueKey: null,
+          body: "A question the router took.",
+        },
+        { error: "not answered" },
+      )
+
+      expect(sent).toEqual([
+        { path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply", userAgent: want },
+        { path: "/api/v1/messages/66666666-6666-4666-8666-666666666666/reply", userAgent: want },
+      ])
+    }
+  } finally {
+    for (const session of sessions) await session.shutdown()
     server?.stop(true)
   }
 })
@@ -777,6 +947,7 @@ test("answers a malformed targeted comment through its supplied comment reply ad
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      userAgent: CLAUDE_ENVOY_USER_AGENT,
     })
 
     await delivery.enqueue({ subject: directSubject, raw: rejectedCommentFrameRaw })
@@ -805,6 +976,7 @@ test("drops a malformed targeted frame that has no reply address", async () => {
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    userAgent: CLAUDE_ENVOY_USER_AGENT,
   })
 
   await delivery.enqueue({

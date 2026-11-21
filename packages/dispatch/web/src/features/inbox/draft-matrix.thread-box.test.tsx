@@ -256,7 +256,12 @@ async function openColumn(
   const client = commentsClient();
   const reads = [
     spyOn(api, "getArtifact").mockRejectedValue(new Error("no document seeded")),
-    spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "",
+      token: "",
+      version: null,
+      unsettled: true,
+    }),
     // The column reads one field of the issue: whether it is closed.
     spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails),
     // A newer answer is fetched by invalidating every read, the comments too, which a box drawn

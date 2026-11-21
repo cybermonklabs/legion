@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -154,23 +155,23 @@ func TestPriorityNode(t *testing.T) {
 	duplicate := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities", map[string]any{
 		"id": "ship-the-daemon", "title": "Ship it again",
 	}, "alice")
-	if code, text := refusalOf(t, duplicate); duplicate.Code != http.StatusConflict || code != codePriorityExists {
+	if code, text := refusalOf(t, duplicate); duplicate.Code != http.StatusConflict || code != apicode.PriorityExists.V1Name() {
 		t.Fatalf("a create of an id the store holds: status=%d code=%s error=%q, want 409 %s",
-			duplicate.Code, code, text, codePriorityExists)
+			duplicate.Code, code, text, apicode.PriorityExists.V1Name())
 	}
 	blank := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities", map[string]any{
 		"id": "nameless", "title": "   ",
 	}, "alice")
-	if code, text := refusalOf(t, blank); blank.Code != http.StatusBadRequest || code != codePriorityInput {
+	if code, text := refusalOf(t, blank); blank.Code != http.StatusBadRequest || code != apicode.PriorityInput.V1Name() {
 		t.Fatalf("a create with an empty title: status=%d code=%s error=%q, want 400 %s",
-			blank.Code, code, text, codePriorityInput)
+			blank.Code, code, text, apicode.PriorityInput.V1Name())
 	}
 	renamedBlank := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/ship-the-daemon", map[string]any{
 		"title": "  ",
 	}, "alice")
-	if code, text := refusalOf(t, renamedBlank); renamedBlank.Code != http.StatusBadRequest || code != codePriorityInput {
+	if code, text := refusalOf(t, renamedBlank); renamedBlank.Code != http.StatusBadRequest || code != apicode.PriorityInput.V1Name() {
 		t.Fatalf("a rename to an empty title: status=%d code=%s error=%q, want 400 %s",
-			renamedBlank.Code, code, text, codePriorityInput)
+			renamedBlank.Code, code, text, apicode.PriorityInput.V1Name())
 	}
 	// An order write that names no priority: one that names neither neighbour, and one whose
 	// neighbour is an id no priority carries. Each is a move to a place the order does not have.
@@ -179,9 +180,9 @@ func TestPriorityNode(t *testing.T) {
 		"naming no priority it has": {"rank": map[string]any{"before": "no-such-priority"}},
 	} {
 		refused := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/ship-the-daemon", body, "alice")
-		if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != codeRankInput {
+		if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != apicode.RankInput.V1Name() {
 			t.Fatalf("an order write %s: status=%d code=%s error=%q, want 400 %s",
-				name, refused.Code, code, text, codeRankInput)
+				name, refused.Code, code, text, apicode.RankInput.V1Name())
 		}
 	}
 	if got := readTestPriority(t, handler, "ship-the-daemon"); got.Rank != renamed.Rank {
@@ -397,9 +398,9 @@ func TestPriorityIDRefusesTheNoneKeyword(t *testing.T) {
 	} {
 		refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities", body, "alice")
 		code, text := refusalOf(t, refused)
-		if refused.Code != http.StatusBadRequest || code != codePriorityInput {
+		if refused.Code != http.StatusBadRequest || code != apicode.PriorityInput.V1Name() {
 			t.Fatalf("a create whose id is %q, %s: status=%d code=%s error=%q, want 400 %s",
-				noAdvancesFilter, name, refused.Code, code, text, codePriorityInput)
+				noAdvancesFilter, name, refused.Code, code, text, apicode.PriorityInput.V1Name())
 		}
 		if !strings.Contains(text, "advances="+noAdvancesFilter) {
 			t.Fatalf("the refusal of the id %q, %s, says %q, want it to name the filter keyword", noAdvancesFilter, name, text)
@@ -433,9 +434,9 @@ func TestPriorityIDRefusesTheAnyKeyword(t *testing.T) {
 	} {
 		refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities", body, "alice")
 		code, text := refusalOf(t, refused)
-		if refused.Code != http.StatusBadRequest || code != codePriorityInput {
+		if refused.Code != http.StatusBadRequest || code != apicode.PriorityInput.V1Name() {
 			t.Fatalf("a create whose id is %q, %s: status=%d code=%s error=%q, want 400 %s",
-				anyAdvancesFilter, name, refused.Code, code, text, codePriorityInput)
+				anyAdvancesFilter, name, refused.Code, code, text, apicode.PriorityInput.V1Name())
 		}
 		if !strings.Contains(text, "advances="+anyAdvancesFilter) {
 			t.Fatalf("the refusal of the id %q, %s, says %q, want it to name the filter keyword", anyAdvancesFilter, name, text)
@@ -465,8 +466,8 @@ func TestPriorityTitleAndIDAreBounded(t *testing.T) {
 	refuse := func(what string, response *httptest.ResponseRecorder, bound int) {
 		t.Helper()
 		code, text := refusalOf(t, response)
-		if response.Code != http.StatusBadRequest || code != codePriorityInput {
-			t.Fatalf("%s: status=%d code=%s error=%.300q, want 400 %s", what, response.Code, code, text, codePriorityInput)
+		if response.Code != http.StatusBadRequest || code != apicode.PriorityInput.V1Name() {
+			t.Fatalf("%s: status=%d code=%s error=%.300q, want 400 %s", what, response.Code, code, text, apicode.PriorityInput.V1Name())
 		}
 		if !strings.Contains(text, fmt.Sprint(bound)) {
 			t.Fatalf("%s is refused with %.300q, want it to name the bound %d", what, text, bound)
@@ -530,9 +531,9 @@ func refuseScopedCredentials(t *testing.T) {
 		"id": "one-project-only", "title": "One project only",
 	}))
 	code, text := refusalOf(t, refused)
-	if refused.Code != http.StatusForbidden || code != codeProjectScopeDeployment {
+	if refused.Code != http.StatusForbidden || code != apicode.ProjectScopeDeployment.V1Name() {
 		t.Fatalf("a priority write under a project-scoped token: status=%d code=%s error=%q, want 403 %s",
-			refused.Code, code, text, codeProjectScopeDeployment)
+			refused.Code, code, text, apicode.ProjectScopeDeployment.V1Name())
 	}
 	if !strings.Contains(text, brokerTestProject) || !strings.Contains(text, "POST /api/v1/priorities") {
 		t.Fatalf("the refusal %q names neither the project the credential covers nor the route", text)

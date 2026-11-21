@@ -126,7 +126,9 @@ export function storedTextProblem(given: string, stored: string, name: string): 
  * which stores the file and asks this route nothing.
  */
 export function storedTextCheckFailed(error: unknown, name: string): string {
-  const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error)}.`;
+  // A failure whose own message ends its sentence (a transport failure, a gateway's advice) gets no
+  // second stop.
+  const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error).replace(/\.$/, "")}.`;
   if (!dispatchAnswered(error, 413)) {
     return `${failure} Send the upload again once that call is answered.`;
   }

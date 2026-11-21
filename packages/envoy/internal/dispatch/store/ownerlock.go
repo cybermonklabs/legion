@@ -17,7 +17,8 @@ import (
 // module are the owner lock gate's (OwnerLockGateNamespace, "OWNG"), the copy locks'
 // (docs.copiedAsksLockNamespace, "COPY"), the duty leases' (duty.leaseNamespace, "LOOP"), a
 // conditional edit's admission's (docs.conditionalEditQueueLockNamespace, "QUEU"), the API's test
-// hooks' (api.testHookLockNamespace, "HOOK") and the hashtext of a name (the dependency and
+// hooks' (api.testHookLockNamespace, "HOOK"), the API's person marks locks'
+// (api.personMarksLockNamespace, "MARK") and the hashtext of a name (the dependency and
 // repository-mapping locks), none of which is this value, so an owner lock never waits on one of
 // those whatever its owner hashes to. It is exported, with LockKey, so a test reads an owner's lock
 // out of pg_locks by the keys this file takes it with rather than by spelling them again

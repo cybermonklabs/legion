@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -164,9 +165,9 @@ func TestAskAskedOf(t *testing.T) {
 		target := "/api/v1/asks/" + askID + "/asked-of"
 
 		bearer := sessionRequest(t, handler, http.MethodPut, target, map[string]any{"asked_of": "bob"})
-		if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"`+codeScopeRequired+`"`) {
+		if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
 			t.Fatalf("the deployment's shared bearer: status=%d body=%s, want 403 %s",
-				bearer.Code, bearer.Body.String(), codeScopeRequired)
+				bearer.Code, bearer.Body.String(), apicode.OAuthScopeRequired.V1Name())
 		}
 		if anonymous := handAskTo(t, handler, askID, "bob", ""); anonymous.Code != http.StatusUnauthorized {
 			t.Fatalf("an anonymous caller: status=%d body=%s, want 401", anonymous.Code, anonymous.Body.String())

@@ -423,7 +423,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 			close(first.running)
 			<-first.release
 			if first.fails {
-				writeError(w, "BROKEN", http.StatusServiceUnavailable, "the first run failed")
+				WriteJSON(w, http.StatusServiceUnavailable, errorBody{Code: "BROKEN", Error: "the first run failed"})
 				return
 			}
 		}

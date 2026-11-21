@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -60,7 +61,7 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 	at, err := parseOptionalRFC3339(r.URL.Query(), "at", time.Now().UTC())
 	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.InvalidQuery, err.Error())
 		return
 	}
 	at = at.UTC()
@@ -70,7 +71,7 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 	population, err := s.readPipelinePopulation(r.Context(), settings, at)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, deliveryPipelineCompute(settings, population, at, time.Now().UTC()))

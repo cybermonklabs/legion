@@ -303,7 +303,7 @@ func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": stepRecordID})
 	}))
 	t.Cleanup(server.Close)
-	rig.runner.dispatch = dispatch.New(server.URL, "agent-token")
+	rig.runner.dispatch = dispatch.New(server.URL, "agent-token", "")
 
 	const tries = waitWarnAttempts + 1
 	for try := 1; try <= tries; try++ {

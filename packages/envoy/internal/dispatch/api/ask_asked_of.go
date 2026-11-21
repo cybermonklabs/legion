@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -38,34 +39,48 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	}
 	askID, err := parseAskID(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var input askAskedOfInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	if input.AskedOf == "" {
-		writeError(w, "INVALID_ASK", http.StatusBadRequest, "asked_of must be a person's email")
+	answer, ok := s.handAskOn(w, r, actor, askID, input.AskedOf, nil)
+	if !ok {
 		return
+	}
+	WriteJSON(w, http.StatusOK, newShapedAsk(answer, wantsDisplayTrees(r)))
+}
+
+// handAskOn hands the open ask askID to the person named, for actor, once the route has read its
+// body: it writes asks.asked_of and who handed it on and when, appends one ask.asked_of event,
+// and, with no readBack, answers the ask read back under its own locks, which PUT
+// /api/v1/asks/{id}/asked-of (putAskAskedOf) answers. PATCH /api/v2/asks/{id} with asked_of
+// (editAskV2) reads its own answer on the write's transaction (readBack) and is answered the zero
+// ask. It writes a refusal itself and answers false.
+func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.Actor, askID, named string, readBack askReadBack) (model.Ask, bool) {
+	if named == "" {
+		writeError(w, r, apicode.InvalidAsk, "asked_of must be a person's email")
+		return model.Ask{}, false
 	}
 	// Who the ask is handed to, canonicalised and held to having signed in
 	// (400 ASSIGNEE_NOT_ALLOWED), resolved before the transaction opens: allowedLogin reads the
 	// shared pool, which refuses a second connection to a caller already holding one
 	// (store.ErrNestedAcquire), so it cannot run under the transaction below - the reason
-	// editAsk resolves its acting person before it begins. A caller naming nobody who has
+	// rewordAsk resolves its acting person before it begins. A caller naming nobody who has
 	// signed in is therefore told so before the ask is read.
-	askedOf, err := s.allowedLogin(r.Context(), input.AskedOf)
+	askedOf, err := s.allowedLogin(r.Context(), named)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	defer tx.Rollback(r.Context())
 	// The owner's lock, which every writer of an ask takes before it reads the ask's state, so
@@ -74,21 +89,21 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// always open, so a document ask passes.
 	unlockedAsk, err := s.loadAsk(r.Context(), tx, askID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	if err := s.requireOpenOwner(r.Context(), tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	ask, err := s.readAskForTransition(r.Context(), tx, askID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	if ask.State != "open" {
-		writeError(w, "ASK_NOT_OPEN", http.StatusConflict, "only open asks may be handed to another person")
-		return
+		writeError(w, r, apicode.AskNotOpen, "only open asks may be handed to another person")
+		return model.Ask{}, false
 	}
 	// Whom the ask waited on before this write, read under the owner's lock through the
 	// expression every reader of that person shares - so its joins are that expression's own
@@ -104,8 +119,8 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		from asks a`+askedOfPersonJoins+`
 		where a.id = $1
 	`, ask.ID).Scan(&waitedOn, &assignee); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	// Handing an ask to the assignee of its own issue empties the field instead of repeating
 	// them in it: the ask follows its issue again, so a later reassignment carries it along, and
@@ -126,8 +141,8 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		where id = $1
 		returning asked_of_at
 	`, ask.ID, stored, handedOnBy).Scan(&handedOnAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	ask.AskedOf = stored
 	ask.AskedOfBy = &handedOnBy
@@ -144,26 +159,33 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		"ask.asked_of", actor, payload,
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
-	// What the 200 answers: the ask as every other read of it answers, read back under this
+	// What /api/v1's 200 answers: the ask as every other read of it answers, read back under this
 	// transaction's own locks through the columns those reads share (askReadColumns), so it
 	// carries waiting_on and waiting_on_person - which the locked row above carries neither of,
 	// and which a handler setting them by hand would be a second rule to keep in step with
 	// askedOfPersonExpression at every hand-back. It is written as the shaped read every other
 	// ask write answers (display_trees.go), so a caller that sent `Dispatch-Trees: 1` reads the
 	// trees of this ask's texts here as it does from an edit or an answer. The event payload
-	// stays the locked row, which is the shape every ask.* payload has (ask_rows.go).
-	answer, err := s.loadAsk(r.Context(), tx, ask.ID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// stays the locked row, which is the shape every ask.* payload has (ask_rows.go). A /api/v2
+	// route reads its own answer on the same transaction (readBack), and this one is not read.
+	var answer model.Ask
+	if readBack == nil {
+		answer, err = s.loadAsk(r.Context(), tx, ask.ID)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, false
+		}
+	} else if err := readBack.read(r.Context(), tx, ask.ID); err != nil {
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusOK, newShapedAsk(answer, wantsDisplayTrees(r)))
+	return answer, true
 }

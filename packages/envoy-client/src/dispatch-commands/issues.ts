@@ -37,7 +37,13 @@ import {
   optionalStringArray,
   stringArg,
 } from "./context";
-import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
+import {
+  dispatchAnswered,
+  refusalWithCode,
+  unsettledWithAccount,
+  withAccount,
+  writeMayHaveLanded,
+} from "./failures";
 import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { formatCheckResults } from "./render-results";
@@ -302,11 +308,13 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
         );
       }
       // The close's PATCH below follows the same rule: only an answer sent before the reason
-      // could be stored proves it was not posted.
+      // could be stored proves it was not posted. An unsettled post is told in these words alone,
+      // which say what it was.
       const told = writeMayHaveLanded(error)
         ? "the reason may or may not have been posted, and the close was not sent: read the issue's messages before retrying, since retrying this call posts its reason again"
         : "the reason was not posted, so the close was not sent";
       if (error instanceof DispatchServiceError) throw refusalWithCode(error, told);
+      if (error instanceof DispatchWriteUnsettledError) throw unsettledWithAccount(error, told);
       throw withAccount(error, told);
     }
   }
@@ -383,6 +391,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since retrying this call posts its reason again`
       : `${posted} but the issue did not close. Retrying this call posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
     if (error instanceof DispatchServiceError) throw refusalWithCode(error, taken, landed);
+    if (error instanceof DispatchWriteUnsettledError) {
+      throw unsettledWithAccount(error, taken, landed);
+    }
     throw withAccount(error, [taken, landed].filter((clause) => clause !== "").join("; "));
   }
   refuseUnsavedRepository("updated", after, repo);

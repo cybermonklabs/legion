@@ -445,6 +445,7 @@ test("labelsControlName names the labels control as it is drawn", () => {
   const view = draw(
     createElement(IssueLabels, {
       disabled: false,
+      externalLinks: [],
       issueKey: "CORE-1",
       labels: [],
       onSave: async () => undefined,

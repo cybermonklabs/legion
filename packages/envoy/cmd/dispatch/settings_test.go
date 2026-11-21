@@ -1701,6 +1701,40 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("web dist = %q, %v", dir, err)
 			}
 		},
+		"DISPATCH_API_V1_END": func(t *testing.T) {
+			// The instant as time.RFC3339 reads it, its offset kept and whitespace at either end
+			// ignored; unset or empty, /api/v1 has no end.
+			want := time.Date(2027, time.January, 1, 9, 0, 0, 0, time.FixedZone("", 9*60*60))
+			boot := resolveWith(t, map[string]string{"DISPATCH_API_V1_END": " 2027-01-01T09:00:00+09:00 "})
+			if _, offset := boot.APIV1End.Zone(); !boot.APIV1End.Equal(want) || offset != 9*60*60 {
+				t.Errorf("APIV1End = %v (offset %ds), want %v", boot.APIV1End, offset, want)
+			}
+			for _, unset := range []string{"", " "} {
+				if boot := resolveWith(t, map[string]string{"DISPATCH_API_V1_END": unset}); !boot.APIV1End.IsZero() {
+					t.Errorf("DISPATCH_API_V1_END=%q: APIV1End = %v, want no end", unset, boot.APIV1End)
+				}
+			}
+			// A value time.RFC3339 does not read refuses the boot, a date alone and a time with no
+			// offset among them, rather than serve /api/v1 past an end the deployment set.
+			for _, invalid := range []string{"2027-01-01", "2027-01-01T00:00:00", "next year"} {
+				refusedWith(t, map[string]string{"DISPATCH_API_V1_END": invalid}, fmt.Sprintf("DISPATCH_API_V1_END=%q is not an RFC 3339 time", invalid))
+			}
+			// The router main serves holds every /api/v1 path to it: with the end a day ahead an
+			// unknown path's 404 carries Sunset naming it, and with it a day back the path is 410.
+			unknownPathUnder := func(end time.Time) *httptest.ResponseRecorder {
+				boot := resolveWith(t, map[string]string{"DISPATCH_API_V1_END": end.Format(time.RFC3339)})
+				response := httptest.NewRecorder()
+				routerFor(t, boot, routes.AppContextOptions{}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/no-such-route", nil))
+				return response
+			}
+			ahead := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+			if response := unknownPathUnder(ahead); response.Code != http.StatusNotFound || response.Header().Get("Sunset") != ahead.UTC().Format(http.TimeFormat) {
+				t.Errorf("the end a day ahead: GET /api/v1/no-such-route answered %d with Sunset %q, want 404 with %q", response.Code, response.Header().Get("Sunset"), ahead.UTC().Format(http.TimeFormat))
+			}
+			if response := unknownPathUnder(time.Now().Add(-24 * time.Hour)); response.Code != http.StatusGone || errorCode(response) != "API_V1_ENDED" {
+				t.Errorf("the end a day back: GET /api/v1/no-such-route answered %d %s, want 410 API_V1_ENDED", response.Code, response.Body.String())
+			}
+		},
 		"DISPATCH_FILE_STORE_BUCKET": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_FILE_STORE_BUCKET": " example-files-bucket "}); boot.FileStoreBucket != "example-files-bucket" {
 				t.Errorf("FileStoreBucket = %q, want the trimmed bucket name", boot.FileStoreBucket)

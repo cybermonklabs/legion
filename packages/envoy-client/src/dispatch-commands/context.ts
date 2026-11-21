@@ -69,6 +69,9 @@ export interface ExecuteDispatchToolInput {
   /** The wait before each new attempt of a request Dispatch answered with no route
    *  (`DispatchClient`); a test passes one that returns at once. */
   readonly sleep?: Sleep;
+  /** The `User-Agent` the call's requests send (`DispatchClient`): the `dispatch` command names
+   *  itself and the host plugin that ships it (`dispatchCommandUserAgent`). */
+  readonly userAgent?: string;
   readonly exec?: ExecFn;
   /** The topics the session's Envoy subscriptions hold, or null when they cannot be read (Envoy
    *  off, or no answer from its listener); called only by a write that would name its owner as
@@ -303,9 +306,10 @@ export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolR
 /**
  * The context every command starts from, built from the checked call. The client names the
  * configured server in a transport error (`DispatchClient`: its URL by `urlForText`, the failure
- * by `errorClass`), since a session whose Dispatch moved reads that message and nothing else;
- * every link is built on a clean base or printed as its reference (`linkBaseOf`). The client's
- * requests go to the URL as configured.
+ * by `errorClass`), since a session whose Dispatch moved reads that message and nothing else; a
+ * write the failure leaves unsettled names its request and quotes that message whole. Every link
+ * is built on a clean base or printed as its reference (`linkBaseOf`). The client's requests go to
+ * the URL as configured.
  */
 export function sessionContext(
   input: ExecuteDispatchToolInput,
@@ -327,6 +331,7 @@ export function sessionContext(
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,
+        userAgent: input.userAgent,
       }),
   };
 }

@@ -30,7 +30,8 @@ type Leases interface {
 // (docs.copiedAsksLockNamespace, "COPY"), the owner locks' (store.OwnerLockNamespace, "OWNR"),
 // the owner lock gate's (store.OwnerLockGateNamespace, "OWNG"), the test hooks' (the api
 // package's testHookLockNamespace, "HOOK", taken only under
-// DISPATCH_TEST_HOOKS), a conditional edit's admission's
+// DISPATCH_TEST_HOOKS), a person's marks' (the api package's personMarksLockNamespace, "MARK"),
+// a conditional edit's admission's
 // (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
 // lockProjectIssueDependencies), the deployment's own issue dependencies' (api's
 // lockDeploymentIssueDependencies), one repository mapping's write (api's lockRepoProjectWrite)

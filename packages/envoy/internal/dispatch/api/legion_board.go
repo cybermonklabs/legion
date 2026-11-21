@@ -1,7 +1,8 @@
-// legion_board.go serves GET /api/v1/projects/{key}/legion/board, one project's Legion board from
-// what the sampler recorded (dispatch://INFRA-1077), and the body the `legion` live view kind
-// sends (live_frames.go's legionBoardView). No dashboard page draws it: the route and the live
-// view kind are all there is of it.
+// legion_board.go serves GET /api/v1/projects/{key}/legion/board, served at the same path under
+// /api/v2 too as a row of the INFRA-979 tree (v2Infra979Rows), one project's Legion board from what the
+// sampler recorded (dispatch://INFRA-1077), and the body the `legion` live view kind sends
+// (live_frames.go's legionBoardView). No dashboard page draws it: the routes and the live view
+// kind are all there is of it.
 //
 // The answer is read from what Dispatch holds, never from the daemon: the sampler reads each
 // daemon once a minute under a lease (internal/dispatch/legion) and records what moved, and this
@@ -32,6 +33,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -92,12 +94,14 @@ var legionPhaseColumns = map[string]string{
 	legion.PhaseHeld:           legionColumnHeld,
 }
 
-// legionNotConfiguredCode and legionNotConfiguredMessage are the one refusal a project with no
-// Legion daemon gets, whichever route or live view asked (getLegionBoard, the live hub's worker).
-const (
-	legionNotConfiguredCode    = "LEGION_NOT_CONFIGURED"
-	legionNotConfiguredMessage = "this project has no Legion daemon; set one through PUT /api/v1/projects/{key}/legion/daemon"
-)
+// legionNotConfigured is the refusal of a Legion board read for a project that names no daemon,
+// whichever route or live view asked (getLegionBoard, the live hub's worker), naming the write
+// of the version that answers: PUT <version>/projects/{key}/legion/daemon. The live socket,
+// which no version serves, names /api/v2's, the version that outlives /api/v1, as
+// deliveryNotConfigured does.
+func legionNotConfigured(version apiVersion) string {
+	return "this project has no Legion daemon; set one through PUT " + versionPrefix(version) + "/projects/{key}/legion/daemon"
+}
 
 // legionBoardResponse is GET /api/v1/projects/{key}/legion/board: the project the board shows, its header, its
 // columns, the settings its daemon reports, and when it was computed.
@@ -186,10 +190,10 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	population, err := s.readLegionBoard(r.Context(), project)
 	if err != nil {
 		if errors.Is(err, legion.ErrNoSettings) {
-			writeError(w, legionNotConfiguredCode, http.StatusNotFound, legionNotConfiguredMessage)
+			writeError(w, r, apicode.LegionNotConfigured, legionNotConfigured(requestAPIVersion(r)))
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, legionBoardCompute(population, time.Now().UTC()))

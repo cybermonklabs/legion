@@ -515,9 +515,10 @@ func TestThePlainPunctuationIsWhatItsDocCommentLists(t *testing.T) {
 
 // hostTexts are a reading or a check's words that hold a host written with no scheme: a bare
 // `www.` address and a schemeless host and path. parsed is what the markdown parse and blockWords
-// leave of text, as measured: the parse reads a bare `www.` address as a link.
+// leave of text, as measured: the parse reads a bare `www.` address as a link, and blockWords keeps
+// a link's text (R10 of dispatch://INFRA-4071/spec).
 var hostTexts = []struct{ name, text, parsed string }{
-	{"a bare www. address", "see www.example.com for logs", "see for logs"},
+	{"a bare www. address", "see www.example.com for logs", "see www.example.com for logs"},
 	{"a schemeless host and path", "example.com/logs", "example.com/logs"},
 }
 
@@ -528,7 +529,7 @@ var hostTexts = []struct{ name, text, parsed string }{
 // two pairings run the same line builders on the other form of the text: the record route given
 // the parsed words as its reading, and ciVerdictLine given the raw words. Neither line drops a
 // public host by lineWords; the parse reads a bare `www.` address as a link, as GFM does, and
-// blockWords drops link text, so the parsed form holds no `www.` host while the raw form keeps it.
+// blockWords keeps a link's text, so the parsed form keeps the `www.` host as the raw form does.
 func TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt(t *testing.T) {
 	ciHandler, database, fake := resultsGitHubCheckRuns(t)
 	ciIssue := issueInRepository(t, ciHandler, "RESWC", "acme/widgets", "CI hosts")

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -281,8 +282,8 @@ func TestADocumentTitleIsCorrectedWithoutMovingItsAddress(t *testing.T) {
 		document := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "Launch notes", "# Notes\n").Artifact
 
 		shared := sessionRequest(t, handler, http.MethodPatch, "/api/v1/artifacts/"+document.ID, map[string]any{"name": "An agent's title"})
-		if shared.Code != http.StatusForbidden || !strings.Contains(shared.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-			t.Fatalf("the shared token's correction: status=%d body=%s, want 403 %s", shared.Code, shared.Body.String(), codeScopeRequired)
+		if shared.Code != http.StatusForbidden || !strings.Contains(shared.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+			t.Fatalf("the shared token's correction: status=%d body=%s, want 403 %s", shared.Code, shared.Body.String(), apicode.OAuthScopeRequired.V1Name())
 		}
 		if stored := readDocument(t, handler, document.ID); stored.Name != "Launch notes" {
 			t.Fatalf("the document after the refused correction = %#v, want %q", stored, "Launch notes")

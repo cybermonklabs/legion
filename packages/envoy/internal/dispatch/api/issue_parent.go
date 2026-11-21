@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -29,11 +29,11 @@ func parseIssueParent(raw json.RawMessage) (parent *string, provided bool, err e
 	}
 	var key string
 	if err := json.Unmarshal(raw, &key); err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must be an issue key or null")
+		return nil, true, errorf(apicode.ParentInput, "parent must be an issue key or null")
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return nil, true, errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must not be blank")
+		return nil, true, errorf(apicode.ParentInput, "parent must not be blank")
 	}
 	return &key, true, nil
 }
@@ -119,7 +119,7 @@ func legionManagedStatusOfRow(ctx context.Context, tx pgx.Tx, key string, parent
 
 func normalizeIssueBlockers(targets []string) ([]string, error) {
 	if len(targets) > contracts.MaxIssueBlockers {
-		return nil, countExceededError("BLOCKED_BY_INPUT", "blocked_by", len(targets), contracts.MaxIssueBlockers)
+		return nil, countExceededError(apicode.BlockedByInput, "blocked_by", len(targets), contracts.MaxIssueBlockers)
 	}
 	slices.Sort(targets)
 	return slices.Compact(targets), nil
@@ -261,7 +261,7 @@ func foreignTargets(ctx context.Context, q queryer, project string, targets []st
 // step before any lock is taken, and writeBlockedBy under the locks — so the wording lives here
 // once and the two cannot drift.
 func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
-	return errorf(http.StatusForbidden, codeProjectScope,
+	return errorf(apicode.ProjectScope,
 		"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
 		caller, target, targetProject)
 }
@@ -287,12 +287,6 @@ func lockIssueOwners(ctx context.Context, tx pgx.Tx, key string, others ...strin
 	}
 	return parent, nil
 }
-
-// parentContended is the code of a PATCH whose issue's parent a concurrent reparent moved at
-// every lock attempt. The Legion daemon retries a status write it refuses
-// (packages/daemon/internal/dispatch/types.go:113, ParentContended) rather than dropping it, so
-// the two spellings change together: no mechanism shares a value between the two Go modules.
-const parentContended = "PARENT_CONTENDED"
 
 // parentLockAttempts bounds how many times lockPatchOwnersAndParent reads the issue's parent and
 // locks it: the first, and one redo for a parent a concurrent reparent changed in between.
@@ -344,7 +338,7 @@ func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named 
 			return err
 		}
 	}
-	return errorf(http.StatusConflict, parentContended,
+	return errorf(apicode.ParentContended,
 		"%s's parent changed at each of %d attempts while this request waited to lock it, so nothing was applied: read the issue and retry", key, parentLockAttempts)
 }
 
@@ -352,18 +346,18 @@ func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named 
 // refuses a parent that would make key its own ancestor or put key's subtree past parentDepthCap.
 func validateIssueParent(ctx context.Context, tx pgx.Tx, key, project, parent string) error {
 	if parent == key {
-		return errorf(http.StatusBadRequest, "PARENT_INPUT", "an issue cannot be its own parent")
+		return errorf(apicode.ParentInput, "an issue cannot be its own parent")
 	}
 	var parentProject string
 	err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, parent).Scan(&parentProject)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return errorf(http.StatusBadRequest, "PARENT_INPUT", "parent issue %s not found", parent)
+		return errorf(apicode.ParentInput, "parent issue %s not found", parent)
 	}
 	if err != nil {
 		return err
 	}
 	if parentProject != project {
-		return errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must be in the same project")
+		return errorf(apicode.ParentInput, "parent must be in the same project")
 	}
 	// parent and the issues above it, parent first: the server's one ancestor walk
 	// (refs.IssueAncestors) with parent itself at its head, since a parent key already stands
@@ -376,18 +370,19 @@ func validateIssueParent(ctx context.Context, tx pgx.Tx, key, project, parent st
 	for index, ancestor := range chain {
 		if ancestor == key {
 			path := key + " → " + strings.Join(chain[:index+1], " → ")
-			return errorf(http.StatusConflict, "PARENT_INPUT", "would create a cycle: %s", path)
+			return errorf(apicode.ParentCycle, "would create a cycle: %s", path)
 		}
 	}
 	return refuseParentTooDeep(ctx, tx, key, parent)
 }
 
 // refuseParentTooDeep refuses a parent link that would put an issue, or the deepest issue under
-// it, more than parentDepthCap links below its root: 409 PARENT_INPUT. child is the issue being
-// moved, or "" for one being created, which has nothing under it. The caller holds the project's
-// dependency lock (lockProjectIssueDependencies), which every create with a parent and every
-// reparent takes, so two writes cannot each pass alone and together pass the cap. Both walks stop
-// one link past the cap, so a chain that loops or is already too deep ends them.
+// it, more than parentDepthCap links below its root: 409 PARENT_INPUT under /api/v1, and
+// PARENT_TOO_DEEP under /api/v2, which tells it from a parent loop (apicode.ParentTooDeep). child
+// is the issue being moved, or "" for one being created, which has nothing under it. The caller
+// holds the project's dependency lock (lockProjectIssueDependencies), which every create with a
+// parent and every reparent takes, so two writes cannot each pass alone and together pass the cap.
+// Both walks stop one link past the cap, so a chain that loops or is already too deep ends them.
 func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) error {
 	var above, below int
 	if err := tx.QueryRow(ctx, `
@@ -417,10 +412,10 @@ func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) e
 		depth = "more than " + parentDepthCapSQL + " links"
 	}
 	if child == "" {
-		return errorf(http.StatusConflict, "PARENT_INPUT",
+		return errorf(apicode.ParentTooDeep,
 			"an issue under %s would sit %s below its root; an issue sits at most %d links below its root", parent, depth, parentDepthCap)
 	}
-	return errorf(http.StatusConflict, "PARENT_INPUT",
+	return errorf(apicode.ParentTooDeep,
 		"moving %s under %s would put the deepest issue under it %s below its root; an issue sits at most %d links below its root", child, parent, depth, parentDepthCap)
 }
 
@@ -453,13 +448,13 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 // taken, and both word it through refuseBlockedByOutsideCallerProject.
 func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller string, targets []string) error {
 	if slices.Contains(targets, issue) {
-		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
+		return errorf(apicode.BlockedByInput, "%s cannot be blocked by itself", issue)
 	}
 	for _, target := range targets {
 		var targetProject string
 		err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, target).Scan(&targetProject)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "blocked_by issue %s not found", target)
+			return errorf(apicode.BlockedByInput, "blocked_by issue %s not found", target)
 		}
 		if err != nil {
 			return err
@@ -495,7 +490,7 @@ func assertNoWaitPath(ctx context.Context, tx pgx.Tx, from []waitNode, goal wait
 	frontier := from
 	for depth := 0; len(frontier) > 0; depth++ {
 		if depth > parentDepthCap {
-			return errorf(http.StatusConflict, "DEPENDENCY_CYCLE", "the dependency graph is deeper than %d links", parentDepthCap)
+			return errorf(apicode.DependencyCycle, "the dependency graph is deeper than %d links", parentDepthCap)
 		}
 		var starts, dones []string
 		for _, node := range frontier {
@@ -505,7 +500,7 @@ func assertNoWaitPath(ctx context.Context, tx pgx.Tx, from []waitNode, goal wait
 			}
 			for _, half := range halves {
 				if half == goal {
-					return errorf(http.StatusConflict, "DEPENDENCY_CYCLE", "%s would wait on itself through blocked_by and parent links", goal.key)
+					return errorf(apicode.DependencyCycle, "%s would wait on itself through blocked_by and parent links", goal.key)
 				}
 				if seen[half] {
 					continue

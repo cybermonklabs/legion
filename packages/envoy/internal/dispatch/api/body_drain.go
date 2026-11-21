@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // An answer given before a request's body is read reaches some clients as a failed connection
@@ -68,9 +70,16 @@ func expectsContinue(r *http.Request) bool {
 // handoff write's, errMarkdownRoundTripTooLarge the markdown round trip's, and errJSONTooLarge
 // every other route's (routeBody, decodeJSON).
 var (
-	errUploadTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "artifact blob exceeds 25 MB")
-	errJSONTooLarge   = errorf(http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body exceeds %d bytes", maxJSONRequestBytes)
+	errUploadTooLarge = errorf(apicode.CapExceededTooLarge, "artifact blob exceeds 25 MB")
+	errJSONTooLarge   = errorf(apicode.RequestTooLarge, "request body exceeds %d bytes", maxJSONRequestBytes)
 )
+
+// versionHeaders are the headers a /api/v1 answer carries whichever layer writes it, and that the
+// drain keeps on the 413 it writes in place of a layer's answer: Deprecation, and Sunset while the
+// end is ahead, which the router sets before any route runs (routes/router.go, endAPIV1), and the
+// Link to the successor, which linkSuccessor sets again when the 413's status is written (R3.1,
+// R3.4 of dispatch://INFRA-4071/spec). A /api/v2 answer carries none of them.
+var versionHeaders = [...]string{"Deprecation", "Link", "Sunset"}
 
 // drainBeforeAnswer serves a route whose requests carry a body - every route but a GET - so that
 // whatever layer answers a request, and however little of its body that layer read, the answer
@@ -86,9 +95,11 @@ var (
 // after it. A body a layer already read to its end, or past the limit itself (its handler's 413),
 // is left as it is, and so is the body of a client that asked to be told to continue before
 // sending it (Expect: 100-continue) and was never told: it sends nothing, and the first read would
-// tell it to send all of it.
-func (s *server) drainBeforeAnswer(method, pattern string, handler http.HandlerFunc) http.HandlerFunc {
-	limit, tooLarge := routeBody(method, pattern)
+// tell it to send all of it. The drain refuses from inside the answer's writer, where no request
+// is in reach, so the mount builds it with the version its route serves (writeVersionedError) and
+// the route's own body bound (apiRoute.BodyLimit).
+func (s *server) drainBeforeAnswer(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
+	version, limit, tooLarge := route.Version, route.BodyLimit.Bytes, route.BodyLimit.TooLarge
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Body == nil || r.Body == http.NoBody {
 			handler(w, r)
@@ -98,6 +109,7 @@ func (s *server) drainBeforeAnswer(method, pattern string, handler http.HandlerF
 		r.Body = body
 		handler(&drainingWriter{
 			ResponseWriter: w,
+			version:        version,
 			body:           body,
 			limit:          limit,
 			tooLarge:       tooLarge,
@@ -129,6 +141,7 @@ func (b *drainedBody) Read(p []byte) (int, error) {
 // (drainBeforeAnswer).
 type drainingWriter struct {
 	http.ResponseWriter
+	version       apiVersion
 	body          *drainedBody
 	limit         int64
 	tooLarge      *apiError
@@ -165,9 +178,20 @@ func (w *drainingWriter) begin(status int) {
 	case status == http.StatusUnauthorized:
 		return
 	}
-	// The body runs past the limit: the answer is the limit's.
-	clear(w.ResponseWriter.Header())
-	writeError(w.ResponseWriter, w.tooLarge.code, w.tooLarge.status, w.tooLarge.message)
+	// The body runs past the limit: the answer is the limit's, which carries none of the headers
+	// the layer that answered set, but those of the version it answers in (versionHeaders).
+	header := w.ResponseWriter.Header()
+	var kept [len(versionHeaders)][]string
+	for index, name := range versionHeaders {
+		kept[index] = header[name]
+	}
+	clear(header)
+	for index, name := range versionHeaders {
+		if kept[index] != nil {
+			header[name] = kept[index]
+		}
+	}
+	writeVersionedError(w.ResponseWriter, w.version, w.tooLarge.code, 0, w.tooLarge.message)
 	w.replaced = true
 }
 

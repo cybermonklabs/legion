@@ -152,7 +152,7 @@ func queryKeysNamedByShapes(t *testing.T, routes []apiRoute) (map[string]namedKe
 		if _, started := byFile[file]; !started {
 			byFile[file] = namedKeys{params: map[string]bool{}, bodies: map[string]bool{}}
 		}
-		shape := routeShapes[route.Method+" "+route.Pattern]
+		shape := route.shape()
 		named := namedKeys{params: map[string]bool{}, bodies: map[string]bool{}}
 		for _, key := range queryTagsOf(shape.Params) {
 			named.params[key] = true

@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -43,7 +44,7 @@ func agentOwnerKey(session string) string {
 func requestSessionID(r *http.Request) (string, error) {
 	session := r.PathValue("session_id")
 	if !text.IsSessionID(session) {
-		return "", errorf(http.StatusBadRequest, "INVALID_SESSION_ID",
+		return "", errorf(apicode.InvalidSessionID,
 			"session_id %q is not a session id: it must be non-empty and hold no /, ?, #, whitespace, control character or <>\"'`[]|", session)
 	}
 	return session, nil
@@ -101,7 +102,7 @@ func (s *server) uploadAgentArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := requestSessionID(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.uploadArtifactFor(w, r, artifactTarget{Session: session})

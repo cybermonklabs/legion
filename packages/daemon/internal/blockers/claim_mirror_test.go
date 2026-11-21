@@ -145,7 +145,7 @@ func TestAClaimNamingNoActorIsUnknownOnAReadAsOnAnEvent(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	listed, err := dispatch.New(server.URL, "token").ListIssues(context.Background(), testProject, nil)
+	listed, err := dispatch.New(server.URL, "token", "").ListIssues(context.Background(), testProject, nil)
 	if err != nil {
 		t.Fatalf("list issues: %v", err)
 	}

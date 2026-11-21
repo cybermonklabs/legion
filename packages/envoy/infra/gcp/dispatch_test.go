@@ -500,6 +500,10 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 		{name: "a pprof port past 65535", input: "pprofPort", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(65536) }, err: []string{"pprofPort 65536", "1-65535"}},
 		{name: "a pprof port on envoy-dispatch's own port", input: "pprofPort", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(8766) }, err: []string{"pprofPort 8766", "envoy-dispatch"}},
 		{name: "a pprof port on cloud-sql-proxy's port", input: "pprofPort", edit: func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(5432) }, err: []string{"pprofPort 5432", "cloud-sql-proxy"}},
+		// Dispatch parses DISPATCH_API_V1_END with time.RFC3339 and refuses at boot what that
+		// refuses: a date with no time, and a time with no offset, which names no instant.
+		{name: "an apiV1End that is a date alone", input: "apiV1End", edit: func(a *gcp.DispatchArgs) { a.ApiV1End = "2027-01-01" }, err: []string{`apiV1End "2027-01-01"`, "is not an RFC 3339 time", "leave it unset for no end of /api/v1"}},
+		{name: "an apiV1End with no offset", input: "apiV1End", edit: func(a *gcp.DispatchArgs) { a.ApiV1End = "2027-01-01T00:00:00" }, err: []string{`apiV1End "2027-01-01T00:00:00"`, "is not an RFC 3339 time"}},
 		{name: "an empty priority class", input: "priorityClassName", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("") }, err: []string{"priorityClassName is empty", "leave it unset for no priority class"}},
 		{name: "a priority class that is no DNS subdomain", input: "priorityClassName", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("Example_Priority") }, err: []string{`priorityClassName "Example_Priority"`, "DNS subdomain"}},
 		{name: "a priority class with trailing whitespace", input: "priorityClassName", edit: func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("example-priority ") }, err: []string{`priorityClassName "example-priority "`, "DNS subdomain"}},
@@ -835,6 +839,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed as the app ID", "appId", func(a *gcp.DispatchArgs) { a.AppId = seed }},
 		{"a seed as the app private key secret name", "appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = lower }},
 		{"a seed as the app private key secret key", "appPrivateKeySecretKey", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretKey = seed }},
+		{"a lowercase seed inside apiV1End", "apiV1End", func(a *gcp.DispatchArgs) { a.ApiV1End = "2027-01-01T00:00:00Z" + lower }},
 		{"a seed in the Azure federation audience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef("api://" + lower)

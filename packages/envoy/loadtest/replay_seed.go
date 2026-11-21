@@ -751,11 +751,14 @@ func (s *replaySeeder) adoptUnmapped(ctx context.Context, kind, query string, ar
 	return "", nil
 }
 
+// ensureFile maps a recorded file or image to its local artifact: one a killed seed already made
+// under the name the replay sends it as (replayFileName), else the one its upload makes now.
 func (s *replaySeeder) ensureFile(ctx context.Context, key string, a *replayArtifact) error {
 	if _, ok := s.ids.get(idArtifact, a.ID); ok {
 		return nil
 	}
-	local, err := s.adoptArtifact(ctx, key, a.Name)
+	name := replayFileName(a.Name)
+	local, err := s.adoptArtifact(ctx, key, name)
 	if err != nil {
 		return err
 	}
@@ -769,7 +772,7 @@ func (s *replaySeeder) ensureFile(ctx context.Context, key string, a *replayArti
 		}
 		// The upload form is built in one place (multipartFile): the boundary is the replay's,
 		// derived from the rng seed and the logged id, and the parts are the same bytes.
-		ct, body, err := multipartFile(s.rngSeed, &replayFile{Name: a.Name, MIME: mimeType, Seed: a.ID, Size: *a.Size,
+		ct, body, err := multipartFile(s.rngSeed, &replayFile{Name: name, MIME: mimeType, Seed: a.ID, Size: *a.Size,
 			Actor: sessionActor(replaySeedActorID)})
 		if err != nil {
 			return err

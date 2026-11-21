@@ -1,10 +1,11 @@
-// routes_shapes.go is the side map that gives every row of the route table its Go types: what it
-// takes, what it answers, and with which status. The table itself carries paths, auth and prose
-// and no shapes (routeRow), so a document emitted from the table alone would describe no body;
-// this file is the data that document is reflected out of (INFRA-1406). Nothing here changes
-// behaviour: no handler reads a type declared below, and the query structs are declarations
-// alone - `r.URL.Query().Get` and `.Has` differ on an absent key, so moving forty handlers'
-// reads onto a struct would be a behaviour change, and is not this file's business.
+// routes_shapes.go is the side map that gives every route of the v1 table its Go types: what it
+// takes, what it answers, and with which status. A v1Row carries paths, auth and prose and no
+// shapes, so a document emitted from the table alone would describe no body; this file is the data
+// that document is reflected out of (INFRA-1406), and a routeRow carries the same in its own
+// Query, Body and Shape columns (routes_versions.go). Nothing here changes behaviour: no v1
+// handler reads a type declared below, and the query structs are declarations alone -
+// `r.URL.Query().Get` and `.Has` differ on an absent key, so moving forty handlers' reads onto a
+// struct would be a behaviour change, and is not this file's business.
 package api
 
 import (
@@ -16,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -25,16 +25,21 @@ import (
 type routeAnswer struct {
 	Status int
 	Body   any
+	// Advice and OtherAdvice are the advice shapes this answer carries beside Body, as
+	// routeShape's are for the success answer: nil for an answer that carries none.
+	Advice      any
+	OtherAdvice []any
 }
 
-// routeShape is what one row of the table takes and answers, in Go types an OpenAPI document is
-// reflected out of (INFRA-1406). It stands beside the table for the reason writeClasses and
-// routeScopes do: routeRow is a positional literal, Go leaves no field out of one, and a sixth
-// column would have to be written on every row of the table, GET rows included. No row carries
-// its shape: routes() stamps the write class and the OAuth scopes onto the row it builds, and
-// nothing stamps this (routes_table.go), so the emitter and the two mount guards read the map
-// here. routes_shapes_test.go holds it to the table: the map and the rows the server mounts are
-// the same set.
+// routeShape is what one route takes and answers, in Go types an OpenAPI document is reflected
+// out of (INFRA-1406). For a route of the v1 table it stands beside the table in routeShapes for
+// the reason writeClasses and routeScopes do: a v1Row is a positional literal, Go leaves no field
+// out of one, and a value more would have to be written on every row of the table, GET rows
+// included. routes() copies the entry onto the route's Shape column (v1Route), and
+// routes_shapes_test.go holds the map to the table: the map and the routes of the v1 table the
+// server mounts are the same set. A routeRow carries what it answers in its own Shape column, and
+// its request in its Query and Body columns rather than in Params and Request
+// (apiRoute.shape).
 type routeShape struct {
 	// Status is the status the route answers when it succeeds.
 	Status int
@@ -67,6 +72,11 @@ type routeShape struct {
 	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
 	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
+	// OtherAdvice are the advice shapes the success answer carries in Advice's place where it
+	// carries another: withSuggestions answers suggestionsOnlyAdvice for a write with no issue
+	// state to report, or whose write advice could not be read. Empty for a route whose advice is
+	// always Advice.
+	OtherAdvice []any
 	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
 	Refusals []routeAnswer
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders
@@ -233,10 +243,10 @@ type issueResolveQuery struct {
 // eventListQuery is the query GET /api/v1/issues/{key}/events and GET /api/v1/artifacts/{id}/events
 // share: one page of an event log.
 type eventListQuery struct {
-	// After reads the events above this event id, oldest first; it combines with neither
-	// Before nor order=desc.
+	// After reads the events above this seq, the event's place in its owner's log, oldest first;
+	// it combines with neither Before nor order=desc.
 	After int `query:"after"`
-	// Before reads the events below this event id.
+	// Before reads the events below this seq.
 	Before int `query:"before"`
 	// IDs reads exactly these event ids, comma-separated.
 	IDs string `query:"ids"`
@@ -513,7 +523,7 @@ type liveWritePauseQuery struct {
 
 // --- the shapes ------------------------------------------------------------------------------
 
-// routeShapes is the shape of every row of the table with its test hooks in, by
+// routeShapes is the shape of every route of the v1 table (v1Rows and the test hooks), by
 // "<method> <pattern>", exactly as writeClasses is keyed. The entries are in the table's own
 // order, so the two read side by side.
 //
@@ -601,42 +611,11 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},
-	"GET /api/v1/settings/delivery": {
-		Status: http.StatusOK, Response: delivery.DeliverySettings{},
-		// A deployment that has not set them answers 200 and the JSON literal `null`
-		// (settings_delivery.go).
-		Nullable: true,
-	},
-	"PUT /api/v1/settings/delivery": {
-		Status: http.StatusOK, Response: delivery.DeliverySettings{}, Request: deliverySettingsInput{},
-	},
 	"GET /api/v1/settings/new-issue": {Status: http.StatusOK, Response: newIssueSettings{}},
 	"POST /api/v1/settings/new-issue/_test": {
 		Status: http.StatusOK, Response: newIssueSettings{}, Request: newIssueSettingsInput{},
 	},
-	"GET /api/v1/projects/{key}/legion/daemon": {
-		Status: http.StatusOK, Response: legion.Settings{},
-		// A project that names no daemon answers 200 and the JSON literal `null`
-		// (settings_legion.go).
-		Nullable: true,
-	},
-	"PUT /api/v1/projects/{key}/legion/daemon": {
-		Status: http.StatusOK, Response: legion.Settings{}, Request: putLegionSettingInput{},
-	},
-	"DELETE /api/v1/projects/{key}/legion/daemon": {Status: http.StatusNoContent},
-	"GET /api/v1/projects/{key}/legion/board": {
-		Status: http.StatusOK, Response: legionBoardResponse{},
-	},
-	"GET /api/v1/delivery/timeline": {
-		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},
-	},
 	"GET /api/v1/delivery/runs/{id}": {Status: http.StatusOK, Response: delivery.DeliveryRunDetailView{}},
-	"GET /api/v1/delivery/measures": {
-		Status: http.StatusOK, Response: deliveryMeasuresResponse{}, Params: deliveryWindowQuery{},
-	},
-	"GET /api/v1/delivery/pipeline": {
-		Status: http.StatusOK, Response: deliveryPipelineResponse{}, Params: deliveryPipelineQuery{},
-	},
 	"POST /api/v1/delivery/session-groups": {
 		Status: http.StatusCreated, Response: delivery.SessionGroup{}, Request: createDeliverySessionGroupInput{},
 	},
@@ -1099,17 +1078,31 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/messages/_test/queued":                             {Status: http.StatusOK, Response: queuedMessages{}},
 }
 
-// shapelessRoutes names every mounted row routeShapes does not name. A row with no shape is a
-// row the generated document would leave out, which is how "one definition of the API" stops
-// holding: a client would be given no type for it and would hand-write one. register refuses to
-// mount such a table, as it refuses a write class it cannot decide (undecidableWrites) and a
-// scope nothing serves (scopedRoutesNotMounted).
+// shapelessRoutes names every mounted route with no shape: a route of the v1 table routeShapes
+// does not name, and the mount of a routeRow whose Shape column names no success status. A route
+// with no shape is a route the generated document would leave out, which is how "one definition of
+// the API" stops holding: a client would be given no type for it and would hand-write one.
+// register refuses to mount such a table, as it refuses a write class it cannot decide
+// (undecidableWrites) and a scope nothing serves (scopedRoutesNotMounted). A routeRow that writes
+// its request into Shape rather than into its Query and Body columns is refused too, since the
+// v2 decoder reads those columns alone, and the request it would decode is not the one the
+// document describes.
 func shapelessRoutes(routes []apiRoute) []string {
 	var shapeless []string
 	for _, route := range routes {
 		name := route.Method + " " + route.Pattern
-		if _, shaped := routeShapes[name]; !shaped {
-			shapeless = append(shapeless, name+": no shape (routeShapes)")
+		if !route.columns {
+			if _, shaped := routeShapes[route.sideMapName()]; !shaped {
+				shapeless = append(shapeless, name+": no shape (routeShapes)")
+			}
+			continue
+		}
+		shape := route.Shape
+		switch {
+		case shape.Status == 0:
+			shapeless = append(shapeless, name+": no shape (its Shape column names no success status)")
+		case shape.Params != nil || shape.Request != nil || shape.Multipart || shape.OptionalRequest || shape.OpaqueRequest != "":
+			shapeless = append(shapeless, name+": its Shape column declares a request; a routeRow declares it in its Query and Body columns")
 		}
 	}
 	sort.Strings(shapeless)

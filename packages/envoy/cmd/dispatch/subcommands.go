@@ -65,12 +65,8 @@ var subcommands = []subcommand{
 		}
 		return 0
 	}},
-	{"routes", func(_ context.Context, _ []string, _ settingValues, stdout, stderr io.Writer) int {
-		if err := api.WriteRouteIndex(stdout); err != nil {
-			fmt.Fprintf(stderr, "routes: %v\n", err)
-			return 1
-		}
-		return 0
+	{"routes", func(_ context.Context, args []string, _ settingValues, stdout, stderr io.Writer) int {
+		return writeRouteIndex(args, stdout, stderr)
 	}},
 	{"openapi", func(_ context.Context, args []string, _ settingValues, stdout, stderr io.Writer) int {
 		return writeOpenAPIDocument(args, stdout, stderr)
@@ -94,93 +90,141 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 	return 2
 }
 
-// writeOpenAPIDocument runs `envoy-dispatch openapi`. With no flag it writes the OpenAPI document
-// of the route table to stdout; --out <path> writes it there; --check writes nothing at all — it
-// renders the document to memory and holds the committed artifact to it, printing a unified diff
-// and then the line that names the file stale and the command that fixes it, the convention
-// packages/contracts/scripts/gen-go.ts follows for every file it generates, and exiting 1.
-func writeOpenAPIDocument(args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("openapi", flag.ContinueOnError)
+// writeRouteIndex runs `envoy-dispatch routes`: the body the route index of one version of the API
+// answers, read from the table alone. With no flag it is GET /api/v1's; --version 2 is GET
+// /api/v2's.
+func writeRouteIndex(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("routes", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	out := flags.String("out", "", "write the document to this path instead of stdout; the file --check compares")
-	check := flags.Bool("check", false, "compare the committed document with a fresh render, write nothing, and exit 1 on a difference")
+	version := flags.Int("version", 1, "the version of the API whose route index to print: 1 or 2")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "openapi: unexpected argument %q; the flags are --out and --check\n", flags.Arg(0))
+		fmt.Fprintf(stderr, "routes: unexpected argument %q; the one flag is --version\n", flags.Arg(0))
 		return 2
 	}
-	var document bytes.Buffer
-	if err := api.WriteOpenAPI(&document); err != nil {
+	if *version != 1 && *version != 2 {
+		fmt.Fprintf(stderr, "routes: --version %d: the API's versions are 1 and 2\n", *version)
+		return 2
+	}
+	if err := api.WriteRouteIndex(stdout, *version); err != nil {
+		fmt.Fprintf(stderr, "routes: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// writeOpenAPIDocument runs `envoy-dispatch openapi` over the OpenAPI document of each version of
+// the API (api.RenderOpenAPI). With no flag it writes each document where the repository commits
+// it, found from the working directory; --check writes nothing at all — it renders each document
+// to memory and holds its committed artifact to it, printing, for each that differs, a unified
+// diff and then the line that names the file stale and the command that fixes it, the convention
+// packages/contracts/scripts/gen-go.ts follows for every file it generates, and exiting 1.
+// --version 1 or 2 takes that version's document alone, and --out <path>, which needs it, names
+// the file to write, or with --check to compare, in place of the committed one (- writes stdout).
+func writeOpenAPIDocument(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("openapi", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	version := flags.Int("version", 0, "the version of the API whose document alone to write or check: 1 or 2; both where it is left out")
+	out := flags.String("out", "", "write the --version document to this path instead of the committed one (- for stdout); with --check, the file compared")
+	check := flags.Bool("check", false, "compare each committed document with a fresh render, write nothing, and exit 1 on a difference")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	switch {
+	case flags.NArg() > 0:
+		fmt.Fprintf(stderr, "openapi: unexpected argument %q; the flags are --version, --out and --check\n", flags.Arg(0))
+		return 2
+	case *version != 0 && *version != 1 && *version != 2:
+		fmt.Fprintf(stderr, "openapi: --version %d: the API's versions are 1 and 2\n", *version)
+		return 2
+	case *out != "" && *version == 0:
+		fmt.Fprintln(stderr, "openapi: --out names one file: name the version of its document with --version 1 or 2")
+		return 2
+	}
+	files, err := api.RenderOpenAPI()
+	if err != nil {
 		fmt.Fprintf(stderr, "openapi: %v\n", err)
 		return 1
 	}
-	switch {
-	case *check:
-		path := *out
+	stale := false
+	for _, file := range files {
+		if *version != 0 && file.Version != *version {
+			continue
+		}
+		path, fix := *out, "envoy-dispatch openapi"
 		if path == "" {
-			found, err := committedOpenAPIPath()
+			found, err := committedOpenAPIPath(file.Path)
 			if err != nil {
 				fmt.Fprintf(stderr, "openapi: %v\n", err)
 				return 1
 			}
 			path = found
+		} else {
+			fix = fmt.Sprintf("envoy-dispatch openapi --version %d --out %s", file.Version, path)
 		}
-		committed, err := os.ReadFile(path)
-		if err != nil {
-			fmt.Fprintf(stderr, "openapi: %v\n", err)
-			return 1
+		switch {
+		case *check:
+			committed, err := os.ReadFile(path)
+			if err != nil {
+				fmt.Fprintf(stderr, "openapi: %v\n", err)
+				return 1
+			}
+			if bytes.Equal(committed, file.Bytes) {
+				continue
+			}
+			diff, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+				A:        difflib.SplitLines(string(committed)),
+				B:        difflib.SplitLines(string(file.Bytes)),
+				FromFile: path,
+				ToFile:   "envoy-dispatch openapi",
+				Context:  3,
+			})
+			if err != nil {
+				fmt.Fprintf(stderr, "openapi: diff the committed document: %v\n", err)
+				return 1
+			}
+			fmt.Fprint(stdout, diff)
+			fmt.Fprintf(stderr, "%s is stale: run `%s` and commit the result.\n", path, fix)
+			stale = true
+		case path == "-":
+			if _, err := stdout.Write(file.Bytes); err != nil {
+				fmt.Fprintf(stderr, "openapi: %v\n", err)
+				return 1
+			}
+		default:
+			if err := os.WriteFile(path, file.Bytes, 0o644); err != nil {
+				fmt.Fprintf(stderr, "openapi: %v\n", err)
+				return 1
+			}
 		}
-		if bytes.Equal(committed, document.Bytes()) {
-			return 0
-		}
-		diff, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
-			A:        difflib.SplitLines(string(committed)),
-			B:        difflib.SplitLines(document.String()),
-			FromFile: path,
-			ToFile:   "envoy-dispatch openapi",
-			Context:  3,
-		})
-		if err != nil {
-			fmt.Fprintf(stderr, "openapi: diff the committed document: %v\n", err)
-			return 1
-		}
-		fmt.Fprint(stdout, diff)
-		fmt.Fprintf(stderr, "%s is stale: run `envoy-dispatch openapi --out %s` and commit the result.\n", path, path)
-		return 1
-	case *out != "":
-		if err := os.WriteFile(*out, document.Bytes(), 0o644); err != nil {
-			fmt.Fprintf(stderr, "openapi: %v\n", err)
-			return 1
-		}
-		return 0
-	default:
-		if _, err := stdout.Write(document.Bytes()); err != nil {
-			fmt.Fprintf(stderr, "openapi: %v\n", err)
-			return 1
-		}
-		return 0
 	}
+	if stale {
+		return 1
+	}
+	return 0
 }
 
-// committedOpenAPIPath finds the committed document by walking up from the working directory, so
-// `openapi --check` reads the same file whether it is run from the repository root or from a
-// package in it.
-func committedOpenAPIPath() (string, error) {
+// committedOpenAPIPath finds where the repository commits the document at relative, a path from
+// the repository root, by walking up from the working directory to the first directory that holds
+// its parent directory, so `openapi` reads and writes the same file whether it is run from the
+// repository root or from a package in it, and writes a document the repository does not hold
+// yet where it belongs.
+func committedOpenAPIPath(relative string) (string, error) {
 	directory, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("read the working directory: %w", err)
 	}
 	for {
-		candidate := filepath.Join(directory, filepath.FromSlash(api.OpenAPIDocumentPath))
-		if _, err := os.Stat(candidate); err == nil {
+		candidate := filepath.Join(directory, filepath.FromSlash(relative))
+		if info, err := os.Stat(filepath.Dir(candidate)); err == nil && info.IsDir() {
 			return candidate, nil
 		}
 		parent := filepath.Dir(directory)
 		if parent == directory {
 			return "", fmt.Errorf("no %s in any directory above the working directory: run it "+
-				"inside the repository, or name the file with --out", api.OpenAPIDocumentPath)
+				"inside the repository, or name the file with --version and --out", filepath.Dir(relative))
 		}
 		directory = parent
 	}

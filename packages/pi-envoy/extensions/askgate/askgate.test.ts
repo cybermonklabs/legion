@@ -5410,6 +5410,7 @@ describe("askgate.ts, the entry", () => {
         logger: { warn: (message: string) => warnings.push(message) },
         runtimeLogger: { warn: () => {} },
         session: () => "gate-session",
+        userAgent: "pi-envoy/test",
       }
     ).loaded;
     const roles = opts.roles ?? { askgate: MODEL };
@@ -5569,6 +5570,7 @@ describe("askgate.ts, the entry", () => {
         logger: { warn: () => {} },
         runtimeLogger: { warn: () => {} },
         session: () => "gate-session",
+        userAgent: "pi-envoy/test",
       }
     );
     const { loaded } = registration;

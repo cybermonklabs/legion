@@ -20,6 +20,7 @@ import {
   DispatchClient,
   DispatchGatewayError,
   DispatchServiceError,
+  DispatchUnreachableError,
   DispatchWriteLandedError,
   type DispatchWriteRetry,
   DispatchWriteUnsettledError,
@@ -515,7 +516,8 @@ describe("DispatchClient's writes", () => {
 
   // Dispatch's own refusal that carries no key back says its keyed layer did not judge the
   // request - a release without the layer, as after a rollback - so an echo the process saw
-  // earlier does not license a resend: /healthz decides afresh.
+  // earlier does not license a resend: /healthz decides afresh. Its 500 is not resent, and may have
+  // come after the write committed, so it leaves the write unsettled.
   test("ask /healthz afresh on Dispatch's own refusal that echoes no key", async () => {
     const { fetchImpl, sent, probes } = scripted(
       [json(posted, 201), refusal(500, "INTERNAL", "internal server error"), json(posted, 201)],
@@ -702,7 +704,9 @@ describe("DispatchClient's writes", () => {
 
   // c2 (the review of c5ed36708c): a connection reset after Dispatch read the whole request may
   // follow a write Dispatch received, and its keyed layer runs that write to its end whatever the
-  // client does, so a reset on every attempt may have landed: unsettled, never "unreachable".
+  // client does, so a reset on every attempt may have landed: unsettled, never "unreachable". The
+  // message names the request and quotes the failure as the client names it, the advice for a
+  // moved URL with it.
   test("a connection reset on every attempt leaves the write unsettled", async () => {
     const { fetchImpl, sent } = scripted(Array.from({ length: 5 }, () => reset()));
 
@@ -710,9 +714,96 @@ describe("DispatchClient's writes", () => {
 
     expect(sent).toHaveLength(5);
     expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
-    expect(error.message).toStartWith(
+    expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(DispatchUnreachableError);
+    expect(error.message).toBe(
       "POST http://dispatch.test/api/v1/issues/DSP-1/comments failed on its last attempt " +
-        "(Dispatch at http://dispatch.test is unreachable: ECONNRESET."
+        "(Dispatch at http://dispatch.test is unreachable: ECONNRESET. If the Dispatch URL " +
+        "changed, restart this agent process so it picks up the new configuration.) (the last of " +
+        "5 attempts), and an attempt of the write may have reached Dispatch, so it may or may not " +
+        "have taken effect. Dispatch finishes an attempt it received whatever this command does, " +
+        "so read the write back before you send it again: a new command sends it under a new key."
+    );
+  });
+
+  // A PUT or a DELETE carries no key and goes once, but it is a write: whatever leaves it with no
+  // definitive answer may have reached Dispatch, while a read's failure is thrown as it came.
+  test("an unkeyed write that fails in transport, at its deadline or with Dispatch's 5xx is unsettled", async () => {
+    const follow = (fetchImpl: typeof fetch, signal?: AbortSignal) =>
+      failure(client(fetchImpl, pacing().retry, signal).followAsk("ask-1", "session-1", actor));
+    const put = "PUT http://dispatch.test/api/v1/asks/ask-1/followers/session-1";
+    const checkFirst =
+      "(its only attempt), and an attempt of the write may have reached Dispatch, so it may or " +
+      "may not have taken effect: check whether it did before retrying it.";
+    const moved =
+      "If the Dispatch URL changed, restart this agent process so it picks up the new configuration.";
+
+    const dropped = scripted([new TypeError("fetch failed")]);
+    const transport = await follow(dropped.fetchImpl);
+    expect(transport).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((transport as DispatchWriteUnsettledError).key).toBeUndefined();
+    expect(transport.message).toBe(
+      `${put} failed on its last attempt (Dispatch at http://dispatch.test is unreachable: ` +
+        `TypeError (message withheld). ${moved}) ${checkFirst}`
+    );
+    expect(dropped.probes).toEqual([]);
+
+    // A refused connection sent nothing, so the PUT cannot have landed.
+    const unreached = await follow(scripted([refused()]).fetchImpl);
+    expect(unreached).toBeInstanceOf(DispatchUnreachableError);
+    expect(unreached.message).toBe(
+      `Dispatch at http://dispatch.test is unreachable: ECONNREFUSED. ${moved}`
+    );
+
+    const hung = scripted([hang]);
+    const deadline = await follow(hung.fetchImpl, AbortSignal.timeout(30));
+    expect(deadline).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((deadline as DispatchWriteUnsettledError).last.name).toBe("TimeoutError");
+    expect(deadline.message).toBe(
+      `${put} had no definitive answer when its deadline ended it ${checkFirst}`
+    );
+
+    const failed = scripted([refusal(500, "INTERNAL", "internal server error")]);
+    const internal = await follow(failed.fetchImpl);
+    expect(internal).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(internal.message).toBe(
+      "INTERNAL: internal server error (its only attempt), and Dispatch answers a 5xx when a " +
+        "write fails, which can be after it committed, so it may or may not have taken effect: " +
+        "check whether it did before retrying it."
+    );
+    expect(failed.sent).toHaveLength(1);
+
+    // A gateway's 5xx already says the write may or may not have reached Dispatch, and a refusal
+    // Dispatch decided says it did not.
+    const gateway = await follow(scripted([page(502, "Bad Gateway")]).fetchImpl);
+    expect(gateway).toBeInstanceOf(DispatchGatewayError);
+    expect(gateway.message).toEndWith(
+      "so the write may or may not have reached Dispatch: check whether it took effect before " +
+        "retrying it."
+    );
+    const refusedAsk = await follow(
+      scripted([refusal(409, "ASK_RESOLVED", "the ask is resolved")]).fetchImpl
+    );
+    expect(refusedAsk).toBeInstanceOf(DispatchServiceError);
+    expect(refusedAsk.message).toBe("the ask is resolved");
+
+    // The caller's own cancellation, once the PUT is out, is thrown as it is.
+    const controller = new AbortController();
+    const cancelled = scripted([
+      (signal) => {
+        const answer = hang(signal);
+        controller.abort(new DOMException("The operation was aborted.", "AbortError"));
+        return answer;
+      },
+    ]);
+    expect((await follow(cancelled.fetchImpl, controller.signal)).name).toBe("AbortError");
+
+    // A read keeps the failure as the client names it, and is never unsettled.
+    const read = await failure(
+      client(scripted([new TypeError("fetch failed")]).fetchImpl, pacing().retry).getAsk("ask-1")
+    );
+    expect(read).toBeInstanceOf(DispatchUnreachableError);
+    expect(read.message).toBe(
+      `Dispatch at http://dispatch.test is unreachable: TypeError (message withheld). ${moved}`
     );
   });
 

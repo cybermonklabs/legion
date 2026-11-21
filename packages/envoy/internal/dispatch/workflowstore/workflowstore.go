@@ -123,14 +123,18 @@ const (
 	PlanSourceOwner   = "owner"
 )
 
-// The refusals a caller maps to an answer of its own. They are the only ones: a write is never
-// refused for its order or for stating again a field the node already holds.
+// The refusals a caller maps to an answer of its own. They are the only ones, and one case of the
+// first a caller may answer apart: a write is never refused for its order or for stating again a
+// field the node already holds.
 var (
 	// ErrStepInput is a value outside its form, a write that would make a node and does not name
 	// the step's identity (its task, kind, step, role and generation), or a type or a rating that
 	// the kind the write names or the kind the node holds does not take (typeOfKind,
 	// ratingOfKind). The error's text names the field and the rule.
 	ErrStepInput = errors.New("step input")
+	// ErrStepUnmade is the second case of ErrStepInput, a write of an id no node holds that does
+	// not name the step's identity, so it makes none: errors.Is answers both for it.
+	ErrStepUnmade = errors.New("no step of this id, and the write does not name its identity")
 	// ErrStepOtherIssue is a write of an id whose node is part of another issue.
 	ErrStepOtherIssue = errors.New("the step is a step of another issue")
 	// ErrPlanInput is a plan's value outside its form, or a plan write that does not name its

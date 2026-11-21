@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -144,9 +145,9 @@ func TestAdvancesRelation(t *testing.T) {
 	} {
 		body["force"] = true
 		refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", body, "alice")
-		if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != codeAdvancesInput {
+		if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != apicode.AdvancesInput.V1Name() {
 			t.Fatalf("a write naming %s: status=%d code=%s error=%q, want 400 %s",
-				name, refused.Code, code, text, codeAdvancesInput)
+				name, refused.Code, code, text, apicode.AdvancesInput.V1Name())
 		}
 	}
 	// The cap is the issue's own relations: the twenty under it are written.
@@ -168,9 +169,9 @@ func TestAdvancesRelation(t *testing.T) {
 		t.Fatalf("write the whole set: status=%d body=%s", written.Code, written.Body.String())
 	}
 	again := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core.Key, whole, "alice")
-	if code, text := refusalOf(t, again); again.Code != http.StatusConflict || code != codeAdvancesRevision {
+	if code, text := refusalOf(t, again); again.Code != http.StatusConflict || code != apicode.AdvancesRevision.V1Name() {
 		t.Fatalf("the same write at the same revision: status=%d code=%s error=%q, want 409 %s",
-			again.Code, code, text, codeAdvancesRevision)
+			again.Code, code, text, apicode.AdvancesRevision.V1Name())
 	}
 	if got := advanceEntries(readTestIssue(t, handler, core.Key).Advances); !slices.Equal(got,
 		[]string{priority + " own", second + " own"}) && !slices.Equal(got, []string{second + " own", priority + " own"}) {
@@ -278,9 +279,9 @@ func TestAdvancesRelationRevisionIsExactAndRefusesBeforeItWrites(t *testing.T) {
 			"title": "Renamed by a write that must not land", "status": "backlog", "labels": []string{"moved"},
 		}, "alice")
 		code, text := refusalOf(t, refused)
-		if refused.Code != http.StatusConflict || code != codeAdvancesRevision {
+		if refused.Code != http.StatusConflict || code != apicode.AdvancesRevision.V1Name() {
 			t.Fatalf("a write carrying %s: status=%d code=%s error=%q, want 409 %s",
-				name, refused.Code, code, text, codeAdvancesRevision)
+				name, refused.Code, code, text, apicode.AdvancesRevision.V1Name())
 		}
 		if !strings.Contains(text, fmt.Sprint(held.AdvancesRevision)) {
 			t.Fatalf("the refusal of %s is %q, want it to name the revision the issue holds, %d",
@@ -330,8 +331,8 @@ func refuseAdvancesOnAnIssueNobodyHas(t *testing.T, database *store.Store, prior
 	if !errors.As(err, &refusal) {
 		t.Fatalf("a relation on an issue nobody has answered %v, want a refusal", err)
 	}
-	if refusal.code != codeAdvancesInput || refusal.status != http.StatusBadRequest {
-		t.Fatalf("the refusal = %d %s %q, want 400 %s", refusal.status, refusal.code, refusal.message, codeAdvancesInput)
+	if refusal.code.V1Name() != apicode.AdvancesInput.V1Name() || refusal.code.V1Status() != http.StatusBadRequest {
+		t.Fatalf("the refusal = %d %s %q, want 400 %s", refusal.code.V1Status(), refusal.code.V1Name(), refusal.message, apicode.AdvancesInput.V1Name())
 	}
 	if !strings.Contains(refusal.message, "CORE-9999") {
 		t.Fatalf("the refusal %q does not name the issue", refusal.message)

@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -596,8 +597,8 @@ func TestBroadcastRoutesRefuseACredentialWithoutThePersonScope(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := bearerRequest(t, handler, request.method, request.path, request.body)
-			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-				t.Fatalf("status=%d body=%s, want 403 %s", response.Code, response.Body.String(), codeScopeRequired)
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+				t.Fatalf("status=%d body=%s, want 403 %s", response.Code, response.Body.String(), apicode.OAuthScopeRequired.V1Name())
 			}
 		})
 	}

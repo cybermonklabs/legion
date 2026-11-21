@@ -1,0 +1,8 @@
+kind: Added
+custom:
+  Issue: pr4274
+body: |-
+  Every Dispatch request the plugin makes names it in its `User-Agent` as `pi-envoy/<version>`, and
+  the `dispatch` command it puts on `PATH` names itself `dispatch/<version> (@sjawhar/pi-envoy)`, so
+  Dispatch's access log tells this plugin's calls from every other client's. The calls still go to
+  `/api/v1`, which Dispatch now marks deprecated.

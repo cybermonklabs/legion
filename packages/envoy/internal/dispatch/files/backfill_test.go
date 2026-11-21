@@ -304,6 +304,42 @@ func TestRestoreWritesTheBytesBackIntoEveryRowWhoseObjectReadsBack(t *testing.T)
 	}
 }
 
+// A document an upload made of a file (the api package's storeArtifact) keeps the file's versions
+// before its first document version: version 1 stores bytes and no markdown under an artifact of
+// kind doc. The passes select a version by what it stores, so they move, verify and restore that
+// version's bytes as any file's, and pass over the document version beside it.
+func TestThePassesKeepAConvertedDocumentsFileVersions(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	body := []byte("The plan, typed in an editor and saved as plan.txt.\n")
+	file := seedFileVersion(t, database, "plan-md", body)
+	if _, err := database.Pool.Exec(ctx, `
+		with converted as (
+			update artifacts set kind = 'doc', role = 'plan' where issue_key = 'FILES-1' and slug = 'plan-md' returning id
+		)
+		insert into artifact_versions (artifact_id, number, markdown, authors) select id, 2, '# Plan', '[]' from converted
+	`); err != nil {
+		t.Fatalf("make plan-md a document: %v", err)
+	}
+	memory := filestest.NewMemory()
+
+	moved, err := files.BackfillRows(ctx, database.Pool, memory, &strings.Builder{})
+	if err != nil || moved.Done != 1 || len(moved.Failed) != 0 || rowBytes(t, database, file) != nil {
+		t.Fatalf("BackfillRows: %+v, %v; want the converted document's file version moved out of its row", moved, err)
+	}
+	if got := storedBytes(t, memory, files.SHA256(body)); !bytes.Equal(got, body) {
+		t.Fatalf("the store holds %q for the file version, want %q", got, body)
+	}
+	verified, err := files.VerifyRows(ctx, database.Pool, memory, &strings.Builder{})
+	if err != nil || verified.Done != 1 || len(verified.Failed) != 0 {
+		t.Fatalf("VerifyRows: %+v, %v; want the converted document's file version checked", verified, err)
+	}
+	restored, err := files.RestoreRows(ctx, database.Pool, memory, &strings.Builder{})
+	if err != nil || restored.Done != 1 || !bytes.Equal(rowBytes(t, database, file), body) {
+		t.Fatalf("RestoreRows: %+v, %v; want the converted document's file version's bytes back in its row", restored, err)
+	}
+}
+
 // Two passes started together do not work the same rows in lockstep: the second is refused while
 func TestASecondPassIsRefusedWhileOneHoldsTheLock(t *testing.T) {
 	database := storetest.Open(t)

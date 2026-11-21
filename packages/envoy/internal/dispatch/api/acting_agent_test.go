@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -578,7 +579,8 @@ func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T
 // holds approve (brokerTokenActor). Each passes the row's gate and is refused inside the answer
 // (answerAsk) exactly as the gate refuses it - the code, the scope named and the challenge header -
 // with the request left open. Each answers any other kind of ask, so it is the ask's kind alone
-// that refuses.
+// that refuses. The broker-issued token is held to the same on PUT /api/v2/asks/{id}/state, the
+// /api/v2 route that answers an ask: /api/v2 grants nothing /api/v1 refuses.
 func TestAnsweringAnApprovalAskNeedsTheApproveScope(t *testing.T) {
 	for _, credential := range []struct {
 		name string
@@ -599,6 +601,15 @@ func TestAnsweringAnApprovalAskNeedsTheApproveScope(t *testing.T) {
 			return func(askID string, body map[string]any) *httptest.ResponseRecorder {
 				body["expected_edited_at"] = nil
 				return rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer", token, body))
+			}
+		}},
+		{"a broker-issued token acting for its person, on /api/v2", func(t *testing.T, rig *brokerTokenRig) func(string, map[string]any) *httptest.ResponseRecorder {
+			caller := newBrokerCaller(t)
+			const token = "a-dev-box-token-that-would-answer-an-approval-on-v2"
+			rig.broker.Says(token, personScopedTokenAnswer(caller.jkt))
+			return func(askID string, body map[string]any) *httptest.ResponseRecorder {
+				body["state"], body["expected_edited_at"] = "answered", nil
+				return rig.serve(caller.presenting(t, http.MethodPut, "/api/v2/asks/"+askID+"/state", token, body))
 			}
 		}},
 	} {
@@ -623,8 +634,8 @@ func TestAnsweringAnApprovalAskNeedsTheApproveScope(t *testing.T) {
 				t.Fatalf("answer an approval ask without approve: status=%d body=%s, want 403", refused.Code, refused.Body.String())
 			}
 			body := decodeBody[refusalAnswer](t, refused)
-			if body.Code != codeScopeRequired || !strings.Contains(body.Error, model.ScopeApprove) {
-				t.Fatalf("the refusal = %+v, want %s naming the approve scope", body, codeScopeRequired)
+			if body.Code != apicode.OAuthScopeRequired.V1Name() || !strings.Contains(body.Error, model.ScopeApprove) {
+				t.Fatalf("the refusal = %+v, want %s naming the approve scope", body, apicode.OAuthScopeRequired.V1Name())
 			}
 			if got, want := refused.Header().Get("WWW-Authenticate"), insufficientScopeChallenge(model.ScopeApprove); got != want {
 				t.Fatalf("the refusal's challenge = %q, want %q", got, want)
@@ -642,6 +653,68 @@ func TestAnsweringAnApprovalAskNeedsTheApproveScope(t *testing.T) {
 				t.Fatalf("answer an ordinary question with the same credential: status=%d body=%s", answered.Code, answered.Body.String())
 			}
 		})
+	}
+}
+
+// An approval request its person answered with a credential that holds approve is answered as it
+// stands, writing nothing, to that credential sending the same answer again on PUT
+// /api/v2/asks/{id}/state (the no-op rule, putChangesNothing), and to no credential that may not
+// approve: a token of the same person narrowed to person, and a broker-issued token acting for
+// that person, which never holds approve (brokerTokenActor), are each refused 403
+// OAUTH_SCOPE_REQUIRED naming approve, with its challenge, as every answer of theirs to that ask
+// is, rather than told its approval stands.
+func TestTheV2NoOpAnswerOfAnApprovalAskNeedsTheApproveScope(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	handler, database := rig.handler, rig.database
+	issue := createInteractionIssue(t, handler, "ACT", "Approving again needs approve", "A spec")
+	approver := mintPersonalToken(t, handler, brokerTestPerson, actingTokenName, []string{model.ScopePerson, model.ScopeApprove})
+	narrow := mintPersonalToken(t, handler, brokerTestPerson, "planner", []string{model.ScopePerson})
+	caller := newBrokerCaller(t)
+	const brokerToken = "a-dev-box-token-that-would-approve-again"
+	rig.broker.Says(brokerToken, personScopedTokenAnswer(caller.jkt))
+	requested := sessionRequest(t, handler, http.MethodPost,
+		"/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{"actor": sessionActor()})
+	if requested.Code != http.StatusCreated {
+		t.Fatalf("request approval: status=%d body=%s", requested.Code, requested.Body.String())
+	}
+	approvalAsk := decodeBody[struct {
+		Ask struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+	}](t, requested).Ask.ID
+
+	state := "/api/v2/asks/" + approvalAsk + "/state"
+	target := state + "?session=" + actingSession
+	answer := map[string]any{"state": "answered", "selected": []string{docs.ApprovalOptionApprove}, "expected_edited_at": nil}
+	if approved := agentRequest(t, handler, http.MethodPut, target, answer, approver.Token); approved.Code != http.StatusOK {
+		t.Fatalf("approve with a token holding approve: status=%d body=%s", approved.Code, approved.Body.String())
+	}
+	stored := storedAskAnswer(t, database, approvalAsk)
+	answered := func() int {
+		var count int
+		if err := database.Pool.QueryRow(context.Background(),
+			`select count(*) from events where issue_key = $1 and type = 'ask.answered'`, issue.Key).Scan(&count); err != nil {
+			t.Fatalf("count ask.answered events: %v", err)
+		}
+		return count
+	}
+	events := answered()
+
+	assertScopeRefused(t, "the same approval sent again by alice's token without approve",
+		agentRequest(t, handler, http.MethodPut, target, answer, narrow.Token), model.ScopeApprove)
+	// The broker token proves its own session, so it names none: a session parameter naming
+	// another would be refused for that before the answer is read.
+	assertScopeRefused(t, "the same approval sent again by alice's broker token",
+		rig.serve(caller.presenting(t, http.MethodPut, state, brokerToken, answer)), model.ScopeApprove)
+	again := agentRequest(t, handler, http.MethodPut, target, answer, approver.Token)
+	if again.Code != http.StatusOK {
+		t.Fatalf("the same approval sent again by the token that gave it: status=%d body=%s, want 200", again.Code, again.Body.String())
+	}
+	if after := answered(); after != events {
+		t.Fatalf("the approval sent again appended %d ask.answered events, want none", after-events)
+	}
+	if now := storedAskAnswer(t, database, approvalAsk); !now.At.Equal(stored.At) {
+		t.Fatalf("the approval sent again rewrote the answer at %v, want it kept at %v", now.At, stored.At)
 	}
 }
 

@@ -65,6 +65,16 @@ Each item below names a variable, then its purpose.
   The auth service answers with Dispatch's grant for the account its `BROKER_NATS_SERVICES` entry lists, and that user expires with the token, so the connection moves to a later token ten minutes before the one it presented lapses.
   Either set beside any other NATS credential variable refuses startup naming both.
 
+- `DISPATCH_API_V1_END`
+
+  The instant `/api/v1` ends, an RFC 3339 time with its offset, such as `2027-01-01T00:00:00Z`, which the `gcp:Dispatch` component's `apiV1End` input sets (`packages/envoy/infra/README.md`).
+  Unset or empty, `/api/v1` has no end; a value that is not an RFC 3339 time refuses startup.
+  While the instant is ahead, every `/api/v1` answer carries a `Sunset` header (RFC 8594) naming it, beside the `Deprecation` and `Link` headers every `/api/v1` answer carries (Routes, below).
+  Once it has passed, a check in front of every route answers every path under `/api/v1`, an unknown path and a test hook's included, `410 {"code":"API_V1_ENDED","error":"/api/v1 ended at <end>; GET /api/v2 lists every route","hint":"GET /api/v2"}` with `Link: </api/v2>; rel="successor-version"`.
+  The check reads the clock on each request, so the end takes effect at that instant on every process, with no restart.
+  Set it only once no client a deployment runs still calls `/api/v1`:
+  at the first `legion-envoy` release that carries pull request #4274, the `dispatch` command, the Oh My Pi and Claude Code plugins, the Legion daemon and the secrets broker all still do, and each names itself in its `User-Agent`, which the access log records (Access log, below).
+
 - `DISPATCH_TEST_HOOKS`
 
   Set to `1` to mount test-only routes: `POST /api/v1/live/_test/disconnect` closes every open live socket with 1012 (restart), and `POST /api/v1/live/_test/rotate` closes every one with 4001 (`max age`);
@@ -74,6 +84,7 @@ Each item below names a variable, then its purpose.
   `POST /api/v1/artifacts/{id}/_test/newer-content` appends an element no build knows, so the document holds newer content;
   and `POST /api/v1/writes/_test/slow` `{method, path, delay_ms}` makes every keyed run of that method and exact path wait `delay_ms` once its key is claimed.
   The first four act on every process serving the database, whichever one the call reached (Running more than one process, below), and the flag costs each process one more Postgres connection outside the shared pool, the one those hooks listen on.
+  Each hook answers at its `/api/v1` path and at `/api/v2/_test/` followed by that path without `/api/v1` and without its `/_test` segment (`POST /api/v2/_test/live/disconnect`, `POST /api/v2/_test/artifacts/{id}/outside-schema`), mounted only with this flag, and the `/api/v1` path ends with `/api/v1` (`DISPATCH_API_V1_END`, above).
   Leave unset in every real deployment.
 
 - `DISPATCH_DEV_SIGNIN`
@@ -217,10 +228,10 @@ No broker-issued token holds the OAuth scope `approve`, whatever its project sco
 Each such token is made from a file on the machine that holds it, a machine login or a person's sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
 So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses every broker-issued token at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
 `403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that holds no scope, and `403 READ_ONLY_TOKEN` for a read-only token (below).
-The answer to an approval request (`POST /api/v1/asks/{id}/answer`) needs only `person` at that gate, because the ask's kind is known only once its row is read, so a token that holds no scope and a read-only token are refused there as above;
+The answer to an approval request (`POST /api/v1/asks/{id}/answer`, and `PUT /api/v2/asks/{id}/state` with `answered`) needs only `person` at that gate, because the ask's kind is known only once its row is read, so a token that holds no scope and a read-only token are refused there as above;
 a token acting for its person passes the gate and is refused inside the answer's transaction (`answerAsk`), once the ask's kind is read and before anything is written, with the same `403 OAUTH_SCOPE_REQUIRED` naming `approve`, and the request stays open.
 The person makes those calls from their browser session, or with a personal token they gave `approve`.
-A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
+A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`, and `PUT /api/v2/issues/{key}/decisions/{block_id}/state` with `kept`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
 
 A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
@@ -3615,11 +3626,15 @@ So a reader sees exactly one ending, never two and never none.
 
 ## Keyed writes
 
-Every `POST` and `PATCH` route takes an optional `Idempotency-Key` request header naming the intent behind the write, the same on every retry of it and new for every new one (the IETF `Idempotency-Key` draft; Google AIP-155).
+Every `POST` and `PATCH` route, and on `/api/v2` every `PUT` and `DELETE` route too, takes an optional `Idempotency-Key` request header naming the intent behind the write, the same on every retry of it and new for every new one (the IETF `Idempotency-Key` draft; Google AIP-155).
 The dashboard mints one per press and the `dispatch` CLI one per command's write, and both retry under it by one rule (`retriesUnderKey` in `@legion/contracts`):
 a failed fetch, an attempt silent too long, a 5xx, a 408, a 429 and a `409 KEY_IN_FLIGHT`.
 No route requires the header: a write without one runs as it always did, unkeyed, so a script or the Legion daemon's outbox keeps working.
-`PUT` and `DELETE` take no key, being idempotent already.
+On `/api/v1` a `PUT` and a `DELETE` take no key, being idempotent already, so no `/api/v1` answer changes;
+on `/api/v2` they are keyed like every other write, so a repeated `PUT` or `DELETE` is answered as its first was, and the routes of the INFRA-979 tree (`/api/v2/delivery/…`, `/api/v2/settings/delivery`), which keep their `/api/v1` shape, keep `/api/v1`'s rule.
+A `/api/v2` `PUT` whose whole body equals the object's present state and fields, sent by the caller the object records as having set them (anyone, for an object that records no setter: a follower, a repository mapping, an architecture source; for a credential request, a caller the broker would let decide it, `record.MayDecide`), answers `200` with the object and writes nothing (`putChangesNothing`), and it is held first to every scope and authority the write it stands in for needs, so a caller the write would not let write is refused as the write refuses it;
+every `/api/v2` `PUT` answers `200` with the object, the follower `PUT` included, which `/api/v1` answers `204`.
+The fingerprint holds the route's pattern, so one key sent to a `/api/v1` route and then to its `/api/v2` route is two requests under one key, `422 KEY_REUSED`.
 A key is 1 to 128 letters, digits, `.`, `_`, `:` and `-`, bare or double-quoted, and belongs to the caller who sent it:
 a person's canonical login (from the dashboard or through a personal token), a service token's subject, or the shared agent token.
 Dispatch keeps each key's answer for 24 hours (`request_keys`, migration `0137`; the maintenance sweep deletes older rows, Background loops above).
@@ -3669,9 +3684,9 @@ Each item below names a status and code, then its meaning.
   its lease lapsed in flight, or it ended in a 5xx or a panic after committing (every transaction a keyed request commits that wrote a row marks the key's `committed_at` in that same transaction;
   a lock-only `SELECT … FOR UPDATE` marks nothing, and a COMMIT refused after the mark leaves none).
   The write landed and is not run again; there is no answer to replay, so the caller reads what it wrote.
-  Also a repeat of a keyed `POST /api/v1/me/agent-tokens` that minted, once that first request has finished, answer lost or not:
+  Also a repeat of a keyed `POST /api/v1/me/agent-tokens` or `POST /api/v2/me/agent-tokens` that minted, once that first request has finished, answer lost or not:
   the mint's answer carries the plaintext token, so it is never kept under the key, never replayed, and no second token is minted (a mint refused with a 4xx commits nothing, so its key is released and a repeat runs it again).
-  That is the one route whose answer is not stored.
+  Those are the routes whose answer is not stored.
 
 - `422 KEY_REUSED`
 
@@ -3695,7 +3710,7 @@ Each item below names a status and code, then its meaning.
 
 A 5xx, a 401, a 408 and a 429 are not stored:
 the key is released and the next attempt runs the request again, unless the request had already committed a write, which makes that next attempt `409 KEY_COMMITTED` at once.
-Four kinds of write keep their own recovery point beside the key, so a repeat of `POST /api/v1/agents/{session_id}/messages`, `POST /api/v1/broadcasts`, `POST /api/v1/issues/{key}/messages`, or a comment (`POST /api/v1/issues/{key}/comments`, `POST /api/v1/artifacts/{id}/comments`) answers what it made as it stands now, under the first's `201`, however the first request ended, and puts on its way whatever delivery a dead process left owed;
+Four kinds of write keep their own recovery point beside the key, so a repeat of `POST /api/v1/agents/{session_id}/messages`, `POST /api/v1/broadcasts`, `POST /api/v1/issues/{key}/messages`, or a comment (`POST /api/v1/issues/{key}/comments`, `POST /api/v1/artifacts/{id}/comments`), and of the same paths under `/api/v2`, answers what it made as it stands now, under the first's `201`, however the first request ended, and puts on its way whatever delivery a dead process left owed;
 a broadcast's repeat answers at once and sends what it owes behind the answer.
 A comment's or an issue message's replay reads every member fresh and keeps from the first answer only its `advice` and `ask_waiting_on`, and only when that answer was a 2xx.
 Neither send route takes a body `idempotency_key` any more.
@@ -3714,7 +3729,7 @@ A send to one session answers once its own attempt has settled, which keeps a pe
 a broadcast answers once its messages are committed, with its deliveries behind the answer.
 
 The layer reads a keyed body before its handler runs, spooling at most the route's own limit:
-26 MiB for the three upload routes (`POST /api/v1/issues/{key}/artifacts`, `/projects/{key}/artifacts`, `/agents/{session_id}/artifacts`), 1,576,960 bytes for the handoff write (`POST /api/v1/issues/{key}/handoffs/{phase}`), 1 MiB for every other.
+26 MiB for the three upload routes (`POST /api/v1/issues/{key}/artifacts`, `/projects/{key}/artifacts`, `/agents/{session_id}/artifacts`, and the same paths under `/api/v2`), 1,576,960 bytes for the handoff write (`POST /api/v1/issues/{key}/handoffs/{phase}`, `POST /api/v2/issues/{key}/handoffs`), 1 MiB for every other.
 A body past it is answered its route's `413` by the layer itself, and the handler does not run.
 A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`;
 one Dispatch cannot spool to its temporary directory is Dispatch's own failure, a 5xx with the key echoed, which the client asks again.
@@ -3807,21 +3822,71 @@ The dashboard's own pages and assets write none, so a browser's page loads do no
 `/healthz`, which a load balancer calls every few seconds, `/livez`, which a liveness or startup probe calls, and `/metrics`, which a scraper calls, write none either.
 Three answers are given before any route runs and write none:
 the `403` a cookie request from another origin gets, the `421` a request for another host gets on a server with local sign-in, and the `307` redirect Go's router gives an unclean path (`/api/v1//issues`) or a prefix route called without its trailing slash (`/api/github/rest`).
+A fourth is given before any route runs and writes one, so the log shows who still calls `/api/v1` once it has ended:
+the `410 API_V1_ENDED` every path under `/api/v1` gets once `DISPATCH_API_V1_END` has passed (Required configuration, above), its `route` the pattern of the route that would have answered it, or `unmatched` where none would, as for the `404` of an unknown path.
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
 
 ## Routes
 
-`GET /api/v1` (no credential) is the authoritative list:
-every mounted `/api/v1` route with its `method`, `path`, `auth` (`public`, `any`, `human`, or `bearer`), and `description`, sorted by path then method.
-`envoy-dispatch routes` prints the same body from the table alone, with no database or listener and never a test hook;
-the docs site's HTTP API reference is generated from it.
-`envoy-dispatch openapi` prints the OpenAPI 3.1 document of the same table with its test hooks in, each hook's operation marked `x-test-hook`, from the table, the Go types beside it (`internal/dispatch/api/routes_shapes.go`) and nothing else;
-`--out <path>` writes it to a file and `--check` compares the committed `packages/contracts/schemas/dispatch-openapi.json` with a fresh render, printing a unified diff and exiting 1 when the two differ.
-The clients' TypeScript types are rendered from that committed document, so a route added to the table reaches them with no type hand-written for it.
-The list below is a summary.
-An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz` is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
-/v1/issues","hint":"GET /api/v1 lists every route"}`, never the dashboard shell.
+Dispatch serves two versions of its API from one route table (`internal/dispatch/api/routes_table.go`, `routes()`), and each version's index is the authoritative list of what that version serves, with no credential.
+`/api/v2` is the version to call, served from the first `legion-envoy` release that carries pull request #4274;
+`/api/v1` is deprecated, keeps the answers it had, and ends at the instant `DISPATCH_API_V1_END` names (Required configuration, above).
+
+`GET /api/v2` answers the list envelope `{docs, items, total, limit, offset}`, every route on one page unless the request names a `limit`:
+each mounted `/api/v2` route with its `method`, `path`, `auth` (`public`, `any`, or `bearer`), `scopes` (`[]` for none) and `description`, and what a client reads to call it — the `resource` it serves, that resource's `kind` and `key`, the `time_fields` a read windows on, the `position` field a log reads `after` and `before` in, the `list` bounds of its `limit`, and whether it reads `cross_project` — sorted by path then method.
+`GET /api/v1` answers `{docs, routes}`, every mounted `/api/v1` route with its `method`, `path`, `auth`, `scopes` (left out for none) and `description`, sorted by path then method.
+`envoy-dispatch routes` prints `GET /api/v1`'s body and `envoy-dispatch routes --version 2` prints `GET /api/v2`'s, from the table alone, with no database or listener and never a test hook;
+the docs site's HTTP API reference is generated from both, one page per version, the `/api/v1` page marked deprecated.
+`envoy-dispatch openapi` writes the OpenAPI 3.1 document of each version of the API where the repository commits it, each with that version's test hooks in and each hook's operation marked `x-test-hook`, from the table and the Go types its rows declare and nothing else:
+`packages/contracts/schemas/dispatch-openapi.json` for `/api/v1`, from each row's `routeShapes` entry (`internal/dispatch/api/routes_shapes.go`),
+and `packages/contracts/schemas/dispatch-openapi-v2.json` for `/api/v2`, from each `/api/v2` row's declared query, body and answer types.
+`--check` writes nothing: it compares both committed documents with a fresh render, printing a unified diff for each that differs and exiting 1.
+`--version 1` or `--version 2` takes that version's document alone, and `--out <path>`, which needs `--version`, writes it to that file instead (`-` for standard output), or with `--check` compares that file.
+The `/api/v2` document lists each operation's refusal codes with their statuses, and every code `/api/v2` can answer, once, under `components.x-refusal-codes`.
+The clients' TypeScript types are rendered from the committed documents (`@legion/contracts` from the `/api/v1` one, `@legion/contracts/dispatch-api-v2` from the `/api/v2` one), so a route added to the table reaches them with no type hand-written for it.
+
+Every `/api/v2` route but the INFRA-979 tree's keeps one shape.
+Each item below names a rule, then what a caller meets.
+
+- Lists
+
+  Every list answers `{items, total, limit, offset}`, with the route's own `limit` bounds (50 and 200 where it had none): a `limit` outside them is `400 INVALID_LIMIT` naming the bound, and an `offset` that is no integer of 0 or more `400 INVALID_OFFSET`.
+  The global event log (`GET /api/v2/events`) and the caller's dismissed threads (`GET /api/v2/me/threads?state=dismissed`) answer `total: null`, since counting the global log costs about ten times its page and counting the dismissed threads counts every thread the caller has ever dismissed; every other list, every other log among them, answers an exact `total`.
+  A log reads `after` and `before` in its one position field (`seq` for an issue's and a document's events, `id` for the global log, `source_seq` for the references, `<time>,<id>` for the caller's dismissed threads); an `after` past the log's last position, or a value not written as that field is, is `400 POSITION_INVALID` naming the parameter and the field, and a `before` past the end answers the newest page.
+
+- Refusals
+
+  Every refusal is `{code, error}`, the code a constant of one list (`internal/dispatch/api/apicode`), and one condition answers one code on every route: a loop through parents and one through dependencies are both `409 ISSUE_CYCLE`.
+  `/api/v1` keeps its own codes, each rendered from the same constant under the name and status `/api/v1` gave it.
+
+- The query and the body
+
+  One decoder reads every route's query and body from the types its row declares.
+  A query key the route does not declare is `400 QUERY_KEY_UNKNOWN` with the `key` and the keys the route `declared`, before any lookup or write; a body member it does not declare is ignored.
+
+- Writes
+
+  Every `POST`, `PATCH`, `PUT` and `DELETE` takes an `Idempotency-Key`, and a `PUT` that changes nothing answers `200` and writes nothing (Keyed writes, above).
+
+- Objects a path names
+
+  A path that names an object Dispatch stores, which does not exist, answers `404` with that object's code (`ISSUE_NOT_FOUND`, `PROJECT_NOT_FOUND`, `ASK_NOT_FOUND`, `VERSION_NOT_FOUND`, `BLOCK_NOT_FOUND`, …);
+  a `{session_id}` and a repository's app installation keep `/api/v1`'s answer, since Dispatch cannot tell a session that never existed from one that has gone, and GitHub answers alike for a missing repository and one the App cannot see.
+
+- An unknown path
+
+  An unknown path under `/api/v2` is a JSON 404 `{"code":"NO_ROUTE","error":"no route for GET /api/v2/issue","hint":"GET /api/v2 lists every route"}`.
+
+Every `/api/v1` answer, an unknown `/api/v1` path's included, carries `Deprecation: @<unix seconds>` (RFC 9745), dated by the constant `apiV1DeprecatedAt`, the day the change that added `/api/v2` was finished, which can be some days before the release that carries it;
+and `Link: </api/v2/…>; rel="successor-version"`, the `/api/v2` route that answers for it, filled from the request's own path values and carrying that route's query where the `/api/v1` route became a filter of it (`GET /api/v1/issues/{key}/artifacts/{slug}` links `/api/v2/issues/{key}/artifacts?slug={slug}`).
+Where the `/api/v2` path needs a value the `/api/v1` request does not carry, an artifact's id or an issue's key, the handler records the one it resolved;
+an answer that holds none, a request refused before its handler resolves one or a keyed write's replay, links `</api/v2>` with `title="<METHOD> /api/v2/<pattern>"`.
+`GET /api/v1/settings/architecture-sources`, every project's sources, carries one `Link` value per project its answer holds, `</api/v2/projects/{key}/architecture-sources>`, and `</api/v2/projects>` when it holds none.
+While `DISPATCH_API_V1_END` is ahead each `/api/v1` answer carries `Sunset` too, and once it has passed every `/api/v1` path answers `410 API_V1_ENDED`.
+No `/api/v2` answer carries any of the three.
+An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz`, outside `/api/v2`, is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
+/v1/issues","hint":"GET /api/v1 lists every route"}`, and no unknown path under those roots, `/api/v2`'s included, is answered the dashboard shell.
 Every server process publishes its dashboard build's assets into the database at boot (Running more than one process, above), so a missing local file under `/assets/` is read whole from the database under the same key (`assets/<file>`) before Dispatch answers, through a cache of at most 64 MiB the process's requests share;
 it never reads `index.html` or a non-asset path from there.
 A path no build published remains `404 {"error":"not found"}` and any other read failure is a 502 with no cache header.
@@ -3830,8 +3895,14 @@ The dashboard's pages (`index.html` and the shell served for a browser route) ca
 
 In this list, header identity means only the test/local harness mode described above.
 Production Dispatch uses cookie identity through the sign-in pool.
+The `/api/v1` routes in it are as `/api/v1` serves them, which the `dispatch` command, the plugins, the daemon and the broker still call:
+`GET /api/v2` and the docs site's reference describe each `/api/v2` route, and an `/api/v1` answer's `Link` header names the one that answers for it.
 
 Each item below names a path with its method and identity, then its purpose.
+
+- `/api/v2` (GET; none)
+
+  List every `/api/v2` route with its auth, scopes and purpose and what a client reads to call it, in the list envelope.
 
 - `/api/v1` (GET; none)
 
@@ -4406,6 +4477,7 @@ Each item below names a path with its method and identity, then its purpose.
   It waits at most 5 seconds and answers `200` with the create's `advice.suggestions` shape (`outcome`, `search`, `search_note`, `search_query`, `related`, `missing`), a blank title and text included (`not_made`).
   The two forms do not answer alike: POST is the check an agent runs to ask a question, so it also answers `other_projects`, at most two answered question asks of other projects, and GET answers none of them, because its caller is the dashboard's new-issue dialog ([Search](#search)).
   `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for an unknown one.
+  Both forms' `/api/v2` successor is a `POST`, `POST /api/v2/projects/{key}/related-searches`, which takes the fields in its JSON body, so the `Link` a `GET` answer carries names a route that a `GET` does not reach.
 
 - `/api/v1/related-checks?project=&source_kind=&from=&to=` (GET; cookie, trusted header, or bearer)
 
@@ -5302,6 +5374,34 @@ Each item below names a status and code, then its meaning.
 - `400 INVALID_SESSION_ID`
 
   An agent artifact route's `session_id` is empty or holds `/`, `?`, `#`, whitespace, a control character or a character that ends a reference in text, so no reference could name what it owns; nothing is written.
+
+- `400 QUERY_KEY_UNKNOWN`
+
+  `/api/v2` alone: the query names a key the route does not declare, a misspelt filter among them.
+  The body is `{code, error, key, declared}`, `key` the key and `declared` every key the route declares, sorted, `session` among them; nothing is read or written.
+  The `/api/v1` routes still ignore a key they do not read.
+
+- `400 INVALID_QUERY`, `400 INVALID_LIMIT`, `400 INVALID_OFFSET`
+
+  On `/api/v2`, a query value outside what its key takes, named with the key and what it takes: a value no `enum` lists, a boolean that is not `true` or `false`, a time that is not RFC 3339, an integer outside its bounds, a `sort` field the route does not sort by, a key given twice that takes one value;
+  a `limit` outside the route's bounds (`INVALID_LIMIT`, naming the bound), or an `offset` that is no integer of 0 or more (`INVALID_OFFSET`).
+
+- `400 POSITION_INVALID`
+
+  `/api/v2` alone: a log's `after` past its last written position, or an `after` or `before` not written as the log's position field is, naming the parameter and the field.
+
+- `400 STATE_INVALID`, `400 INVALID_KIND`
+
+  On `/api/v2`, a body keyed by `state` (a `PUT` to a `…/state` route) whose `state` names no state the route takes, or none, and a mark whose `kind` names no kind it takes, each naming the ones it takes.
+
+- `404 NO_ROUTE`
+
+  `/api/v2` alone: no route serves the method and path; the body's `hint` is `GET /api/v2 lists every route`.
+  `/api/v1` answers the same case `404 NOT_FOUND`, "no route for …".
+
+- `410 API_V1_ENDED`
+
+  `/api/v1` alone, every path under it, once the instant `DISPATCH_API_V1_END` names has passed (Required configuration, above); the body's `hint` is `GET /api/v2`.
 
 - `409 ID_AMBIGUOUS`
 

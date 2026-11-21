@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -49,7 +50,7 @@ type retractedResult struct {
 func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	var input checkResultRetractionInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -58,14 +59,32 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	reason := strings.TrimSpace(input.Reason)
 	if reason == "" {
-		writeError(w, "RETRACTION_INPUT", http.StatusBadRequest,
+		writeError(w, r, apicode.RetractionInput,
 			"reason says why the result is wrong, and the retraction keeps it for every later reader")
 		return
 	}
-	if !requireUUIDPath(w, r, "result") {
+	if !requireUUIDPath(w, r, "result", apicode.ResultIDInput) {
 		return
 	}
-	resultID := r.PathValue("id")
+	retraction, ok := s.retractCheckResultAs(w, r, actor, r.PathValue("id"), reason, nil)
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusCreated, retraction)
+}
+
+// retractCheckResultAs is the retraction both versions write of result resultID for actor, with
+// reason, a reason it holds to be no blank text already, and answers it; it writes a refusal itself
+// and answers false. unchanged, where it is not nil, is the no-op rule of PUT
+// /api/v2/results/{id}/state (dispatch://INFRA-4071/spec R8): a result retracted already, by a
+// retraction it answers true for, is answered as it stands with nothing written - the zero
+// retraction and true - where every other second retraction is 409 RESULT_RETRACTED. The rule is
+// applied once the caller is held to the three who may retract the result, so it answers nobody
+// else a retraction.
+func (s *server) retractCheckResultAs(
+	w http.ResponseWriter, r *http.Request, actor model.Actor, resultID, reason string,
+	unchanged func(model.CheckResultRetracted) bool,
+) (model.CheckResultRetraction, bool) {
 	// Asked before the transaction opens, because a cookie caller's credential is read through
 	// the pool (identity), and a caller that already holds a connection of the pool is refused
 	// a second one (store/pool.go): inside the transaction every person would read as holding
@@ -73,8 +92,8 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	person := s.callerHoldsScope(r, model.ScopePerson)
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.CheckResultRetraction{}, false
 	}
 	defer tx.Rollback(r.Context())
 
@@ -92,27 +111,37 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// route under this lock, reads the first one as soon as that one commits.
 	result, err := readRetractedResult(r.Context(), tx, resultID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.CheckResultRetraction{}, false
 	}
 	if err := store.LockOwner(r.Context(), tx, store.IssueOwner(result.CheckIssueKey)); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.CheckResultRetraction{}, false
 	}
 	if err := s.refuseRetractionBy(r.Context(), tx, actor, person, result); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.CheckResultRetraction{}, false
 	}
 	retracted, err := resultIsRetracted(r.Context(), tx, resultID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.CheckResultRetraction{}, false
 	}
 	if retracted {
-		writeError(w, "RESULT_RETRACTED", http.StatusConflict, fmt.Sprintf(
+		if unchanged != nil {
+			standing, err := standingRetraction(r.Context(), tx, resultID)
+			if err != nil {
+				s.writeHandlerError(w, r, err)
+				return model.CheckResultRetraction{}, false
+			}
+			if unchanged(standing) {
+				return model.CheckResultRetraction{}, true
+			}
+		}
+		writeError(w, r, apicode.ResultRetracted, fmt.Sprintf(
 			"result %s was retracted already. Read the retraction that stands, and record a new result for the check.",
 			resultID))
-		return
+		return model.CheckResultRetraction{}, false
 	}
 
 	// The write phase: the event and the retraction's row, back to back, and the COMMIT behind
@@ -125,23 +154,23 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 			CheckBlockID: result.CheckBlockID, CommitSHA: result.CommitSHA, Reason: reason,
 		}))
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.CheckResultRetraction{}, false
 	}
 	seq := int64(event.Seq)
 	retraction := model.CheckResultRetraction{
 		ResultID: resultID, Reason: reason, Session: sessionOf(actor), Actor: actor, EventSeq: &seq,
 	}
 	if err := insertCheckResultRetraction(r.Context(), tx, &retraction); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.CheckResultRetraction{}, false
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.CheckResultRetraction{}, false
 	}
 	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusCreated, retraction)
+	return retraction, true
 }
 
 // refuseRetractionBy refuses every caller but the three a retraction belongs to:
@@ -178,7 +207,7 @@ func (s *server) refuseRetractionBy(
 	if session != "" && session == holder {
 		return nil
 	}
-	return errorf(http.StatusForbidden, "RETRACTION_FORBIDDEN",
+	return errorf(apicode.RetractionForbidden,
 		"three callers retract this result: the session that recorded it, the session holding the Dispatch claim of %s, and a person. Take that claim, or send the request with a personal token.",
 		result.IssueKey)
 }
@@ -212,7 +241,7 @@ func readRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedRe
 	`, id).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
 		&result.CommitSHA, &result.Session)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return retractedResult{}, errorf(http.StatusNotFound, "RESULT_NOT_FOUND", "result not found")
+		return retractedResult{}, errorf(apicode.ResultNotFound, "result not found")
 	}
 	if err != nil {
 		return retractedResult{}, fmt.Errorf("read result %s: %w", id, err)
@@ -231,6 +260,23 @@ func resultIsRetracted(ctx context.Context, q queryer, id string) (bool, error) 
 		return false, fmt.Errorf("read the retraction of result %s: %w", id, err)
 	}
 	return true, nil
+}
+
+// standingRetraction is the retraction that stands against one result, as the results read
+// carries it on the result (loadCheckResultRetractions): its reason, its actor and when it was
+// written. A result no retraction stands against is pgx.ErrNoRows.
+func standingRetraction(ctx context.Context, q queryer, id string) (model.CheckResultRetracted, error) {
+	var retraction model.CheckResultRetracted
+	var actorJSON []byte
+	if err := q.QueryRow(ctx, `
+		select reason, actor, created_at from check_result_retractions where result_id = $1
+	`, id).Scan(&retraction.Reason, &actorJSON, &retraction.CreatedAt); err != nil {
+		return model.CheckResultRetracted{}, fmt.Errorf("read the retraction of result %s: %w", id, err)
+	}
+	if err := json.Unmarshal(actorJSON, &retraction.Actor); err != nil {
+		return model.CheckResultRetracted{}, fmt.Errorf("decode the actor of the retraction of result %s: %w", id, err)
+	}
+	return retraction, nil
 }
 
 // loadCheckResultRetractions is the retraction standing against each result of one

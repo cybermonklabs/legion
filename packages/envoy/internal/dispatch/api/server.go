@@ -10,10 +10,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
@@ -446,17 +447,22 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime   context.Context
-	routeIndex []routeIndexEntry
+	lifetime context.Context
+	// routeIndex and routeIndexV2 are the routes GET /api/v1 and GET /api/v2 list: each version's
+	// own, rendered once at mount (register).
+	routeIndex   []routeIndexEntry
+	routeIndexV2 []routeIndexV2Entry
 	// readOnlyRefusal is the message every route the read list does not name answers a read-only
 	// token with (refuseReadOnlyToken): the read list as register found it, in words. register
 	// builds it once, before it wraps the first row, so the rows share one text rather than each
 	// holding a copy of its own. A server register did not build has none, and
 	// refuseReadOnlyToken wraps no route of one rather than answer an empty message.
 	readOnlyRefusal string
-	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
-	// write, held to the table this server mounts (going_catalogue.go).
+	// going is the action catalogue GET /api/v1/going/catalogue serves, and goingV2 the one GET
+	// /api/v2/going-actions serves: the dispatch tools that write, each held to the rows of its
+	// own version of the table this server mounts (going_catalogue.go).
 	going           GoingCatalogue
+	goingV2         GoingCatalogue
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
@@ -643,8 +649,9 @@ type RouteMux interface {
 	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
 }
 
-// Register mounts every native-workspace route on mux. The routes live in routes_table.go; the
-// same table answers GET /api/v1.
+// Register mounts every native-workspace route on mux, at /api/v1 and at /api/v2. The routes live
+// in routes_table.go and the v2_<group>.go files (routes_versions.go); the same table answers GET
+// /api/v1 and GET /api/v2, each with the routes of its own version.
 //
 // Every route is marked so the shared pool can refuse a second connection to a handler that
 // already holds one of its transactions (store.ErrNestedAcquire): one caller, one connection is
@@ -654,10 +661,15 @@ type RouteMux interface {
 // Every route refuses a path or query parameter holding U+0000 or a byte that is not UTF-8 before
 // its handler runs (refuseUnstorableParameters), as decodeJSON refuses a U+0000 in a body.
 //
-// Every POST and PATCH route takes an Idempotency-Key, and a repeat under one is answered from the
-// key rather than run again (keyedWrites, request_keys.go). Every write route - a POST, PATCH, PUT
-// or DELETE - that names its presser in Dispatch-Login runs only as that person
-// (refuseChangedLogin).
+// Every POST and PATCH route, and every PUT and DELETE route the rules of /api/v2 bind
+// (apiRoute.v2Bound: neither a test hook nor a row of the INFRA-979 tree), takes an
+// Idempotency-Key, and a repeat under one is answered from the key rather than run again
+// (keyedWrites, keyedMethod, request_keys.go). Every write route - a POST, PATCH, PUT or DELETE -
+// that names its presser in Dispatch-Login runs only as that person (refuseChangedLogin).
+//
+// Every route the rules of /api/v2 bind reads its query and its body through one decoder, from the
+// types its row declares, and holds each value its row gives an authority to that authority before
+// its handler runs (decode_v2.go, authorities_v2.go).
 //
 // Every route the read list does not name (readScopeRoutes), GET /ws/live among them, answers a
 // read-only broker token 403 READ_ONLY_TOKEN before anything else it does (refuseReadOnlyToken).
@@ -823,14 +835,20 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	// row is wrapped, since every row the list does not name answers it (refuseReadOnlyToken).
 	s.readOnlyRefusal = "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
 		strings.Join(readScopeRoutes, ", ") + "): nothing ran"
-	going, err := buildGoingCatalogue(routes)
-	if err != nil {
-		// A catalogue entry naming a row this table does not hold or does not class as a write,
-		// a placeholder no argument of the tool fills, or a relation named in neither edge
-		// family, is refused rather than mounted (going_catalogue.go).
-		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
+	for _, version := range []apiVersion{apiV1, apiV2} {
+		going, err := buildGoingCatalogue(routes, version)
+		if err != nil {
+			// A catalogue entry naming a row this table does not hold at its version or does not
+			// class as a write, a placeholder no argument of the tool fills, or a relation named in
+			// neither edge family, is refused rather than mounted (going_catalogue.go).
+			panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
+		}
+		if version == apiV2 {
+			s.goingV2 = going
+		} else {
+			s.going = going
+		}
 	}
-	s.going = going
 	if shapeless := shapelessRoutes(routes); len(shapeless) > 0 {
 		// A row with no shape is a row the generated OpenAPI document would leave out, so the
 		// one definition of the API would stop being one; the table is refused rather than
@@ -843,10 +861,24 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// table is refused rather than mounted (routeShapes).
 		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
 	}
-	s.routeIndex = routeIndexEntries(routes)
-	replays := s.keyedReplays()
+	if undecided := undecidedIDRoutes(routes); len(undecided) > 0 {
+		// A route whose id wildcard says neither what it names nor why no prefix is resolved there
+		// would answer a short id as no id at all - a row of the v1 table missing from idRoutes, a
+		// routeRow with no IDs column - so the table is refused rather than mounted (idRoutes).
+		panic("api.Register: the route table holds a route whose id the prefix layer cannot decide: " + strings.Join(undecided, "; "))
+	}
+	if undecodable := undecodableRoutes(routes); len(undecodable) > 0 {
+		// A /api/v2 route whose query or body the decoder cannot read, an authority rule that
+		// could never hold, or a /api/v1 mount of a routeRow that declares a query or a body,
+		// which reaches a handler that reads them from a decoder /api/v1 does not mount, would
+		// refuse, admit or drop requests by a declaration nothing reads as written, so the table
+		// is refused rather than mounted (decode_v2.go).
+		panic("api.Register: the route table holds a route whose request declarations the /api/v2 decoder cannot read: " + strings.Join(undecodable, "; "))
+	}
+	s.routeIndex = routeIndexEntries(servedAt(apiV1, routes))
+	s.routeIndexV2 = routeIndexV2Entries(servedAt(apiV2, routes))
 	for _, route := range routes {
-		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, replays[route.Method+" "+route.Pattern]))
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -861,18 +893,46 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	return s
 }
 
-// routeHandler is the chain register mounts one row of the table behind: the row's own handler
-// inside every layer the row runs, in the one order every row runs them. It is the one place that
-// order is written, so register and a test that walks the table with each row's handler replaced
-// (read_only_token_test.go) build the same chain. replay is the row's keyed replay
-// (keyedReplays), nil for a row that has none.
-func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
-	handler := route.Handler
-	if keyedMethod(route.Method) {
-		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
+// routeHandler is the chain register mounts one route of the table behind: the route's own
+// handler inside every layer the route runs, in the one order every route runs them. It is the one
+// place that order is written, so register, a test that mounts a made-up row to meet the chain a
+// real one meets, and a test that walks the table with each row's handler replaced
+// (read_only_token_test.go) build the same chain.
+func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
+	// Every fact a layer below reads is the route's own (routes_versions.go): its version, which
+	// reaches the error writers on the request (withMountedRoute) and the drain from here, its
+	// replay and its body bound, its owner's closed state, its write class and the object its
+	// path names, the session its path names, its id facts, its scopes and whether a read-only
+	// token may call it, and on a route the rules of /api/v2 bind its query and body types and
+	// its authorities. The route itself rides the request too, for the code behind the layers
+	// that reads a fact of it: whose documents a slug names (loadArtifactForRequest) and the
+	// route a write's advice logs (routeName).
+	var decoder *v2Decoder
+	if route.v2Bound() {
+		decoder = mustV2Decoder(route)
 	}
-	if route.Method+" "+route.Pattern == issueUploadRoute {
+	handler := route.Handler
+	if decoder != nil {
+		// Just around the handler, inside the keyed layer that spools an upload's body as it
+		// spools every upload's: the handler reads the upload's declared fields and its file
+		// through the decoder (v2Body, v2Upload), and never r.FormValue.
+		handler = s.readV2Upload(decoder, handler)
+	}
+	if keyedMethod(route) {
+		handler = s.keyedWrites(route, handler)
+	}
+	if route.RefusesClosedOwner {
 		handler = s.refuseUploadToAClosedIssue(handler)
+	}
+	if decoder != nil {
+		// After the decoder has read the body and outside the keyed layer, so a value the
+		// credential lacks the scope for is refused before the handler runs and claims no
+		// idempotency key (authorities_v2.go).
+		handler = s.gateV2Authorities(route, handler)
+		// After the project, session and login checks and before the authority gate and the
+		// keyed layer: a JSON body is read once, bounded by the route's BodyLimit, decoded, and
+		// put back as the bytes the keyed layer fingerprints (decode_v2.go).
+		handler = s.readV2Body(decoder, handler)
 	}
 	if route.Method != http.MethodGet {
 		// Outside the keyed layer and the upload's spool, so a write to another project's
@@ -896,6 +956,12 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
 	handler = s.resolveIDPrefixes(route, handler)
 	handler = s.refuseUnstorableParameters(route.Pattern, handler)
+	if decoder != nil {
+		// Just inside the route's scope gate, so a query key the route does not declare is
+		// refused 400 QUERY_KEY_UNKNOWN before any lookup or write (R4), and every layer behind
+		// reads the session the decoded query names (requestSession).
+		handler = s.readV2Query(decoder, handler)
+	}
 	if len(route.OAuthScopes) > 0 {
 		// Ahead of the keyed layer and the project and session checks, so the row's own
 		// scopes are the first thing a request is held to once the read-only gate outside it
@@ -906,13 +972,14 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// told to continue is handled as it is for every other early answer.
 		handler = s.gateRouteScopes(route.OAuthScopes, handler)
 	}
-	// Outside the scope gate and every layer inside it, so a read-only token on a row the read
-	// list does not name is refused before anything the row does: before the row's own scopes,
-	// which would name a scope to ask for where no scope makes the row its to call; before the
-	// sign-in check, which would tell it to sign a person in; and before a Dispatch-Login check,
-	// an id prefix's lookup, the project and session checks and the Idempotency-Key, none of
-	// which it reaches, so it claims no key. It is inside the drain, as the scope gate is, so a
-	// client that asked to be told to continue is handled as for every other early answer.
+	// Outside the scope gate and every layer inside it, so a read-only token on a route the read
+	// list does not name is refused before anything the route does: before the route's own
+	// scopes, which would name a scope to ask for where no scope makes the route its to call;
+	// before the sign-in check, which would tell it to sign a person in; and before the v2
+	// query's keys, a Dispatch-Login check, an id prefix's lookup, the project and session checks
+	// and the Idempotency-Key, none of which it reaches, so it claims no key. It is inside the
+	// drain, as the scope gate is, so a client that asked to be told to continue is handled as
+	// for every other early answer.
 	handler = s.refuseReadOnlyToken(route.ReadScope, handler)
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
 	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
@@ -934,15 +1001,25 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
 		// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
 		// pins: without either, the client is told to continue and the answer waits on its body.
-		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
+		handler = s.drainBeforeAnswer(route, handler)
 	}
-	// The access-log line is outermost, so it records what every layer answered - a keyed
-	// replay, a refused login, an early answer the drain held - and the caller the first of
-	// them resolved. Compression sits just inside it, so every one of those answers is
-	// compressed for a caller that takes gzip and the line counts the bytes that went on the
-	// wire. The two websockets register mounts beside the table carry no compressed answer: the
-	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
-	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+	// The access-log line is outermost but for the mount, so it records what every layer
+	// answered - a keyed replay, a refused login, an early answer the drain held - and the
+	// caller the first of them resolved. Compression sits just inside it, so every one of those
+	// answers is compressed for a caller that takes gzip and the line counts the bytes that went
+	// on the wire. The two websockets register mounts beside the table carry no compressed
+	// answer: the upgrade is not a body, and the frames after it are the socket's
+	// (compressAnswers). The route and its version are put on the request before any of them, so
+	// every layer that refuses answers for the version, and the code behind reads the route
+	// rather than the path (withMountedRoute).
+	served := accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+	if route.Version == apiV1 {
+		// Outermost of the writers, so the Link it sets when the status is written follows every
+		// layer's answer - a refusal before the handler, a keyed replay, the handler's own - and
+		// reads whatever value the handler resolved for it (v1_successor.go).
+		served = linkSuccessor(route, served)
+	}
+	return withMountedRoute(route, served)
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1056,15 +1133,17 @@ func (credentialExpired) CloseCode() (int, string) {
 // (readScopeRoutes).
 func (s *server) signInStillResolves(r *http.Request) error {
 	if s.deps.Identity == nil {
-		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
+		return errorf(apicode.IdentityError, "identity service unavailable")
 	}
 	_, err := s.deps.Identity.Login(r)
 	return err
 }
 
+// apiError is a refusal a handler returns rather than writes: its code, which carries the name
+// and the status each version answers it with, and its message. writeHandlerError writes it for
+// the version of the request it answers.
 type apiError struct {
-	status  int
-	code    string
+	code    apicode.Code
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
@@ -1081,8 +1160,14 @@ type apiError struct {
 
 func (e *apiError) Error() string { return e.message }
 
-func errorf(status int, code, format string, args ...any) *apiError {
-	return &apiError{status: status, code: code, message: fmt.Sprintf(format, args...)}
+// statusFor is the status e answers r with, in the version r's route serves.
+func (e *apiError) statusFor(r *http.Request) int {
+	_, status, _ := codePair(requestAPIVersion(r), e.code)
+	return status
+}
+
+func errorf(code apicode.Code, format string, args ...any) *apiError {
+	return &apiError{code: code, message: fmt.Sprintf(format, args...)}
 }
 
 // parseQueryInt reads one query parameter as an integer within [min, max]. present is false
@@ -1165,7 +1250,7 @@ func (s *server) refuseChangedLogin(handler http.HandlerFunc) http.HandlerFunc {
 			handler(w, r)
 			return
 		}
-		writeError(w, contracts.DispatchLoginChanged, http.StatusConflict, fmt.Sprintf(
+		writeError(w, r, apicode.LoginChanged, fmt.Sprintf(
 			"this write was pressed by %q and its request is not signed in as them: nothing ran; it goes only as the person who pressed it",
 			login))
 	}
@@ -1190,7 +1275,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	if token, present := auth.BearerToken(r); present {
 		if token == "" {
-			return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
+			return model.Actor{}, false, errorf(apicode.Unauthorized, "invalid bearer token")
 		}
 		if auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens) {
 			accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
@@ -1206,13 +1291,13 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 			return model.Actor{}, false, err
 		}
 		if actor.Owner == nil {
-			return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
+			return model.Actor{}, false, errorf(apicode.Unauthorized, "invalid bearer token")
 		}
 		accesslog.Note(r.Context(), accesslog.KindToken, *actor.Owner)
 		return actor, false, nil
 	}
 	if s.deps.Identity == nil {
-		return model.Actor{}, false, errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
+		return model.Actor{}, false, errorf(apicode.IdentityError, "identity service unavailable")
 	}
 	login, err := s.deps.Identity.Login(r)
 	if err != nil {
@@ -1245,7 +1330,7 @@ var (
 func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, bool, error) {
 	claims, err := s.deps.OIDC.Verify(r.Context(), token)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
-		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "OIDC_ISSUER_UNAVAILABLE",
+		return model.Actor{}, false, errorf(apicode.OIDCIssuerUnavailable,
 			"the service-account token issuer cannot be reached; try again in a minute")
 	}
 	if err != nil {
@@ -1255,7 +1340,7 @@ func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, 
 		// before any authorization, so logging them lets anyone write what they
 		// like into the operator's log on every request.
 		slog.Warn("dispatch: service-account token rejected", "reason", reason)
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "OIDC_TOKEN_INVALID",
+		return model.Actor{}, false, errorf(apicode.OIDCTokenInvalid,
 			"service-account token rejected (%s)", reason)
 	}
 	accesslog.Note(r.Context(), accesslog.KindService, claims.Subject)
@@ -1300,7 +1385,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// anything else than that same session is the mismatch.
 		named := supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
 		if named && (supplied.Kind != "session" || strings.TrimSpace(supplied.ID) != authenticated.ID) {
-			return model.Actor{}, errorf(http.StatusForbidden, "ACTOR_SESSION_MISMATCH",
+			return model.Actor{}, errorf(apicode.ActorSessionMismatch,
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
@@ -1314,7 +1399,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		return actor, nil
 	}
 	if supplied == nil || supplied.Kind != "session" || strings.TrimSpace(supplied.ID) == "" {
-		return model.Actor{}, errorf(http.StatusBadRequest, "ACTOR_KIND", "bearer callers require actor.kind session")
+		return model.Actor{}, errorf(apicode.ActorKind, "bearer callers require actor.kind session")
 	}
 	accesslog.Note(r.Context(), accesslog.KindSession, supplied.ID)
 	return model.Actor{
@@ -1332,20 +1417,22 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 
 // writeAuthenticationError answers a caller that did not resolve: 401 NO_IDENTITY, or 503
 // SIGNIN_UNAVAILABLE for a person whose lapsed confirmation the sign-in issuer could not renew,
-// as identity.WriteError renders both; anything else as writeHandlerError does. Only identity's
-// own sentinels reach identity.WriteError, so a service-account token's issuer outage
-// (serviceTokenActor's OIDC_ISSUER_UNAVAILABLE) never reads as the sign-in issuer's.
-func (s *server) writeAuthenticationError(w http.ResponseWriter, err error) {
+// with the code and message identity.Refusal gives each, as identity.WriteError renders them;
+// anything else as writeHandlerError does. Only identity's own sentinels reach identity.Refusal,
+// so a service-account token's issuer outage (serviceTokenActor's OIDC_ISSUER_UNAVAILABLE) never
+// reads as the sign-in issuer's.
+func (s *server) writeAuthenticationError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, identity.ErrNoIdentity) || errors.Is(err, identity.ErrSignInUnavailable) {
-		identity.WriteError(w, err)
+		code, message := identity.Refusal(err)
+		writeError(w, r, code, message)
 		return
 	}
-	s.writeHandlerError(w, err)
+	s.writeHandlerError(w, r, err)
 }
 
 func (s *server) requireAuthenticated(w http.ResponseWriter, r *http.Request) bool {
 	if _, _, err := s.optionalActor(r); err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return false
 	}
 	return true
@@ -1354,7 +1441,7 @@ func (s *server) requireAuthenticated(w http.ResponseWriter, r *http.Request) bo
 func (s *server) requireActor(w http.ResponseWriter, r *http.Request, supplied *model.Actor) (model.Actor, bool) {
 	actor, err := s.actorFrom(r, supplied)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return model.Actor{}, false
 	}
 	return actor, true
@@ -1368,15 +1455,11 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 		return true
 	}
 	if err := decodeJSON(r, dst); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return false
 	}
 	return true
 }
-
-// codeScopeRequired refuses a caller whose credential does not hold an OAuth scope the route
-// needs. What each credential holds is said once, above routeScopes.
-const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
 
 // insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
 // for a scope the credential does not hold. Both ways of writing that refusal go through it, so
@@ -1389,17 +1472,17 @@ func insufficientScopeChallenge(scope string) string {
 // does not hold, under the challenge RFC 6750 section 3.1 gives that refusal. writeError sets no
 // header, so the header goes on here and the body through it, which keeps the refusal the same
 // shape as every other.
-func refuseMissingScope(w http.ResponseWriter, scope, message string) {
+func refuseMissingScope(w http.ResponseWriter, r *http.Request, scope, message string) {
 	w.Header().Set("WWW-Authenticate", insufficientScopeChallenge(scope))
-	writeError(w, codeScopeRequired, http.StatusForbidden, message)
+	writeError(w, r, apicode.OAuthScopeRequired, message)
 }
 
 // missingScopeError is refuseMissingScope as an error, for a check that cannot run at the gate
-// because what it reads is known only once a row is loaded (answerAsk's approval asks).
+// because what it reads is known only once a row is loaded (recordAnswer's approval asks).
 // writeHandlerError writes the challenge header from the error's scope, so such a refusal is the
 // gate's own answer in every part a caller can see.
 func missingScopeError(scope, message string) *apiError {
-	return &apiError{status: http.StatusForbidden, code: codeScopeRequired, message: message, scope: scope}
+	return &apiError{code: apicode.OAuthScopeRequired, message: message, scope: scope}
 }
 
 // gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
@@ -1415,12 +1498,12 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, human, err := s.optionalActor(r)
 		if err != nil {
-			s.writeAuthenticationError(w, err)
+			s.writeAuthenticationError(w, r, err)
 			return
 		}
 		for _, scope := range scopes {
 			if !actor.Credential.Holds(scope) {
-				refuseMissingScope(w, scope, fmt.Sprintf(
+				refuseMissingScope(w, r, scope, fmt.Sprintf(
 					"this request's credential does not hold the %s scope, which this route requires", scope))
 				return
 			}
@@ -1460,7 +1543,7 @@ func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.Ha
 	return func(w http.ResponseWriter, r *http.Request) {
 		if caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided && caller.err == nil &&
 			caller.actor.Credential != nil && caller.actor.Credential.ReadOnly {
-			writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, refusal)
+			writeError(w, r, apicode.ReadOnlyToken, refusal)
 			return
 		}
 		next(w, r)
@@ -1491,15 +1574,17 @@ func (s *server) refuseReadOnlyToken(listed bool, next http.HandlerFunc) http.Ha
 // acted, and carries none. A credential that proved no session takes the one the `session` query
 // parameter names where the caller gives it, the convention messages.go already reads; one that
 // proved a session is refused a parameter naming another, 403 ACTOR_SESSION_MISMATCH, which is
-// what bearerSessionActor answers the same disagreement in a body.
+// what bearerSessionActor answers the same disagreement in a body. On a /api/v2 route the
+// parameter is the one the decoder read (requestSession, R4); on every other route it is read off
+// the raw query, as it always was.
 func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return model.Actor{}, false
 	}
 	if !actor.Credential.Holds(model.ScopePerson) {
-		refuseMissingScope(w, model.ScopePerson, fmt.Sprintf(
+		refuseMissingScope(w, r, model.ScopePerson, fmt.Sprintf(
 			"this request's credential does not hold the %s scope, which this route requires", model.ScopePerson))
 		return model.Actor{}, false
 	}
@@ -1513,9 +1598,10 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 	var act *model.ActorAct
 	if credential.TokenID != "" || credential.Session != "" {
 		session := credential.Session
-		if named := strings.TrimSpace(r.URL.Query().Get("session")); named != "" {
+		named := requestSession(r)
+		if named != "" {
 			if session != "" && named != session {
-				writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
+				writeError(w, r, apicode.ActorSessionMismatch, fmt.Sprintf(
 					"this request's credential acts for session %s; its session parameter names another session", session))
 				return model.Actor{}, false
 			}
@@ -1537,23 +1623,23 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 }
 
 // actSessionFromBody records on actor's act the session the request body names, for the
-// person-scope handlers that already decode a body actor: answerAsk, putUserState, editAsk and
-// the follower routes. A
-// credential that proved no session of its own - a personal token - names its agent nowhere
-// else on a route whose body is already read, so the body's actor is taken for it, exactly as
-// `?session=` is taken on every other route (actingPerson). A credential that did prove one - a
-// broker-issued token - decides it, and a body naming another session is the disagreement
-// bearerSessionActor and actingPerson both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a
-// write recorded as a session the caller merely asked for. The act keeps SessionProven only
-// when the body names the session the credential proved; a session the body alone names is not
-// proven.
+// person-scope handlers that decode a body actor: an ask's answer and decline (recordAnswer,
+// recordDecline), its reword (rewordAsk), the issue state (putUserState) and an issue mark's
+// write (planMarkWrite), and the follower routes (askFollowerActor). A credential that proved no
+// session of its own - a personal token - names its agent nowhere else on a route whose body is
+// already read, so the body's actor is taken for it, exactly as `?session=` is taken on every
+// other route (actingPerson). A credential that did prove one - a broker-issued token - decides
+// it, and a body naming another session is the disagreement bearerSessionActor and actingPerson
+// both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a write recorded as a session the caller
+// merely asked for. The act keeps SessionProven only when the body names the session the
+// credential proved; a session the body alone names is not proven.
 //
 // Only those routes read it: decodeJSON ignores a member the route's input struct does not
 // declare (it logs it at debug), so a body actor on any other route is dropped unread, and four of
 // the mutating rows a person's scope opened are DELETEs with no body at all. A browser's actor
 // names no agent (act is nil), so there is nothing for a body to name, and its body actor is
 // ignored here as it always was.
-func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
+func actSessionFromBody(w http.ResponseWriter, r *http.Request, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {
 		named = strings.TrimSpace(supplied.ID)
@@ -1562,7 +1648,7 @@ func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *mode
 		return actor, true
 	}
 	if actor.Act.Session != "" && actor.Act.Session != named {
-		writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
+		writeError(w, r, apicode.ActorSessionMismatch, fmt.Sprintf(
 			"this request acts for session %s; its actor names another session", actor.Act.Session))
 		return model.Actor{}, false
 	}
@@ -1598,11 +1684,11 @@ func (s *server) callerHoldsScope(r *http.Request, scope string) bool {
 func (s *server) requireCallerScope(w http.ResponseWriter, r *http.Request, scope string) bool {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return false
 	}
 	if !actor.Credential.Holds(scope) {
-		refuseMissingScope(w, scope, fmt.Sprintf(
+		refuseMissingScope(w, r, scope, fmt.Sprintf(
 			"this request's credential does not hold the %s scope, which this field requires", scope))
 		return false
 	}
@@ -1613,13 +1699,14 @@ func (s *server) requireCallerScope(w http.ResponseWriter, r *http.Request, scop
 // "<field> is N characters over the M-character limit (L/M)". Lengths are UTF-16 units
 // (itemblocks.Units16).
 func capExceededError(field string, length, limit int) *apiError {
-	return errorf(http.StatusBadRequest, "CAP_EXCEEDED",
+	return errorf(apicode.CapExceeded,
 		"%s is %d characters over the %d-character limit (%d/%d)", field, length-limit, limit, length, limit)
 }
 
-// countExceededError is capExceededError for item counts (options, labels).
-func countExceededError(code, field string, count, limit int) *apiError {
-	return errorf(http.StatusBadRequest, code,
+// countExceededError is capExceededError for item counts (options, labels), under the code of the
+// field it counts.
+func countExceededError(code apicode.Code, field string, count, limit int) *apiError {
+	return errorf(code,
 		"%s is %d over the %d-item limit (%d/%d)", field, count-limit, limit, count, limit)
 }
 
@@ -1636,19 +1723,20 @@ func blockBoundError(err error) *apiError {
 	}
 	var decision *itemblocks.DecisionBlock
 	if errors.As(err, &decision) {
-		return errorf(http.StatusBadRequest, "DECISION_BLOCK_IN_BODY", "%s", err)
+		return errorf(apicode.DecisionBlockInBody, "%s", err)
 	}
-	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s", err)
+	return errorf(apicode.CapExceeded, "%s", err)
 }
 
-func capExceeded(w http.ResponseWriter, field string, length, limit int) {
+func capExceeded(w http.ResponseWriter, r *http.Request, field string, length, limit int) {
 	err := capExceededError(field, length, limit)
-	writeError(w, err.code, err.status, err.message)
+	writeError(w, r, err.code, err.message)
 }
 
-// requireUUIDPath rejects a `{id}` path value that is no id with 400 <KIND>_ID_INPUT before it
-// reaches a uuid column (where pgx would surface it as a 500). kind is "ask", "comment", or
-// "message".
+// requireUUIDPath rejects a `{id}` path value that is no id with 400 code, the kind's
+// <KIND>_ID_INPUT, before it reaches a uuid column (where pgx would surface it as a 500). kind
+// names the id in the message: "ask", "comment", "message", and the kinds idPathProblem words as
+// whole uuids.
 //
 // The value it reads is the one the prefix layer left (resolveIDPrefixes): an id written as a
 // unique prefix is already the whole id by the time this runs, and what reaches here is an id
@@ -1659,9 +1747,9 @@ func capExceeded(w http.ResponseWriter, field string, length, limit int) {
 // A value uuid.Parse reads in one of its other spellings reaches here already rewritten to the
 // canonical one: the prefix layer canonicalizes the {id} of every route that takes one
 // (canonicalizeUUIDPath), so this parse only decides whether the value is an id at all.
-func requireUUIDPath(w http.ResponseWriter, r *http.Request, kind string) bool {
+func requireUUIDPath(w http.ResponseWriter, r *http.Request, kind string, code apicode.Code) bool {
 	if _, err := uuid.Parse(r.PathValue("id")); err != nil {
-		writeError(w, strings.ToUpper(kind)+"_ID_INPUT", http.StatusBadRequest, idPathProblem(kind))
+		writeError(w, r, code, idPathProblem(kind))
 		return false
 	}
 	return true
@@ -1733,7 +1821,7 @@ func decodeJSONTestHook(r *http.Request, value any) error {
 // that value's type does not declare, and nil when it declares them all.
 func refuseUndeclaredMembers(value any, body []byte) error {
 	if undeclared := undeclaredMembers(value, body); len(undeclared) > 0 {
-		return errorf(http.StatusBadRequest, "INVALID_JSON", "the hook does not take: %s", strings.Join(undeclared, ", "))
+		return errorf(apicode.InvalidJSON, "the hook does not take: %s", strings.Join(undeclared, ", "))
 	}
 	return nil
 }
@@ -1742,9 +1830,8 @@ func refuseUndeclaredMembers(value any, body []byte) error {
 // read, for the caller to judge the members value does not declare by. A body past limit is
 // tooLarge, the 413 the route answers one with.
 func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
-	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {
-		return nil, errorf(http.StatusUnsupportedMediaType, "JSON_CONTENT_TYPE", "JSON mutations require Content-Type application/json")
+	if refusal := jsonContentTypeRefusal(r); refusal != nil {
+		return nil, refusal
 	}
 	r.Body = http.MaxBytesReader(maxBytesDiscarder{}, r.Body, limit)
 	var read bytes.Buffer
@@ -1754,10 +1841,10 @@ func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) (
 		if errors.As(err, &maxBytes) {
 			return nil, tooLarge
 		}
-		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
+		return nil, errorf(apicode.InvalidJSON, "invalid JSON body: %v", err)
 	}
 	if decoder.More() {
-		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "request body must contain one JSON value")
+		return nil, errorf(apicode.InvalidJSON, "request body must contain one JSON value")
 	}
 	if refusal := unstorableJSON("", read.Bytes()); refusal != nil {
 		return nil, refusal
@@ -1780,8 +1867,85 @@ type errorBody struct {
 	Error string `json:"error"`
 }
 
-func writeError(w http.ResponseWriter, code string, status int, message string) {
-	WriteJSON(w, status, errorBody{Code: code, Error: message})
+// writeError is the one error writer of both API versions: it answers code as the version the
+// mount put on the request names it (requestAPIVersion), with its v1 name and status on a
+// /api/v1 route and its v2 ones on a /api/v2 route. A code the version does not answer - the
+// zero Code, a code of the other version alone, or AnswerNotKept, whose status is the call's
+// (writeErrorAt) - is the server's own mistake, answered 500 INTERNAL with the site that wrote
+// it logged (renderCode). So a v2-only code written on a /api/v1 route answers 500: a handler or
+// helper both versions share must never return or write a v2-only code (one /api/v1 alone answers
+// likewise on /api/v2); a refusal only /api/v2 gives is decided on a path only /api/v2 takes.
+func writeError(w http.ResponseWriter, r *http.Request, code apicode.Code, message string) {
+	writeVersionedError(w, requestAPIVersion(r), code, 0, message)
+}
+
+// writeErrorAt is writeError for the one code whose status is the call's (apicode.AnswerNotKept,
+// the status of the first answer a keyed write could not keep): it answers that code at status,
+// and any other code as writeError answers a code the version does not answer.
+func writeErrorAt(w http.ResponseWriter, r *http.Request, code apicode.Code, status int, message string) {
+	writeVersionedError(w, requestAPIVersion(r), code, status, message)
+}
+
+// writeVersionedError is writeError and writeErrorAt for a version given rather than read from a
+// request, which the one writer that refuses from inside a ResponseWriter needs: the drain holds
+// no request, and the mount builds it with the route's version (drainingWriter.begin). status is
+// the call's status for a code that takes one, and 0 for every other.
+func writeVersionedError(w http.ResponseWriter, version apiVersion, code apicode.Code, status int, message string) {
+	name, answered := renderCode(version, code, status)
+	WriteJSON(w, answered, errorBody{Code: name, Error: message})
+}
+
+// refusalPair is the name and status the request's version answers code with, for a refusal
+// whose body carries more than errorBody does (editPreconditionError, issueClaimedError and the
+// like): the handler writes that body with this name and status, as writeError would write its
+// own.
+func refusalPair(r *http.Request, code apicode.Code) (string, int) {
+	return renderCode(requestAPIVersion(r), code, 0)
+}
+
+// codePair is the name and status code answers with under version, and whether that version
+// answers it at all. A code whose status is the call's answers with status 0 here.
+func codePair(version apiVersion, code apicode.Code) (string, int, bool) {
+	if version == apiV2 {
+		return code.Name(), code.Status(), code.InV2()
+	}
+	return code.V1Name(), code.V1Status(), code.InV1()
+}
+
+// renderCode is the name and status code answers with under version. callStatus is the status
+// of a code that takes its status from the call, and 0 for any other. A code the version does
+// not answer, or one given a status it does not take (or not given the one it does), renders as
+// INTERNAL 500, and the site that wrote it - the first caller outside the writers - is logged,
+// since only the server's own code can be at fault.
+func renderCode(version apiVersion, code apicode.Code, callStatus int) (string, int) {
+	name, status, answers := codePair(version, code)
+	if code.StatusFromCall() {
+		status = callStatus
+	}
+	if !answers || code.StatusFromCall() != (callStatus != 0) {
+		slog.Error("dispatch: a refusal was written with a code its API version does not answer",
+			"code", code.String(), "version", int(version), "call_status", callStatus, "site", refusalSite())
+		name, status, _ = codePair(version, apicode.InternalError)
+	}
+	return name, status
+}
+
+// refusalSite is the file and line of the first caller outside the error writers, for
+// renderCode's log line.
+func refusalSite() string {
+	pcs := make([]uintptr, 16)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
+	for {
+		frame, more := frames.Next()
+		switch frame.Function[strings.LastIndex(frame.Function, ".")+1:] {
+		case "renderCode", "writeVersionedError", "writeError", "writeErrorAt", "refusalPair", "writeHandlerError":
+		default:
+			return frame.File + ":" + strconv.Itoa(frame.Line)
+		}
+		if !more {
+			return "unknown"
+		}
+	}
 }
 
 func encodeJSON(value any) ([]byte, error) {
@@ -1810,7 +1974,7 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+		return nil, errorf(apicode.DatabaseUnavailable, "database unavailable")
 	}
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -1823,7 +1987,7 @@ func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 // refusal begin would make when there is no database.
 func (s *server) readyPool() (*store.Pool, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+		return nil, errorf(apicode.DatabaseUnavailable, "database unavailable")
 	}
 	return s.deps.Store.Pool, nil
 }
@@ -1873,7 +2037,7 @@ const (
 )
 
 // errIssueClosed is the refusal of a write that a closed issue does not take.
-var errIssueClosed error = errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+var errIssueClosed error = errorf(apicode.IssueClosed, "issue is closed")
 
 // refuseClosed is the one place the writes that take the owner's lock through ownerStatus refuse
 // a closed owner: the locked checks (requireOpenOwnerStatus, lockCommentOwner, lockedComment) and
@@ -1901,7 +2065,10 @@ func artifactCreatedEventPayload(artifact model.Artifact, changes model.Referenc
 // namedVersionDiff is the diff a named version's event carries: from the version before it to it.
 // Either may be the version this transaction has just queued (ledger), which the table holds only
 // once Commit has run its insert, so each is taken from the ledger when it is that version, and
-// read from the table otherwise (transactionVersionMarkdown).
+// read from the table otherwise (transactionVersionMarkdown). A previous version that stores no
+// markdown - the file a document was before an upload made it one (storeArtifact), whose
+// converting upload names its version when it carries a summary - is read as the empty text, so
+// the diff is the whole of the named version.
 func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, version model.Version) (*string, error) {
 	if !version.Named || version.Number < 2 {
 		return nil, nil
@@ -1926,17 +2093,18 @@ func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, ledger *docs.L
 
 // transactionVersionMarkdown is the markdown of version number of artifactID as tx sees it once its
 // queue has run: the ledger's, when it is the version this transaction queued
-// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it.
+// (docs.Ledger.PendingVersionMarkdown), else the stored row's, the empty text for a stored file
+// version, which holds no markdown. False when neither holds it.
 func transactionVersionMarkdown(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, number int) (string, bool, error) {
 	if markdown, pending := ledger.PendingVersionMarkdown(artifactID, number); pending {
 		return markdown, true, nil
 	}
-	var markdown string
+	var markdown *string
 	err := tx.QueryRow(ctx, `
 		select markdown from artifact_versions where artifact_id = $1 and number = $2
 	`, artifactID, number).Scan(&markdown)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
-	return markdown, err == nil, err
+	return deref(markdown), err == nil, err
 }

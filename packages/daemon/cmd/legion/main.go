@@ -88,6 +88,16 @@ var release string
 // `legion config check`'s resolution of the pair to install (applyLinkedPlugins, daemon.ResolvedPlugins).
 var piLegionVersion, piEnvoyVersion string
 
+// dispatchRelease is the build the daemon names itself by to Dispatch (`legion-daemon/<release>`,
+// daemon.Run): `release`, which `legion version` prints as its version, else `revision`, which it
+// prints after `commit`, else none, which the daemon's Dispatch client sends as `(devel)`.
+func dispatchRelease() string {
+	if release != "" {
+		return release
+	}
+	return revision
+}
+
 // helpRequested says whether a pass-through command's first argument asks for its usage: such a
 // command reads its own arguments (passThrough), --help among them.
 func helpRequested(arg string) bool {
@@ -437,7 +447,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		}
 	}()
 
-	if err := daemon.Run(ctx, cfg, log, inherited); err != nil {
+	if err := daemon.Run(ctx, cfg, log, inherited, dispatchRelease()); err != nil {
 		printRefusal(stderr, "legion start", err)
 		return 1
 	}

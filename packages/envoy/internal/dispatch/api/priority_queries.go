@@ -279,7 +279,9 @@ var (
 )
 
 // readPriorities answers the whole body of GET /api/v1/priorities: the priorities in rank order,
-// the work under each, and the two faults, narrowed to `projects` where it is narrowed at all.
+// the work under each, and the two faults, narrowed to `projects` where it is narrowed at all; and
+// how many live priorities there are, which a summary's empty list does not say and GET
+// /api/v2/priorities answers as its total.
 //
 // It is two round trips plus the relations' own: prioritystore.List, then the relations, then one
 // batch of the statements that rest on them. A summary sends the two fault counts in that batch
@@ -287,10 +289,10 @@ var (
 // fault under it. A deployment that has written no priority holds no relation of one either, so
 // the relations are not read at all there — which is what the navigation rail asks of every page
 // of such a deployment.
-func (s *server) readPriorities(ctx context.Context, projects []string, summary bool) (model.Priorities, error) {
+func (s *server) readPriorities(ctx context.Context, projects []string, summary bool) (model.Priorities, int, error) {
 	nodes, err := prioritystore.List(ctx, s.deps.Store.Pool)
 	if err != nil {
-		return model.Priorities{}, err
+		return model.Priorities{}, 0, err
 	}
 	body := model.Priorities{
 		Priorities:          make([]model.PriorityRow, 0, len(nodes)),
@@ -308,7 +310,7 @@ func (s *server) readPriorities(ctx context.Context, projects []string, summary 
 	if len(nodes) > 0 {
 		seedKeys, seedIDs, err = s.readPriorityRelations(ctx, ids)
 		if err != nil {
-			return model.Priorities{}, err
+			return model.Priorities{}, 0, err
 		}
 	}
 	arguments := []any{seedKeys, seedIDs, projects}
@@ -349,9 +351,9 @@ func (s *server) readPriorities(ctx context.Context, projects []string, summary 
 			body.PriorityWorkParked.Issues = issues
 		})
 	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
-		return model.Priorities{}, fmt.Errorf("read the work under the priorities: %w", err)
+		return model.Priorities{}, 0, fmt.Errorf("read the work under the priorities: %w", err)
 	}
-	return body, nil
+	return body, len(nodes), nil
 }
 
 // readPriorityRelations reads the `advances` relations of every live priority as two lists in one

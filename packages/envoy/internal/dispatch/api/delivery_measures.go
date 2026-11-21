@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
@@ -45,7 +46,7 @@ func (s *server) getDeliveryMeasures(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	from, to, err := parseDeliveryWindow(query)
 	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.InvalidQuery, err.Error())
 		return
 	}
 	settings, ok := s.deliverySettings(w, r)
@@ -54,7 +55,7 @@ func (s *server) getDeliveryMeasures(w http.ResponseWriter, r *http.Request) {
 	}
 	population, err := s.readDeliveryPopulation(r.Context(), settings, from, to, query, false)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, deliveryMeasuresCompute(settings, population, from, to, time.Now().UTC()))

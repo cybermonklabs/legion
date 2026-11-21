@@ -16,6 +16,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -260,8 +261,8 @@ func TestAnchoredAskAnswerAndInbox(t *testing.T) {
 	forbidden := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", map[string]any{
 		"selected": []string{"brown"}, "actor": sessionActor(),
 	})
-	if forbidden.Code != http.StatusForbidden || !strings.Contains(forbidden.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's answer: status=%d body=%s, want 403 %s", forbidden.Code, forbidden.Body.String(), codeScopeRequired)
+	if forbidden.Code != http.StatusForbidden || !strings.Contains(forbidden.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's answer: status=%d body=%s, want 403 %s", forbidden.Code, forbidden.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 
 	answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", map[string]any{
@@ -965,8 +966,8 @@ func TestSuggestionAcceptAppliesLiveDocument(t *testing.T) {
 	})
 	comment := decodeBody[model.Comment](t, suggestion)
 	forbidden := sessionRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/accept", map[string]any{"actor": sessionActor()})
-	if forbidden.Code != http.StatusForbidden || !strings.Contains(forbidden.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token accepts a suggestion: status=%d body=%s, want 403 %s", forbidden.Code, forbidden.Body.String(), codeScopeRequired)
+	if forbidden.Code != http.StatusForbidden || !strings.Contains(forbidden.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token accepts a suggestion: status=%d body=%s, want 403 %s", forbidden.Code, forbidden.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 	accepted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/accept", map[string]any{}, "alice")
 	if accepted.Code != http.StatusOK || !strings.Contains(accepted.Body.String(), `"resolved":true`) || !strings.Contains(accepted.Body.String(), `"accepted":true`) {

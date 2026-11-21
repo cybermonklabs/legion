@@ -80,7 +80,7 @@ var itemRowWriters = map[string]map[string]string{
 		"writeMessages": seedLoaderException,
 	},
 	"internal/dispatch/api/ask_asked_of.go": {
-		"putAskAskedOf": "the ask's owner lock, taken with the read of the owner it guards " +
+		"handAskOn": "the ask's owner lock, taken with the read of the owner it guards " +
 			"(requireOpenOwner, store.LockOwnerAndRead)",
 	},
 	"internal/dispatch/api/ask_transitions.go": {
@@ -88,24 +88,24 @@ var itemRowWriters = map[string]map[string]string{
 			"transition reads the ask (requireOpenOwner)",
 	},
 	"internal/dispatch/api/asks.go": {
-		"createAskFor": "the owner's lock (requireOpenOwnerStatus)",
-		"editAsk":      "the ask's owner lock, taken before the document's (requireOpenOwner)",
+		"openAsk":   "the owner's lock (requireOpenOwnerStatus)",
+		"rewordAsk": "the ask's owner lock, taken before the document's (requireOpenOwner)",
 	},
 	"internal/dispatch/api/broadcasts.go": {
 		"writeBroadcast": "none, and none to take: each copy is a direct message, whose " +
 			"conversation is no owner (store.OwnerOf), and nothing rewrites a message's body",
 	},
 	"internal/dispatch/api/comment_actions.go": {
-		"commentAction": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
-		"editComment":   "the comment's owner lock (lockedComment, lockOwnerOfComment)",
-		"reopenComment": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
+		"commentActionAs": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
+		"editCommentAs":   "the comment's owner lock (lockedComment, lockOwnerOfComment)",
+		"reopenCommentAs": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
 	},
 	"internal/dispatch/api/comment_create.go": {
-		"createCommentFor": "the owner's lock, taken inside the comment's transaction " +
+		"writeComment": "the owner's lock, taken inside the comment's transaction " +
 			"(lockCommentOwner)",
 	},
 	"internal/dispatch/api/comment_delivery.go": {
-		"replyComment": "the comment's owner lock (lockedCommentForDelivery, lockOwnerOfComment)",
+		"answerCommentDelivery": "the comment's owner lock (lockedCommentForDelivery, lockOwnerOfComment)",
 	},
 	"internal/dispatch/api/message_delivery.go": {
 		"insertSessionReply": "the issue's owner lock where the conversation names an issue " +

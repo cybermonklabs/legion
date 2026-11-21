@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -35,11 +35,11 @@ func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error
 	}
 	var value string
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" or null`)
+		return nil, true, errorf(apicode.InvalidIssue, `repo must be "owner/name" or null`)
 	}
 	owner, name, err := refs.ParseGitHubRepo(strings.TrimSpace(value))
 	if err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" (got %q)`, value)
+		return nil, true, errorf(apicode.InvalidIssue, `repo must be "owner/name" (got %q)`, value)
 	}
 	canonical := owner + "/" + name
 	return &canonical, true, nil

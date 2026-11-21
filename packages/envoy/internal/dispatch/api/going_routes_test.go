@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -293,8 +294,8 @@ func TestGoingRequestRefusesAProjectScopedCallerAnotherProject(t *testing.T) {
 		"words": "what is going on in the other project?", "project": "OTH",
 	}))
 	refusal := decodeBody[refusalAnswer](t, response)
-	if response.Code != http.StatusForbidden || refusal.Code != codeProjectScope {
-		t.Fatalf("status=%d refusal=%+v, want 403 %s", response.Code, refusal, codeProjectScope)
+	if response.Code != http.StatusForbidden || refusal.Code != apicode.ProjectScope.V1Name() {
+		t.Fatalf("status=%d refusal=%+v, want 403 %s", response.Code, refusal, apicode.ProjectScope.V1Name())
 	}
 	if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "OTH") {
 		t.Fatalf("the refusal names %q, want both projects", refusal.Error)
@@ -491,8 +492,8 @@ func TestGoingStreamAnswersEveryRunItWillNotServeAlike(t *testing.T) {
 			t.Fatalf("%s: status=%d body=%s, want 404", name, response.Code, response.Body.String())
 		}
 		refusal := decodeBody[refusalAnswer](t, response)
-		if refusal.Code != codeGoingRequestNotFound {
-			t.Fatalf("%s: code=%q, want %s", name, refusal.Code, codeGoingRequestNotFound)
+		if refusal.Code != apicode.GoingRequestNotFound.V1Name() {
+			t.Fatalf("%s: code=%q, want %s", name, refusal.Code, apicode.GoingRequestNotFound.V1Name())
 		}
 	}
 	bodies := map[string]bool{}
@@ -605,8 +606,8 @@ func TestGoingStreamRefusesAnotherOwnersPersonalToken(t *testing.T) {
 	if refused.Code != http.StatusNotFound {
 		t.Fatalf("bob's token reading alice's run: status=%d body=%s, want 404", refused.Code, refused.Body.String())
 	}
-	if refusal := decodeBody[refusalAnswer](t, refused); refusal.Code != codeGoingRequestNotFound {
-		t.Fatalf("bob's token reading alice's run: code=%q, want %s", refusal.Code, codeGoingRequestNotFound)
+	if refusal := decodeBody[refusalAnswer](t, refused); refusal.Code != apicode.GoingRequestNotFound.V1Name() {
+		t.Fatalf("bob's token reading alice's run: code=%q, want %s", refusal.Code, apicode.GoingRequestNotFound.V1Name())
 	}
 	own := rig.streamUnder(t, run.ID, alice)
 	if own.Code != http.StatusOK || own.Body.String() == "" {
@@ -626,8 +627,8 @@ func TestGoingRequestRefusesAnAskerThatNamesNobody(t *testing.T) {
 	if asked.Code != http.StatusForbidden {
 		t.Fatalf("ask under the shared token: status=%d body=%s, want 403", asked.Code, asked.Body.String())
 	}
-	if refusal := decodeBody[refusalAnswer](t, asked); refusal.Code != codeGoingAskerNamesNobody {
-		t.Fatalf("ask under the shared token: code=%q, want %s", refusal.Code, codeGoingAskerNamesNobody)
+	if refusal := decodeBody[refusalAnswer](t, asked); refusal.Code != apicode.GoingAskerNamesNobody.V1Name() {
+		t.Fatalf("ask under the shared token: code=%q, want %s", refusal.Code, apicode.GoingAskerNamesNobody.V1Name())
 	}
 	var recorded int
 	if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from going_requests`).Scan(&recorded); err != nil {
@@ -659,8 +660,8 @@ func TestGoingStreamRefusesARunWhoseAuthorNamesNobody(t *testing.T) {
 	if refused.Code != http.StatusNotFound {
 		t.Fatalf("the shared token reading a run naming nobody: status=%d body=%s, want 404", refused.Code, refused.Body.String())
 	}
-	if refusal := decodeBody[refusalAnswer](t, refused); refusal.Code != codeGoingRequestNotFound {
-		t.Fatalf("the shared token reading a run naming nobody: code=%q, want %s", refusal.Code, codeGoingRequestNotFound)
+	if refusal := decodeBody[refusalAnswer](t, refused); refusal.Code != apicode.GoingRequestNotFound.V1Name() {
+		t.Fatalf("the shared token reading a run naming nobody: code=%q, want %s", refusal.Code, apicode.GoingRequestNotFound.V1Name())
 	}
 
 	subject := "system:serviceaccount:dispatch:answerer"

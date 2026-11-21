@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,8 +51,8 @@ func keyedRequest(t *testing.T, handler http.Handler, method, target string, bod
 	return response
 }
 
-// keyedRig is one write route behind the keyed layer, as register mounts every POST and PATCH
-// route, whose handler counts its runs and answers as the test says.
+// keyedRig is one write route behind the keyed layer, as register mounts every route it keys
+// (keyedMethod), whose handler counts its runs and answers as the test says.
 type keyedRig struct {
 	handler  http.Handler
 	database *store.Store
@@ -66,16 +68,16 @@ func newKeyedRig(t *testing.T, answer func(run int32, w http.ResponseWriter, r *
 }
 
 // newKeyedRigAt is a keyedRig mounted at pattern, so a route the layer treats as its own - an
-// upload's larger body limit - can be driven too.
+// upload's larger body limit - can be driven too. The route carries what a /api/v1 route at
+// pattern carries (v1Route), with no replay.
 func newKeyedRigAt(t *testing.T, pattern string, answer func(run int32, w http.ResponseWriter, r *http.Request)) *keyedRig {
 	t.Helper()
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	rig := &keyedRig{database: database, server: served}
 	mux := http.NewServeMux()
 	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
-		http.MethodPost, pattern,
+		v1Route(routeRow{Method: http.MethodPost, Pattern: pattern}, nil),
 		func(w http.ResponseWriter, r *http.Request) { answer(rig.runs.Add(1), w, r) },
-		nil,
 	)))
 	rig.handler = mux
 	return rig
@@ -262,7 +264,7 @@ func TestOnlyAVerdictIsStored(t *testing.T) {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
 				if run == 1 {
-					writeError(w, "SOMETHING", status, "this attempt")
+					WriteJSON(w, status, errorBody{Code: "SOMETHING", Error: "this attempt"})
 					return
 				}
 				answerRun(run, w, r)
@@ -282,7 +284,7 @@ func TestOnlyAVerdictIsStored(t *testing.T) {
 	for _, status := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusConflict} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			rig := newKeyedRig(t, func(_ int32, w http.ResponseWriter, _ *http.Request) {
-				writeError(w, "REFUSED", status, "refused")
+				WriteJSON(w, status, errorBody{Code: "REFUSED", Error: "refused"})
 			})
 			first := rig.send(t, "a", nil, "alice", "k")
 			again := rig.send(t, "a", nil, "alice", "k")
@@ -430,7 +432,7 @@ func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.PathValue("thing") == "broken":
-			writeError(w, "BROKEN", http.StatusInternalServerError, "the handler's own failure")
+			WriteJSON(w, http.StatusInternalServerError, errorBody{Code: "BROKEN", Error: "the handler's own failure"})
 		case r.PathValue("thing") == "slow":
 			if slowRuns.Add(1) == 1 {
 				close(running)
@@ -671,7 +673,7 @@ func TestAFailureAfterACommittedWriteIsAnsweredCommitted(t *testing.T) {
 		if err := write(r.Context(), nil); err != nil {
 			t.Errorf("write: %v", err)
 		}
-		writeError(w, "AFTER_THE_WRITE", http.StatusInternalServerError, "failed after the write")
+		WriteJSON(w, http.StatusInternalServerError, errorBody{Code: "AFTER_THE_WRITE", Error: "failed after the write"})
 	})
 	if first := rig.send(t, "a", nil, "alice", "half"); first.Code != http.StatusInternalServerError {
 		t.Fatalf("first: status=%d, want 500", first.Code)
@@ -706,7 +708,7 @@ func TestAHolderThatLostItsKeyCommitsNoWrite(t *testing.T) {
 		}
 		if err != nil {
 			s := &server{}
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		answerRun(run, w, r)
@@ -919,32 +921,95 @@ func TestBoundaryMaskFindsABoundaryAcrossWrites(t *testing.T) {
 	}
 }
 
-// Every POST and PATCH route takes a key, and no other: a header that is not a key is refused on
-// each of them before its handler runs, and ignored by a PUT and a DELETE, which are idempotent
-// already. A GET writes nothing and is never wrapped.
-func TestEveryPostAndPatchRouteTakesAKey(t *testing.T) {
+// Every POST and PATCH route takes a key, and so does every PUT and DELETE route the rules of
+// /api/v2 bind (keyedMethod, apiRoute.v2Bound): a header that is not a key is refused on each of
+// them before its handler runs, and ignored by a PUT and a DELETE of /api/v1 and of the INFRA-979
+// tree, which no rule of /api/v2 binds. A GET writes nothing and is never wrapped. The table is
+// read without its test hooks. A route whose body is a union is sent a body its decoder reads
+// (unionProbe): the decoder refuses one naming no arm before the keyed layer judges the key, the
+// order in which a refused body claims no key, so `{}` would never reach the layer this holds.
+func TestEveryKeyedRouteTakesAKeyAndNoOtherJudgesOne(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	for _, route := range (&server{}).routes() {
 		if route.Method == http.MethodGet {
 			continue
 		}
+		body := "{}"
+		probe, member, arm, union := unionProbe(route, nil)
+		if union {
+			body = probe
+		}
 		target := route.Pattern
 		for _, name := range patternWildcards(route.Pattern) {
-			target = strings.Replace(target, "{"+name+"}", "x", 1)
-			target = strings.Replace(target, "{"+name+"...}", "x", 1)
+			value := "x"
+			if union && name == member {
+				// A union keyed by a mark's kind reads the kind from the path where it holds one.
+				value = arm
+			}
+			target = strings.Replace(target, "{"+name+"}", value, 1)
+			target = strings.Replace(target, "{"+name+"...}", value, 1)
 		}
-		request := httptest.NewRequest(route.Method, target, strings.NewReader("{}"))
+		request := httptest.NewRequest(route.Method, target, strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("X-Dispatch-User", "alice")
 		request.Header.Set(contracts.IdempotencyKeyHeader, "not a key")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		refused := strings.Contains(response.Body.String(), `"code":"`+contracts.IdempotencyKeyInvalid+`"`)
-		if keyedMethod(route.Method) != refused {
-			t.Errorf("%s %s: status=%d body=%.200s, want the key judged only on a POST or a PATCH",
+		if keyedMethod(route) != refused {
+			t.Errorf("%s %s: status=%d body=%.200s, want the key judged only where keyedMethod keys the route",
 				route.Method, route.Pattern, response.Code, response.Body.String())
 		}
 	}
+}
+
+// unionProbe is a body the decoder of route's union reads, for a test that must reach what stands
+// behind the decoder: the arm of the first state or kind, in the order of the arms' names, that no
+// authority rule of the row gates - so a credential that holds no scope meets the route itself
+// rather than one arm's scope - written as that arm's type writes its zero value, so every member
+// the arm declares, its required ones among them, is there, with the discriminating member naming
+// the arm and extra's members over the rest. member is that discriminating member, state or kind,
+// and arm its value; union is false, and the rest empty, for a route whose body is no union.
+func unionProbe(route apiRoute, extra map[string]any) (body, member, arm string, union bool) {
+	switch route.Body.Kind {
+	case bodyStateUnion:
+		member = "state"
+	case bodyKindUnion:
+		member = "kind"
+	default:
+		return "", "", "", false
+	}
+	gated := map[string]bool{}
+	for _, rule := range route.Authorities {
+		if rule.Where.In == partBody && rule.Where.Name == member {
+			gated[rule.Value] = true
+		}
+	}
+	arms := slices.Sorted(maps.Keys(route.Body.Arms))
+	arm = arms[0]
+	for _, name := range arms {
+		if !gated[name] {
+			arm = name
+			break
+		}
+	}
+	members := map[string]any{}
+	written, err := json.Marshal(route.Body.Arms[arm])
+	if err == nil {
+		err = json.Unmarshal(written, &members)
+	}
+	if err != nil {
+		panic(fmt.Sprintf("%s %s: the arm %s writes no JSON object: %v", route.Method, route.Pattern, arm, err))
+	}
+	members[member] = arm
+	for name, value := range extra {
+		members[name] = value
+	}
+	encoded, err := json.Marshal(members)
+	if err != nil {
+		panic(fmt.Sprintf("%s %s: encode the arm %s: %v", route.Method, route.Pattern, arm, err))
+	}
+	return string(encoded), member, arm, true
 }
 
 // The browser case on a real route: a comment posted again under its key, its first answer lost,

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -98,13 +99,6 @@ func parseRFC3339(name, text string) (time.Time, error) {
 	return parsed, nil
 }
 
-// deliveryNotConfiguredCode and deliveryNotConfiguredMessage are the one refusal a Dispatch with
-// no delivery settings gives, from this route and from the live hub's worker alike.
-const (
-	deliveryNotConfiguredCode    = "DELIVERY_NOT_CONFIGURED"
-	deliveryNotConfiguredMessage = "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery"
-)
-
 // parseOptionalWindow is a record route's [from, to) window (parseWindow).
 func parseOptionalWindow(query url.Values) (from, to *time.Time, err error) {
 	return parseWindow(windowBound{name: "from", text: query.Get("from")}, windowBound{name: "to", text: query.Get("to")})
@@ -149,13 +143,20 @@ func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (deliv
 	settings, err := delivery.GetSettings(r.Context(), s.deps.Store.Pool)
 	if err != nil {
 		if errors.Is(err, delivery.ErrNoSettings) {
-			writeError(w, deliveryNotConfiguredCode, http.StatusNotFound, deliveryNotConfiguredMessage)
+			writeError(w, r, apicode.DeliveryNotConfigured, deliveryNotConfigured(requestAPIVersion(r)))
 			return delivery.DeliverySettings{}, false
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return delivery.DeliverySettings{}, false
 	}
 	return settings, true
+}
+
+// deliveryNotConfigured is the refusal of a delivery read made before its settings are written,
+// naming the write of the version that answers: PUT <version>/settings/delivery. The live socket,
+// which no version serves, names /api/v2's, the version that outlives /api/v1.
+func deliveryNotConfigured(version apiVersion) string {
+	return "delivery is not configured; set delivery_settings through PUT " + versionPrefix(version) + "/settings/delivery"
 }
 
 // getDeliveryTimeline answers GET /api/v1/delivery/timeline: merges, deploys, pipeline failures
@@ -174,7 +175,7 @@ func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	from, to, err := parseDeliveryWindow(query)
 	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.InvalidQuery, err.Error())
 		return
 	}
 	settings, ok := s.deliverySettings(w, r)
@@ -183,7 +184,7 @@ func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 	population, err := s.readDeliveryPopulation(r.Context(), settings, from, to, query, true)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, deliveryTimelineCompute(settings, population, from, to, time.Now().UTC()))
@@ -717,7 +718,7 @@ func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	}
 	runID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || runID < 1 {
-		writeError(w, "RUN_ID_INPUT", http.StatusBadRequest, "run id must be a positive integer")
+		writeError(w, r, apicode.RunIDInput, "run id must be a positive integer")
 		return
 	}
 	settings, ok := s.deliverySettings(w, r)
@@ -729,15 +730,15 @@ func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	run, err := delivery.ScanRun(pool.QueryRow(ctx, `select `+delivery.RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, settings.DeployRepo, runID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "NOT_FOUND", http.StatusNotFound, "no run "+strconv.FormatInt(runID, 10)+" of "+settings.DeployRepo)
+			writeError(w, r, apicode.NotFound, "no run "+strconv.FormatInt(runID, 10)+" of "+settings.DeployRepo)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	jobs, err := delivery.ListRunJobs(ctx, pool, settings.DeployRepo, runID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	views := make([]delivery.DeliveryRunJobDetailView, len(jobs))

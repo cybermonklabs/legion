@@ -44,7 +44,7 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | An Envoy listener | `ENVOY_URL` | Where the Agents page finds live agent sessions. Defaults to `http://127.0.0.1:9020`. |
 | NATS | `NATS_URLS`, `NATS_NKEY_SEED_FILE` | Where Dispatch publishes its events for agents. The Agents page's live view also needs it. Dispatch refuses a NATS server on another machine unless `ENVOY_ALLOW_REMOTE_NATS=1`. A NATS that is down, or refuses Dispatch's credential, when Dispatch starts does not stop it: Dispatch serves, connects once NATS answers, and publishes what was written meanwhile. Set `DISPATCH_NATS_DISABLED=1` to run without it. |
 | An address to listen on | `DISPATCH_LISTEN_HOST`, `DISPATCH_PORT` | Port `8766` by default. |
-| Meaning search | `DISPATCH_EMBEDDER`, and for Azure the `DISPATCH_AZURE_*` settings | Search by meaning embeds text with Cohere Embed v4 on AWS Bedrock (the default, with the AWS SDK's region and credentials) or on Azure AI Foundry (`DISPATCH_EMBEDDER=azure`: the endpoint, the deployment's tokens-per-minute quota, and either the deployment's key or a keyless sign-in through a federated token). Without it, search answers by words alone and says so. The server embeds everything it already holds by itself, at start and every ten minutes; `GET /api/v1/search/coverage` shows how far it has got. |
+| Meaning search | `DISPATCH_EMBEDDER`, and for Azure the `DISPATCH_AZURE_*` settings | Search by meaning embeds text with Cohere Embed v4 on AWS Bedrock (the default, with the AWS SDK's region and credentials) or on Azure AI Foundry (`DISPATCH_EMBEDDER=azure`: the endpoint, the deployment's tokens-per-minute quota, and either the deployment's key or a keyless sign-in through a federated token). Without it, search answers by words alone and says so. The server embeds everything it already holds by itself, at start and every ten minutes; `GET /api/v2/search-coverage` shows how far it has got. |
 
 These are the settings most deployments need, not all of them. The full list, generated from the
 server, is in [Configuration](/legion/dispatch/reference/configuration/).
@@ -754,7 +754,41 @@ delete from components c
 where not exists (select 1 from architecture_sources s where s.project_key = c.project_key);
 ```
 
+The first `legion-envoy` release that carries pull request #4274 serves `/api/v2` beside
+`/api/v1`, and its page calls `/api/v2` alone, where every write method takes a key, so its `PUT`
+and `DELETE` writes carry one too. It needs no step of its own: the server serves both versions,
+so a page or a `dispatch` command of either release works against either while the release rolls.
+A page of this release that reaches a server of the release before it is answered "no route" for a
+`/api/v2` path, and sends that request again after 1, 2 and 4 seconds, as it does for any route a
+rolling release adds. A write a page of an earlier release kept to send again after a reload goes
+to the `/api/v1` path it was first sent to, under its own key, so a write that landed is answered
+its stored result rather than made twice.
+
 ## The HTTP API
 
-`GET /api/v1` lists every API route with its method, who may call it, and a description. The
-[HTTP API reference](/legion/dispatch/reference/api/) is the same list.
+Dispatch serves two versions of its API side by side. `/api/v2`, from the first `legion-envoy`
+release that carries pull request #4274, is the one to call: every list answers
+`{items, total, limit, offset}`, every refusal is `{code, error}`, a query key a route does not
+declare is refused `400 QUERY_KEY_UNKNOWN`, and every write takes an `Idempotency-Key`.
+`GET /api/v2` lists every route with its method, who may call it, what it serves and a
+description, with no credential, and the [HTTP API reference](/legion/dispatch/reference/api/) is
+the same list.
+
+`/api/v1` is deprecated. `GET /api/v1` and the
+[HTTP API v1 reference](/legion/dispatch/reference/api-v1/) list its routes, which keep the
+answers they had, and from that release on each answer carries a `Deprecation` header and a
+`Link` header (`rel="successor-version"`) naming the `/api/v2` route that answers for it. At that
+release the `dispatch` command, the Oh My Pi and Claude Code plugins, the Legion daemon and the
+Secrets Broker still call `/api/v1`. Each names itself and its release in its `User-Agent`
+(`dispatch/<version> (<plugin>)`, `pi-envoy/<version>`, `pi-legion/<version>`,
+`claude-envoy/<version>`, `claude-envoy-hooks/<version>`, `legion-daemon/<release>`,
+`envoy-broker-judge/<commit>`, `envoy-broker-project-access/<commit>`), so the `user_agent` of
+Dispatch's access log shows which of them still call it.
+
+`/api/v1` ends at the instant `DISPATCH_API_V1_END` names, an RFC 3339 time with its offset, such
+as `2027-01-01T00:00:00Z`; `envoy-infra`'s `gcp:Dispatch` component sets it from its `apiV1End`
+input. While the instant is ahead, every `/api/v1` answer carries a `Sunset` header naming it.
+Once it has passed, every path under `/api/v1` answers `410 API_V1_ENDED`, pointing to
+`GET /api/v2`. Dispatch reads the clock on each request, so the end needs no restart, and it
+refuses to start on a value that is not an RFC 3339 time. Unset, `/api/v1` has no end: leave it so
+until no client you run still calls `/api/v1`, since such a client fails every call once it ends.

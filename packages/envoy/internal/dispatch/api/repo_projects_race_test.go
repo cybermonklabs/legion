@@ -243,3 +243,44 @@ func TestIssueCreateNamingAMappingWhileItMovesDoesNotDeadlock(t *testing.T) {
 		t.Fatalf("%d issue(s) name a repository their project does not map (%v), want the one this race created", orphans, err)
 	}
 }
+
+// Of two DELETEs of one mapping through /api/v2 at once, the one that takes the mapping's write
+// lock second finds the row gone and answers 404 REPOSITORY_NOT_FOUND, the route's answer for a
+// spelling no mapping is stored under (deleteRepositoryV2), not 204, and writes no removal event.
+// The first DELETE is the test's own transaction: it holds the lock lockRepoProjectWrite takes
+// while the request passes its exists check and waits on that lock, then removes the row and
+// commits.
+func TestV2RepositoryDeleteThatFindsTheMappingGoneUnderItsLockIsNotFound(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createProjects(t, handler, "CORE")
+	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v2/repositories/acme/widgets", map[string]string{"project": "CORE"}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("map acme/widgets: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var first pgx.Tx
+	holdWith(t, database, "acme/widgets's mapping write lock", func(tx pgx.Tx) error {
+		first = tx
+		_, err := tx.Exec(context.Background(), `select pg_advisory_xact_lock(hashtext('dispatch-repo-project'), hashtext($1))`, "acme/widgets")
+		return err
+	})
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- dispatchRequest(t, handler, http.MethodDelete, "/api/v2/repositories/acme/widgets", nil, "alice")
+	}()
+	awaitLockWaiters(t, database, 1)
+	if _, err := first.Exec(context.Background(), `delete from repo_projects where repo = 'acme/widgets'`); err != nil {
+		t.Fatalf("remove acme/widgets in the transaction holding its lock: %v", err)
+	}
+	if err := first.Commit(context.Background()); err != nil {
+		t.Fatalf("commit the removal: %v", err)
+	}
+	response := awaitAnswer(t, answered, "DELETE /api/v2/repositories/acme/widgets")
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("the DELETE that took the lock after the mapping went: status=%d body=%s, want 404", response.Code, response.Body.String())
+	}
+	if code, _ := refusalOf(t, response); code != "REPOSITORY_NOT_FOUND" {
+		t.Fatalf("the DELETE that took the lock after the mapping went refused %s, want REPOSITORY_NOT_FOUND", code)
+	}
+	if core := projectEvents(t, database, "CORE", "settings.repo_project.updated"); len(core) != 1 || core[0]["deleted"] != false {
+		t.Fatalf("CORE's mapping events = %v, want the PUT's alone: the DELETE removed nothing", core)
+	}
+}

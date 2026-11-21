@@ -859,9 +859,17 @@ RULES = {
         (f"{FIX}/live/event.json", "internal/dispatch/api/live_events_test.go:983")),
     f"{ENVOY}/internal/dispatch/api/openapi_test.go": reads(
         ("packages/contracts/schemas/dispatch-openapi.json",
-         "internal/dispatch/api/openapi_test.go:199-200 (the path built runtime-relative ../../../../.., then "
-         "read: the committed document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the "
-         "emitter's bytes with)")),
+         "internal/dispatch/api/openapi_test.go:261-262 (the path built runtime-relative ../../../../.., then "
+         "read: the committed /api/v1 document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the "
+         "emitter's bytes with)"),
+        ("packages/contracts/schemas/dispatch-openapi-v2.json",
+         "internal/dispatch/api/openapi_test.go:261-262, the same read of the committed /api/v2 document, which "
+         "TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares too and TestTheV2DocumentRequiresWhatTheStructsTag "
+         "and TestTheV2DocumentListsEveryCodeItCanAnswer hold to the Go types and the code list")),
+    f"{ENVOY}/internal/dispatch/api/routes_v2_tour_test.go": reads(
+        ("packages/contracts/schemas/dispatch-openapi-v2.json",
+         "internal/dispatch/api/routes_v2_tour_test.go:546-550 (the path built runtime-relative ../../../../.., then "
+         "opened: the committed /api/v2 document the route tour's contract subtest holds every answer to)")),
     f"{ENVOY}/internal/dispatch/api/session_answers_test.go": reads(
         (f"{FIX}/ask-reply-recipients.json",
          "internal/dispatch/api/session_answers_test.go:1496 os.ReadFile (askReplyRecipientsFixture :1167, "
@@ -1919,13 +1927,13 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The nine static checks of internal/dispatch/api, keyed by their path in this repository: the
-# eight source guards and one_expression_guard_test.go, which reads the module's text for the same
+# The ten static checks of internal/dispatch/api, keyed by their path in this repository: the
+# nine source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all seventeen of their tests in the plain step; they are left out of it instead,
+# below would put all eighteen of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
-# tells nobody anything. The exemption is held to the files it is about in three ways, so an
-# eighteenth such test cannot quietly rejoin the plain step: a file named here that does not
+# tells nobody anything. The exemption is held to the files it is about in three ways, so a
+# nineteenth such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -1957,6 +1965,8 @@ TEXT_CHECK_TESTS = {
         "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
+    f"{ENVOY}/internal/dispatch/api/routes_v2_raw_query_test.go": {
+        "TestNoV2HandlerReadsTheRawQuery"},
 }
 
 # The mention sender's claim model (internal/dispatch/api), keyed by path as TEXT_CHECK_TESTS is:
@@ -2142,12 +2152,12 @@ DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_pack
 DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
-# nine static checks - its eight source guards and one_expression_guard_test.go. They read the
+# The text-check job: the three modules' text checks, and the eighteen tests of the Dispatch API's
+# ten static checks - its nine source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those seventeen out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those eighteen out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
@@ -3344,8 +3354,12 @@ GATES = [
         # must start this job: the Run stands for what the command compiles, never for what it reads.
         ("packages/contracts/schemas/dispatch-openapi.json",
          f"{at('envoy-go-checks', 'Check the OpenAPI document is generated from the route table')}: "
-         "cmd/dispatch/subcommands.go:127 reads the committed document to compare it (:173 only builds a "
+         "cmd/dispatch/subcommands.go:166 reads each committed document to compare it (:217 only builds a "
          "candidate path for it)"),
+        ("packages/contracts/schemas/dispatch-openapi-v2.json",
+         f"{at('envoy-go-checks', 'Check the OpenAPI document is generated from the route table')}: "
+         "cmd/dispatch/subcommands.go:166 reads the committed /api/v2 document to compare it, as it reads the "
+         "/api/v1 one"),
         (CONTRACTS_SRC, "packages/contracts/scripts/gen-go.ts's imports of ../src/*"),
         (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-checks', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
         ("packages/proof-editor/src/**", "packages/envoy/internal/dispatch/pmdoc/gen/gen.ts:4-6 imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),
@@ -3446,12 +3460,12 @@ GATES = [
         *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT, module, [TEXT_CHECK_PKG])
           for module in TEXT_CHECK_MODULES],
     ], exact=[
-        # The seventeen static tests by name: a -run is outside the simple form, so the step is
+        # The eighteen static tests by name: a -run is outside the simple form, so the step is
         # pinned whole. A -run moves no closure - the whole package compiles whichever tests the
         # run selects - so the Run is the plain go test of the package, which is why this gate
         # reads everything the API's tests read.
         pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
-            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's seventeen source-check tests in {GUARD_PACKAGE}", {}),
+            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's eighteen source-check tests in {GUARD_PACKAGE}", {}),
         ]),
         # The supervise table's two pure pins by name (SUPERVISE_TABLE_TESTS), which the
         # daemon-go plain step skips: pinned whole for the same reason, and its Run is the plain

@@ -276,7 +276,12 @@ function answerIssuePageReads(): void {
     ),
     http.get("/api/v1/artifacts/:id/blocks", () => Response.json([])),
     http.get("/api/v1/artifacts/:id/text", () =>
-      Response.json({ markdown: "", token: "sha256:empty", version: null } satisfies ArtifactText)
+      Response.json({
+        markdown: "",
+        token: "sha256:empty",
+        version: null,
+        unsettled: true,
+      } satisfies ArtifactText)
     ),
     http.get("/api/v1/artifacts/:id/versions/:version", ({ params }) =>
       Response.json({
@@ -1320,6 +1325,7 @@ test("IssuePage keeps the Spec mounted across tabs", async () => {
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "The mounted specification",
     version: 1,
+    unsettled: false,
     token: "sha256:mounted-specification",
   });
   const view = renderIssuePage("/issues/CORE-1/spec", undefined, "The mounted specification");
@@ -1486,6 +1492,7 @@ test("IssuePage highlights a historical quote from its comment deep link", async
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "SQLite is local",
     version: 1,
+    unsettled: false,
     token: "sha256:sqlite-local",
   });
   const getArtifactVersion = spyOn(api, "getArtifactVersion").mockResolvedValue({
@@ -1563,6 +1570,7 @@ test("IssuePage reports an ambiguous historical quote as changed text", async ()
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "SQLite and SQLite",
     version: 1,
+    unsettled: false,
     token: "sha256:sqlite",
   });
   const getArtifactVersion = spyOn(api, "getArtifactVersion").mockResolvedValue({
@@ -1690,6 +1698,7 @@ test("IssuePage does not mount an image as the hidden Spec document", async () =
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "# Primary",
     version: 1,
+    unsettled: false,
     token: "sha256:primary",
   });
   const view = renderIssuePage("/issues/CORE-1/spec", "/issues/CORE-1/artifacts/diagram-png");
@@ -1742,6 +1751,7 @@ test("IssuePage opens a non-spec document at its version route", async () => {
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "# Design",
     version: 1,
+    unsettled: false,
     token: "sha256:design",
   });
   const view = renderIssuePage("/issues/CORE-1/artifacts/design");
@@ -1871,6 +1881,7 @@ test("IssuePage encodes primary-document version selection in the artifact route
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "# Primary",
     version: 1,
+    unsettled: false,
     token: "sha256:primary",
   });
   const view = renderIssuePage("/issues/CORE-1/spec");
@@ -1903,6 +1914,7 @@ test("IssuePage renders exactly one Version combobox on the Spec tab", async () 
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "# Primary",
     version: 1,
+    unsettled: false,
     token: "sha256:primary",
   });
   const view = renderIssuePage("/issues/CORE-1/spec");
@@ -1927,6 +1939,7 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "# Primary",
     version: 1,
+    unsettled: false,
     token: "sha256:primary",
   });
   const view = renderIssuePage("/issues/CORE-1/spec");
@@ -1963,6 +1976,7 @@ test("IssuePage copies the issue key on click, its reference on a modifier click
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "# Primary",
     version: 1,
+    unsettled: false,
     token: "sha256:primary",
   });
   const getArtifactVersion = spyOn(api, "getArtifactVersion").mockResolvedValue({
@@ -2268,6 +2282,7 @@ test("IssuePage shows a failed historical document version", async () => {
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "# Primary",
     version: 1,
+    unsettled: false,
     token: "sha256:primary",
   });
   const getArtifactVersion = spyOn(api, "getArtifactVersion").mockRejectedValue(
@@ -2299,6 +2314,7 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "The mounted specification",
     version: 1,
+    unsettled: false,
     token: "sha256:mounted-specification",
   });
   const closeSave = Promise.withResolvers<IssueDetails>();

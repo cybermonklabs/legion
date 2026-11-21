@@ -14,26 +14,32 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // searchParameters is one validated search: the words, the filters every leg of it is narrowed
-// by, the project a bare issue number is read in, and the page. numberProject is the project the
-// page a person searched from names, which narrows nothing at all (numberScope). ownKeys is what
-// runSearch resolves the words to when they name an issue (searchOwnIssueKeys) and empty
-// otherwise. broaden is empty for the query as typed, which is what every search runs first and
-// what nearly every search runs alone; it holds the rarest words of a query that matched nothing
-// (searchRarestWords) on the one second run such a query is given, and the statement then
-// searches for those words alone (searchQOpener). excluded is the -word terms the statement ANDs
-// onto that OR (readSearchQuery, excludedWords), set with broaden and empty whenever broaden is:
-// the query as typed needs none of it, because websearch_to_tsquery is already reading each
-// -word in $1 itself. keywordsOnly is the request's own ?keywords_only=true: the search runs the
-// keyword statement and makes no embedding call, whatever embedder the deployment configured
-// (runSearch). trees is whether the caller reads display trees (wantsDisplayTrees), which each
-// hit's snippet is cut and marked into beside its text (scanSearchRows); the answerer's own
-// search reads a hit's title and href alone and asks for none.
+// by, the project a bare issue number is read in, and the page. project is the one project the
+// search is narrowed to, empty for every project; projects is set in its place, with project
+// empty, where a request names several (two or more, which GET /api/v2/search-results alone
+// takes), and the statements then take their several-project form (searchProjectScope).
+// numberProject is the project the page a person searched from names, which narrows nothing at
+// all (numberScope). since and until are the window the date filter keeps, [since, until), each
+// nil for no bound: /api/v1 names since alone. ownKeys is what runSearch resolves the words to
+// when they name an issue (searchOwnIssueKeys) and empty otherwise. broaden is empty for the
+// query as typed, which is what every search runs first and what nearly every search runs alone;
+// it holds the rarest words of a query that matched nothing (searchRarestWords) on the one
+// second run such a query is given, and the statement then searches for those words alone
+// (searchQOpener). excluded is the -word terms the statement ANDs onto that OR (readSearchQuery,
+// excludedWords), set with broaden and empty whenever broaden is: the query as typed needs none
+// of it, because websearch_to_tsquery is already reading each -word in $1 itself. keywordsOnly is
+// the request's own ?keywords_only=true: the search runs the keyword statement and makes no
+// embedding call, whatever embedder the deployment configured (runSearch). trees is whether the
+// caller reads display trees (wantsDisplayTrees), which each hit's snippet is cut and marked into
+// beside its text (scanSearchRows); the answerer's own search reads a hit's title and href alone
+// and asks for none.
 //
 // reading is text read as the words a person wrote and the operators around them
 // (readSearchQuery), taken once by whoever builds the parameters and handed to every reader of
@@ -41,10 +47,12 @@ import (
 type searchParameters struct {
 	text          string
 	project       string
+	projects      []string
 	numberProject string
 	status        string
 	author        string
 	since         *time.Time
+	until         *time.Time
 	limit         int
 	offset        int
 	keywordsOnly  bool
@@ -55,13 +63,36 @@ type searchParameters struct {
 	reading       *searchReading
 }
 
+// projectScope is the form of the statements this search runs: several where it names a list of
+// projects, and one project, or every project, otherwise.
+func (p searchParameters) projectScope() searchProjectScope {
+	if len(p.projects) > 0 {
+		return searchSeveralProjects
+	}
+	return searchOneProject
+}
+
+// projectArgument is what $2 binds: the list of projects a search of several names, and
+// otherwise the one project, empty for every project.
+func (p searchParameters) projectArgument() any {
+	if p.projectScope() == searchSeveralProjects {
+		return p.projects
+	}
+	return p.project
+}
+
 // numberScope is the project a bare issue number names: the project filter when the request
 // narrows by one, since an issue that filter leaves out cannot be on the page whatever context a
 // request carries, and otherwise the project of the page the search was made from
 // (number_project). Empty for a request naming neither, and then a bare number names the issue of
-// that number in every project (searchOwnIssueKeys).
+// that number in every project (searchOwnIssueKeys). Empty too for a request naming several
+// projects: the number names its issue in every project, and the legs keep those of the projects
+// named, so it names that number's issue of each of them.
 func (p searchParameters) numberScope() string {
-	if p.project != "" {
+	switch {
+	case p.projectScope() == searchSeveralProjects:
+		return ""
+	case p.project != "":
 		return p.project
 	}
 	return p.numberProject
@@ -75,7 +106,7 @@ func (p searchParameters) numberScope() string {
 // (meaningStatementFor). The project is no filter of this kind: it is what the three
 // statements differ over, and each of them carries it.
 func (p searchParameters) filtered() bool {
-	return p.status != "" || p.author != "" || p.since != nil
+	return p.status != "" || p.author != "" || p.since != nil || p.until != nil
 }
 
 // queryReading is this search's text read as words and operators, which the search route reads
@@ -235,19 +266,20 @@ func (s *server) searchOwnIssueKeys(ctx context.Context, q, scope string) ([]str
 }
 
 // searchQueryBase is the eight parameters both of search's statements open with, in the order
-// searchQuery's own comment names them: the query, the project, the page and the two constants.
-// The statements differ in what follows them - the meaning leg's three, then the opener's six
-// (searchQOpenerArguments) - and each caller appends what it binds, so no caller counts this
-// list's length to splice around it.
+// searchQuery's own comment names them: the query, the project (projectArgument), the page and
+// the two constants. The statements differ in what follows them - the meaning leg's three, then
+// the opener's own (searchQOpenerArguments) - and each caller appends what it binds, so no
+// caller counts this list's length to splice around it.
 func searchQueryBase(parameters searchParameters) []any {
-	return []any{parameters.text, parameters.project, parameters.limit,
+	return []any{parameters.text, parameters.projectArgument(), parameters.limit,
 		parameters.queryReading().firstTerm(), headlineOptions, parameters.offset,
 		contracts.SearchKindDepth, searchFusionK}
 }
 
 // searchQOpenerArguments is searchQOpener's own six, which both statements end with: the
 // fallback's words and the words it excludes, the issues the query names by key, and the three
-// filters every leg is narrowed by.
+// filters every leg is narrowed by, the date filter its start; and a seventh, its end, for a
+// search that names one, which runs a statement that binds it (searchQOpenerIn, searchUntil).
 func searchQOpenerArguments(parameters searchParameters) []any {
 	keys := parameters.ownKeys
 	if keys == nil {
@@ -259,11 +291,15 @@ func searchQOpenerArguments(parameters searchParameters) []any {
 	if len(parameters.broaden) > 0 {
 		broaden = strings.Join(parameters.broaden, " or ")
 	}
-	return []any{broaden, parameters.excluded, keys, parameters.status, parameters.author, parameters.since}
+	arguments := []any{broaden, parameters.excluded, keys, parameters.status, parameters.author, parameters.since}
+	if parameters.until != nil {
+		arguments = append(arguments, parameters.until)
+	}
+	return arguments
 }
 
 // searchQueryArguments binds searchQuery's parameters, in the order its own comment names them:
-// the base eight, then searchQOpener's own six from $9. searchQueryMeaning takes the same values
+// the base eight, then searchQOpener's own from $9. searchQueryMeaning takes the same values
 // with the meaning leg's three between them (searchMeaningQueryArguments), so this pair is the
 // one place that knows what a search binds.
 func searchQueryArguments(parameters searchParameters) []any {
@@ -271,9 +307,9 @@ func searchQueryArguments(parameters searchParameters) []any {
 }
 
 // searchMeaningQueryArguments binds searchQueryMeaning's: the base eight, the meaning leg's
-// three at $9-$11, then the opener's six from $12, each appended to the one before it as
+// three at $9-$11, then the opener's own from $12, each appended to the one before it as
 // relatedSearch appends the check's own, so that a parameter added to the base moves the
-// opener's six along with it rather than being bound in their place.
+// opener's own along with them rather than being bound in their place.
 func searchMeaningQueryArguments(parameters searchParameters, vector []float32, identity string) []any {
 	arguments := append(searchQueryBase(parameters), embed.Literal(vector), searchMeaningFloor, identity)
 	return append(arguments, searchQOpenerArguments(parameters)...)
@@ -284,7 +320,8 @@ func searchMeaningQueryArguments(parameters searchParameters, vector []float32, 
 // configuration every search column is built with ('english'), so the word a person wrote and
 // the lexeme the statistics count are the same thing; the lexemes of one query are matched once
 // each (distinct on), and the df is summed over the projects in scope - one when the search names
-// a project ($2), every project when it names none.
+// a project ($2), every project when it names none, and the several of
+// searchRarestWordsSeveralSQL, the same statement over the list a search of several names ($2).
 //
 // The statistics are search_term_stats, the per-project document frequencies the related-terms
 // refresh keeps up to date through search_term_queue and the snapshot beside its totals
@@ -301,7 +338,14 @@ func searchMeaningQueryArguments(parameters searchParameters, vector []float32, 
 // ones run out, which is what broadens a query on a database whose statistics have never been
 // built: every word unknown, the order is the query's own and the bound is all that is left of
 // the pick.
-const searchRarestWordsSQL = `
+var (
+	searchRarestWordsSQL        = searchRarestWordsIn(searchOneProject)
+	searchRarestWordsSeveralSQL = searchRarestWordsIn(searchSeveralProjects)
+)
+
+// searchRarestWordsIn is searchRarestWordsSQL with its statistics narrowed by projects.
+func searchRarestWordsIn(projects searchProjectScope) string {
+	return `
 with words as (
   select distinct on (w.lexeme) w.word, w.at, w.lexeme
     from (select t.word, t.at,
@@ -313,12 +357,13 @@ with words as (
 df as (
   select s.lexeme, sum(s.ndoc) as ndoc
     from search_term_stats s
-   where s.lexeme in (select lexeme from words) and ($2 = '' or s.project_key = $2)
+   where s.lexeme in (select lexeme from words) and ` + projects.of("s.project_key") + `
    group by s.lexeme
 )
 select w.word from words w left join df on df.lexeme = w.lexeme
  order by df.ndoc nulls last, w.at
  limit $3`
+}
 
 // searchRarestWords is the fallback's own words: the searchBroadenWords rarest words of the
 // query (searchRarestWordsSQL). It is the one extra statement the fallback costs, and it runs for
@@ -331,7 +376,11 @@ func (s *server) searchRarestWords(ctx context.Context, parameters searchParamet
 	if len(words) < 2 {
 		return nil, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, searchRarestWordsSQL, words, parameters.project, searchBroadenWords)
+	statement := searchRarestWordsSQL
+	if parameters.projectScope() == searchSeveralProjects {
+		statement = searchRarestWordsSeveralSQL
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, statement, words, parameters.projectArgument(), searchBroadenWords)
 	if err != nil {
 		return nil, err
 	}
@@ -353,31 +402,50 @@ func searchAppliedFilters(parameters searchParameters) model.SearchFilters {
 // the refusal itself when one of them is repeated, blank or unreadable, each under a code of its
 // own, exactly as the project and the page parameters beside them are refused. A filter the
 // request leaves out narrows nothing.
-func parseSearchFilters(w http.ResponseWriter, query url.Values) (status, author string, since *time.Time, ok bool) {
+func parseSearchFilters(w http.ResponseWriter, r *http.Request, query url.Values) (status, author string, since *time.Time, ok bool) {
 	if values, present := query["status"]; present {
 		status = strings.TrimSpace(values[0])
 		if len(values) != 1 || !model.IsIssueStatus(status) {
-			writeError(w, "INVALID_STATUS", http.StatusBadRequest,
-				"status must be one of "+strings.Join(model.IssueStatuses, ", "))
+			refusal := searchStatusRefusal()
+			writeError(w, r, refusal.code, refusal.message)
 			return "", "", nil, false
 		}
 	}
 	if values, present := query["author"]; present {
 		author = strings.TrimSpace(values[0])
-		if len(values) != 1 || !searchAuthorPattern.MatchString(author) || itemblocks.Units16(author) > searchAuthorMax {
-			writeError(w, "INVALID_AUTHOR", http.StatusBadRequest, fmt.Sprintf(
-				"author must be one actor id - a person's login or a session id, with no whitespace - of at most %d characters",
-				searchAuthorMax))
+		if len(values) != 1 || !searchAuthorTaken(author) {
+			refusal := searchAuthorRefusal()
+			writeError(w, r, refusal.code, refusal.message)
 			return "", "", nil, false
 		}
 	}
 	if values, present := query["updated_since"]; present {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(values[0]))
 		if len(values) != 1 || err != nil {
-			writeError(w, "INVALID_UPDATED_SINCE", http.StatusBadRequest, "updated_since must be an RFC3339 timestamp")
+			writeError(w, r, apicode.InvalidUpdatedSince, "updated_since must be an RFC3339 timestamp")
 			return "", "", nil, false
 		}
 		since = &parsed
 	}
 	return status, author, since, true
+}
+
+// searchStatusRefusal is the refusal of a status filter that names no issue status, which both
+// versions of the search route answer.
+func searchStatusRefusal() *apiError {
+	return errorf(apicode.InvalidStatus, "status must be one of %s", strings.Join(model.IssueStatuses, ", "))
+}
+
+// searchAuthorTaken reports whether author, already trimmed, is an author filter both versions of
+// the search route take: one actor id, holding no whitespace, of at most searchAuthorMax
+// characters.
+func searchAuthorTaken(author string) bool {
+	return searchAuthorPattern.MatchString(author) && itemblocks.Units16(author) <= searchAuthorMax
+}
+
+// searchAuthorRefusal is the refusal of an author filter searchAuthorTaken does not take.
+func searchAuthorRefusal() *apiError {
+	return errorf(apicode.InvalidAuthor,
+		"author must be one actor id - a person's login or a session id, with no whitespace - of at most %d characters",
+		searchAuthorMax)
 }

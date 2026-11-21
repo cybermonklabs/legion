@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 type agentTokenResponse struct {
@@ -58,8 +59,8 @@ func TestAgentTokensArePrivateRevocableAndAttributeSessionWrites(t *testing.T) {
 	} {
 		t.Run("the shared token cannot "+test.name, func(t *testing.T) {
 			response := agentRequest(t, handler, test.method, test.path, test.body, "agent-token")
-			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-				t.Fatalf("%s agent token endpoint: status=%d body=%s, want 403 %s", test.name, response.Code, response.Body.String(), codeScopeRequired)
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+				t.Fatalf("%s agent token endpoint: status=%d body=%s, want 403 %s", test.name, response.Code, response.Body.String(), apicode.OAuthScopeRequired.V1Name())
 			}
 		})
 	}

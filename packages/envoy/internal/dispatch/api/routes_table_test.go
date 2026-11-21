@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -91,8 +93,9 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 	if !found {
 		t.Fatalf("GET /api/v1/issues/{key} missing from the index: %+v", index.Routes)
 	}
-	if len(index.Routes) != len((&server{}).routes()) {
-		t.Fatalf("index lists %d routes, table has %d", len(index.Routes), len((&server{}).routes()))
+	// GET /api/v1 lists the routes /api/v1 serves, and testdata/routes.txt both versions'.
+	if served := servedAt(apiV1, (&server{}).routes()); len(index.Routes) != len(served) {
+		t.Fatalf("index lists %d routes, /api/v1 serves %d", len(index.Routes), len(served))
 	}
 
 	// The table against the committed index. A route added, removed, or given another auth class
@@ -128,46 +131,79 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 }
 
 // WriteRouteIndex is what `envoy-dispatch routes` prints and the docs site's API reference is
-// generated from: every row of the table, as GET /api/v1 serves it, and no test hook.
+// generated from: every route of one version, as GET /api/v1 or GET /api/v2 serves it, and no test
+// hook. Each index lists its own version's routes alone, and GET /api/v2 answers them all on one
+// page.
 func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
-	var output bytes.Buffer
-	if err := WriteRouteIndex(&output); err != nil {
-		t.Fatal(err)
-	}
-	var printed routeIndex
-	if err := json.Unmarshal(output.Bytes(), &printed); err != nil {
-		t.Fatalf("decode %q: %v", output.String(), err)
-	}
-	table := (&server{}).routes()
-	if len(printed.Routes) != len(table) {
-		t.Fatalf("printed %d routes, table has %d", len(printed.Routes), len(table))
-	}
-	byKey := make(map[string]routeIndexEntry, len(printed.Routes))
-	for _, entry := range printed.Routes {
-		byKey[entry.Method+" "+entry.Path] = entry
-	}
-	for _, route := range table {
-		entry, ok := byKey[route.Method+" "+route.Pattern]
-		if !ok {
-			t.Errorf("%s %s missing from the printed index", route.Method, route.Pattern)
-			continue
-		}
-		if entry.Auth != route.Auth || entry.Description != route.Description {
-			t.Errorf("%s %s printed as auth %q, description %q; the table says %q, %q", route.Method, route.Pattern, entry.Auth, entry.Description, route.Auth, route.Description)
-		}
-	}
-	for _, entry := range printed.Routes {
-		if strings.Contains(entry.Path, "/_test/") {
-			t.Errorf("printed index carries test hook %s %s", entry.Method, entry.Path)
-		}
-	}
-
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
-	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1", nil))
-	if served := response.Body.String(); served != output.String() {
-		t.Fatalf("printed index differs from GET /api/v1:\nprinted %s\nserved  %s", output.String(), served)
+	for _, version := range []apiVersion{apiV1, apiV2} {
+		prefix := versionPrefix(version)
+		t.Run(prefix, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := WriteRouteIndex(&output, int(version)); err != nil {
+				t.Fatal(err)
+			}
+			type printedEntry struct {
+				Method      string    `json:"method"`
+				Path        string    `json:"path"`
+				Auth        routeAuth `json:"auth"`
+				Description string    `json:"description"`
+			}
+			var printed struct {
+				Routes []printedEntry `json:"routes"`
+				Items  []printedEntry `json:"items"`
+				Total  int            `json:"total"`
+				Limit  int            `json:"limit"`
+				Offset int            `json:"offset"`
+			}
+			if err := json.Unmarshal(output.Bytes(), &printed); err != nil {
+				t.Fatalf("decode %q: %v", output.String(), err)
+			}
+			entries := printed.Routes
+			if version == apiV2 {
+				entries = printed.Items
+				if printed.Routes != nil || printed.Total != len(entries) || printed.Limit != len(entries) || printed.Offset != 0 {
+					t.Errorf("GET /api/v2 answers routes %v, total %d, limit %d, offset %d over %d items; want every route on one page",
+						printed.Routes, printed.Total, printed.Limit, printed.Offset, len(entries))
+				}
+			}
+			table := servedAt(version, (&server{}).routes())
+			if len(entries) != len(table) {
+				t.Fatalf("printed %d routes, %s serves %d", len(entries), prefix, len(table))
+			}
+			byKey := make(map[string]printedEntry, len(entries))
+			for _, entry := range entries {
+				byKey[entry.Method+" "+entry.Path] = entry
+			}
+			for _, route := range table {
+				entry, ok := byKey[route.Method+" "+route.Pattern]
+				if !ok {
+					t.Errorf("%s %s missing from the printed index", route.Method, route.Pattern)
+					continue
+				}
+				if entry.Auth != route.Auth || entry.Description != route.Description {
+					t.Errorf("%s %s printed as auth %q, description %q; the table says %q, %q", route.Method, route.Pattern, entry.Auth, entry.Description, route.Auth, route.Description)
+				}
+			}
+			for _, entry := range entries {
+				if strings.Contains(entry.Path, "/_test") {
+					t.Errorf("printed index carries test hook %s %s", entry.Method, entry.Path)
+				}
+				if entry.Path != prefix && !strings.HasPrefix(entry.Path, prefix+"/") {
+					t.Errorf("the %s index lists %s %s", prefix, entry.Method, entry.Path)
+				}
+			}
+
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, prefix, nil))
+			if served := response.Body.String(); served != output.String() {
+				t.Fatalf("printed index differs from GET %s:\nprinted %s\nserved  %s", prefix, output.String(), served)
+			}
+		})
+	}
+	if err := WriteRouteIndex(io.Discard, 3); err == nil {
+		t.Error("WriteRouteIndex printed an index of version 3, which the API does not have")
 	}
 }
 
@@ -204,17 +240,21 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+15 {
-		t.Fatalf("test hooks add fifteen routes: got %d, want %d", got, len(routes)+15)
+	// Fifteen hooks, each mounted at its /api/v1 path and at its /api/v2/_test path.
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+2*15 {
+		t.Fatalf("test hooks add fifteen rows at two paths each: got %d, want %d", got, len(routes)+2*15)
 	}
 }
 
 // The Inbox route's description states the rule the person a question reaches is resolved by —
 // the person it was handed to, then the issue's assignee, then the project's default assignee —
-// and the four descriptions that rule narrowed no longer carry what it replaced. This is a test
-// of its own because the two route tests above read every description and assert no word of
-// one: the index leaves descriptions out (routeIndexLines) and the pin only holds each row to
-// having one, so nothing else fails when a description outlives the code it describes.
+// and that the read filters by no caller unless it asks for the caller's own (R10.1 of
+// dispatch://INFRA-2946/spec), at GET /api/v1/inbox and at GET /api/v2/asks alike; the /api/v1
+// descriptions of the default assignee's create, list and write state their side of the rule; and
+// none of the five descriptions the rule narrowed says what the rule makes false. This is a test of
+// its own because the two route tests above read every description and assert no word of one: the
+// index leaves descriptions out (routeIndexLines) and the pin only holds each row to having one, so
+// nothing else fails when a description outlives the code it describes.
 func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 	descriptions := map[string]string{}
 	for _, route := range (&server{}).routes() {
@@ -225,6 +265,12 @@ func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 		{"GET /api/v1/inbox", "handed to"},
 		{"GET /api/v1/inbox", "the issue's assignee"},
 		{"GET /api/v1/inbox", "the project's default assignee"},
+		{"GET /api/v2/asks", "handed to"},
+		{"GET /api/v2/asks", "the issue's assignee"},
+		{"GET /api/v2/asks", "the project's default assignee"},
+		// With no filter the read lists every open ask, whoever it waits on.
+		{"GET /api/v1/inbox", "filters by no caller unless ?assignee=me"},
+		{"GET /api/v2/asks", "with no filter, every open ask of every project the caller reads, whoever it waits on"},
 		// A create names the person, and says what happens when it names nobody.
 		{"POST /api/v1/projects", "default_assignee"},
 		{"POST /api/v1/projects", "ASSIGNEE_NOT_ALLOWED"},
@@ -250,13 +296,16 @@ func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 		{"POST /api/v1/issues", "still names a person who has signed in"},
 		// The inbox resolves three steps and stops at none of them.
 		{"GET /api/v1/inbox", "until somebody hands it on"},
+		// Neither read lists only the asks waiting on the caller unless it is asked to.
+		{"GET /api/v1/inbox", "waiting on the caller"},
+		{"GET /api/v2/asks", "waiting on the caller"},
 	} {
 		description, mounted := descriptions[stale.route]
 		if !mounted {
 			t.Fatalf("the table mounts no %s", stale.route)
 		}
 		if strings.Contains(description, stale.says) {
-			t.Errorf("%s still says %q, which the three-step rule made false: %s", stale.route, stale.says, description)
+			t.Errorf("%s says %q, which the three-step rule makes false: %s", stale.route, stale.says, description)
 		}
 	}
 }
@@ -307,7 +356,7 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 	})
 
 	t.Run("a row that resolves a kind and gives a reason fails it too", func(t *testing.T) {
-		withIDRoute(t, "GET /api/v1/widgets/{id}", idRoute{Kind: "ask", NotFound: "NOT_FOUND", Reason: "and also not"})
+		withIDRoute(t, "GET /api/v1/widgets/{id}", idRoute{Kind: "ask", NotFound: apicode.NotFound, Reason: "and also not"})
 		undecided := undecidedIDRoutes([]apiRoute{
 			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}", Auth: authAny}},
 		})
@@ -328,7 +377,7 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 
 	t.Run("a row that resolves a block and names no 404 for it fails it too", func(t *testing.T) {
 		withIDRoute(t, "GET /api/v1/widgets/{id}/blocks/{block_id}",
-			idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND", Blocks: true})
+			idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound, Blocks: true})
 		undecided := undecidedIDRoutes([]apiRoute{
 			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}/blocks/{block_id}", Auth: authAny}},
 		})
@@ -353,9 +402,9 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 			if strings.Contains(name, "{block_id}") && !entry.Blocks {
 				t.Errorf("idRoutes leaves the {block_id} of %q unresolved", name)
 			}
-			for column, code := range map[string]string{"NotFound": entry.NotFound, "BlockNotFound": entry.BlockNotFound} {
-				if code != "" && code != notFoundNone && !strings.HasSuffix(code, "NOT_FOUND") {
-					t.Errorf("idRoutes gives %q the %s code %q, which is no not-found code", name, column, code)
+			for column, code := range map[string]apicode.Code{"NotFound": entry.NotFound, "BlockNotFound": entry.BlockNotFound} {
+				if !code.IsZero() && !strings.HasSuffix(code.V1Name(), "NOT_FOUND") {
+					t.Errorf("idRoutes gives %q the %s code %q, which is no not-found code", name, column, code.V1Name())
 				}
 			}
 		}
@@ -395,17 +444,22 @@ func routeProbePath(pattern string) string {
 }
 
 // routeProbeBody is the JSON body a probe sends. Every mutation that decodes before it
-// authenticates accepts `actor` (a bearer's self-identification). Two kinds of route need more:
+// authenticates accepts `actor` (a bearer's self-identification). Three kinds of route need more:
 // a review route refuses a body without a valid state (400 INVALID_REVIEW) before it reads the
-// document, so its probe is an approval, and a reply route answers REPLY_FORBIDDEN to a malformed
+// document, so its probe is an approval; a reply route answers REPLY_FORBIDDEN to a malformed
 // reply as well as to the wrong caller, so its probe must be a complete reply to reach the caller
-// check.
+// check; and a /api/v2 route whose body is a union is decoded before its handler runs, and its
+// decoder refuses a body naming no arm 400 before any credential is judged, so its probe is an arm
+// its decoder reads that no scope gates (unionProbe).
 func routeProbeBody(route apiRoute) string {
 	switch route.Method + " " + route.Pattern {
 	case "POST /api/v1/artifacts/{id}/reviews", "POST /api/v1/artifacts/{id}/versions/{number}/reviews":
 		return `{"state":"approved"}`
 	case "POST /api/v1/messages/{id}/reply", "POST /api/v1/comments/{id}/reply":
 		return `{"actor":{"kind":"session","id":"s1"},"attempt":1,"body":"probe"}`
+	}
+	if probe, _, _, union := unionProbe(route, map[string]any{"actor": map[string]any{"kind": "session", "id": "s1"}}); union {
+		return probe
 	}
 	return `{"actor":{"kind":"session","id":"s1"}}`
 }
@@ -425,7 +479,7 @@ func authRefusal(response *httptest.ResponseRecorder) (bool, string) {
 		}
 		_ = json.Unmarshal(response.Body.Bytes(), &body)
 		switch body.Code {
-		case codeScopeRequired, "REPLY_FORBIDDEN", "ACCEPT_FORBIDDEN", "HANDOFF_FORBIDDEN":
+		case apicode.OAuthScopeRequired.V1Name(), "REPLY_FORBIDDEN", "ACCEPT_FORBIDDEN", "HANDOFF_FORBIDDEN":
 			return true, "403 " + body.Code
 		}
 	}
@@ -514,7 +568,7 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 		t.Helper()
 		response := probe(route, credential)
 		refused, why := authRefusal(response)
-		if !refused || why != "403 "+codeScopeRequired {
+		if !refused || why != "403 "+apicode.OAuthScopeRequired.V1Name() {
 			t.Fatalf("%s %s needs %v but answers a %s caller %d %s", route.Method, route.Pattern, route.OAuthScopes, credential, response.Code, response.Body.String())
 		}
 	}

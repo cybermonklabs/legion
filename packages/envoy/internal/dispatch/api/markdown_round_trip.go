@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -67,7 +68,7 @@ const markdownRoundTripLimit = 6*maxDocumentMarkdownBytes + 1<<10
 // bound and nothing else: the text a caller asks about is bounded by the write that would store
 // it, which refuses its own, and a refusal here that named the text's bound would send a writer
 // back to a call no repeat gets through.
-var errMarkdownRoundTripTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED",
+var errMarkdownRoundTripTooLarge = errorf(apicode.CapExceededTooLarge,
 	"request body exceeds %d bytes", markdownRoundTripLimit)
 
 // markdownRoundTripInput is the body of POST /api/v1/markdown/round-trip: the text a caller is
@@ -98,14 +99,20 @@ func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input markdownRoundTripInput
-	limit, tooLarge := routeBody(http.MethodPost, markdownRoundTripPattern)
-	if err := decodeJSONWithin(r, &input, limit, tooLarge); err != nil {
-		s.writeHandlerError(w, err)
+	if err := decodeJSONWithin(r, &input, markdownRoundTripBodyLimit.Bytes, markdownRoundTripBodyLimit.TooLarge); err != nil {
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	WriteJSON(w, http.StatusOK, markdownRoundTrip(input))
+}
+
+// markdownRoundTrip is the answer both versions of the route give for the text input holds:
+// what the store would hold for it, or the text itself where it is longer than a document may
+// hold.
+func markdownRoundTrip(input markdownRoundTripInput) markdownRoundTripResponse {
 	stored := input.Markdown
 	if len(stored) <= maxDocumentMarkdownBytes {
 		stored = storedMarkdown(stored)
 	}
-	WriteJSON(w, http.StatusOK, markdownRoundTripResponse{Markdown: stored})
+	return markdownRoundTripResponse{Markdown: stored}
 }

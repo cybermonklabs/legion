@@ -650,6 +650,7 @@ test("project routes render the project page and a project document route", asyn
       markdown: "",
       token: "sha256:design-notes",
       version: null,
+      unsettled: true,
     }),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
     spyOn(api, "listArtifactComments").mockResolvedValue([]),

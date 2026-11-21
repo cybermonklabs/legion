@@ -88,6 +88,7 @@ test("renders the header, the document, versions, and Referenced by for an unlin
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "# Design notes",
     version: 1,
+    unsettled: false,
     token: "sha256:design-notes",
   });
   getReferences.mockResolvedValueOnce({
@@ -154,6 +155,7 @@ test("Referenced by leaves out an edge whose kind or node kind the page does not
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "# Design notes",
     version: 1,
+    unsettled: false,
     token: "sha256:design-notes",
   });
   const mention: GraphEdge = {
@@ -231,6 +233,7 @@ test("shows Subscribed agents and unsubscribes after confirming the dialog", asy
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "# Design notes",
     version: 1,
+    unsettled: false,
     token: "sha256:design-notes",
   });
   let currentSubscribers: Subscriber[] = [
@@ -333,6 +336,7 @@ async function unsubscribing(unsubscribe: (subscribers: Subscriber[]) => Promise
     spyOn(api, "getArtifactText").mockResolvedValue({
       markdown: "# Design notes",
       version: 1,
+      unsettled: false,
       token: "sha256:design-notes",
     }),
     spyOn(api, "getArtifactSubscribers").mockImplementation(async () => [...subscribers]),
@@ -440,6 +444,7 @@ test("after a refused unsubscribe, the next document's page shows no refusal and
     spyOn(api, "getArtifactText").mockResolvedValue({
       markdown: "# Design notes",
       version: 1,
+      unsettled: false,
       token: "sha256:design-notes",
     }),
     spyOn(api, "getArtifactSubscribers").mockResolvedValue([

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -27,27 +28,35 @@ type createDeliveryInput struct {
 func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	var input createDeliveryInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !human {
 		if actor, err = bearerSessionActor(r, actor, input.Actor); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
-	if !validDelivery(input.Delivery) {
-		writeError(w, "MESSAGE_INPUT", http.StatusBadRequest, "delivery must be one of btw, aside, steer")
+	s.retryMessageDelivery(w, r, actor, input.Delivery)
+}
+
+// retryMessageDelivery opens or resumes a delivery attempt of the targeted message the path's {id}
+// names, in mode delivery, for actor, once the route has read its body and resolved who acts: the
+// work of POST /api/v1/messages/{id}/deliveries and POST /api/v2/messages/{id}/deliveries. It
+// answers 201 the attempt as it settled, or the refusal.
+func (s *server) retryMessageDelivery(w http.ResponseWriter, r *http.Request, actor model.Actor, delivery string) {
+	if !validDelivery(delivery) {
+		writeError(w, r, apicode.MessageInput, "delivery must be one of btw, aside, steer")
 		return
 	}
 	message, err := s.loadMessage(r.Context(), s.deps.Store.Pool, "", r.PathValue("id"))
 	if err != nil || message.Target == nil {
-		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
+		writeError(w, r, apicode.MessageNotFound, "message not found")
 		return
 	}
 	// The send outlives the request's connection, keeping its values and dropping its
@@ -55,9 +64,9 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 	// call, a cut connection must not strand it, and one a process death strands the delivery
 	// sweep resumes. It carries the urgency of the attempt it resumes, and none on an attempt it
 	// opens: a Retry asks for none.
-	attempt, err := s.deliverMessage(context.WithoutCancel(r.Context()), message, input.Delivery, actor, nil)
+	attempt, err := s.deliverMessage(context.WithoutCancel(r.Context()), message, delivery, actor, nil)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusCreated, attempt)
@@ -131,27 +140,36 @@ type acceptedDelivery struct {
 // session is then refused and shows a card, and nothing is injected.
 func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
-		writeError(w, "ACCEPT_FORBIDDEN", http.StatusForbidden, "accept requires an agent bearer token")
+		writeError(w, r, apicode.AcceptForbidden, "accept requires an agent bearer token")
 		return
 	}
 	var input actorInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
+	s.acceptDeliveryAs(w, r, actor)
+}
+
+// acceptDeliveryAs is the accept's compare-and-set for the attempt the path's {attempt} names of
+// the message its {id} names, by the session actor, once the route has read its body and resolved
+// who acts: the work of POST /api/v1/messages/{id}/deliveries/{attempt}/accept and PUT
+// /api/v2/messages/{id}/deliveries/{attempt}/state {state: accepted}. It answers the accepted
+// attempt with the message's stored body, or the refusal naming the check.
+func (s *server) acceptDeliveryAs(w http.ResponseWriter, r *http.Request, actor model.Actor) {
 	number, err := strconv.Atoi(r.PathValue("attempt"))
 	if err != nil || number < 1 {
-		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
+		writeError(w, r, apicode.MessageNotFound, "message delivery not found")
 		return
 	}
 	ctx := r.Context()
 	message, err := s.loadMessage(ctx, s.deps.Store.Pool, "", r.PathValue("id"))
 	if err != nil {
-		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
+		writeError(w, r, apicode.MessageNotFound, "message not found")
 		return
 	}
 	event := messageEvent(message, "message.accepted", actor, model.MessageAcceptedEventPayload{
@@ -160,7 +178,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	})
 	tx, err := s.begin(ctx)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(ctx)
@@ -170,7 +188,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	// through its insert's foreign key, this row FOR KEY SHARE, which FOR UPDATE would wait for
 	// while this transaction waits for the attempt row the reply holds.
 	if _, err := tx.Exec(ctx, `select 1 from messages where id = $1 for no key update`, message.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var sessionID, delivery, state string
@@ -193,47 +211,47 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		&sessionID, &delivery, &state, &direct, &byPerson, &byAgent, &latest, &taken, &requester, &byAuthor, &fresh,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
+		writeError(w, r, apicode.MessageNotFound, "message delivery not found")
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	switch {
 	case sessionID != actor.ID:
-		writeError(w, "ACCEPT_FORBIDDEN", http.StatusForbidden, "session may accept only its own delivery")
+		writeError(w, r, apicode.AcceptForbidden, "session may accept only its own delivery")
 		return
 	case !direct:
-		writeError(w, "ACCEPT_NOT_DIRECT", http.StatusConflict,
+		writeError(w, r, apicode.AcceptNotDirect,
 			"only a direct message to this session, on no issue and from no broadcast, is taken as its turn")
 		return
 	case !byPerson:
-		writeError(w, "ACCEPT_NOT_WRITTEN_BY_PERSON", http.StatusConflict,
+		writeError(w, r, apicode.AcceptNotWrittenByPerson,
 			"only a message a person wrote is taken as the session's turn")
 		return
 	case byAgent:
-		writeError(w, "ACCEPT_WRITTEN_BY_AGENT", http.StatusConflict,
+		writeError(w, r, apicode.AcceptWrittenByAgent,
 			"this message was written by an agent acting for the person, so it is shown as a card rather than taken as the session's turn")
 		return
 	case delivery != "aside" && delivery != "steer":
-		writeError(w, "ACCEPT_NOT_ASIDE_OR_STEER", http.StatusConflict,
+		writeError(w, r, apicode.AcceptNotAsideOrSteer,
 			fmt.Sprintf("attempt %d is a %s, and only a Send or an Aside is taken as the session's turn", number, delivery))
 		return
 	case taken != nil:
-		writeError(w, "ACCEPT_ALREADY_ACCEPTED", http.StatusConflict,
+		writeError(w, r, apicode.AcceptAlreadyAccepted,
 			fmt.Sprintf("attempt %d of this message was already accepted", *taken))
 		return
 	case !latest:
-		writeError(w, "ACCEPT_SUPERSEDED", http.StatusConflict,
+		writeError(w, r, apicode.AcceptSuperseded,
 			fmt.Sprintf("attempt %d is not this message's latest attempt", number))
 		return
 	case requester == nil || *requester != "user":
-		writeError(w, "ACCEPT_NOT_REQUESTED_BY_PERSON", http.StatusConflict,
+		writeError(w, r, apicode.AcceptNotRequestedByPerson,
 			fmt.Sprintf("no person requested attempt %d", number))
 		return
 	case !byAuthor:
-		writeError(w, "ACCEPT_NOT_REQUESTED_BY_AUTHOR", http.StatusConflict,
+		writeError(w, r, apicode.AcceptNotRequestedByAuthor,
 			fmt.Sprintf("attempt %d was requested by someone other than the person who wrote the message", number))
 		return
 	case state != model.DeliveryStatePending && !model.DeliveryTaken(state):
@@ -241,11 +259,11 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		// another way; a frame naming it is not the delivery they were shown. A queued attempt is
 		// not one of those: the listener took it, and the session accepting it now is the session
 		// it was stored for, reading it as it runs again.
-		writeError(w, "ACCEPT_FAILED", http.StatusConflict,
+		writeError(w, r, apicode.AcceptFailed,
 			fmt.Sprintf("attempt %d failed, and only a pending, sent or queued attempt is taken as the session's turn", number))
 		return
 	case !fresh:
-		writeError(w, "ACCEPT_STALE", http.StatusConflict,
+		writeError(w, r, apicode.AcceptStale,
 			fmt.Sprintf("attempt %d was requested more than a minute ago", number))
 		return
 	}
@@ -256,16 +274,16 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		message.ID, number, acceptedAsUserTurn,
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	appended, err := s.appendEvent(ctx, tx, event)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(ctx, appended)
@@ -775,7 +793,7 @@ func (s *server) deliverMessageResuming(
 		func(ctx context.Context, resolved ResolvedMention) (pendingMessageDelivery, error) {
 			return s.recordPendingMessageDelivery(ctx, message, actor, resolved, replyThread, resumeAttempt)
 		},
-		errorf(http.StatusConflict, "MESSAGE_TARGET_CHANGED",
+		errorf(apicode.MessageTargetChanged,
 			"the message's target changed while this delivery was being recorded"),
 	)
 	if err != nil {
@@ -910,7 +928,7 @@ func (s *server) planMessageReply(
 ) (messageReplyPlan, error) {
 	plan := messageReplyPlan{body: body}
 	if inReplyToBlock != nil {
-		repair, block, err := s.planReplyBlock(ctx, tx, refs.ItemMessage, message.ID, *inReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE")
+		repair, block, err := s.planReplyBlock(ctx, tx, refs.ItemMessage, message.ID, *inReplyToBlock, "in_reply_to_block", apicode.InvalidMessage)
 		if err != nil {
 			plan.refusal, err = deferredRefusal(err)
 			return plan, err
@@ -931,41 +949,53 @@ func (s *server) planMessageReply(
 
 func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires an agent bearer token")
+		writeError(w, r, apicode.ReplyForbidden, "reply requires an agent bearer token")
 		return
 	}
 	var input messageReplyInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	followUp, followUpErr := followUpRequested(r)
+	s.answerMessageDelivery(w, r, input, followUp, followUpErr)
+}
+
+// answerMessageDelivery is the targeted session's answer to one delivery attempt of the message
+// the path's {id} names - a reply's body, or the error the session met - once the route has read
+// its body and its follow_up: the work of POST /api/v1/messages/{id}/reply and POST
+// /api/v2/messages/{id}/replies, whose caller has already shown a bearer credential. followUpErr
+// is the refusal of a follow_up that is neither true nor false, which /api/v1 reads off the raw
+// query and answers after the body's own checks, as it always has; /api/v2's decoder refuses such
+// a value before the handler runs, so it passes nil. It answers the reply, an answered attempt's
+// stored reply, the failed attempt, or the refusal.
+func (s *server) answerMessageDelivery(w http.ResponseWriter, r *http.Request, input messageReplyInput, followUp bool, followUpErr error) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
 	if actor.Kind != "session" || input.Attempt < 1 || (input.Body == nil) == (input.Error == nil) {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires one body or error for a delivery attempt")
+		writeError(w, r, apicode.ReplyForbidden, "reply requires one body or error for a delivery attempt")
 		return
 	}
 	if input.Body != nil {
 		if strings.TrimSpace(*input.Body) == "" {
-			writeError(w, "MESSAGE_INPUT", http.StatusBadRequest, "message body is required")
+			writeError(w, r, apicode.MessageInput, "message body is required")
 			return
 		}
 		// A reply is stored as a message of its own, so it takes the message route's bound.
 		if err := blockBoundError(itemblocks.Check("body", *input.Body)); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.InReplyToBlock != nil && input.Body == nil {
-		writeError(w, "INVALID_MESSAGE", http.StatusBadRequest, "in_reply_to_block names the block a reply's body answers; an error report has none")
+		writeError(w, r, apicode.InvalidMessage, "in_reply_to_block names the block a reply's body answers; an error report has none")
 		return
 	}
 
-	followUp, err := followUpRequested(r)
-	if err != nil {
-		s.writeHandlerError(w, err)
+	if followUpErr != nil {
+		s.writeHandlerError(w, r, followUpErr)
 		return
 	}
 	// The message's target and the session its attempt names are read before the transaction,
@@ -979,13 +1009,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		where m.id = $1
 	`, input.Attempt)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -994,12 +1024,12 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		from messages where id = $1
 	`, r.PathValue("id")))
 	if err != nil {
-		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
+		writeError(w, r, apicode.MessageNotFound, "message not found")
 		return
 	}
 	if message.IssueKey != nil {
 		if _, err := s.lockIssue(r.Context(), tx, *message.IssueKey); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -1013,14 +1043,14 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	var plan messageReplyPlan
 	if input.Body != nil {
 		if plan, err = s.planMessageReply(r.Context(), tx, message, *input.Body, input.InReplyToBlock); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.InReplyToBlock != nil {
 		// Before the attempt row, as the accept route takes them: issue, message, attempt.
 		if err := lockReplyParentMessage(r.Context(), tx, message.ID); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -1029,14 +1059,14 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		from message_deliveries where message_id = $1 and attempt = $2 for update
 	`, message.ID, input.Attempt))
 	if err != nil {
-		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
+		writeError(w, r, apicode.MessageNotFound, "message delivery not found")
 		return
 	}
 	// The session the attempt names answers it, and so does the session that holds the role the
 	// message went to now, while it is live: a different session that took the role from the one
 	// the attempt names is handed what that session had not read (lookUpRoleHolderReply).
 	if attempt.SessionID != actor.ID && !roleReply.allows(messageTarget(message.Target)) {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "session may reply only to its own delivery, or to one sent for a role it holds while it is live")
+		writeError(w, r, apicode.ReplyForbidden, "session may reply only to its own delivery, or to one sent for a role it holds while it is live")
 		return
 	}
 	// Each outcome is a response, its status, and the event it appended, if any; they share one
@@ -1047,18 +1077,18 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case attempt.ReplyID != nil:
 		if followUp && input.InReplyToBlock != nil {
-			writeError(w, "INVALID_MESSAGE", http.StatusBadRequest,
+			writeError(w, r, apicode.InvalidMessage,
 				"a follow-up is filed under the session's first reply, so it names no block of message "+message.ID)
 			return
 		}
 		answer, err := s.loadMessage(r.Context(), tx, messageIssueKey(message), *attempt.ReplyID)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body != nil && followUp, plan, wantsDisplayTrees(r))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// A message handed back as it is stored reads the block it answers as every read does.
@@ -1066,7 +1096,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		// does, so it stays on the transaction, where replyComment's own replay hydrates too.
 		if posted == nil {
 			if err := hydrateMessageReplyBlocks(r.Context(), tx, &read.Message); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			// The hydration wrote the block into the row the shape stands in front of, so the
@@ -1087,27 +1117,27 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			message.ID, input.Attempt, *input.Error,
 		))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		receipt, err := s.appendEvent(r.Context(), tx, messageDeliveryReceipt(message, actor, updated, ""))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		response, events = updated, append(events, receipt)
 	default:
 		if plan.refusal != nil {
-			s.writeHandlerError(w, plan.refusal)
+			s.writeHandlerError(w, r, plan.refusal)
 			return
 		}
 		if err := plan.parentIndex.Write(r.Context(), tx); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		reply, answered, err := s.insertSessionReply(r.Context(), tx, message, actor, plan)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// The session answered, so the message reached it whatever the attempt recorded: a failed
@@ -1116,13 +1146,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			update message_deliveries set reply_id = $3, state = 'sent', error = null
 			where message_id = $1 and attempt = $2
 		`, message.ID, input.Attempt, reply.ID); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		response, events, status = replyRead{shapedMessage: newShapedMessage(reply, wantsDisplayTrees(r))}, append(events, answered), http.StatusCreated
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), events...)
@@ -1194,7 +1224,7 @@ func followUpRequested(r *http.Request) (bool, error) {
 			return false, nil
 		}
 	}
-	return false, errorf(http.StatusBadRequest, "MESSAGE_INPUT", "follow_up must be true or false")
+	return false, errorf(apicode.MessageInput, "follow_up must be true or false")
 }
 
 // insertSessionReply writes a session's reply to parent in parent's conversation - its issue,

@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -152,7 +152,7 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	case ownUnread:
 		return nil, nil
 	}
-	return nil, errorf(http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN",
+	return nil, errorf(apicode.ResultCommitUnknown,
 		"%s no commit %s: record the result once the commit is pushed, or link the issue to an open or merged pull request of the repository that holds it%s%s%s",
 		repositoriesHold(checked), sha, reads.couldNotRead(), reads.setAside(), reads.leftUnread())
 }
@@ -186,7 +186,7 @@ func linkedReadRefusal(repo, sha string, err error) error {
 	if errors.Is(err, delivery.ErrTokenMint) {
 		failed = fmt.Sprintf("Dispatch's GitHub App could not mint an installation token for %s, a repository the issue links a pull request in, so GitHub could not be read for whether it holds commit %s", repo, sha)
 	}
-	refusal := errorf(http.StatusBadGateway, "GITHUB_UNREADABLE", "%s: %s. Nothing was recorded: %s", failed, reason, again)
+	refusal := errorf(apicode.GitHubUnreadable, "%s: %s. Nothing was recorded: %s", failed, reason, again)
 	refusal.retryAfter = retryAfter
 	return refusal
 }

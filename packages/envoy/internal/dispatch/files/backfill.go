@@ -59,8 +59,11 @@ func acquire(ctx context.Context, pool Querier) (func(), error) {
 	}, nil
 }
 
-// fileVersion is one row of artifact_versions the passes walk: a file's version, never a
-// document's.
+// fileVersion is one row of artifact_versions the passes walk: a version that stores a file's
+// bytes and no markdown, never a document's text. That is every version of a file or an image, and
+// a version a document holds from before an upload made a file or an image that document (the api
+// package's storeArtifact): the passes select a version by what it stores, not by its artifact's
+// kind, so they move, restore and verify those bytes as any file's.
 type fileVersion struct {
 	id        string
 	createdAt time.Time
@@ -86,8 +89,7 @@ func nextVersion(ctx context.Context, pool Querier, after *fileVersion, where st
 	row := pool.QueryRow(ctx, `
 		select v.id::text, v.created_at, v.sha256, coalesce(v.mime, 'application/octet-stream'), `+content+`
 		from artifact_versions v
-		join artifacts a on a.id = v.artifact_id
-		where a.kind <> 'doc' and (`+where+`) and (v.created_at, v.id::text) > ($1, $2)
+		where v.markdown is null and (`+where+`) and (v.created_at, v.id::text) > ($1, $2)
 		order by v.created_at, v.id
 		limit 1
 	`, afterAt, afterID)
@@ -239,8 +241,7 @@ func VerifyRows(ctx context.Context, pool Querier, store Store, out io.Writer) (
 	rows, err := pool.Query(ctx, `
 		select v.id::text, v.sha256
 		from artifact_versions v
-		join artifacts a on a.id = v.artifact_id
-		where a.kind <> 'doc' and v.content is null and v.sha256 is not null
+		where v.markdown is null and v.content is null and v.sha256 is not null
 		order by v.created_at, v.id
 	`)
 	if err != nil {

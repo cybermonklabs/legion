@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // A session's own conversation, relayed to a person watching it through an agent view on the live
@@ -164,24 +165,24 @@ func (s *server) publishAgentStreamFrame(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if _, ok := s.deps.AgentStream.(*agentstream.Memory); !ok {
-		writeError(w, "STREAM_UNAVAILABLE", http.StatusServiceUnavailable,
+		writeError(w, r, apicode.StreamUnavailable,
 			"this deployment's relay takes frames from sessions, not from a test hook")
 		return
 	}
 	frame, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJSONRequestBytes))
 	if err != nil {
-		writeError(w, "FRAME_INPUT", http.StatusBadRequest, "could not read the frame")
+		writeError(w, r, apicode.FrameInput, "could not read the frame")
 		return
 	}
 	// A frame is JSON text, and a notification carries text: a byte sequence that is not UTF-8
 	// would reach the other processes altered rather than as it was sent.
 	if !utf8.Valid(frame) {
-		writeError(w, "FRAME_INPUT", http.StatusBadRequest, "a frame is UTF-8 text")
+		writeError(w, r, apicode.FrameInput, "a frame is UTF-8 text")
 		return
 	}
 	sessionID, problem := agentStreamSessionID(r.PathValue("session_id"))
 	if problem != "" {
-		writeError(w, "SESSION_ID_INPUT", http.StatusBadRequest, problem)
+		writeError(w, r, apicode.SessionIDInput, problem)
 		return
 	}
 	call := testHookCall{Hook: hookPublishFrame, Session: sessionID}
@@ -198,13 +199,13 @@ func (s *server) publishAgentStreamFrame(w http.ResponseWriter, r *http.Request)
 		// session that has produced nothing, or one whose plugin cannot stream at all.
 		var body publishFrameResponderInput
 		if err := json.Unmarshal(frame, &body); err != nil {
-			writeError(w, "FRAME_INPUT", http.StatusBadRequest, "responder takes {\"responding\": bool}")
+			writeError(w, r, apicode.FrameInput, "responder takes {\"responding\": bool}")
 			return
 		}
 		// This body is the test's alone, so a member it does not declare is a mistake in the
 		// test and is refused by name, as every test hook's body is (decodeJSONTestHook).
 		if err := refuseUndeclaredMembers(&body, frame); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		call.As, call.Responding = as, body.Responding

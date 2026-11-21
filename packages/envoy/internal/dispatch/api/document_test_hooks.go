@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
@@ -37,24 +38,24 @@ func (s *server) requireDocumentTestHooks(w http.ResponseWriter, r *http.Request
 	}
 	hooks, ok := s.deps.Docs.(documentTestHooks)
 	if !ok {
-		writeDocumentTestHookError(w, docs.ErrTestHooksOff)
+		writeDocumentTestHookError(w, r, docs.ErrTestHooksOff)
 		return nil, false
 	}
 	return hooks, true
 }
 
-func writeDocumentTestHookError(w http.ResponseWriter, err error) {
+func writeDocumentTestHookError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, docs.ErrTestHooksOff):
-		writeError(w, "TEST_HOOKS_OFF", http.StatusNotFound, err.Error())
+		writeError(w, r, apicode.TestHooksOff, err.Error())
 	case errors.Is(err, docs.ErrLiveWritePausePoint):
-		writeError(w, "PAUSE_POINT_INPUT", http.StatusBadRequest, err.Error()+`; want "after-first-append" or "after-commit"`)
+		writeError(w, r, apicode.PausePointInput, err.Error()+`; want "after-first-append" or "after-commit"`)
 	case errors.Is(err, docs.ErrLiveWritePauseArmed):
-		writeError(w, "PAUSE_ARMED", http.StatusConflict, err.Error())
+		writeError(w, r, apicode.PauseArmed, err.Error())
 	case errors.Is(err, docs.ErrLiveWritePauseNotArmed):
-		writeError(w, "PAUSE_NOT_ARMED", http.StatusNotFound, err.Error())
+		writeError(w, r, apicode.PauseNotArmed, err.Error())
 	default:
-		writeError(w, "TEST_HOOK_FAILED", http.StatusInternalServerError, err.Error())
+		writeError(w, r, apicode.TestHookFailed, err.Error())
 	}
 }
 
@@ -90,7 +91,7 @@ func (s *server) getRoomCounters(w http.ResponseWriter, r *http.Request) {
 	}
 	counters, err := hooks.RoomCounters(r.PathValue("id"))
 	if err != nil {
-		writeDocumentTestHookError(w, err)
+		writeDocumentTestHookError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, counters)
@@ -110,16 +111,16 @@ func (s *server) holdRoomPersistence(w http.ResponseWriter, r *http.Request) {
 	}
 	var input holdPersistenceInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	duration, err := time.ParseDuration(input.Duration)
 	if err != nil || duration <= 0 {
-		writeError(w, "DURATION_INPUT", http.StatusBadRequest, `duration must be a positive Go duration, such as "300ms"`)
+		writeError(w, r, apicode.DurationInput, `duration must be a positive Go duration, such as "300ms"`)
 		return
 	}
 	if err := hooks.HoldRoomPersistence(r.PathValue("id"), duration); err != nil {
-		writeDocumentTestHookError(w, err)
+		writeDocumentTestHookError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -133,7 +134,7 @@ func (s *server) armLiveWritePause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := hooks.ArmLiveWritePause(r.PathValue("id"), docs.LiveWritePausePoint(r.PathValue("point"))); err != nil {
-		writeDocumentTestHookError(w, err)
+		writeDocumentTestHookError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -151,7 +152,7 @@ func (s *server) awaitLiveWriteParked(w http.ResponseWriter, r *http.Request) {
 	if raw := r.URL.Query().Get("wait"); raw != "" {
 		parsed, err := time.ParseDuration(raw)
 		if err != nil || parsed <= 0 {
-			writeError(w, "WAIT_INPUT", http.StatusBadRequest, `wait must be a positive Go duration, such as "10s"`)
+			writeError(w, r, apicode.WaitInput, `wait must be a positive Go duration, such as "10s"`)
 			return
 		}
 		wait = parsed
@@ -165,7 +166,7 @@ func (s *server) awaitLiveWriteParked(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, context.DeadlineExceeded):
 		WriteJSON(w, http.StatusOK, liveWritePauseState{Parked: false})
 	default:
-		writeDocumentTestHookError(w, err)
+		writeDocumentTestHookError(w, r, err)
 	}
 }
 
@@ -178,7 +179,7 @@ func (s *server) releaseLiveWritePause(w http.ResponseWriter, r *http.Request) {
 	}
 	parked, err := hooks.ReleaseLiveWritePause(r.PathValue("id"), docs.LiveWritePausePoint(r.PathValue("point")))
 	if err != nil {
-		writeDocumentTestHookError(w, err)
+		writeDocumentTestHookError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, liveWritePauseState{Parked: parked})

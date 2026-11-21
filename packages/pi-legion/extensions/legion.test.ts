@@ -3043,6 +3043,38 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     );
   });
 
+  test("register_gate's document lookup names pi-legion and its release to Dispatch", async () => {
+    const pane = await bootPane({ role: "architect", issue: "REPO-42", sessionId: "ses_gate_ua" });
+    process.env.DISPATCH_URL = "http://dispatch.named.test";
+    process.env.DISPATCH_TOKEN = fixtureSecret("dsp");
+    const sent: { readonly path: string; readonly userAgent: string | null }[] = [];
+    const paneFetch = globalThis.fetch;
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.host === "dispatch.named.test") {
+        sent.push({ path: url.pathname, userAgent: new Headers(init?.headers).get("user-agent") });
+        throw new TypeError("Unable to connect. Is the computer able to access the url?");
+      }
+      return paneFetch(input, init);
+    }) as typeof fetch;
+    const legion = pane.tools.find((tool) => tool.name === "legion");
+    if (legion === undefined) throw new Error("the legion tool was not registered");
+
+    await legion.execute(
+      "register-gate",
+      { op: "register_gate", issue: "REPO-42", artifactId: "spec", version: 2 },
+      undefined,
+      undefined,
+      pane.context
+    );
+
+    expect(sent.length).toBeGreaterThan(0);
+    for (const request of sent) {
+      expect(request.path).toStartWith("/api/v1/");
+      expect(request.userAgent).toBe(`pi-legion/${pkg.version}`);
+    }
+  });
+
   // The two entries share one process and read one envoy.json: Oh My Pi's rule picks a named
   // profile's file over the one an outer session handed down, the Envoy entry hands its choice on
   // as ENVOY_CONFIG_FILE, and this entry's lookup reads that same file.

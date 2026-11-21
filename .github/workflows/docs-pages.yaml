@@ -158,6 +158,7 @@ on:
       - 'packages/envoy/internal/dispatch/cipher/*'
       - 'packages/envoy/internal/dispatch/agentstream/*'
       - 'packages/envoy/internal/dispatch/api/*'
+      - 'packages/envoy/internal/dispatch/api/apicode/*'
       - 'packages/envoy/internal/dispatch/architecture/*'
       - 'packages/envoy/internal/dispatch/architecture/notes/*'
       - 'packages/envoy/internal/dispatch/asks/*'

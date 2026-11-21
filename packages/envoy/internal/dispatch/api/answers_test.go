@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -137,8 +138,8 @@ func TestListMyAnswersReturnsOwnAnswersAndRepliesNewestFirst(t *testing.T) {
 	// The page is the calling person's own, so the deployment's shared token, which holds no
 	// scope, is turned away, and Alice's own token reads the three rows her browser reads.
 	if bearer := sessionRequest(t, handler, http.MethodGet, "/api/v1/me/answers", nil); bearer.Code != http.StatusForbidden ||
-		!strings.Contains(bearer.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's answer page: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
+		!strings.Contains(bearer.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's answer page: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 	own := agentRequest(t, handler, http.MethodGet, "/api/v1/me/answers", nil,
 		personalTokenHolding(t, database, model.ScopePerson))

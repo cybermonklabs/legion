@@ -544,7 +544,7 @@ func (i ItemIndexing) Queue(b *store.WriteBatch) {
 // leaves the item owed its windows rather than silently windowless.
 //
 // An item indexed to no block is marked like any other, and the arm lists it: a comment whose
-// body is empty holds none (api's createCommentFor takes such a comment when it carries a
+// body is empty holds none (api's writeComment takes such a comment when it carries a
 // suggestion), and so does one whose last block an edit removed, which still holds the windows
 // of the text it had. The sum written here is what the arm finds it by, since it has no current
 // block row to be found by (ItemsOwedWindows, INFRA-988).
@@ -1214,7 +1214,7 @@ func markItemBlocksOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, tables it
 // does (documentsOwedWindowsQuery): an item the block index has reached - its state row
 // carries the sum of the text it was indexed from - and an item holding a current block, which
 // an index older than that sum left behind. An item indexed to no block at all is the first
-// kind and not the second: a comment whose body is empty, which api's createCommentFor takes
+// kind and not the second: a comment whose body is empty, which api's writeComment takes
 // when the comment carries a suggestion, and an item whose last block an edit removed, whose
 // block rows all read `position is null`. The arm windows such an item to no window, which
 // deletes the windows its old text left and clears the marker in the one statement

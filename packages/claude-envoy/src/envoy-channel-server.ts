@@ -216,6 +216,10 @@ function undefinedOnNotFound(error: unknown): undefined {
 /** The MCP `serverInfo`; the version is the package's, so it is spelled once. */
 export const MCP_SERVER_INFO = { name: "envoy", version: packageVersion } as const
 
+/** What every Dispatch request of this server names it as: the program and the package's release.
+ *  The hooks and the `dispatch` command name themselves apart. */
+export const CLAUDE_ENVOY_USER_AGENT = `claude-envoy/${packageVersion}`
+
 /**
  * What a session takes, which Dispatch checks every targeted delivery against.
  *
@@ -348,10 +352,11 @@ export interface ChannelSessionOptions {
   /**
    * The router a person's messages go through (`./user-turn-router`), built for the record of
    * the session id now bound: at startup, and again whenever a `/clear` moves the session to
-   * another id, since that record is kept per session id (`./user-turn-state`). Omitted, every
-   * frame arrives as the card it renders as.
+   * another id, since that record is kept per session id (`./user-turn-state`). It is handed the
+   * session's answer to a delivery on Dispatch (`reply`), which posts under `userAgent`, so the
+   * owner names its program once. Omitted, every frame arrives as the card it renders as.
    */
-  readonly router?: (state: UserTurnState) => UserTurnRouter
+  readonly router?: (state: UserTurnState, reply: UserTurnRouterOptions["reply"]) => UserTurnRouter
   readonly client: Pick<
     EnvoyClient,
     "subscribe" | "unsubscribe" | "unregisterSession" | "setRole" | "getRole" | "getInterest"
@@ -392,6 +397,13 @@ export interface ChannelSessionOptions {
   /** Ends a start still waiting for its connection to come back (`flushThroughRedials`): the
    *  process is stopping. */
   readonly startSignal?: AbortSignal
+  /**
+   * The program that answers a Dispatch delivery on Dispatch, as its `User-Agent`
+   * (`postDispatchReply`): a rejected frame's answer, and every reply the router posts (`router`).
+   * The Codex server's session names its own (`CODEX_ENVOY_USER_AGENT`); omitted, the session is
+   * this server's and names `claude-envoy/<version>`.
+   */
+  readonly userAgent?: string
   /** How long a deregistration waits for a registration already on the wire (default
    *  `REGISTRATION_SETTLE_MS`), past which the DELETE goes out anyway. The shutdown path spends
    *  at most `SHUTDOWN_SETTLE_MS` of it, over both of its waits. */
@@ -499,20 +511,23 @@ class UnsupportedEnvoyToolError extends Error {
  * Answer a targeted Dispatch delivery, on the sender's behalf: the reply this session has for it,
  * or the error that stopped it, so the sender sees the attempt fail instead of waiting on a reply
  * that never comes. `followUp` asks Dispatch to post an answer to an attempt its first reply
- * already settled, which every answer after the first needs (`postDeliveryReply`).
+ * already settled, which every answer after the first needs (`postDeliveryReply`). `userAgent`
+ * names the program that answers, which every caller gives: this server's own, or the Codex
+ * server's (`CODEX_ENVOY_USER_AGENT`).
  */
 export async function postDispatchReply(
   identity: SessionIdentity,
   configFile: SessionConfigFile,
   delivery: DispatchDelivery,
   result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
+  userAgent: string,
 ): Promise<void> {
   const config = sessionDispatchSettings(configFile, process.env, {
     cwd: identity.directory,
     session: () => identity.id,
   }).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
-  await postDeliveryReply(config, identity.id, delivery, result)
+  await postDeliveryReply(config, identity.id, delivery, result, userAgent)
 }
 
 /**
@@ -534,6 +549,8 @@ export function createChannelDelivery(input: {
   readonly notifier: ChannelNotifier
   /** The session's envoy.json, which a rejected Dispatch frame's reply reads. */
   readonly configFile: SessionConfigFile
+  /** The program that answers a rejected Dispatch frame on Dispatch (`postDispatchReply`). */
+  readonly userAgent: string
   /** What a person's own message, command, pick or BTW becomes; omitted, every frame is a card. */
   readonly router?: () => UserTurnRouter | undefined
 }): ChannelDeliveryPath {
@@ -606,9 +623,13 @@ export function createChannelDelivery(input: {
         process.stderr.write(
           `envoy-channel: rejecting malformed Dispatch targeted delivery ${rejected.id}\n`,
         )
-        return postDispatchReply(input.identity, input.configFile, rejected, {
-          error: "Invalid Dispatch targeted delivery frame",
-        }).then(
+        return postDispatchReply(
+          input.identity,
+          input.configFile,
+          rejected,
+          { error: "Invalid Dispatch targeted delivery frame" },
+          input.userAgent,
+        ).then(
           () => false,
           (error: unknown) => {
             process.stderr.write(
@@ -811,10 +832,16 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   /** The record the router above reads and writes, kept so a shutdown can wait for its writes
    *  and so the live view can read which Dispatch message a row is (`messageOf`). */
   let turns: UserTurnState | undefined
+  /** The program this session answers Dispatch as (`ChannelSessionOptions.userAgent`), and its
+   *  answer to a delivery, which the router posts (`ChannelSessionOptions.router`). */
+  const userAgent = options.userAgent ?? CLAUDE_ENVOY_USER_AGENT
+  const reply: UserTurnRouterOptions["reply"] = (target, result) =>
+    postDispatchReply(identity, options.configFile, target, result, userAgent)
   const delivery = createChannelDelivery({
     identity,
     notifier: options.notifier,
     configFile: options.configFile,
+    userAgent,
     router: () => router,
   })
   const userTopics = new Set<string>()
@@ -982,7 +1009,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     })
     if (restored === undefined) return
     turns = userTurnState(file, restored)
-    router = options.router(turns)
+    router = options.router(turns, reply)
   }
 
   /**
@@ -2586,7 +2613,13 @@ export async function runEnvoyChannelServer(): Promise<void> {
         claim: () => claim?.capability(),
         // The pane's own environment and PATH's jj, and the Dispatch this session's envoy.json
         // names, which the pane's `dispatch handoff-write` wrote the record to.
-        handoffReport: paneHandoffReport(configFile, process.env, directory, identity.id),
+        handoffReport: paneHandoffReport(
+          configFile,
+          process.env,
+          directory,
+          identity.id,
+          CLAUDE_ENVOY_USER_AGENT,
+        ),
         branchHead: () => findPushedBranchHead({ env: process.env }),
       }
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
@@ -2733,9 +2766,10 @@ export async function runEnvoyChannelServer(): Promise<void> {
   /**
    * The router of a person's messages, built again for each session id the session binds
    * (`ChannelSessionOptions.router`). Everything it needs that does not move with the id - the
-   * Claude Code session, Dispatch, where a pane's message goes - is this process's.
+   * Claude Code session, Dispatch, where a pane's message goes - is this process's; the answer
+   * it posts to a delivery is the session's (`reply`), under the session's User-Agent.
    */
-  const router = (state: UserTurnState): UserTurnRouter => {
+  const router = (state: UserTurnState, reply: UserTurnRouterOptions["reply"]): UserTurnRouter => {
     const options: UserTurnRouterOptions = {
       dispatch: (ms) => {
         const active = activeDispatchSettings(
@@ -2745,11 +2779,12 @@ export async function runEnvoyChannelServer(): Promise<void> {
           ? undefined
           : new DispatchClient(active.url, active.credential, fetch, {
               deadlineMs: ms,
+              userAgent: CLAUDE_ENVOY_USER_AGENT,
             })
       },
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),
-      reply: (delivery, result) => postDispatchReply(identity, configFile, delivery, result),
+      reply,
       session: claude,
       sessionId: () => identity.id,
       state,

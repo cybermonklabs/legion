@@ -124,43 +124,43 @@ var itemRowLockTable = []itemRowLockCase{
 	{
 		name:     "the comment create route",
 		file:     "internal/dispatch/api/comment_create.go",
-		function: "createCommentFor",
+		function: "writeComment",
 		ready:    readyCommentCreate,
 	},
 	{
 		name:     "the comment edit route",
 		file:     "internal/dispatch/api/comment_actions.go",
-		function: "editComment",
+		function: "editCommentAs",
 		ready:    readyCommentEdit,
 	},
 	{
 		name:     "the comment resolve route",
 		file:     "internal/dispatch/api/comment_actions.go",
-		function: "commentAction",
+		function: "commentActionAs",
 		ready:    readyCommentResolve,
 	},
 	{
 		name:     "the comment reopen route",
 		file:     "internal/dispatch/api/comment_actions.go",
-		function: "reopenComment",
+		function: "reopenCommentAs",
 		ready:    readyCommentReopen,
 	},
 	{
 		name:     "the mention reply route",
 		file:     "internal/dispatch/api/comment_delivery.go",
-		function: "replyComment",
+		function: "answerCommentDelivery",
 		ready:    readyCommentReply,
 	},
 	{
 		name:     "the ask create route",
 		file:     "internal/dispatch/api/asks.go",
-		function: "createAskFor",
+		function: "openAsk",
 		ready:    readyAskCreate,
 	},
 	{
 		name:     "the ask edit route",
 		file:     "internal/dispatch/api/asks.go",
-		function: "editAsk",
+		function: "rewordAsk",
 		ready:    readyAskEdit,
 	},
 	{
@@ -172,7 +172,7 @@ var itemRowLockTable = []itemRowLockCase{
 	{
 		name:     "the ask hand-on route",
 		file:     "internal/dispatch/api/ask_asked_of.go",
-		function: "putAskAskedOf",
+		function: "handAskOn",
 		ready:    readyAskHandOn,
 	},
 	{

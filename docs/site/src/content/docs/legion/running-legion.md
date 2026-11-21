@@ -648,7 +648,7 @@ What each part is for:
   approval, which the word `off` also means. A list naming one step twice, and any other word,
   is refused at load. There is no other way past the gate. `legion state --json` answers the
   resolved list at `settings.gates.design`, and the daemon publishes it onto the project's row in
-  Dispatch, which `GET /api/v1/projects` answers as
+  Dispatch, which `GET /api/v2/projects` (and the deprecated `GET /api/v1/projects`) answers as
   `gated_steps`.
 - **`instructions`** (optional) names a Markdown file of your standing rules (required checks,
   deploy and smoke commands, scope) that is appended to every agent's system prompt. It must hold no

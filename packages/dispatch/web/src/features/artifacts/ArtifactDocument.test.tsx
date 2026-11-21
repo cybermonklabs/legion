@@ -200,6 +200,7 @@ function documentClient(document: Artifact): QueryClient {
   queryClient.setQueryData(["artifact", document.id, "text"], {
     markdown: "The live document",
     version: null,
+    unsettled: true,
   });
   queryClient.setQueryData(["issue", issue.key], issue);
   queryClient.setQueryData(["user-state"], {});

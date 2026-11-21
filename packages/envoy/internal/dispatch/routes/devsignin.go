@@ -14,6 +14,8 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // DevSignInOrigin returns the host:port of serverURL, the dashboard origin, when it names this
@@ -90,7 +92,7 @@ func (r *router) authDevSignIn(w http.ResponseWriter, req *http.Request) {
 	}
 	if err := r.ctx.People.Record(req.Context(), email); err != nil {
 		slog.Error("dispatch: dev sign-in could not record the person", "email", email, "error", err)
-		writeError(w, http.StatusInternalServerError, "record person")
+		writeCodeError(w, http.StatusInternalServerError, "record person", codeSigninRecordFailed)
 		return
 	}
 	if !r.issueSession(w, req, email, "") {
@@ -107,7 +109,7 @@ func (r *router) authDevSignIn(w http.ResponseWriter, req *http.Request) {
 func requireHost(host string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if !strings.EqualFold(req.Host, host) {
-			writeCodeError(w, http.StatusMisdirectedRequest, fmt.Sprintf("request Host %q is not the dashboard origin %q", req.Host, host), "HOST_MISMATCH")
+			writeAPIRefusal(w, req, apicode.HostMismatch, fmt.Sprintf("request Host %q is not the dashboard origin %q", req.Host, host))
 			return
 		}
 		next.ServeHTTP(w, req)

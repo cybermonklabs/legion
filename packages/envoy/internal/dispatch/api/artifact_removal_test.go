@@ -17,6 +17,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -610,8 +611,8 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		scoped := emptyDocument(t, handler, open.Key, "Scoped notes")
 
 		shared := sessionRequest(t, handler, http.MethodDelete, "/api/v1/artifacts/"+scoped.ID, nil)
-		if shared.Code != http.StatusForbidden || decodeBody[refusedWrite](t, shared).Code != codeScopeRequired {
-			t.Fatalf("a shared token's removal: status=%d body=%s, want 403 %s", shared.Code, shared.Body.String(), codeScopeRequired)
+		if shared.Code != http.StatusForbidden || decodeBody[refusedWrite](t, shared).Code != apicode.OAuthScopeRequired.V1Name() {
+			t.Fatalf("a shared token's removal: status=%d body=%s, want 403 %s", shared.Code, shared.Body.String(), apicode.OAuthScopeRequired.V1Name())
 		}
 		if held := readDocument(t, handler, scoped.ID); held.ID != scoped.ID {
 			t.Fatalf("the document after the refused removal = %#v, want %s", held, scoped.ID)

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -137,9 +138,8 @@ const (
 // one that scans the table, so the planner scans it - 101,540 rows read to answer 1,540 of them at
 // INFRA-450's a14 seed - and sorts what it keeps.
 //
-// Neither step carries an order over the joins: the route sorts the two kinds of row together
-// (listMyReplies) whatever order each half read them in, so an order here would be one sort for
-// nothing.
+// Neither step carries an order over the joins: readMyReplies sorts the two kinds of row together
+// whatever order each half read them in, so an order here would be one sort for nothing.
 const myRepliesPage = `
 	with recursive picked as (
 		select u.thread_id `
@@ -202,7 +202,7 @@ const myRepliesPageRest = `
 	       coalesce(rc.author, rm.author,
 	         case when answered.id is not null then jsonb_build_object('kind', 'user', 'id', answered.answer->>'user') end),
 	       coalesce(rc.body, rm.body, answered.text, ''),
-	       coalesce(rc.created_at, rm.created_at, p.replied_at),
+	       coalesce(rc.created_at, rm.created_at, p.replied_at, a.created_at, root.created_at, mroot.created_at),
 	       i.priority, p.project_key, p.read_through, p.unread,
 	       coalesce(counted.unread_count, 0), coalesce(root.anchor, a.anchor), p.dismissed_at,
 	       p.version
@@ -212,18 +212,23 @@ const myRepliesPageRest = `
 	-- whole of comments and messages against the page: at a14's seed that is two scans of 203,080
 	-- comments and two of 20,120 messages, 100 ms of the Inbox read's 154, to answer 1,540 rows
 	-- whose ids it already holds.
+	--
+	-- The root's created_at is the reply's time on a row of a thread nobody else has written in,
+	-- which has no reply and no replied_at: only the Dismissed view holds such a row, since a
+	-- person may dismiss any thread they wrote in (PATCH /api/v2/me/marks/thread/{id} under the
+	-- version GET of that mark answers), and a row's reply time is never null.
 	left join lateral (
-		select a.id, a.question, a.anchor, a.answer
+		select a.id, a.question, a.anchor, a.answer, a.created_at
 		from asks a where p.kind = 'ask' and a.id = p.thread_id
 		offset 0
 	) a on true
 	left join lateral (
-		select root.body, root.anchor
+		select root.body, root.anchor, root.created_at
 		from comments root where p.kind = 'comment' and root.id = p.thread_id
 		offset 0
 	) root on true
 	left join lateral (
-		select mroot.body
+		select mroot.body, mroot.created_at
 		from messages mroot where p.kind = 'message' and mroot.id = p.thread_id
 		offset 0
 	) mroot on true
@@ -283,6 +288,66 @@ const (
 		myRepliesDismissedCut + myRepliesPageRows + myRepliesPageRest
 )
 
+// The Dismissed view read forward from an after, which /api/v2's GET /me/threads alone names (a
+// log takes after and before, R5 of dispatch://INFRA-4071/spec): the rows dismissed above that
+// position, and below a before where one is given too, oldest dismissal first, so a reader that
+// passes the position of the newest row it holds reads what was dismissed since. Each statement
+// is its before-only form with one more row comparison, the index's own condition as the cursor's
+// is, and the cut ascending; the after binds the two parameters behind every other one the
+// statement binds.
+const (
+	myRepliesDismissedForwardCut = `
+		order by u.dismissed_at, u.thread_id
+		limit $4`
+	myAgentDismissedForwardCut = `
+		order by d.dismissed_at, d.message_id
+		limit $4
+	)`
+)
+
+// dismissedAbove keeps the marks above an after: markColumn and idColumn are the mark and the id
+// the Dismissed view is ordered by, and first the parameter the after's time binds, its id the
+// one after it.
+func dismissedAbove(markColumn, idColumn string, first int) string {
+	return fmt.Sprintf(`
+	  and (%s, %s) > ($%d::text::timestamptz, $%d::uuid)`, markColumn, idColumn, first, first+1)
+}
+
+// myRepliesDismissedForwardQuery is the Reply half's page of the Dismissed view read forward from
+// an after, below before where it is given.
+func myRepliesDismissedForwardQuery(before *myRepliesCursor) string {
+	query, next := myRepliesPage+myRepliesDismissed, 5
+	if before != nil {
+		query, next = query+myRepliesDismissedCursor, 7
+	}
+	return query + dismissedAbove("u.dismissed_at", "u.thread_id", next) + myRepliesDismissedForwardCut +
+		myRepliesPageRows + myRepliesPageRest
+}
+
+// myAgentDismissedForwardQuery is the Agent half's page of the Dismissed view read forward from an
+// after, below before where it is given.
+func myAgentDismissedForwardQuery(before *myRepliesCursor) string {
+	query, next := myAgentDismissedRootsHead, 5
+	if before != nil {
+		query, next = query+myAgentDismissedCursor, 7
+	}
+	return query + dismissedAbove("d.dismissed_at", "d.message_id", next) + myAgentDismissedForwardCut + myAgentRowsSelect
+}
+
+// myDismissedReachesQuery answers whether the caller has dismissed a thread at or above one
+// position ($2 the time as the caller's own text, $3 the id), among the Reply rows and the Agent
+// roots both: an after above every mark is above the log's last written position, which R5
+// refuses (dismissedAfterWritten).
+const myDismissedReachesQuery = `
+	select exists (
+		select 1 from user_threads u
+		where u.login = $1 and u.dismissed_at is not null
+		  and (u.dismissed_at, u.thread_id) >= ($2::text::timestamptz, $3::uuid)
+	) or exists (
+		select 1 from user_agent_thread_dismissed d
+		where d.login = $1 and (d.dismissed_at, d.message_id) >= ($2::text::timestamptz, $3::uuid)
+	)`
+
 // parseThreadOwner reads the owner that narrows an Inbox read to one thread owner: an issue key
 // or a project document's id, the read a mounted thread makes to learn whether it is unread.
 // Both together are refused, as is a document that is not a uuid. The list route reads the two
@@ -292,12 +357,12 @@ func parseThreadOwner(rawIssue, rawArtifact string) (issue string, artifact *str
 	issue = strings.TrimSpace(rawIssue)
 	rawArtifact = strings.TrimSpace(rawArtifact)
 	if issue != "" && rawArtifact != "" {
-		return "", nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "name issue or artifact, not both")
+		return "", nil, errorf(apicode.InvalidQuery, "name issue or artifact, not both")
 	}
 	if rawArtifact != "" {
 		parsed, err := uuid.Parse(rawArtifact)
 		if err != nil {
-			return "", nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "artifact must be a document id")
+			return "", nil, errorf(apicode.InvalidQuery, "artifact must be a document id")
 		}
 		canonical := parsed.String()
 		artifact = &canonical
@@ -341,7 +406,7 @@ func parseThreadKinds(values []string) (reply, agent bool, err error) {
 		case myReplyKindAgent:
 			agent = true
 		default:
-			return false, false, errorf(http.StatusBadRequest, "INVALID_QUERY",
+			return false, false, errorf(apicode.InvalidQuery,
 				"kind takes %s and %s", myReplyKindReply, myReplyKindAgent)
 		}
 	}
@@ -378,7 +443,7 @@ func parseMyRepliesState(r *http.Request) (state string, err error) {
 	case myRepliesStateUnread, myRepliesStateInbox, myRepliesStateDismissed:
 		return value, nil
 	default:
-		return "", errorf(http.StatusBadRequest, "INVALID_QUERY", "state is %s, %s or %s",
+		return "", errorf(apicode.InvalidQuery, "state is %s, %s or %s",
 			myRepliesStateUnread, myRepliesStateInbox, myRepliesStateDismissed)
 	}
 }
@@ -401,7 +466,7 @@ func myRepliesCursorOf(row model.MyReplyRow) string {
 // mark and the thread id it names, as myRepliesCursorOf writes them.
 func parseMyRepliesCursor(raw string) (*myRepliesCursor, error) {
 	at, thread, found := strings.Cut(raw, ",")
-	refusal := errorf(http.StatusBadRequest, "INVALID_QUERY", "cursor is one this route answered in next_cursor")
+	refusal := errorf(apicode.InvalidQuery, "cursor is one this route answered in next_cursor")
 	if !found {
 		return nil, refusal
 	}
@@ -430,7 +495,7 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 	if state == myRepliesStateDismissed {
 		for _, name := range []string{"limit", "offset"} {
 			if query.Has(name) {
-				return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY",
+				return nil, 0, nil, errorf(apicode.InvalidQuery,
 					"%s is not a query parameter of state=%s, which pages with cursor, %d rows at a time",
 					name, myRepliesStateDismissed, myRepliesDismissedPage)
 			}
@@ -445,19 +510,19 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 		return &page, 0, cursor, nil
 	}
 	if query.Has("cursor") {
-		return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY",
+		return nil, 0, nil, errorf(apicode.InvalidQuery,
 			"cursor is a query parameter of state=%s alone; this state pages with limit and offset",
 			myRepliesStateDismissed)
 	}
 	if value, present, valid := parseQueryInt(query, "limit", 1, myAnswersMaxLimit); present {
 		if !valid {
-			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", myAnswersMaxLimit)
+			return nil, 0, nil, errorf(apicode.InvalidQuery, "limit must be one integer from 1 to %d", myAnswersMaxLimit)
 		}
 		limit = &value
 	}
 	if value, present, valid := parseQueryInt(query, "offset", 0, math.MaxInt); present {
 		if !valid {
-			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "offset must be one non-negative integer")
+			return nil, 0, nil, errorf(apicode.InvalidQuery, "offset must be one non-negative integer")
 		}
 		offset = value
 	}
@@ -465,7 +530,65 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 }
 
 // listMyReplies answers GET /api/v1/me/replies: the caller's Inbox threads of the kinds ?kind=
-// names, in the state ?state= names, and how many there are in all.
+// names, in the state ?state= names, and how many there are in all, read as readMyReplies reads
+// them once this route has read its query.
+func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
+	caller, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	wantReply, wantAgent, err := parseMyRepliesKinds(r)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	state, err := parseMyRepliesState(r)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	limit, offset, from, err := parseMyRepliesPage(r, state)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	issue, artifact, err := parseMyRepliesOwner(r)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	response, err := s.readMyReplies(r.Context(), caller, myRepliesRead{
+		reply: wantReply, agent: wantAgent, state: state,
+		limit: limit, offset: offset, from: from, issue: issue, artifact: artifact,
+	})
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, response)
+}
+
+// myRepliesRead is one read of the caller's Inbox threads, as a route has read it off its own
+// query: the kinds of row, the state, the page, where a Dismissed page resumes and the one thread
+// owner it is narrowed to. GET /api/v1/me/replies (listMyReplies) and GET /api/v2/me/threads
+// (listMyThreadsV2) each read their own query into one and answer what readMyReplies reads.
+type myRepliesRead struct {
+	reply, agent bool
+	state        string
+	// limit is the page's size, nil for every row; offset is where the page starts.
+	limit  *int
+	offset int
+	// from is where a Dismissed page resumes, nil for its first page: the rows below it.
+	from *myRepliesCursor
+	// after is where a Dismissed page reads forward from, the rows above it, oldest dismissal
+	// first; nil for none. Only GET /api/v2/me/threads names one.
+	after    *myRepliesCursor
+	issue    string
+	artifact *string
+}
+
+// readMyReplies reads the caller's Inbox threads of the kinds read names, in the state it names,
+// and how many there are in all.
 //
 // Every read runs in one read-only repeatable-read transaction, and as_of is that snapshot's
 // database time. A mark-all passes as_of back as its read mark, so that time has to be one at
@@ -487,48 +610,29 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 // error of its own to report. One block over a per-kind callback would hide four differences
 // behind one parameter list to save six lines. The unpaged total is the one line the two would
 // have shared, and it is taken once, after both.
-func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
-	caller, ok := s.actingPerson(w, r)
-	if !ok {
-		return
-	}
-	wantReply, wantAgent, err := parseMyRepliesKinds(r)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	state, err := parseMyRepliesState(r)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	limit, offset, from, err := parseMyRepliesPage(r, state)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	issue, artifact, err := parseMyRepliesOwner(r)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+func (s *server) readMyReplies(ctx context.Context, caller model.Actor, read myRepliesRead) (model.MyRepliesResponse, error) {
+	limit, offset, from, after, state := read.limit, read.offset, read.from, read.after, read.state
+	// A Dismissed read with an after reads forward, oldest dismissal first; every other read
+	// answers the state's own order, newest first.
+	forward := state == myRepliesStateDismissed && after != nil
+	if !forward {
+		after = nil
 	}
 	// An Agent row has no issue and no document, so a read narrowed to one owner holds none.
-	wantAgent = wantAgent && issue == "" && artifact == nil
+	wantReply, wantAgent := read.reply, read.agent && read.issue == "" && read.artifact == nil
 
 	login := model.CanonicalLogin(caller.ID)
 	response := model.MyRepliesResponse{Rows: []model.MyReplyRow{}, Offset: offset}
 	if limit != nil {
 		response.Limit = *limit
 	}
-	tx, err := s.deps.Store.Pool.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read my replies: %w", err))
-		return
+		return model.MyRepliesResponse{}, fmt.Errorf("read my replies: %w", err)
 	}
-	defer tx.Rollback(r.Context())
-	if err := tx.QueryRow(r.Context(), "select now()").Scan(&response.AsOf); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read my replies: %w", err))
-		return
+	defer tx.Rollback(ctx)
+	if err := tx.QueryRow(ctx, "select now()").Scan(&response.AsOf); err != nil {
+		return model.MyRepliesResponse{}, fmt.Errorf("read my replies: %w", err)
 	}
 
 	rows := []model.MyReplyRow{}
@@ -541,42 +645,46 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 		reach = &through
 	}
 	// Every state but the Dismissed view counts its rows when the read is paged, since the page it
-	// answers is a cut of a list the caller is told the length of. The Dismissed view is counted
-	// nowhere: it answers 200 rows at a time from a cursor and says in next_cursor whether another
-	// page follows, which is what the view reads, and a count of it is a count of every thread the
-	// person has ever dismissed - 110,000 rows at INFRA-450's a14 seed, 8 s of the 9.4 s that read
-	// took. Its total is the page it answers (contracts' MyRepliesResponse).
+	// answers is a cut of a list the caller is told the length of. The Dismissed view is not
+	// counted: it answers a page at a time from a position, and a count of it is a count of every
+	// thread the person has ever dismissed - 110,000 rows at INFRA-450's a14 seed, 8 s of the 9.4 s
+	// that read took. Its total is the page it answers (contracts' MyRepliesResponse), which GET
+	// /api/v2/me/threads answers as null (listMyThreadsV2).
 	counted := limit != nil && state != myRepliesStateDismissed
 	if wantReply {
 		countQuery, pageQuery := myRepliesQueries(state, from)
-		countArgs := []any{login, issue, artifact}
+		if forward {
+			pageQuery = myRepliesDismissedForwardQuery(from)
+		}
+		countArgs := []any{login, read.issue, read.artifact}
 		if counted {
 			var total int
-			if err := tx.QueryRow(r.Context(), countQuery, countArgs...).Scan(&total); err != nil {
-				s.writeHandlerError(w, fmt.Errorf("count my replies: %w", err))
-				return
+			if err := tx.QueryRow(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+				return model.MyRepliesResponse{}, fmt.Errorf("count my replies: %w", err)
 			}
 			response.Total += total
 		}
-		read, err := s.readMyReplyRows(r.Context(), tx, pageQuery, myRepliesPageArgs(countArgs, reach, from))
+		replyRows, err := s.readMyReplyRows(ctx, tx, pageQuery, withAfter(myRepliesPageArgs(countArgs, reach, from), after))
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return model.MyRepliesResponse{}, err
 		}
-		rows = append(rows, read...)
+		rows = append(rows, replyRows...)
 	}
 	if wantAgent {
 		// The Agent half answers its own total beside its rows when the read is counted, rather
 		// than in a second statement: it reads every root the state holds either way.
 		args := unreadDirectRepliesArgs(caller.ID, nil)
-		read, total, err := s.readMyAgentRows(r.Context(), tx,
-			myAgentPageQuery(state, from, counted), myRepliesPageArgs(args, reach, from), counted)
+		pageQuery := myAgentPageQuery(state, from, counted)
+		if forward {
+			pageQuery = myAgentDismissedForwardQuery(from)
+		}
+		agentRows, total, err := s.readMyAgentRows(ctx, tx,
+			pageQuery, withAfter(myRepliesPageArgs(args, reach, from), after), counted)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return model.MyRepliesResponse{}, err
 		}
 		response.Total += total
-		rows = append(rows, read...)
+		rows = append(rows, agentRows...)
 	}
 	// An unpaged read of either kind read every matching row, so the rows in hand are the total,
 	// taken before the offset cut below throws any away. The Dismissed view's total is the page it
@@ -586,6 +694,9 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slices.SortFunc(rows, func(left, right model.MyReplyRow) int {
+		if forward {
+			left, right = right, left
+		}
 		if order := myRepliesOrderOf(state, right).Compare(myRepliesOrderOf(state, left)); order != 0 {
 			return order
 		}
@@ -604,27 +715,36 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 		response.Total = len(rows)
 	}
 	// A Dismissed page that filled answers the cursor the next one resumes from. A page that did
-	// not fill is the last one, and following a cursor off the end of the list answers no row.
-	if state == myRepliesStateDismissed && limit != nil && len(rows) == *limit {
+	// not fill is the last one, and following a cursor off the end of the list answers no row. A
+	// page read forward answers none: only /api/v1's cursor resumes, and it reads backward.
+	if state == myRepliesStateDismissed && !forward && limit != nil && len(rows) == *limit {
 		response.NextCursor = myRepliesCursorOf(rows[len(rows)-1])
 	}
-	if err := nameAgentSessions(r.Context(), tx, rows); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := nameAgentSessions(ctx, tx, rows); err != nil {
+		return model.MyRepliesResponse{}, err
 	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read my replies: %w", err))
-		return
+	if err := tx.Commit(ctx); err != nil {
+		return model.MyRepliesResponse{}, fmt.Errorf("read my replies: %w", err)
 	}
 	response.Rows = append(response.Rows, rows...)
-	WriteJSON(w, http.StatusOK, response)
+	return response, nil
+}
+
+// withAfter is a Dismissed page read's parameters with the after its statement reads forward
+// from bound last, and args itself where after is nil.
+func withAfter(args []any, after *myRepliesCursor) []any {
+	if after == nil {
+		return args
+	}
+	return append(args, after.at, after.thread)
 }
 
 // myRepliesQueries is the statements one state reads its Reply rows through: the page itself,
 // which is the cursor's own query when a Dismissed page resumes from one, and the count the
 // answer's total needs when the read is paged. The Dismissed view has no count - its total is the
-// page it answers (listMyReplies) - so it answers an empty count for that state, which that read
-// never asks for. The Agent half's own statements are myAgentPageQuery's (api/replies_agent.go).
+// page it answers on /api/v1 (readMyReplies) and null on /api/v2 (listMyThreadsV2) - so it answers
+// an empty count for that state, which that read never asks for. The Agent half's own statements
+// are myAgentPageQuery's (api/replies_agent.go).
 func myRepliesQueries(state string, from *myRepliesCursor) (count, page string) {
 	switch state {
 	case myRepliesStateInbox:
@@ -759,30 +879,54 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !requireUUIDPath(w, r, "thread") {
+	if !requireUUIDPath(w, r, "thread", apicode.ThreadIDInput) {
 		return
 	}
 	var input threadReadInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.ReadThrough == nil {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "read_through is required")
+		writeError(w, r, apicode.InvalidState, "read_through is required")
 		return
 	}
 	if _, err := parseAgentStateCutoff("read_through", input.ReadThrough); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	login := model.CanonicalLogin(actor.ID)
-	threadID := r.PathValue("id")
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
+	event, err := s.moveThreadReadIn(r.Context(), tx, actor, r.PathValue("id"), *input.ReadThrough)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if event != nil {
+		written, err := s.appendEvent(r.Context(), tx, *event)
+		if err == nil {
+			err = tx.Commit(r.Context())
+		}
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		s.publish(r.Context(), written)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// moveThreadReadIn moves, in tx, actor's read mark on one thread forward to readThrough, the
+// caller's own RFC3339 text, already checked, and answers, where it moved, the event that
+// announces it, for its caller to append: the work of PUT /api/v1/me/threads/{id}/read and of a
+// thread mark's write under /api/v2. A thread the caller has no row for writes nothing, and
+// neither does a mark already at or past readThrough.
+func (s *server) moveThreadReadIn(ctx context.Context, tx pgx.Tx, actor model.Actor, threadID, readThrough string) (*model.Event, error) {
+	login := model.CanonicalLogin(actor.ID)
 	// The read phase holds no transaction id. The caller's row is read first and plainly, for
 	// the owners it names: the thread's, which the lock below takes, and the project, which the
 	// event's append takes. Neither ever changes on a row that stands - the trigger writes them
@@ -790,16 +934,14 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// migration 20261105093501) - so they are read before any lock and used after it.
 	var project string
 	var issueKey, artifactID *string
-	err = tx.QueryRow(r.Context(), `
+	err := tx.QueryRow(ctx, `
 		select project_key, issue_key, artifact_id::text from user_threads where login = $1 and thread_id = $2
 	`, login, threadID).Scan(&project, &issueKey, &artifactID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return nil, nil
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 	// A closed issue is not refused: reading a thread on a closed issue is reading it. The lock
 	// is the one every reader and writer of the thread's rows takes (store.OwnerOf), and it is
@@ -811,8 +953,7 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// project, the cycle markInboxReadThreads rules out.
 	owner := store.OwnerOf(issueKey, artifactID)
 	if owner == nil {
-		s.writeHandlerError(w, fmt.Errorf("%s's user_threads row of thread %s names no issue and no document", login, threadID))
-		return
+		return nil, fmt.Errorf("%s's user_threads row of thread %s names no issue and no document", login, threadID)
 	}
 	// Whether the mark moves at all, read under that lock in the statement after it
 	// (store.LockOwnerAndRead) and by the predicate the update below writes by, against the same
@@ -824,21 +965,19 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// refetch the count in every tab the viewer has open, and would queue every such visit behind
 	// every write of events in that project.
 	var moves bool
-	if err := store.LockOwnerAndRead(r.Context(), tx, *owner,
+	if err := store.LockOwnerAndRead(ctx, tx, *owner,
 		`select exists (select 1 from user_threads where `+threadReadMoves+`)`,
-		[]any{login, threadID, *input.ReadThrough}, &moves); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		[]any{login, threadID, readThrough}, &moves); err != nil {
+		return nil, err
 	}
 	if !moves {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return nil, nil
 	}
-	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(project)); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := store.LockOwner(ctx, tx, store.ProjectOwner(project)); err != nil {
+		return nil, err
 	}
-	// The write phase: the row and the event, back to back, and the COMMIT behind them.
+	// The write phase: the row, and then the event its caller appends, back to back, and the
+	// COMMIT behind them.
 	//
 	// read_through is cast by Postgres from the caller's own text rather than bound as a parsed
 	// time: an answer's time carries nanoseconds, which the trigger's cast of the answer rounds to
@@ -846,24 +985,15 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// would otherwise fall a microsecond short of the answer and leave the thread unread. The
 	// predicate is written on the update as well as on the read, because this is the statement
 	// that must never move a mark back, whatever was read before it; under the owner's lock it
-	// moves the row the read said it would, so the event below is appended for a mark that moved.
-	if _, err := tx.Exec(r.Context(), `
+	// moves the row the read said it would, so the event answered is appended for a mark that
+	// moved.
+	if _, err := tx.Exec(ctx, `
 		update user_threads set read_through = least($3::text::timestamptz, now())
-		where `+threadReadMoves, login, threadID, *input.ReadThrough); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		where `+threadReadMoves, login, threadID, readThrough); err != nil {
+		return nil, err
 	}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(project).event(
+	event := projectOwner(project).event(
 		"user_thread_state.updated", actor, model.UserThreadStateEventPayload{Login: login, ThreadID: threadID},
-	))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	s.publish(r.Context(), event)
-	w.WriteHeader(http.StatusNoContent)
+	)
+	return &event, nil
 }

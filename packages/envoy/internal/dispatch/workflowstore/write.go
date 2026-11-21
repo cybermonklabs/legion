@@ -107,8 +107,8 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 	var other *nodeOfAnotherIssue
 	switch {
 	case errors.Is(err, errNoNode):
-		return Step{}, refusal(ErrStepInput, "step %s holds no node yet, and this write, which would make it, does not name its %s: the first write of a step names its task, kind, step, role and generation",
-			id, strings.Join(missing, ", "))
+		return Step{}, unmadeError{refusal(ErrStepInput, "step %s holds no node yet, and this write, which would make it, does not name its %s: the first write of a step names its task, kind, step, role and generation",
+			id, strings.Join(missing, ", "))}
 	case errors.As(err, &other):
 		return Step{}, fmt.Errorf("%w: step %s is part of %s, and this write names %s", ErrStepOtherIssue, id, other.issue, write.Issue)
 	case err != nil:
@@ -455,6 +455,12 @@ func ratingOfKind(id, kind string) error {
 func refusal(sentinel error, format string, args ...any) error {
 	return fmt.Errorf("%w: %s", sentinel, fmt.Sprintf(format, args...))
 }
+
+// unmadeError is the refusal of a write that finds no node of its id and names no identity to
+// make one: the input error it holds, whose text it answers, and ErrStepUnmade besides.
+type unmadeError struct{ error }
+
+func (e unmadeError) Unwrap() []error { return []error{e.error, ErrStepUnmade} }
 
 // heldString is the text attribute name of a node's held attributes, "" where the node holds none.
 func heldString(held map[string]json.RawMessage, name string) (string, error) {

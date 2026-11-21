@@ -3,7 +3,10 @@ import { unwatchFile, watchFile } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { DELIVERY_CAPABILITIES } from "@legion/contracts"
-import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
+import {
+  type ActiveDispatchConfig,
+  activeDispatchSettings,
+} from "@legion/envoy-client/dispatch-config"
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
@@ -20,7 +23,10 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { connect } from "nats"
 import { z } from "zod"
 /** The npm package a Codex session runs, which its registrations name. */
-import { name as CODEX_PACKAGE_NAME } from "../../codex/package.json" with { type: "json" }
+import {
+  name as CODEX_PACKAGE_NAME,
+  version as CODEX_PACKAGE_VERSION,
+} from "../../codex/package.json" with { type: "json" }
 import {
   admittingMoves,
   channelReopener,
@@ -37,7 +43,6 @@ import {
   executeEnvoyTool,
   MCP_SERVER_INFO,
   mcpResult,
-  postDispatchReply,
   startChannelSession,
 } from "../envoy-channel-server"
 import { inboundOffChannelSession } from "../envoy-off"
@@ -119,6 +124,23 @@ const STANDBY_NOTE =
 
 /** How often the owning server checks it still owns the session. */
 const OWNER_RECHECK_MS = 5_000
+
+/** What every Dispatch request of this server names it as: the program and its own package's
+ *  release (`codex/package.json`), as claude-envoy's channel server names itself. */
+export const CODEX_ENVOY_USER_AGENT = `codex-envoy/${CODEX_PACKAGE_VERSION}`
+
+/** The Dispatch client the Codex user-turn router reads with, bounded to `ms` and naming this
+ *  server in its `User-Agent` (`CODEX_ENVOY_USER_AGENT`). */
+export function codexDispatchClient(
+  active: ActiveDispatchConfig,
+  ms: number,
+  fetchImpl: typeof fetch = fetch,
+): DispatchClient {
+  return new DispatchClient(active.url, active.credential, fetchImpl, {
+    signal: AbortSignal.timeout(ms),
+    userAgent: CODEX_ENVOY_USER_AGENT,
+  })
+}
 
 /**
  * The Codex thread whose turn made a tool call, from the request's `_meta`: Codex 0.154.0 sends
@@ -596,7 +618,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
         },
         pluginVersion: installedPluginVersion(bundlePath) ?? "source",
         pluginName: CODEX_PACKAGE_NAME,
-        router: (state) =>
+        router: (state, reply) =>
           createCodexUserTurnRouter({
             ask: (question) => askSideQuestion(command(), id.id, question),
             deliver: (item) => codexDelivery.deliver(item),
@@ -604,14 +626,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
               const active = activeDispatchSettings(
                 sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }).dispatch,
               )
-              return active === null
-                ? undefined
-                : new DispatchClient(active.url, active.credential, fetch, {
-                    signal: AbortSignal.timeout(ms),
-                  })
+              return active === null ? undefined : codexDispatchClient(active, ms)
             },
             expect: (text, messageId) => stream?.expect(text, messageId),
-            reply: (target, result) => postDispatchReply(id, configFile, target, result),
+            reply,
             sessionId: () => id.id,
             state,
             warn,
@@ -622,6 +640,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
         startSignal: stopping.signal,
         stateDirectory,
         title,
+        userAgent: CODEX_ENVOY_USER_AGENT,
         ...(dispatch.enabled ? { stampTitle } : {}),
       }).catch((error: unknown) => {
         // A stop asked for while the session was still starting ends the start, and is no

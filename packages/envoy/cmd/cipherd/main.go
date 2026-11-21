@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -69,6 +70,30 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
+
+// buildCommit is the legion commit this binary was built from. Only the image build stamps it
+// (packages/envoy/docker/Dockerfile passes its LEGION_COMMIT build argument through -ldflags -X,
+// and refuses anything but a full commit sha), as it stamps cmd/dispatch's.
+var buildCommit string
+
+// buildRelease is the build the broker's Dispatch reads name themselves by (judge.Dispatch and
+// projectaccess.Client's Commit): the stamped buildCommit, else the vcs.revision Go records in a
+// build from a checkout (scripts/dev-broker.sh builds with no -ldflags), else empty, which each
+// reader names `(devel)`. The Envoy image is released as a build of one commit, and its version
+// is decided after the image is built, so the commit is the release the broker can name.
+func buildRelease() string {
+	if buildCommit != "" {
+		return buildCommit
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" {
+				return setting.Value
+			}
+		}
+	}
+	return ""
+}
 
 // machineLoginPendingTTL bounds how long a typed-code machine login waits for a human to decide
 // it before the Sweeper expires it. Not a BROKER_* config knob (the shared broker contract's
@@ -348,9 +373,12 @@ func main() {
 	// every projected token here goes through, so a rotation needs no restart. config.Load holds
 	// the two settings to both or neither. Built before the loader, which serves a tagged secret
 	// only when this broker can ask whether its project is private (policy.Loader.ProjectChecks).
+	// Each of its calls names the broker's build in its User-Agent (buildRelease).
 	var projectAccess projectaccess.Access
 	if cfg.ProjectAccessURL != "" {
-		projectAccess = projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		client := projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		client.Commit = buildRelease()
+		projectAccess = client
 	}
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
 	// policy version is the one it has today.
@@ -1273,6 +1301,7 @@ func judgeDispatch(cfg config.Config) *judge.Dispatch {
 		BaseURL: cfg.JudgeDispatchURL,
 		Account: ciphertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
 		HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
+		Commit:  buildRelease(),
 	}
 }
 

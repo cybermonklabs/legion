@@ -1289,7 +1289,7 @@ func TestStaticHandlerServesBuiltAssets(t *testing.T) {
 
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil))
-	if response.Code != http.StatusNotFound || response.Body.String() != "{\"error\":\"not found\"}\n" {
+	if response.Code != http.StatusNotFound || response.Body.String() != "{\"code\":\"STATIC_NOT_FOUND\",\"error\":\"not found\"}\n" {
 		t.Fatalf("missing asset: status %d body %q", response.Code, response.Body.String())
 	}
 }
@@ -1486,7 +1486,7 @@ func TestUnknownReservedPathIsJSONNotFoundWithHint(t *testing.T) {
 			if webDist == "" {
 				return
 			}
-			if response.Code != http.StatusNotFound || response.Body.String() != "{\"error\":\"not found\"}\n" {
+			if response.Code != http.StatusNotFound || response.Body.String() != "{\"code\":\"STATIC_NOT_FOUND\",\"error\":\"not found\"}\n" {
 				t.Fatalf("missing asset: status %d body %q", response.Code, response.Body.String())
 			}
 		})

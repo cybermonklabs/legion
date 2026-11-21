@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +115,36 @@ func askSessionsOf(t *testing.T, payload map[string]any) ([]string, bool) {
 	return sessions, true
 }
 
+// askSessionsInBothLogs is the ask_sessions of the issue's newest comment.created, and whether its
+// payload carries the field, read from the /api/v1 log and from the /api/v2 log, newest first,
+// failing unless both answer the same: each serves the payload the event stored.
+func askSessionsInBothLogs(t *testing.T, handler http.Handler, issueKey string) ([]string, bool) {
+	t.Helper()
+	v1, v1Present := askSessionsOf(t, latestCommentCreatedPayload(t, handler, issueKey))
+	log := dispatchRequest(t, handler, http.MethodGet, "/api/v2/issues/"+issueKey+"/events?sort=-seq", nil, "alice")
+	if log.Code != http.StatusOK {
+		t.Fatalf("read /api/v2 events: status=%d body=%s", log.Code, log.Body.String())
+	}
+	for _, event := range decodeBody[page[struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+	}]](t, log).Items {
+		if event.Type != "comment.created" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode /api/v2 comment.created payload: %v", err)
+		}
+		if v2, v2Present := askSessionsOf(t, payload); v2Present != v1Present || !slices.Equal(v2, v1) {
+			t.Fatalf("/api/v2's log ask_sessions = %v (present %v), want /api/v1's %v (present %v)", v2, v2Present, v1, v1Present)
+		}
+		return v1, v1Present
+	}
+	t.Fatalf("no comment.created event in /api/v2's log of %s", issueKey)
+	return nil, false
+}
+
 // A comment.created in an ask's thread names the sessions that own the ask once the comment is in
 // (ask_sessions): the ask's author when a session wrote it, then its followers in the order they
 // joined, each once, a session that replies among them. An author that left its ask still owns it,
@@ -130,7 +162,7 @@ func TestACommentInAnAsksThreadNamesTheSessionsThatOwnTheAsk(t *testing.T) {
 		t.Fatalf("s3 following: status=%d body=%s", followed.Code, followed.Body.String())
 	}
 	replyToAskAs(t, handler, issue.Key, askID, "s2", "I would hold.")
-	if got, present := askSessionsOf(t, latestCommentCreatedPayload(t, handler, issue.Key)); !present || strings.Join(got, ",") != "s1,s3,s2" {
+	if got, present := askSessionsInBothLogs(t, handler, issue.Key); !present || strings.Join(got, ",") != "s1,s3,s2" {
 		t.Fatalf("s2's reply ask_sessions = %v (present %v), want [s1 s3 s2]: the asker, then each follower once, the replier among them", got, present)
 	}
 
@@ -144,8 +176,18 @@ func TestACommentInAnAsksThreadNamesTheSessionsThatOwnTheAsk(t *testing.T) {
 	}, "alice"); replied.Code != http.StatusCreated {
 		t.Fatalf("alice's reply: status=%d body=%s", replied.Code, replied.Body.String())
 	}
-	if got, present := askSessionsOf(t, latestCommentCreatedPayload(t, handler, issue.Key)); !present || strings.Join(got, ",") != "s1,s3,s2" {
+	if got, present := askSessionsInBothLogs(t, handler, issue.Key); !present || strings.Join(got, ",") != "s1,s3,s2" {
 		t.Fatalf("alice's reply after s1 left ask_sessions = %v (present %v), want [s1 s3 s2]: s1 wrote the ask", got, present)
+	}
+	// A reply through /api/v2's comment route, which writes through the same writeComment, names
+	// the same owners.
+	if replied := keyedRequest(t, handler, http.MethodPost, "/api/v2/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "Hold for a week.", "ask_id": askID,
+	}, "alice", "ask-sessions-v2-reply"); replied.Code != http.StatusCreated {
+		t.Fatalf("alice's /api/v2 reply: status=%d body=%s", replied.Code, replied.Body.String())
+	}
+	if got, present := askSessionsInBothLogs(t, handler, issue.Key); !present || strings.Join(got, ",") != "s1,s3,s2" {
+		t.Fatalf("alice's /api/v2 reply ask_sessions = %v (present %v), want [s1 s3 s2]", got, present)
 	}
 
 	asked := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -162,7 +204,7 @@ func TestACommentInAnAsksThreadNamesTheSessionsThatOwnTheAsk(t *testing.T) {
 	}, "bob"); replied.Code != http.StatusCreated {
 		t.Fatalf("bob's reply: status=%d body=%s", replied.Code, replied.Body.String())
 	}
-	if got, present := askSessionsOf(t, latestCommentCreatedPayload(t, handler, issue.Key)); !present || len(got) != 0 {
+	if got, present := askSessionsInBothLogs(t, handler, issue.Key); !present || len(got) != 0 {
 		t.Fatalf("a reply on a person's ask no session follows: ask_sessions = %v (present %v), want []", got, present)
 	}
 
@@ -171,7 +213,7 @@ func TestACommentInAnAsksThreadNamesTheSessionsThatOwnTheAsk(t *testing.T) {
 	}, "alice"); root.Code != http.StatusCreated {
 		t.Fatalf("alice's comment: status=%d body=%s", root.Code, root.Body.String())
 	}
-	if got, present := askSessionsOf(t, latestCommentCreatedPayload(t, handler, issue.Key)); present {
+	if got, present := askSessionsInBothLogs(t, handler, issue.Key); present {
 		t.Fatalf("a comment outside an ask's thread carries ask_sessions %v, want none", got)
 	}
 }
@@ -462,4 +504,52 @@ func TestAHumanAddsAndRemovesAnyFollower(t *testing.T) {
 	if badID.Code != http.StatusBadRequest || !strings.Contains(badID.Body.String(), `"code":"ASK_ID_INPUT"`) {
 		t.Fatalf("followers of a malformed ask id: status=%d body=%s", badID.Code, badID.Body.String())
 	}
+}
+
+// PUT /api/v2/asks/{id}/followers/{session_id} reads the follower it answers on the follow's own
+// transaction, before the commit, as every other /api/v2 ask write reads its answer (askReadBack):
+// a read that fails rolls the follow back and answers 500 with nothing stored and its
+// Idempotency-Key unclaimed, so the retry under that key follows afresh, and the follower answered
+// is the one a fresh read of the followers holds.
+func TestAV2FollowReadsItsAnswerBeforeItCommits(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "FOLV", "Followed", "# Spec\n\nA passage.")
+	askID := openAskAs(t, handler, issue.Key, "session-asker", "Which way?")
+	target := "/api/v2/asks/" + askID + "/followers/session-follower"
+	alter := func(t *testing.T, statement string) {
+		t.Helper()
+		if _, err := database.Pool.Exec(t.Context(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	// A follower table the answer's read cannot select from: the follow's insert names no since,
+	// and the read of the follower it answers does.
+	alter(t, `alter table ask_followers rename column since to since_unread`)
+	failed := keyedRequest(t, handler, http.MethodPut, target, nil, "alice", "follow-read-back-1")
+	alter(t, `alter table ask_followers rename column since_unread to since`)
+	if failed.Code != http.StatusInternalServerError {
+		t.Fatalf("a follow whose answer could not be read answered %d %s, want 500", failed.Code, failed.Body.String())
+	}
+	if followers := readAskFollowers(t, handler, askID); slices.Contains(followers, "session-follower") {
+		t.Fatalf("a follow that answered 500 left the followers %v, want it rolled back", followers)
+	}
+	retried := keyedRequest(t, handler, http.MethodPut, target, nil, "alice", "follow-read-back-1")
+	if retried.Code != http.StatusOK || replayed(retried) {
+		t.Fatalf("the retry under the failed follow's key answered %d %s (replayed %v), want a follow of its own",
+			retried.Code, retried.Body.String(), replayed(retried))
+	}
+	answered := decodeBody[model.AskFollower](t, retried)
+	fresh := sessionRequest(t, handler, http.MethodGet, "/api/v1/asks/"+askID+"/followers", nil)
+	if fresh.Code != http.StatusOK {
+		t.Fatalf("read the followers: %d %s", fresh.Code, fresh.Body.String())
+	}
+	for _, follower := range decodeBody[askFollowersRead](t, fresh).Followers {
+		if follower.SessionID == "session-follower" {
+			if !follower.Since.Equal(answered.Since) {
+				t.Fatalf("the follow answered since %v, and a fresh read holds %v", answered.Since, follower.Since)
+			}
+			return
+		}
+	}
+	t.Fatalf("the follow answered %+v, and a fresh read of the followers holds no such follower", answered)
 }

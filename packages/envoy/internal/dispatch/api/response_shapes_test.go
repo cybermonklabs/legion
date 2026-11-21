@@ -123,9 +123,10 @@ func TestResponseShapes(t *testing.T) {
 			before: map[string]any{"result": result, "line": "- Check b-1 (before_merge): pass."},
 		},
 		{
+			// unsettled is a member of the text read, false for a text a version holds.
 			name:   "artifactText",
 			named:  artifactText{Markdown: "# Spec", Token: "tok-1", Version: new(7)},
-			before: map[string]any{"markdown": "# Spec", "version": new(7), "token": "tok-1"},
+			before: map[string]any{"markdown": "# Spec", "version": new(7), "token": "tok-1", "unsettled": false},
 		},
 		{
 			name: "editArtifactResponse",

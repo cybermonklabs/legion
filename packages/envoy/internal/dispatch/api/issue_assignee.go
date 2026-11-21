@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -26,7 +27,7 @@ func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (a
 	}
 	var login string
 	if err := json.Unmarshal(raw, &login); err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", "assignee must be a person's email or null")
+		return nil, true, errorf(apicode.InvalidIssue, "assignee must be a person's email or null")
 	}
 	canonical, err := s.allowedLogin(ctx, login)
 	if err != nil {
@@ -45,7 +46,7 @@ func (s *server) allowedLogin(ctx context.Context, login string) (string, error)
 		}
 	}
 	if !known {
-		return "", errorf(http.StatusBadRequest, "ASSIGNEE_NOT_ALLOWED", "%q has not signed in to Dispatch", strings.TrimSpace(login))
+		return "", errorf(apicode.AssigneeNotAllowed, "%q has not signed in to Dispatch", strings.TrimSpace(login))
 	}
 	return canonical, nil
 }
@@ -110,10 +111,20 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `select email from people order by email`)
+	users, err := s.signedInUsers(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("list people: %w", err))
+		s.writeHandlerError(w, r, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, listUsersResponse{Users: users})
+}
+
+// signedInUsers is everyone who has signed in, sorted by email, which both versions of the users
+// route answer.
+func (s *server) signedInUsers(ctx context.Context) ([]dispatchUser, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `select email from people order by email`)
+	if err != nil {
+		return nil, fmt.Errorf("list people: %w", err)
 	}
 	users, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (dispatchUser, error) {
 		var user dispatchUser
@@ -121,10 +132,9 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 		return user, err
 	})
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("list people: %w", err))
-		return
+		return nil, fmt.Errorf("list people: %w", err)
 	}
-	WriteJSON(w, http.StatusOK, listUsersResponse{Users: users})
+	return users, nil
 }
 
 // whoamiUser is the body GET /api/v1/whoami answers a person at a browser.
@@ -166,7 +176,7 @@ type whoamiAgent struct {
 func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	scopes := whoamiScopes(actor.Credential)

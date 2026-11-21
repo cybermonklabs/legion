@@ -97,6 +97,7 @@ test("an upload over a document the issue already holds names the base it replac
     markdown: "# Notes\n",
     token: "sha256:live-notes",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
   const view = renderHarness();
@@ -140,8 +141,18 @@ test("the first upload of a name has no base to name, and names none", async () 
 test("the base is read when the file is chosen, and the press sends that one", async () => {
   const user = userEvent.setup();
   const ownerArtifactText = spyOn(api, "ownerArtifactText")
-    .mockResolvedValueOnce({ markdown: "# Notes\n", token: "sha256:chosen", version: 1 })
-    .mockResolvedValue({ markdown: "# Notes\n", token: "sha256:moved-on", version: 2 });
+    .mockResolvedValueOnce({
+      markdown: "# Notes\n",
+      token: "sha256:chosen",
+      version: 1,
+      unsettled: false,
+    })
+    .mockResolvedValue({
+      markdown: "# Notes\n",
+      token: "sha256:moved-on",
+      version: 2,
+      unsettled: false,
+    });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
   const view = renderHarness();
 
@@ -174,6 +185,7 @@ test("a markdown file whose declared type carries a charset names its base", asy
     markdown: "# Notes\n",
     token: "sha256:live-notes",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(UPLOADED);
   const view = renderHarness();
@@ -277,6 +289,7 @@ test("a refused upload tells the person the document changed, not a command to r
     markdown: "# Notes\n",
     token: "sha256:stale-notes",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
     // The sentence the server sends, read from a live Dispatch at this head:

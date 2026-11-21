@@ -1,4 +1,8 @@
-import { DispatchGatewayError, DispatchServiceError } from "../dispatch-http";
+import {
+  DispatchGatewayError,
+  DispatchServiceError,
+  type DispatchWriteUnsettledError,
+} from "../dispatch-http";
 import { messageFor } from "../errors";
 
 /**
@@ -44,7 +48,12 @@ export function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
   );
 }
 
-/** Whether Dispatch itself answered `status`; a gateway's answer of that status says nothing it decided. */
+/**
+ * Whether Dispatch itself answered `status`; a gateway's answer of that status says nothing it
+ * decided. A write Dispatch answered with its own 5xx is no refusal but a
+ * `DispatchWriteUnsettledError` (the write may have committed first), so a caller that reads such
+ * a 5xx asks this of that error's `last`.
+ */
 export function dispatchAnswered(error: unknown, status: number): error is DispatchServiceError {
   return error instanceof DispatchServiceError && error.fromDispatch && error.status === status;
 }
@@ -54,12 +63,28 @@ export function dispatchAnswered(error: unknown, status: number): error is Dispa
  * before the write could apply proves it did not: Dispatch's own refusal (a 4xx), or a gateway's
  * answer that never reached Dispatch (`mayHaveReachedDispatch`), which the client throws as such
  * only when no earlier attempt of the write may have reached Dispatch either. Dispatch's own 5xx
- * can come after it committed, and a timeout, a transport error or a `DispatchWriteUnsettledError`
- * (an earlier attempt may have reached Dispatch) says nothing either way.
+ * can come after it committed, so the client throws it as a `DispatchWriteUnsettledError`, as it
+ * does a transport failure and a deadline after an attempt may have reached Dispatch; that error,
+ * and a timeout or a transport error thrown as it came, says nothing either way.
  */
 export function writeMayHaveLanded(error: unknown): boolean {
   if (error instanceof DispatchGatewayError) return error.mayHaveReachedDispatch;
   return !(error instanceof DispatchServiceError) || error.status >= 500;
+}
+
+/**
+ * A write that may or may not have taken effect (`DispatchWriteUnsettledError`) told with
+ * `clauses`, the caller's account of what its call did and what to do, in place of the client's
+ * own words on it: an account that knows what the call wrote says that once, as `refusalWithCode`
+ * lets one replace a gateway's advice. What the write got leads: a transport failure's, quoted
+ * whole, carries its own advice for a server that may have moved.
+ */
+export function unsettledWithAccount(
+  error: DispatchWriteUnsettledError,
+  ...clauses: string[]
+): Error {
+  const account = clauses.filter((clause) => clause !== "").join("; ");
+  return new Error(`${error.answer}; ${account}`, { cause: error });
 }
 
 /**

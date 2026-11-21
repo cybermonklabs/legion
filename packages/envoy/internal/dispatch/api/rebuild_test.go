@@ -12,6 +12,7 @@ import (
 
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -47,8 +48,8 @@ func TestRebuildArtifactRouteNeedsThePersonScopeAndRefusesADocumentThatLoads(t *
 
 	path := "/api/v1/artifacts/" + artifact.ID + "/rebuild"
 	bearer := sessionRequest(t, handler, http.MethodPost, path, map[string]any{"actor": sessionActor()})
-	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's rebuild: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
+	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's rebuild: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 	human := dispatchRequest(t, handler, http.MethodPost, path, map[string]any{}, "alice")
 	if human.Code != http.StatusConflict || !strings.Contains(human.Body.String(), `"code":"DOCUMENT_LOADS"`) || !strings.Contains(human.Body.String(), "latest saved version ") || !strings.Contains(human.Body.String(), "Stop. Ask a person what to do with this document") || strings.Contains(human.Body.String(), "either") || strings.Contains(human.Body.String(), "replace") {

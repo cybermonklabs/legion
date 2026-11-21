@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -42,11 +43,12 @@ const (
 // acting as its person may watch a session's conversation — the person scope, which /ws/live
 // cannot take from the route table because it is one socket serving every view — and the view
 // names its kind and a session uuid alone; a deployment with no relay (no NATS) has nothing to
-// watch. The refusal is the route gate's code (codeScopeRequired); a frame carries no HTTP
+// watch. The refusal is the route gate's code (apicode.OAuthScopeRequired), by the name /api/v1
+// gives it, as every frame names a code apicode declares (liveRefusal); a frame carries no HTTP
 // header, so it carries no WWW-Authenticate challenge beside it.
 func (s *server) startAgentView(ctx context.Context, stream liveStreamer, sub string, view LiveView, _ *EventsLiveResume) (liveSubscription, *LiveError) {
 	if !stream.Holds(model.ScopePerson) {
-		refusal := liveRefusal(sub, codeScopeRequired, "this socket's credential does not hold the "+
+		refusal := liveRefusal(sub, apicode.OAuthScopeRequired.V1Name(), "this socket's credential does not hold the "+
 			model.ScopePerson+" scope, which watching an agent's conversation requires")
 		return nil, &refusal
 	}
@@ -60,11 +62,11 @@ func (s *server) startAgentView(ctx context.Context, stream liveStreamer, sub st
 	}
 	sessionID, problem := agentStreamSessionID(raw)
 	if problem != "" {
-		refusal := liveRefusal(sub, "SESSION_ID_INPUT", problem)
+		refusal := liveRefusal(sub, apicode.SessionIDInput.V1Name(), problem)
 		return nil, &refusal
 	}
 	if s.deps.AgentStream == nil {
-		refusal := liveRefusal(sub, "STREAM_UNAVAILABLE", "this deployment has no agent conversation relay (it needs NATS)")
+		refusal := liveRefusal(sub, apicode.StreamUnavailable.V1Name(), "this deployment has no agent conversation relay (it needs NATS)")
 		return nil, &refusal
 	}
 	return s.startAgentSubscription(ctx, stream, sub, sessionID), nil

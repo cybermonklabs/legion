@@ -1368,6 +1368,27 @@ component refuses, by name, a value outside 1-65535 and the two ports the app po
 its loopback, `envoy-dispatch`'s `8766` and the `cloud-sql-proxy` sidecar's `5432`. Setting or
 unsetting it replaces the app's pods as any change to its pod template does.
 
+`apiV1End`, unset by default, is the instant Dispatch's `/api/v1` ends: an RFC 3339 time, with
+its offset, such as `2027-01-01T00:00:00Z` or `2027-01-01T09:00:00+09:00`, as Go's `time.RFC3339`
+parses it. The component sets `DISPATCH_API_V1_END` to it, as written, on the `envoy-dispatch`
+container alone. While the instant is ahead, every `/api/v1` answer carries a `Sunset` header
+(RFC 8594) naming it; once it has passed, every path under `/api/v1` answers `410` with the code
+`API_V1_ENDED`, pointing to `GET /api/v2`, which lists every route. Dispatch reads the clock on
+each request, so the end takes effect at that instant with no restart. Before it registers a
+resource the component refuses, by name, a value that is not an RFC 3339 time, a date alone or a
+time with no offset among them, since Dispatch refuses such a value at boot. Unset, nothing is
+rendered and `/api/v1` has no end. Arming the end needs an `envoy-infra` release that carries the
+input and no Dispatch release, but it takes effect only on an `envoyImage` whose `envoy-dispatch`
+reads the setting, the first `legion-envoy` release that carries pull request #4274 or a later
+one, the release that first serves `/api/v2`: an older one ignores it, as it ignores every
+variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Whatever
+this input says, every `/api/v1` answer of such a release carries a `Deprecation` header and a
+`Link` header naming the `/api/v2` route that answers for it. Arm the end only once no client the
+deployment runs still calls `/api/v1`: at that release the `dispatch` command, the Oh My Pi and
+Claude Code plugins, the Legion daemon and the secrets broker still do, each naming itself in its
+`User-Agent`, which Dispatch's access log records. Setting, changing or unsetting it replaces the
+app's pods as any change to its pod template does.
+
 `priorityClassName`, `appPdbMinAvailable`, `frontDoorPdbMinAvailable` and
 `listenerPdbMinAvailable` protect the pods from being displaced; with none set the component
 renders no priority class and no budget.
@@ -1564,7 +1585,8 @@ entries are held to once IDNA lookup has made them ASCII; the domain renders tri
 namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemory`,
 `appEphemeralStorage` or `proxyEphemeralStorage` outside
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod
-already binds (above), a `replicas`, `frontDoorReplicas` or `listenerReplicas` below 1, a
+already binds (above), an `apiV1End` that is not an RFC 3339 time (above), a `replicas`,
+`frontDoorReplicas` or `listenerReplicas` below 1, a
 `natsReplicas` outside 1 to 5 or a `streamMaxBytes` below 1, a `senderMessagesPerMinute` outside
 1 to 60000, a `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a
 `priorityClassName` that is empty, not a DNS subdomain or a `system-` class, an

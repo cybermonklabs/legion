@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -751,8 +752,8 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 		"body": "Can I send this?", "delivery": "btw",
 		"actor": map[string]any{"kind": "session", "id": "s2"},
 	})
-	if scopeless.Code != http.StatusForbidden || !strings.Contains(scopeless.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's creation: status=%d body=%s, want 403 %s", scopeless.Code, scopeless.Body.String(), codeScopeRequired)
+	if scopeless.Code != http.StatusForbidden || !strings.Contains(scopeless.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's creation: status=%d body=%s, want 403 %s", scopeless.Code, scopeless.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 
 	first := postAgentMessage(t, handler, "s1", map[string]any{

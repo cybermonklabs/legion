@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -135,7 +135,7 @@ type replyRowPlan struct {
 // first indexing (refs.PlanItemIndex) and none after it, and either way it is no new fact of this
 // request.
 func (s *server) planReplyBlock(
-	ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, blockID, field, code string,
+	ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, blockID, field string, code apicode.Code,
 ) (refs.ItemRepair, *namedBlock, error) {
 	repair, err := refs.PlanItemIfOwed(ctx, tx, kind, itemID, s.deps.ServerURL)
 	if err != nil {
@@ -148,7 +148,7 @@ func (s *server) planReplyBlock(
 		return refs.ItemRepair{}, nil, err
 	}
 	if !found {
-		return refs.ItemRepair{}, nil, errorf(http.StatusBadRequest, code, "%s %s is not a block of %s %s", field, blockID, kind, itemID)
+		return refs.ItemRepair{}, nil, errorf(code, "%s %s is not a block of %s %s", field, blockID, kind, itemID)
 	}
 	return repair, &namedBlock{kind: kind, node: node, item: itemID, id: blockID, excerpt: excerpt}, nil
 }

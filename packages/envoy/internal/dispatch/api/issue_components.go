@@ -3,12 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -46,7 +46,7 @@ func parseIssueComponents(raw json.RawMessage) (*componentsInput, bool, error) {
 	}
 	var input issueComponentsInput
 	if err := json.Unmarshal(raw, &input); err != nil || input.Mode == nil {
-		return nil, true, errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "components must be null or an object with mode inherit, explicit, or none")
+		return nil, true, errorf(apicode.ComponentsInput, "components must be null or an object with mode inherit, explicit, or none")
 	}
 	parsed := &componentsInput{Mode: strings.TrimSpace(*input.Mode)}
 	switch parsed.Mode {
@@ -54,16 +54,16 @@ func parseIssueComponents(raw json.RawMessage) (*componentsInput, bool, error) {
 		return parsed, true, nil
 	case "explicit":
 		if input.IDs == nil || len(*input.IDs) == 0 {
-			return nil, true, errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "components.ids must name at least one component for mode explicit")
+			return nil, true, errorf(apicode.ComponentsInput, "components.ids must name at least one component for mode explicit")
 		}
 		if len(*input.IDs) > maxIssueComponents {
-			return nil, true, countExceededError("COMPONENTS_INPUT", "components.ids", len(*input.IDs), maxIssueComponents)
+			return nil, true, countExceededError(apicode.ComponentsInput, "components.ids", len(*input.IDs), maxIssueComponents)
 		}
 		seen := make(map[string]struct{}, len(*input.IDs))
 		for _, raw := range *input.IDs {
 			id := strings.TrimSpace(raw)
 			if !text.IsComponentID(id) {
-				return nil, true, errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "%q is not a component id (a lowercase slug such as web or dispatch-server)", raw)
+				return nil, true, errorf(apicode.ComponentsInput, "%q is not a component id (a lowercase slug such as web or dispatch-server)", raw)
 			}
 			if _, dup := seen[id]; dup {
 				continue
@@ -75,12 +75,12 @@ func parseIssueComponents(raw json.RawMessage) (*componentsInput, bool, error) {
 		return parsed, true, nil
 	case "none":
 		if input.Reason == nil || strings.TrimSpace(*input.Reason) == "" {
-			return nil, true, errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "components.reason must say why the issue is not architectural for mode none")
+			return nil, true, errorf(apicode.ComponentsInput, "components.reason must say why the issue is not architectural for mode none")
 		}
 		parsed.Reason = strings.TrimSpace(*input.Reason)
 		return parsed, true, nil
 	}
-	return nil, true, errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "components.mode must be inherit, explicit, or none")
+	return nil, true, errorf(apicode.ComponentsInput, "components.mode must be inherit, explicit, or none")
 }
 
 // writeIssueComponents replaces the issue's own attachment row inside tx. For mode explicit
@@ -116,10 +116,10 @@ func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, i
 			}
 		}
 		if len(unknown) > 0 {
-			return errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "%s has no component %s in its current architecture model", project, strings.Join(unknown, ", "))
+			return errorf(apicode.ComponentsInput, "%s has no component %s in its current architecture model", project, strings.Join(unknown, ", "))
 		}
 		if len(external) > 0 {
-			return errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "external components cannot be attached: %s", strings.Join(external, ", "))
+			return errorf(apicode.ComponentsInput, "external components cannot be attached: %s", strings.Join(external, ", "))
 		}
 	}
 	if _, err := tx.Exec(ctx, `delete from issue_components where issue_key = $1`, key); err != nil {

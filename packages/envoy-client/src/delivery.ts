@@ -142,7 +142,8 @@ function dispatchReplyPath(resource: DispatchDelivery["resource"], id: string): 
  *
  * `followUp` is the ask that a second answer to an attempt already settled by the first is
  * posted rather than handed back (`?follow_up=true`). It travels as the route's query parameter,
- * never in the body, which the route decodes strictly.
+ * never in the body, which the route decodes strictly. `userAgent` names the host program that
+ * answers (`DispatchClient`'s `userAgent`).
  */
 export async function postDeliveryReply(
   config: Pick<ActiveDispatchConfig, "url" | "credential">,
@@ -152,10 +153,11 @@ export async function postDeliveryReply(
     readonly body?: string;
     readonly error?: string;
     readonly followUp?: boolean;
-  }
+  },
+  userAgent?: string
 ): Promise<void> {
   const { followUp, ...reply } = result;
-  const client = new DispatchClient(config.url, config.credential);
+  const client = new DispatchClient(config.url, config.credential, fetch, { userAgent });
   await client.deliveryReply(
     delivery.resource,
     delivery.id,

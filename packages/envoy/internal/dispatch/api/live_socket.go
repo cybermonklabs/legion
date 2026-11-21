@@ -355,7 +355,7 @@ func (socket *liveSocket) writeFrame(frame any) bool {
 func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	upgrader := gws.Upgrader{EnableCompression: true, ReadBufferSize: liveSocketReadBuffer}
@@ -432,7 +432,7 @@ func (s *server) liveSocketFrame(socket *liveSocket, data []byte) {
 		if !text.Storable(sub) {
 			sub = ""
 		}
-		socket.Send(liveRefusal(sub, refusal.code, refusal.message))
+		socket.Send(liveRefusal(sub, refusal.code.V1Name(), refusal.message))
 		return
 	}
 	switch head.Type {
@@ -444,7 +444,7 @@ func (s *server) liveSocketFrame(socket *liveSocket, data []byte) {
 		}
 		if frame.View.Query != nil {
 			if refusal := unstorableQuery(*frame.View.Query); refusal != nil {
-				socket.Send(liveRefusal(sub, refusal.code, refusal.message))
+				socket.Send(liveRefusal(sub, refusal.code.V1Name(), refusal.message))
 				return
 			}
 		}

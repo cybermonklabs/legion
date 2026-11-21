@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -73,19 +74,18 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 		Apply: func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
 			if options.Revision != nil && !stringPointersEqual(options.Revision.EditedAt, ask.EditedAt) {
 				return model.Ask{}, errorf(
-					http.StatusConflict,
-					"ASK_EDITED",
+					apicode.AskEdited,
 					"the question changed after you reviewed it; review the latest version and confirm your answer",
 				)
 			}
 			if ask.State == "answered" {
 				switch {
 				case ask.Kind == "approval":
-					return model.Ask{}, errorf(http.StatusConflict, "ASK_APPROVAL_REVIEW", "an approval is a review of a document version; record a new review on the document instead")
+					return model.Ask{}, errorf(apicode.AskApprovalReview, "an approval is a review of a document version; record a new review on the document instead")
 				case !ask.Answer.At.Equal(*options.ReplacesAnswer):
-					return model.Ask{}, errorf(http.StatusConflict, "ASK_ANSWER_CHANGED", "the answer changed after you reviewed it; review the current answer and confirm your change")
+					return model.Ask{}, errorf(apicode.AskAnswerChanged, "the answer changed after you reviewed it; review the current answer and confirm your change")
 				case model.CanonicalLogin(ask.Answer.User) != model.CanonicalLogin(actor.ID):
-					return model.Ask{}, errorf(http.StatusForbidden, "NOT_ANSWERER", "only the person who gave the current answer may change it")
+					return model.Ask{}, errorf(apicode.NotAnswerer, "only the person who gave the current answer may change it")
 				}
 				previousAnswer = ask.Answer
 			}
@@ -97,13 +97,13 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 				}
 			default:
 				if !ask.Multiple && len(selected) > 1 {
-					return model.Ask{}, errorf(http.StatusBadRequest, "INVALID_ANSWER", "single-select asks accept at most one selected answer")
+					return model.Ask{}, errorf(apicode.InvalidAnswer, "single-select asks accept at most one selected answer")
 				}
 				if len(selected) > 0 && !selectedOptions(ask.Options, selected) {
-					return model.Ask{}, errorf(http.StatusBadRequest, "INVALID_ANSWER", "selected answers must be ask option labels")
+					return model.Ask{}, errorf(apicode.InvalidAnswer, "selected answers must be ask option labels")
 				}
 				if len(selected) == 0 && !hasText {
-					return model.Ask{}, errorf(http.StatusBadRequest, "INVALID_ANSWER", "answer requires a selected option or free-text answer")
+					return model.Ask{}, errorf(apicode.InvalidAnswer, "answer requires a selected option or free-text answer")
 				}
 			}
 			// An answer that chose no option stores an empty list, never null.
@@ -160,7 +160,7 @@ func parseAnswerPrecondition(field string, raw json.RawMessage) (value *string, 
 	}
 	var text string
 	if err := json.Unmarshal(raw, &text); err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ANSWER", "%s must be an RFC3339 timestamp or null", field)
+		return nil, true, errorf(apicode.InvalidAnswer, "%s must be an RFC3339 timestamp or null", field)
 	}
 	return &text, true, nil
 }
@@ -174,7 +174,7 @@ func parseReplacesAnswer(raw json.RawMessage) (*time.Time, error) {
 	}
 	value, err := time.Parse(time.RFC3339Nano, *text)
 	if err != nil {
-		return nil, errorf(http.StatusBadRequest, "INVALID_ANSWER", "expected_answer_at must be an RFC3339 timestamp or null")
+		return nil, errorf(apicode.InvalidAnswer, "expected_answer_at must be an RFC3339 timestamp or null")
 	}
 	return &value, nil
 }
@@ -184,7 +184,7 @@ type answerAskInput struct {
 	Selected []string `json:"selected"`
 	Text     *string  `json:"text"`
 	// ExpectedEditedAt is required: an answer names the wording it answers, and a body without
-	// the field is refused (400 ASK_REVISION_REQUIRED, answerAsk below). Null is the
+	// the field is refused (400 ASK_REVISION_REQUIRED, recordAnswer below). Null is the
 	// precondition that the ask has never been edited, so the field is required and nullable
 	// both, which is why the handler holds the bytes unparsed (rawFieldSchemas).
 	ExpectedEditedAt json.RawMessage `json:"expected_edited_at" required:"true"`
@@ -197,40 +197,55 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !requireUUIDPath(w, r, "ask") {
+	if !requireUUIDPath(w, r, "ask", apicode.AskIDInput) {
 		return
 	}
 	var input answerAskInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	// The acting session the body names, where the caller's credential proved none: this route
-	// has always decoded an actor, and a personal token names its session nowhere else.
-	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
+	ask, ok := s.recordAnswer(w, r, actor, input, nil)
+	if !ok {
 		return
+	}
+	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+}
+
+// recordAnswer answers the ask the path names as input says, for actor, once the route has read
+// its body: the first answer, or a change of the current one by the person who gave it, through
+// the transition engine (closeAsk), with an approval's reviews. POST /api/v1/asks/{id}/answer
+// (answerAsk) and PUT /api/v2/asks/{id}/state with state answered (putAskStateV2) each answer it
+// in their own shape, the /api/v2 route reading its own on the write's transaction (readBack). It
+// writes a refusal itself and answers false.
+func (s *server) recordAnswer(w http.ResponseWriter, r *http.Request, actor model.Actor, input answerAskInput, readBack askReadBack) (model.Ask, bool) {
+	// The acting session the body names, where the caller's credential proved none: both routes
+	// decode an actor, and a personal token names its session nowhere else.
+	actor, ok := actSessionFromBody(w, r, actor, input.Actor)
+	if !ok {
+		return model.Ask{}, false
 	}
 	// Before the transition opens its own transaction: an answer's text rides the ask.answered
 	// event beside the ask's wording, so it takes the same bound.
 	if input.Text != nil {
 		if length := itemblocks.Units16(*input.Text); length > contracts.DispatchEventBodyMax {
-			capExceeded(w, "text", length, contracts.DispatchEventBodyMax)
-			return
+			capExceeded(w, r, "text", length, contracts.DispatchEventBodyMax)
+			return model.Ask{}, false
 		}
 	}
 	expectedEditedAt, provided, err := parseAnswerPrecondition("expected_edited_at", input.ExpectedEditedAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	if !provided {
-		writeError(w, "ASK_REVISION_REQUIRED", http.StatusBadRequest, "expected_edited_at is required")
-		return
+		writeError(w, r, apicode.AskRevisionRequired, "expected_edited_at is required")
+		return model.Ask{}, false
 	}
 	replacesAnswer, err := parseReplacesAnswer(input.ExpectedAnswerAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	transition := answerTransition(actor, input.Selected, input.Text, answerOptions{
 		Revision:       &answerRevision{EditedAt: expectedEditedAt},
@@ -263,21 +278,18 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			return s.deps.Docs.SetBlockAttributes(ctx, blockArtifact, *ask.BlockID, attributes, actor)
 		},
 	})
-	// Answering an approval request approves its document, so it needs the approve scope beside
-	// the person scope the table declares for this route. The check cannot sit at the gate: an
-	// ask's kind is known only once its row is read, and reading it before the transaction would
-	// decide on a row another writer could still move. It sits here instead, inside Apply, under
-	// the ask's owner lock (requireOpenOwner in transitionAskTx), which every writer of an ask
-	// takes first and which the transaction holds until Commit writes the queued answer, so the
-	// kind checked is the kind answered; the refusal is the gate's own (missingScopeError), which
-	// writeHandlerError gives the challenge header.
-	recordAnswer := transition.Apply
+	// The approve scope an approval request's answer needs (approvalAnswerRefusal) cannot be
+	// checked at the gate: an ask's kind is known only once its row is read, and reading it before
+	// the transaction would decide on a row another writer could still move. It sits here instead,
+	// inside Apply, under the ask's owner lock (requireOpenOwner in transitionAskTx), which every
+	// writer of an ask takes first and which the transaction holds until Commit writes the queued
+	// answer, so the kind checked is the kind answered.
+	applyAnswer := transition.Apply
 	transition.Apply = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
-		if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
-			return model.Ask{}, missingScopeError(model.ScopeApprove,
-				"this request's credential does not hold the approve scope, which answering an approval request requires")
+		if err := approvalAnswerRefusal(ask, actor); err != nil {
+			return model.Ask{}, err
 		}
-		return recordAnswer(ctx, tx, ledger, ask)
+		return applyAnswer(ctx, tx, ledger, ask)
 	}
 	// An approval ask's answer is a review of every document it names, each pinned to the version
 	// its question named: that document's latest settled one, which every version write moves the
@@ -304,12 +316,26 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		}
 		return reviewEvents, nil
 	}
-	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, transition)
+	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, transition, readBack)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
-	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+	return ask, true
+}
+
+// approvalAnswerRefusal is the refusal of actor's answer to ask, and nil where actor may answer it:
+// answering an approval request approves its document, so it needs the approve scope beside the
+// person scope the answer's routes declare. The refusal is the gate's own (missingScopeError),
+// which writeHandlerError gives the challenge header. recordAnswer holds every answer to it, and
+// PUT /api/v2/asks/{id}/state holds the answer it would answer as it stands (putAskStateV2), so
+// the no-op tells no caller that may not approve that its approval stands.
+func approvalAnswerRefusal(ask model.Ask, actor model.Actor) error {
+	if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
+		return missingScopeError(model.ScopeApprove,
+			"this request's credential does not hold the approve scope, which answering an approval request requires")
+	}
+	return nil
 }
 
 // resolveAskInput is the body of POST /api/v1/asks/{id}/resolve.
@@ -323,43 +349,57 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	if !requireUUIDPath(w, r, "ask") {
+	if !requireUUIDPath(w, r, "ask", apicode.AskIDInput) {
 		return
 	}
 	var input resolveAskInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
-	kind := strings.TrimSpace(input.Kind)
-	reason := strings.TrimSpace(input.Reason)
-	if kind != "retracted" && kind != "resolved" {
-		writeError(w, "INVALID_RESOLUTION", http.StatusBadRequest,
-			`resolution kind must be "retracted" or "resolved", not `+strconv.Quote(kind))
+	ask, ok := s.recordResolution(w, r, actor, input.Kind, input.Reason, nil)
+	if !ok {
 		return
 	}
+	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+}
+
+// recordResolution resolves or retracts the ask the path names without an answer, for actor, once
+// the route has read its body: kind is retracted or resolved, and reason is required, held to the
+// event's bound and to no opening of the settlement's own. POST /api/v1/asks/{id}/resolve
+// (resolveAsk) and PUT /api/v2/asks/{id}/state with state resolved or retracted (putAskStateV2)
+// each answer it in their own shape, the /api/v2 route reading its own on the write's transaction
+// (readBack). It writes a refusal itself and answers false.
+func (s *server) recordResolution(w http.ResponseWriter, r *http.Request, actor model.Actor, kind, reason string, readBack askReadBack) (model.Ask, bool) {
+	kind = strings.TrimSpace(kind)
+	reason = strings.TrimSpace(reason)
+	if kind != "retracted" && kind != "resolved" {
+		writeError(w, r, apicode.InvalidResolution,
+			`resolution kind must be "retracted" or "resolved", not `+strconv.Quote(kind))
+		return model.Ask{}, false
+	}
 	if reason == "" {
-		writeError(w, "INVALID_RESOLUTION", http.StatusBadRequest, "resolution requires a kind and reason")
-		return
+		writeError(w, r, apicode.InvalidResolution, "resolution requires a kind and reason")
+		return model.Ask{}, false
 	}
 	// A resolution's reason rides the ask.resolved event, so it takes the event's bound; before
 	// the transition opens its transaction, so nothing is written.
 	if length := itemblocks.Units16(reason); length > contracts.DispatchEventBodyMax {
-		capExceeded(w, "reason", length, contracts.DispatchEventBodyMax)
-		return
+		capExceeded(w, r, "reason", length, contracts.DispatchEventBodyMax)
+		return model.Ask{}, false
 	}
 	// Settlement's own retraction reason is how a resolution written before this rule is
 	// recognised as settlement's, and such a resolution is restored when its block comes back.
 	// A caller writing that reason would have their retract undone, so it is not theirs to
 	// write.
 	if strings.HasPrefix(reason, docs.SettlementRetractionReason) {
-		writeError(w, "INVALID_RESOLUTION", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidResolution,
 			"reason may not begin with "+strconv.Quote(docs.SettlementRetractionReason)+", which marks a retraction the document's settlement wrote")
-		return
+		return model.Ask{}, false
 	}
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
@@ -371,12 +411,12 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 			// is queued there, after the block's writes.
 			return docs.WriteAskResolution(ctx, tx, ask, kind, reason, actor)
 		},
-	})
+	}, readBack)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
-	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+	return ask, true
 }
 
 // writeClosedBlockState writes a closed block ask's state into its document, as the resolve and
@@ -416,18 +456,33 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !requireUUIDPath(w, r, "ask") {
+	if !requireUUIDPath(w, r, "ask", apicode.AskIDInput) {
 		return
 	}
 	var input declineAskInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	ask, ok := s.recordDecline(w, r, actor, input, nil)
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+}
+
+// recordDecline declines the ask the path names for actor, a person, once the route has read its
+// body: the ask resolves with the kind declined, the note as its reason beside the words Dispatch
+// writes for the asking agent. POST /api/v1/asks/{id}/decline (declineAsk) and PUT
+// /api/v2/asks/{id}/state with state declined (putAskStateV2) each answer it in their own shape,
+// the /api/v2 route reading its own on the write's transaction (readBack). It writes a refusal
+// itself and answers false.
+func (s *server) recordDecline(w http.ResponseWriter, r *http.Request, actor model.Actor, input declineAskInput, readBack askReadBack) (model.Ask, bool) {
 	// The acting session the body names, where the caller's credential proved none, as the
 	// answer route reads it: a personal token names its session nowhere else.
-	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
-		return
+	actor, ok := actSessionFromBody(w, r, actor, input.Actor)
+	if !ok {
+		return model.Ask{}, false
 	}
 	note := ""
 	if input.Note != nil {
@@ -436,8 +491,8 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	// The note is the resolution's reason and rides the ask.resolved event, so it takes the
 	// event's bound; before the transition opens its transaction, so nothing is written.
 	if length := itemblocks.Units16(note); length > contracts.DispatchEventBodyMax {
-		capExceeded(w, "note", length, contracts.DispatchEventBodyMax)
-		return
+		capExceeded(w, r, "note", length, contracts.DispatchEventBodyMax)
+		return model.Ask{}, false
 	}
 	// The resolve route refuses a reason opening with docs.SettlementRetractionReason because
 	// such a reason marks a retraction settlement itself wrote, which returning the block undoes
@@ -447,13 +502,13 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
 		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask) (model.Ask, error) {
-			// The kind is refused here, inside Apply, for the reason answerAsk states for its
+			// The kind is refused here, inside Apply, for the reason recordAnswer states for its
 			// own kind-dependent refusal: an ask's kind is known only once its row is read, and
 			// a read before the transaction would decide on a row another writer could still
 			// move. Under the ask's owner lock, which transitionAskTx takes before it reads the
 			// row (requireOpenOwner), the kind refused is the kind this write would close.
 			if ask.Kind == "approval" {
-				return model.Ask{}, errorf(http.StatusConflict, "ASK_NOT_DECLINABLE",
+				return model.Ask{}, errorf(apicode.AskNotDeclinable,
 					"an approval request is answered with %s or %s; it is not declined",
 					docs.ApprovalOptionApprove, docs.ApprovalOptionRequestChanges)
 			}
@@ -462,15 +517,18 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 			}
 			return docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionDeclined, note, actor)
 		},
-	})
+	}, readBack)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
-	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+	return ask, true
 }
 
-func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, transition askTransition) (model.Ask, error) {
+// closeAsk applies transition to the open ask id names, for actor, in a transaction of its own
+// (closeAskTx), and commits it; readBack reads on that transaction what the route answers of the
+// ask once the write phase has written the transition and before the commit (askReadBack.commit).
+func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, transition askTransition, readBack askReadBack) (model.Ask, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return model.Ask{}, err
@@ -482,7 +540,7 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 	if err != nil {
 		return model.Ask{}, err
 	}
-	if err := ledger.Commit(ctx); err != nil {
+	if err := readBack.commit(ctx, ledger, ask.ID); err != nil {
 		return model.Ask{}, err
 	}
 	s.publish(ctx, appendedEvents(events...)...)
@@ -560,21 +618,21 @@ func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 	switch ask.State {
 	case "open":
 		if transition.ReplacesAnswer != nil {
-			return model.Ask{}, errorf(http.StatusConflict, "ASK_ANSWER_CHANGED", "the answer changed after you reviewed it; review the current answer and confirm your change")
+			return model.Ask{}, errorf(apicode.AskAnswerChanged, "the answer changed after you reviewed it; review the current answer and confirm your change")
 		}
 	case "answered":
 		switch {
 		case transition.EventType != "ask.answered":
-			return model.Ask{}, errorf(http.StatusConflict, "ASK_ANSWERED", "ask is already answered")
+			return model.Ask{}, errorf(apicode.AskAnswered, "ask is already answered")
 		case transition.ReplacesAnswer == nil:
 			// A first answer to an ask someone answered first.
-			return model.Ask{}, errorf(http.StatusConflict, "ASK_CLOSED", "ask is already answered")
+			return model.Ask{}, errorf(apicode.AskClosed, "ask is already answered")
 		}
 		// A change to the current answer, which Apply checks is the answer the human reviewed.
 	case "resolved":
-		return model.Ask{}, errorf(http.StatusConflict, "ASK_RESOLVED", "ask is already resolved")
+		return model.Ask{}, errorf(apicode.AskResolved, "ask is already resolved")
 	default:
-		return model.Ask{}, errorf(http.StatusInternalServerError, "ASK_STATE_INVALID", "ask has an invalid state")
+		return model.Ask{}, errorf(apicode.AskStateInvalid, "ask has an invalid state")
 	}
 	return transition.Apply(ctx, tx, ledger, ask)
 }

@@ -211,6 +211,24 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	}},
 }
 
+// itemUnion is a request type whose JSON is a union of arms its Go type cannot state
+// (itemUnions): Key is the member whose value picks the arm, and Arms the arm types by the values
+// that pick them.
+type itemUnion struct {
+	Key  string
+	Arms map[string]any
+}
+
+// itemUnions names the request types whose JSON carries, beside the type's own members, the
+// members of the arm its key picks, which the handler reads out of the bytes rather than through
+// a field: an item of PATCH /api/v2/me/marks is {kind, id, ...fields}, its fields its kind's mark
+// write (markArms), read by markItemWrite as PATCH /api/v2/me/marks/{kind}/{id} reads its body by
+// the path's kind. The document declares such a type as that union (writeItemUnions). An entry
+// naming a type neither document declares fails the emit.
+var itemUnions = map[reflect.Type]itemUnion{
+	reflect.TypeOf(markItemV2{}): {Key: "kind", Arms: markArms},
+}
+
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
 var (
 	openAPITimestamp = map[string]any{

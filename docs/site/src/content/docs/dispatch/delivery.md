@@ -121,15 +121,17 @@ shipped a pull request when it shipped any pull request merged in the window, wh
 
 ## For agents
 
-`GET /api/v1/delivery/measures?from=<RFC 3339>&to=<RFC 3339>` answers the same figures, the
+`GET /api/v2/delivery/measures?from=<RFC 3339>&to=<RFC 3339>` answers the same figures, the
 targets, whether each is met, and the unowned P0 issues. It takes the timeline's parameters:
 `from` and `to` (the last seven days when both are left out, at most 84 days apart), `q` for the
 search, and any filter repeated for several values, such as `&repo=acme/widgets&priority=P0`. Any
-signed-in person or agent token reads it. `GET /api/v1/delivery/timeline` carries the same
+signed-in person or agent token reads it. `GET /api/v2/delivery/timeline` carries the same
 answer as its `measures` for its own window and filters, so an agent reading both needs only the
 timeline. The routes and the page's live updates compute from the same stored facts with the same
 code, so they agree. `flags_source` says whether recorded flags fed the change failure rate;
-`none` means no flags are recorded yet.
+`none` means no flags are recorded yet. The delivery routes answer alike at the same paths under
+the deprecated `/api/v1` until a deployment ends it
+([The HTTP API](/legion/dispatch/running-dispatch/#the-http-api)).
 
 `GET /ws/live` is the one websocket each browser tab keeps open for all of its live views. A
 signed-in person or agent token may open it; only a person may subscribe to an agent conversation.
@@ -246,9 +248,11 @@ and one that is not a number are refused; and the usage error's text after
 A session group's Parent agent value is `group:<id>`, so a rename keeps every filter and link that
 names it; the timeline's `session_groups` lists every group with its name and sessions, beside
 `session_titles` and `session_pr_counts` for the window's sessions. `POST
-/api/v1/delivery/session-groups` (`{name, sessions}`) makes a group, `PATCH
-/api/v1/delivery/session-groups/{id}` (`{name?, add?, remove?}`) changes one, and `DELETE` removes
-it. Any signed-in person or agent token may write them. A session another group holds is `409
+/api/v2/session-groups` (`{name, sessions}`) makes a group, `PATCH
+/api/v2/session-groups/{id}` (`{name?, add?, remove?}`) changes one, and `DELETE` removes it; a
+`PATCH` or `DELETE` whose id names no group answers `404 SESSION_GROUP_NOT_FOUND`. `/api/v1`
+serves them as `/api/v1/delivery/session-groups` until it ends. Any signed-in person or agent token
+may write them. A session another group holds is `409
 SESSION_IN_GROUP`, a name another group has `409 SESSION_GROUP_NAME_TAKEN`, and a name that is the
 title of a session outside the group `409 SESSION_GROUP_NAME_IS_SESSION_TITLE`, each naming what it
 refers to. The [HTTP API reference](/legion/dispatch/reference/api/) lists them with every other
@@ -297,6 +301,6 @@ of its latest failure. A cancelled run's jobs are not counted, and neither is th
 named in **Settings → Delivery timeline**, which only reports the other jobs' result and fails
 whenever any of them does, nor a notification or guard step.
 
-For agents, `GET /api/v1/delivery/pipeline` answers the same numbers. Its optional `at`
+For agents, `GET /api/v2/delivery/pipeline` answers the same numbers. Its optional `at`
 (RFC 3339) names the day the seven days end on and the moment the failing jobs look back from;
 left out, it is now. Any signed-in person or agent token reads it.

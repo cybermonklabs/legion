@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -206,8 +207,8 @@ func TestReopenCommentClearsResolutionAndReprojects(t *testing.T) {
 	}
 
 	forbidden := sessionRequest(t, handler, http.MethodPost, "/api/v1/comments/"+root.ID+"/reopen", map[string]any{"actor": sessionActor()})
-	if forbidden.Code != http.StatusForbidden || !strings.Contains(forbidden.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's reopen: status=%d body=%s, want 403 %s", forbidden.Code, forbidden.Body.String(), codeScopeRequired)
+	if forbidden.Code != http.StatusForbidden || !strings.Contains(forbidden.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's reopen: status=%d body=%s, want 403 %s", forbidden.Code, forbidden.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 	reopened := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+root.ID+"/reopen", nil, "bob")
 	if reopened.Code != http.StatusOK {
@@ -643,8 +644,8 @@ func TestEditCommentIsAuthorOnly(t *testing.T) {
 	bearer := sessionRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+comment.ID, map[string]any{
 		"body": "agent edit", "actor": sessionActor(),
 	})
-	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's edit: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
+	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's edit: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 	stored := readThreadComment(t, handler, comment.ID)
 	if stored.Body != "after edit" {

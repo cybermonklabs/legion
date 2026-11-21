@@ -1358,7 +1358,7 @@ func TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
 		if !slices.Contains(reached, topicOf(reader.session)) {
 			t.Fatalf("the second reply reached %v, want %s's own topic", reached, reader.session)
 		}
-		listed := f.list(t, reader.session, "")
+		listed := f.listInBoth(t, reader.session)
 		if listed.Total != 2 || len(listed.Items) != 2 || listed.Items[0].ID != second || listed.Items[1].ID != first {
 			t.Fatalf("%s's answers = %+v, want the second reply then the first", reader.session, listed)
 		}
@@ -1383,7 +1383,7 @@ func TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
 	if got := copyAskSessions(t, thirdCopy); !slices.Equal(got, owners) {
 		t.Fatalf("the third reply's copy names %v as the ask's own sessions, want %v: %s wrote the ask", got, owners, askSessionA)
 	}
-	listed := f.list(t, askSessionA, "")
+	listed := f.listInBoth(t, askSessionA)
 	if listed.Total != 2 || len(listed.Items) != 2 || listed.Items[0].ID != third || listed.Items[1].ID != first {
 		t.Fatalf("%s's answers = %+v, want the third reply then the first", askSessionA, listed)
 	}
@@ -1535,7 +1535,7 @@ func TestAnAnswerAndADeclineAreTheSessionsOwnOnlyForItsAskerAndFollowers(t *test
 		{askSessionC, model.SessionAnswerRelationAnsweredYourAsk, model.SessionAnswerRelationDeclinedYourAsk, model.DeclineDispatchWords},
 		{askSessionB, model.SessionAnswerRelationAnsweredAnAsk, model.SessionAnswerRelationDeclinedAnAsk, ""},
 	} {
-		listed := f.list(t, reader.session, "")
+		listed := f.listInBoth(t, reader.session)
 		// Newest first: the decline, then the answer.
 		if listed.Total != 2 || len(listed.Items) != 2 || listed.Items[0].ID != declinedID || listed.Items[1].ID != answeredID {
 			t.Fatalf("%s's answers = %+v, want the decline of %s then the answer to %s", reader.session, listed, declinedID, answeredID)
@@ -1553,4 +1553,31 @@ func TestAnAnswerAndADeclineAreTheSessionsOwnOnlyForItsAskerAndFollowers(t *test
 				reader.session, declined.Kind, declined.Relation, declined.Text, declined.DispatchWords, declined.Ask, declinedID, reader.declined, reader.words)
 		}
 	}
+}
+
+// listInBoth is session's list as f.list reads it with no query, failing unless GET
+// /api/v2/agents/{session_id}/answers, with its own defaults, answers the same items and total:
+// both read sessionanswers.List, so each tells the session the same thing about whose ask an
+// item is on.
+func (f *answersFixture) listInBoth(t *testing.T, session string) model.SessionAnswersResponse {
+	t.Helper()
+	listed := f.list(t, session, "")
+	response := dispatchRequest(t, f.handler, http.MethodGet, "/api/v2/agents/"+session+"/answers", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("list %s answers on /api/v2: status=%d body=%s", session, response.Code, response.Body.String())
+	}
+	paged := decodeBody[sessionAnswersV2](t, response)
+	v1Items, err := json.Marshal(listed.Items)
+	if err != nil {
+		t.Fatalf("encode %s's /api/v1 items: %v", session, err)
+	}
+	v2Items, err := json.Marshal(paged.Items)
+	if err != nil {
+		t.Fatalf("encode %s's /api/v2 items: %v", session, err)
+	}
+	if paged.Total != listed.Total || !bytes.Equal(v2Items, v1Items) {
+		t.Fatalf("%s's /api/v2 answers = total %d, items %s; want the /api/v1 total %d and items %s",
+			session, paged.Total, v2Items, listed.Total, v1Items)
+	}
+	return listed
 }

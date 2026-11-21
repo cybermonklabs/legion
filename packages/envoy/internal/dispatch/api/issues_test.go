@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -872,8 +874,8 @@ func TestListIssuesPinnedFilterAndLabels(t *testing.T) {
 	// `?pinned=true` reads the calling person's pins, so the shared token, which holds no scope,
 	// is turned away.
 	if bearer := agentRequest(t, handler, http.MethodGet, "/api/v1/issues?pinned=true", nil, "agent-token"); bearer.Code != http.StatusForbidden ||
-		!strings.Contains(bearer.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's pinned issues: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
+		!strings.Contains(bearer.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's pinned issues: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 }
 
@@ -1100,6 +1102,43 @@ func TestIssueLabelsRejectInvalidInput(t *testing.T) {
 		}, "alice")
 		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"LABELS_INPUT"`) {
 			t.Fatalf("reject labels %#v: status=%d body=%s", labels, response.Code, response.Body.String())
+		}
+	}
+}
+
+// A labels_add counts the labels the issue holds and every label it names before a label the
+// issue already holds is folded away, as c8a44f97's merge counted them (normalizeIssueLabels over
+// both lists): a labels_add of a held label on an issue at twenty labels is 400 LABELS_INPUT with
+// the count, on both versions.
+func TestALabelsAddCountsAHeldLabelBeforeFoldingIt(t *testing.T) {
+	handler := newTestHandler(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	labels := make([]string, 20)
+	for index := range labels {
+		labels[index] = fmt.Sprintf("label-%02d", index+1)
+	}
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "title": "Twenty labels", "labels": labels,
+	}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
+	}
+	issue := decodeBody[model.Issue](t, created)
+	if len(issue.Labels) != 20 {
+		t.Fatalf("the issue holds %d labels, want 20", len(issue.Labels))
+	}
+	const want = "labels is 1 over the 20-item limit (21/20)"
+	for _, version := range []string{"v1", "v2"} {
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/"+version+"/issues/"+issue.Key, map[string]any{
+			"labels_add": []string{"LABEL-01"},
+		}, "alice")
+		if code, text := refusalOf(t, response); response.Code != http.StatusBadRequest || code != "LABELS_INPUT" || text != want {
+			t.Errorf("%s: a labels_add of a held label on an issue at twenty labels answered %d %s %q, want 400 LABELS_INPUT %q",
+				version, response.Code, code, text, want)
 		}
 	}
 }

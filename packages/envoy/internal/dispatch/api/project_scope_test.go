@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // TestEveryMutatingRouteIsClassed: every mutating row of the table declares what its write
@@ -43,7 +45,7 @@ func TestEveryMutatingRouteIsClassed(t *testing.T) {
 
 	t.Run("a project row whose address names no object fails it too", func(t *testing.T) {
 		undecidable := served.undecidableWrites([]apiRoute{
-			{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/widgets/{id}/paint", Auth: authAny}, Scope: scopeProject},
+			{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/widgets/{id}/paint", Auth: authAny, Scope: scopeProject}},
 		})
 		if len(undecidable) != 1 || !strings.Contains(undecidable[0], "names no object") {
 			t.Fatalf("the walk answered %q, want the unresolvable project row named", undecidable)
@@ -264,8 +266,8 @@ func TestAProjectScopedTokenWritesOnlyItsOwnProject(t *testing.T) {
 					t.Fatalf("a write to %s: status=%d body=%s, want 403", other.key, refused.Code, refused.Body.String())
 				}
 				refusal := decodeBody[refusalAnswer](t, refused)
-				if refusal.Code != codeProjectScope {
-					t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
+				if refusal.Code != apicode.ProjectScope.V1Name() {
+					t.Fatalf("refusal = %+v, want %s", refusal, apicode.ProjectScope.V1Name())
 				}
 				if !strings.Contains(refusal.Error, own.key) || !strings.Contains(refusal.Error, other.key) {
 					t.Fatalf("refusal %q names neither the project the credential covers (%s) nor the project the write belongs to (%s)",
@@ -281,7 +283,7 @@ func TestAProjectScopedTokenWritesOnlyItsOwnProject(t *testing.T) {
 						own.key, answered.Code, answered.Body.String(), write.handlerAnswer)
 				}
 				if answered.Code == http.StatusForbidden {
-					if blocked := decodeBody[refusalAnswer](t, answered); blocked.Code == codeProjectScope {
+					if blocked := decodeBody[refusalAnswer](t, answered); blocked.Code == apicode.ProjectScope.V1Name() {
 						t.Fatalf("the token's own project was refused: %+v", blocked)
 					}
 				}
@@ -332,8 +334,8 @@ func TestATargetThatResolvesToNoProjectIsRefusedToAProjectScopedToken(t *testing
 				t.Fatalf("status=%d body=%s, want 403 from the project check", refused.Code, refused.Body.String())
 			}
 			refusal := decodeBody[refusalAnswer](t, refused)
-			if refusal.Code != codeProjectScope {
-				t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
+			if refusal.Code != apicode.ProjectScope.V1Name() {
+				t.Fatalf("refusal = %+v, want %s", refusal, apicode.ProjectScope.V1Name())
 			}
 			if !strings.Contains(refusal.Error, brokerTestProject) {
 				t.Fatalf("refusal %q does not name the project the credential covers (%s)", refusal.Error, brokerTestProject)
@@ -350,7 +352,7 @@ func TestATargetThatResolvesToNoProjectIsRefusedToAProjectScopedToken(t *testing
 					answered.Code, answered.Body.String())
 			}
 			if answered.Code == http.StatusForbidden {
-				if blocked := decodeBody[refusalAnswer](t, answered); blocked.Code == codeProjectScope {
+				if blocked := decodeBody[refusalAnswer](t, answered); blocked.Code == apicode.ProjectScope.V1Name() {
 					t.Fatalf("a caller that names no project was refused by project scope: %+v", blocked)
 				}
 			}
@@ -375,8 +377,8 @@ func TestADeploymentWriteIsRefusedToAProjectScopedToken(t *testing.T) {
 		t.Fatalf("a project create under a project-scoped token: status=%d body=%s, want 403", refused.Code, refused.Body.String())
 	}
 	refusal := decodeBody[refusalAnswer](t, refused)
-	if refusal.Code != codeProjectScopeDeployment {
-		t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScopeDeployment)
+	if refusal.Code != apicode.ProjectScopeDeployment.V1Name() {
+		t.Fatalf("refusal = %+v, want %s", refusal, apicode.ProjectScopeDeployment.V1Name())
 	}
 	if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "POST /api/v1/projects") {
 		t.Fatalf("refusal %q names neither the project the credential covers nor the route", refusal.Error)
@@ -450,8 +452,8 @@ func TestAProjectScopedTokenCreatesIssuesOnlyInItsOwnProject(t *testing.T) {
 		t.Fatalf("creating an issue in another project: status=%d body=%s, want 403", refused.Code, refused.Body.String())
 	}
 	refusal := decodeBody[refusalAnswer](t, refused)
-	if refusal.Code != codeProjectScope || !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "OTH") {
-		t.Fatalf("refusal = %+v, want %s naming %s and OTH", refusal, codeProjectScope, brokerTestProject)
+	if refusal.Code != apicode.ProjectScope.V1Name() || !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "OTH") {
+		t.Fatalf("refusal = %+v, want %s naming %s and OTH", refusal, apicode.ProjectScope.V1Name(), brokerTestProject)
 	}
 
 	created := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{

@@ -26,11 +26,11 @@ const maxQueuedConditionalEdits = 32
 // admission never waits on one of those. The other first keys of the two-key space are the copy
 // locks' (copiedAsksLockNamespace), the owner locks' (store.OwnerLockNamespace), the owner lock
 // gate's (store.OwnerLockGateNamespace), the loop leases' (duty.leaseNamespace), the test hooks'
-// (the api package's testHookLockNamespace), the issue
-// dependencies' (api's lockProjectIssueDependencies), the deployment's own issue dependencies'
-// (api's lockDeploymentIssueDependencies), one repository mapping's write (api's
-// lockRepoProjectWrite) and the rename graph's own (api's refuseRepoRenameChain), none of them
-// this one.
+// (the api package's testHookLockNamespace), a person's marks' (the api package's
+// personMarksLockNamespace), the issue dependencies' (api's lockProjectIssueDependencies), the
+// deployment's own issue dependencies' (api's lockDeploymentIssueDependencies), one repository
+// mapping's write (api's lockRepoProjectWrite) and the rename graph's own (api's
+// refuseRepoRenameChain), none of them this one.
 const conditionalEditQueueLockNamespace int32 = 0x51554555
 
 // conditionalEditReleaseTimeout bounds the write of a process's count when one of its conditional

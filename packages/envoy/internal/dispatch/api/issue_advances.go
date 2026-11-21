@@ -15,26 +15,15 @@ package api
 import (
 	"context"
 	"errors"
-	"net/http"
 	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
-)
-
-const (
-	// codeAdvancesInput refuses an `advances` input no relation can be written from, as
-	// BLOCKED_BY_INPUT refuses a blocker list beside it: more ids than the cap holds, an id no
-	// priority row names, a priority whose state is gone, and a relation whose issue does not
-	// exist. Each of the four is a 400 naming the key it refuses.
-	codeAdvancesInput = "ADVANCES_INPUT"
-	// codeAdvancesRevision refuses a write the revision rule does not let through: the one
-	// refusal of this field that is not a 400.
-	codeAdvancesRevision = "ADVANCES_REVISION"
 )
 
 // normalizeIssueAdvances bounds and deduplicates the priority ids of one write, before any row
@@ -43,7 +32,7 @@ const (
 // issue five deep pass the cap without writing anything.
 func normalizeIssueAdvances(ids []string) ([]string, error) {
 	if len(ids) > contracts.MaxIssueAdvances {
-		return nil, countExceededError(codeAdvancesInput, "advances", len(ids), contracts.MaxIssueAdvances)
+		return nil, countExceededError(apicode.AdvancesInput, "advances", len(ids), contracts.MaxIssueAdvances)
 	}
 	slices.Sort(ids)
 	return slices.Compact(ids), nil
@@ -84,7 +73,7 @@ func ownAdvances(entries []model.IssueAdvance) []string {
 func refuseAdvancesRevision(held []string, revision int64, carried *int64, ids []string) error {
 	if carried != nil {
 		if *carried != revision {
-			return errorf(http.StatusConflict, codeAdvancesRevision,
+			return errorf(apicode.AdvancesRevision,
 				"advances revision %d is not the revision this issue holds, %d: read the issue again and write the set you mean against %d",
 				*carried, revision, revision)
 		}
@@ -102,7 +91,7 @@ func refuseAdvancesRevision(held []string, revision int64, carried *int64, ids [
 		}
 	}
 	if acts > 1 {
-		return errorf(http.StatusConflict, codeAdvancesRevision,
+		return errorf(apicode.AdvancesRevision,
 			"this write changes %d of the issue's advances relations and carries no revision: a write with no revision asserts or retracts one relation at a time, and a whole-set write carries the revision the read it is answering returned, which is %d here",
 			acts, revision)
 	}
@@ -157,7 +146,7 @@ func requireIssueForAdvances(ctx context.Context, tx pgx.Tx, issue string) error
 	var exists bool
 	err := tx.QueryRow(ctx, `select true from issues where key = $1`, issue).Scan(&exists)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return errorf(http.StatusBadRequest, codeAdvancesInput, "advances issue %s not found", issue)
+		return errorf(apicode.AdvancesInput, "advances issue %s not found", issue)
 	}
 	return err
 }
@@ -170,10 +159,10 @@ func requireLivePriority(ctx context.Context, tx pgx.Tx, id string) error {
 		return err
 	}
 	if !held {
-		return errorf(http.StatusBadRequest, codeAdvancesInput, "advances priority %s not found", id)
+		return errorf(apicode.AdvancesInput, "advances priority %s not found", id)
 	}
 	if node.State != prioritystore.StateLive {
-		return errorf(http.StatusBadRequest, codeAdvancesInput, "advances priority %s is gone", id)
+		return errorf(apicode.AdvancesInput, "advances priority %s is gone", id)
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -158,9 +159,9 @@ func TestCommentAndAskReadsStandWhenTheAnchorDocumentCannotBeRead(t *testing.T) 
 		store docs.VersionedStore
 		want  string
 	}{
-		{"the store cannot load the document", failingLoadStore{VersionedStore: docs.NewPgVersioned(database)}, codeDocServiceUnavailable},
-		{"the live tree leaves the schema", outsideSchemaStore{VersionedStore: docs.NewPgVersioned(database)}, codeDocSchema},
-		{"the live tree holds an element this build does not know", outsideSchemaStore{VersionedStore: docs.NewPgVersioned(database), element: docs.UnknownElementForTest}, codeDocNewerContent},
+		{"the store cannot load the document", failingLoadStore{VersionedStore: docs.NewPgVersioned(database)}, apicode.DocServiceUnavailable.V1Name()},
+		{"the live tree leaves the schema", outsideSchemaStore{VersionedStore: docs.NewPgVersioned(database)}, apicode.DocSchema.V1Name()},
+		{"the live tree holds an element this build does not know", outsideSchemaStore{VersionedStore: docs.NewPgVersioned(database), element: docs.UnknownElementForTest}, apicode.DocNewerContent.V1Name()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			reader := readingServer(t, database, test.store, nil)
@@ -225,8 +226,8 @@ func TestAnAnchoredReadDecidesCancellationByItsOwnRequest(t *testing.T) {
 		if err := json.Unmarshal(decodeBody[map[string]json.RawMessage](t, response)[read.record], &record); err != nil {
 			t.Fatalf("live GET %s: decode %s: %v", read.path, read.record, err)
 		}
-		if _, carried := record["anchor_block"]; carried || string(record["anchor_block_error"]) != `"`+codeDocServiceUnavailable+`"` {
-			t.Fatalf("live GET %s: body=%s, want no anchor_block and anchor_block_error %q", read.path, body, codeDocServiceUnavailable)
+		if _, carried := record["anchor_block"]; carried || string(record["anchor_block_error"]) != `"`+apicode.DocServiceUnavailable.V1Name()+`"` {
+			t.Fatalf("live GET %s: body=%s, want no anchor_block and anchor_block_error %q", read.path, body, apicode.DocServiceUnavailable.V1Name())
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -237,8 +238,8 @@ func TestAnAnchoredReadDecidesCancellationByItsOwnRequest(t *testing.T) {
 		request.Header.Set("X-Dispatch-User", "alice")
 		cancelled := httptest.NewRecorder()
 		gone.ServeHTTP(cancelled, request)
-		if cancelled.Code != http.StatusInternalServerError || !strings.Contains(cancelled.Body.String(), `"code":"`+codeInternal+`"`) {
-			t.Fatalf("cancelled GET %s: status=%d body=%s, want 500 %s", read.path, cancelled.Code, cancelled.Body.String(), codeInternal)
+		if cancelled.Code != http.StatusInternalServerError || !strings.Contains(cancelled.Body.String(), `"code":"`+apicode.InternalError.V1Name()+`"`) {
+			t.Fatalf("cancelled GET %s: status=%d body=%s, want 500 %s", read.path, cancelled.Code, cancelled.Body.String(), apicode.InternalError.V1Name())
 		}
 	}
 }
@@ -278,12 +279,12 @@ func TestAnAnchoredReadNamesADocumentErrorAsTheBlockRouteDoes(t *testing.T) {
 		status int
 		code   string
 	}{
-		{"a room settlement's schema refusal failed", failedRoom(outsideSchema), http.StatusServiceUnavailable, codeDocServiceUnavailable},
-		{"a room failed by an error that wraps a closed issue's refusal", failedRoom(fmt.Errorf("ygo/websocket: inject refused: %w", docs.ErrIssueClosed)), http.StatusServiceUnavailable, codeDocServiceUnavailable},
-		{"a room failed by an invalid operation's error", failedRoom(&docs.ErrInvalidOp{Field: "markdown", Reason: "a fragment the document cannot hold"}), http.StatusServiceUnavailable, codeDocServiceUnavailable},
-		{"a room failed by a missing block's error", failedRoom(fmt.Errorf("place block: %w", pmdoc.ErrTargetNotFound)), http.StatusServiceUnavailable, codeDocServiceUnavailable},
-		{"a live tree outside the schema", outsideSchema, http.StatusInternalServerError, codeDocSchema},
-		{"an unclassified failure", errors.New("unexpected document failure"), http.StatusInternalServerError, codeInternal},
+		{"a room settlement's schema refusal failed", failedRoom(outsideSchema), http.StatusServiceUnavailable, apicode.DocServiceUnavailable.V1Name()},
+		{"a room failed by an error that wraps a closed issue's refusal", failedRoom(fmt.Errorf("ygo/websocket: inject refused: %w", docs.ErrIssueClosed)), http.StatusServiceUnavailable, apicode.DocServiceUnavailable.V1Name()},
+		{"a room failed by an invalid operation's error", failedRoom(&docs.ErrInvalidOp{Field: "markdown", Reason: "a fragment the document cannot hold"}), http.StatusServiceUnavailable, apicode.DocServiceUnavailable.V1Name()},
+		{"a room failed by a missing block's error", failedRoom(fmt.Errorf("place block: %w", pmdoc.ErrTargetNotFound)), http.StatusServiceUnavailable, apicode.DocServiceUnavailable.V1Name()},
+		{"a live tree outside the schema", outsideSchema, http.StatusInternalServerError, apicode.DocSchema.V1Name()},
+		{"an unclassified failure", errors.New("unexpected document failure"), http.StatusInternalServerError, apicode.InternalError.V1Name()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			reader := readingServer(t, database, docs.NewPgVersioned(database), func(documents docs.API) docs.API {
@@ -325,11 +326,11 @@ func TestAnAskBlockRefusalWhoseReasonIsASchemaRefusalStaysThatRefusal(t *testing
 		code   string
 	}{
 		{"the refusal itself", refusal, http.StatusBadRequest, "INVALID_ASK_BLOCK"},
-		{"a room the refusal failed", fmt.Errorf("%w: %w", docs.ErrServiceUnavailable, refusal), http.StatusServiceUnavailable, codeDocServiceUnavailable},
+		{"a room the refusal failed", fmt.Errorf("%w: %w", docs.ErrServiceUnavailable, refusal), http.StatusServiceUnavailable, apicode.DocServiceUnavailable.V1Name()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			(&server{}).writeHandlerError(recorder, test.err)
+			(&server{}).writeHandlerError(recorder, nil, test.err)
 			if recorder.Code != test.status || !strings.Contains(recorder.Body.String(), `"code":"`+test.code+`"`) {
 				t.Fatalf("status=%d body=%s, want %d %s", recorder.Code, recorder.Body.String(), test.status, test.code)
 			}

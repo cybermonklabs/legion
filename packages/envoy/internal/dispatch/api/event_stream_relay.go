@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -286,7 +286,7 @@ func (r *eventStreamRelay) subscribe(ctx context.Context, buffer int) (relaySubs
 		r.mu.Lock()
 		if r.closed || r.lifetime.Err() != nil {
 			r.mu.Unlock()
-			return relaySubscription{}, errorf(http.StatusServiceUnavailable, "SHUTTING_DOWN", "the server is shutting down")
+			return relaySubscription{}, errorf(apicode.ShuttingDown, "the server is shutting down")
 		}
 		if g := r.generation; g != nil {
 			defer r.mu.Unlock()
@@ -316,7 +316,7 @@ func (r *eventStreamRelay) subscribe(ctx context.Context, buffer int) (relaySubs
 		}
 		if r.closed || r.lifetime.Err() != nil {
 			r.mu.Unlock()
-			return relaySubscription{}, errorf(http.StatusServiceUnavailable, "SHUTTING_DOWN", "the server is shutting down")
+			return relaySubscription{}, errorf(apicode.ShuttingDown, "the server is shutting down")
 		}
 		g := r.startLocked(cursor, cursorAt)
 		subscription := r.joinLocked(g, buffer)

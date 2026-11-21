@@ -31,6 +31,7 @@ test("ProofDocument keeps transport active without cursor decorations in the com
     markdown: "",
     token: "sha256:empty-spec",
     version: null,
+    unsettled: true,
   });
   const view = render(
     <MemoryRouter>

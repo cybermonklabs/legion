@@ -1,0 +1,21 @@
+kind: Fixed
+custom:
+  Issue: pr4274
+body: |-
+  A plan, a Verification document and a decisions document are always documents, on `/api/v1` and
+  `/api/v2`. A file or an image uploaded under the name or the slug of a document that plays a role
+  on an issue (`plan.md`, `verification.md`, `decisions.md`) is refused `400 ARTIFACT_ROLE_NAME`,
+  naming the role and saying the upload must be Markdown, where it was stored as a file or refused
+  `ARTIFACT_KIND_MISMATCH`. A Markdown upload onto such a file or image becomes its next version and
+  makes it a document, and its earlier versions stay readable as files. A plan review of a plan that
+  is not a document is refused `409 NOT_PLAN_DOCUMENT`, naming its kind.
+
+  A first import of an external issue reference through the default project takes every GitHub
+  repository's name: its generated `repo:` label is held to neither the caller's 40 characters nor
+  the 20 labels, and stays so when a labels replacement sends it back unchanged. That label, like a
+  label filter value that starts with `repo:`, is held to 145 characters (an owner of 39 and a name
+  of 100), and a name past it is refused `400 LABELS_INPUT` before anything is written. Every other
+  label keeps its limits.
+
+  The Dismissed view of a person's threads no longer answers `500` when a thread they dismissed
+  holds no reply: its time falls back to the thread's own.

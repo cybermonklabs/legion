@@ -196,6 +196,12 @@ type Access interface {
 
 // Client asks Dispatch's routes at one base URL, presenting the broker's own account token.
 type Client struct {
+	// Commit is the commit the broker was built from (cmd/cipherd's buildRelease), which every
+	// call names in its User-Agent, `envoy-broker-project-access/<commit>`, so Dispatch's access
+	// log tells this check's calls from every other caller's; empty names `(devel)`, a build that
+	// holds none. It is set before the first call and never after.
+	Commit string
+
 	base    string
 	account ciphertoken.Account
 	http    *http.Client
@@ -451,6 +457,11 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 	}
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	request.Header.Set("Accept", "application/json")
+	commit := c.Commit
+	if commit == "" {
+		commit = "(devel)"
+	}
+	request.Header.Set("User-Agent", "envoy-broker-project-access/"+commit)
 	response, err := c.http.Do(request)
 	if err != nil {
 		return 0, fmt.Errorf("projectaccess: ask dispatch: %w", err)

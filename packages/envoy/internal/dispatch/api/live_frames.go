@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
@@ -250,18 +251,20 @@ const (
 
 // refusal is the code and message a view's subscribers are refused with when its read answered
 // err, and refused false for an err that is a failed read, which the hub retries. A deployment
-// that configured nothing the view reads is told so, and an *apiError is refused as the matching
-// GET route answers it: a Legion board of a project that does not exist is loadProject's 404
-// PROJECT_NOT_FOUND.
+// that configured nothing the view reads is told so, naming /api/v2's write of it as every refusal
+// of the socket does (deliveryNotConfigured, legionNotConfigured), and an *apiError is refused as
+// the matching GET route answers it: a Legion board of a project that does not exist is
+// loadProject's 404 PROJECT_NOT_FOUND. The socket is no /api route, so each code is named as
+// /api/v1 names it (liveRefusal).
 func (r viewReads) refusal(err error) (code, message string, refused bool) {
 	var answered *apiError
 	switch {
 	case r == viewReadsDelivery && errors.Is(err, delivery.ErrNoSettings):
-		return deliveryNotConfiguredCode, deliveryNotConfiguredMessage, true
+		return apicode.DeliveryNotConfigured.V1Name(), deliveryNotConfigured(apiV2), true
 	case r == viewReadsLegion && errors.Is(err, legion.ErrNoSettings):
-		return legionNotConfiguredCode, legionNotConfiguredMessage, true
+		return apicode.LegionNotConfigured.V1Name(), legionNotConfigured(apiV2), true
 	case errors.As(err, &answered):
-		return answered.code, answered.message, true
+		return answered.code.V1Name(), answered.message, true
 	}
 	return "", "", false
 }

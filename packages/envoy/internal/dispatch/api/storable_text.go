@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -35,10 +36,10 @@ func unstorableText(field, value string) *apiError {
 		char, width := utf8.DecodeRuneInString(value[at:])
 		switch {
 		case char == 0:
-			return errorf(http.StatusBadRequest, "NUL_CHARACTER",
+			return errorf(apicode.NULCharacter,
 				"%s holds a NUL character (U+0000) at character %d, which Dispatch cannot store", field, itemblocks.Units16(value[:at])+1)
 		case char == utf8.RuneError && width == 1:
-			return errorf(http.StatusBadRequest, "INVALID_UTF8",
+			return errorf(apicode.InvalidUTF8,
 				"%s holds a byte that is not UTF-8 (0x%02X) at character %d, which Dispatch cannot store", field, value[at], itemblocks.Units16(value[:at])+1)
 		}
 		at += width
@@ -85,7 +86,7 @@ func (s *server) refuseUnstorableParameters(pattern string, handler http.Handler
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if refusal := unstorableParameter(r, wildcards); refusal != nil {
-			s.writeHandlerError(w, refusal)
+			s.writeHandlerError(w, r, refusal)
 			return
 		}
 		handler(w, r)

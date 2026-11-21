@@ -27,6 +27,10 @@
 #   - The model judge, on every broker: the six BROKER_JUDGE_* settings pointed at the model
 #     and Dispatch stands, and GCE_METADATA_HOST at the metadata stand, so a human-tier request
 #     the rules give the judge seconds for is decided by the model rather than by a person.
+#     AIRLOCK_JUDGE_DISPATCH_URL, when set, points the judge at that Dispatch instead of the
+#     Dispatch stand (a local stack's, whose access log then shows each judge read and the
+#     User-Agent it names); the judge presents the stand's token either way, so such a
+#     Dispatch may refuse the read, and the line is logged all the same.
 #   - A rules file (BROKER_AIRLOCK_RULES_FILE) and a fake Secrets Manager (the file
 #     BROKER_FAKE_SECRETS_FILE names) that name each other: a stored secret bound to S; a second
 #     stored secret bound to S with headers and allow of its own; a github-app secret; a
@@ -469,6 +473,7 @@ GOOGLE_URL="$(stand '.stands.google.url')"
 MODEL_URL="$(stand '.stands.model.url')"
 MODEL_ANSWER_URL="$(stand .model_answer_url)"
 DISPATCH_URL="$(stand '.stands.dispatch.url')"
+JUDGE_DISPATCH_URL="${AIRLOCK_JUDGE_DISPATCH_URL:-$DISPATCH_URL}"
 # GCE_METADATA_HOST is a host and no scheme, so the metadata stand is named by its address.
 METADATA_URL="$(stand '.stands.metadata.url')"
 METADATA_ADDRESS="$(stand '.stands.metadata.address')"
@@ -656,7 +661,7 @@ start_broker() {
   BROKER_JUDGE_MODEL="$JUDGE_MODEL" \
   BROKER_JUDGE_MODEL_PROTOCOL="$JUDGE_MODEL_PROTOCOL" \
   BROKER_JUDGE_MODEL_AUDIENCE="$JUDGE_MODEL_AUDIENCE" \
-  BROKER_JUDGE_DISPATCH_URL="$DISPATCH_URL" \
+  BROKER_JUDGE_DISPATCH_URL="$JUDGE_DISPATCH_URL" \
   BROKER_JUDGE_DISPATCH_TOKEN_FILE="$JUDGE_DISPATCH_TOKEN_FILE" \
   BROKER_JUDGE_TEST_SKIP_CHECKS="$JUDGE_SKIP_CHECKS" \
   GCE_METADATA_HOST="$METADATA_ADDRESS" \

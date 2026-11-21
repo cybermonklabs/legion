@@ -312,3 +312,27 @@ func TestDeleteSessionGroup(t *testing.T) {
 	// The sessions are free again.
 	createSessionGroup(t, handler, "Crew again", "s1", "s2")
 }
+
+// A group deleted between the route's read of it and its own delete is the condition a missing
+// group is (decision 11): /api/v2 answers it 404 SESSION_GROUP_NOT_FOUND, as it answers a group
+// nothing holds, and /api/v1 the 404 NOT_FOUND it has always answered. A trigger that keeps every
+// group row from its delete stands in for the delete that lands between the two.
+func TestAGroupGoneMidRequestIsAMissingGroup(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	for _, statement := range []string{
+		`create function keep_session_groups() returns trigger language plpgsql as $$ begin return null; end $$`,
+		`create trigger keep_session_groups before delete on delivery_session_groups for each row execute function keep_session_groups()`,
+	} {
+		if _, err := database.Pool.Exec(t.Context(), statement); err != nil {
+			t.Fatalf("keep the groups from their delete: %v", err)
+		}
+	}
+	v2 := createSessionGroup(t, handler, "Kept two", "s-kept-2")
+	expectRefusal(t, "a v2 delete of a group gone after the route read it",
+		dispatchRequest(t, handler, http.MethodDelete, "/api/v2/session-groups/"+v2.ID, nil, "alice"),
+		http.StatusNotFound, "SESSION_GROUP_NOT_FOUND")
+	v1 := createSessionGroup(t, handler, "Kept one", "s-kept-1")
+	expectRefusal(t, "a v1 delete of a group its delete finds gone",
+		dispatchRequest(t, handler, http.MethodDelete, "/api/v1/delivery/session-groups/"+v1.ID, nil, "alice"),
+		http.StatusNotFound, "NOT_FOUND")
+}

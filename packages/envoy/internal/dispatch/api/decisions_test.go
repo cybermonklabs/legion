@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -347,8 +348,8 @@ func TestKeepRecordsAgreementUntilTheDecisionChanges(t *testing.T) {
 	// A Keep is the person's own agreement, so the route needs the person scope: the deployment's
 	// shared token holds none and is refused, naming it.
 	bearer := sessionRequest(t, handler, http.MethodPost, keepPath, map[string]any{"actor": sessionActor()})
-	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), codeScopeRequired) {
-		t.Fatalf("a bearer's keep: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
+	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), apicode.OAuthScopeRequired.V1Name()) {
+		t.Fatalf("a bearer's keep: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 
 	blocks := blockIDsByText(t, handler, fixture.decisions.ID)
@@ -503,8 +504,8 @@ func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
 		{http.MethodPut, map[string]any{"version": 2, "actor": sessionActor()}},
 	} {
 		response := sessionRequest(t, handler, probe.method, path, probe.body)
-		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), codeScopeRequired) {
-			t.Fatalf("a bearer's %s: status=%d body=%s, want 403 %s", probe.method, response.Code, response.Body.String(), codeScopeRequired)
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), apicode.OAuthScopeRequired.V1Name()) {
+			t.Fatalf("a bearer's %s: status=%d body=%s, want 403 %s", probe.method, response.Code, response.Body.String(), apicode.OAuthScopeRequired.V1Name())
 		}
 	}
 }

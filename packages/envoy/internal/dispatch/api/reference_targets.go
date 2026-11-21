@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -68,9 +70,9 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	targets, err := s.referenceTargets(r, trees)
+	targets, err := s.referenceTargets(r.Context(), r.URL.Query()["ref"], trees)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees.resolve()
@@ -81,14 +83,16 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, model.ReferenceTargets{Targets: targets})
 }
 
-// referenceTargets reads every ?ref= of the request, writes each id that a reference writes
-// short as its whole id in one batch (wholeReferences), and then resolves the references in one
-// query per node kind. The kind of each answer is the kind the reference itself names, which is
-// the kind its node resolves to (refs.TargetOf stores a block of an ask, a comment or a message
-// under its item's block kind, and those resolve to nodes of kind block), so a gone target is
-// answered under its kind too. A reference whose short id two items or more carry names no one
-// target, so it is looked up as nothing (the zero refs.Target, which has no name and no tree),
-// and is answered gone and ambiguous.
+// referenceTargets reads every reference raw holds - the ?ref= values of the request, in its
+// order - writes each id that a reference writes short as its whole id in one batch
+// (wholeReferences), and then resolves the references in one query per node kind. The kind of
+// each answer is the kind the reference itself names, which is the kind its node resolves to
+// (refs.TargetOf stores a block of an ask, a comment or a message under its item's block kind,
+// and those resolve to nodes of kind block), so a gone target is answered under its kind too. A
+// reference whose short id two items or more carry names no one target, so it is looked up as
+// nothing (the zero refs.Target, which has no name and no tree), and is answered gone and
+// ambiguous. Both versions of the read answer what this reads: GET /api/v1/reference-targets
+// from its raw query, and GET /api/v2/reference-targets from its decoded one.
 //
 // A reference is read past the whitespace around it, and echoed as the request wrote it, that
 // whitespace and an id written short included: the answer is read by index or by reference, and
@@ -97,13 +101,12 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 //
 // trees is the request's own reader, nil for a caller that asked for no tree, which then reads
 // no block's text at all.
-func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]model.ReferenceTarget, error) {
-	raw := r.URL.Query()["ref"]
+func (s *server) referenceTargets(ctx context.Context, raw []string, trees *displayTreeReader) ([]model.ReferenceTarget, error) {
 	if len(raw) == 0 {
-		return nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "ref is required, once per reference to resolve")
+		return nil, errorf(apicode.InvalidReference, "ref is required, once per reference to resolve")
 	}
 	if len(raw) > referenceTargetsMax {
-		return nil, countExceededError("CAP_EXCEEDED", "ref", len(raw), referenceTargetsMax)
+		return nil, countExceededError(apicode.CapExceeded, "ref", len(raw), referenceTargetsMax)
 	}
 	parsed := make([]text.Ref, len(raw))
 	for index, value := range raw {
@@ -113,7 +116,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 		}
 		parsed[index] = ref
 	}
-	ambiguous, err := s.wholeReferences(r.Context(), parsed)
+	ambiguous, err := s.wholeReferences(ctx, parsed)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +133,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 		target, _ := refs.TargetOf(ref)
 		named[index] = target
 	}
-	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, named)
+	names, err := refs.TargetNames(ctx, s.deps.Store.Pool, named)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +142,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 			answers[index].Name, answers[index].Gone = name, false
 		}
 	}
-	if err := s.blockTrees(r.Context(), answers, named, trees); err != nil {
+	if err := s.blockTrees(ctx, answers, named, trees); err != nil {
 		return nil, err
 	}
 	return answers, nil
@@ -505,9 +508,15 @@ func withoutBlankEnds(lines string) string {
 // answered different bodies wherever a block is named, and different tags with them.
 func referenceTargetsETag(targets []model.ReferenceTarget) string {
 	hash := sha256.New()
+	hashReferenceTargets(hash, targets)
+	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
+}
+
+// hashReferenceTargets writes every member of targets into hash, in order, as
+// referenceTargetsETag describes: the tag of each version of the read hashes its members so.
+func hashReferenceTargets(hash io.Writer, targets []model.ReferenceTarget) {
 	for _, target := range targets {
 		_, _ = fmt.Fprintf(hash, "%s %s %t %t %d %s %d %s\n", target.Ref, target.Kind, target.Gone,
 			target.Ambiguous, len(target.Name), target.Name, len(target.TextTree), target.TextTree)
 	}
-	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
 }

@@ -1409,7 +1409,8 @@ test("models per-block anchor reference counts", () => {
 
 test("keeps document read tokens optional for older Dispatch servers", () => {
   // The route table states `token` on both reads, so the contract's own shapes always carry one;
-  // an older Dispatch answers without it, which is that answer minus the field.
+  // an older Dispatch answers without it, which is that answer minus the field. Such a text read
+  // carries no `unsettled` either, which a newer Dispatch answers beside the version.
   const block: Omit<ArtifactBlock, "token"> = {
     from: 0,
     id: "legacy-block",
@@ -1417,7 +1418,7 @@ test("keeps document read tokens optional for older Dispatch servers", () => {
     to: 6,
     type: "paragraph",
   };
-  const text: Omit<ArtifactText, "token"> = { markdown: "legacy", version: null };
+  const text: Omit<ArtifactText, "token" | "unsettled"> = { markdown: "legacy", version: null };
 
   expect("token" in block).toBe(false);
   expect("token" in text).toBe(false);

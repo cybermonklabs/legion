@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -280,8 +281,8 @@ func TestAgentsListsCapabilitiesForBearerCallers(t *testing.T) {
 		"body": "hi", "delivery": "btw",
 		"actor": map[string]string{"kind": "session", "id": "s2"},
 	})
-	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("issue-less targeted message by the shared token: status %d: %s, want 403 %s", response.Code, response.Body.String(), codeScopeRequired)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("issue-less targeted message by the shared token: status %d: %s, want 403 %s", response.Code, response.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 }
 

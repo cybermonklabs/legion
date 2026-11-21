@@ -30,6 +30,48 @@ func clientOf(server *projectaccesstest.Server) *projectaccess.Client {
 	return projectaccess.New(server.URL, server.Account, nil)
 }
 
+// TestTheReadNamesItself: every call names the project-access check and the broker's build in
+// its User-Agent, so Dispatch's access log tells the check's calls from every other caller's; a
+// broker whose build names no commit sends `(devel)`. The calls stay on /api/v1.
+func TestTheReadNamesItself(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	for _, tc := range []struct{ commit, want string }{
+		{commit, "envoy-broker-project-access/" + commit},
+		{"", "envoy-broker-project-access/(devel)"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			var mu sync.Mutex
+			var sent []string
+			recorder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				sent = append(sent, r.URL.Path+" "+r.UserAgent())
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				if strings.HasPrefix(r.URL.Path, "/api/v1/access/person") {
+					_, _ = w.Write([]byte(`{"person":"carol@example.com","member_kind":"full"}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"project":"PRIV","visibility":"private","owner":"carol@example.com","person":"carol@example.com","member_kind":"full","visible":true,"repositories":[]}`))
+			}))
+			t.Cleanup(recorder.Close)
+			client := projectaccess.New(recorder.URL, projectaccesstest.StaticAccount("token"), nil)
+			client.Commit = tc.commit
+			if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.MemberKind(t.Context(), "carol@example.com"); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			want := []string{"/api/v1/access/projects/PRIV " + tc.want, "/api/v1/access/person " + tc.want}
+			if !reflect.DeepEqual(sent, want) {
+				t.Fatalf("the client asked %q, want %q", sent, want)
+			}
+		})
+	}
+}
+
 // TestAccessReadsTheK3Answer: every field of Dispatch's answer reaches Answer, for a person the
 // project's list names and for one it does not.
 func TestAccessReadsTheK3Answer(t *testing.T) {

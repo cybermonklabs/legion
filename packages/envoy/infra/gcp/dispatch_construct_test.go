@@ -593,6 +593,37 @@ func TestConstructRefusesASeedInAnAnswererInput(t *testing.T) {
 	}
 }
 
+// dispatchAPIV1End is apiV1End as a deployment sets it: the instant /api/v1 ends, in UTC.
+const dispatchAPIV1End = "2027-01-01T00:00:00Z"
+
+// apiV1End reaches Dispatch as DISPATCH_API_V1_END on the app's envoy-dispatch container, as
+// written, in any form time.RFC3339 parses (an offset, a fraction of a second), so the server ends
+// /api/v1 at the instant the deployment set, and nothing else in the app's, the listener's or the
+// front door's pods changes. Unset, no such variable renders and /api/v1 has no end
+// (TestDispatchPodMatchesGolden pins that pod whole). It arrives over the wire a consumer's SDK
+// uses, which is how a deployment arms the end with an envoy-infra release alone.
+func TestConstructRendersTheAPIV1End(t *testing.T) {
+	unset, _, err := constructDispatch(t, dispatchConstructBaseInputs(), false)
+	require.NoError(t, err)
+	require.NotContains(t, appEnv(t, unset), "DISPATCH_API_V1_END")
+	for _, end := range []string{dispatchAPIV1End, "2027-06-30T23:59:59.5+02:00"} {
+		t.Run(end, func(t *testing.T) {
+			inputs := dispatchConstructBaseInputs()
+			inputs["apiV1End"] = property.New(end)
+			m, _, err := constructDispatch(t, inputs, false)
+			require.NoError(t, err)
+			require.Equal(t, end, appEnv(t, m)["DISPATCH_API_V1_END"])
+			want := deploymentPodTemplate(t, unset, "example-dispatch")
+			app := podContainer(t, want, "envoy-dispatch")
+			app["env"] = append(app["env"].([]any), map[string]any{"name": "DISPATCH_API_V1_END", "value": end})
+			require.Equal(t, want, deploymentPodTemplate(t, m, "example-dispatch"))
+			for _, workload := range []string{"example-dispatch-listener", "example-dispatch-tailnet"} {
+				require.Equal(t, deploymentPodTemplate(t, unset, workload), deploymentPodTemplate(t, m, workload), workload)
+			}
+		})
+	}
+}
+
 // The issuer and subject an Azure federated credential trusts are outputs, so the Azure side reads
 // them rather than rebuilding them: the cluster's token issuer, and the app's ServiceAccount
 // <hostname> in the component's namespace. Neither is secret, and both are there with no Azure

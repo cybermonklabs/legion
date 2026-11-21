@@ -829,16 +829,22 @@ func carryVerdict(input carryInput) bool {
 // storedVersionTree is the tree of the stored version number of artifactID, and whether that
 // version could be read: a version outside the Proof schema is logged and not readable, a number
 // below 1, before the document's first version, is no version and not readable either, and a
-// version holding an element this build does not know is an error (skipUnreadableVersion).
+// version holding an element this build does not know is an error (skipUnreadableVersion). A
+// version that stores no markdown is not readable: a document holds one only from before an
+// upload made a file or an image that document (the api package's storeArtifact), and an approval
+// of it - a plan review of a plan stored as a file - approved no text, so it carries nothing.
 func (s *Service) storedVersionTree(ctx context.Context, tx pgx.Tx, artifactID string, number int) (tree *pmdoc.Node, readable bool, err error) {
 	if number < 1 {
 		return nil, false, nil
 	}
-	var markdown string
+	var markdown *string
 	if err := tx.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, number).Scan(&markdown); err != nil {
 		return nil, false, fmt.Errorf("read document version %d: %w", number, err)
 	}
-	tree, err = pmdoc.ParseRendering(markdown)
+	if markdown == nil {
+		return nil, false, nil
+	}
+	tree, err = pmdoc.ParseRendering(*markdown)
 	if err != nil {
 		return nil, false, skipUnreadableVersion(artifactID, number, err)
 	}

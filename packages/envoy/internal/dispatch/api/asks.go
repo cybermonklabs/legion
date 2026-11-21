@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -46,7 +47,7 @@ func (s *server) askIDInputForOwner(ctx context.Context, q queryer, owner owner)
 	if len(hints) == 0 {
 		hints = append(hints, "none")
 	}
-	return errorf(http.StatusBadRequest, "ASK_ID_INPUT", "ask IDs are UUIDs; use the full ask ID; %s open asks: %s", scope, strings.Join(hints, ", "))
+	return errorf(apicode.AskIDInput, "ask IDs are UUIDs; use the full ask ID; %s open asks: %s", scope, strings.Join(hints, ", "))
 }
 
 func askQuestionHint(question string) string {
@@ -60,7 +61,7 @@ func askQuestionHint(question string) string {
 
 func validateAskQuestion(question string) error {
 	if strings.TrimSpace(question) == "" {
-		return errorf(http.StatusBadRequest, "INVALID_ASK", "ask question is required")
+		return errorf(apicode.InvalidAsk, "ask question is required")
 	}
 	return nil
 }
@@ -83,16 +84,16 @@ func validateAskWording(question string, options []model.AskOption) error {
 // nor moves one, and the id never reaches the ask's row.
 func validateAskOptions(options []model.AskOption) error {
 	if len(options) > maxAskOptions {
-		return countExceededError("CAP_EXCEEDED", "options", len(options), maxAskOptions)
+		return countExceededError(apicode.CapExceeded, "options", len(options), maxAskOptions)
 	}
 	seen := make(map[string]struct{}, len(options))
 	for index := range options {
 		label := strings.TrimSpace(options[index].Label)
 		if label == "" {
-			return errorf(http.StatusBadRequest, "INVALID_ASK", "ask option labels are required")
+			return errorf(apicode.InvalidAsk, "ask option labels are required")
 		}
 		if _, duplicate := seen[label]; duplicate {
-			return errorf(http.StatusBadRequest, "INVALID_ASK", "ask option labels must be unique")
+			return errorf(apicode.InvalidAsk, "ask option labels must be unique")
 		}
 		seen[label] = struct{}{}
 		options[index].Label = label
@@ -107,7 +108,7 @@ func normalizeAskUrgency(value string) (string, error) {
 		urgency = "med"
 	}
 	if !validUrgency(urgency) {
-		return "", errorf(http.StatusBadRequest, "INVALID_ASK", "ask urgency must be low, med, high, or blocking")
+		return "", errorf(apicode.InvalidAsk, "ask urgency must be low, med, high, or blocking")
 	}
 	return urgency, nil
 }
@@ -117,11 +118,11 @@ func normalizeAskKind(value string) (string, error) {
 	case "", "question":
 		return "question", nil
 	case "approval":
-		return "", errorf(http.StatusBadRequest, "ASK_KIND_INPUT", "approval asks are server-created only")
+		return "", errorf(apicode.AskKindInput, "approval asks are server-created only")
 	case "action":
-		return "", errorf(http.StatusBadRequest, "ASK_KIND_INPUT", "the action ask kind was removed; open a question with the options you want, such as Done / Can't")
+		return "", errorf(apicode.AskKindInput, "the action ask kind was removed; open a question with the options you want, such as Done / Can't")
 	default:
-		return "", errorf(http.StatusBadRequest, "ASK_KIND_INPUT", "ask kind must be question")
+		return "", errorf(apicode.AskKindInput, "ask kind must be question")
 	}
 }
 
@@ -146,32 +147,81 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	var input createAskInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	ask, advice, suggestions, ok := s.openAsk(w, r, owner, input, nil)
 	if !ok {
 		return
 	}
+	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
+}
+
+// askReadBack reads, on q, what a /api/v2 write of an ask answers of the ask id names: on the
+// write's own transaction, once its writes are made and before it commits, as an upload reads
+// its row (storeArtifact). A read that fails then rolls the write back, so its 500 is true of
+// what is stored and a retry under the request's Idempotency-Key makes the write afresh; read
+// after the commit, it would answer 500 for a write that stands, its key marked committed with it
+// (markRequestKeyCommitted), and the retry would hear 409 KEY_COMMITTED and never the ask. An
+// /api/v1 write answers what its own handler holds or reads on its transaction (a hand-on reads
+// its ask back with loadAsk, an opened ask its waiting person with askWaitingOnPerson), and has
+// none (nil).
+type askReadBack func(ctx context.Context, q queryer, id string) error
+
+// read runs readBack where there is one.
+func (readBack askReadBack) read(ctx context.Context, q queryer, id string) error {
+	if readBack == nil {
+		return nil
+	}
+	return readBack(ctx, q, id)
+}
+
+// commit commits the transaction ledger joined, running readBack where there is one between its
+// write phase and its commit (docs.Ledger.CommitReading): the writes such a route answers are
+// queued on the ledger, so the rows readBack reads are there only once the write phase has run
+// them, and a read that fails still rolls them back.
+func (readBack askReadBack) commit(ctx context.Context, ledger *docs.Ledger, id string) error {
+	if readBack == nil {
+		return ledger.Commit(ctx)
+	}
+	return ledger.CommitReading(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return readBack(ctx, tx, id)
+	})
+}
+
+// openAsk opens the question ask input asks on owner, once the route has read its body: the ask's
+// row, its author's follow, its references and parts and its ask.opened event, and after the
+// write commits the related-item check, whose result rides the write's advice. POST
+// /api/v1/issues/{key}/asks and /api/v1/artifacts/{id}/asks (createAskFor) and POST
+// /api/v2/issues/{key}/asks and /api/v2/artifacts/{id}/asks (createIssueAskV2,
+// createArtifactAskV2) each answer what it opened in their own shape, the /api/v2 routes reading
+// theirs on the write's transaction (readBack). It writes a refusal itself and answers false.
+func (s *server) openAsk(
+	w http.ResponseWriter, r *http.Request, owner owner, input createAskInput, readBack askReadBack,
+) (model.Ask, *writeAdvice, *model.Suggestions, bool) {
+	actor, ok := s.requireActor(w, r, input.Actor)
+	if !ok {
+		return model.Ask{}, nil, nil, false
+	}
 	kind, err := normalizeAskKind(input.Kind)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	if err := validateAskQuestion(input.Question); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	if input.Options == nil {
 		input.Options = []model.AskOption{}
 	}
 	if err := validateAskOptions(input.Options); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	if err := validateAskWording(input.Question, input.Options); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	multiple := false
 	if input.Multiple != nil {
@@ -179,41 +229,45 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	urgency, err := normalizeAskUrgency(input.Urgency)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	status, err := s.requireOpenOwnerStatus(r.Context(), tx, owner)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	// The row's created_at is the transaction's now(), its column default, read with its id and
 	// written explicitly, so the ask this route answers and its event carry the time the row will
 	// hold.
 	var ask model.Ask
 	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, now()`).Scan(&ask.ID, &ask.CreatedAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	rowID := ask.ID
 	// The person this question reaches, read here in the read phase, under the owner's lock
-	// requireOpenOwnerStatus took, through the rule every read of that person shares, so the
-	// caller is told whose Inbox it just landed in rather than having to read the ask again. A
-	// new ask is handed to nobody, so the rule is read over its owner alone
+	// requireOpenOwnerStatus took, through the rule every read of that person shares, so a
+	// /api/v1 caller is told whose Inbox it just landed in rather than having to read the ask
+	// again; a /api/v2 route reads its whole answer on this transaction (readBack) and needs none
+	// of it. A new ask is handed to nobody, so the rule is read over its owner alone
 	// (askWaitingOnPerson): the row itself is only queued below.
-	waitingOnPerson, err := askWaitingOnPerson(r.Context(), tx, owner, nil)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	var waitingOnPerson string
+	if readBack == nil {
+		waitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, owner, nil)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, nil, nil, false
+		}
 	}
 	// Everything up to Commit is the read phase (Docs.Join): the document operations and this
 	// route queue their writes on the ledger, in the order made, and Commit sends them as one
@@ -224,46 +278,46 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
 		advice = s.writeAdvice(
-			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, adviceAsks{excluded: []string{rowID}}, *status, "ask.opened", true,
+			r.Context(), tx, routeName(r.Context()), *owner.IssueKey, actor, adviceAsks{excluded: []string{rowID}}, *status, "ask.opened", true,
 		)
 	}
 	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, docs.MarkAsk, rowID, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 
 	options, err := encodeJSON(input.Options)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	author, err := encodeJSON(actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	var anchorJSON any
 	if anchor != nil {
 		anchorJSON, err = encodeJSON(anchor)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, nil, nil, false
 		}
 	}
 	if err := queueExec(ledger, `
 		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind, ask.CreatedAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		asks.QueueFollowAuthor(b, rowID, actor)
 		return nil
 	}); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	ask.IssueKey = owner.IssueKey
 	ask.ArtifactID = owner.ArtifactID
@@ -278,8 +332,8 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	if anchor != nil {
 		ask.AnchorArtifact, err = s.loadAskAnchorArtifact(r.Context(), tx, anchor.ArtifactID)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, nil, nil, false
 		}
 	}
 	// The question and the parts are read with the whole grammar (refs.Reader.Mentions), so the
@@ -288,15 +342,15 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// event below names what the question and the parts moved between them.
 	askChanges, err := s.queueNewAskReferences(r.Context(), tx, ledger, ask)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	appended := []*model.Event{}
 	if snapshot != nil {
 		snapshotEvent, err := s.commitArtifactVersionEvent(ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, nil, nil, false
 		}
 		appended = append(appended, snapshotEvent)
 	}
@@ -306,10 +360,11 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		"ask.opened", actor, model.NewAskEventPayload(ask, askChanges),
 	), events.ThreadLoginsOf(ask.ID), "ask", ask.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
-	// The person read in the read phase above is set only now, after the payload is built:
+	// The person read in the read phase above for a /api/v1 caller is set only now, after the
+	// payload is built:
 	// model.Ask carries the field on reads alone, and no `ask.*` event payload may hold it
 	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
 	ask.WaitingOnPerson = waitingOnPerson
@@ -325,12 +380,14 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// report no review.
 	if advice != nil && owner.IssueKey != nil {
 		advice.StandingReview = s.standingReviewAdvice(
-			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
+			r.Context(), tx, ledger, routeName(r.Context()), *owner.IssueKey,
 		)
 	}
-	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// A /api/v2 route reads its answer between the write phase, which writes the rows it reads,
+	// and the commit (askReadBack).
+	if err := readBack.commit(r.Context(), ledger, ask.ID); err != nil {
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
 	}
 	ask.OpenedEventID = &event.ID
 	s.publish(r.Context(), appendedEvents(appended...)...)
@@ -355,7 +412,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		trees: trees,
 	})
 	trees.resolve()
-	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
+	return ask, advice, suggestions, true
 }
 
 // editAskInput is the body of PATCH /api/v1/asks/{id}.
@@ -373,12 +430,25 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	var input editAskInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	if input.Question == nil && input.Options == nil && input.Multiple == nil && input.Urgency == nil {
-		writeError(w, "INVALID_ASK", http.StatusBadRequest, "ask edit requires at least one field")
+	ask, ok := s.rewordAsk(w, r, input, nil)
+	if !ok {
 		return
+	}
+	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+}
+
+// rewordAsk rewords the open ask the path names as input asks, once the route has read its body:
+// its question, options, multiple and urgency, written into a block ask's `:::ask` block first,
+// and its ask.edited event. PATCH /api/v1/asks/{id} (editAsk) and PATCH /api/v2/asks/{id}
+// (editAskV2) each answer what it wrote in their own shape, the /api/v2 route reading its own on
+// the write's transaction (readBack). It writes a refusal itself and answers false.
+func (s *server) rewordAsk(w http.ResponseWriter, r *http.Request, input editAskInput, readBack askReadBack) (model.Ask, bool) {
+	if input.Question == nil && input.Options == nil && input.Multiple == nil && input.Urgency == nil {
+		writeError(w, r, apicode.InvalidAsk, "ask edit requires at least one field")
+		return model.Ask{}, false
 	}
 	// A block ask's text is written into its document, where text reaches the parser with line
 	// feeds alone (pmdoc.LineFeeds); the ask's row takes the same text.
@@ -395,21 +465,21 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
-		return
+		return model.Ask{}, false
 	}
-	if !requireUUIDPath(w, r, "ask") {
-		return
+	if !requireUUIDPath(w, r, "ask", apicode.AskIDInput) {
+		return model.Ask{}, false
 	}
 	if input.Question != nil {
 		if err := validateAskQuestion(*input.Question); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, false
 		}
 	}
 	if input.Options != nil {
 		if err := validateAskOptions(*input.Options); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, false
 		}
 	}
 	var requestedUrgency string
@@ -417,8 +487,8 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		var err error
 		requestedUrgency, err = normalizeAskUrgency(*input.Urgency)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, false
 		}
 	}
 	// The person this credential acts for, where it holds the `person` scope, resolved here and
@@ -429,18 +499,18 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	if s.callerHoldsScope(r, model.ScopePerson) {
 		person, held := s.actingPerson(w, r)
 		if !held {
-			return
+			return model.Ask{}, false
 		}
-		if person, ok = actSessionFromBody(w, person, input.Actor); !ok {
-			return
+		if person, ok = actSessionFromBody(w, r, person, input.Actor); !ok {
+			return model.Ask{}, false
 		}
 		asThePerson = &person
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	defer tx.Rollback(r.Context())
 	// A block ask's text lives in its `:::ask` block and the row projects it, so writing both
@@ -456,25 +526,25 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	defer ledger.Discard()
 	unlockedAsk, err := s.loadAsk(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	if err := s.requireOpenOwner(documentCtx, tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	ask, err := s.readAskForTransition(documentCtx, tx, unlockedAsk.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	if ask.State != "open" {
-		writeError(w, "ASK_NOT_OPEN", http.StatusConflict, "only open asks may be edited")
-		return
+		writeError(w, r, apicode.AskNotOpen, "only open asks may be edited")
+		return model.Ask{}, false
 	}
 	if ask.Kind == "approval" {
-		writeError(w, "ASK_KIND_FIXED", http.StatusConflict, "an approval ask's question and options are fixed; revise its document, then, once the human has agreed to every point in it, hand the request back with `dispatch request-approval`")
-		return
+		writeError(w, r, apicode.AskKindFixed, "an approval ask's question and options are fixed; revise its document, then, once the human has agreed to every point in it, hand the request back with `dispatch request-approval`")
+		return model.Ask{}, false
 	}
 	if actor.Kind == "session" && !ask.Author.SameAs(actor) {
 		// A session rewording its own ask is recorded as that session acting for its owner, as
@@ -484,9 +554,9 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		// their browser's reword is recorded as them, and every other credential keeps the
 		// refusal.
 		if asThePerson == nil {
-			writeError(w, "NOT_AUTHOR", http.StatusForbidden,
+			writeError(w, r, apicode.NotAuthor,
 				"only the asking session, or a credential holding the person scope, may edit an ask")
-			return
+			return model.Ask{}, false
 		}
 		actor = *asThePerson
 	}
@@ -507,8 +577,8 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// The bound is on the ask as it will be stored, not on the fields this request named: an
 	// edit that sends options alone is held against the question the row already holds.
 	if err := validateAskWording(ask.Question, ask.Options); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	// The block is the text's source of truth. Write it first, then take the row's values from
 	// what the block parses back to, so trimming can never leave the two disagreeing and the
@@ -518,8 +588,8 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	if ask.BlockID != nil {
 		blockArtifact, err := blockArtifactOf(ask)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, false
 		}
 		edit := docs.AskBlockEdit{Question: input.Question, Options: input.Options, Multiple: input.Multiple}
 		if input.Urgency != nil {
@@ -527,8 +597,8 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		}
 		stored, err := s.deps.Docs.SetAskBlockText(documentCtx, blockArtifact, *ask.BlockID, edit, actor)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, false
 		}
 		ask.Question = stored.Question
 		// The row keeps the options it held where the write left a block no parse reads as a
@@ -549,37 +619,37 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	options, err := encodeJSON(ask.Options)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	// edited_at is the transaction's now(), which the queued update writes, read here so the ask
 	// this route answers and its event carry it before that update runs.
 	editedAt, err := ledger.Now(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	if err := queueExec(ledger, `
 		update asks
 		set question = $2, options = $3, multiple = $4, urgency = $5, edited_at = $6
 		where id = $1
 	`, ask.ID, ask.Question, options, ask.Multiple, ask.Urgency, editedAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	ask.EditedAt = timestampPtr(&editedAt)
 	askChanges, err := s.queueEditedReferences(documentCtx, tx, ledger, "ask", ask.ID, previous.Question, ask.Question)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	// The edit writes the question and the options, so it is a revision of the ask's parts: plan
 	// them at the edited_at the queued update writes, which the row above carries already, queue
 	// the index after that update, and name what they moved beside the rest.
 	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, askChanges)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	event, err := s.queueStampedEvent(ledger, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.edited",
@@ -587,12 +657,12 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		model.NewAskEditEventPayload(ask, previous, actor, askChanges),
 	), "ask", ask.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
-	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := readBack.commit(r.Context(), ledger, ask.ID); err != nil {
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
 	}
 	s.publish(r.Context(), *event)
 	// The question and options this edit replaced are stored beside the new ones: the row holds
@@ -600,7 +670,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// previous wording, which no other write would ever store.
 	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(
 		texttrees.AskWrittenTexts(nil, ask.Question, ask.Options), previous.Question, previous.Options)...)
-	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
+	return ask, true
 }
 
 // blockArtifactOf is the document an indexed ask's block lives in. Every write that touches the
@@ -670,22 +740,22 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(r.URL.Query().Get("author_session"))
 	project := strings.TrimSpace(r.URL.Query().Get("project"))
 	if sessionID == "" && project == "" {
-		writeError(w, "AUTHOR_SESSION_OR_PROJECT_REQUIRED", http.StatusBadRequest, "exactly one of author_session or project is required")
+		writeError(w, r, apicode.AuthorSessionOrProjectRequired, "exactly one of author_session or project is required")
 		return
 	}
 	if sessionID != "" && project != "" {
-		writeError(w, "AUTHOR_SESSION_OR_PROJECT_CONFLICT", http.StatusBadRequest, "author_session and project are mutually exclusive; supply exactly one")
+		writeError(w, r, apicode.AuthorSessionOrProjectConflict, "author_session and project are mutually exclusive; supply exactly one")
 		return
 	}
 	var since *time.Time
 	if values, ok := r.URL.Query()["since"]; ok {
 		if len(values) != 1 {
-			writeError(w, "INVALID_SINCE", http.StatusBadRequest, "since must be one RFC3339 timestamp")
+			writeError(w, r, apicode.InvalidSince, "since must be one RFC3339 timestamp")
 			return
 		}
 		value, err := time.Parse(time.RFC3339, values[0])
 		if err != nil {
-			writeError(w, "INVALID_SINCE", http.StatusBadRequest, "since must be an RFC3339 timestamp")
+			writeError(w, r, apicode.InvalidSince, "since must be an RFC3339 timestamp")
 			return
 		}
 		since = &value
@@ -739,13 +809,13 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 			coalesce((select jsonb_agg(to_jsonb(active) order by priority asc nulls last, created_at asc, id) from active), '[]'::jsonb)
 	`, sessionID, since, project).Scan(&asOf, &openedSince, &rawAsks)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	asks := []openAsk{}
 	if err := json.Unmarshal(rawAsks, &asks); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("decode open asks: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("decode open asks: %w", err))
 		return
 	}
 	response := openAsksResponse{
@@ -761,7 +831,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		case "agent":
 			response.WaitingOnAgent++
 		default:
-			s.writeHandlerError(w, fmt.Errorf("open ask %q has invalid waiting_on %q", ask.ID, ask.WaitingOn))
+			s.writeHandlerError(w, r, fmt.Errorf("open ask %q has invalid waiting_on %q", ask.ID, ask.WaitingOn))
 			return
 		}
 	}
@@ -791,17 +861,17 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := parseAskListState(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	withThread, err := parseAskListThread(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, issueOwner(r.PathValue("key")), state)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// One reader for the whole page: the asks' texts, and the replies, rewordings and answers of
@@ -817,7 +887,7 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	}
 	if withThread {
 		if err := s.attachIssueAskThreads(r.Context(), rows, reader); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -858,7 +928,7 @@ func parseAskListState(r *http.Request) (string, error) {
 		return "all", nil
 	}
 	if state != "all" && state != "open" && state != "answered" {
-		return "", errorf(http.StatusBadRequest, "INVALID_ASK_STATE", "state must be all, open, or answered")
+		return "", errorf(apicode.InvalidAskState, "state must be all, open, or answered")
 	}
 	return state, nil
 }
@@ -872,7 +942,7 @@ func parseAskListThread(r *http.Request) (bool, error) {
 		return false, nil
 	}
 	if thread != "1" {
-		return false, errorf(http.StatusBadRequest, "INVALID_ASK_THREAD", "thread must be 1 or absent")
+		return false, errorf(apicode.InvalidAskThread, "thread must be 1 or absent")
 	}
 	return true, nil
 }
@@ -885,49 +955,49 @@ type askRead struct {
 }
 
 func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "ask") {
+	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "ask", apicode.AskIDInput) {
 		return
 	}
 	ask, err := s.loadAsk(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The ask read is the one caller that serialises the count; the write paths load the row
 	// only to check its owner and answer from their own re-read, so they do not pay for it. The
 	// same goes for the part ids of its options and of its answer, and its part revision.
 	if err := attachAskReadFields(r.Context(), s.deps.Store.Pool, []*model.Ask{&ask}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	ask.AnchorPosition, err = s.anchorBlock(r.Context(), ask.Anchor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, "ask_id", ask.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	edits, err := s.loadAskEdits(r.Context(), s.deps.Store.Pool, ask.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	answers, err := s.loadAskAnswers(r.Context(), s.deps.Store.Pool, ask.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, ask.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reaches, err := s.loadAskReaches(r.Context(), []string{ask.ID})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The single-ask read is a thread with the ask beside it, so it and every Inbox or ask-list
@@ -1130,7 +1200,7 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, sta
 			query = listArtifactAsksQueryAll
 		}
 	default:
-		return nil, nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return nil, nil, errorf(apicode.OwnerInvalid, "owner requires exactly one issue or artifact")
 	}
 	rows, err := q.Query(ctx, query, value)
 	if err != nil {

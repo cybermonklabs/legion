@@ -39,33 +39,38 @@ func LiveDashboardBuilds(ctx context.Context, db processes.Querier) ([]string, e
 	return builds, nil
 }
 
-// getDashboardBuilds answers which dashboard builds are being served. Live is the registry of live
-// server processes (processes.Live, heartbeats on the database's clock) joined to the builds those
-// processes published at boot (dashboard_builds, migration 0136) on the build id: a process whose
-// build has no row, or a row whose page names no entry chunk, adds nothing.
+// getDashboardBuilds answers which dashboard builds are being served (liveDashboardEntries).
 func (s *server) getDashboardBuilds(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	builds, err := LiveDashboardBuilds(r.Context(), s.deps.Store.Pool)
+	entries, err := s.liveDashboardEntries(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+	WriteJSON(w, http.StatusOK, dashboardBuilds{Serving: s.deps.DashboardEntry, Live: entries})
+}
+
+// liveDashboardEntries is the distinct entry chunks of the dashboard builds the live server
+// processes serve, sorted, which /api/v1 answers as `live` and /api/v2 as its items
+// (listDashboardBuildsV2). It joins the registry of live server processes (processes.Live,
+// heartbeats on the database's clock; LiveDashboardBuilds) to the builds those processes published
+// at boot (dashboard_builds, migration 0136) on the build id: a process whose build has no row, or
+// a row whose page names no entry chunk, adds nothing.
+func (s *server) liveDashboardEntries(ctx context.Context) ([]string, error) {
+	builds, err := LiveDashboardBuilds(ctx, s.deps.Store.Pool)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select entry from dashboard_builds
 		where build = any($1::text[]) and entry <> ''
 		group by entry
 		order by entry collate "C"`, builds)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 	// CollectRows answers a non-nil slice when there are no rows, which keeps "live":[] in the JSON.
-	entries, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	WriteJSON(w, http.StatusOK, dashboardBuilds{Serving: s.deps.DashboardEntry, Live: entries})
+	return pgx.CollectRows(rows, pgx.RowTo[string])
 }

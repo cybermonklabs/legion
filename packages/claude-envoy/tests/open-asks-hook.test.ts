@@ -3,6 +3,8 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } fro
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { version as codexPackageVersion } from "../codex/package.json" with { type: "json" }
+import { version as packageVersion } from "../package.json" with { type: "json" }
 import { unresolvedNames } from "./unresolved-names"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
@@ -94,6 +96,68 @@ test("summarises the session's open asks into context and records the session id
         "utf8",
       ),
     ).toBe("s-1\n")
+  } finally {
+    server.stop(true)
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
+// Each hook names itself by its program and the release of the package its harness runs: Claude
+// Code's session hooks as claude-envoy-hooks, Codex's session hook (`hooks/codex-hook.ts`, whose
+// session-start reads the open asks) as codex-envoy-hooks, at `@sjawhar/codex-envoy`'s release.
+test.each([
+  [
+    "claude-envoy-hooks",
+    packageVersion,
+    (env: Record<string, string> & { readonly HOME: string }) => runHook(hookInput, env),
+  ],
+  [
+    "codex-envoy-hooks",
+    codexPackageVersion,
+    async (env: Record<string, string> & { readonly HOME: string }) => {
+      const run = Bun.spawn(
+        ["bun", resolve(import.meta.dir, "..", "hooks", "codex-hook.ts"), "session-start"],
+        {
+          env: { PATH: process.env["PATH"] ?? "", ...env },
+          stdin: new TextEncoder().encode(JSON.stringify({ session_id: "s-1", cwd: env.HOME })),
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      )
+      return { exitCode: await run.exited }
+    },
+  ],
+] as const)("names itself to Dispatch as %s and its release", async (program, version, run) => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-agent-"))
+  const sent: { readonly path: string; readonly userAgent: string | null }[] = []
+  const server = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      sent.push({
+        path: new URL(request.url).pathname,
+        userAgent: request.headers.get("user-agent"),
+      })
+      return Response.json({
+        session_id: "s-1",
+        as_of: "2026-09-14T00:00:00Z",
+        opened_since: false,
+        count: 0,
+        waiting_on_human: 0,
+        waiting_on_agent: 0,
+        asks: [],
+      })
+    },
+  })
+  try {
+    const result = await run({
+      HOME: scratch,
+      CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+      DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+      DISPATCH_TOKEN,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(sent).toEqual([{ path: "/api/v1/asks/open", userAgent: `${program}/${version}` }])
   } finally {
     server.stop(true)
     await rm(scratch, { recursive: true, force: true })

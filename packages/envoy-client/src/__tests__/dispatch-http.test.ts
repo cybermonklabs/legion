@@ -9,6 +9,7 @@ import {
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { version as envoyClientVersion } from "../../package.json" with { type: "json" };
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -16,6 +17,7 @@ import {
   DispatchGatewayError,
   DispatchNoRouteError,
   DispatchWriteUnsettledError,
+  forgetKeyedLayerMemory,
   type SearchOptions,
 } from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
@@ -2025,5 +2027,75 @@ describe("a broker token Dispatch says is not live", () => {
       expect(stales).toHaveLength(1);
       expect(requests).toHaveLength(1);
     }
+  });
+});
+
+describe("the User-Agent", () => {
+  const userAgentOf = (request: RecordedRequest) =>
+    new Headers(request.init.headers).get("user-agent");
+
+  test("every request names the program the client was made for, over any the credential presents", async () => {
+    // A credential that presents a User-Agent of its own, in two letter cases, beside its
+    // Authorization: neither reaches Dispatch, alone or joined to the client's.
+    const credential: RequestCredential = {
+      scheme: "Bearer",
+      headers: () => ({
+        Authorization: "Bearer secret",
+        "User-Agent": "credential/1",
+        "user-agent": "credential/2",
+      }),
+      secret: () => "secret",
+    };
+    // A read, then a write whose first attempt fails in transport, so the write asks `/healthz`
+    // whether Dispatch runs its keyed layer and then asks again under its key, which Dispatch's
+    // answer carries back as it does for every keyed write.
+    forgetKeyedLayerMemory();
+    const requests: RecordedRequest[] = [];
+    let posts = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), init: init ?? {} });
+      const { pathname } = new URL(String(input));
+      if (pathname === "/healthz") return jsonResponse({ status: "ok", idempotency_keys: true });
+      if (init?.method !== "POST") return jsonResponse([]);
+      posts += 1;
+      if (posts === 1) throw new TypeError("fetch failed");
+      const answer = jsonResponse({ id: "message-1" }, 201);
+      answer.headers.set("Idempotency-Key", new Headers(init.headers).get("idempotency-key") ?? "");
+      return answer;
+    }) as typeof fetch;
+    const client = new DispatchClient("http://user-agent.test", credential, fetchImpl, {
+      writeRetry: { ...DISPATCH_WRITE_RETRY, pause: async () => {} },
+      userAgent: "example-program/1.2.3",
+    });
+
+    await client.listAllIssues({});
+    await client.message("DSP-1", { body: "Shipped.", actor });
+
+    expect(
+      requests.map((request) => [new URL(request.url).pathname, userAgentOf(request)])
+    ).toEqual([
+      ["/api/v1/issues", "example-program/1.2.3"],
+      ["/api/v1/issues/DSP-1/messages", "example-program/1.2.3"],
+      ["/healthz", "example-program/1.2.3"],
+      ["/api/v1/issues/DSP-1/messages", "example-program/1.2.3"],
+    ]);
+    // The credential's other headers still go out where it presents; the `/healthz` probe
+    // presents none (`#probeKeyedLayer`), and names the program all the same.
+    expect(
+      requests.map((request) => new Headers(request.init.headers).get("authorization"))
+    ).toEqual(["Bearer secret", "Bearer secret", null, "Bearer secret"]);
+  });
+
+  test("a client made with no program named sends envoy-client's own name and version", async () => {
+    const { fetchImpl, requests } = fakeFetch([jsonResponse([])]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await client.listAllIssues({});
+
+    expect(requests.map(userAgentOf)).toEqual([`dispatch-client/${envoyClientVersion}`]);
   });
 });

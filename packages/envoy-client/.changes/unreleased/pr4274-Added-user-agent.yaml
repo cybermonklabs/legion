@@ -1,0 +1,10 @@
+kind: Added
+custom:
+  Issue: pr4274
+body: |-
+  `DispatchClient` sends a `User-Agent` naming the program that runs it and its release, on every
+  request and on the `/healthz` probe, and no credential's headers replace it: the `userAgent` its
+  caller passes, else `dispatch-client/<version>`. The `dispatch` command names itself
+  `dispatch/<version> (<package>)` of the host plugin whose bundle runs it, or
+  `dispatch/0.0.0-dev (source)` from a checkout, so Dispatch's access log tells each client apart.
+  Every call still goes to `/api/v1`, which Dispatch now marks deprecated.

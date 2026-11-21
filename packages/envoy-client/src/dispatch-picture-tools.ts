@@ -15,7 +15,12 @@ import type {
 } from "@legion/contracts";
 import { SESSION_ID_PATTERN } from "@legion/contracts";
 import { bodyWasCut, carriedItem, wholeCarriedBody } from "./delivery";
-import { type DispatchClient, DispatchGatewayError, DispatchServiceError } from "./dispatch-http";
+import {
+  type DispatchClient,
+  DispatchGatewayError,
+  DispatchServiceError,
+  DispatchWriteUnsettledError,
+} from "./dispatch-http";
 import { parseDispatchRef } from "./dispatch-owner";
 import {
   type DatedText,
@@ -102,7 +107,7 @@ async function localPicture(
  * `PROJECT`, or `agent/<session id>`). Nothing here holds the text to a length: Dispatch holds
  * the whole text, picture lines included, to the bounds it publishes, and refuses it naming the
  * block that passed one. An upload Dispatch refuses fails the call naming its path, with nothing
- * posted.
+ * posted; one that may have landed fails it saying so once, and to check before a retry.
  */
 export async function textWithPictures(
   text: string,
@@ -125,15 +130,31 @@ export async function textWithPictures(
           : `; the pictures before it are uploaded (${addresses.join(", ")})`;
       // Only a refusal that says the upload never took effect is "not uploaded": a gateway's page
       // or Dispatch's own 5xx may come after Dispatch stored it, and a transport failure or an
-      // unsettled write may still land. The write's own message already ends its sentence.
+      // unsettled write may still land. A refusal's own message already ends its sentence.
       const refused =
         error instanceof DispatchGatewayError
           ? !error.mayHaveReachedDispatch
           : error instanceof DispatchServiceError && error.status < 500;
-      const outcome = refused ? "was not uploaded" : "may or may not have been uploaded";
+      if (refused) {
+        throw new Error(
+          `images: ${picture.path} was not uploaded: ${messageFor(error).replace(/\.$/, "")}. ` +
+            `Nothing was posted${earlier}.`
+        );
+      }
+      // An upload that may have landed says so once, in this line's words: what it got leads, in
+      // place of the client's own words on such a write, and this line says what to do before a
+      // retry, which uploads the picture again. A transport failure's advice for a moved URL is
+      // among what it got.
+      const got =
+        error instanceof DispatchWriteUnsettledError
+          ? error.answer
+          : error instanceof DispatchGatewayError
+            ? `${error.code}: ${error.answer}`
+            : messageFor(error).replace(/\.$/, "");
       throw new Error(
-        `images: ${picture.path} ${outcome}: ${messageFor(error).replace(/\.$/, "")}. Nothing ` +
-          `was posted${earlier}.`
+        `images: ${picture.path} may or may not have been uploaded: ${got}. Nothing was ` +
+          `posted${earlier}: check whether the picture was uploaded before you run the call ` +
+          "again, which uploads it again."
       );
     }
     const address = `dispatch://${owner}/artifact/${uploaded.artifact.slug}@v${uploaded.version.number}`;

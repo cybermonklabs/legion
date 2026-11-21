@@ -1689,7 +1689,7 @@ func TestTheBootHearsTheRecordsRepositoriesAndCachesTheLiveOnes(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(server.Close)
-	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "LEGION"}, dispatch: dispatch.New(server.URL, "dispatch-test-token"),
+	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "LEGION"}, dispatch: dispatch.New(server.URL, "dispatch-test-token", ""),
 		dispatchProject: "LEGION", repositories: newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets"))), log: quietLogger()}
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		for _, issue := range []record.Issue{anchorOn("LEGION-1", "acme/widgets"), doneOn("LEGION-2", "LEGION", "orbit/gadgets", "main")} {

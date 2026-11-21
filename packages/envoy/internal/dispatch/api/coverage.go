@@ -43,13 +43,13 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 	}
 	issueKey := r.PathValue("key")
 	if err := s.requireIssueExists(r.Context(), issueKey); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, issueKey, trees)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees.resolve()

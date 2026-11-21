@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // legionSettingResponse is what GET and PUT /api/v1/projects/{key}/legion/daemon answer.
@@ -163,8 +165,8 @@ func TestALegionSettingIsRefusedToAProjectScopedToken(t *testing.T) {
 				write.method, write.path, refused.Code, refused.Body.String())
 		}
 		refusal := decodeBody[refusalAnswer](t, refused)
-		if refusal.Code != codeProjectScopeDeployment {
-			t.Errorf("%s %s refusal = %+v, want %s", write.method, write.path, refusal, codeProjectScopeDeployment)
+		if refusal.Code != apicode.ProjectScopeDeployment.V1Name() {
+			t.Errorf("%s %s refusal = %+v, want %s", write.method, write.path, refusal, apicode.ProjectScopeDeployment.V1Name())
 		}
 		if !strings.Contains(refusal.Error, write.method+" ") {
 			t.Errorf("%s %s refusal %q does not name the route", write.method, write.path, refusal.Error)

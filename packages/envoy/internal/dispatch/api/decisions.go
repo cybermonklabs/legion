@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -39,12 +40,11 @@ import (
 // the block graph already answers.
 
 const (
-	// decisionsDocumentName is the document an issue's decisions live in, and
-	// decisionsDocumentSlug the slug its reference names
-	// (`dispatch://KEY/artifact/decisions-md`). The view reads the slug first and falls back to
-	// the filename, as every document reference resolves.
+	// decisionsDocumentName is the document an issue's decisions live in; the slug its
+	// reference names (`dispatch://KEY/artifact/decisions-md`) is its role's,
+	// model.RoleDocumentSlugs[model.ArtifactRoleDecisions]. The view reads the slug first and
+	// falls back to the filename, as every document reference resolves.
 	decisionsDocumentName = "decisions.md"
-	decisionsDocumentSlug = "decisions-md"
 	// replacedHeading is the section that holds replaced decisions; its own `###` sections are
 	// the replaced ones, and it is no decision itself.
 	replacedHeading = "Replaced"
@@ -88,37 +88,48 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	answer := issueDecisions{OpenQuestions: []issueAskRow{}, Decisions: []model.Decision{}}
 	spec, specFound, err := s.issueSpecDocument(r.Context(), key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if specFound {
 		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), key, spec.ID, reader); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
-	document, found, err := s.issueDecisionsDocument(r.Context(), key)
+	answer.Document, answer.Decisions, err = s.issueDecisionsOf(r.Context(), key, spec, specFound, reader)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if !found {
-		reader.resolve()
-		WriteJSON(w, http.StatusOK, answer)
-		return
-	}
-	reference := artifactReference(document)
-	answer.Document = &reference
-	specID := ""
-	if specFound {
-		specID = spec.ID
-	}
-	if answer.Decisions, err = s.readDecisions(r.Context(), document, reference, specID, reader); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// issueDecisionsOf is the issue's decisions document, its dispatch:// address or nil where the
+// issue has none, and each decision it holds in document order, as both versions of GET
+// decisions read them: an issue with no decisions.md answers nil and no decision. spec is the
+// issue's spec where specFound, which the decisions' links point into.
+func (s *server) issueDecisionsOf(
+	ctx context.Context, key string, spec model.Artifact, specFound bool, reader *displayTreeReader,
+) (*string, []model.Decision, error) {
+	document, found, err := s.issueDecisionsDocument(ctx, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !found {
+		return nil, []model.Decision{}, nil
+	}
+	reference := artifactReference(document)
+	specID := ""
+	if specFound {
+		specID = spec.ID
+	}
+	decisions, err := s.readDecisions(ctx, document, reference, specID, reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &reference, decisions, nil
 }
 
 // artifactReference is a document's own dispatch:// address.
@@ -148,7 +159,7 @@ func (s *server) issueSpecDocument(ctx context.Context, key string) (model.Artif
 // names, else the one whose filename it is, as every document reference resolves.
 func (s *server) issueDecisionsDocument(ctx context.Context, key string) (model.Artifact, bool, error) {
 	target := artifactTarget{IssueKey: &key}
-	document, err := s.loadArtifactByRefKey(ctx, s.deps.Store.Pool, target.refPrefix()+"/"+decisionsDocumentSlug)
+	document, err := s.loadArtifactByRefKey(ctx, s.deps.Store.Pool, target.refPrefix()+"/"+model.RoleDocumentSlugs[model.ArtifactRoleDecisions])
 	if err == nil {
 		return document, true, nil
 	}
@@ -173,7 +184,7 @@ func artifactMissing(err error) bool {
 	if !errors.As(err, &apiErr) {
 		return false
 	}
-	return apiErr.code == "ARTIFACT_NOT_FOUND" || apiErr.code == "ARTIFACT_REFERENCE_AMBIGUOUS"
+	return apiErr.code == apicode.ArtifactNotFound || apiErr.code == apicode.ArtifactReferenceAmbiguous
 }
 
 // specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
@@ -765,38 +776,58 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	var input keepDecisionInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.TextSHA256 == "" {
-		writeError(w, "INVALID_KEEP", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidKeep,
 			"text_sha256 is the text_sha256 the decision was read at")
 		return
 	}
 	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
+	}
+	// The keep's /api/v2 route is under the document's issue, which the v1 path does not name
+	// (dispatch://INFRA-4071/spec R3.1); a document of no issue is refused below.
+	if document.IssueKey != nil {
+		successorValue(r, "key", *document.IssueKey)
 	}
 	blockID := r.PathValue("block_id")
 	decision, err := s.keptDecision(r.Context(), document, blockID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if decision.TextSHA256 != input.TextSHA256 {
-		writeError(w, "DECISION_CHANGED", http.StatusConflict,
+		writeError(w, r, apicode.DecisionChanged,
 			"the decision changed since it was read; read it again and keep what it says now")
 		return
 	}
-	tx, err := s.begin(r.Context())
+	keep, err := s.writeDecisionKeep(r.Context(), actor, document, blockID, decision)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	defer tx.Rollback(r.Context())
+	WriteJSON(w, http.StatusOK, keep)
+}
+
+// writeDecisionKeep records that actor keeps decision, which keptDecision found blockID opens in
+// document, as its text stands: the one keep row of that decision, moved to actor and to now on
+// a repeat, and decision.kept appended on the document's issue and published once the write
+// commits. Both versions' keeps write it, POST /api/v1/artifacts/{id}/blocks/{block_id}/keep and
+// PUT /api/v2/issues/{key}/decisions/{block_id}/state.
+func (s *server) writeDecisionKeep(
+	ctx context.Context, actor model.Actor, document model.Artifact, blockID string, decision model.Decision,
+) (model.DecisionKeep, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return model.DecisionKeep{}, err
+	}
+	defer tx.Rollback(ctx)
 	keep := model.DecisionKeep{ArtifactID: document.ID}
-	if err := tx.QueryRow(r.Context(), `
+	if err := tx.QueryRow(ctx, `
 		insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
 		values ($1::uuid, $2, $3, $4, $5)
 		on conflict (artifact_id, block_id) do update
@@ -806,32 +837,31 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	`, document.ID, blockID, decisionTextSum(decision.Text), decision.ChangedVersion,
 		model.CanonicalLogin(actor.ID)).
 		Scan(&keep.BlockID, &keep.TextSHA256, &keep.ChangedVersion, &keep.KeptBy, &keep.KeptAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return model.DecisionKeep{}, err
 	}
-	event, err := s.appendEvent(r.Context(), tx, issueOwner(*document.IssueKey).event("decision.kept", actor, map[string]any{
+	event, err := s.appendEvent(ctx, tx, issueOwner(*document.IssueKey).event("decision.kept", actor, map[string]any{
 		"artifact_id":     document.ID,
 		"block_id":        blockID,
 		"changed_version": keep.ChangedVersion,
 	}))
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return model.DecisionKeep{}, err
 	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := tx.Commit(ctx); err != nil {
+		return model.DecisionKeep{}, err
 	}
-	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusOK, keep)
+	s.publish(ctx, event)
+	return keep, nil
 }
 
 // keptDecision is the decision blockID opens in document, refused unless document is the
 // decisions.md of its issue - resolved as the view resolves it, by slug and then by filename, so
 // Keep and the view never disagree about which document holds the decisions - and that block is
-// the heading of a decision outside `## Replaced`.
+// the heading of a decision outside `## Replaced`. Any other block is the block the path names
+// that holds no decision: 404 BLOCK_NOT_FOUND under /api/v2, which /api/v1 names TARGET_NOT_FOUND
+// (dispatch://INFRA-4071/spec R7).
 func (s *server) keptDecision(ctx context.Context, document model.Artifact, blockID string) (model.Decision, error) {
-	notFound := errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", blockID, document.Name)
+	notFound := errorf(apicode.BlockNotFound, "no decision %q in %s", blockID, document.Name)
 	if document.IssueKey == nil {
 		return model.Decision{}, notFound
 	}
@@ -863,7 +893,7 @@ func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
 	}
 	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	read := model.DocumentRead{ArtifactID: document.ID}
@@ -873,7 +903,7 @@ func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
 		select version, read_at from user_document_reads where login = $1 and artifact_id = $2::uuid
 	`, model.CanonicalLogin(actor.ID), document.ID).Scan(&version, &at)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	read.Version, read.ReadAt = version, at
@@ -895,29 +925,41 @@ func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 	}
 	var input documentReadInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.Version == nil || *input.Version < 0 {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "version must be a whole number that is not negative")
+		writeError(w, r, apicode.InvalidState, "version must be a whole number that is not negative")
 		return
 	}
 	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	read := model.DocumentRead{ArtifactID: document.ID}
-	var version int
+	read, err := writeDocumentRead(r.Context(), s.deps.Store.Pool, model.CanonicalLogin(actor.ID), document.ID, *input.Version)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, read)
+}
+
+// writeDocumentRead records, through q, that login has read the document artifactID names through
+// version, replacing the read it held, and answers the read as stored: the work of PUT
+// /api/v1/me/documents/{id}/read, through the pool, and of a document mark's write under /api/v2,
+// in the transaction of the request's every mark.
+func writeDocumentRead(ctx context.Context, q queryer, login, artifactID string, version int) (model.DocumentRead, error) {
+	read := model.DocumentRead{ArtifactID: artifactID}
+	var stored int
 	var at time.Time
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
+	if err := q.QueryRow(ctx, `
 		insert into user_document_reads (login, artifact_id, version) values ($1, $2::uuid, $3)
 		on conflict (login, artifact_id) do update set version = excluded.version, read_at = now()
 		returning version, read_at
-	`, model.CanonicalLogin(actor.ID), document.ID, *input.Version).Scan(&version, &at); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	`, login, artifactID, version).Scan(&stored, &at); err != nil {
+		return model.DocumentRead{}, err
 	}
-	read.Version, read.ReadAt = &version, &at
-	WriteJSON(w, http.StatusOK, read)
+	read.Version, read.ReadAt = &stored, &at
+	return read, nil
 }

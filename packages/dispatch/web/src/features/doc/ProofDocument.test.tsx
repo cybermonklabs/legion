@@ -555,6 +555,7 @@ test("ProofDocument compares a selected version with the current settled text wh
   queryClient.setQueryData(["artifact", artifact.id, "text"], {
     markdown: "Use Postgres",
     version: 2,
+    unsettled: false,
   });
   queryClient.setQueryData(["artifact", artifact.id, "version", 1], {
     authors: [{ id: "alice", kind: "user" }],

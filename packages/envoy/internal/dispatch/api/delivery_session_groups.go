@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -29,39 +30,45 @@ type createDeliverySessionGroupInput struct {
 func (s *server) createDeliverySessionGroup(w http.ResponseWriter, r *http.Request) {
 	var input createDeliverySessionGroupInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.createDeliverySessionGroupFrom(w, r, input)
+}
+
+// createDeliverySessionGroupFrom creates the group input names, the write both versions of the
+// create route make once each has read its body.
+func (s *server) createDeliverySessionGroupFrom(w http.ResponseWriter, r *http.Request, input createDeliverySessionGroupInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
-		writeError(w, "SESSION_GROUP_INPUT", http.StatusBadRequest, "name is required")
+		writeError(w, r, apicode.SessionGroupInput, "name is required")
 		return
 	}
-	sessions, ok := sessionGroupSessions(w, "sessions", input.Sessions)
+	sessions, ok := sessionGroupSessions(w, r, "sessions", input.Sessions)
 	if !ok {
 		return
 	}
 	if len(sessions) == 0 {
-		writeError(w, "SESSION_GROUP_INPUT", http.StatusBadRequest, "sessions must name at least one session")
+		writeError(w, r, apicode.SessionGroupInput, "sessions must name at least one session")
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	group, err := delivery.CreateSessionGroup(r.Context(), tx, name, sessions, actor)
 	if err != nil {
-		s.writeSessionGroupError(w, err)
+		s.writeSessionGroupError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusCreated, group)
@@ -80,9 +87,15 @@ type updateDeliverySessionGroupInput struct {
 func (s *server) updateDeliverySessionGroup(w http.ResponseWriter, r *http.Request) {
 	var input updateDeliverySessionGroupInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.updateDeliverySessionGroupFrom(w, r, input)
+}
+
+// updateDeliverySessionGroupFrom writes the edit input names to the path's group, the write both
+// versions of the edit route make once each has read its body.
+func (s *server) updateDeliverySessionGroupFrom(w http.ResponseWriter, r *http.Request, input updateDeliverySessionGroupInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -95,30 +108,30 @@ func (s *server) updateDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 	if input.Name != nil {
 		name := strings.TrimSpace(*input.Name)
 		if name == "" {
-			writeError(w, "SESSION_GROUP_INPUT", http.StatusBadRequest, "name must not be blank")
+			writeError(w, r, apicode.SessionGroupInput, "name must not be blank")
 			return
 		}
 		update.Name = &name
 	}
-	if update.Add, ok = sessionGroupSessions(w, "add", input.Add); !ok {
+	if update.Add, ok = sessionGroupSessions(w, r, "add", input.Add); !ok {
 		return
 	}
-	if update.Remove, ok = sessionGroupSessions(w, "remove", input.Remove); !ok {
+	if update.Remove, ok = sessionGroupSessions(w, r, "remove", input.Remove); !ok {
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	group, err := delivery.UpdateSessionGroup(r.Context(), tx, id, update, actor)
 	if err != nil {
-		s.writeSessionGroupError(w, err)
+		s.writeSessionGroupError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, group)
@@ -131,6 +144,12 @@ func (s *server) deleteDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
+	s.deleteDeliverySessionGroupAs(w, r, input)
+}
+
+// deleteDeliverySessionGroupAs deletes the path's group for the actor input names, the delete both
+// versions of the route make once each has read its body.
+func (s *server) deleteDeliverySessionGroupAs(w http.ResponseWriter, r *http.Request, input actorInput) {
 	if _, ok := s.requireActor(w, r, input.Actor); !ok {
 		return
 	}
@@ -140,16 +159,16 @@ func (s *server) deleteDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	if err := delivery.DeleteSessionGroup(r.Context(), tx, id); err != nil {
-		s.writeSessionGroupError(w, err)
+		s.writeSessionGroupError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -163,7 +182,7 @@ func (s *server) deleteDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 func sessionGroupID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id := r.PathValue("id")
 	if _, err := uuid.Parse(id); err != nil {
-		writeError(w, "SESSION_GROUP_ID_INPUT", http.StatusBadRequest, "session group ids are UUIDs")
+		writeError(w, r, apicode.SessionGroupIDInput, "session group ids are UUIDs")
 		return "", false
 	}
 	return id, true
@@ -171,12 +190,12 @@ func sessionGroupID(w http.ResponseWriter, r *http.Request) (string, bool) {
 
 // sessionGroupSessions trims each session id the field names and drops repeats, refusing a blank
 // one.
-func sessionGroupSessions(w http.ResponseWriter, field string, values []string) ([]string, bool) {
+func sessionGroupSessions(w http.ResponseWriter, r *http.Request, field string, values []string) ([]string, bool) {
 	sessions := make([]string, 0, len(values))
 	for _, value := range values {
 		session := strings.TrimSpace(value)
 		if session == "" {
-			writeError(w, "SESSION_GROUP_INPUT", http.StatusBadRequest, field+" holds a blank session id")
+			writeError(w, r, apicode.SessionGroupInput, field+" holds a blank session id")
 			return nil, false
 		}
 		if !slices.Contains(sessions, session) {
@@ -186,23 +205,25 @@ func sessionGroupSessions(w http.ResponseWriter, field string, values []string) 
 	return sessions, true
 }
 
-// writeSessionGroupError answers a group write's refusal with its code, naming what it refers to.
-func (s *server) writeSessionGroupError(w http.ResponseWriter, err error) {
+// writeSessionGroupError answers a group write's refusal with its code, naming what it refers to:
+// a group gone before the write could make it is a group nothing holds, 404 NOT_FOUND on /api/v1
+// and SESSION_GROUP_NOT_FOUND on /api/v2 (apicode.SessionGroupNotFound).
+func (s *server) writeSessionGroupError(w http.ResponseWriter, r *http.Request, err error) {
 	var inGroup *delivery.SessionInGroupError
 	var taken *delivery.SessionGroupNameTakenError
 	var titled *delivery.SessionGroupNameIsTitleError
 	switch {
 	case errors.Is(err, delivery.ErrSessionGroupNotFound):
-		writeError(w, "NOT_FOUND", http.StatusNotFound, err.Error())
+		writeError(w, r, apicode.SessionGroupNotFound, err.Error())
 	case errors.Is(err, delivery.ErrSessionGroupEmpty):
-		writeError(w, "SESSION_GROUP_INPUT", http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.SessionGroupInput, err.Error())
 	case errors.As(err, &inGroup):
-		writeError(w, "SESSION_IN_GROUP", http.StatusConflict, err.Error())
+		writeError(w, r, apicode.SessionInGroup, err.Error())
 	case errors.As(err, &taken):
-		writeError(w, "SESSION_GROUP_NAME_TAKEN", http.StatusConflict, err.Error())
+		writeError(w, r, apicode.SessionGroupNameTaken, err.Error())
 	case errors.As(err, &titled):
-		writeError(w, "SESSION_GROUP_NAME_IS_SESSION_TITLE", http.StatusConflict, err.Error())
+		writeError(w, r, apicode.SessionGroupNameIsSessionTitle, err.Error())
 	default:
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 	}
 }

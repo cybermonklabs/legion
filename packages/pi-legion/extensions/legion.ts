@@ -87,6 +87,10 @@ import {
   workspaceRecreatedNotice,
 } from "../src/workspace-recreated";
 
+/** What every Dispatch request this plugin makes names it as: the program and the release it
+ *  ships in. */
+const PI_LEGION_USER_AGENT = `pi-legion/${pkg.version}`;
+
 // Fatal bootstrap failures call this instead of `process.exit` directly, so a
 // test can substitute a throwing stand-in without killing the test runner. The stall watch's
 // last step reaches this same seam, since that exit is the one the daemon reads as a death.
@@ -961,7 +965,8 @@ export default function legionExtension(pi: PiApi): void {
             sessionConfigFile("omp", process.env),
             process.env,
             process.cwd(),
-            currentSessionID()
+            currentSessionID(),
+            PI_LEGION_USER_AGENT
           )(phase, role),
         branchHead: () => findPushedBranchHead({ env: process.env }),
         resolveDocument: async (issue, reference) => {
@@ -979,7 +984,9 @@ export default function legionExtension(pi: PiApi): void {
           }
           try {
             return await resolveIssueDocumentId(
-              new DispatchClient(config.url, config.credential, fetch),
+              new DispatchClient(config.url, config.credential, fetch, {
+                userAgent: PI_LEGION_USER_AGENT,
+              }),
               issue,
               reference
             );

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 )
 
@@ -105,26 +106,31 @@ func (NoBrowserIdentity) Login(*http.Request) (string, error) {
 	return "", ErrNoIdentity
 }
 
-// signInUnavailableMessage is what WriteError answers, with the code SIGNIN_UNAVAILABLE, a request
+// signInUnavailableMessage is what Refusal answers, with the code SIGNIN_UNAVAILABLE, a request
 // that needs the sign-in issuer while the issuer cannot be reached.
 const signInUnavailableMessage = "the sign-in issuer cannot be reached; try again in a minute"
 
-// WriteError renders an Identity error, or a sign-in's, as Dispatch's JSON error response: 401
+// Refusal is the code and message an Identity error, or a sign-in's, is refused with: 401
 // NO_IDENTITY for ErrNoIdentity; 503 SIGNIN_UNAVAILABLE for ErrSignInUnavailable (Membership: the
 // person stays signed in, and the first request after the issuer answers is served); and 500
-// IDENTITY_ERROR for anything else.
-func WriteError(w http.ResponseWriter, err error) {
-	status := http.StatusInternalServerError
-	body := map[string]string{"error": "identity resolution failed", "code": "IDENTITY_ERROR"}
+// IDENTITY_ERROR for anything else. The API's routes answer it through their own error writer, in
+// their version; WriteError answers it everywhere else.
+func Refusal(err error) (apicode.Code, string) {
 	switch {
 	case errors.Is(err, ErrNoIdentity):
-		status = http.StatusUnauthorized
-		body = map[string]string{"error": "unauthorized", "code": "NO_IDENTITY"}
+		return apicode.NoIdentity, "unauthorized"
 	case errors.Is(err, ErrSignInUnavailable):
-		status = http.StatusServiceUnavailable
-		body = map[string]string{"error": signInUnavailableMessage, "code": "SIGNIN_UNAVAILABLE"}
+		return apicode.SigninUnavailable, signInUnavailableMessage
 	}
+	return apicode.IdentityError, "identity resolution failed"
+}
+
+// WriteError renders an Identity error, or a sign-in's, as Dispatch's JSON error response: the
+// code and message of Refusal, under the name and status /api/v1 answers that code with, which
+// are the /auth routes' and a document socket's too.
+func WriteError(w http.ResponseWriter, err error) {
+	code, message := Refusal(err)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	w.WriteHeader(code.V1Status())
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code.V1Name(), "error": message})
 }

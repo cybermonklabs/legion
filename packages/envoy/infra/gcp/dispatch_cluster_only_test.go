@@ -214,6 +214,7 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"appEphemeralStorage", func(a *gcp.DispatchArgs) { a.AppEphemeralStorage = pulumi.StringRef("2Gi") }},
 		{"proxyEphemeralStorage", func(a *gcp.DispatchArgs) { a.ProxyEphemeralStorage = pulumi.StringRef("1Gi") }},
 		{"pprofPort", func(a *gcp.DispatchArgs) { a.PprofPort = pulumi.IntRef(6060) }},
+		{"apiV1End", func(a *gcp.DispatchArgs) { a.ApiV1End = dispatchAPIV1End }},
 		{"priorityClassName", func(a *gcp.DispatchArgs) { a.PriorityClassName = pulumi.StringRef("example-priority") }},
 		{"appPdbMinAvailable", func(a *gcp.DispatchArgs) { a.AppPdbMinAvailable = pulumi.IntRef(1) }},
 		{"frontDoorPdbMinAvailable", func(a *gcp.DispatchArgs) { a.FrontDoorPdbMinAvailable = pulumi.IntRef(1) }},

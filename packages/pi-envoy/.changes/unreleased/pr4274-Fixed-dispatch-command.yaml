@@ -1,0 +1,7 @@
+kind: Fixed
+custom:
+  Issue: pr4274
+body: |-
+  The bundled `dispatch` command stores a `--path` upload under a `.md` or `.markdown` name as a
+  document and names the kind Dispatch stored, and a write of it that may have reached Dispatch says
+  so and tells the caller to check before retrying, while a refusal does not.

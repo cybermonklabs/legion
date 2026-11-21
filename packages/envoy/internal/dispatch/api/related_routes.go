@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -52,7 +54,7 @@ func (s *server) getRelated(w http.ResponseWriter, r *http.Request) {
 	// blank one asks for the check both legs make.
 	keywordsOnly, present, valid := parseQueryBool(query, "keywords_only", false, true)
 	if present && !valid {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "keywords_only must be true or false")
+		writeError(w, r, apicode.InvalidQuery, "keywords_only must be true or false")
 		return
 	}
 	request := relatedRequest{
@@ -64,7 +66,7 @@ func (s *server) getRelated(w http.ResponseWriter, r *http.Request) {
 	}
 	if length := itemblocks.Units16(request.checkText()); length > contracts.SearchQueryMax {
 		tooLong := capExceededError("title and text", length, contracts.SearchQueryMax)
-		writeError(w, tooLong.code, tooLong.status, tooLong.message+"; send a longer text with POST")
+		writeError(w, r, tooLong.code, tooLong.message+"; send a longer text with POST")
 		return
 	}
 	// The GET form offers no answered question of another project: its one caller is the
@@ -82,11 +84,11 @@ func (s *server) postRelated(w http.ResponseWriter, r *http.Request) {
 	}
 	var request relatedRequest
 	if err := decodeJSON(r, &request); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if length := itemblocks.Units16(request.Title); length > contracts.IssueTitleMax {
-		capExceeded(w, "title", length, contracts.IssueTitleMax)
+		capExceeded(w, r, "title", length, contracts.IssueTitleMax)
 		return
 	}
 	// The POST form is what `dispatch related` calls, which an agent runs on purpose to ask a
@@ -101,17 +103,17 @@ func (s *server) postRelated(w http.ResponseWriter, r *http.Request) {
 func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request relatedRequest, question bool) {
 	project := r.PathValue("key")
 	if !projectKeyPattern.MatchString(project) {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("key", project))
+		writeError(w, r, apicode.InvalidProject, projectKeyProblem("key", project))
 		return
 	}
 	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	request.ExcludeIssue = strings.TrimSpace(request.ExcludeIssue)
 	if request.ExcludeIssue != "" {
 		if err := s.requireProjectIssue(r, project, request.ExcludeIssue); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -122,7 +124,7 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		}
 	}
 	if err := s.requireProjectIssues(r, project, excluded); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The answered asks this check offers carry the display tree of their answer for a caller
@@ -148,18 +150,18 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 // refuses a parent it cannot find or that sits in another project.
 func (s *server) requireProjectIssue(r *http.Request, project, key string) error {
 	if !issueKeyPattern.MatchString(key) {
-		return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT", "exclude_issue %q is not an issue key", key)
+		return errorf(apicode.ExcludeIssueInput, "exclude_issue %q is not an issue key", key)
 	}
 	var issueProject string
 	err := s.deps.Store.Pool.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&issueProject)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT", "exclude_issue issue %s not found", key)
+		return errorf(apicode.ExcludeIssueInput, "exclude_issue issue %s not found", key)
 	}
 	if err != nil {
 		return err
 	}
 	if issueProject != project {
-		return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT", "exclude_issue %s is not an issue of project %s", key, project)
+		return errorf(apicode.ExcludeIssueInput, "exclude_issue %s is not an issue of project %s", key, project)
 	}
 	return nil
 }
@@ -173,12 +175,12 @@ func (s *server) requireProjectIssues(r *http.Request, project string, keys []st
 		return nil
 	}
 	if len(keys) > relatedExcludeLimit {
-		return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT",
+		return errorf(apicode.ExcludeIssueInput,
 			"exclude_issues takes at most %d issues; %d were sent", relatedExcludeLimit, len(keys))
 	}
 	for _, key := range keys {
 		if !issueKeyPattern.MatchString(key) {
-			return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT", "exclude_issues %q is not an issue key", key)
+			return errorf(apicode.ExcludeIssueInput, "exclude_issues %q is not an issue key", key)
 		}
 	}
 	var missing []string
@@ -190,13 +192,13 @@ func (s *server) requireProjectIssues(r *http.Request, project string, keys []st
 		return err
 	}
 	if len(missing) > 0 {
-		return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT",
+		return errorf(apicode.ExcludeIssueInput,
 			"exclude_issues %s is not an issue of project %s", missing[0], project)
 	}
 	return nil
 }
 
-// relatedChecksReportQuery counts the related_checks rows the filters select ($1 project, $2
+// relatedChecksReportQuery counts the related_checks rows the filters select ($1 projects, $2
 // from, $3 to, $4 source kind; each null for no filter). The percentiles are percentile_disc,
 // which ignores nulls like every aggregate here, so each is a time some check took rather than
 // one interpolated between two checks.
@@ -204,7 +206,7 @@ const relatedChecksReportQuery = `
 with checks as (
   select source_kind, outcome, search, reason, keyword_ms, total_ms
     from related_checks
-   where ($1::text is null or project_key = $1)
+   where ($1::text[] is null or project_key = any($1))
      and ($2::timestamptz is null or created_at >= $2)
      and ($3::timestamptz is null or created_at < $3)
      and ($4::text is null or source_kind = $4)
@@ -224,7 +226,7 @@ select
 from checks`
 
 // relatedChecksOffersQuery counts the writes whose check offered an answered question of another
-// project, under the filters relatedChecksReportQuery applies to related_checks ($1 project, $2
+// project, under the filters relatedChecksReportQuery applies to related_checks ($1 projects, $2
 // from, $3 to, $4 source kind; each null for no filter).
 //
 // It counts the writes, not the items: a check that offered two questions wrote two rows of the
@@ -242,7 +244,7 @@ select count(distinct ws.source_ask_id)
   left join issues i on i.key = ws.source_issue_key
   left join artifacts a on a.id = ws.source_artifact_id
  where ws.role = 'other_project'
-   and ($1::text is null or coalesce(i.project_key, a.project_key) = $1)
+   and ($1::text[] is null or coalesce(i.project_key, a.project_key) = any($1))
    and ($2::timestamptz is null or ws.created_at >= $2)
    and ($3::timestamptz is null or ws.created_at < $3)
    and ($4::text is null or ws.source_kind = $4)`
@@ -252,53 +254,62 @@ select count(distinct ws.source_ask_id)
 var relatedSourceKinds = map[string]bool{"issue": true, "ask": true, "decision_block": true}
 
 // getRelatedChecks answers GET /api/v1/related-checks: model.RelatedChecksReport over the checks
-// recorded within [from, to), of one project and one source kind when given. The counts of
-// related_checks come in one statement and OtherProjectOffers, which write_suggestions holds, in
-// a second one over the same window and filters (relatedChecksOffersQuery).
+// recorded within [from, to), of one project and one source kind when given
+// (relatedChecksReportOf).
 func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	query := r.URL.Query()
 	var report model.RelatedChecksReport
+	var projects []string
 	if project := strings.TrimSpace(query.Get("project")); project != "" {
 		if !projectKeyPattern.MatchString(project) {
-			writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
+			writeError(w, r, apicode.InvalidProject, projectKeyProblem("project", project))
 			return
 		}
 		report.Project = &project
+		projects = []string{project}
 	}
 	if kind := strings.TrimSpace(query.Get("source_kind")); kind != "" {
 		if !relatedSourceKinds[kind] {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("source_kind %q is not issue, ask or decision_block", kind))
+			writeError(w, r, apicode.InvalidQuery, fmt.Sprintf("source_kind %q is not issue, ask or decision_block", kind))
 			return
 		}
 		report.SourceKind = &kind
 	}
 	from, to, err := parseOptionalWindow(query)
 	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.InvalidQuery, err.Error())
 		return
 	}
 	report.From, report.To = from, to
+	if err := s.relatedChecksReportOf(r.Context(), &report, projects); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, report)
+}
 
+// relatedChecksReportOf counts into report the checks recorded within [report.From, report.To),
+// of the projects named (every project for none) and of report.SourceKind, each filter left out
+// where it is nil: the counts of related_checks in one statement and OtherProjectOffers, which
+// write_suggestions holds, in a second one over the same window and filters
+// (relatedChecksOffersQuery). GET /api/v1/related-checks and GET /api/v2/related-check-stats both
+// count through it.
+func (s *server) relatedChecksReportOf(ctx context.Context, report *model.RelatedChecksReport, projects []string) error {
 	keyword, total := &report.KeywordMS, &report.TotalMS
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), relatedChecksReportQuery,
-		report.Project, report.From, report.To, report.SourceKind,
+	if err := s.deps.Store.Pool.QueryRow(ctx, relatedChecksReportQuery,
+		projects, report.From, report.To, report.SourceKind,
 	).Scan(
 		&report.Total, &report.BySourceKind, &report.ByOutcome, &report.BySearch, &report.ByReason,
 		&report.Completed, &report.SkippedForTime,
 		&keyword.Count, &keyword.P50, &keyword.P95, &keyword.Max, &keyword.Over300MS,
 		&total.Count, &total.P50, &total.P95, &total.Max, &total.Over300MS,
 	); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return err
 	}
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), relatedChecksOffersQuery,
-		report.Project, report.From, report.To, report.SourceKind,
-	).Scan(&report.OtherProjectOffers); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	WriteJSON(w, http.StatusOK, report)
+	return s.deps.Store.Pool.QueryRow(ctx, relatedChecksOffersQuery,
+		projects, report.From, report.To, report.SourceKind,
+	).Scan(&report.OtherProjectOffers)
 }

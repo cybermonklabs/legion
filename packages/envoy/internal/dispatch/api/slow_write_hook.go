@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // slowWriteInput is the body of POST /api/v1/writes/_test/slow.
@@ -42,12 +44,14 @@ func (s *server) armSlowWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	var input slowWriteInput
 	if err := decodeJSONTestHook(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	if !keyedMethod(input.Method) || !strings.HasPrefix(input.Path, "/") ||
+	// A POST or a PATCH, the methods every version keys (keyedMethod): a path names its version,
+	// and the hook takes the methods that are keyed whichever version it names.
+	if (input.Method != http.MethodPost && input.Method != http.MethodPatch) || !strings.HasPrefix(input.Path, "/") ||
 		input.DelayMS < 0 || input.DelayMS > keyedHandlerLimit.Milliseconds() {
-		writeError(w, "INVALID_BODY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidBody,
 			"want {method: POST or PATCH, path: a request path, delay_ms: 0 to disarm, at most the keyed handler's limit}")
 		return
 	}
@@ -73,7 +77,7 @@ func (s *server) slowedByTestHook(handler http.HandlerFunc) http.HandlerFunc {
 		route := r.Method + " " + r.URL.Path
 		if delay, armed := s.slowWrites.Load(route); armed {
 			if !s.waitSlowWrite(r.Context(), route, delay.(time.Duration)) {
-				writeError(w, "SLOW_WRITE_CUT_OFF", http.StatusServiceUnavailable,
+				writeError(w, r, apicode.SlowWriteCutOff,
 					"the slow-write test hook's wait was cut off before the handler ran")
 				return
 			}

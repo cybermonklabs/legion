@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 
 import { projectIssuesQuery } from "../../api/queries";
+import type { ExternalLink } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { type PageWords, usePageWords, withoutEllipsis } from "../../components/tooltips";
 import {
@@ -19,6 +20,10 @@ import {
 
 const maxLabelLength = 40;
 const maxLabels = 20;
+
+/** A GitHub issue link as Dispatch records the source of an issue it imported, its group the
+ *  repository's `<owner>/<repo>`. */
+const githubIssueURL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\/\d+$/;
 
 function labelKey(label: string): string {
   return label.toLowerCase();
@@ -40,6 +45,24 @@ function includesLabel(labels: readonly string[], label: string): boolean {
   return labels.some((current) => labelKey(current) === labelKey(label));
 }
 
+/** The key of the issue's own `repo:` label, when it holds one: the label equal to `repo:` and
+ *  the `<owner>/<repo>` of one of its GitHub issue links, which Dispatch wrote when it imported
+ *  the issue through the default project. The server keeps that label, whatever its length, when
+ *  a replacement sends it back, and counts it toward no limit (R14); every other `repo:` label, a
+ *  person's or another issue's, is an ordinary label held to 20 labels and 40 characters. */
+function ownRepoLabelKey(
+  labels: readonly string[],
+  externalLinks: readonly ExternalLink[]
+): string | undefined {
+  const repoKeys = new Set(
+    externalLinks.flatMap((link) => {
+      const match = githubIssueURL.exec(link.url);
+      return match === null ? [] : [labelKey(`repo:${match[1]}`)];
+    })
+  );
+  return labels.map(labelKey).find((key) => repoKeys.has(key));
+}
+
 function labelsMatch(left: readonly string[], right: readonly string[]): boolean {
   const leftKeys = new Set<string>();
   const rightKeys = new Set<string>();
@@ -52,6 +75,8 @@ function labelsMatch(left: readonly string[], right: readonly string[]): boolean
   return true;
 }
 
+/** The issue's labels go back as the issue spells them, so its own `repo:` label is sent back
+ *  unchanged, which is when the server keeps it. */
 function saveLabels(draft: readonly string[], labels: readonly string[]): string[] {
   return [
     ...labels.filter((label) => includesLabel(draft, label)),
@@ -105,6 +130,8 @@ export interface IssueLabelsProps {
    *  new issue page's Details draws the prototype's `.lchip`). Given, the labels wrap. */
   readonly chipClassName?: string;
   readonly disabled: boolean;
+  /** The issue's external links, which name its own `repo:` label (`ownRepoLabelKey`). */
+  readonly externalLinks: readonly ExternalLink[];
   /** The issue's key, `labelsControlName`'s first argument, which ends the control's name inside
    *  `NoTooltips` while the control draws no label (`displayLabels`: the open popover's draft,
    *  else `labels`) or a save is in flight. Outside `NoTooltips` it changes nothing. */
@@ -122,6 +149,7 @@ export interface IssueLabelsProps {
 export function IssueLabels({
   chipClassName,
   disabled,
+  externalLinks,
   issueKey,
   labels,
   onSave,
@@ -136,18 +164,23 @@ export function IssueLabels({
   // The same list the project's issues table and IssueBoard load for this project, so opening
   // the popover on a page that already has it fetches nothing.
   const issues = useQuery({ ...projectIssuesQuery(project, []), enabled: open });
+  const ownLabelKey = ownRepoLabelKey(labels, externalLinks);
+  // Every label over 40 characters but the issue's own `repo:` label, another issue's long
+  // `repo:` label among them, is left out of the options: the server would refuse it.
   const options = useMemo(
     () =>
       uniqueLabels([
         ...draft,
         ...labels,
         ...(issues.data ?? []).flatMap((issue) => issue.labels ?? []),
-      ]).sort((left, right) => {
-        const selectedOrder =
-          Number(includesLabel(draft, right)) - Number(includesLabel(draft, left));
-        return selectedOrder === 0 ? left.localeCompare(right) : selectedOrder;
-      }),
-    [draft, issues.data, labels]
+      ])
+        .filter((label) => label.length <= maxLabelLength || labelKey(label) === ownLabelKey)
+        .sort((left, right) => {
+          const selectedOrder =
+            Number(includesLabel(draft, right)) - Number(includesLabel(draft, left));
+          return selectedOrder === 0 ? left.localeCompare(right) : selectedOrder;
+        }),
+    [draft, issues.data, labels, ownLabelKey]
   );
   const displayLabels = open ? draft : labels;
   // Inside `NoTooltips` the control's name begins with the words it draws: "Add a label" with no
@@ -180,7 +213,7 @@ export function IssueLabels({
     [disabled, draft, labels, onSave, open, saving]
   );
   const changeDraft = (next: string[]) => {
-    if (next.length > maxLabels) {
+    if (next.filter((label) => labelKey(label) !== ownLabelKey).length > maxLabels) {
       setInputError(`An issue can have at most ${maxLabels} labels.`);
       return;
     }

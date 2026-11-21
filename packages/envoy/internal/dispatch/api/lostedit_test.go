@@ -97,7 +97,7 @@ func TestALostWriteIsRefusedWithItsOperationsAndParticipants(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			(&server{}).writeHandlerError(recorder, test.err)
+			(&server{}).writeHandlerError(recorder, nil, test.err)
 			if recorder.Code != http.StatusConflict {
 				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusConflict)
 			}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -101,8 +102,8 @@ func TestOnlyAPersonScopeRecordsADeclineAndNeverOnAnApprovalRequest(t *testing.T
 	// The deployment's shared token holds no scope at all, so it acts for nobody.
 	scopeless := openAskAs(t, handler, issue.Key, "session-asking", "Which transport, asked of a scopeless caller?")
 	refused := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+scopeless+"/decline", declineBody(&note))
-	if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != codeScopeRequired {
-		t.Fatalf("a decline by the shared token: status=%d body=%s, want 403 %s", refused.Code, refused.Body.String(), codeScopeRequired)
+	if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != apicode.OAuthScopeRequired.V1Name() {
+		t.Fatalf("a decline by the shared token: status=%d body=%s, want 403 %s", refused.Code, refused.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 	requireAskState(t, database, "after the shared token's decline", scopeless, "open")
 
@@ -168,9 +169,9 @@ func TestOnlyAPersonScopeRecordsADeclineAndNeverOnAnApprovalRequest(t *testing.T
 
 		refused := rig.serve(caller.presenting(t, http.MethodPost,
 			"/api/v1/asks/"+fixture.ask+"/decline", token, map[string]any{"note": "Not mine to say."}))
-		if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != codeScopeRequired {
+		if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != apicode.OAuthScopeRequired.V1Name() {
 			t.Fatalf("a decline by a project-scoped token: status=%d body=%s, want 403 %s",
-				refused.Code, refused.Body.String(), codeScopeRequired)
+				refused.Code, refused.Body.String(), apicode.OAuthScopeRequired.V1Name())
 		}
 		requireAskState(t, rig.database, "after the project-scoped token's decline", fixture.ask, "open")
 	})

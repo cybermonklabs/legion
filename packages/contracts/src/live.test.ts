@@ -252,7 +252,7 @@ test("an error frame names its code and its message", () => {
     sub: "timeline-1",
     code: "DELIVERY_NOT_CONFIGURED",
     message:
-      "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery",
+      "delivery is not configured; set delivery_settings through PUT /api/v2/settings/delivery",
   });
 });
 

@@ -84,7 +84,13 @@ type DocumentTextSpy = Mock<typeof api.getArtifactText>;
 function spyDocumentText(markdown: string | Error): DocumentTextSpy {
   return spyOn(api, "getArtifactText").mockImplementation(async (): Promise<ArtifactText> => {
     if (markdown instanceof Error) throw markdown;
-    return { markdown, markdown_tree: displayTree(markdown), token: "token", version: 1 };
+    return {
+      markdown,
+      markdown_tree: displayTree(markdown),
+      token: "token",
+      version: 1,
+      unsettled: false,
+    };
   });
 }
 

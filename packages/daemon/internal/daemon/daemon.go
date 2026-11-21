@@ -162,8 +162,9 @@ func storeOpenLongest(retry bootprobe.Retry) time.Duration {
 	return longest
 }
 
-// overrides are the parts of a daemon a test replaces, and the listener `legion start` inherited;
-// the zero value is the real daemon binding its own address.
+// overrides are the parts of a daemon a test replaces, and what `legion start` hands it: the
+// listener it inherited and the build's release; the zero value is the real daemon binding its own
+// address and naming no release.
 type overrides struct {
 	// runtime builds the runtime over the worker stream in place of the configured one; nil is the
 	// configured runtime.
@@ -222,6 +223,10 @@ type overrides struct {
 	// serves the socket `legion start` inherited from LEGION_LISTEN_FD (handed); a test's hands
 	// over a listener it holds.
 	listen func(network, address string) (net.Listener, error)
+	// release is the build `legion start` names this daemon by (cmd/legion's release, else its
+	// revision): what the daemon's Dispatch client names itself with (dispatch.New). Empty, in a
+	// test, names none, which the client sends as `legion-daemon/(devel)`.
+	release string
 	// strandedReported runs once the boot's report of the claims nothing will wake has finished,
 	// whether it logged or not (reportStranded); nil, in production, is nothing. The report runs
 	// beside the API, so a test that asserts on its line waits for this rather than for /healthz.
@@ -294,8 +299,11 @@ type overrides struct {
 // and port: the socket `legion start` inherited (LEGION_LISTEN_FD), which it checked names both.
 // Run closes it once it stops serving, as it closes a listener it binds; a refusal before the
 // listener is taken leaves it to the caller to close.
-func Run(ctx context.Context, cfg config.Config, log *slog.Logger, listener net.Listener) error {
-	return run(ctx, cfg, log, overrides{listen: handed(listener)})
+//
+// release names the build the daemon runs in every request its Dispatch client makes
+// (`legion-daemon/<release>`); empty names none.
+func Run(ctx context.Context, cfg config.Config, log *slog.Logger, listener net.Listener, release string) error {
+	return run(ctx, cfg, log, overrides{listen: handed(listener), release: release})
 }
 
 // handed is the listen of a daemon handed listener: it takes listener, whatever address it is
@@ -442,7 +450,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, o.release, plan.clock.Now)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {

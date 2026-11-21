@@ -82,6 +82,9 @@ export interface AskGateHost {
   /** The session this process is acting as now, read at each call: what a broker trade for the
    * gate's own Dispatch reads writes under (`currentSessionID`, extensions/envoy.ts). */
   readonly session: () => string;
+  /** What the gate's own Dispatch requests name the plugin as (`PI_ENVOY_USER_AGENT`,
+   * extensions/envoy.ts). */
+  readonly userAgent: string;
 }
 
 // The core passes the host's objects through untyped: ctx is the ExtensionContext, whose
@@ -147,7 +150,7 @@ export function registerAskGate(pi: PiApi, host: AskGateHost): AskGateRegistrati
     env: process.env,
     now: Date.now,
     dispatchClient: (directory, signal) =>
-      sessionDispatchClient(host.configFile, directory, { signal }, host.session),
+      sessionDispatchClient(host.configFile, directory, { signal }, host.session, host.userAgent),
   });
   const loading = loadAskGate(pi, host, record);
   // A rejection is handled here and by the caller's notice; never an unhandled one.
@@ -362,7 +365,8 @@ async function loadAskGate(
         host.configFile,
         directory,
         deadlineMs === undefined ? { signal } : { signal, deadlineMs },
-        host.session
+        host.session,
+        host.userAgent
       ),
     recordDecision: record,
     // The dump holds the primary system prompt and transcript: owner-only, like the session files.

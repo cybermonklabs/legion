@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -30,21 +31,28 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	var input rebuildArtifactInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.rebuildDocument(w, r, actor, input)
+}
+
+// rebuildDocument rebuilds the document the path names for actor, as input asks, once the route
+// has read its body: the work of POST /api/v1/artifacts/{id}/rebuild (rebuildArtifact) and POST
+// /api/v2/artifacts/{id}/rebuilds (rebuildArtifactV2). It answers the rebuild's report 200.
+func (s *server) rebuildDocument(w http.ResponseWriter, r *http.Request, actor model.Actor, input rebuildArtifactInput) {
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		writeError(w, r, apicode.NotDocument, "artifact is not a document")
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -52,28 +60,28 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 	defer ledger.Discard()
 	report, written, err := s.deps.Docs.RebuildDocument(documentCtx, artifact.ID, input.Markdown, actor)
 	if errors.Is(err, docs.ErrDocumentLive) {
-		writeError(w, "DOCUMENT_LIVE", http.StatusConflict, err.Error())
+		writeError(w, r, apicode.DocumentLive, err.Error())
 		return
 	}
 	if errors.Is(err, docs.ErrDocumentLoads) {
-		writeError(w, "DOCUMENT_LOADS", http.StatusConflict, err.Error())
+		writeError(w, r, apicode.DocumentLoads, err.Error())
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var published []*model.Event
 	if written.Wrote {
 		event, err := s.commitArtifactVersionEvent(ledger, ownerForArtifact(artifact), actor, artifact.ID, artifact.Name, written, nil)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		published = append(published, event)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), appendedEvents(published...)...)
@@ -97,15 +105,15 @@ func (s *server) injectArtifactForTest(w http.ResponseWriter, r *http.Request, i
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		writeError(w, r, apicode.NotDocument, "artifact is not a document")
 		return
 	}
 	if err := inject(r.Context(), artifact.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

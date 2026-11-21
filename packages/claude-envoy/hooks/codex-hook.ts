@@ -19,6 +19,7 @@ import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
 import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
 import { z } from "zod"
+import { version as codexPackageVersion } from "../codex/package.json" with { type: "json" }
 import { configuredValue } from "../src/claude-session"
 import {
   codexEndedFile,
@@ -39,6 +40,11 @@ import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity
 
 /** How long the open-asks read may take before the summary says it is unavailable. */
 const OPEN_ASKS_TIMEOUT_MS = 3_000
+
+/** What every Dispatch request of this hook names it as: the program and the release of the
+ *  package a Codex session runs (`codex/package.json`), as Claude Code's session hooks name
+ *  themselves `claude-envoy-hooks/<version>`. The Codex MCP server names itself apart. */
+const CODEX_HOOKS_USER_AGENT = `codex-envoy-hooks/${codexPackageVersion}`
 
 const SessionStartInput = z.object({
   session_id: z.string().min(1),
@@ -142,6 +148,7 @@ async function sessionStart(raw: unknown): Promise<void> {
   try {
     const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
       signal: AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
+      userAgent: CODEX_HOOKS_USER_AGENT,
     }).openAsks(input.session_id)
     process.stdout.write(
       `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url)}\n`,

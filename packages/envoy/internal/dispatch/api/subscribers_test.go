@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -306,8 +307,8 @@ func TestListIssueSubscribersRejectsACredentialWithoutThePersonScope(t *testing.
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token: status=%d body=%s, want 403 %s", response.Code, response.Body.String(), codeScopeRequired)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token: status=%d body=%s, want 403 %s", response.Code, response.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 	own := agentRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key+"/subscribers", nil,
 		personalTokenHolding(t, database, model.ScopePerson))
@@ -623,8 +624,8 @@ func TestUnsubscribeIssueSessionRejectsACredentialWithoutThePersonScope(t *testi
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token: status=%d body=%s, want 403 %s", response.Code, response.Body.String(), codeScopeRequired)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token: status=%d body=%s, want 403 %s", response.Code, response.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 }
 

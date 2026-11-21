@@ -499,6 +499,11 @@ sends anything and names `--path`, which stores a file whose path does not end i
 `.markdown` as its bytes, unchanged, under that name. A document title with a dot near its end
 takes `--content` once it ends in `.md`.
 
+A `--path` upload under a `--name` that ends in `.md` or `.markdown` is sent as Markdown whatever
+the path's extension, so `--name plan.md --path plan.txt` stores a document. The answer names the
+kind Dispatch stored: `a document (kind doc; …)`, `a file (kind file; …)` or
+`a picture (kind image; …)`.
+
 An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
 That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`, beside the `--force` that asks the command for the document's next version.
 A token behind the live document is refused `409 PRECONDITION_FAILED` and nothing is written: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token the document carries now, and to upload again naming that token.

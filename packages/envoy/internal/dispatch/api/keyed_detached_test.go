@@ -47,7 +47,7 @@ func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 		select {
 		case <-time.After(20 * time.Second):
 		case <-r.Context().Done():
-			writeError(w, "CUT_OFF", http.StatusServiceUnavailable, "the run was cut off with its client")
+			WriteJSON(w, http.StatusServiceUnavailable, errorBody{Code: "CUT_OFF", Error: "the run was cut off with its client"})
 			return
 		}
 		if err := write(r.Context(), nil); err != nil {

@@ -1,7 +1,8 @@
 package api
 
 // going_catalogue.go holds the catalogue of operations an agent may propose on Dispatch's
-// graph, and serves it at GET /api/v1/going/catalogue.
+// graph, and serves it at GET /api/v1/going/catalogue and at GET /api/v2/going-actions, each
+// naming the rows of its own version.
 //
 // The catalogue is the dispatch tools that write, all but one: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
@@ -25,6 +26,13 @@ package api
 //
 // Nothing here decides anything: the catalogue says what an action is and what it takes, and
 // GoingCaller performs one an agent already chose. The loop that chooses is not in this package.
+//
+// The two versions name their own rows: goingToolRoutes the /api/v1 rows, which GET
+// /api/v1/going/catalogue serves, and goingToolRoutesV2 the /api/v2 rows that answer them. A v1
+// row a v2 route answers in a state body is a v2 row with the fixed part of that body
+// (goingToolRoute.Body), or two where the one v1 row moves to either of two states, as POST
+// /api/v1/asks/{id}/resolve resolves or retracts; and the v1 rows a v2 route replaced by one row
+// with an id, such as the document edits by slug, are that one row.
 
 import (
 	"bytes"
@@ -43,9 +51,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// goingCataloguePath is the route that serves the catalogue, named once so the refusal of an
-// action the catalogue does not hold can point at the list without spelling it again.
-const goingCataloguePath = "/api/v1/going/catalogue"
+// goingCataloguePath is the path of the route that serves the /api/v1 catalogue, and
+// goingActionsPath that of the route that serves the /api/v2 one: the refusal of an action a
+// catalogue does not hold points at its list by them (GoingCatalogue.list).
+const (
+	goingCataloguePath = "/api/v1/going/catalogue"
+	goingActionsPath   = "/api/v2/going-actions"
+)
 
 // goingCallerSession stands, where a row's path binding names it, for the agent session the
 // caller acts as rather than for an argument of the tool: a follow records the calling session
@@ -70,6 +82,11 @@ type goingToolRoute struct {
 	// Relations are the graph relations this row's write makes, each a structural edge kind
 	// (model.GraphEdgeKinds) or a `block[]` attribute of a typed block (pmdoc.LinkKinds).
 	Relations []string
+	// Body is the fixed part of the body a call of this row sends beside the tool's arguments:
+	// the state a /api/v2 state route moves to, such as {"state": "resolved"} on PUT
+	// /api/v2/asks/{id}/state. No member of it is an argument of the tool, which
+	// buildGoingCatalogue holds the table to. Nil on every row of the /api/v1 table.
+	Body map[string]any
 }
 
 // goingToolRoutes is the rows of the server's table each dispatch tool writes, by the tool's own
@@ -252,16 +269,189 @@ var goingToolRoutes = map[string][]goingToolRoute{
 	}},
 }
 
+// goingToolRoutesV2 is goingToolRoutes at /api/v2: for each tool, the /api/v2 rows that answer
+// the /api/v1 rows it writes (each v1 row's successor), in the same order, which GET
+// /api/v2/going-actions serves and GoingCaller performs against /api/v2. Where the v2 route is a
+// state route its row carries the fixed part of its body: the ask's resolve and retract are one v2
+// route picked by the state, so they are two rows told apart by the tool's own `kind`. The three
+// document-edit rows of /api/v1 are one, the document's own by id, since /api/v2 edits a document
+// by its id alone; a call naming a document by slug resolves it first, as a v1 call to the
+// document's own row does.
+var goingToolRoutesV2 = map[string][]goingToolRoute{
+	"dispatch_issue": {{
+		Method: http.MethodPost, Pattern: "/api/v2/issues", Path: map[string]string{},
+		Relations: []string{"child_of", "blocked_by", "affects", "mentions"},
+	}},
+	"dispatch_issue_update": {{
+		Method: http.MethodPatch, Pattern: "/api/v2/issues/{key}",
+		Path:      map[string]string{"key": "issue"},
+		Relations: []string{"child_of", "blocked_by", "affects"},
+	}},
+	"dispatch_claim": {
+		{
+			Method: http.MethodDelete, Pattern: "/api/v2/issues/{key}/claim",
+			Path: map[string]string{"key": "issue"}, WhenArgument: "release", WhenValue: true,
+		},
+		{
+			Method: http.MethodPut, Pattern: "/api/v2/issues/{key}/claim",
+			Path: map[string]string{"key": "issue"},
+		},
+	},
+	"dispatch_ask": {
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/issues/{key}/asks",
+			Path:      map[string]string{"key": "issue"},
+			Relations: []string{"owned_by", "anchored_to", "followed_by", "mentions"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/artifacts/{id}/asks",
+			Path:      map[string]string{"id": "artifact"},
+			Relations: []string{"owned_by", "anchored_to", "followed_by", "mentions"},
+		},
+	},
+	"dispatch_edit_ask": {{
+		Method: http.MethodPatch, Pattern: "/api/v2/asks/{id}",
+		Path: map[string]string{"id": "ask"}, Relations: []string{"mentions"},
+	}},
+	"dispatch_resolve_ask": {
+		{
+			Method: http.MethodPut, Pattern: "/api/v2/asks/{id}/state",
+			Path: map[string]string{"id": "ask"}, WhenArgument: "kind", WhenValue: "resolved",
+			Body: map[string]any{"state": "resolved"},
+		},
+		{
+			Method: http.MethodPut, Pattern: "/api/v2/asks/{id}/state",
+			Path: map[string]string{"id": "ask"}, WhenArgument: "kind", WhenValue: "retracted",
+			Body: map[string]any{"state": "retracted"},
+		},
+	},
+	"dispatch_resolve_comment": {{
+		Method: http.MethodPut, Pattern: "/api/v2/comments/{id}/state",
+		Path: map[string]string{"id": "comment"}, Body: map[string]any{"state": "resolved"},
+	}},
+	"dispatch_follow": {
+		{
+			Method: http.MethodDelete, Pattern: "/api/v2/asks/{id}/followers/{session_id}",
+			Path:         map[string]string{"id": "ask", "session_id": goingCallerSession},
+			WhenArgument: "action", WhenValue: "unfollow",
+			Relations: []string{"followed_by"},
+		},
+		{
+			Method: http.MethodPut, Pattern: "/api/v2/asks/{id}/followers/{session_id}",
+			Path:      map[string]string{"id": "ask", "session_id": goingCallerSession},
+			Relations: []string{"followed_by"},
+		},
+	},
+	"dispatch_comment": {
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/issues/{key}/comments",
+			Path:      map[string]string{"key": "issue"},
+			Relations: []string{"owned_by", "anchored_to", "answers", "replies_to", "mentions"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/artifacts/{id}/comments",
+			Path:      map[string]string{"id": "artifact"},
+			Relations: []string{"owned_by", "anchored_to", "answers", "replies_to", "mentions"},
+		},
+	},
+	"dispatch_suggest": {
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/issues/{key}/comments",
+			Path:      map[string]string{"key": "issue"},
+			Relations: []string{"owned_by", "anchored_to", "mentions"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/artifacts/{id}/comments",
+			Path:      map[string]string{"id": "artifact"},
+			Relations: []string{"owned_by", "anchored_to", "mentions"},
+		},
+	},
+	"dispatch_message": {
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/issues/{key}/messages",
+			Path:      map[string]string{"key": "issue"},
+			Relations: []string{"replies_to", "mentions"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/messages/{id}/replies",
+			Path:      map[string]string{"id": "in_reply_to"},
+			Relations: []string{"replies_to", "mentions"},
+		},
+	},
+	"dispatch_send_to_agent": {{
+		Method: http.MethodPost, Pattern: "/api/v2/agents/{session_id}/messages",
+		Path: map[string]string{"session_id": "session"}, Relations: []string{"replies_to"},
+	}},
+	"dispatch_doc_edit": {{
+		Method: http.MethodPost, Pattern: "/api/v2/artifacts/{id}/edits",
+		Path:      map[string]string{"id": "artifact"},
+		Relations: []string{"mentions", "needs", "serves"},
+	}},
+	"dispatch_request_approval": {{
+		Method: http.MethodPost, Pattern: "/api/v2/artifacts/{id}/approval-requests",
+		Path: map[string]string{"id": "artifact"}, Relations: []string{"owned_by"},
+	}},
+	"dispatch_plan_approve": {{
+		Method: http.MethodPost, Pattern: "/api/v2/artifacts/{id}/plan-reviews",
+		Path: map[string]string{"id": "artifact"},
+	}},
+	"dispatch_result": {
+		{
+			Method: http.MethodPut, Pattern: "/api/v2/results/{id}/state",
+			Path: map[string]string{"id": "retract"}, Body: map[string]any{"state": "retracted"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/issues/{key}/results",
+			Path: map[string]string{"key": "issue"},
+		},
+	},
+	"dispatch_artifact": {
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/issues/{key}/artifacts",
+			Path:      map[string]string{"key": "issue"},
+			Relations: []string{"attached_to", "mentions"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/projects/{key}/artifacts",
+			Path:      map[string]string{"key": "project"},
+			Relations: []string{"mentions"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v2/agents/{session_id}/artifacts",
+			Path: map[string]string{"session_id": goingCallerSession},
+		},
+	},
+	"dispatch_project": {{
+		Method: http.MethodPost, Pattern: "/api/v2/projects", Path: map[string]string{},
+	}},
+	"dispatch_architecture_sync": {{
+		Method: http.MethodPost, Pattern: "/api/v2/projects/{key}/architecture-syncs",
+		Path: map[string]string{"key": "project"}, Relations: []string{"depends_on", "affects"},
+	}},
+	// The phase is a member of the v2 body rather than a segment of the path, so the tool's own
+	// phase argument is sent in the body with the handoff's text.
+	"dispatch_handoff_write": {{
+		Method: http.MethodPost, Pattern: "/api/v2/issues/{key}/handoffs",
+		Path: map[string]string{"key": "issue"},
+	}},
+}
+
+// goingToolTables is each version's table of the rows its catalogue names.
+var goingToolTables = map[apiVersion]map[string][]goingToolRoute{apiV1: goingToolRoutes, apiV2: goingToolRoutesV2}
+
 // GoingRoute is one row of the server's table an action writes, as the catalogue serves it.
 type GoingRoute struct {
 	Method  string `json:"method"`
 	Pattern string `json:"pattern"`
 
 	// path and the guard are how a call reaches this row (goingToolRoute); they are the
-	// caller's business rather than the reader's, so neither is served.
+	// caller's business rather than the reader's, so neither is served. body is the row's fixed
+	// body part, which GET /api/v2/going-actions serves (goingActionV2) and GET
+	// /api/v1/going/catalogue, whose rows carry none, does not.
 	path         map[string]string
 	whenArgument string
 	whenValue    any
+	body         map[string]any
 }
 
 // GoingAction is one action an agent may propose: a dispatch tool that writes, with the
@@ -286,11 +476,17 @@ type GoingAction struct {
 	Example json.RawMessage `json:"example"`
 }
 
-// GoingCatalogue is every action an agent may propose, read whole.
+// GoingCatalogue is every action an agent may propose, read whole, at the rows of one version of
+// the API.
 type GoingCatalogue struct {
 	actions []GoingAction
 	// byAction is the index into actions of each action's name.
 	byAction map[string]int
+	// version is the version whose rows the actions name.
+	version apiVersion
+	// actionsV2 is the actions as GET /api/v2/going-actions serves them, rendered once when the
+	// /api/v2 catalogue is built; nil for the /api/v1 one.
+	actionsV2 []goingActionV2
 }
 
 // Actions is the catalogue in the order the tool specs state the tools.
@@ -307,14 +503,15 @@ func (c GoingCatalogue) Lookup(name string) (GoingAction, bool) {
 	return c.actions[index], true
 }
 
-// mutatingRoutes is every row of the table that changes something, in the shape
-// TestEveryMutatingRouteIsClassed reads the table in: a row whose method is not GET, each of
-// which writeClasses must class (undecidableWrites). It is the one classification of a write the
-// server has, and the catalogue is held to it.
-func mutatingRoutes(routes []apiRoute) map[string]bool {
+// mutatingRoutes is every route of the table at version that changes something, in the shape
+// TestEveryMutatingRouteIsClassed reads the table in: a route whose method is not GET, each of
+// which writeClasses must class (undecidableWrites), or a v2 row its own Scope. It is the one
+// classification of a write the server has, and each catalogue is held to the routes of its own
+// version.
+func mutatingRoutes(routes []apiRoute, version apiVersion) map[string]bool {
 	mutating := make(map[string]bool, len(routes))
 	for _, route := range routes {
-		if route.Method == http.MethodGet {
+		if route.Method == http.MethodGet || route.Version != version {
 			continue
 		}
 		mutating[route.Method+" "+route.Pattern] = true
@@ -347,32 +544,38 @@ func goingPlaceholders(pattern string) []string {
 	}
 }
 
-// BuildGoingCatalogue is the catalogue of the server's own route table, with no test hooks: what
-// `envoy-dispatch` serves and what a caller outside a request builds. register builds the
-// server's from the table it mounts.
+// BuildGoingCatalogue is the /api/v1 catalogue of the server's own route table, with no test
+// hooks: what `envoy-dispatch` serves and what a caller outside a request builds. register builds
+// the server's two from the table it mounts.
 func BuildGoingCatalogue() (GoingCatalogue, error) {
-	return buildGoingCatalogue((&server{}).routes())
+	return buildGoingCatalogue((&server{}).routes(), apiV1)
 }
 
-// buildGoingCatalogue is one entry per dispatch tool that writes, and an error naming every row
-// the catalogue cannot hold: a row that is no row of this table, a row the table does not class
-// as a write, a placeholder no argument of the tool fills, a relation in neither edge family,
-// and a tool name no tool spec has. register refuses to mount a table it answers an error for,
-// so a catalogue entry can only ever name an action the server serves.
-func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
-	mutating := mutatingRoutes(routes)
+// buildGoingCatalogue is one entry per dispatch tool that writes, at the rows of version's own
+// table (goingToolTables), and an error naming every row the catalogue cannot hold: a row that
+// is no row of this table at that version, a row the table does not class as a write, a
+// placeholder no argument of the tool fills, a fixed body member that is also an argument of the
+// tool, a relation in neither edge family, and a tool name no tool spec has. register refuses to
+// mount a table it answers an error for, so a catalogue entry can only ever name an action the
+// server serves.
+func buildGoingCatalogue(routes []apiRoute, version apiVersion) (GoingCatalogue, error) {
+	table := goingToolTables[version]
+	mutating := mutatingRoutes(routes, version)
 	served := make(map[string]bool, len(routes))
 	for _, route := range routes {
-		served[route.Method+" "+route.Pattern] = true
+		if route.Version == version {
+			served[route.Method+" "+route.Pattern] = true
+		}
 	}
 	families := edgeFamilies()
 	catalogue := GoingCatalogue{
-		actions:  make([]GoingAction, 0, len(goingToolRoutes)),
-		byAction: make(map[string]int, len(goingToolRoutes)),
+		actions:  make([]GoingAction, 0, len(table)),
+		byAction: make(map[string]int, len(table)),
+		version:  version,
 	}
 	var refusals []string
 	for _, tool := range contracts.DispatchTools {
-		rows, writes := goingToolRoutes[tool.Name]
+		rows, writes := table[tool.Name]
 		if !writes {
 			continue
 		}
@@ -411,6 +614,11 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 			if row.WhenArgument != "" && !takes[row.WhenArgument] {
 				refusals = append(refusals, fmt.Sprintf("%s: %s is picked by %q, which is no argument of the tool", tool.Name, name, row.WhenArgument))
 			}
+			for member := range row.Body {
+				if takes[member] {
+					refusals = append(refusals, fmt.Sprintf("%s: %s fixes the body member %q, which is an argument of the tool", tool.Name, name, member))
+				}
+			}
 			for _, relation := range row.Relations {
 				if !slices.Contains(families, relation) {
 					refusals = append(refusals, fmt.Sprintf("%s: relation %q is neither a structural edge kind (%s) nor a block[] attribute (%s)",
@@ -426,12 +634,13 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 				path:         row.Path,
 				whenArgument: row.WhenArgument,
 				whenValue:    row.WhenValue,
+				body:         row.Body,
 			})
 		}
 		catalogue.byAction[tool.Name] = len(catalogue.actions)
 		catalogue.actions = append(catalogue.actions, entry)
 	}
-	for name := range goingToolRoutes {
+	for name := range table {
 		if _, held := catalogue.byAction[name]; !held {
 			refusals = append(refusals, name+": no dispatch tool of that name (packages/contracts/src/dispatch-tools.ts)")
 		}
@@ -439,6 +648,9 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 	if len(refusals) > 0 {
 		sort.Strings(refusals)
 		return GoingCatalogue{}, fmt.Errorf("%d catalogue entry problem(s):\n%s", len(refusals), strings.Join(refusals, "\n"))
+	}
+	if version == apiV2 {
+		catalogue.actionsV2 = goingActionsV2(catalogue)
 	}
 	return catalogue, nil
 }
@@ -458,6 +670,43 @@ func (s *server) getGoingCatalogue(w http.ResponseWriter, r *http.Request) {
 	}
 	actions := s.going.Actions()
 	WriteJSON(w, http.StatusOK, goingCatalogueBody{Total: len(actions), Actions: actions})
+}
+
+// goingActionV2 is one action as GET /api/v2/going-actions serves it: GoingAction's members, its
+// routes the /api/v2 rows with each one's fixed body part. It is a type of its own, so GET
+// /api/v1/going/catalogue's shape does not change (dispatch://INFRA-4071/spec R3).
+type goingActionV2 struct {
+	Action      string                `json:"action"`
+	Description string                `json:"description"`
+	Routes      []goingRouteV2        `json:"routes"`
+	Relations   []string              `json:"relations,omitempty"`
+	Request     []contracts.ToolField `json:"request"`
+	Example     json.RawMessage       `json:"example"`
+}
+
+// goingRouteV2 is one /api/v2 row an action writes: its method and pattern, and the fixed part of
+// the body a call of it sends beside the action's arguments, such as {"state": "resolved"} on
+// PUT /api/v2/asks/{id}/state; absent where the row fixes none.
+type goingRouteV2 struct {
+	Method  string         `json:"method"`
+	Pattern string         `json:"pattern"`
+	Body    map[string]any `json:"body,omitempty"`
+}
+
+// goingActionsV2 is the /api/v2 catalogue's actions as GET /api/v2/going-actions serves them.
+func goingActionsV2(catalogue GoingCatalogue) []goingActionV2 {
+	actions := make([]goingActionV2, len(catalogue.actions))
+	for index, action := range catalogue.actions {
+		routes := make([]goingRouteV2, len(action.Routes))
+		for at, route := range action.Routes {
+			routes[at] = goingRouteV2{Method: route.Method, Pattern: route.Pattern, Body: route.body}
+		}
+		actions[index] = goingActionV2{
+			Action: action.Action, Description: action.Description, Routes: routes,
+			Relations: action.Relations, Request: action.Request, Example: action.Example,
+		}
+	}
+	return actions
 }
 
 // GoingDoer is the one thing a caller needs of an HTTP client, so a test watches what was sent
@@ -483,13 +732,23 @@ type GoingCaller struct {
 
 // GoingUnknownActionError is the refusal of an action the catalogue does not hold. It is the
 // caller's own error, raised before any request: there is nothing to send, since nothing names
-// what to send it to.
+// what to send it to. List is the route that lists every action of that catalogue.
 type GoingUnknownActionError struct {
 	Action string
+	List   string
 }
 
 func (e GoingUnknownActionError) Error() string {
-	return fmt.Sprintf("%q is no action of the catalogue: GET %s lists every action", e.Action, goingCataloguePath)
+	return fmt.Sprintf("%q is no action of the catalogue: GET %s lists every action", e.Action, e.List)
+}
+
+// list is the route that serves this catalogue: GET /api/v1/going/catalogue for the /api/v1
+// catalogue, GET /api/v2/going-actions for the /api/v2 one.
+func (c GoingCatalogue) list() string {
+	if c.version == apiV2 {
+		return goingActionsPath
+	}
+	return goingCataloguePath
 }
 
 // GoingArgumentError is the refusal of a call the action's own schema does not accept, raised
@@ -505,13 +764,19 @@ func (e GoingArgumentError) Error() string {
 
 // Do performs one catalogue action with the arguments given: the action's first row the call
 // fills (chooseGoingRoute) takes its path from the arguments its placeholders name, and every
-// other argument becomes the request's JSON body. Nothing is sent until the catalogue holds the
-// action and the tool's own schema accepts the call. An argument naming a document by slug is
-// the caller's to resolve to the id a row's path takes.
+// other argument becomes the request's JSON body, beside the row's fixed body part where it has
+// one. Nothing is sent until the catalogue holds the action and the tool's own schema accepts the
+// call. An argument naming a document by slug is the caller's to resolve to the id a row's path
+// takes.
+//
+// On the /api/v2 catalogue an argument that picks among an action's rows (WhenArgument) is sent
+// to none of them: the row it picked, its method and its fixed body, already says what the
+// argument said, and no /api/v2 body declares it. The /api/v1 rows are sent every argument their
+// path does not take, as they always were.
 func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string]any) (*http.Response, error) {
 	entry, held := c.Catalogue.Lookup(action)
 	if !held {
-		return nil, GoingUnknownActionError{Action: action}
+		return nil, GoingUnknownActionError{Action: action, List: c.Catalogue.list()}
 	}
 	if reason := checkGoingArguments(entry.Request, arguments); reason != "" {
 		return nil, GoingArgumentError{Action: action, Reason: reason}
@@ -520,16 +785,26 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 	if !chosen {
 		return nil, GoingArgumentError{Action: action, Reason: goingNoRouteReason(entry)}
 	}
-	inPath := make(map[string]bool, len(route.path))
+	unsent := make(map[string]bool, len(route.path))
 	for _, argument := range route.path {
-		inPath[argument] = true
+		unsent[argument] = true
+	}
+	if c.Catalogue.version == apiV2 {
+		for _, row := range entry.Routes {
+			if row.whenArgument != "" {
+				unsent[row.whenArgument] = true
+			}
+		}
 	}
 	body := map[string]any{}
 	for name, value := range arguments {
-		if inPath[name] {
+		if unsent[name] {
 			continue
 		}
 		body[name] = value
+	}
+	for member, value := range route.body {
+		body[member] = value
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

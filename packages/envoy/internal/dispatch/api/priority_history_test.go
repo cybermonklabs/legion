@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 )
@@ -111,9 +112,9 @@ func TestPriorityHistory(t *testing.T) {
 	// An id no priority carries is the 404 the two writes of an id answer.
 	missing := dispatchRequest(t, handler, http.MethodGet, "/api/v1/priorities/no-such-priority/history", nil, "alice")
 	code, text := refusalOf(t, missing)
-	if missing.Code != http.StatusNotFound || code != codePriorityNotFound {
+	if missing.Code != http.StatusNotFound || code != apicode.PriorityNotFound.V1Name() {
 		t.Fatalf("the history of an id no priority carries: status=%d code=%s error=%q, want 404 %s",
-			missing.Code, code, text, codePriorityNotFound)
+			missing.Code, code, text, apicode.PriorityNotFound.V1Name())
 	}
 	if !strings.Contains(text, "no-such-priority") {
 		t.Fatalf("the refusal %q does not name the id it was asked for", text)

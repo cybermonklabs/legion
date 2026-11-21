@@ -2244,6 +2244,36 @@ describe("envoy OMP extension", () => {
     expect(requests).toEqual(["/api/v1/asks/open?author_session=ses_reminder"]);
   });
 
+  test("names itself to Dispatch as pi-envoy and its release", async () => {
+    process.env.DISPATCH_URL = "http://dispatch.test";
+    process.env.DISPATCH_TOKEN = "token";
+    const sent: { readonly path: string; readonly userAgent: string | null }[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/api/v1/asks/open") {
+        sent.push({ path: url.pathname, userAgent: new Headers(init?.headers).get("user-agent") });
+        return Response.json({
+          session_id: "ses_user_agent",
+          as_of: "2026-09-13T00:00:00Z",
+          opened_since: false,
+          count: 0,
+          waiting_on_human: 0,
+          waiting_on_agent: 0,
+          asks: [],
+        });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?user-agent");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = withSelfCheck(sessionContext("ses_user_agent"));
+    await fixture.handlers.get("session_start")?.({}, context);
+    await fixture.handlers.get("before_agent_start")?.({ prompt: "finish the task" }, context);
+
+    expect(sent).toEqual([{ path: "/api/v1/asks/open", userAgent: `pi-envoy/${packageVersion}` }]);
+  });
+
   test("injects nothing and warns once when the open-ask check is unavailable", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
     process.env.DISPATCH_TOKEN = "token";

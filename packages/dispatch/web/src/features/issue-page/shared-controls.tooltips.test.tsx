@@ -271,6 +271,7 @@ function answerDefaults(): void {
     markdown: "The live document",
     token: "sha256:spec-text",
     version: null,
+    unsettled: true,
   });
   stubs.getDocumentRead.mockImplementation(async (id) => ({
     artifact_id: id,
@@ -928,6 +929,7 @@ const MOUNTS: readonly Mount[] = [
     node: () => (
       <IssueLabels
         disabled={false}
+        externalLinks={[]}
         issueKey="CORE-1"
         labels={["api", "frontend"]}
         onSave={async () => undefined}
@@ -1228,6 +1230,7 @@ const labelsEmptyAndSaving: Mount = {
     <>
       <IssueLabels
         disabled={false}
+        externalLinks={[]}
         issueKey="CORE-1"
         labels={[]}
         onSave={async () => undefined}
@@ -1236,6 +1239,7 @@ const labelsEmptyAndSaving: Mount = {
       />
       <IssueLabels
         disabled={false}
+        externalLinks={[]}
         labels={["api"]}
         onSave={async () => undefined}
         project="CORE"
@@ -1890,6 +1894,7 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
     node: () => (
       <IssueLabels
         disabled={false}
+        externalLinks={[]}
         issueKey="CORE-1"
         labels={[LONG.label, "api"]}
         onSave={async () => undefined}
@@ -1904,6 +1909,7 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
       <>
         <IssueLabels
           disabled={false}
+          externalLinks={[]}
           issueKey="CORE-1"
           labels={[]}
           onSave={async () => undefined}
@@ -1912,6 +1918,7 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
         />
         <IssueLabels
           disabled={false}
+          externalLinks={[]}
           labels={[LONG.label]}
           onSave={async () => undefined}
           project="CORE"
@@ -1919,6 +1926,7 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
         />
         <IssueLabels
           disabled={false}
+          externalLinks={[]}
           labels={[LONG.label]}
           onSave={async () => undefined}
           project="CORE"

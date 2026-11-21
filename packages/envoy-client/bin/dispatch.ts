@@ -1,7 +1,7 @@
 // The `dispatch` command each host plugin bundles into its dist/dispatch.js and puts on its
 // agents' shell PATH through a `bin/dispatch` shim. `runDispatchCli` holds the behaviour.
 import { readFileSync } from "node:fs";
-import { runDispatchCli } from "../src/dispatch-cli";
+import { dispatchCommandUserAgent, runDispatchCli } from "../src/dispatch-cli";
 
 const readText = (path: string): string => readFileSync(path === "-" ? 0 : path, "utf-8");
 
@@ -22,6 +22,9 @@ const code = await runDispatchCli(Bun.argv.slice(2), process.env, {
   stderr: writeTo(process.stderr),
   readText,
   cwd: process.cwd(),
+  // This module's own URL is the bundle's once a host plugin built it into its dist/dispatch.js,
+  // whose package.json beside it names the plugin and its release.
+  userAgent: dispatchCommandUserAgent(import.meta.url),
 });
 await Promise.all(pending);
 process.exit(code);

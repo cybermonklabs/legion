@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -167,7 +168,7 @@ func (s *server) listQueuedMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	recorder, ok := s.deps.AgentPublisher.(*AgentPublishRecorder)
 	if !ok {
-		writeError(w, "QUEUED_ON_BUS", http.StatusNotFound,
+		writeError(w, r, apicode.QueuedOnBus,
 			"this process queues targeted messages on the bus, not in a test hook's recorder")
 		return
 	}

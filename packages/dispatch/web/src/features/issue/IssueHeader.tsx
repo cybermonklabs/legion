@@ -634,6 +634,7 @@ export function IssueHeader({
             <span className="font-medium">Labels:</span>
             <IssueLabels
               disabled={isClosed}
+              externalLinks={issue.external_links ?? []}
               labels={issue.labels ?? []}
               onSave={(labels) => labelsMutation.mutateAsync(labels)}
               project={issue.project}

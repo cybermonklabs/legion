@@ -28,6 +28,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 const (
@@ -1205,14 +1207,38 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 	return act, "", nil
 }
 
-// fileUpload is a multipart upload of deterministic bytes of the logged size.
+// replayedFileSuffix is what replayFileName adds to a recorded file's name that names a role
+// document.
+const replayedFileSuffix = " (replayed file)"
+
+// replayFileName is the name the replay sends a recorded file or image under: its recorded name,
+// except where that name's slug (model.ArtifactSlug) is the slug of an issue's role document
+// (model.RoleOfDocumentSlug), where replayedFileSuffix follows it: plan.md is sent as
+// "plan.md (replayed file)", slug plan-md-replayed-file, which names no role. Dispatch refuses a
+// file or an image under the name or the slug of an issue's plan, Verification document or
+// decisions document (400 ARTIFACT_ROLE_NAME, R15 of dispatch://INFRA-4071/spec), and production
+// holds such files from before that refusal (dispatch://BET-1328's plan-md was stored as a file),
+// so under its recorded name such a file would stop the seed (ensureFile) and fail the run's
+// file-create and file-version actions. Every place that sends, adopts or looks up a file by its
+// name asks this (fileUpload, ensureFile), so a file's create, its versions and a resumed seed's
+// adoption all name one artifact. The file's bytes, size and type stay as recorded, so the load
+// is the same.
+func replayFileName(recorded string) string {
+	if model.RoleOfDocumentSlug(model.ArtifactSlug(recorded)) == "" {
+		return recorded
+	}
+	return recorded + replayedFileSuffix
+}
+
+// fileUpload is a multipart upload of deterministic bytes of the logged size, under the name the
+// replay sends the recorded file's name as (replayFileName).
 func fileUpload(key, name string, mime *string, seed string, size int, actor map[string]any, person string, produce []replayProduce) *replayReq {
 	m := "application/octet-stream"
 	if mime != nil && *mime != "" {
 		m = *mime
 	}
 	return &replayReq{Method: "POST", Path: "/api/v1/issues/{key}/artifacts", Params: keyParams(key), Person: person, Produces: produce,
-		File: &replayFile{Name: name, MIME: m, Seed: seed, Size: size, Actor: actor}}
+		File: &replayFile{Name: replayFileName(name), MIME: m, Seed: seed, Size: size, Actor: actor}}
 }
 
 // stateSnapshot is the issue's fields at the bundle's instant, those the state carries.

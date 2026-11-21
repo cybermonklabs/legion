@@ -16,6 +16,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -263,10 +265,10 @@ func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 	path := "/api/v1/issues/" + issue + "/steps/"
 
 	person := dispatchRequest(t, handler, http.MethodPut, path+uuid.NewString(), implementerStart(nil), "alice")
-	expectRefusal(t, "a person's write", person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+	expectRefusal(t, "a person's write", person, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 	for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
 		refused := putStep(t, handler, issue, uuid.NewString(), implementerStart(map[string]any{"kind": "session", "id": session}))
-		expectRefusal(t, "a write as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		expectRefusal(t, "a write as "+session, refused, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused writes left %d records, want none", len(steps))
@@ -413,7 +415,7 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			id := cmp.Or(row.id, uuid.NewString())
-			expectRefusal(t, row.name, putStep(t, handler, issue, id, row.body), http.StatusBadRequest, codeStepInput, row.field)
+			expectRefusal(t, row.name, putStep(t, handler, issue, id, row.body), http.StatusBadRequest, contracts.StepInputCode, row.field)
 		})
 	}
 	for name, raw := range map[string]string{
@@ -579,7 +581,7 @@ func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 	putStepOK(t, handler, issues[0], id, implementerStart(daemonSessionOf("LEG")))
 
 	other := putStep(t, handler, issues[1], id, implementerEnd(daemonSessionOf("LEG"), "passed", stepEnd))
-	expectRefusal(t, "the same id on "+issues[1], other, http.StatusConflict, codeStepOtherIssue, issues[0], issues[1])
+	expectRefusal(t, "the same id on "+issues[1], other, http.StatusConflict, contracts.StepOtherIssueCode, issues[0], issues[1])
 	if steps := stepsOf(t, handler, issues[1]); len(steps) != 0 {
 		t.Fatalf("%s lists %+v, want nothing", issues[1], steps)
 	}
@@ -613,7 +615,7 @@ func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
 
 	refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+other+"/steps/"+uuid.NewString(), token,
 		implementerStart(daemonSessionOf("OTH"))))
-	expectRefusal(t, "a write to "+other, refused, http.StatusForbidden, codeProjectScope, brokerTestProject, "OTH")
+	expectRefusal(t, "a write to "+other, refused, http.StatusForbidden, apicode.ProjectScope.V1Name(), brokerTestProject, "OTH")
 	answered := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+own+"/steps/"+uuid.NewString(), token,
 		implementerStart(daemonSessionOf(brokerTestProject))))
 	if answered.Code != http.StatusOK {

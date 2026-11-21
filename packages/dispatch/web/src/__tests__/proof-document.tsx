@@ -135,6 +135,7 @@ export function answerTextReadsWithTheSeededText(): void {
       markdown: defaultText,
       token: "sha256:spec-text",
       version: null,
+      unsettled: true,
     }));
     restore = () => getArtifactText.mockRestore();
   });

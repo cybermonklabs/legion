@@ -83,14 +83,15 @@ func readOnlyTable() []apiRoute {
 	return (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 }
 
-// TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler builds every row's own
+// TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler builds every route's own
 // chain as register does (routeHandler) with the row's handler replaced by a recorder, and sends
-// each a read-only token with a body and a valid Idempotency-Key. Every row the list does not name
-// answers 403 READ_ONLY_TOKEN and never runs its handler; the row the list names runs it once.
-// GET /ws/live is walked the same way through its own chain (liveSocketHandler), with the socket
-// replaced. A row is counted once its assertions have run, and the count is held to the rows the
-// registered server mounts (its route index, one entry a row), so a walk that skipped a row, or
-// walked none, fails.
+// each a read-only token with a body and a valid Idempotency-Key. Every route the list does not
+// name answers 403 READ_ONLY_TOKEN and never runs its handler; each route the list names (a row's
+// /api/v1 and /api/v2 routes) runs it once. GET /ws/live is walked the same way through its own
+// chain (liveSocketHandler), with the socket replaced. A route is counted once its assertions have
+// run, the count is held to the routes the registered server mounts (its two route indexes, one
+// entry a route), and the routes that carry the list's mark to the list's length, so a walk that
+// skipped a route, or walked none, fails.
 func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *testing.T) {
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)
@@ -98,7 +99,6 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 	rig.broker.Says(token, readOnlyToken(caller.jkt))
 
 	table := readOnlyTable()
-	replays := rig.served.keyedReplays()
 	walked, listed := 0, 0
 	for _, route := range table {
 		name := route.Method + " " + route.Pattern
@@ -108,7 +108,7 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 			w.WriteHeader(http.StatusNoContent)
 		}
 		response := httptest.NewRecorder()
-		rig.served.routeHandler(route, replays[name]).ServeHTTP(response, caller.presentingProbe(t, route, token))
+		rig.served.routeHandler(route).ServeHTTP(response, caller.presentingProbe(t, route, token))
 		if route.ReadScope {
 			listed++
 			if ran != 1 || response.Code != http.StatusNoContent {
@@ -137,7 +137,7 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 		t.Errorf("GET %s %s, want 403 %s", liveSocketPattern, why, contracts.DispatchReadOnlyToken)
 	}
 
-	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
+	if mounted := len(rig.served.routeIndex) + len(rig.served.routeIndexV2); walked == 0 || walked != mounted {
 		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 	}
 	if listed != len(readScopeRoutes) {
@@ -148,16 +148,22 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 }
 
 // readListAnswers is what each route of the read list answers the mounted walk below at its probe
-// path, which names a project with no architecture source and an issue Dispatch does not hold: its
-// handler's own answer, which a request the gate refused could not carry. A route added to the
-// list adds its answer here.
+// path, which names a project TEST the walk's server does not hold and an issue it does not hold
+// either: its handler's own answer, which a request the gate refused could not carry - /api/v1's
+// architecture read the project's missing source, /api/v2's the project itself (decision 11),
+// /api/v1's steps read NOT_FOUND, as the issue's own read answers it, and /api/v2's the issue
+// itself, and a project's plans read the project itself in both versions. A route added to the list
+// adds its answer here.
 var readListAnswers = map[string]struct {
 	status int
 	code   string
 }{
 	"GET /api/v1/projects/{key}/architecture": {http.StatusNotFound, "SOURCE_NOT_FOUND"},
+	"GET /api/v2/projects/{key}/architecture": {http.StatusNotFound, "PROJECT_NOT_FOUND"},
 	"GET /api/v1/issues/{key}/steps":          {http.StatusNotFound, "NOT_FOUND"},
+	"GET /api/v2/issues/{key}/steps":          {http.StatusNotFound, "ISSUE_NOT_FOUND"},
 	"GET /api/v1/projects/{key}/plans":        {http.StatusNotFound, "PROJECT_NOT_FOUND"},
+	"GET /api/v2/projects/{key}/plans":        {http.StatusNotFound, "PROJECT_NOT_FOUND"},
 }
 
 // TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone walks the server register mounted,
@@ -198,7 +204,7 @@ func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
 		t.Errorf("GET %s answered %d %s, want 401: the document socket takes a cookie alone", room, document.Code, document.Body.String())
 	}
 
-	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
+	if mounted := len(rig.served.routeIndex) + len(rig.served.routeIndexV2); walked == 0 || walked != mounted {
 		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 	}
 	t.Logf("walked %d rows of the mounted table (test hooks in), GET %s and GET /ws/doc/{room}", walked, liveSocketPattern)
@@ -390,16 +396,39 @@ func readOnlyTreeFiles(nonce string) map[string]string {
 	}
 }
 
+// readOnlyArchitectureReads are the architecture reads of the read list, each with a project and a
+// repository of its own, whose prose no other read of the test has shown.
+var readOnlyArchitectureReads = []struct{ version, project, repo string }{
+	{"v1", "RDR", "reader/arch"},
+	{"v2", "RDRTWO", "reader/arch-two"},
+}
+
+// readOnlyStepsReads are the steps reads of the read list, each with the title of an issue of its
+// own, far enough from the other's that the near-copy gate lets both in, and the id of the one run
+// that issue's daemon writes before the read.
+var readOnlyStepsReads = []struct{ version, title, run string }{
+	{"v1", "A run to read", "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0b"},
+	{"v2", "Steps a read-only token lists through the second version", "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0c"},
+}
+
+// readOnlyPlansReads are the plans reads of the read list, each with a project of its own, so each
+// lists its one finished issue alone, the title of that issue, and the id of the plan its daemon
+// writes before the read.
+var readOnlyPlansReads = []struct{ version, project, title, plan string }{
+	{"v1", "RDRPLANS", "A finished issue to list", "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e6f"},
+	{"v2", "RDRPLANTWO", "Plans a read-only token lists through the second version", "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e70"},
+}
+
 // TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches sends each route the read list names, with
 // a read-only token, and reads every statement the request ran - its handler's and the work it
 // detaches - through a tracer on the one pool the server and the verifier's replay store share.
 // The architecture is read with Dispatch-Trees: 1, a cold display cache and a stale route_roster,
-// the steps of an issue the daemon wrote a run of, and the plans of the project once that issue is
-// done. Every insert, update and delete is to dpop_proofs, text_trees or route_roster: the proof's
-// replay row and the two caches Dispatch rebuilds from what it holds. The positive controls are
-// each proof's insert, a tree's insert, the read of architecture_sources, the read of
-// workflow_tuples and the read of the project's finished issues, so a tracer that saw nothing
-// cannot pass.
+// the steps of an issue the daemon wrote a run of, and the plans of a project once its issue is
+// done, each in both versions. Every insert, update and delete is to dpop_proofs, text_trees or
+// route_roster: the proof's replay row and the two caches Dispatch rebuilds from what it holds.
+// The positive controls are each proof's insert, a tree's insert, the read of architecture_sources,
+// the read of workflow_tuples and the read of the project's finished issues, so a tracer that saw
+// nothing cannot pass.
 func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	database := storetest.Open(t)
 	marked := &markedStatements{}
@@ -409,10 +438,10 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	const project, repo = "RDR", "reader/arch"
-	fake := &fakeGitHubApp{
-		installations: map[string]string{repo: "read"},
-		repos:         map[string]*fakeArchitectureRepo{repo: {commit: shaOne, files: readOnlyTreeFiles(rand.Text())}},
+	fake := &fakeGitHubApp{installations: map[string]string{}, repos: map[string]*fakeArchitectureRepo{}}
+	for _, read := range readOnlyArchitectureReads {
+		fake.installations[read.repo] = "read"
+		fake.repos[read.repo] = &fakeArchitectureRepo{commit: shaOne, files: readOnlyTreeFiles(rand.Text())}
 	}
 	github := githubtest.Server(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP})
 	rig := newBrokerTokenRigOn(t, testServerOptions{
@@ -424,113 +453,150 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	const token = "a-read-only-token-reading-the-architecture"
 	rig.broker.Says(token, readOnlyToken(caller.jkt))
 
+	for _, read := range readOnlyArchitectureReads {
+		t.Run(read.version, func(t *testing.T) {
+			project, repo := read.project, read.repo
+			createTestProject(t, rig.handler, project)
+			putSource(t, rig.handler, project, repo, "main")
+			if synced := syncSource(t, rig.handler, project, repo); synced.LastError != nil {
+				t.Fatalf("sync rejected the model: %s", *synced.LastError)
+			}
+
+			// The import stored every component's tree (architecture's storeComponentTrees); those
+			// rows go, so the read finds the table as cold as the cache and stores what it read.
+			ctx := context.Background()
+			rows, err := database.Pool.Query(ctx, `select prose from components where project_key = $1`, project)
+			if err != nil {
+				t.Fatalf("read the components' prose: %v", err)
+			}
+			proses, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				t.Fatalf("read the components' prose: %v", err)
+			}
+			if len(proses) != len(fake.repos[repo].files) {
+				t.Fatalf("the import holds %d components, want the model's %d", len(proses), len(fake.repos[repo].files))
+			}
+			sums := make([][]byte, len(proses))
+			for index, prose := range proses {
+				sum := pmdoc.TextSum(prose)
+				sums[index] = sum[:]
+			}
+			storedTrees := func() int {
+				t.Helper()
+				var count int
+				if err := database.Pool.QueryRow(ctx, `select count(*) from text_trees where sum = any($1)`, sums).Scan(&count); err != nil {
+					t.Fatalf("count the prose's trees: %v", err)
+				}
+				return count
+			}
+			if stored := storedTrees(); stored != len(sums) {
+				t.Fatalf("the import stored %d of the prose's %d trees, want every one", stored, len(sums))
+			}
+			if _, err := database.Pool.Exec(ctx, `delete from text_trees where sum = any($1)`, sums); err != nil {
+				t.Fatalf("delete the prose's trees: %v", err)
+			}
+			// A roster an hour past its expiry, which any read of the roster would refresh.
+			if _, err := database.Pool.Exec(ctx, `
+				insert into route_roster (answered, sessions, sent_at, expires_at)
+				values (true, '[]'::jsonb, now() - interval '2 hours', now() - interval '1 hour')
+				on conflict (id) do update
+				set answered = excluded.answered, sessions = excluded.sessions,
+				    sent_at = excluded.sent_at, expires_at = excluded.expires_at`); err != nil {
+				t.Fatalf("make the route roster stale: %v", err)
+			}
+
+			request := caller.presenting(t, http.MethodGet, "/api/"+read.version+"/projects/"+project+"/architecture", token, nil)
+			request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
+			request.Header.Set(displayTreesHeader, "1")
+			response := rig.serve(request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("the read-only token's read of the architecture: status=%d body=%s, want 200", response.Code, response.Body.String())
+			}
+			answer := decodeBody[architectureTreeRead](t, response)
+			for _, component := range answer.Components {
+				if len(component.ProseTree) == 0 {
+					t.Fatalf("component %s came back with no prose tree: %s", component.ID, response.Body.String())
+				}
+			}
+
+			// The trees are stored beside the request, on a goroutine of the server's background
+			// work, so the statements are read once the rows it stores are back.
+			if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return storedTrees() == len(sums) }) {
+				t.Fatalf("the read stored %d of the prose's %d trees within 10s, want every one", storedTrees(), len(sums))
+			}
+
+			statements := marked.take()
+			if !requireOnlyProofAndCaches(t, statements, sourcesRead) {
+				t.Errorf("the tracer saw no insert into text_trees among %d statements: it did not see the trees the read stored", len(statements))
+			}
+		})
+	}
+
+	// The steps of an issue, in each version: the daemon writes one run, over its own credential
+	// and outside the counted read, and the read-only token reads it back.
+	const project = "RDRSTEPS"
 	createTestProject(t, rig.handler, project)
-	putSource(t, rig.handler, project, repo, "main")
-	if synced := syncSource(t, rig.handler, project, repo); synced.LastError != nil {
-		t.Fatalf("sync rejected the model: %s", *synced.LastError)
+	for _, read := range readOnlyStepsReads {
+		t.Run("steps "+read.version, func(t *testing.T) {
+			issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": project, "title": read.title})
+			if issue.Code != http.StatusCreated {
+				t.Fatalf("create an issue in %s: status=%d body=%s", project, issue.Code, issue.Body.String())
+			}
+			issueKey := decodeBody[struct {
+				Key string `json:"key"`
+			}](t, issue).Key
+			putStepOK(t, rig.handler, issueKey, read.run, implementerStart(daemonSessionOf(project)))
+			marked.take()
+			request := caller.presenting(t, http.MethodGet, "/api/"+read.version+"/issues/"+issueKey+"/steps", token, nil)
+			request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
+			response := rig.serve(request)
+			runs := 0
+			if read.version == "v1" {
+				for _, task := range decodeBody[model.IssueSteps](t, response).Tasks {
+					runs += len(task.Steps)
+				}
+			} else {
+				runs = len(decodeBody[page[model.StepRecord]](t, response).Items)
+			}
+			if response.Code != http.StatusOK || runs != 1 {
+				t.Fatalf("the read-only token's read of the steps of %s: status=%d body=%s, want 200 and its one run", issueKey, response.Code, response.Body.String())
+			}
+			requireOnlyProofAndCaches(t, marked.take(), stepsRead)
+		})
 	}
 
-	// The import stored every component's tree (architecture's storeComponentTrees); those rows
-	// go, so the read finds the table as cold as the cache and stores what it read.
-	ctx := context.Background()
-	rows, err := database.Pool.Query(ctx, `select prose from components where project_key = $1`, project)
-	if err != nil {
-		t.Fatalf("read the components' prose: %v", err)
+	// The plans of a project, in each version, once its issue is done: the person closes it and the
+	// daemon writes its plan, outside the counted read, and the read-only token lists it.
+	for _, read := range readOnlyPlansReads {
+		t.Run("plans "+read.version, func(t *testing.T) {
+			createTestProject(t, rig.handler, read.project)
+			issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": read.project, "title": read.title})
+			if issue.Code != http.StatusCreated {
+				t.Fatalf("create an issue in %s: status=%d body=%s", read.project, issue.Code, issue.Body.String())
+			}
+			issueKey := decodeBody[struct {
+				Key string `json:"key"`
+			}](t, issue).Key
+			if closed := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+issueKey, map[string]any{"status": "done"}); closed.Code != http.StatusOK {
+				t.Fatalf("close %s: status=%d body=%s", issueKey, closed.Code, closed.Body.String())
+			}
+			putPlanRecordOK(t, rig.handler, issueKey, read.plan, defaultPlanBody(daemonSessionOf(read.project), 1))
+			marked.take()
+			request := caller.presenting(t, http.MethodGet, "/api/"+read.version+"/projects/"+read.project+"/plans", token, nil)
+			request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
+			response := rig.serve(request)
+			var listed []model.FinishedIssue
+			if read.version == "v1" {
+				listed = decodeBody[model.ProjectPlans](t, response).Issues
+			} else {
+				listed = decodeBody[page[model.FinishedIssue]](t, response).Items
+			}
+			if response.Code != http.StatusOK || len(listed) != 1 || listed[0].Plan == nil {
+				t.Fatalf("the read-only token's read of the plans of %s: status=%d body=%s, want 200 and %s with its plan", read.project, response.Code, response.Body.String(), issueKey)
+			}
+			requireOnlyProofAndCaches(t, marked.take(), plansRead)
+		})
 	}
-	proses, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("read the components' prose: %v", err)
-	}
-	if len(proses) != len(fake.repos[repo].files) {
-		t.Fatalf("the import holds %d components, want the model's %d", len(proses), len(fake.repos[repo].files))
-	}
-	sums := make([][]byte, len(proses))
-	for index, prose := range proses {
-		sum := pmdoc.TextSum(prose)
-		sums[index] = sum[:]
-	}
-	storedTrees := func() int {
-		t.Helper()
-		var count int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from text_trees where sum = any($1)`, sums).Scan(&count); err != nil {
-			t.Fatalf("count the prose's trees: %v", err)
-		}
-		return count
-	}
-	if stored := storedTrees(); stored != len(sums) {
-		t.Fatalf("the import stored %d of the prose's %d trees, want every one", stored, len(sums))
-	}
-	if _, err := database.Pool.Exec(ctx, `delete from text_trees where sum = any($1)`, sums); err != nil {
-		t.Fatalf("delete the prose's trees: %v", err)
-	}
-	// A roster an hour past its expiry, which any read of the roster would refresh.
-	if _, err := database.Pool.Exec(ctx, `
-		insert into route_roster (answered, sessions, sent_at, expires_at)
-		values (true, '[]'::jsonb, now() - interval '2 hours', now() - interval '1 hour')
-		on conflict (id) do update
-		set answered = excluded.answered, sessions = excluded.sessions,
-		    sent_at = excluded.sent_at, expires_at = excluded.expires_at`); err != nil {
-		t.Fatalf("make the route roster stale: %v", err)
-	}
-
-	request := caller.presenting(t, http.MethodGet, "/api/v1/projects/"+project+"/architecture", token, nil)
-	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
-	request.Header.Set(displayTreesHeader, "1")
-	response := rig.serve(request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("the read-only token's read of the architecture: status=%d body=%s, want 200", response.Code, response.Body.String())
-	}
-	answer := decodeBody[architectureTreeRead](t, response)
-	for _, component := range answer.Components {
-		if len(component.ProseTree) == 0 {
-			t.Fatalf("component %s came back with no prose tree: %s", component.ID, response.Body.String())
-		}
-	}
-
-	// The trees are stored beside the request, on a goroutine of the server's background work, so
-	// the statements are read once the rows it stores are back.
-	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return storedTrees() == len(sums) }) {
-		t.Fatalf("the read stored %d of the prose's %d trees within 10s, want every one", storedTrees(), len(sums))
-	}
-
-	statements := marked.take()
-	if !requireOnlyProofAndCaches(t, statements, sourcesRead) {
-		t.Errorf("the tracer saw no insert into text_trees among %d statements: it did not see the trees the read stored", len(statements))
-	}
-
-	// The steps of an issue: the daemon writes one run, over its own credential and outside the
-	// counted read, and the read-only token reads it back.
-	issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": project, "title": "A run to read"})
-	if issue.Code != http.StatusCreated {
-		t.Fatalf("create an issue in %s: status=%d body=%s", project, issue.Code, issue.Body.String())
-	}
-	issueKey := decodeBody[struct {
-		Key string `json:"key"`
-	}](t, issue).Key
-	putStepOK(t, rig.handler, issueKey, "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0b", implementerStart(daemonSessionOf(project)))
-	marked.take()
-	request = caller.presenting(t, http.MethodGet, "/api/v1/issues/"+issueKey+"/steps", token, nil)
-	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
-	response = rig.serve(request)
-	if read := decodeBody[model.IssueSteps](t, response); response.Code != http.StatusOK || len(read.Tasks) != 1 {
-		t.Fatalf("the read-only token's read of the steps of %s: status=%d body=%s, want 200 and its one task", issueKey, response.Code, response.Body.String())
-	}
-	requireOnlyProofAndCaches(t, marked.take(), stepsRead)
-
-	// The plans of the project, once the issue is done: the person closes it and the daemon
-	// writes its plan, outside the counted read, and the read-only token lists it.
-	if closed := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+issueKey, map[string]any{"status": "done"}); closed.Code != http.StatusOK {
-		t.Fatalf("close %s: status=%d body=%s", issueKey, closed.Code, closed.Body.String())
-	}
-	putPlanRecordOK(t, rig.handler, issueKey, "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e6f", defaultPlanBody(daemonSessionOf(project), 1))
-	marked.take()
-	request = caller.presenting(t, http.MethodGet, "/api/v1/projects/"+project+"/plans", token, nil)
-	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
-	response = rig.serve(request)
-	if read := decodeBody[model.ProjectPlans](t, response); response.Code != http.StatusOK || len(read.Issues) != 1 || read.Issues[0].Plan == nil {
-		t.Fatalf("the read-only token's read of the plans of %s: status=%d body=%s, want 200 and %s with its plan", project, response.Code, response.Body.String(), issueKey)
-	}
-	requireOnlyProofAndCaches(t, marked.take(), plansRead)
 }
 
 // requireOnlyProofAndCaches fails unless every write of statements is to the proof's replay row or

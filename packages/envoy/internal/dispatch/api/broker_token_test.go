@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -215,7 +216,16 @@ func newBrokerTokenRig(t *testing.T, options ...func(*ciphertoken.Options)) *bro
 func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...func(*ciphertoken.Options)) *brokerTokenRig {
 	t.Helper()
 	broker := ciphertokentest.NewStubBroker(t)
-	serving.brokerTokens = func(database *store.Store) *ciphertoken.Verifier {
+	serving.brokerTokens = stubBrokerTokens(t, broker, options...)
+	handler, database, deps, served := newRegisteredTestServer(t, serving)
+	return &brokerTokenRig{handler: handler, deps: deps, database: database, broker: broker, served: served}
+}
+
+// stubBrokerTokens builds the broker-token check a test server decides a broker-issued token by,
+// asking broker about each token and keeping its proofs' replay store in the server's database,
+// each option applied to the verifier's options before it is built.
+func stubBrokerTokens(t *testing.T, broker *ciphertokentest.StubBroker, options ...func(*ciphertoken.Options)) func(*store.Store) *ciphertoken.Verifier {
+	return func(database *store.Store) *ciphertoken.Verifier {
 		opts := ciphertoken.Options{
 			BrokerURL: broker.Server.URL,
 			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
@@ -237,8 +247,6 @@ func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...fun
 		}
 		return verifier
 	}
-	handler, database, deps, served := newRegisteredTestServer(t, serving)
-	return &brokerTokenRig{handler: handler, deps: deps, database: database, broker: broker, served: served}
 }
 
 // serve carries one request through the server under test.
@@ -606,8 +614,8 @@ func TestANamedBrokerTokenLimitsWritesToItsProject(t *testing.T) {
 	other := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 		"project": "OTHER", "title": "Written into another project", "spec": "# Spec",
 	}))
-	if refusal := decodeBody[refusalAnswer](t, other); other.Code != http.StatusForbidden || refusal.Code != codeProjectScope {
-		t.Fatalf("a named token's write into another project: status=%d body=%s, want 403 %s", other.Code, other.Body.String(), codeProjectScope)
+	if refusal := decodeBody[refusalAnswer](t, other); other.Code != http.StatusForbidden || refusal.Code != apicode.ProjectScope.V1Name() {
+		t.Fatalf("a named token's write into another project: status=%d body=%s, want 403 %s", other.Code, other.Body.String(), apicode.ProjectScope.V1Name())
 	}
 }
 

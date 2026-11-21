@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -58,7 +59,7 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
 	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
@@ -72,7 +73,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	}
 	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, owner, artifactFilter)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), trees)
@@ -80,7 +81,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	reader.resolve()
 	encoded, err := encodeListAnswer(reads)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.writeListAnswer(w, key, encoded, ownerHeld)
@@ -110,7 +111,7 @@ func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, 
 			       exists(select 1 from artifacts where id = $1)
 		`, *owner.ArtifactID
 	default:
-		return 0, 0, false, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return 0, 0, false, errorf(apicode.OwnerInvalid, "owner requires exactly one issue or artifact")
 	}
 	var watermark, lastSeq int64
 	var ownerHeld bool
@@ -132,7 +133,21 @@ func (s *server) commentListETag(owner owner, artifactFilter string, watermark, 
 	return s.listETag(hash, trees)
 }
 
+// loadOwnerComments is every comment of owner, oldest first, with what hydrateCommentSideTables
+// adds to each (mentions, delivery attempts, the block a reply answers), as /api/v1's lists answer
+// them whole.
 func (s *server) loadOwnerComments(ctx context.Context, q queryer, owner owner, artifactFilter string) ([]model.Comment, error) {
+	comments, err := readOwnerComments(ctx, q, owner, artifactFilter)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateCommentSideTables(ctx, q, comments)
+}
+
+// readOwnerComments is every comment of owner, oldest first, its rows alone: a /api/v2 list
+// hydrates the page it answers (hydrateCommentSideTables reads each comment by itself), and none
+// of the rows before or after it.
+func readOwnerComments(ctx context.Context, q queryer, owner owner, artifactFilter string) ([]model.Comment, error) {
 	var ownerColumn, ownerValue string
 	switch {
 	case owner.IssueKey != nil:
@@ -140,7 +155,7 @@ func (s *server) loadOwnerComments(ctx context.Context, q queryer, owner owner, 
 	case owner.ArtifactID != nil:
 		ownerColumn, ownerValue = "artifact_id", *owner.ArtifactID
 	default:
-		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return nil, errorf(apicode.OwnerInvalid, "owner requires exactly one issue or artifact")
 	}
 	rows, err := q.Query(ctx, fmt.Sprintf(`
 		select `+commentColumns+`
@@ -163,7 +178,7 @@ func (s *server) loadOwnerComments(ctx context.Context, q queryer, owner owner, 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return s.hydrateCommentSideTables(ctx, q, comments)
+	return comments, nil
 }
 
 func commentHasOwner(comment model.Comment, owner owner) bool {
@@ -180,35 +195,43 @@ type commentRead struct {
 }
 
 func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment") {
+	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment", apicode.CommentIDInput) {
 		return
 	}
-	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	read, err := s.readCommentThread(r.Context(), r.PathValue("id"), wantsDisplayTrees(r))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	comments, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, []model.Comment{comment})
+	WriteJSON(w, http.StatusOK, read)
+}
+
+// readCommentThread is the comment id names with its mentions, its delivery attempts and its
+// anchor's block position, and every comment replying to it, as GET /api/v1/comments/{id} and GET
+// /api/v2/comments/{id} both read it; a comment that does not exist is pgx.ErrNoRows.
+func (s *server) readCommentThread(ctx context.Context, id string, trees bool) (commentRead, error) {
+	comment, err := s.loadComment(ctx, s.deps.Store.Pool, id)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return commentRead{}, err
 	}
-	comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
+	comments, err := s.hydrateCommentSideTables(ctx, s.deps.Store.Pool, []model.Comment{comment})
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return commentRead{}, err
 	}
-	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, "reply_to", comment.ID)
+	comments[0].AnchorPosition, err = s.anchorBlock(ctx, comments[0].Anchor)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return commentRead{}, err
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	replies, err := s.loadReplyChain(ctx, s.deps.Store.Pool, "reply_to", comment.ID)
+	if err != nil {
+		return commentRead{}, err
+	}
+	reader := s.readDisplayTrees(ctx, trees)
 	read := commentRead{Replies: shapedComments(replies, reader)}
 	read.Comment.Comment = comments[0]
 	read.Comment.shape(reader)
 	reader.resolve()
-	WriteJSON(w, http.StatusOK, read)
+	return read, nil
 }
 
 // replyChainQuery is every comment transitively replying to the row(s) matching
@@ -300,7 +323,7 @@ func (s *server) loadOwnedComment(
 ) (model.Comment, error) {
 	comment, err := s.loadComment(ctx, tx, id)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !commentHasOwner(comment, owner)) {
-		return model.Comment{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must identify a comment on this owner")
+		return model.Comment{}, errorf(apicode.InvalidComment, "reply_to must identify a comment on this owner")
 	}
 	if err != nil {
 		return model.Comment{}, err

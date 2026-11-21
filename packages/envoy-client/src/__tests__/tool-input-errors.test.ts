@@ -172,9 +172,10 @@ describe("formatZodIssues", () => {
       "a document holds Markdown, which rewrites other text " +
         "(a JSONL file's lines come back joined into one paragraph), and " +
         '"rows.jsonl" is not a Markdown name. Upload the file under the same name with ' +
-        "path (--path <file>), which stores a file whose path does not end in .md or .markdown " +
-        "as its bytes, unchanged; a document takes a name ending in .md or .markdown or with " +
-        "no extension.",
+        "path (--path <file>), which stores the file as its bytes, unchanged, when neither the " +
+        "name nor the path ends in .md or .markdown (a name that ends in .md or .markdown makes " +
+        "the upload Markdown whatever its path); a document takes a name ending in .md or " +
+        ".markdown or with no extension.",
     ]);
     expect(problemsFor("dispatch_search", { query: "a" })).toEqual([
       "--query: Too small: expected string to have >=2 characters",

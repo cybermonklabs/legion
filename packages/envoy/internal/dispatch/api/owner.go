@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -55,17 +56,16 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 	}
 	if artifact.IssueKey != nil {
 		return model.Artifact{}, owner{}, errorf(
-			http.StatusBadRequest,
-			"ARTIFACT_LINKED",
-			"artifact belongs to issue %s; use /api/v1/issues/%s/...",
+			apicode.ArtifactLinked,
+			"artifact belongs to issue %s; use %s/issues/%s/...",
 			*artifact.IssueKey,
+			versionPrefix(requestAPIVersion(r)),
 			*artifact.IssueKey,
 		)
 	}
 	if artifact.SessionID != nil {
 		return model.Artifact{}, owner{}, errorf(
-			http.StatusBadRequest,
-			"ARTIFACT_AGENT_OWNED",
+			apicode.ArtifactAgentOwned,
 			"artifact belongs to agent %s's conversation, which holds files and images only: it has no comments, asks, events or subscribers, which belong to an issue's or a project's documents",
 			*artifact.SessionID,
 		)
@@ -81,7 +81,7 @@ func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.
 		&project.CreatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Project{}, errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")
+			return model.Project{}, errorf(apicode.ProjectNotFound, "project not found")
 		}
 		return model.Project{}, err
 	}
@@ -112,7 +112,7 @@ func (s *server) requireOpenOwnerStatus(ctx context.Context, tx pgx.Tx, owner ow
 }
 
 func ownerInvalid() error {
-	return errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+	return errorf(apicode.OwnerInvalid, "owner requires exactly one issue or artifact")
 }
 
 // ownerRead makes the read an owner check decides on: the statement, the arguments it takes and
@@ -168,7 +168,7 @@ const unlinkedArtifactRead = `select true from artifacts where id = $1 and issue
 // not exist is ARTIFACT_NOT_FOUND, any other failure err itself.
 func refuseMissingArtifact(err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {
-		return errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
+		return errorf(apicode.ArtifactNotFound, "artifact not found")
 	}
 	return err
 }
@@ -184,7 +184,7 @@ func refuseMissingArtifact(err error) error {
 // twice.
 func (s *server) refuseOwnerBeforeResolving(ctx context.Context, owner owner, write closedWrite) error {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+		return errorf(apicode.DatabaseUnavailable, "database unavailable")
 	}
 	_, open, err := ownerStatus(ctx, owner, pooledOwnerRead(s.deps.Store.Pool))
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -393,8 +394,8 @@ func TestListUsersReturnsSignedInPeopleToThePersonScope(t *testing.T) {
 		t.Fatalf("users = %#v, want alice then bob", users)
 	}
 	denied := agentRequest(t, handler, http.MethodGet, "/api/v1/users", nil, "agent-token")
-	if denied.Code != http.StatusForbidden || !strings.Contains(denied.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token lists users: status=%d body=%s, want 403 %s", denied.Code, denied.Body.String(), codeScopeRequired)
+	if denied.Code != http.StatusForbidden || !strings.Contains(denied.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token lists users: status=%d body=%s, want 403 %s", denied.Code, denied.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 	own := agentRequest(t, handler, http.MethodGet, "/api/v1/users", nil,
 		personalTokenHolding(t, database, model.ScopePerson))

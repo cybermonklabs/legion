@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -205,7 +206,7 @@ func TestAnAgentViewIsServedToThePersonScopeAndRefusedWithoutIt(t *testing.T) {
 	} {
 		client := rig.dial(t, withBearer(token))
 		client.subscribeAgent(t, "agent", reviewerSessionID)
-		refusal := client.refusal(t, agentFeedWait, "agent", codeScopeRequired)
+		refusal := client.refusal(t, agentFeedWait, "agent", apicode.OAuthScopeRequired.V1Name())
 		if !strings.Contains(refusal.Message, model.ScopePerson) {
 			t.Fatalf("%s was refused %q, which does not name the %s scope", name, refusal.Message, model.ScopePerson)
 		}
