@@ -335,10 +335,11 @@ machine in again. A machine login nobody decides expires after 15 minutes, a fix
 a setting (`machineLoginPendingTTL` in `packages/envoy/cmd/cipherd/main.go`). A person's machine
 logs in through the device grant alone: the earlier `POST /v1/launcher-credentials` login answers
 `405 Method Not Allowed` and its poll `GET /v1/launcher-credentials/{pending}` `404`. A service's
-login has no operator. The machine-login page lists it for everyone signed in, and anyone may
-revoke it, which ends every pod it enrolled at once: a service login a person approved through a
-code before services logged in with their tokens, until it expires, and a service's token login,
-which names no approver. A service whose token login was revoked logs in again with its token at
+login has no operator. The machine-login page lists it for everyone signed in but a restricted
+member (below), and any of them may revoke it, which ends every pod it enrolled at once: a service
+login a person approved through a code before services logged in with their tokens, until it
+expires, and a service's token login, which names no approver. A service whose token login was
+revoked logs in again with its token at
 its next call, under a new credential, which enrolls the pods it launches next; a pod the revoke
 ended stays without secrets until it is replaced. To stop it logging in, remove its account from
 `BROKER_SERVICE_LOGINS` and redeploy the broker. A token login of an account that
@@ -353,14 +354,21 @@ person's agents are released no secret; the login still trades for a token that 
 projects. A session such a person already had is denied every secret `restricted-member`, and its
 grants end at their next use ([Operating the broker](/legion/broker/operate/)). Nor is such a
 person any secret's approver, even of a secret they own, of a secret a Google group they are in
-owns, or of a shared one whose approver is `anyone`: the broker's approval page signs in only the
-deployment's domain, their **Inbox** lists them no secret request and their **Live grants** no
-grant as its approver, and their revoke or dismissal of one, and their deny of a service's machine
-login an older broker opened, is refused `403 NOT_APPROVER`. Their own machine logins and the
-grants of their own sessions stay theirs. While Dispatch cannot say what kind of member a person
-is, those lists leave such rows out, and such a dismissal or deny is refused
-`503 MEMBER_KIND_UNCHECKABLE`; such a revoke goes ahead, since a revoke only takes access away,
-and a revoke of a grant of one's own session asks nothing. The broker's rate
+owns, or of a shared one whose approver is `anyone`, nor an approver of any service's machine
+login: the broker's approval page signs in only the deployment's domain and refuses them as a
+decider too, their **Inbox** lists them no secret request and no service's machine login, their
+**Live grants** lists only the grants of the sessions that act for them, and their machine-login
+page only their own machines' and pods' logins. Their revoke or dismissal of anything else, and
+their deny of a service's machine login an older broker opened, is refused `403 NOT_APPROVER`,
+saying why, and their revoke of a service's machine login `404 NOT_FOUND`. Their own machine
+logins and the grants of their own sessions stay theirs. While Dispatch cannot say what kind of
+member a person is, those lists leave such rows out, the machine-login page and such a dismissal
+or deny are refused `503 MEMBER_KIND_UNCHECKABLE`, and a decision on the approval page decides
+nothing. A revoke of a grant as its approver goes ahead while Dispatch does not answer, since a
+revoke only takes access away, and is refused `503 MEMBER_KIND_UNCHECKABLE` while Dispatch
+refuses the broker's own account or answers a kind this broker does not know; a revoke of a grant
+of one's own session asks nothing. Each of these reads of Dispatch ends within 2 seconds, inside
+the 5 that Dispatch waits for the broker. The broker's rate
 limiter caps how often anyone can start a machine login, per source address and per named person,
 and how often anyone can try a token login: per source address before the token is verified, and
 per account once it is. A token login the broker could not complete (a 5xx, such as while its

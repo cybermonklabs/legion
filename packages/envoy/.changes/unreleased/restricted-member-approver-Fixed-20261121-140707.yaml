@@ -1,26 +1,36 @@
 kind: Fixed
 body: |-
-  A restricted member is no longer an approver of any secret on Dispatch's pages. A restricted
-  member is a person an access list admitted from outside the deployment's sign-in domain. The
-  broker's approval page already signed in only that domain, so such a person decided nothing; but
-  the routes Dispatch relays for its signed-in people listed them the secret requests and grants
-  of a Google group that listed them, of a secret they owned, and of a shared secret whose approver
-  is `anyone`, and let them revoke those grants and dismiss those expired requests, ending other
-  people's grants, and let them deny a service's machine login an older broker had opened. Where
+  A restricted member is no longer an approver of any secret or of any service's machine login on
+  Dispatch's pages. A restricted member is a person an access list admitted from outside the
+  deployment's sign-in domain. The routes Dispatch relays for its signed-in people listed them the
+  secret requests and grants of a Google group that listed them, of a secret they owned, and of a
+  shared secret whose approver is `anyone`, every service pod's automatic grant, every service's
+  machine login, and every service's machine login an older broker had opened, and let them revoke
+  those grants and those machine logins, ending the sessions of other people and of services,
+  dismiss those expired requests and logins, and deny such a service's login. Where
   `BROKER_PROJECT_ACCESS_URL` is set, the broker now asks Dispatch what kind of member the person
-  is before it acts on one of those approver arms: a restricted member's Inbox lists no secret
-  request, their Live grants list no grant as its approver, and their revoke or dismissal of one,
-  and their deny of a service's machine login, is refused `403 NOT_APPROVER`. Their own machine
-  logins, and the grants of their own sessions, which they end as the session's operator, stay
-  theirs, asking Dispatch nothing. While Dispatch cannot say what kind of member a person is, their
-  lists leave those rows out, logged once per person per 30 seconds (`an approver's list leaves
-  out every secret request and grant it holds the person as an approver of`), and their dismissal
-  of a secret request or deny of a service's login is refused `503 MEMBER_KIND_UNCHECKABLE`, with
-  nothing written. A revoke as an approver goes ahead then, logged at WARN (`a revoke as the
-  grant's approver goes ahead though Dispatch could not say whether the person is a restricted
-  member`), since a revoke only takes access away and one refused through an outage would delay
-  ending a grant that leaks. With `BROKER_PROJECT_ACCESS_URL` unset the broker asks nothing and
-  behaves as before.
+  is before it acts on one of those arms: a restricted member's Inbox lists no secret request and
+  no service's login, their Live grants list only the grants of the sessions that act for them,
+  their machine-login list holds only their own machines' and pods' logins, and their revoke,
+  dismissal or deny of anything else is refused, `403 NOT_APPROVER` saying why, or `404 NOT_FOUND`
+  for a service's machine login. The broker's approval page, which signs in only the deployment's
+  domain, now also asks the deciding person's kind and refuses a restricted member. Their own
+  machine logins, and the grants of their own sessions, which they end as the session's operator,
+  stay theirs, asking Dispatch nothing. While Dispatch cannot say what kind of member a person is,
+  their lists leave those rows out, logged once per person per 30 seconds (`an approver's list
+  leaves out every row it holds the person as an approver of`), their dismissal, deny,
+  machine-login list or machine-login revoke is refused `503 MEMBER_KIND_UNCHECKABLE`, with nothing
+  written, and their decision on the approval page decides nothing. A revoke of a grant as its
+  approver goes ahead while Dispatch does not answer, logged at WARN (`a revoke as the grant's
+  approver goes ahead though Dispatch could not
+  say whether the person is a restricted member`), since a revoke only takes access away and one
+  refused through an outage would delay ending a grant that leaks; it helps only someone who
+  already holds the grant's id, since the lists hide such a grant then. While Dispatch refuses the
+  broker's own account, or answers a member kind this broker does not know, that revoke is refused
+  `503 MEMBER_KIND_UNCHECKABLE` too. Every member-kind read a route Dispatch relays makes ends
+  within 2 seconds, so a Dispatch that does not answer leaves the route its answer rather than
+  holding it past the 5 seconds Dispatch waits. With `BROKER_PROJECT_ACCESS_URL` unset the broker
+  asks nothing and behaves as before.
 time: 2026-11-21T14:07:07Z
 custom:
     Issue: restricted-member-approver
