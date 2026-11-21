@@ -244,14 +244,20 @@ type PublishResponse struct {
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
 }
 
-// SessionInfo is the joined view of a session's interest record (topics, dir, machine) and its
+// SessionInfoAs is the joined view of a session's interest record (topics, dir, machine) and its
 // session entry (its title, its capabilities and how it receives), which GET /v1/sessions lists
-// and GET /v1/registry/<session_id> answers for one session. Its host is where the session runs,
-// its recorded host or else MachineID; no delivery reads it. An inbox message is the session's
-// owner's to deliver: the listener its stored subscription names, else the one MachineID names.
-// Any other listener leaves inbox messages to the owner silently.
-type SessionInfo struct {
-	SessionID string `json:"session_id"`
+// and GET /v1/registry/<session_id> answers for one session, with its session id and its title
+// held as Text. Its host is where the session runs, its recorded host or else MachineID; no
+// delivery reads it. An inbox message is the session's owner's to deliver: the listener its stored
+// subscription names, else the one MachineID names. Any other listener leaves inbox messages to
+// the owner silently.
+//
+// The listener writes it as SessionInfo, the id and the title strings. A client that must not hold
+// the listener's words as strings reads those two as a type of its own, as APIErrorAs says
+// (Dispatch's client reads its redact.RemoteText), through the one declaration the listener writes
+// them with.
+type SessionInfoAs[Text any] struct {
+	SessionID Text `json:"session_id"`
 	// State is what the session's last registration says about it (session.StateOf): live, or
 	// unresponsive for one past the live window that is not gone. LastSeen below is that
 	// registration, so the two together say how long it has been stalled.
@@ -269,7 +275,7 @@ type SessionInfo struct {
 	// because every released client parses it (packages/envoy-client/src/transport.ts), and a
 	// client that does not tolerate its absence would break without it.
 	Port           int      `json:"port"`
-	Title          string   `json:"title"`
+	Title          Text     `json:"title"`
 	Capabilities   []string `json:"capabilities"`
 	SelfSubscribed bool     `json:"self_subscribed"`
 	Topics         []string `json:"topics"`
@@ -298,6 +304,9 @@ type SessionInfo struct {
 	// string.
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
 }
+
+// SessionInfo is a session as the listener writes it (SessionInfoAs).
+type SessionInfo = SessionInfoAs[string]
 
 // StoppedSessionInfo is what GET /v1/registry/<session_id>?include=unresponsive,stopped answers
 // for a session the session registry holds no entry for within the accepted states and the
@@ -491,14 +500,19 @@ type UnsubscribeResponse struct {
 	Removed []string `json:"removed"`
 }
 
-// RoleHolder is GET /v1/roles/<role>'s answer for a role whose holder is live: the role, its
+// RoleHolderAs is GET /v1/roles/<role>'s answer for a role whose holder is live: the role, its
 // holder and the holder's state, live on this answer, named exactly as the 404 of a lapsed holder
 // (RoleRefusal) and a publish answer name them, the holder's title, directory, machine, host and
-// capabilities, its last registration, and the claim's revision. The fields are declared in the
-// alphabetical order of their JSON names, which is the order encoding/json wrote the keys of the
-// map this answer was before it was a struct, so the answer's bytes did not change; a new field
-// keeps that order.
-type RoleHolder struct {
+// capabilities, its last registration, and the claim's revision, with the holder's session id and
+// its title held as Text. The fields are declared in the alphabetical order of their JSON names,
+// which is the order encoding/json wrote the keys of the map this answer was before it was a
+// struct, so the answer's bytes did not change; a new field keeps that order.
+//
+// The listener writes it as RoleHolder, the holder and the title strings. A client that must not
+// hold the listener's words as strings reads those two as a type of its own, as APIErrorAs says,
+// through the one declaration the listener writes them with: the holder of the 200 is the same
+// word as the holder of the 404 (RoleRefusalAs), and is read the same way.
+type RoleHolderAs[Text any] struct {
 	// Capabilities is the empty list, never null, for a holder that advertises none.
 	Capabilities []string `json:"capabilities"`
 	// ClaimRevision is the role bucket revision of the claim record the resolution read, which a
@@ -518,7 +532,7 @@ type RoleHolder struct {
 	// It is left out where the claim carries no mark, so a client reads an absent field as "this
 	// claim is still its holder's".
 	HandedBack  bool         `json:"handed_back,omitempty"`
-	Holder      string       `json:"holder"`
+	Holder      Text         `json:"holder"`
 	HolderState SessionState `json:"holder_state"`
 	Host        string       `json:"host"`
 	// LastSeen is the holder's last registration (Unix ms). It is a pointer, which the listener
@@ -526,8 +540,11 @@ type RoleHolder struct {
 	LastSeen  *int64 `json:"last_seen"`
 	MachineID string `json:"machine_id"`
 	Role      string `json:"role"`
-	Title     string `json:"title"`
+	Title     Text   `json:"title"`
 }
+
+// RoleHolder is a role's live holder as the listener writes it (RoleHolderAs).
+type RoleHolder = RoleHolderAs[string]
 
 // RoleRefusalAs is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and
 // a role send through POST /v1/messages/publish that kept nothing answers, with each of its free

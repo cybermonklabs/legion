@@ -10,10 +10,12 @@ import (
 )
 
 // The listener writes its error and role refusal bodies as listenerwire.APIError and
-// listenerwire.RoleRefusal, each word a string, and this client reads them as the same declarations
-// with each word held as redact.RemoteText. A body the listener writes is the bytes it always
-// wrote, and it reads the same through both: the listener's own instantiation gets back what was
-// written, and each box of the client's holds, compared as it came, the string written there.
+// listenerwire.RoleRefusal, each word a string, and its role holder and session answers as
+// listenerwire.RoleHolder and listenerwire.SessionInfo, the session id and the title strings; this
+// client reads them as the same declarations with each of those words held as redact.RemoteText. A
+// body the listener writes is the bytes it always wrote, and it reads the same through both: the
+// listener's own instantiation gets back what was written, and each box of the client's holds,
+// compared as it came, the string written there.
 func TestAListenerBodyReadsTheSameThroughTheClientsInstantiation(t *testing.T) {
 	t.Run("APIError", func(t *testing.T) {
 		for _, tc := range []struct {
@@ -85,6 +87,45 @@ func TestAListenerBodyReadsTheSameThroughTheClientsInstantiation(t *testing.T) {
 				t.Errorf("%s reads its other fields as %+v through the client's instantiation, want those of %+v", data, boxed, tc.written)
 			}
 		}
+	})
+	t.Run("RoleHolder", func(t *testing.T) {
+		lastSeen := int64(1700000000000)
+		written := listenerwire.RoleHolder{
+			Capabilities: []string{"steer"}, ClaimRevision: 7, ClientInstanceID: "instance_1", Dir: "/work",
+			Holder: "ses_holder", HolderState: StateLive, Host: "box", LastSeen: &lastSeen, MachineID: "box",
+			Role: "legion-planner", Title: "planner",
+		}
+		data := writtenBytes(t, written, `{"capabilities":["steer"],"claim_revision":7,"client_instance_id":"instance_1","dir":"/work","holder":"ses_holder","holder_state":"live","host":"box","last_seen":1700000000000,"machine_id":"box","role":"legion-planner","title":"planner"}`)
+		var plain listenerwire.RoleHolder
+		var boxed listenerwire.RoleHolderAs[redact.RemoteText]
+		decode(t, data, &plain)
+		decode(t, data, &boxed)
+		if !reflect.DeepEqual(plain, written) {
+			t.Errorf("%s reads back as %+v through RoleHolder, want %+v", data, plain, written)
+		}
+		sameWord(t, data, "holder", boxed.Holder, written.Holder)
+		sameWord(t, data, "title", boxed.Title, written.Title)
+		// Its words print as they came, so the client's instantiation writes the body back as the
+		// listener wrote it, every other field with them.
+		writtenBytes(t, boxed, string(data))
+	})
+	t.Run("SessionInfo", func(t *testing.T) {
+		written := listenerwire.SessionInfo{
+			SessionID: "ses_one", State: StateLive, MachineID: "box", Host: "box", Dir: "/work", Title: "planner",
+			Capabilities: []string{"steer"}, Topics: []string{"agent.ses_one"}, Roles: []string{"legion-planner"},
+			UpdatedAt: 1, LastSeen: 2, Delivery: "consumer",
+		}
+		data := writtenBytes(t, written, `{"session_id":"ses_one","state":"live","machine_id":"box","host":"box","dir":"/work","port":0,"title":"planner","capabilities":["steer"],"self_subscribed":false,"topics":["agent.ses_one"],"roles":["legion-planner"],"updated_at":1,"last_seen":2,"delivery":"consumer"}`)
+		var plain listenerwire.SessionInfo
+		var boxed listenerwire.SessionInfoAs[redact.RemoteText]
+		decode(t, data, &plain)
+		decode(t, data, &boxed)
+		if !reflect.DeepEqual(plain, written) {
+			t.Errorf("%s reads back as %+v through SessionInfo, want %+v", data, plain, written)
+		}
+		sameWord(t, data, "session_id", boxed.SessionID, written.SessionID)
+		sameWord(t, data, "title", boxed.Title, written.Title)
+		writtenBytes(t, boxed, string(data))
 	})
 }
 

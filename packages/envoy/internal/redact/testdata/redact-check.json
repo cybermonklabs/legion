@@ -177,6 +177,14 @@
         "test": "print-envoy.listenerwire.RoleRefusalAs"
       },
       {
+        "holder": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/internal/redact.RemoteText]",
+        "test": "print-envoy.listenerwire.RoleHolderAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.SessionInfoAs[github.com/sjawhar/envoy/internal/redact.RemoteText]",
+        "test": "print-envoy.listenerwire.SessionInfoAs"
+      },
+      {
         "holder": "github.com/sjawhar/envoy/listenerwire.APIErrorAs[github.com/sjawhar/envoy/internal/redact.RemoteText]",
         "test": "print-envoy.listenerwire.APIErrorAs"
       },
@@ -2640,6 +2648,90 @@
       "production": "envoy.Client.lapsedRoleHolder, redact.RemoteText.SendBack"
     },
     {
+      "id": "envoy-answer-words-role-id-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/role/id-echo",
+      "production": "envoy Client.Role: a 200's holder held as redact.RemoteText and kept only where the rule prints it as it came (keptSessionID), so a holder echoing the bearer is ErrUnavailable naming the read and the member"
+    },
+    {
+      "id": "envoy-answer-words-role-id-url",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/role/id-url",
+      "production": "envoy Client.Role: a 200's holder quoting a credential's URL is kept nowhere (keptSessionID), ErrUnavailable naming the read and the member"
+    },
+    {
+      "id": "envoy-answer-words-role-title-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/role/title-echo",
+      "production": "envoy Client.Role: a 200's title held as redact.RemoteText and kept as the rule reads it, so the holder's Session prints neither the bearer nor the URL's secrets"
+    },
+    {
+      "id": "envoy-answer-words-role-plain",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/role/plain",
+      "production": "envoy Client.Role: a holder and a title the rule prints as they came are kept as they came"
+    },
+    {
+      "id": "envoy-answer-words-session-id-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/session/id-echo",
+      "production": "envoy Client.readSession (Session, SessionIncludingStopped): a 200's session_id held as redact.RemoteText and kept only where the rule prints it as it came (keptSessionID), else ErrUnavailable naming the read and the member"
+    },
+    {
+      "id": "envoy-answer-words-session-id-url",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/session/id-url",
+      "production": "envoy Client.readSession: a 200's session_id quoting a credential's URL is kept nowhere, ErrUnavailable naming the read and the member"
+    },
+    {
+      "id": "envoy-answer-words-session-title-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/session/title-echo",
+      "production": "envoy Client.readSession: a 200's title kept as the rule reads it (sessionOf), so the Session prints neither the bearer nor the URL's secrets"
+    },
+    {
+      "id": "envoy-answer-words-session-plain",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/session/plain",
+      "production": "envoy Client.readSession: a session_id and a title the rule prints as they came are kept as they came"
+    },
+    {
+      "id": "envoy-answer-words-sessions-id-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/sessions/id-echo",
+      "production": "envoy Client.Sessions: a row's session_id kept only where the rule prints it as it came (keptSessionID), else the whole list is ErrUnavailable naming the read and the member"
+    },
+    {
+      "id": "envoy-answer-words-sessions-id-url",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/sessions/id-url",
+      "production": "envoy Client.Sessions: a row's session_id quoting a credential's URL is kept nowhere, the list ErrUnavailable naming the read and the member"
+    },
+    {
+      "id": "envoy-answer-words-sessions-title-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/sessions/title-echo",
+      "production": "envoy Client.Sessions: a row's title kept as the rule reads it (sessionOf), so the listed Session prints neither the bearer nor the URL's secrets"
+    },
+    {
+      "id": "envoy-answer-words-sessions-plain",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestAListenersSessionAnswerKeepsNoWordItEchoes/sessions/plain",
+      "production": "envoy Client.Sessions: a row's session_id and title the rule prints as they came are kept as they came"
+    },
+    {
       "id": "box-string",
       "requirement": "r3-each-site",
       "package": "./internal/redact",
@@ -4955,6 +5047,20 @@
       "package": "./internal/dispatch/envoy",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.listenerwire.RoleRefusalAs",
       "production": "github.com/sjawhar/envoy/listenerwire.RoleRefusalAs[github.com/sjawhar/envoy/internal/redact.RemoteText, github.com/sjawhar/envoy/internal/redact.RemoteText, github.com/sjawhar/envoy/internal/dispatch/envoy.holderState]: every printer at every placement"
+    },
+    {
+      "id": "print-envoy.listenerwire.RoleHolderAs",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.listenerwire.RoleHolderAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/internal/redact.RemoteText]: every printer at every placement"
+    },
+    {
+      "id": "print-envoy.listenerwire.SessionInfoAs",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/envoy",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.listenerwire.SessionInfoAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.SessionInfoAs[github.com/sjawhar/envoy/internal/redact.RemoteText]: every printer at every placement"
     },
     {
       "id": "print-envoy.listenerwire.APIErrorAs",
@@ -8002,6 +8108,36 @@
       "site": "a commit's sha with no date, printed raw by the delivery fetch",
       "source": "the class search of the retried-trade finding",
       "guard": "delivery-answer-words-not-a-sha"
+    },
+    {
+      "site": "the listener's role lookup 200 holder, decoded into a plain string by Dispatch's envoy client and printed raw as a role mention's session (the copy order rule's errors, the outbox's fallback copy, a delivery's recorded failure)",
+      "source": "the class search of round 5's deep review",
+      "guard": "envoy-answer-words-role-id-echo"
+    },
+    {
+      "site": "the listener's role lookup 200 title, decoded into a plain string by Dispatch's envoy client and printed raw in a delivery's recorded failure",
+      "source": "the class search of round 5's deep review",
+      "guard": "envoy-answer-words-role-title-echo"
+    },
+    {
+      "site": "the listener's session read 200 session_id, decoded into a plain string by Dispatch's envoy client and printed raw as a mention's session",
+      "source": "the class search of round 5's deep review",
+      "guard": "envoy-answer-words-session-id-echo"
+    },
+    {
+      "site": "the listener's session read 200 title, decoded into a plain string by Dispatch's envoy client and printed raw in a delivery's recorded failure",
+      "source": "the class search of round 5's deep review",
+      "guard": "envoy-answer-words-session-title-echo"
+    },
+    {
+      "site": "the listener's session list rows' session_id, decoded into plain strings by Dispatch's envoy client",
+      "source": "the class search of round 5's deep review",
+      "guard": "envoy-answer-words-sessions-id-echo"
+    },
+    {
+      "site": "the listener's session list rows' title, decoded into plain strings by Dispatch's envoy client",
+      "source": "the class search of round 5's deep review",
+      "guard": "envoy-answer-words-sessions-title-echo"
     },
     {
       "site": "Dispatch's member_kind, decoded into a plain string and printed raw by the project access client's ErrUnknownMemberKind",

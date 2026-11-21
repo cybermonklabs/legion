@@ -169,8 +169,10 @@ const (
 
 // Session is Dispatch's reading of one Envoy listener session, live, unresponsive or, on
 // SessionIncludingStopped's answer alone, stopped. It is built from the listener's own answers,
-// listenerwire.SessionInfo for a registry read or the list (sessionOf) and listenerwire.RoleHolder
-// for a role lookup (Role), and keeps what Dispatch uses of them. Its JSON names are Dispatch's:
+// listenerwire.SessionInfoAs for a registry read or the list (sessionOf) and
+// listenerwire.RoleHolderAs for a role lookup (Role), each read with the session's id and its title
+// held as redact.RemoteText, and keeps what Dispatch uses of them: the id only where the rule prints
+// it as it came (keptSessionID), and the title as the rule reads it. Its JSON names are Dispatch's:
 // its route roster stores the rows (api/issue_route_status.go) and GET /api/v1/agents answers them.
 type Session struct {
 	SessionID string `json:"session_id"`
@@ -218,13 +220,19 @@ func (s *Session) normalize(sessionID string) {
 }
 
 // sessionOf is Dispatch's reading of a session the listener answered with info (normalize fills
-// in what it left out). A stopped session's answer (listenerwire.StoppedSessionInfo) carries its
-// fields under the same names, so it reads here too, with no Dir, MachineID, Host, TmuxPlace or
-// Roles.
-func sessionOf(info listenerwire.SessionInfo, sessionID string) Session {
+// in what it left out), and false for an answer whose session id is none this client keeps
+// (keptSessionID). A stopped session's answer (listenerwire.StoppedSessionInfo) carries its fields
+// under the same names, so it reads here too, with no Dir, MachineID, Host, TmuxPlace or Roles. The
+// title is the rule's reading of the listener's (redact.RemoteText.String): Dispatch shows a
+// session's title and decides nothing on it, so it keeps none of it that a print would not show.
+func sessionOf(info listenerwire.SessionInfoAs[redact.RemoteText], sessionID string) (Session, bool) {
+	id, kept := keptSessionID(info.SessionID)
+	if !kept {
+		return Session{}, false
+	}
 	session := Session{
-		SessionID:    info.SessionID,
-		Title:        info.Title,
+		SessionID:    id,
+		Title:        info.Title.String(),
 		Dir:          info.Dir,
 		MachineID:    info.MachineID,
 		Host:         info.Host,
@@ -235,7 +243,28 @@ func sessionOf(info listenerwire.SessionInfo, sessionID string) Session {
 		State:        string(info.State),
 	}
 	session.normalize(sessionID)
-	return session
+	return session, true
+}
+
+// keptSessionID is a session id the listener answered with - a session's own, or a role's holder -
+// as this client keeps it, and false for one it keeps nowhere. The empty field is the empty id,
+// which normalize and every caller read as they always have. Any other id is kept only where the
+// rule prints it as it came, each credential the read carried redacted first
+// (redact.RemoteText.SendBack), as the holder of a lapsed role refusal is (lapsedRoleHolder):
+// Dispatch compares, stores, prints and sends back to the listener the id it keeps, so none of
+// those holds more of the listener's words than a print of them shows, and an id that echoes the
+// bearer the read carried, or quotes a credential's URL, is an answer this client cannot read.
+func keptSessionID(id redact.RemoteText) (string, bool) {
+	if id.IsEmpty() {
+		return "", true
+	}
+	return id.SendBack()
+}
+
+// sessionIDNotKept is the ErrUnavailable of a read whose answer named, as its member, a session id
+// keptSessionID keeps nowhere. It names the read and the member, and nothing of the id.
+func sessionIDNotKept(read, member string) error {
+	return fmt.Errorf("%w: %s answered a %s the rule does not print as it came", ErrUnavailable, read, member)
 }
 
 // SendInput is a targeted Dispatch delivery through the listener.
@@ -446,6 +475,9 @@ func closeBody(response *http.Response) {
 // refuses the list as refilling, or ErrUnavailable. A caller tests each row's State, never its
 // membership of the list: a list without the unresponsive rows reads every stalled session as
 // ended, which is the whole of dispatch://INFRA-392.
+//
+// A row whose session id this client keeps nowhere (keptSessionID) refuses the whole list as
+// ErrUnavailable, for the same reason: leaving the row out would read that session as ended.
 func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	const route = "/v1/sessions"
 	response, err := c.get(ctx, route, includeUnresponsive)
@@ -457,7 +489,7 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 		return nil, listFailure(response, "GET "+route)
 	}
 
-	var rows []listenerwire.SessionInfo
+	var rows []listenerwire.SessionInfoAs[redact.RemoteText]
 	if err := decodeAnswer(response, &rows); err != nil {
 		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
@@ -466,7 +498,11 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	// holds a session's subscriptions, which it reads through ListInterests instead.
 	sessions := make([]Session, len(rows))
 	for index, row := range rows {
-		sessions[index] = sessionOf(row, row.SessionID)
+		session, kept := sessionOf(row, "")
+		if !kept {
+			return nil, sessionIDNotKept("GET "+route, "session_id")
+		}
+		sessions[index] = session
 	}
 	return sessions, nil
 }
@@ -582,7 +618,8 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 // cannot be reached right now and that its claim still stands, which is not the same as the role
 // having no holder: that holder is read through the session route, which answers an unresponsive
 // record like any other, so the delivery still resolves to it and its frame is stored until it
-// answers again (lapsedRoleHolder).
+// answers again (lapsedRoleHolder). The 200's holder is the 404's word, and is kept as that one is:
+// only where the rule prints it as it came (keptSessionID); one it does not is ErrUnavailable.
 func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 	route := "/v1/roles/" + url.PathEscape(role)
 	response, err := c.get(ctx, route, includeUnresponsive)
@@ -593,14 +630,18 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 	if response.StatusCode != http.StatusOK {
 		return c.lapsedRoleHolder(ctx, response)
 	}
-	var answer listenerwire.RoleHolder
+	var answer listenerwire.RoleHolderAs[redact.RemoteText]
 	if err := decodeAnswer(response, &answer); err != nil {
 		return Session{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
+	holderID, kept := keptSessionID(answer.Holder)
+	if !kept {
+		return Session{}, sessionIDNotKept("GET "+route, "holder")
+	}
 	// An older listener names no holder_state, which normalize reads as live.
 	holder := Session{
-		SessionID:    answer.Holder,
-		Title:        answer.Title,
+		SessionID:    holderID,
+		Title:        answer.Title.String(),
 		Dir:          answer.Dir,
 		MachineID:    answer.MachineID,
 		Host:         answer.Host,
@@ -611,7 +652,7 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 	if answer.LastSeen != nil {
 		holder.LastSeen = *answer.LastSeen
 	}
-	holder.normalize(answer.Holder)
+	holder.normalize(holderID)
 	return holder, nil
 }
 
@@ -715,11 +756,15 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 		return Session{}, unavailableGetStatus(response, route)
 	}
 
-	var info listenerwire.SessionInfo
+	var info listenerwire.SessionInfoAs[redact.RemoteText]
 	if err := decodeAnswer(response, &info); err != nil {
 		return Session{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
-	return sessionOf(info, sessionID), nil
+	session, kept := sessionOf(info, sessionID)
+	if !kept {
+		return Session{}, sessionIDNotKept("GET "+route, "session_id")
+	}
+	return session, nil
 }
 
 // Agent returns the Legion agent registry's entry for one session (listenerwire.LegionAgentAnswer,

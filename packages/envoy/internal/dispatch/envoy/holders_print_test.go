@@ -43,6 +43,12 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	// the body as the listener writes it.
 	failure := listenerwire.APIErrorAs[redact.RemoteText]{Code: code, Error: words, Expected: []redact.RemoteText{words}}
 	failureTwin := listenerwire.APIError{Code: redacttest.Code, Error: redacttest.Words, Expected: []string{redacttest.Words}}
+	// The role holder Client.Role decodes from a 200 and the session Client.Session, Client.Sessions
+	// and Client.SessionIncludingStopped decode, and their twins, each as the listener writes it.
+	holder := listenerwire.RoleHolderAs[redact.RemoteText]{Holder: code, Title: words, Role: "legion-planner", Capabilities: []string{}}
+	holderTwin := listenerwire.RoleHolder{Holder: redacttest.Code, Title: redacttest.Words, Role: "legion-planner", Capabilities: []string{}}
+	session := listenerwire.SessionInfoAs[redact.RemoteText]{SessionID: code, Title: words, State: StateLive}
+	sessionTwin := listenerwire.SessionInfo{SessionID: redacttest.Code, Title: redacttest.Words, State: StateLive}
 	for _, h := range []redacttest.Holder{
 		{
 			Name:     "envoy.RefillingError",
@@ -64,6 +70,20 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Boxed:    failure,
 			Same:     failureTwin,
 			Exported: failureTwin,
+		},
+		{
+			Name:     "envoy.listenerwire.RoleHolderAs",
+			Kind:     "fields",
+			Boxed:    holder,
+			Same:     holderTwin,
+			Exported: holderTwin,
+		},
+		{
+			Name:     "envoy.listenerwire.SessionInfoAs",
+			Kind:     "fields",
+			Boxed:    session,
+			Same:     sessionTwin,
+			Exported: sessionTwin,
 		},
 	} {
 		t.Run(h.Name, func(t *testing.T) { redacttest.PrintTest(t, h) })
