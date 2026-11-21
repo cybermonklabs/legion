@@ -383,11 +383,11 @@ func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing
 	}
 }
 
-// emptySchemaStore opens a store on a schema of its own on the BROKER_TEST_DATABASE_URL server,
-// created empty and dropped when t ends, with params, extra connection parameters as key=value
-// (e.g. "pool_max_conns=4"), added to the URL. A test that migrates a set of its own needs one:
-// the server's shared schema already records the broker's real versions, which would pass over
-// the test set's numbers as applied.
+// emptySchemaStore opens a store on a schema of its own in the test binary's database on the
+// BROKER_TEST_DATABASE_URL server (testDatabaseURL), created empty and dropped when t ends, with
+// params, extra connection parameters as key=value (e.g. "pool_max_conns=4"), added to the URL. A
+// test that migrates a set of its own needs one: the database's shared schema already records the
+// broker's real versions, which would pass over the test set's numbers as applied.
 func emptySchemaStore(t *testing.T, params ...string) *Store {
 	t.Helper()
 	raw := testDatabaseURL(t)

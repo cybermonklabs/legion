@@ -488,10 +488,15 @@ func TestTheBrokerRefusesABadSessionAccountPair(t *testing.T) {
 	}
 }
 
-// listenTimeout bounds how long startBroker waits for a broker's "broker listening" line: long
-// enough for a cold binary to migrate an empty database, short enough that a broker which will
-// never bind fails its row rather than its package's deadline.
-const listenTimeout = 10 * time.Second
+// listenWaitMargin is how long before the test binary's deadline AwaitListening gives up on a
+// broker that has neither logged "broker listening" nor exited: the cleanup's stop of that broker
+// (stopTimeout) and a few seconds more, so the row fails naming the broker and its log, and its
+// cleanup ends, before the binary's own timeout ends the run with no word of which row hung.
+const listenWaitMargin = stopTimeout + 10*time.Second
+
+// listenWaitNoDeadline is how long AwaitListening waits when the test binary has no deadline at
+// all (go test -timeout 0): a guard against a hang, as the deadline is everywhere else.
+const listenWaitNoDeadline = time.Hour
 
 // stopTimeout bounds how long a broker gets to exit after the SIGTERM its test's cleanup sends,
 // before it is killed outright. It covers the whole stop budget the process logs at boot — its
@@ -558,7 +563,7 @@ func startBroker(t *testing.T, options brokerOptions) *brokerProcess {
 		}
 	})
 	if !options.NoWaitForListening {
-		p.AwaitListening(t, listenTimeout)
+		p.AwaitListening(t)
 	}
 	return p
 }
@@ -668,11 +673,26 @@ func scrapeMetric(t *testing.T, addr, metric string) map[string]float64 {
 // so this is how soon a test reads the bind, never how soon the broker makes it.
 const listeningPoll = 20 * time.Millisecond
 
-// AwaitListening waits up to within for the broker's "broker listening" line and records the
-// address it names in Addr and the log up to it in Boot. It fails t when the broker exits without
-// ever logging that line, and when within passes with no such line.
-func (p *brokerProcess) AwaitListening(t *testing.T, within time.Duration) {
+// AwaitListening waits for the broker's "broker listening" line and records the address it names
+// in Addr and the log up to it in Boot. The wait ends on one of the two facts a boot ends on: the
+// line, or the broker's exit, which fails t, since a broker that refuses its boot exits. Before
+// the line a broker opens its database and migrates it, a wait no span on this side measures: its
+// migration waits on the advisory lock every migration of its database takes, as the second
+// process of a pair does on the first's, and on a loaded machine the bind itself comes late. So
+// nothing but the test binary's deadline bounds it: the wait gives up listenWaitMargin before that
+// deadline, failing t with the broker's log, so the row and its cleanup end before the binary's
+// own timeout does. A deadline nearer than listenWaitMargin leaves the boot no time at all, and t
+// fails at once, naming the deadline rather than the broker. With no deadline (go test -timeout
+// 0) the wait is listenWaitNoDeadline.
+func (p *brokerProcess) AwaitListening(t *testing.T) {
 	t.Helper()
+	within := listenWaitNoDeadline
+	if deadline, ok := t.Deadline(); ok {
+		left := time.Until(deadline)
+		if within = left - listenWaitMargin; within <= 0 {
+			t.Fatalf("the test binary's deadline is %s away, nearer than the %s AwaitListening keeps for the broker's stop (listenWaitMargin), so no broker boot can be waited for: run with a -timeout longer than that", left.Round(time.Second), listenWaitMargin)
+		}
+	}
 	if !testwait.Holds(within, listeningPoll, func() bool {
 		if addr, boot, ok := listeningIn(p.Log()); ok {
 			p.Addr, p.Boot = addr, boot
@@ -693,7 +713,11 @@ func (p *brokerProcess) AwaitListening(t *testing.T, within time.Duration) {
 		}
 		return false
 	}) {
-		t.Fatalf("no %q line within %s:\n%s", "broker listening", within, p.Log())
+		bound := listenWaitMargin.String() + " before the test binary's deadline"
+		if _, ok := t.Deadline(); !ok {
+			bound = "the wait of a test binary with no deadline (listenWaitNoDeadline)"
+		}
+		t.Fatalf("the broker neither logged %q nor exited within %s, %s:\n%s", "broker listening", within.Round(time.Second), bound, p.Log())
 	}
 }
 
