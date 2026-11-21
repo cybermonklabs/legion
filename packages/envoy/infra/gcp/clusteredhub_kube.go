@@ -3,6 +3,7 @@ package gcp
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	kubernetes "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes"
 	apiextensions "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/apiextensions"
@@ -246,9 +247,7 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 	}
 	env := pulumi.Map{"GOMEMLIMIT": pulumi.String(s.size.goMemLimit)}
 	if s.route != nil {
-		for name, value := range s.route.env(s.name) {
-			env[name] = value
-		}
+		maps.Copy(env, s.route.env(s.name))
 	}
 	return pulumi.Map{
 		"fullnameOverride": pulumi.String(s.name),
