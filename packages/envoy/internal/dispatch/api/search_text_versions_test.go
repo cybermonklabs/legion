@@ -384,7 +384,12 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		t.Fatalf("the fill logged %d batches while paused, want none", batches-batchesBeforePause)
 	}
 	// The held read ends after the lock is released, so after releasing: the fill may write
-	// nothing before releasing + 10 s.
+	// nothing before releasing + 10 s. The database's clock is read too, through the holder before
+	// its rollback, for the check of the transaction starts it records (keywordRecordCursorWrites).
+	var releasingAtDatabase time.Time
+	if err := holder.QueryRow(t.Context(), `select clock_timestamp()`).Scan(&releasingAtDatabase); err != nil {
+		t.Fatalf("read the database's clock before the release: %v", err)
+	}
 	releasing := time.Now()
 	if err := holder.Rollback(t.Context()); err != nil {
 		t.Fatalf("release message_deliveries: %v", err)
@@ -419,7 +424,7 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 	// Then the fill continues: the cursor moves, and every event gets its rows. Every write of the
 	// cursor after the pause began 10 s or more after the release, which is when the held read can
 	// have ended at the earliest: the transaction start Postgres recorded for each
-	// (keywordRecordCursorWrites), on the clock of the machine this test reads too.
+	// (keywordRecordCursorWrites), against the database's clock read before the release.
 	keywordAwaitLineFrom(t, fill, pausedAt, keywordContinuesLine)
 	testwait.UntilPolling(t, 100*time.Millisecond, fmt.Sprintf("the cursor to move from %d once the fill says it continues", paused), func() (int64, bool) {
 		cursor := textversionstest.Cursor(t, server.database)
@@ -436,8 +441,8 @@ func TestTheKeywordFillPausesWhileTheAnswersReadIsSlow(t *testing.T) {
 		t.Fatalf("no write of the keyword fill's cursor was recorded after its pause, though the cursor moved from %d to %d", paused, newest)
 	}
 	for _, write := range after {
-		if earliest := releasing.Add(sessionanswers.SlowWithin); write.began.Before(earliest) {
-			t.Fatalf("the fill wrote its cursor to event %d in a transaction begun at %s, before %s, 10 s after the slow read could have ended:\n%s",
+		if earliest := releasingAtDatabase.Add(sessionanswers.SlowWithin); write.began.Before(earliest) {
+			t.Fatalf("the fill wrote its cursor to event %d in a transaction begun at %s, before %s, 10 s after the slow read could have ended, both on the database's clock:\n%s",
 				write.event, write.began.Format(time.RFC3339Nano), earliest.Format(time.RFC3339Nano), fill.Log())
 		}
 	}
@@ -590,30 +595,43 @@ const (
 // writes and the fill's next line is its pause. Any other round lets the read go, stops the fill,
 // empties the keyword table and its cursor, so the next round has the whole backlog to write,
 // waits for the reads to be fast, and runs the fill again, whose first batch asks its pause after
-// the slow read: no clock of the machine running the row decides which round is the one. A batch
-// line right after that of the batch in flight fails the row in any round.
+// the slow read. A batch line right after that of the batch in flight fails the row in any round.
+//
+// For a correct fill a round is rejected only when the test's own thread stalls past the batch's
+// lock wait or the fill loses its hold, each a stall of seconds. So the row takes at most
+// keywordMaxArmRounds rounds, and fails by its own name with what each round saw when none was
+// taken: a fill that logs another line before its pause, a pause that stops the batch in flight,
+// or a lock wait shorter than the read's turn to slow rejects every round.
 func keywordArmSlowRead(t *testing.T, server keywordServer, answers string) (*textversionstest.Fill, pgx.Tx, chan *httptest.ResponseRecorder, int) {
 	t.Helper()
 	leases := reserveKeywordFillLeases(t, server)
-	for round := 1; ; round++ {
-		fill, holder, held, wrote, ok := keywordSlowRound(t, server, leases, answers, round)
+	var rejected []string
+	for round := 1; round <= keywordMaxArmRounds; round++ {
+		fill, holder, held, wrote, reason, ok := keywordSlowRound(t, server, leases, answers, round)
 		if ok {
 			return fill, holder, held, wrote
 		}
+		rejected = append(rejected, reason)
 		testwait.Until(t, "the answers reads to be fast again", func() (bool, bool) {
 			return true, !server.latency.Slow(time.Now())
 		})
 	}
+	t.Fatalf("none of %d rounds had a batch of the keyword fill wait alone through the answers read's turn to slow, write, and see the fill pause next:\n%s",
+		keywordMaxArmRounds, strings.Join(rejected, "\n"))
+	return nil, nil, nil, 0
 }
+
+// keywordMaxArmRounds bounds the rounds keywordArmSlowRead takes.
+const keywordMaxArmRounds = 10
 
 // keywordSlowRound is one round of keywordArmSlowRead. It locks the fill's cursor, runs the fill
 // on leases, waits for a batch to wait on the cursor, holds an answers read on
 // message_deliveries until it is slow, and releases the cursor when the fill has logged only its
 // hold's take and that same batch alone still waits. It answers ok when the fill's next line is
 // that batch's and the one after it the paused line, and fails the test when the one after it is
-// a second batch's. Otherwise it lets the held read go, waits for its answer, stops the fill, and
-// empties the keyword table and its cursor of what the round wrote.
-func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, answers string, round int) (fill *textversionstest.Fill, holder pgx.Tx, held chan *httptest.ResponseRecorder, wrote int, ok bool) {
+// a second batch's. Otherwise it lets the held read go, waits for its answer, stops the fill,
+// empties the keyword table and its cursor of what the round wrote, and answers why.
+func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, answers string, round int) (fill *textversionstest.Fill, holder pgx.Tx, held chan *httptest.ResponseRecorder, wrote int, reason string, ok bool) {
 	t.Helper()
 	// Each batch locks the cursor's row before it reads an event, which an exclusive lock of the
 	// cursor's table holds back; reads of the cursor go on.
@@ -645,7 +663,7 @@ func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, 
 	logged := fill.Lines(t, "")
 	wrote = len(logged)
 	if waiting := keywordCursorWaiters(t, cursorLock); len(logged) != 1 || !strings.HasPrefix(logged[0], keywordTookHoldLine) || !slices.Equal(waiting, []string{batch}) {
-		t.Logf("round %d: as the answers read turned slow the keyword fill had logged %q and %v waited on its cursor, not its hold's take alone and the batch %s alone; running the fill again", round, logged, waiting, batch)
+		reason = fmt.Sprintf("round %d: as the answers read turned slow the keyword fill had logged %q and %v waited on its cursor, not its hold's take alone and the batch %s alone", round, logged, waiting, batch)
 	} else {
 		if err := cursorLock.Rollback(t.Context()); err != nil {
 			t.Fatalf("release the keyword fill's cursor: %v", err)
@@ -660,12 +678,13 @@ func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, 
 		}
 		switch {
 		case strings.HasPrefix(next, keywordPausedLine):
-			return fill, holder, held, wrote, true
+			return fill, holder, held, wrote, "", true
 		case strings.HasPrefix(next, keywordBatchLine):
 			t.Fatalf("after the answers read turned slow, the fill wrote the batch in flight and then another without pausing:\n%s", fill.Log())
 		}
-		t.Logf("round %d: after the answers read turned slow the keyword fill logged %q, then %q, not the batch in flight and its pause; running the fill again", round, first, next)
+		reason = fmt.Sprintf("round %d: after the answers read turned slow the keyword fill logged %q, then %q, not the batch in flight and its pause", round, first, next)
 	}
+	t.Logf("%s; running the fill again", reason)
 	if err := holder.Rollback(t.Context()); err != nil {
 		t.Fatalf("release message_deliveries: %v", err)
 	}
@@ -690,7 +709,7 @@ func keywordSlowRound(t *testing.T, server keywordServer, leases *pgxpool.Pool, 
 			}
 		}
 	})
-	return fill, holder, held, wrote, false
+	return fill, holder, held, wrote, reason, false
 }
 
 // keywordLineAt waits for fill to have logged its line index, and answers that line's message.
