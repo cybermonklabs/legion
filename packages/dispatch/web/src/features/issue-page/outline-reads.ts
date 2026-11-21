@@ -5,14 +5,13 @@ import { primarySpec, roleDocument } from "../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
-import { EVENT_FRESH } from "../refs/reference-target";
+import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
 import {
   issueAsksQuery,
   issueCommentsQuery,
   issueMessagesQuery,
-  standsFailed,
   treeDocumentIds,
   useIssueTree,
 } from "./useIssueTree";

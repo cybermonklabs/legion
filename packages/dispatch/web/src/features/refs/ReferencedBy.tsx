@@ -14,7 +14,7 @@ import {
 import { compiledBlockSchema } from "../doc/schema";
 import { blockFragment, isBlockItemKind } from "./block-reference";
 import { referenceTriggerProps } from "./RefPreview";
-import { referencesQuery, useNewIssuePageFreshness } from "./reference-target";
+import { referencesQuery, standsFailed, useNewIssuePageFreshness } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
 import { buildReferencePath, parseNodeReference } from "./routes";
 import { Timestamp } from "./Timestamp";
@@ -250,12 +250,15 @@ export function ReferencedBy({
   reference: string;
   /** Notes the reader's press of Retry for the hand-off of its host (`useFocusHandOff`'s
    *  `pressed`): set as Retry is pressed, and forgotten where the list still reads as failed once
-   *  the read the press sent, or joined, has ended, since that press then took nothing away. A
-   *  host that passes it keeps Retry's focus while the read it sent is out: Retry is drawn
-   *  `aria-disabled` then, in place of `disabled`, since Chromium moves the focus of a control that
+   *  the read the press sent, or joined, has ended, since that press then took nothing away. Where
+   *  it is passed, the failure line stands while the list holds no answer and a read of it has
+   *  failed (`standsFailed`), in place of the loading line, as Details' own lines do, so the line
+   *  stays while the read Retry sent is out, and Retry keeps its focus then: it is drawn
+   *  `aria-disabled`, in place of `disabled`, since Chromium moves the focus of a control that
    *  turns disabled to the page's body, and a press while the read is out joins it
-   *  (`cancelRefetch: false`) and sends nothing new. The new issue page's Details passes it;
-   *  elsewhere Retry is `disabled` then. */
+   *  (`cancelRefetch: false`) and sends nothing new. The new issue page's Details passes it.
+   *  Elsewhere the line stands while the last read failed, and Retry is `disabled` while its read
+   *  is out. */
   retried?: RefObject<boolean>;
   /** Takes Retry, so the host can hand the focus it holds on as it goes (`useFocusHandOff`). */
   retryRef?: Ref<HTMLButtonElement>;
@@ -293,17 +296,14 @@ export function ReferencedBy({
             });
           },
         };
-  // Where the host notes Retry's press - Details - the line stands only while the read holds no
-  // answer and a fetch of it has failed, as Details says each of its own reads failed: a refresh
-  // that fails over the list keeps the list and draws no line over it, and the line stays while
-  // Retry's read is out, so Retry keeps its focus. That is `standsFailed`
-  // (`issue-page/useIssueTree.ts`), written out here because importing it would bring the new
-  // page's words into every page that draws this list. While the line stands in Details it takes
-  // the place of the loading line, as Details' own lines do while their Retry's read is out. Every
-  // other page draws the line while the last read failed, which is never while the read is
-  // pending, so the loading line there is as before.
-  const failed =
-    retried === undefined ? query.isError : query.data === undefined && query.errorUpdateCount > 0;
+  // Where the host notes Retry's press - Details - the line stands while the read stands failed
+  // (`standsFailed`), as Details says each of its own reads failed: a refresh that fails over the
+  // list keeps the list and draws no line over it, and the line stays while Retry's read is out,
+  // so Retry keeps its focus. While the line stands in Details it takes the place of the loading
+  // line, as Details' own lines do while their Retry's read is out. Every other page draws the
+  // line while the last read failed, which is never while the read is pending, so the loading line
+  // there is as before.
+  const failed = retried === undefined ? query.isError : standsFailed(query);
 
   return (
     <section aria-label="Referenced by" className={`space-y-2 ${className ?? ""}`} id={toggle?.id}>

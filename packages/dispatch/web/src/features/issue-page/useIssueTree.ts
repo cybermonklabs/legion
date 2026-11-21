@@ -221,27 +221,6 @@ function useNamesFailures(reads: readonly NamesRead[]): number {
   return failures;
 }
 
-/**
- * Whether a read stands failed, by its state (TanStack Query's; a read's observer gives the same
- * fields): it holds no answer, and a fetch of it has failed (`errorUpdateCount`). That count goes
- * back to 0 only with the read's answer - the read reset, or taken out of the cache - so a
- * failure it counts came after the read last held an answer.
- *
- * The read's status is not the rule, for two reasons. A read that holds an answer and whose
- * refresh failed reads `error`, though its rows are still drawn from that answer: it is not
- * failed, and draws no line, which would stand over rows that are all drawn and take the page's
- * opening. And TanStack sets a read that holds no answer back to `pending`, its error cleared,
- * the moment it fetches again: a failed read goes on standing failed while it runs again - its
- * Retry, or window focus - so its line stays, with the focus its Retry holds, until the read
- * answers.
- */
-export function standsFailed(state: {
-  readonly data: unknown;
-  readonly errorUpdateCount: number;
-}): boolean {
-  return state.data === undefined && state.errorUpdateCount > 0;
-}
-
 /** The issue's asks as the tree reads them: every ask, open or closed (`listIssueAsks` with
  *  `all`), under the key the margin, a document's ask blocks and the feed's ask rules read and
  *  refresh (`["asks", key]`). One definition, so a view that observes the same read takes the

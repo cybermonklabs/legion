@@ -2404,21 +2404,24 @@ test("the titles' Retry taken away by blockers changed back elsewhere to a set w
 
 // The reader presses the titles' Retry, and while its read is out another session changes the
 // issues this one waits on to a set whose titles Details failed to read as many times: that read
-// stands failed too, so the line stays, with its Retry and the focus. The cache drops the read the
-// press was for once nothing has observed it for its `gcTime` (dropped here by hand), and the
-// session then puts back the set it was for: the row reads those titles afresh, and the line goes
-// with the focus on its Retry. No read answered the press, which the row forgot as it drew the
-// other set, so the focus stays on the page's body rather than going to the row's control.
-test("the titles' Retry whose blockers changed elsewhere and back, its read dropped from the cache meanwhile, leaves its focus on the page's body", async () => {
+// stands failed too, so the line stays, with its Retry and the focus. The read the press sent then
+// fails while the row draws the other set, and the cache drops it once nothing has observed it,
+// and no fetch of it is out, for its `gcTime` (dropped here by hand). The session then puts back
+// the set the press was for: the row reads those titles afresh, and the line goes with the focus
+// on its Retry. The press's read ended under the other set, so the row forgot the press then, and
+// no read answered it: the focus stays on the page's body rather than going to the row's control.
+test("the titles' Retry whose read failed while its blockers changed elsewhere, and was dropped from the cache before they changed back, leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
   getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-4"] });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
-  // The first read of each set's titles fails, and every read after those is out until the end.
+  // The first read of each set's titles fails, and every read after those but the press's is out
+  // until the end.
   const titles = spyOn(api, "getReferenceTargets")
     .mockImplementation(() => new Promise(() => undefined))
     .mockRejectedValueOnce(readFailure())
     .mockRejectedValueOnce(readFailure());
+  const pressed = Promise.withResolvers<ReferenceTargets>();
   const pressedFor = referenceTargetsQuery([
     buildDispatchReference({ key: "CORE-3", kind: "issue" }),
   ]).queryKey;
@@ -2432,6 +2435,7 @@ test("the titles' Retry whose blockers changed elsewhere and back, its read drop
     drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
     await waitFor(() => expect(queryClient.getQueryState(pressedFor)?.errorUpdateCount).toBe(1));
     const retry = await blockedBy().findByRole("button", { name: CONTROL_LABELS.retry });
+    titles.mockImplementationOnce(() => pressed.promise);
     act(() => retry.focus());
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
@@ -2446,6 +2450,13 @@ test("the titles' Retry whose blockers changed elsewhere and back, its read drop
       retry
     );
 
+    await act(async () => pressed.reject(readFailure()));
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryState(pressedFor)?.fetchStatus,
+        "the read the press sent did not end"
+      ).toBe("idle")
+    );
     act(() => queryClient.removeQueries({ exact: true, queryKey: pressedFor }));
     drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
     await waitFor(() =>
@@ -2457,8 +2468,73 @@ test("the titles' Retry whose blockers changed elsewhere and back, its read drop
     await settleFocus();
     expect(
       document.activeElement,
-      "the set pressed for came back after another, and the focus left the page's body though no read answered the press"
+      "the set pressed for came back after its read failed under another, and the focus left the page's body though no read answered the press"
     ).toBe(document.body);
+  } finally {
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// The reader presses the titles' Retry, and while its read is out another session changes the
+// issues this one waits on to a set whose titles Details failed to read as many times, so the line
+// stays, with its Retry and the focus, and then puts back the set the press was for. Drawing
+// another set stopped no read: the press's read is still out, so the line stands, and once that
+// read answers the line goes for the press's answer, so the focus Retry held goes on to the row's
+// control rather than to the page's body.
+test("the titles' Retry whose blockers changed elsewhere and back while its read is out hands its focus to the row's control once that read answers", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-4"] });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  // The first read of each set's titles fails, and every read after those but the press's is out
+  // until the end.
+  const titles = spyOn(api, "getReferenceTargets")
+    .mockImplementation(() => new Promise(() => undefined))
+    .mockRejectedValueOnce(readFailure())
+    .mockRejectedValueOnce(readFailure());
+  const pressed = Promise.withResolvers<ReferenceTargets>();
+  const blocker = buildDispatchReference({ key: "CORE-3", kind: "issue" });
+  const pressedFor = referenceTargetsQuery([blocker]).queryKey;
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
+
+  try {
+    await waitFor(() =>
+      expect(blockedBy().getByRole("alert")).toHaveTextContent(TITLES_READ_FAILED)
+    );
+    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
+    await waitFor(() => expect(queryClient.getQueryState(pressedFor)?.errorUpdateCount).toBe(1));
+    const retry = await blockedBy().findByRole("button", { name: CONTROL_LABELS.retry });
+    titles.mockImplementationOnce(() => pressed.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+
+    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-4"] });
+    await blockedBy().findByRole("link", { name: "CORE-4" });
+    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
+    await blockedBy().findByRole("link", { name: "CORE-3" });
+    expect(
+      retry,
+      "the issue waits again on the set pressed for, whose read is still out, but the titles' Retry went"
+    ).toBeInTheDocument();
+    expect(
+      document.activeElement,
+      "the titles' Retry lost the focus as the set changed and back"
+    ).toBe(retry);
+
+    await act(async () => pressed.resolve(issueNames([blocker], { "CORE-3": "Fix the build" })));
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
+    );
+    expect(retry, "the titles answered, but their Retry is still drawn").not.toBeInTheDocument();
+    expect(
+      document.activeElement,
+      "the read the press sent answered after the set changed elsewhere and back, and the focus fell to the page rather than to the row's control"
+    ).toBe(blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }));
   } finally {
     unmount();
     titles.mockRestore();
@@ -2749,26 +2825,17 @@ test("in Details, Referenced by's Retry keeps the focus while the read it sent i
 // line takes the place of the list's loading line, as each line of Details' own does while its
 // Retry's read is out. Drawing both would say at once that the list failed and that it loads.
 test("in Details, Referenced by's line stands without the list's loading line while its Retry's read is out", async () => {
-  const user = userEvent.setup();
-  const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({ ...issue, referenced_by_count: 3 });
-  // The list reads what references the issue with no kind, and its first read fails; Blocks reads
-  // one kind of it.
-  const getReferences = spyOn(api, "getReferences").mockImplementation((_to, options) =>
-    options === undefined ? Promise.reject(readFailure()) : Promise.resolve(NOTHING_REFERENCES)
-  );
-  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const details = referencedByDetails();
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
-    const list = await screen.findByRole("region", { name: "Referenced by" });
-    const retry = await within(list).findByRole("button", { name: "Retry" });
-
-    getReferences.mockImplementation((_to, options) =>
-      options === undefined ? new Promise(() => undefined) : Promise.resolve(NOTHING_REFERENCES)
-    );
+    const { list, retry } = await details.open();
+    details.answerList(() => new Promise(() => undefined));
     act(() => retry.focus());
-    await user.keyboard("{Enter}");
+    await details.user.keyboard("{Enter}");
+    expect(
+      within(list).queryByText("Referenced by unavailable."),
+      "the list holds no answer, but its failure line went as Retry's read went out"
+    ).not.toBeNull();
     await waitFor(() =>
       expect(retry, "Retry takes a press while the read it sent is out").toHaveAttribute(
         "aria-disabled",
@@ -2776,17 +2843,11 @@ test("in Details, Referenced by's line stands without the list's loading line wh
       )
     );
     expect(
-      within(list).queryByText("Referenced by unavailable."),
-      "the list holds no answer, but its failure line went as Retry's read went out"
-    ).toBeInTheDocument();
-    expect(
       within(list).queryByText("Loading references…"),
       "the list says it loads beside the line that says it failed"
     ).toBeNull();
   } finally {
-    unmount();
-    getReferences.mockRestore();
-    restore();
+    details.restore();
   }
 });
 
@@ -2840,14 +2901,15 @@ test("in Details, Referenced by's Retry, pressed after the list's first read fai
 /**
  * Details with Referenced by's list, whose reads fail until `answerList` says otherwise; Blocks
  * reads nothing. `open` opens the list, whose first read fails, so the list draws its line and
- * Retry over no list. `readListAgain` reads the list again as an event about the issue's
- * references reads it. `restore` takes Details off the page and puts the spies back.
+ * Retry over no list. `listKey` is the key the list is read under, and `readListAgain` reads it
+ * again as an event about the issue's references reads it. `restore` takes Details off the page
+ * and puts the spies back.
  */
 function referencedByDetails() {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
   getIssue.mockResolvedValue({ ...issue, referenced_by_count: 3 });
-  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const listKey = ["references", "to", buildDispatchReference({ key: "CORE-1", kind: "issue" })];
   let listAnswer = (): Promise<GraphReferences> => Promise.reject(readFailure());
   // The list reads what references the issue with no kind; Blocks reads one kind of it.
   const getReferences = spyOn(api, "getReferences").mockImplementation((_to, options) =>
@@ -2859,11 +2921,10 @@ function referencedByDetails() {
     listAnswer = answer;
   };
   const readListAgain = () =>
-    act(() =>
-      queryClient.refetchQueries({ exact: true, queryKey: ["references", "to", reference] })
-    );
+    act(() => queryClient.refetchQueries({ exact: true, queryKey: listKey }));
   return {
     answerList,
+    listKey,
     open: async () => {
       await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
       const list = await screen.findByRole("region", { name: "Referenced by" });
@@ -2997,11 +3058,7 @@ test("in Details, a refresh that fails over the list Referenced by holds keeps t
     await within(list).findAllByRole("link");
     details.answerList(() => Promise.reject(readFailure()));
     await details.readListAgain();
-    const read = details.queryClient.getQueryState([
-      "references",
-      "to",
-      buildDispatchReference({ key: "CORE-1", kind: "issue" }),
-    ]);
+    const read = details.queryClient.getQueryState(details.listKey);
     expect(
       [read?.status, read?.data !== undefined],
       "the list was not read again with a failure over the answer it holds"
@@ -3851,30 +3908,36 @@ test.each(
 // body. It goes on in the Advances row: to the line's add control, named as the control it was on,
 // whose next press adds another; or, where the read after the add also draws the issue closed, as
 // another session closed it while the add was out, which disables that control, to the link of the
-// priority the reader added. Each row is the issue read back after the add, and the element the
-// focus goes to in the Advances row.
-const FIRST_ADDED: readonly (readonly [string, IssueDetails, (row: HTMLElement) => HTMLElement])[] =
+// priority the reader added. Each row is the issue read back after the add, whether that read
+// disables the add control, and the element the focus goes to in the Advances row.
+const FIRST_ADDED: readonly (readonly [
+  string,
+  IssueDetails,
+  boolean,
+  (row: HTMLElement) => HTMLElement,
+])[] = [
   [
-    [
-      "the Advances row's add control",
-      { ...advancesOnly, advances: [{ id: "evals-now", inherited: false }] },
-      (row) => within(row).getByRole("button", { name: addPriorityControlName("CORE-1") }),
-    ],
-    [
-      "the link of the priority added, on an issue closed meanwhile",
-      {
-        ...advancesOnly,
-        advances: [{ id: "evals-now", inherited: false }],
-        closed_at: "2026-09-10T00:00:00Z",
-        status: "done",
-      },
-      (row) => within(row).getByRole("link", { name: /Evals collecting data now$/ }),
-    ],
-  ];
+    "the Advances row's add control",
+    { ...advancesOnly, advances: [{ id: "evals-now", inherited: false }] },
+    false,
+    (row) => within(row).getByRole("button", { name: addPriorityControlName("CORE-1") }),
+  ],
+  [
+    "the link of the priority added, on an issue closed meanwhile",
+    {
+      ...advancesOnly,
+      advances: [{ id: "evals-now", inherited: false }],
+      closed_at: "2026-09-10T00:00:00Z",
+      status: "done",
+    },
+    true,
+    (row) => within(row).getByRole("link", { name: /Evals collecting data now$/ }),
+  ],
+];
 
 test.each(
   FIRST_ADDED
-)("the first priority added hands the focus from the add control beside Add to %s", async (name, readBack, focused) => {
+)("the first priority added hands the focus from the add control beside Add to %s", async (name, readBack, disabled, focused) => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
@@ -3909,6 +3972,12 @@ test.each(
     await act(async () => reread.resolve(readBack));
     const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
     expect(
+      within(row).getByRole("button", { name: addPriorityControlName("CORE-1") }),
+      disabled
+        ? "the Advances row's add control takes a press on a closed issue"
+        : "the Advances row's add control takes no press on an open issue"
+    ).toHaveProperty("disabled", disabled);
+    expect(
       document.activeElement,
       `the line moved into the Advances row, and the focus fell to the page rather than to ${name}`
     ).toBe(focused(row));
@@ -3926,23 +3995,26 @@ test.each(
 // as another session closed it while the removal was out, which disables that control, to
 // Development's heading, the button that opens and closes the section. Remove holds the focus
 // until the line moves: while its write is out it is `aria-disabled`, never `disabled`. Each row
-// is the issue read back after the removal, and the element the focus goes to.
-const LAST_REMOVED: readonly (readonly [string, IssueDetails, () => HTMLElement])[] = [
+// is the issue read back after the removal, whether that read disables the add control, and the
+// element the focus goes to.
+const LAST_REMOVED: readonly (readonly [string, IssueDetails, boolean, () => HTMLElement])[] = [
   [
     "the add control beside Add",
     advancesOnly,
+    false,
     () => screen.getByRole("button", { name: addPriorityControlName("CORE-1") }),
   ],
   [
     "Development's heading, on an issue closed meanwhile",
     { ...advancesOnly, closed_at: "2026-09-10T00:00:00Z", status: "done" },
+    true,
     () => screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }),
   ],
 ];
 
 test.each(
   LAST_REMOVED
-)("removing the last priority hands the focus from its Remove to %s", async (name, readBack, focused) => {
+)("removing the last priority hands the focus from its Remove to %s", async (name, readBack, disabled, focused) => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
@@ -3983,6 +4055,12 @@ test.each(
         "the issue advances nothing, and Details still draws the Advances row"
       ).toBeNull()
     );
+    expect(
+      screen.getByRole("button", { name: addPriorityControlName("CORE-1") }),
+      disabled
+        ? "the add control beside Add takes a press on a closed issue"
+        : "the add control beside Add takes no press on an open issue"
+    ).toHaveProperty("disabled", disabled);
     expect(
       document.activeElement,
       `the line moved back beside Add, and the focus fell to the page rather than to ${name}`
