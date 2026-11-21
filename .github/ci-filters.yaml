@@ -191,6 +191,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/natsversion/*'
 legion_command: &legion_command
   - 'packages/daemon/cmd/legion/*'
+  - 'packages/daemon/cmd/legion/tls-fixtures/*'
   - 'packages/daemon/internal/admit/*'
   - 'packages/daemon/internal/cipher/*'
   - 'packages/daemon/internal/api/*'

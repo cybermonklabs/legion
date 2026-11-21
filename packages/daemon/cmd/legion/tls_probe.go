@@ -3,9 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -13,6 +19,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -31,17 +38,65 @@ const (
 	tlsBigQueryProbeTimeout = 60 * time.Second
 )
 
+// tlsSite is one site the probe holds the clients to. The probe's own server (tlsServer) serves
+// five, which no public host or name reaches: the fixture emSign and AAA chains, which every client
+// must refuse; the control, which every client must accept; and the public test sites' own chains,
+// vendored, which every client that checks a chain during the handshake must refuse before the
+// server's signature. The fixture chains show a store holding no root of the distrusted roots'
+// names; the vendored chains show the refusal the public sites draw, which for node, bun, omp,
+// CodeGraph's node and uv is a list keyed to those chains' own certificates and no fixture can
+// draw (newTLSFixture). The clients that check a chain only after the handshake are held
+// to the public test sites instead, which fail the probe only where a client accepts their chain:
+// any outcome there but a verdict is unknown, and fails nothing (tlsVerdict).
 type tlsSite struct {
-	name, url, root string
-	control         bool
+	name, url string
+	// root is the root the site's positive control holds its chain to: the fixture root for a
+	// fixture chain, the CA-published root for a vendored chain or a public site.
+	root string
+	kind tlsSiteKind
+	// unasked is why no client asks the site: a public site whose positive control did not accept
+	// its chain (probePublicTLSSites), or a vendored chain whose positive control did not get past
+	// it to the server's signature (probeVendoredTLSSites); empty for a site the clients ask.
+	unasked string
+	// via is the address of the probe's server, for a site it serves; empty for a public site.
+	via string
+	// trust is the CA file each client is given to trust at the site: the control's root, at the
+	// control alone.
+	trust string
+	// seen counts the TLS handshakes the probe's server began for a site it serves.
+	seen *atomic.Int64
+	// clients names the clients held to the site, every client where it is nil (runTLSProbe).
+	clients []string
 }
 
+// tlsSiteKind is which of the probe's four kinds of site a site is, which decides what each
+// client's outcome there means (tlsVerdict).
+type tlsSiteKind int
+
+const (
+	// tlsFixtureSite is a chain the probe builds in the image of a public site's (newTLSFixture),
+	// which every client must refuse.
+	tlsFixtureSite tlsSiteKind = iota
+	// tlsControlSite is the control, which every client must accept, given its root (tlsSite.trust).
+	tlsControlSite
+	// tlsVendoredSite is a public site's own chain, served by the probe's server with a key of its
+	// own (tlsServer): a client that accepts it fails the server's signature (tlsSignatureFailure).
+	tlsVendoredSite
+	// tlsPublicSite is a public test site, which the clients that check a chain after the handshake
+	// are held to, and every client where its vendored chain failed its positive control
+	// (runTLSProbe).
+	tlsPublicSite
+)
+
+// The public test sites, with the CA-published roots their chains reach. These roots are records
+// from repository.emsign.com/certs/emSignECCRootCAG3.crt
+// (86:A1:EC:BA:08:9C:4A:8D:3B:BE:27:34:C6:12:BA:34:1D:81:3E:04:3C:F9:E8:A8:62:CD:5C:57:A3:6B:BE:6B)
+// and crt.sectigo.com/AAACertificateServices.crt
+// (D7:A7:A0:FB:5D:7E:27:31:D7:71:E9:48:4E:BC:DE:F7:1D:5F:0C:3E:0A:29:48:78:2B:C8:3E:E0:EA:69:9E:F4).
 var (
-	emSignTLSSite    = tlsSite{name: "emSign", url: "https://dv-g3b-emudhra.we-have-a-problem.com/", root: "/usr/share/legion/tls-roots/emsign-ecc-root-ca-g3.pem"}
-	aaaTLSSite       = tlsSite{name: "AAA", url: "https://dv-g3b-aaa-emudhra.we-have-a-problem.com/", root: "/usr/share/legion/tls-roots/aaa-certificate-services.pem"}
-	controlTLSSite   = tlsSite{name: "control", url: "https://example.com/", control: true}
-	isolationTLSSite = tlsSite{name: "isolation", url: "https://letsencrypt.org/"}
-	tlsSites         = []tlsSite{emSignTLSSite, aaaTLSSite, controlTLSSite}
+	publicEmSignTLSSite = tlsSite{name: "public emSign", url: "https://" + tlsEmSignHost + "/", root: "/usr/share/legion/tls-roots/emsign-ecc-root-ca-g3.pem", kind: tlsPublicSite}
+	publicAAATLSSite    = tlsSite{name: "public AAA", url: "https://" + tlsAAAHost + "/", root: "/usr/share/legion/tls-roots/aaa-certificate-services.pem", kind: tlsPublicSite}
+	publicTLSSites      = []tlsSite{publicEmSignTLSSite, publicAAATLSSite}
 )
 
 type tlsStatus string
@@ -50,7 +105,8 @@ const (
 	tlsCertificateRefused tlsStatus = "refused"
 	tlsConnectionAccepted tlsStatus = "accepted"
 	tlsNetworkUnavailable tlsStatus = "unavailable"
-	tlsClientAbsent       tlsStatus = "absent" // an optional client whose program is not on PATH (tlsOptionalClient)
+	tlsClientAbsent       tlsStatus = "absent"  // an optional client whose program is not on PATH (tlsOptionalClient)
+	tlsPublicUnknown      tlsStatus = "unknown" // a public site that gave no verdict, or that no client asks
 	// tlsNoVerdict is a run that says nothing of the client: the probe's deadline ended it, or its
 	// own limit ended it at a site an earlier run reached with neither a refusal nor an answer in
 	// its output (probeTLSClients says why). It fails nothing.
@@ -60,6 +116,15 @@ const (
 type tlsOutcome struct {
 	status tlsStatus
 	detail string
+	// signatureFailed marks an outcome that failed a signature the chain should have carried
+	// (tlsSignatureFailure): at a fixture chain, a root of the chain's root's name in the client's
+	// own store; at a vendored chain, the server's, which the probe cannot make. It is read from the
+	// client's whole output, of which detail may keep only the ends.
+	signatureFailed bool
+	// ending is what ended the run of a command client (tlsCommandRun.ending): the served copies'
+	// positive controls mark a copy unasked only where the run exited by itself
+	// (probeVendoredTLSSites).
+	ending tlsEnding
 }
 
 type tlsClient interface {
@@ -101,20 +166,16 @@ type tlsObservation struct {
 	tlsOutcome
 }
 
-// The root paths and fingerprints below are CA-published records from
-// repository.emsign.com/certs/emSignECCRootCAG3.crt (86:A1:EC:BA:08:9C:4A:8D:3B:BE:27:34:C6:12:BA:34:1D:81:3E:04:3C:F9:E8:A8:62:CD:5C:57:A3:6B:BE:6B)
-// and crt.sectigo.com/AAACertificateServices.crt
-// (D7:A7:A0:FB:5D:7E:27:31:D7:71:E9:48:4E:BC:DE:F7:1D:5F:0C:3E:0A:29:48:78:2B:C8:3E:E0:EA:69:9E:F4). example.com cannot prove
-// isolation because its observed SSL.com chain is cross-signed by AAA Certificate Services.
-func compromisedTLSSites() []tlsSite {
-	var sites []tlsSite
-	for _, site := range tlsSites {
-		if site.root != "" {
-			sites = append(sites, site)
-		}
-	}
-	return sites
+// fixtureTLSSites are the fixture sites of sites.
+func fixtureTLSSites(sites []tlsSite) []tlsSite {
+	return slices.DeleteFunc(slices.Clone(sites), func(site tlsSite) bool { return site.kind != tlsFixtureSite })
 }
+
+// tlsControlIndex is the index of sites' control, or -1 where sites holds none.
+func tlsControlIndex(sites []tlsSite) int {
+	return slices.IndexFunc(sites, func(site tlsSite) bool { return site.kind == tlsControlSite })
+}
+
 func tlsPositiveControlsLine(sites []tlsSite) string {
 	var line strings.Builder
 	line.WriteString("probe-image: TLS positive controls: ")
@@ -132,30 +193,40 @@ func tlsPositiveControlsLine(sites []tlsSite) string {
 	return line.String()
 }
 
-// verifyTLSPositiveControls runs probe at each site with its pinned root, which must be accepted,
-// and at the isolation endpoint with that root, which must be refused. Every other outcome fails,
-// the run's own limit included, since a positive control gets no second run: curl is small, and a
-// pod whose egress drops packets fails here at once. The one exception is a run the probe's
-// deadline ended, which has no verdict and fails nothing; noVerdict names each such run,
-// "<control>: <detail>", apart from err, which names every failure.
+// verifyTLSPositiveControls holds the probe's own server to the fixture chains it serves, before
+// any client is held to them: each fixture chain must reach its fixture root, so a refusal there is
+// a refusal of that root, and the control's chain must be refused with that root alone, so the
+// acceptance proves the root, not a client that accepts anything. Every other outcome fails, the
+// run's own limit included, since a positive control gets no second run: curl is small, and the
+// server is on the pod's own loopback. The one exception is a run the probe's deadline ended, which
+// has no verdict and fails nothing; noVerdict names each such run, "<control>: <detail>", apart
+// from err, which names every failure. The vendored chains have positive controls of their own
+// (probeVendoredTLSSites), which mark a chain unasked rather than fail the probe where the run
+// exited by itself, since a chain that has expired is no fault of the image's, and keep this rule
+// for a run that did not.
 func verifyTLSPositiveControls(sites []tlsSite, probe func(tlsSite) tlsOutcome) (noVerdict []string, err error) {
 	var failures []string
-	for _, site := range sites {
+	control := tlsControlIndex(sites)
+	for _, site := range fixtureTLSSites(sites) {
 		switch outcome := probe(site); outcome.status {
 		case tlsConnectionAccepted:
 		case tlsNoVerdict:
 			noVerdict = append(noVerdict, fmt.Sprintf("%s positive control at %s: %s", site.name, site.url, outcome.detail))
 		default:
-			failures = append(failures, fmt.Sprintf("%s positive control at %s did not accept its pinned root: %s", site.name, site.url, outcome.detail))
+			failures = append(failures, fmt.Sprintf("%s positive control at %s did not accept its root: %s", site.name, site.url, outcome.detail))
 		}
-		negative := isolationTLSSite
-		negative.root = site.root
-		switch outcome := probe(negative); outcome.status {
+		if control < 0 {
+			failures = append(failures, fmt.Sprintf("%s positive control has no control site to hold its root's isolation to", site.name))
+			continue
+		}
+		isolation := sites[control]
+		isolation.root, isolation.trust = site.root, ""
+		switch outcome := probe(isolation); outcome.status {
 		case tlsCertificateRefused:
 		case tlsNoVerdict:
-			noVerdict = append(noVerdict, fmt.Sprintf("%s positive control isolation endpoint %s: %s", site.name, negative.url, outcome.detail))
+			noVerdict = append(noVerdict, fmt.Sprintf("%s positive control isolation at %s: %s", site.name, isolation.url, outcome.detail))
 		default:
-			failures = append(failures, fmt.Sprintf("%s positive control isolation endpoint %s was %s: %s", site.name, negative.url, outcome.status, outcome.detail))
+			failures = append(failures, fmt.Sprintf("%s positive control isolation at %s was %s: %s", site.name, isolation.url, outcome.status, outcome.detail))
 		}
 	}
 	if len(failures) > 0 {
@@ -167,23 +238,19 @@ func verifyTLSPositiveControls(sites []tlsSite, probe func(tlsSite) tlsOutcome) 
 // tlsPositiveControlSpec is the positive controls' curl. It is built through tlsClientSpec.build,
 // and takes -q first for the reason at the curl spec (workerTLSClients).
 var tlsPositiveControlSpec = tlsClientSpec{
-	name: "positive-control", program: "curl", timeout: tlsDefaultProbeTimeout,
+	name: "positive-control", program: "curl", timeout: tlsDefaultProbeTimeout, applicationSeen: curlHTTPError.MatchString,
 	command: func(site tlsSite, _, _ string) ([]string, []string) {
 		return []string{"-q", "--cacert", site.root, "--capath", "/nonexistent", "--fail", "--silent", "--show-error", site.url}, nil
 	},
 }
 
-// probeTLSPositiveControls runs the positive controls (verifyTLSPositiveControls) with the curl
-// tlsPositiveControlSpec builds under env. Its error is their failures where any control failed,
-// else a tlsNoVerdicts naming the runs with no verdict where there are any, else nil.
-func probeTLSPositiveControls(ctx context.Context, env []string) error {
-	stateDir, remove, err := newTLSStateDir()
-	if err != nil {
-		return err
-	}
-	defer remove()
+// probeTLSPositiveControls runs verifyTLSPositiveControls over sites, the probe's server's, with
+// the positive controls' curl under env, its state in stateDir. Its error is their failures where
+// any control failed, else a tlsNoVerdicts naming the runs with no verdict where there are any,
+// else nil.
+func probeTLSPositiveControls(ctx context.Context, env []string, stateDir string, sites []tlsSite) error {
 	client := tlsPositiveControlSpec.build("", env, stateDir)
-	noVerdict, err := verifyTLSPositiveControls(compromisedTLSSites(), func(site tlsSite) tlsOutcome {
+	noVerdict, err := verifyTLSPositiveControls(sites, func(site tlsSite) tlsOutcome {
 		return client.probe(ctx, site, tlsRunTerms{})
 	})
 	if err == nil && len(noVerdict) > 0 {
@@ -194,80 +261,347 @@ func probeTLSPositiveControls(ctx context.Context, env []string) error {
 
 var newTLSPositiveControls = probeTLSPositiveControls
 
-// probeTLSClients holds every TLS client the worker image carries to the two compromised chains and
-// a reachable control. A chain is safe only when its client refuses it for a certificate error; a
-// network failure is neither a refusal nor an acceptance. An optional client the image does not
-// carry is absent at each site, which is recorded and fails nothing.
+// probeVendoredTLSSites returns the vendored sites, each marked unasked where its positive control
+// failed by itself: the positive controls' curl under env, given the CA-published root alone, must
+// get past the vendored chain to the server's signature, which the probe cannot make
+// (tlsSignatureFailure), and must refuse the control's chain with that root. A chain whose control
+// run exited by itself without that, as it does once its leaf has expired, cannot show a client
+// refusing that root, so no client is held to it, and its clients are held to the public site
+// instead (runTLSProbe). A control run that did not end by itself says nothing of the chain, so it
+// takes the fixture chains' rule (verifyTLSPositiveControls): one its own limit or a signal ended
+// fails the probe, since the copy is served on the pod's own loopback, and one the probe's deadline
+// ended has no verdict, which fails nothing and leaves the chain unasked, since nothing verified
+// it. Its error is the failures where any control failed, else a tlsNoVerdicts naming the runs
+// with no verdict where there are any, else nil.
+func probeVendoredTLSSites(ctx context.Context, env []string, stateDir string, sites []tlsSite) ([]tlsSite, error) {
+	client := tlsPositiveControlSpec.build("", env, stateDir)
+	control := tlsControlIndex(sites)
+	var vendored []tlsSite
+	var failures, noVerdict []string
+	for _, site := range sites {
+		if site.kind != tlsVendoredSite {
+			continue
+		}
+		// run is the control run that decides the chain: the first, or the isolation after a first
+		// that passed; unasked is why no client is held to the chain where run did not pass.
+		where := "at " + site.url
+		run := client.probe(ctx, site, tlsRunTerms{})
+		unasked := fmt.Sprintf("its positive control was %s, where it must get past the chain to the server's signature: %s", run.status, run.detail)
+		if run.signatureFailed {
+			unasked = ""
+			if control >= 0 {
+				isolation := sites[control]
+				isolation.root, isolation.trust = site.root, ""
+				if run = client.probe(ctx, isolation, tlsRunTerms{}); run.status != tlsCertificateRefused {
+					where = "isolation at " + isolation.url
+					unasked = fmt.Sprintf("its positive control's isolation at %s was %s: %s", isolation.url, run.status, run.detail)
+				}
+			}
+		}
+		switch {
+		case unasked == "":
+		case run.status == tlsNoVerdict:
+			noVerdict = append(noVerdict, fmt.Sprintf("%s positive control %s: %s", site.name, where, run.detail))
+			site.unasked = unasked
+		case run.ending != tlsExited:
+			failures = append(failures, fmt.Sprintf("%s positive control %s was %s: %s", site.name, where, run.status, run.detail))
+		default:
+			site.unasked = unasked
+		}
+		vendored = append(vendored, site)
+	}
+	if len(failures) > 0 {
+		return nil, fmt.Errorf("worker TLS probe cannot verify test chains: %s", strings.Join(failures, "; "))
+	}
+	if len(noVerdict) > 0 {
+		return vendored, tlsNoVerdicts(noVerdict)
+	}
+	return vendored, nil
+}
+
+var newVendoredTLSSites = probeVendoredTLSSites
+
+// probePublicTLSSites returns the public sites, each marked unasked where its positive control,
+// the positive controls' curl under env holding it to its CA-published root, did not accept its
+// chain: a site that cannot be reached, or that no longer serves the chain the clients must refuse,
+// cannot show a client trusting that root, so no client asks it.
+func probePublicTLSSites(ctx context.Context, env []string, stateDir string) []tlsSite {
+	client := tlsPositiveControlSpec.build("", env, stateDir)
+	sites := slices.Clone(publicTLSSites)
+	for index, site := range sites {
+		if outcome := client.probe(ctx, site, tlsRunTerms{}); outcome.status != tlsConnectionAccepted {
+			sites[index].unasked = fmt.Sprintf("its positive control was %s: %s", outcome.status, outcome.detail)
+		}
+	}
+	return sites
+}
+
+var newPublicTLSSites = probePublicTLSSites
+
+// tlsSiteLine is the line that says whether the clients are held to a vendored or public site.
+// One no client is held to is UNKNOWN: it says why, and never reads as verified.
+func tlsSiteLine(site tlsSite) string {
+	if site.unasked != "" {
+		return fmt.Sprintf("probe-image: UNKNOWN: the %s chain at %s: %s", site.name, tlsSiteURL(site).Hostname(), site.unasked)
+	}
+	return fmt.Sprintf("probe-image: TLS %s: chain verified", site.name)
+}
+
+// tlsUnknownLine is the line that names a client the probe could not hold to a public site: the
+// client, the site's host and why. The build passes, and this line, in the build's log beside the
+// probe's OK line, says what it did not verify.
+func tlsUnknownLine(observation tlsObservation) string {
+	return fmt.Sprintf("probe-image: UNKNOWN: %s against %s: %s", observation.client, tlsSiteURL(observation.site).Hostname(), observation.detail)
+}
+
+// probeTLSClients holds every TLS client the worker image carries to sites, each client only to the
+// sites that hold it (tlsSite.clients), and judges each run by its site's kind (tlsVerdict). At a
+// site the probe's server serves, a verdict counts only where the server began a handshake for the
+// site while the client ran (probeTLSSite), so a client that reached the public host of that name
+// instead, or answered without reaching any, fails it. At a public site, an acceptance fails the
+// probe and a refusal of the site's own chain is recorded (tlsCommandClient.probe says which
+// refusal is); any other outcome but a run with no verdict is unknown, which fails nothing and is
+// named (tlsUnknownLine), and no later client asks that site, so an unreachable host costs one
+// client's bound and no more. An optional client the image does not carry is absent at each site,
+// which is recorded and fails nothing.
 //
-// reached is the sites an earlier run of the probe run reached: the compromised sites, once the
-// positive controls accepted their pinned roots there. A client's refusal of a compromised chain
-// for a certificate error reaches that site too, and its acceptance at the control reaches the
-// control. A run its own limit ends with neither a refusal nor an answer in its output has no
-// verdict at a reached site, since the network reaches the site and what the limit cut short is
-// the client: GKE image streaming loads an image's files at their first read, so a large client's
-// first run on a node where the image is new can outlast its limit. At a site no run reached, that
-// run is unavailable and fails, since the network may not reach the site. A run the probe's
-// deadline ended has no verdict wherever it ran. After every client's first run at every site, each
-// run with no verdict runs once more, in the same order, within two times its client's limit,
-// unless the probe's deadline has passed, and that run decides it: one TLS run gets three times
-// its limit at most.
+// reached is the sites an earlier run of the probe reached: the server's sites once the positive
+// controls passed there, and each served copy of a public chain whose own positive control passed.
+// A client's refusal at a site the server serves reaches that site too, and its acceptance at the
+// control reaches the control. A run its own limit ends with neither a refusal nor an answer in its
+// output has no verdict at a reached site, since what the limit cut short is the client: GKE image
+// streaming loads an image's files at their first read, so a large client's first run on a node
+// where the image is new can outlast its limit. At a site the server serves that no run reached,
+// that run is unavailable and fails; a public site is never counted reached, so there it is
+// unknown. A run the probe's deadline ended has no verdict wherever it ran. After every client's
+// first run at every site, each run with no verdict runs once more, in the same order, within two
+// times its client's limit, unless the probe's deadline has passed, and that run decides it: one
+// TLS run gets three times its limit at most.
 //
 // observations is every run, the second ones included. err names every failure; noVerdict, each
 // "<client> <site>: <detail>", names the runs that still have no verdict, which fail nothing. Where
 // both are there, err decides the probe.
-func probeTLSClients(ctx context.Context, clients []tlsClient, reached []tlsSite) (observations []tlsObservation, noVerdict []string, err error) {
+func probeTLSClients(ctx context.Context, clients []tlsClient, sites, reached []tlsSite) (observations []tlsObservation, noVerdict []string, err error) {
 	reachedSites := map[string]bool{}
 	for _, site := range reached {
 		reachedSites[site.name] = true
 	}
+	unasked := map[string]string{}
+	for _, site := range sites {
+		if site.kind == tlsPublicSite && site.unasked != "" {
+			unasked[site.name] = site.unasked
+		}
+	}
 	var failures []string
-	judge := func(observation tlsObservation) {
+	judge := func(observation *tlsObservation) {
 		client, site, outcome := observation.client, observation.site, observation.tlsOutcome
-		switch {
-		case outcome.status == tlsClientAbsent:
+		switch outcome.status {
+		case tlsClientAbsent, tlsPublicUnknown:
 			// Only a tlsOptionalClient is absent, and only where its program is not on PATH.
-		case outcome.status == tlsNoVerdict:
+		case tlsNoVerdict:
 			noVerdict = append(noVerdict, fmt.Sprintf("%s %s: %s", client, site.name, outcome.detail))
-		case site.control && outcome.status != tlsConnectionAccepted:
-			failures = append(failures, fmt.Sprintf("network unavailable: %s cannot reach %s: %s", client, site.url, outcome.detail))
-		case !site.control && outcome.status == tlsConnectionAccepted:
-			failures = append(failures, fmt.Sprintf("%s accepts the %s chain: %s", client, site.name, outcome.detail))
-		case !site.control && outcome.status != tlsCertificateRefused:
-			failures = append(failures, fmt.Sprintf("%s cannot verify refusal of the %s chain: %s", client, site.name, outcome.detail))
+		default:
+			failure, unknown := tlsVerdict(client, site, outcome)
+			if failure != "" {
+				failures = append(failures, failure)
+			}
+			if unknown {
+				observation.status = tlsPublicUnknown
+				unasked[site.name] = fmt.Sprintf("%s gave no verdict there: %s", client, outcome.detail)
+			}
 		}
 	}
 	type noVerdictRun struct {
-		client      tlsClient
-		observation tlsObservation
+		client tlsClient
+		index  int // its first run's observation
 	}
 	var again []noVerdictRun
 	for _, client := range clients {
-		for _, site := range tlsSites {
-			outcome := client.probe(ctx, site, tlsRunTerms{reached: reachedSites[site.name]})
-			observation := tlsObservation{client: client.name(), site: site, tlsOutcome: outcome}
-			observations = append(observations, observation)
-			if outcome.status == tlsNoVerdict {
-				again = append(again, noVerdictRun{client: client, observation: observation})
+		for _, site := range sites {
+			if site.clients != nil && !slices.Contains(site.clients, client.name()) || site.kind == tlsVendoredSite && site.unasked != "" {
 				continue
 			}
-			if site.control && outcome.status == tlsConnectionAccepted || !site.control && outcome.status == tlsCertificateRefused {
+			var outcome tlsOutcome
+			if reason := unasked[site.name]; site.kind == tlsPublicSite && reason != "" {
+				outcome = tlsOutcome{status: tlsPublicUnknown, detail: "not asked: " + reason}
+			} else {
+				outcome = probeTLSSite(ctx, client, site, tlsRunTerms{reached: reachedSites[site.name]})
+			}
+			observations = append(observations, tlsObservation{client: client.name(), site: site, tlsOutcome: outcome})
+			if outcome.status == tlsNoVerdict {
+				again = append(again, noVerdictRun{client: client, index: len(observations) - 1})
+				continue
+			}
+			if site.kind == tlsControlSite && outcome.status == tlsConnectionAccepted ||
+				(site.kind == tlsFixtureSite || site.kind == tlsVendoredSite) && outcome.status == tlsCertificateRefused {
 				reachedSites[site.name] = true
 			}
-			judge(observation)
+			judge(&observations[len(observations)-1])
 		}
 	}
 	for _, run := range again {
-		observation := run.observation
-		if ctx.Err() == nil {
-			observation.tlsOutcome = run.client.probe(ctx, observation.site, tlsRunTerms{again: true, reached: true})
-			observations = append(observations, observation)
+		observation := observations[run.index]
+		if ctx.Err() != nil {
+			judge(&observation)
+			continue
 		}
-		judge(observation)
+		observation.tlsOutcome = probeTLSSite(ctx, run.client, observation.site, tlsRunTerms{again: true, reached: observation.site.kind != tlsPublicSite})
+		observations = append(observations, observation)
+		judge(&observations[len(observations)-1])
 	}
 	if len(failures) > 0 {
 		return observations, noVerdict, fmt.Errorf("worker TLS probe failed: %s", strings.Join(failures, "; "))
 	}
 	return observations, noVerdict, nil
+}
+
+// tlsVerdict is what client's outcome at site means, by the site's kind: a failure of the probe,
+// or "" where the outcome is the one that kind needs; and unknown where a public site gave no
+// verdict, which fails nothing. The caller passes no outcome of an absent client, of a site no
+// client asked, or of a run with no verdict.
+func tlsVerdict(client string, site tlsSite, outcome tlsOutcome) (failure string, unknown bool) {
+	accepts := fmt.Sprintf("%s accepts the %s chain: %s", client, site.name, outcome.detail)
+	unverified := fmt.Sprintf("%s cannot verify refusal of the %s chain: %s", client, site.name, outcome.detail)
+	switch site.kind {
+	case tlsControlSite:
+		if outcome.status != tlsConnectionAccepted {
+			return fmt.Sprintf("network unavailable: %s cannot reach %s: %s", client, site.url, outcome.detail), false
+		}
+	case tlsFixtureSite:
+		switch {
+		case outcome.status == tlsConnectionAccepted:
+			return accepts, false
+		case outcome.signatureFailed:
+			return fmt.Sprintf("%s holds the %s root: its refusal failed the signature of a root of that name in its own store: %s", client, site.name, outcome.detail), false
+		case outcome.status != tlsCertificateRefused:
+			return unverified, false
+		}
+	case tlsVendoredSite:
+		switch {
+		case outcome.status == tlsConnectionAccepted:
+			return accepts, false
+		case outcome.signatureFailed:
+			// A store that holds the CA-published root accepts the chain and fails the server's
+			// signature; one that holds a root of that name and another key fails that root's. Both
+			// trust a root named as the distrusted one.
+			return fmt.Sprintf("%s accepts the %s chain: it trusts a root of that chain's root's name, and got past the chain's names to a signature check, which the probe's chains cannot pass: %s", client, site.name, outcome.detail), false
+		case outcome.status != tlsCertificateRefused:
+			return unverified, false
+		}
+	case tlsPublicSite:
+		switch outcome.status {
+		case tlsConnectionAccepted:
+			return accepts, false
+		case tlsCertificateRefused:
+		default:
+			// A host the client could not reach, or that gave it no verdict.
+			return "", true
+		}
+	}
+	return "", false
+}
+
+// tlsNeverReached begins the detail of a verdict a client gave at a site the probe's server serves
+// without the server beginning a handshake for that site (probeTLSSite).
+const tlsNeverReached = "never reached the probe's server, so the verdict is not the probe's chain's: "
+
+// probeTLSSite is client's outcome at site on terms. At a site the probe's server serves, a verdict
+// the client gave without the server beginning a handshake for that site is no verdict of that
+// site's: the client reached some other host, or none.
+func probeTLSSite(ctx context.Context, client tlsClient, site tlsSite, terms tlsRunTerms) tlsOutcome {
+	if site.seen == nil {
+		return client.probe(ctx, site, terms)
+	}
+	before := site.seen.Load()
+	outcome := client.probe(ctx, site, terms)
+	if (outcome.status == tlsCertificateRefused || outcome.status == tlsConnectionAccepted) && site.seen.Load() == before {
+		return tlsOutcome{status: tlsNetworkUnavailable, detail: tlsNeverReached + outcome.detail}
+	}
+	return outcome
+}
+
+// runTLSProbe is the worker image's TLS probe, `legion probe-image`'s step after the capability
+// check. It starts the probe's server in a state directory of its own and holds it to its fixture
+// chains (the positive controls, which fail the probe) and to its vendored chains (whose controls
+// fail it only for a run that did not end by itself), then holds the image's clients, invocation
+// the image's Oh My Pi, under env:
+//
+//   - every client to the fixture chains and the control;
+//   - every client that verifies a chain during the handshake to the vendored chains, which show
+//     its refusal of the public sites' own chains with no network;
+//   - each client that verifies a chain only after the handshake (tlsClientSpec.chainAfterHandshake),
+//     for which no chain the server cannot sign for shows a refusal, to the public sites; and every
+//     client to a public site in place of a vendored chain that failed its positive control.
+//
+// It prints each line to stdout, an UNKNOWN line for each vendored or public site no client is held
+// to and for each client a public site gave no verdict for, and stops the server and removes the
+// state directory before it returns. It returns the runs with no verdict, the positive controls'
+// included, which fail nothing (probeTLSClients), and an error naming every failure.
+func runTLSProbe(ctx context.Context, invocation string, env []string, stdout io.Writer) (noVerdict []string, err error) {
+	stateDir, removeStateDir, err := newTLSStateDir()
+	if err != nil {
+		return nil, err
+	}
+	defer removeStateDir()
+	server, err := newTLSServer(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	defer server.Close()
+	served := server.sites()
+	local := slices.DeleteFunc(slices.Clone(served), func(site tlsSite) bool { return site.kind == tlsVendoredSite })
+	// The sites the positive controls reached, where a client's run its own limit ends with no
+	// answer has no verdict (probeTLSClients): the server's own sites once those controls passed,
+	// and each served copy of a public chain whose own control passed.
+	var reached []tlsSite
+	var controlsNoVerdict tlsNoVerdicts
+	switch err := newTLSPositiveControls(ctx, env, stateDir, local); {
+	case errors.As(err, &controlsNoVerdict):
+		noVerdict = append(noVerdict, controlsNoVerdict...)
+	case err != nil:
+		return nil, err
+	default:
+		reached = slices.Clone(local)
+		fmt.Fprintln(stdout, tlsPositiveControlsLine(fixtureTLSSites(local)))
+	}
+	afterHandshake := tlsChainAfterHandshakeClients()
+	duringHandshake := slices.DeleteFunc(workerTLSClientNames(), func(name string) bool { return slices.Contains(afterHandshake, name) })
+	vendored, err := newVendoredTLSSites(ctx, env, stateDir, served)
+	var vendoredNoVerdict tlsNoVerdicts
+	switch {
+	case errors.As(err, &vendoredNoVerdict):
+		noVerdict = append(noVerdict, vendoredNoVerdict...)
+	case err != nil:
+		return nil, err
+	}
+	public := newPublicTLSSites(ctx, env, stateDir)
+	for index := range vendored {
+		vendored[index].clients = duringHandshake
+		if vendored[index].unasked == "" {
+			reached = append(reached, vendored[index])
+		}
+		fmt.Fprintln(stdout, tlsSiteLine(vendored[index]))
+	}
+	for index := range public {
+		public[index].clients = afterHandshake
+		for _, site := range vendored {
+			if site.url == public[index].url && site.unasked != "" {
+				public[index].clients = nil
+			}
+		}
+		fmt.Fprintln(stdout, tlsSiteLine(public[index]))
+	}
+	observations, clientsNoVerdict, err := probeTLSClients(ctx, newImageTLSClients(invocation, env, stateDir), slices.Concat(local, vendored, public), reached)
+	for _, observation := range observations {
+		fmt.Fprintf(stdout, "probe-image: TLS client %s %s: %s (%s)\n",
+			observation.client, observation.site.name, observation.status, observation.detail)
+	}
+	for _, observation := range observations {
+		if observation.status == tlsPublicUnknown {
+			fmt.Fprintln(stdout, tlsUnknownLine(observation))
+		}
+	}
+	return append(noVerdict, clientsNoVerdict...), err
 }
 
 type tlsCommandClient struct {
@@ -279,6 +613,9 @@ type tlsCommandClient struct {
 	// sets, each NAME=value, on top of the variables of env it keeps (commandLine).
 	command         func(tlsSite) (program string, args, set []string)
 	applicationSeen func(string) bool
+	// publicRefusal is tlsClientSpec.publicRefusal: where set, the only refusal of the client's
+	// that is a refusal of a public site's own chain.
+	publicRefusal func(string) bool
 	// readStdout classifies stdout with stderr, for a program that writes its errors to stdout
 	// (bq). Every other client's stdout is discarded: it is where a fetched page lands.
 	readStdout bool
@@ -287,17 +624,30 @@ type tlsCommandClient struct {
 func (c tlsCommandClient) name() string { return c.clientName }
 
 // probe runs c's command at site. A run the probe's deadline ended has no verdict, whatever it
-// printed, and a run a signal ended before its limit is unavailable, whatever it printed, since
-// what killed it is no answer of the site's and no limit of the probe's. Any other run is judged
-// by what it printed first, one its own limit ended included: an answer the site gave
-// (applicationSeen), or an exit 0, is an acceptance, and a certificate error a refusal. A run its
-// own limit ended with neither in its output has no verdict where terms say an earlier run reached
-// the site, and is unavailable where none did; every other run is unavailable.
+// printed. Any other run is judged by what it printed first, one its own limit or a signal ended
+// included: an answer the site gave (applicationSeen), or an exit 0, is an acceptance, whatever
+// ended the run, and a certificate error a refusal, but in a run a signal ended before its limit,
+// which is unavailable unless it accepted, since what killed it is no answer of the site's and no
+// limit of the probe's. At a public site, a client that refuses the site's own chain in words of
+// its own (tlsClientSpec.publicRefusal) refuses that chain only in those words: any other
+// certificate error of its there refused some other chain, which its detail says
+// (tlsUntiedRefusal), and is no refusal. A run its own limit ended with neither in its output has
+// no verdict where terms say an earlier run reached the site, and is unavailable where none did;
+// every other run is unavailable. A refusal, or a run that is unavailable, that failed a signature
+// the chain should have carried says so (tlsSignatureFailure).
 func (c tlsCommandClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
 	r := c.run(ctx, site, terms.limit(c.timeout))
 	message := tlsCommandMessage(r.err, r.output)
 	accepted := r.err == nil || c.applicationSeen != nil && c.applicationSeen(message)
-	return r.outcome(terms, accepted, tlsCertificateError(message), r.detail(trimTLSDetail(message)))
+	refused, detail := tlsCertificateError(message), trimTLSDetail(message)
+	if refused && site.kind == tlsPublicSite && c.publicRefusal != nil && !c.publicRefusal(message) {
+		refused, detail = false, tlsUntiedRefusal+detail
+	}
+	outcome := r.outcome(terms, accepted, refused, r.detail(detail))
+	if outcome.status == tlsCertificateRefused || outcome.status == tlsNetworkUnavailable {
+		outcome.signatureFailed = tlsSignatureFailure(message)
+	}
+	return outcome
 }
 
 // commandLine is the program c runs at site, its arguments, and the environment it runs under:
@@ -356,26 +706,29 @@ func (r tlsCommandRun) detail(message string) string {
 	}
 }
 
-// outcome is the run's verdict on terms, with detail as its TLS line's detail. A run the probe's
-// deadline ended has no verdict and one a signal ended before its limit is unavailable, whatever
-// it printed. Any other run is accepted where the client read an acceptance in it, and refused
-// where it read a certificate refusal; a run its own limit ended with neither has no verdict where
-// terms say an earlier run reached the site, and every other run is unavailable.
+// outcome is the run's verdict on terms, with detail as its TLS line's detail, and what ended it.
+// A run the probe's deadline ended has no verdict, whatever it printed. Any other run is accepted
+// where the client read an acceptance in it, one a signal ended included: the answer came after a
+// handshake the client accepted, which the signal cannot take back, and an acceptance is the
+// verdict that fails a compromised chain wherever it is read. A run a signal ended before its limit
+// is otherwise unavailable, whatever it printed. Any other run is refused where the client read a
+// certificate refusal in it; a run its own limit ended with neither has no verdict where terms say
+// an earlier run reached the site, and every other run is unavailable.
 func (r tlsCommandRun) outcome(terms tlsRunTerms, accepted, refused bool, detail string) tlsOutcome {
+	outcome := tlsOutcome{status: tlsNetworkUnavailable, detail: detail, ending: r.ending}
 	switch {
 	case r.ending == tlsDeadlineEnded:
-		return tlsOutcome{status: tlsNoVerdict, detail: detail}
-	case r.ending == tlsSignalEnded:
-		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
+		outcome.status = tlsNoVerdict
 	case accepted:
-		return tlsOutcome{status: tlsConnectionAccepted, detail: detail}
+		outcome.status = tlsConnectionAccepted
+	case r.ending == tlsSignalEnded:
+		// Unavailable, a refusal in its output included.
 	case refused:
-		return tlsOutcome{status: tlsCertificateRefused, detail: detail}
+		outcome.status = tlsCertificateRefused
 	case r.ending == tlsLimitEnded && terms.reached:
-		return tlsOutcome{status: tlsNoVerdict, detail: detail}
-	default:
-		return tlsOutcome{status: tlsNetworkUnavailable, detail: detail}
+		outcome.status = tlsNoVerdict
 	}
+	return outcome
 }
 
 // run runs c's command at site within limit and records the run. Its output is the command's
@@ -457,8 +810,10 @@ func (c tlsChromiumClient) probe(ctx context.Context, site tlsSite, terms tlsRun
 	if failure == "" {
 		message = tlsCommandMessage(r.err, r.output)
 	}
-	accepted := failure == "" && r.err == nil
-	refused := failure != "" && tlsCertificateError(failure)
+	// A navigation that failed on the site's answer is past a handshake Chromium accepted.
+	answered := failure != "" && c.applicationSeen != nil && c.applicationSeen(failure)
+	accepted := failure == "" && r.err == nil || answered
+	refused := failure != "" && !answered && tlsCertificateError(failure)
 	return r.outcome(terms, accepted, refused, r.detail(trimTLSDetail(message)))
 }
 
@@ -522,12 +877,14 @@ func chromiumNavigationFailure(stderr string) string {
 // setting of Bun's. So no credential variable of the pod's reaches a client, and no file of the
 // pod's home or working directory does but one a kept variable names, as SSL_CERT_FILE may.
 //
-// No proxy variable of the pod's reaches a client, so the probe tests each client's direct path
-// to each site. Where a pod's roles reach the sites only through a proxy, the positive controls
-// cannot reach them and fail the probe (verifyTLSPositiveControls); where a pod has a proxy and
-// direct egress both, the probe tests the direct path while the roles' traffic takes the proxy,
-// which the probe does not test. Proxy variables are left out because a proxy URL can carry a
-// login.
+// No proxy variable of the pod's reaches a client. At a site the probe's server serves, each
+// client's proxy is that server (tlsProxyEnvironment), so the probe tests the chain that server
+// serves whatever the pod's egress. At a public site the probe tests each client's direct path;
+// where a pod's roles reach the public sites only through a proxy, their positive controls cannot
+// reach them, so no client asks them and each is unknown (probePublicTLSSites), and where a pod
+// has a proxy and direct egress both, the probe tests the direct path while the roles' traffic
+// takes the proxy, which the probe does not test. The pod's proxy variables are left out because
+// a proxy URL can carry a login.
 var tlsKeptVariables = slices.Concat(sandbox.ImageEnv, tlsTrustVariables)
 
 // tlsTrustVariables are the pod's trust and verification settings every client keeps
@@ -661,6 +1018,12 @@ func tlsCertificateError(detail string) bool {
 		// git's https transport, through libcurl's GnuTLS build: "server verification failed:
 		// certificate signer not trusted".
 		"server verification failed",
+		// node, CodeGraph's node, bun and omp at the fixture chains, whose roots no store of theirs
+		// holds: "Error: unable to get local issuer certificate … code:
+		// 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY'" from node and "TypeError: unable to get local issuer
+		// certificate … code: \"UNABLE_TO_GET_ISSUER_CERT_LOCALLY\"" from bun, measured on 2026-11-20
+		// with node 24.22.1 and bun 1.4.4 and 1.4.5 in the image of 1c7c825367.
+		"unable to get local issuer certificate",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
@@ -668,6 +1031,78 @@ func tlsCertificateError(detail string) bool {
 	}
 	return false
 }
+
+// tlsSignatureFailure reports whether detail failed a signature the chain should have carried. At a
+// fixture chain it means the client found a root of the fixture root's name and key identifier in
+// its own store and failed the fixture's signature: each fixture root has the subject and subject
+// key identifier of the CA-published root it stands in for, and a key of its own
+// (newTLSFixture), so a store that holds no root of that name refuses the fixture chain
+// for an unknown issuer, as it refuses the public site's, and a store that holds the distrusted
+// root itself finds it as the issuer and fails the fixture's signature: the store trusts the root
+// the probe exists to keep out. At a vendored chain it means the client got past the chain to the
+// server's signature, which the probe's server cannot make for a chain whose key it lacks: the
+// client accepted the chain. Each marker was measured on 2026-11-20 in the image of 1c7c825367,
+// with the CA-published roots added to the store each client reads:
+//
+//   - at the fixture chains: "certificate signature failure", OpenSSL's verify text, from the AWS
+//     CLI, python3, bq, gcloud, az, node, CodeGraph's node, bun and omp, the last four also with
+//     the code CERT_SIGNATURE_FAILURE; "BadSignature" from uv's and mise's rustls; Go's "possibly
+//     because of … while trying to verify candidate authority certificate" from gh, go and
+//     kubectl; "provider signature failure", the handshake error curl 8.14 and socat gave for the
+//     ECDSA emSign root; and "certificate error, no details available" from git, whose libcurl
+//     8.14 GnuTLS build names four causes of an invalid certificate and prints that for any other
+//     (lib/vtls/gtls.c), where at no root of the name it prints "certificate signer not trusted".
+//     For the RSA AAA root curl gave "rsa routines::invalid padding", which is no certificate
+//     error, so it fails the probe as no verdict, and socat that line before "certificate verify
+//     failed", which reads as a refusal; redis-cli gave "certificate verify failed" for both,
+//     which no marker here reads; wget, given the bundle with --ca-certificate (only an image's
+//     /etc/wgetrc can give it one; no pod variable does), gave "The certificate of '<host>' is not
+//     trusted." alone, where with Debian's bundle it adds "doesn't have a known issuer.", the one
+//     cause GnuTLS sets for no root of the name; and Chromium reads no setting that adds a root;
+//   - at the vendored chains: OpenSSL's "bad signature" from the AWS CLI, python3, gcloud, bq, az,
+//     redis-cli and socat; "provider signature failure" from curl; Go's "invalid signature by the
+//     server certificate" from gh and kubectl; and "BadSignature" from mise. go refused the chain
+//     itself ("x509: no valid chains built"), and bun, omp and uv refused it as revoked or
+//     distrusted, the roots added or not.
+func tlsSignatureFailure(detail string) bool {
+	lower := strings.ToLower(detail)
+	for _, marker := range []string{
+		"certificate signature failure",
+		"cert_signature_failure",
+		"badsignature",
+		"while trying to verify candidate authority certificate",
+		"provider signature failure",
+		"bad signature",
+		"invalid signature by the server certificate",
+		"certificate error, no details available",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	// wget names each cause of an invalid certificate on an "ERROR: The certificate" line of its own
+	// after "is not trusted.", so that line alone is a root of the name held and its signature
+	// failed.
+	return strings.Contains(lower, "is not trusted.") && strings.Count(lower, "error: the certificate") == 1
+}
+
+// tlsRevokedOrDistrusted reports whether detail is the refusal node, CodeGraph's node, bun, omp
+// and uv give the public test sites' own chains, which a list of each keyed to those chains'
+// certificates finds revoked ("certificate revoked", code CERT_REVOKED, from node and Bun) or
+// distrusted ("CertDistrusted", from uv's rustls): measured at the public sites
+// (tlsRefusalRows' public column), and for node and bun with the emSign root added as an extra CA
+// (tlsTrustVariables). A chain no such list names, as the fixture chains or any chain another
+// server serves under the site's name, draws an unknown issuer from each instead, which names no
+// certificate of the site's.
+func tlsRevokedOrDistrusted(detail string) bool {
+	lower := strings.ToLower(detail)
+	return strings.Contains(lower, "cert_revoked") || strings.Contains(lower, "certificate revoked") || strings.Contains(lower, "certdistrusted")
+}
+
+// tlsUntiedRefusal begins the detail of a certificate error a client with a public refusal of its
+// own (tlsClientSpec.publicRefusal) gave at a public site in other words: it refused a chain that
+// is not the site's, so the run says nothing of the site's chain, and the site reads as unknown.
+const tlsUntiedRefusal = "a refusal that names no certificate of the site's own chain, so not of that chain: "
 
 const tlsFetchProgram = `const response = await fetch(process.env.LEGION_TLS_URL); if (!response.ok) throw new Error("HTTP " + response.status);`
 
@@ -696,22 +1131,44 @@ type tlsClientSpec struct {
 	// readStdout and applicationSeen are the command client's.
 	readStdout      bool
 	applicationSeen func(string) bool
+	// publicRefusal, where set, is how the client refuses a public site's own chain in words that
+	// name that chain (tlsRevokedOrDistrusted), and its only refusal there that counts
+	// (tlsCommandClient.probe): any other certificate error of its at a public site refused some
+	// other chain, as one a server the site's name has come to reach serves. A client without it
+	// refuses every chain whose root it lacks in the same words (tlsRefusalRows' same), so its
+	// refusal at a public site cannot be told from a refusal of such a chain, and counts as the
+	// site's.
+	publicRefusal func(string) bool
+	// chainAfterHandshake marks a client that verifies the server's chain only once the handshake
+	// has completed, so at a vendored chain, which the probe's server cannot sign for, it fails the
+	// server's signature before it ever reads the chain, whatever its store holds: node and
+	// CodeGraph's node (Node reads OpenSSL's verify result after the handshake and raises it then),
+	// and wget and git (GnuTLS, through wget's own TLS code and libcurl's, verifies the peer after
+	// gnutls_handshake). Measured on 2026-11-20 in the image of 1c7c825367: at the vendored chains,
+	// node gave "provider signature failure" and wget and git "Public key signature verification
+	// has failed", with the CA-published roots in their stores and without. Such a client is held to
+	// the public sites (runTLSProbe).
+	chainAfterHandshake bool
 	// command gives one site's arguments and the variables the client sets, each NAME=value, with
-	// the client's state under stateDir (newTLSStateDir); invocation is the image's Oh My Pi.
+	// the client's state under stateDir (newTLSStateDir); invocation is the image's Oh My Pi. At
+	// the control it gives the client the site's trust file (tlsSite.trust) in the client's own
+	// way, and at a site the probe's server serves, a client with no proxy (redis-cli, socat) or
+	// with a proxy setting of its own (Chromium) names the server's address (tlsSite.via) itself.
 	command func(site tlsSite, stateDir, invocation string) (args, set []string)
 }
 
 // build makes the client spec names, under env, with stateDir as its working directory and a HOME
-// of its own, <stateDir>/<name>, given before the variables its command sets, so a client's own
-// HOME replaces it.
+// of its own, <stateDir>/<name>, then, at a site the probe's server serves, that server as its
+// proxy (tlsProxyEnvironment), each given before the variables its command sets, so a client's own
+// value replaces it.
 func (spec tlsClientSpec) build(invocation string, env []string, stateDir string) tlsClient {
 	home := "HOME=" + filepath.Join(stateDir, spec.name)
 	client := tlsCommandClient{
 		clientName: spec.name, env: env, workDir: stateDir, timeout: spec.timeout,
-		applicationSeen: spec.applicationSeen, readStdout: spec.readStdout,
+		applicationSeen: spec.applicationSeen, publicRefusal: spec.publicRefusal, readStdout: spec.readStdout,
 		command: func(site tlsSite) (string, []string, []string) {
 			args, set := spec.command(site, stateDir, invocation)
-			return spec.program, args, append([]string{home}, set...)
+			return spec.program, args, slices.Concat([]string{home}, tlsProxyEnvironment(site), set)
 		},
 	}
 	switch spec.kind {
@@ -722,6 +1179,46 @@ func (spec tlsClientSpec) build(invocation string, env []string, stateDir string
 	default:
 		return client
 	}
+}
+
+// tlsProxyEnvironment is the probe's server as the HTTP and HTTPS proxy of a client at a site that
+// server serves, and nothing at a public site: both spellings, since some clients read the
+// lower-case ones (curl, git's libcurl, wget) and some the upper-case ones, and node's
+// NODE_USE_ENV_PROXY=1, without which node and CodeGraph's node read neither (measured on
+// 2026-11-20 with node 24.22.1: without it, a fetch under HTTPS_PROXY resolved the site's name;
+// with it, the fetch went to the proxy). Measured on 2026-11-20 in the image of 1c7c825367 with no
+// route but loopback, every client of workerTLSClients that reads them reached the server at
+// every site it serves, which tlsSite.seen proves at each probe. So no client resolves a site's
+// name: the server takes its CONNECT and serves the site's chain, and refuses any other host, so
+// nothing else a client fetches (an issuer certificate, a version check) reaches the network.
+func tlsProxyEnvironment(site tlsSite) []string {
+	if site.via == "" {
+		return nil
+	}
+	proxy := "http://" + site.via
+	return []string{"HTTPS_PROXY=" + proxy, "https_proxy=" + proxy, "HTTP_PROXY=" + proxy, "http_proxy=" + proxy, "NODE_USE_ENV_PROXY=1"}
+}
+
+// tlsTrustSetting is NAME=<the site's trust file>, the one variable a client is given its trust in
+// at the control, and nothing at a site with no trust file.
+func tlsTrustSetting(site tlsSite, name string) []string {
+	if site.trust == "" {
+		return nil
+	}
+	return []string{name + "=" + site.trust}
+}
+
+// tlsTrustArgs is the arguments a client is given its trust in at the control, the trust file
+// joined to flag ("--cacert" and the file as two, "--ca-certificate=" and the file as one), and
+// nothing at a site with no trust file.
+func tlsTrustArgs(site tlsSite, flag string) []string {
+	if site.trust == "" {
+		return nil
+	}
+	if strings.HasSuffix(flag, "=") {
+		return []string{flag + site.trust}
+	}
+	return []string{flag, site.trust}
 }
 
 // tlsProbeSignIn is the dummy credential gcloud, bq and kubectl sign in with: gcloud and bq from
@@ -915,27 +1412,27 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 //     open no connection.
 var workerTLSClients = []tlsClientSpec{
 	{
-		name: "node", program: "node", timeout: tlsDefaultProbeTimeout,
-		command: func(tlsSite, string, string) ([]string, []string) {
-			return []string{"--input-type=module", "--eval", tlsFetchProgram}, nil
+		name: "node", program: "node", timeout: tlsDefaultProbeTimeout, chainAfterHandshake: true, applicationSeen: tlsFetchHTTPError.MatchString, publicRefusal: tlsRevokedOrDistrusted,
+		command: func(site tlsSite, _, _ string) ([]string, []string) {
+			return []string{"--input-type=module", "--eval", tlsFetchProgram}, tlsTrustSetting(site, "NODE_EXTRA_CA_CERTS")
 		},
 	},
 	{
-		name: "bun", program: "bun", timeout: tlsDefaultProbeTimeout,
-		command: func(tlsSite, string, string) ([]string, []string) {
-			return []string{"--eval", tlsFetchProgram}, nil
+		name: "bun", program: "bun", timeout: tlsDefaultProbeTimeout, applicationSeen: tlsFetchHTTPError.MatchString, publicRefusal: tlsRevokedOrDistrusted,
+		command: func(site tlsSite, _, _ string) ([]string, []string) {
+			return []string{"--eval", tlsFetchProgram}, tlsTrustSetting(site, "NODE_EXTRA_CA_CERTS")
 		},
 	},
 	{
-		name: "omp", program: "sh", timeout: tlsDefaultProbeTimeout,
-		command: func(_ tlsSite, _, invocation string) ([]string, []string) {
-			return []string{"-c", "exec " + invocation + " --eval \"$1\"", "sh", tlsFetchProgram}, []string{"BUN_BE_BUN=1"}
+		name: "omp", program: "sh", timeout: tlsDefaultProbeTimeout, applicationSeen: tlsFetchHTTPError.MatchString, publicRefusal: tlsRevokedOrDistrusted,
+		command: func(site tlsSite, _, invocation string) ([]string, []string) {
+			return []string{"-c", "exec " + invocation + " --eval \"$1\"", "sh", tlsFetchProgram}, append([]string{"BUN_BE_BUN=1"}, tlsTrustSetting(site, "NODE_EXTRA_CA_CERTS")...)
 		},
 	},
 	{
-		name: "codegraph-node", program: "/opt/codegraph/node", timeout: tlsDefaultProbeTimeout,
-		command: func(tlsSite, string, string) ([]string, []string) {
-			return []string{"--input-type=module", "--eval", tlsFetchProgram}, nil
+		name: "codegraph-node", program: "/opt/codegraph/node", timeout: tlsDefaultProbeTimeout, chainAfterHandshake: true, applicationSeen: tlsFetchHTTPError.MatchString, publicRefusal: tlsRevokedOrDistrusted,
+		command: func(site tlsSite, _, _ string) ([]string, []string) {
+			return []string{"--input-type=module", "--eval", tlsFetchProgram}, tlsTrustSetting(site, "NODE_EXTRA_CA_CERTS")
 		},
 	},
 	// uv reads its settings from its workspace root, and the state directory's pyproject.toml,
@@ -950,15 +1447,19 @@ var workerTLSClients = []tlsClientSpec{
 	// directory and failed at the fetch, reading neither that pyproject.toml nor a broken uv.toml
 	// added beside it; and it read a system uv.toml given through XDG_CONFIG_DIRS.
 	{
-		name: "uv", program: "uv", timeout: tlsDefaultProbeTimeout, applicationSeen: uvResponseSeen,
+		name: "uv", program: "uv", timeout: tlsDefaultProbeTimeout, applicationSeen: uvResponseSeen, publicRefusal: tlsRevokedOrDistrusted,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"pip", "install", "--system", "--break-system-packages", "--dry-run", "--no-deps", "--no-cache", "--index-url", site.url, "legion-tls-probe-not-a-package"}, nil
+			var trust []string
+			if site.trust != "" {
+				trust = []string{"UV_SYSTEM_CERTS=true", "SSL_CERT_FILE=" + site.trust}
+			}
+			return []string{"pip", "install", "--system", "--break-system-packages", "--dry-run", "--no-deps", "--no-cache", "--index-url", site.url, "legion-tls-probe-not-a-package"}, trust
 		},
 	},
 	{
 		name: "aws", program: "aws", timeout: tlsDefaultProbeTimeout, applicationSeen: awsResponseSeen,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"sts", "get-caller-identity", "--no-sign-request", "--region", "us-east-1", "--endpoint-url", site.url}, nil
+			return append([]string{"sts", "get-caller-identity", "--no-sign-request", "--region", "us-east-1", "--endpoint-url", site.url}, tlsTrustArgs(site, "--ca-bundle")...), nil
 		},
 	},
 	// curl reads a curlrc, and sends its headers to every host it reaches, from CURL_HOME,
@@ -971,29 +1472,30 @@ var workerTLSClients = []tlsClientSpec{
 	// none while `curl -s -q` sent it. The positive controls' curl (tlsPositiveControlSpec) takes
 	// -q first for the same reason.
 	{
-		name: "curl", program: "curl", timeout: tlsDefaultProbeTimeout,
+		name: "curl", program: "curl", timeout: tlsDefaultProbeTimeout, applicationSeen: curlHTTPError.MatchString,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"-q", "--fail", "--silent", "--show-error", site.url}, nil
+			return slices.Concat([]string{"-q"}, tlsTrustArgs(site, "--cacert"), []string{"--fail", "--silent", "--show-error", site.url}), nil
 		},
 	},
 	{
-		name: "python3", program: "python3", timeout: tlsDefaultProbeTimeout,
-		command: func(tlsSite, string, string) ([]string, []string) {
-			return []string{"-c", "import os, urllib.request; urllib.request.urlopen(os.environ['LEGION_TLS_URL']).read(1)"}, nil
+		name: "python3", program: "python3", timeout: tlsDefaultProbeTimeout, applicationSeen: python3HTTPError.MatchString,
+		command: func(site tlsSite, _, _ string) ([]string, []string) {
+			return []string{"-c", "import os, urllib.request; urllib.request.urlopen(os.environ['LEGION_TLS_URL']).read(1)"}, tlsTrustSetting(site, "SSL_CERT_FILE")
 		},
 	},
 	{
 		name: "gh", program: "/usr/local/bin/gh", timeout: tlsDefaultProbeTimeout, applicationSeen: ghResponseSeen,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"api", site.url}, []string{"GH_TOKEN=" + tlsProbeSignIn}
+			return []string{"api", site.url}, append([]string{"GH_TOKEN=" + tlsProbeSignIn}, tlsTrustSetting(site, "SSL_CERT_FILE")...)
 		},
 	},
 	// --no-hsts keeps wget from writing ~/.wget-hsts into the runtime user's home. wget exits 0 on
-	// the control's page, so, as curl, it needs no response marker.
+	// the control's page, and names a status the site answered ("ERROR 503: Service Unavailable.",
+	// measured on 2026-11-20 with GNU wget in the image of 1c7c825367), which reads as accepted.
 	{
-		name: "wget", program: "wget", timeout: tlsDefaultProbeTimeout,
+		name: "wget", program: "wget", timeout: tlsDefaultProbeTimeout, chainAfterHandshake: true, applicationSeen: wgetHTTPError.MatchString,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"--no-verbose", "--no-hsts", "--tries=1", "--output-document=/dev/null", site.url}, nil
+			return slices.Concat([]string{"--no-verbose", "--no-hsts", "--tries=1", "--output-document=/dev/null"}, tlsTrustArgs(site, "--ca-certificate="), []string{site.url}), nil
 		},
 	},
 	// The PATH's git: in a pod, the /opt/legion/bin/git wrapper, which hands ls-remote to
@@ -1008,9 +1510,9 @@ var workerTLSClients = []tlsClientSpec{
 	// No site is a git repository, so git fails ls-remote at the control too, after the handshake;
 	// gitSiteAnswer reads that answer.
 	{
-		name: "git", program: "git", timeout: tlsDefaultProbeTimeout, applicationSeen: gitSiteAnswer.MatchString,
+		name: "git", program: "git", timeout: tlsDefaultProbeTimeout, applicationSeen: gitSiteAnswer.MatchString, chainAfterHandshake: true,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
-			return []string{"ls-remote", site.url}, []string{"GIT_TERMINAL_PROMPT=0", "GIT_CEILING_DIRECTORIES=" + filepath.Dir(stateDir)}
+			return []string{"ls-remote", site.url}, append([]string{"GIT_TERMINAL_PROMPT=0", "GIT_CEILING_DIRECTORIES=" + filepath.Dir(stateDir)}, tlsTrustSetting(site, "GIT_SSL_CAINFO")...)
 		},
 	},
 	// go's fetch of a module path at the site's host, the fetch `go install` and `go get` make with
@@ -1027,7 +1529,7 @@ var workerTLSClients = []tlsClientSpec{
 		name: "go", program: "go", timeout: tlsDefaultProbeTimeout, applicationSeen: goGetAnswer.MatchString,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
 			home := filepath.Join(stateDir, "go")
-			return []string{"mod", "download", tlsSiteURL(site).Hostname() + "/legion-tls-probe@latest"}, []string{
+			return []string{"mod", "download", tlsSiteURL(site).Hostname() + "/legion-tls-probe@latest"}, append([]string{
 				"XDG_CONFIG_HOME=" + filepath.Join(home, "config"),
 				"GOPATH=" + filepath.Join(home, "path"),
 				"GOMODCACHE=" + filepath.Join(home, "mod"),
@@ -1037,7 +1539,7 @@ var workerTLSClients = []tlsClientSpec{
 				"GOFLAGS=",
 				"GOWORK=off",
 				"GOAUTH=off",
-			}
+			}, tlsTrustSetting(site, "SSL_CERT_FILE")...)
 		},
 	},
 	// kubectl at the site as its API server. Without a credential kubectl asks for a user name
@@ -1046,34 +1548,41 @@ var workerTLSClients = []tlsClientSpec{
 	// KUBERNETES_SERVICE_PORT, client-go never takes the in-cluster configuration, which would send
 	// the pod's service-account token to a test site, and with no KUBECONFIG kubectl reads its
 	// default, $HOME/.kube/config, a file its own empty HOME does not hold, which it reads as empty.
-	// kubectl exits 0 on the control's page, so, as curl, it needs no response marker.
+	// kubectl exits 0 on the control's page; its marker reads an error status the site answered
+	// (kubectlHTTPError).
 	{
-		name: "kubectl", program: "kubectl", timeout: tlsDefaultProbeTimeout,
+		name: "kubectl", program: "kubectl", timeout: tlsDefaultProbeTimeout, applicationSeen: kubectlHTTPError,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"--server=" + site.url, "--token=" + tlsProbeSignIn, "get", "--raw", "/"}, nil
+			return slices.Concat([]string{"--server=" + site.url, "--token=" + tlsProbeSignIn}, tlsTrustArgs(site, "--certificate-authority="), []string{"get", "--raw", "/"}), nil
 		},
 	},
 	// redis-cli's TLS connection to the site's host and port, with the host as its SNI name, the
-	// way `redis-cli --tls -h <host> -p <port>` reaches a Redis server a role names. No site speaks
-	// Redis, so redis-cli fails at the control too, past the handshake; redisResponseSeen reads
-	// that answer. redis-cli sends REDISCLI_AUTH as AUTH to the server it reaches, here a test site
-	// (measured on 2026-11-18 at example.com with a dummy value set, redis-cli 8.0.2 printed "I/O
-	// error" for the AUTH before its protocol error), and no kept variable is REDISCLI_AUTH, so the
-	// pod's never reaches it.
+	// way `redis-cli --tls -h <host> -p <port>` reaches a Redis server a role names; at a site the
+	// probe's server serves, redis-cli, which has no proxy, connects to that server's address and
+	// names the site's host in its SNI alone. No site speaks Redis, so redis-cli fails at the
+	// control too, past the handshake; redisResponseSeen reads that answer. redis-cli sends
+	// REDISCLI_AUTH as AUTH to the server it reaches, here a test site (measured on 2026-11-18 at
+	// example.com with a dummy value set, redis-cli 8.0.2 printed "I/O error" for the AUTH before
+	// its protocol error), and no kept variable is REDISCLI_AUTH, so the pod's never reaches it.
 	{
 		name: "redis-cli", program: "redis-cli", timeout: tlsDefaultProbeTimeout, applicationSeen: redisResponseSeen,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			host, port := tlsSiteHostPort(site)
-			return []string{"--tls", "--sni", host, "-h", host, "-p", port, "PING"}, nil
+			sni, address, port := tlsSiteAddress(site)
+			return slices.Concat([]string{"--tls", "--sni", sni, "-h", address, "-p", port}, tlsTrustArgs(site, "--cacert"), []string{"PING"}), nil
 		},
 	},
 	// gcloud's compute call, with the compute endpoint at the site. `gcloud storage` is not the
-	// form because it retried for 35-41 s before it answered.
+	// form because it retried for 35-41 s before it answered. At the control it is given the
+	// control's root in core/custom_ca_certs_file and in the two variables requests reads, which a
+	// pod may set: measured on 2026-11-20 with gcloud 594.0.0, under a pod's REQUESTS_CA_BUNDLE and
+	// CURL_CA_BUNDLE naming a bundle without the control's root, gcloud refused the control whose
+	// root the property alone named.
 	{
 		name: "gcloud", program: "gcloud", timeout: tlsDefaultProbeTimeout, kind: tlsOptionalKind, applicationSeen: gcloudResponseSeen,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
 			return []string{"compute", "regions", "list", "--project", "legion-tls-probe"},
-				append(googleCloudTLSEnvironment(stateDir, "gcloud"), "CLOUDSDK_API_ENDPOINT_OVERRIDES_COMPUTE="+site.url+"compute/v1/")
+				slices.Concat(googleCloudTLSEnvironment(stateDir, "gcloud"), []string{"CLOUDSDK_API_ENDPOINT_OVERRIDES_COMPUTE=" + site.url + "compute/v1/"},
+					tlsTrustSetting(site, "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE"), tlsTrustSetting(site, "REQUESTS_CA_BUNDLE"), tlsTrustSetting(site, "CURL_CA_BUNDLE"))
 		},
 	},
 	// --oauth_access_token makes the SDK's bq launcher skip its own credential lookup, which asks
@@ -1083,17 +1592,19 @@ var workerTLSClients = []tlsClientSpec{
 	{
 		name: "bq", program: "bq", timeout: tlsBigQueryProbeTimeout, kind: tlsOptionalKind, readStdout: true, applicationSeen: bqResponseSeen,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
-			return []string{"--oauth_access_token=" + tlsProbeSignIn, "--api=" + site.url, "ls", "--project_id=legion-tls-probe"}, googleCloudTLSEnvironment(stateDir, "bq")
+			return []string{"--oauth_access_token=" + tlsProbeSignIn, "--api=" + site.url, "ls", "--project_id=legion-tls-probe"},
+				append(googleCloudTLSEnvironment(stateDir, "bq"), tlsTrustSetting(site, "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE")...)
 		},
 	},
-	// One configuration directory for az's three sites, so the version fetch from
+	// One configuration directory for az's every site, so the version fetch from
 	// azcliprod.blob.core.windows.net, which az makes at its first command in a configuration
-	// directory, happens once a probe. az exited 0 on the control's page, so, as curl, it needs no
-	// response marker.
+	// directory, happens once a probe. az exited 0 on the control's page; its marker reads an error
+	// status the site answered (azHTTPError).
 	{
-		name: "az", program: "az", timeout: tlsDefaultProbeTimeout, kind: tlsOptionalKind,
+		name: "az", program: "az", timeout: tlsDefaultProbeTimeout, kind: tlsOptionalKind, applicationSeen: azHTTPError,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
-			return []string{"rest", "--method", "get", "--url", site.url, "--skip-authorization-header"}, []string{"AZURE_CONFIG_DIR=" + filepath.Join(stateDir, "az", "config")}
+			return []string{"rest", "--method", "get", "--url", site.url, "--skip-authorization-header"},
+				append([]string{"AZURE_CONFIG_DIR=" + filepath.Join(stateDir, "az", "config")}, tlsTrustSetting(site, "REQUESTS_CA_BUNDLE")...)
 		},
 	},
 	// mise's http: backend, downloading the site as a tool, in a directory of its own per site so
@@ -1109,8 +1620,8 @@ var workerTLSClients = []tlsClientSpec{
 	{
 		name: "mise", program: "mise", timeout: tlsDefaultProbeTimeout, kind: tlsOptionalKind, applicationSeen: miseHTTPStatus.MatchString,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
-			home := filepath.Join(stateDir, "mise", site.name)
-			return []string{"--no-config", "x", "http:legion-tls-probe[url=" + site.url + "]@1", "--", "true"}, []string{
+			home := filepath.Join(stateDir, "mise", strings.ReplaceAll(site.name, " ", "-"))
+			return []string{"--no-config", "x", "http:legion-tls-probe[url=" + site.url + "]@1", "--", "true"}, append([]string{
 				"HOME=" + home,
 				"MISE_DATA_DIR=" + filepath.Join(home, "data"),
 				"MISE_CACHE_DIR=" + filepath.Join(home, "cache"),
@@ -1118,23 +1629,32 @@ var workerTLSClients = []tlsClientSpec{
 				"MISE_STATE_DIR=" + filepath.Join(home, "state"),
 				"MISE_YES=1",
 				"MISE_VERBOSE=1",
-			}
+			}, tlsTrustSetting(site, "SSL_CERT_FILE")...)
 		},
 	},
-	// socat's OPENSSL: address at the site's host and port. Its stdin is the probe's /dev/null, so
-	// it completes the handshake, sends nothing and exits. It exits 0 on the control, so, as curl,
-	// it needs no response marker, and it keeps no state.
+	// socat's OPENSSL: address at the site's host and port, which socat verifies the leaf's name
+	// against; at a site the probe's server serves, socat, which has no proxy, connects to that
+	// server's address and names the site's host as the name to verify and in its SNI. Its stdin
+	// is the probe's /dev/null, so it completes the handshake, sends nothing and exits. It exits 0
+	// on the control and speaks no HTTP, so it needs no response marker, and it keeps no state.
 	{
 		name: "socat", program: "socat", timeout: tlsDefaultProbeTimeout, kind: tlsOptionalKind,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			host, port := tlsSiteHostPort(site)
-			return []string{"-u", "-", "OPENSSL:" + host + ":" + port}, nil
+			sni, address, port := tlsSiteAddress(site)
+			target := "OPENSSL:" + address + ":" + port
+			if site.via != "" {
+				target += ",commonname=" + sni + ",snihost=" + sni
+			}
+			if site.trust != "" {
+				target += ",cafile=" + site.trust
+			}
+			return []string{"-u", "-", target}, nil
 		},
 	},
 	{
-		name: "chromium", program: "chromium", timeout: tlsChromiumProbeTimeout, kind: tlsChromiumKind,
-		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return chromiumTLSArgs(site), nil
+		name: "chromium", program: "chromium", timeout: tlsChromiumProbeTimeout, kind: tlsChromiumKind, applicationSeen: chromiumHTTPAnswer,
+		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
+			return chromiumTLSArgs(site, stateDir), nil
 		},
 	},
 }
@@ -1149,26 +1669,66 @@ var workerTLSClients = []tlsClientSpec{
 // subject, and the sites' AIA URLs hold only self-signed roots, which a path can end at only as
 // anchors of the local trust store. `^NOTFOUND` is the rule's token for "fail with
 // ERR_NAME_NOT_RESOLVED" (net/dns/mapped_host_resolver.h).
-func chromiumTLSArgs(site tlsSite) []string {
-	return []string{"--headless", "--no-sandbox", "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE " + tlsSiteURL(site).Hostname(), "--dump-dom", site.url}
+//
+// At a site the probe's server serves, Chromium takes that server as its proxy (--proxy-server),
+// which it reaches by address, so the rule excludes that address alone and Chromium resolves no
+// name at all; the fixture chains carry no AIA URL. At the control, Chromium is given the control's
+// root as --ignore-certificate-errors-spki-list, the SHA-256 of the root's public key, which the
+// control's chain carries (newTLSControlFixture): Chromium on Linux keeps the roots a user adds
+// in an NSS database, and the image carries no certutil to write one. Chromium reads that switch
+// only beside --user-data-dir, so the control's Chromium runs with a profile of its own in the
+// state directory.
+func chromiumTLSArgs(site tlsSite, stateDir string) []string {
+	args := []string{"--headless", "--no-sandbox"}
+	if site.via == "" {
+		args = append(args, "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE "+tlsSiteURL(site).Hostname())
+	} else {
+		host, _, _ := net.SplitHostPort(site.via)
+		args = append(args, "--proxy-server=http://"+site.via, "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE "+host)
+	}
+	if site.trust != "" {
+		args = append(args, "--user-data-dir="+filepath.Join(stateDir, "chromium-control"), "--ignore-certificate-errors-spki-list="+tlsSPKIHash(site.trust))
+	}
+	return append(args, "--dump-dom", site.url)
 }
 
-// tlsSiteURL is site's URL, parsed. Every tlsSites URL is an absolute https URL, which url.Parse
+// tlsSPKIHash is the base64 SHA-256 of the public key of the first certificate in the PEM file at
+// path, the form --ignore-certificate-errors-spki-list takes, or "" where the file holds none: then
+// Chromium is given no key, and refuses the control, which fails the probe.
+func tlsSPKIHash(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return ""
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// tlsSiteURL is site's URL, parsed. Every site's URL is an absolute https URL, which url.Parse
 // reads without error.
 func tlsSiteURL(site tlsSite) *url.URL {
 	parsed, _ := url.Parse(site.url)
 	return parsed
 }
 
-// tlsSiteHostPort is the host and port of site's URL, the port 443 where the URL names none, as
-// no tlsSites URL does.
-func tlsSiteHostPort(site tlsSite) (host, port string) {
-	address := tlsSiteURL(site)
-	port = address.Port()
-	if port == "" {
-		port = "443"
+// tlsSiteAddress is the name a client verifies and sends in its SNI at site, the site's host, and
+// the address and port it connects to: the site's host and port 443, as no site's URL names
+// another, or, at a site the probe's server serves, that server's address and port.
+func tlsSiteAddress(site tlsSite) (sni, address, port string) {
+	sni = tlsSiteURL(site).Hostname()
+	if site.via != "" {
+		address, port, _ = net.SplitHostPort(site.via)
+		return sni, address, port
 	}
-	return address.Hostname(), port
+	return sni, sni, "443"
 }
 
 // imageTLSClients returns the image's TLS-capable programs. The gh wrapper manages worker tokens,
@@ -1180,6 +1740,18 @@ func imageTLSClients(invocation string, env []string, stateDir string) []tlsClie
 		clients = append(clients, spec.build(invocation, env, stateDir))
 	}
 	return clients
+}
+
+// tlsChainAfterHandshakeClients names the clients of workerTLSClients that verify a chain only
+// after the handshake (tlsClientSpec.chainAfterHandshake), in the inventory's order.
+func tlsChainAfterHandshakeClients() []string {
+	var names []string
+	for _, spec := range workerTLSClients {
+		if spec.chainAfterHandshake {
+			names = append(names, spec.name)
+		}
+	}
+	return names
 }
 
 func workerTLSClientNames() []string {
@@ -1213,8 +1785,11 @@ func tlsAnyMarker(markers ...string) func(string) bool {
 // dependencies", one answering a 200 text/plain page made it print "Unsupported `Content-Type`"
 // naming that index's URL, and in both uv never contacted the site. The probe then reads uv as
 // accepting the compromised chain of a site it never reached: it still fails, but names that
-// index's answer as uv accepting the chain.
-var uvResponseSeen = tlsAnyMarker("No solution found when resolving dependencies", "Unsupported `Content-Type`")
+// index's answer as uv accepting the chain. uv also names a status the site answered after it
+// retried it, "HTTP status client error (429 Too Many Requests)" and "HTTP status server error (503
+// Service Unavailable)" (measured on 2026-11-20 in the image of 1c7c825367, after 3 retries in at
+// most 10.9 s); a 401 or 403 it names as "No solution found" with a hint naming the status.
+var uvResponseSeen = tlsAnyMarker("No solution found when resolving dependencies", "Unsupported `Content-Type`", "HTTP status client error", "HTTP status server error")
 
 var awsResponseSeen = tlsAnyMarker("An error occurred", "InvalidResponse", "invalid XML", "ResponseParserError")
 
@@ -1233,19 +1808,82 @@ var gcloudResponseSeen = tlsAnyMarker("Some requests did not succeed", "Error de
 // document (platform/bq/clients/bigquery_client.py, _LoadDiscoveryDocumentUrl), or a page it could
 // not parse as JSON at all, which bq 2.1.40 of the stock SDK reported as "a bug in the BigQuery
 // CLI" with "json.decoder.JSONDecodeError" in its trace at the emSign site (measured 2026-11-18).
-var bqResponseSeen = tlsAnyMarker("response from discovery url", "discovery doc", "contains no resources", "JSONDecodeError")
+// A 401 makes bq refresh its credentials, which it cannot, and print "the server likely returned an
+// Unauthorized response" (measured on 2026-11-20 in the image of 1c7c825367).
+var bqResponseSeen = tlsAnyMarker("response from discovery url", "discovery doc", "contains no resources", "JSONDecodeError", "returned an Unauthorized response")
 
 // miseHTTPStatus is the line MISE_VERBOSE prints for a request the site answered
 // ("DEBUG GET https://example.com/ 200 OK"); a request that failed prints its URL with no status.
 var miseHTTPStatus = regexp.MustCompile(`\bGET \S+ [1-5][0-9][0-9]\b`)
 
 // gitSiteAnswer is how git's ls-remote names a site that answered but serves no repository: a
-// 404 ("fatal: repository 'https://example.com/' not found", the control) or a page that is no
+// 404 ("fatal: repository 'https://example.com/' not found", the control), a page that is no
 // ref advertisement ("fatal: https://<host>/info/refs not valid: is this a git repository?", the
-// emSign and AAA sites' answer, measured on 2026-11-18 with GIT_SSL_NO_VERIFY=true). A refused
-// chain is "unable to access" the URL instead. Reading both answers keeps a git that accepted a
-// compromised chain reported as accepting it rather than as unavailable.
-var gitSiteAnswer = regexp.MustCompile(`repository '\S+' not found|/info/refs not valid`)
+// emSign and AAA sites' answer, measured on 2026-11-18 with GIT_SSL_NO_VERIFY=true), or another
+// status ("fatal: unable to access 'https://<host>/': The requested URL returned error: 503",
+// measured on 2026-11-20 with a 403, a 429 and a 503 in the image of 1c7c825367, and, at a 401,
+// "fatal: could not read Username for 'https://<host>': terminal prompts disabled", since git asks
+// for a credential only where the site asked for one). A refused chain is "unable to access" the
+// URL with a certificate error instead. Reading every answer keeps a git that accepted a
+// compromised chain reported as accepting it rather than as unavailable, which at a public site
+// reads as UNKNOWN.
+var gitSiteAnswer = regexp.MustCompile(`repository '\S+' not found|/info/refs not valid|could not read Username for '|` + tlsLibcurlHTTPError)
+
+// tlsLibcurlHTTPError is how libcurl names a status the site answered after a handshake it
+// accepted, under curl's --fail and in git's https transport: "The requested URL returned error:
+// 503" (measured on 2026-11-20 with a 401, 403, 429 and 503 in the image of 1c7c825367).
+const tlsLibcurlHTTPError = `The requested URL returned error: [1-5][0-9][0-9]\b`
+
+// curlHTTPError reads that status in the output of the curl client and of the positive controls'
+// curl, whose refusal is "SSL certificate problem". The public sites' positive control reads it
+// too: a site that verified against its CA-published root and answered an error status still
+// serves the chain the clients must refuse, so the clients are asked.
+var curlHTTPError = regexp.MustCompile(tlsLibcurlHTTPError)
+
+// python3HTTPError is how urllib names a status the site answered: "urllib.error.HTTPError: HTTP
+// Error 503: Service Unavailable" (measured on 2026-11-20 with a 401, 403, 429 and 503 in the image
+// of 1c7c825367). Its refusal is a URLError naming CERTIFICATE_VERIFY_FAILED.
+var python3HTTPError = regexp.MustCompile(`urllib\.error\.HTTPError: HTTP Error [1-5][0-9][0-9]\b`)
+
+// kubectlHTTPError reads a status the site answered: "Error from server (Forbidden):",
+// "(TooManyRequests)", "(ServiceUnavailable)", or at a 401 "error: You must be logged in to the
+// server" (measured on 2026-11-20 in the image of 1c7c825367). Its refusal is "Unable to connect to
+// the server: tls: failed to verify certificate".
+var kubectlHTTPError = tlsAnyMarker("Error from server (", "You must be logged in to the server")
+
+// azHTTPError reads a status the site answered in az rest's output, which names it by its reason
+// phrase alone ("ERROR: Unauthorized", "ERROR: Forbidden", "ERROR: Too Many Requests", "ERROR:
+// Service Unavailable", measured on 2026-11-20 in the image of 1c7c825367), so it reads every 4xx
+// and 5xx reason phrase Go names (http.StatusText). Its refusal is "ERROR: HTTPSConnectionPool(…)"
+// with an SSLCertVerificationError.
+var azHTTPError = func() func(string) bool {
+	var phrases []string
+	for code := 400; code < 600; code++ {
+		if text := http.StatusText(code); text != "" {
+			phrases = append(phrases, regexp.QuoteMeta(text))
+		}
+	}
+	return regexp.MustCompile(`\bERROR: (?:` + strings.Join(phrases, "|") + `)\b`).MatchString
+}()
+
+// chromiumHTTPAnswer reads the navigation failures headless Chromium reports for an error status
+// with an empty body, which it loads past an accepted handshake: "net::ERR_HTTP_RESPONSE_CODE_FAILURE"
+// at a 403, 429 and 503, and "net::ERR_INVALID_AUTH_CREDENTIALS" at a 401 (measured on 2026-11-20 in
+// the image of 1c7c825367). A status with a body Chromium loads as the page.
+var chromiumHTTPAnswer = tlsAnyMarker("net::ERR_HTTP_RESPONSE_CODE_FAILURE", "net::ERR_INVALID_AUTH_CREDENTIALS")
+
+// wgetHTTPError is how wget names a status the site answered ("ERROR 503: Service Unavailable.",
+// and at a 401 "Username/Password Authentication Failed.", measured on 2026-11-20 in the image of
+// 1c7c825367). Its refusal of a chain is "ERROR: The certificate of '<host>' is not trusted", with
+// no status.
+var wgetHTTPError = regexp.MustCompile(`\bERROR [1-5][0-9][0-9]: |Username/Password Authentication Failed\.`)
+
+// tlsFetchHTTPError is how node, CodeGraph's node, bun and omp report a status the site answered,
+// the error tlsFetchProgram throws: "Error: HTTP 503" from node, "error: HTTP 503" from bun
+// (measured on 2026-11-20 with a 403 and a 503 in the image of 1c7c825367). Each also prints the
+// program's own source line, whose `new Error("HTTP " + response.status)` reads `Error("HTTP "`, so
+// the source line never matches, and a refusal, which prints it too, stays a refusal.
+var tlsFetchHTTPError = regexp.MustCompile(`(?i)\berror: HTTP [1-5][0-9][0-9]\b`)
 
 // goGetAnswer is how go names the page a site served at its go-get=1 fetch: its status
 // ("reading https://example.com/legion-tls-probe?go-get=1: 404 Not Found", the control), or a page

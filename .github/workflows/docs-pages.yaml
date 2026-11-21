@@ -65,6 +65,7 @@ on:
       - 'docs/site/**'
       # ci-filters.yaml's *legion_command:
       - 'packages/daemon/cmd/legion/*'
+      - 'packages/daemon/cmd/legion/tls-fixtures/*'
       - 'packages/daemon/internal/admit/*'
       - 'packages/daemon/internal/cipher/*'
       - 'packages/daemon/internal/api/*'

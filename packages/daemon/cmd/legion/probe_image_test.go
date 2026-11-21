@@ -170,30 +170,58 @@ func inImage(t *testing.T, contract, omp string) image {
 // says model fallback is off.
 const capabilityMarks = " capabilities=checked model-fallback=off daemon-api-version="
 
-// probeImage runs `legion probe-image` with args, every TLS client and positive control passing.
+// probeImage runs `legion probe-image` with args, every TLS client and positive control passing,
+// its vendored chains asked and no public site reached: the probe's own server still starts and
+// serves, so a run proves the command starts and stops it, and the public sites are reported
+// UNKNOWN with each client held to them.
 func probeImage(args ...string) (int, string, string) {
 	return probeImageWith(passingImageTLSClients, passingTLSPositiveControls, args...)
 }
 
 // probeImageWith runs `legion probe-image` with args, clients in place of the image's TLS clients
-// and controls in place of its positive controls.
-func probeImageWith(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string) error, args ...string) (int, string, string) {
-	previousClients, previousControls := newImageTLSClients, newTLSPositiveControls
+// and controls in place of its positive controls, its vendored chains asked and no public site
+// reached.
+func probeImageWith(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string, string, []tlsSite) error, args ...string) (int, string, string) {
+	return probeImageAt(clients, controls, unaskedPublicTLSSites, args...)
+}
+
+// probeImageAt is probeImageWith with public in place of the public sites' positive controls.
+func probeImageAt(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string, string, []tlsSite) error, public func(context.Context, []string, string) []tlsSite, args ...string) (int, string, string) {
+	previousClients, previousControls, previousVendored, previousPublic := newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites
 	newImageTLSClients, newTLSPositiveControls = clients, controls
+	newVendoredTLSSites, newPublicTLSSites = askedVendoredTLSSites, public
 	defer func() {
-		newImageTLSClients, newTLSPositiveControls = previousClients, previousControls
+		newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites = previousClients, previousControls, previousVendored, previousPublic
 	}()
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), append([]string{"legion", "probe-image"}, args...), &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 
-// passingTLSPositiveControls stands in for positive controls that each accepted their pinned root.
-func passingTLSPositiveControls(context.Context, []string) error { return nil }
+// passingTLSPositiveControls stands in for positive controls that each accepted their root.
+func passingTLSPositiveControls(context.Context, []string, string, []tlsSite) error { return nil }
 
-// theseTLSClients stands in for the image's TLS clients with clients.
+// theseTLSClients stands in for the image's TLS clients with clients, each counted as having reached
+// the probe's server at every site it serves (reachingTLSClient), as a client that reached it is.
 func theseTLSClients(clients ...tlsClient) func(string, []string, string) []tlsClient {
-	return func(string, []string, string) []tlsClient { return clients }
+	return func(string, []string, string) []tlsClient {
+		reaching := make([]tlsClient, len(clients))
+		for index, client := range clients {
+			reaching[index] = reachingTLSClient{client}
+		}
+		return reaching
+	}
+}
+
+// reachingTLSClient is a stand-in client counted as having reached the probe's server at a site it
+// serves (tlsSite.seen) before its run, so the probe reads the stand-in's answer as the site's.
+type reachingTLSClient struct{ tlsClient }
+
+func (c reachingTLSClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
+	if site.seen != nil {
+		site.seen.Add(1)
+	}
+	return c.tlsClient.probe(ctx, site, terms)
 }
 
 // With --role-namespaces the probe runs a role generation's namespaces first
@@ -265,8 +293,23 @@ func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.
 	if !strings.HasPrefix(stdout, strings.Join(table, "\n")+"\n") || !strings.HasSuffix(stdout, okLine) {
 		t.Fatalf("stdout = %q, want the table, TLS decisions, then the OK line %q", stdout, okLine)
 	}
-	if got, want := strings.Count(stdout, "probe-image: TLS client "), len(tlsSites)*len(workerTLSClients); got != want {
-		t.Fatalf("stdout carries %d TLS decisions, want one for each client and site (%d):\n%s", got, want, stdout)
+	// Every client at the fixture chains and the control, each client that verifies a chain during
+	// the handshake at the two vendored chains, and each of the others at the two public sites.
+	afterHandshake := len(tlsChainAfterHandshakeClients())
+	want := len(servedTLSSiteNames)*len(workerTLSClients) + 2*(len(workerTLSClients)-afterHandshake) + 2*afterHandshake
+	if got := strings.Count(stdout, "probe-image: TLS client "); got != want {
+		t.Fatalf("stdout carries %d TLS decisions, want %d:\n%s", got, want, stdout)
+	}
+	for _, site := range unaskedPublicTLSSites(context.Background(), nil, "") {
+		if line := tlsSiteLine(site); !strings.Contains(stdout, line+"\n") {
+			t.Errorf("stdout = %q, want the line %q", stdout, line)
+		}
+		for _, client := range tlsChainAfterHandshakeClients() {
+			line := "probe-image: UNKNOWN: " + client + " against " + tlsSiteURL(site).Hostname() + ": not asked: " + site.unasked
+			if !strings.Contains(stdout, line+"\n") {
+				t.Errorf("stdout = %q, want the line %q", stdout, line)
+			}
+		}
 	}
 }
 
@@ -501,7 +544,9 @@ func TestProbeImageNamesTheUserOfTheSeedItsPointerNames(t *testing.T) {
 
 	code, stdout, stderr := probeImage(img.flags()...)
 
-	want := ")\nprobe-image: nats-nkey-user=" + public + "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
+	// The TLS probe's last line before it is the UNKNOWN line of the last client held to a public
+	// site the stand-ins do not reach (probeImage).
+	want := ": not asked: the test asks no public site\nprobe-image: nats-nkey-user=" + public + "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
 	if code != 0 || !strings.HasSuffix(stdout, want) || strings.Contains(stdout+stderr, seed) {
 		t.Fatalf("probe-image with a user seed = %d %q %q, want the table, then %q, and no seed", code, stdout, stderr, want)
 	}

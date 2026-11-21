@@ -605,8 +605,8 @@ RUN set -eu; \
 # and bq at Debian's root bundle. As the SDK ships, both trust the CA files it bundles, which hold
 # the compromised emSign and AAA roots: measured on 2026-11-18 in an INFRA issue pod, gcloud 589.0.0
 # and bq 2.1.40 accepted the emSign chain. With the property at Debian's bundle both refuse the two
-# chains and reach example.com, which `legion probe-image`'s TLS probe holds them to (the final
-# step). The two properties are defaults: a role's own gcloud configuration or
+# chains, which `legion probe-image`'s TLS probe holds them to (the final step). The two properties
+# are defaults: a role's own gcloud configuration or
 # CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE still overrides them, as a role's AWS_CA_BUNDLE does the
 # image's.
 # /opt is read-only in a pod, so the SDK cannot write the bytecode Python would otherwise compile at
@@ -1525,9 +1525,14 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # with npm and node on PATH (packages/daemon/internal/capabilities/image.go). It then has node, bun,
 # omp's embedded bun, CodeGraph's Node, uv, the AWS CLI, curl, Python, gh, GNU wget, git, go,
 # kubectl, redis-cli and Chromium, and, where each is on PATH, gcloud, bq, az, mise and socat,
-# refuse each compromised chain while reaching the control; a deployment image without one of
-# those five is not refused for it (the probe reports it `absent`), because those five are outside
-# the floor every deployment's image is held to. It
+# refuse each compromised chain while accepting the control, and the public test sites' own chains,
+# all served by the probe's own server on 127.0.0.1, so no public host's name or route decides the
+# build; node, CodeGraph's Node, wget and git, which read a chain only after the handshake, are held
+# to the two public test sites instead, which fail the build only where a client accepts their
+# chains and print `probe-image: UNKNOWN: <client> against <host>` where they cannot be reached
+# (packages/daemon/cmd/legion/tls_probe.go says why). A
+# deployment image without one of those five is not refused for it (the probe reports it
+# `absent`), because those five are outside the floor every deployment's image is held to. It
 # prints the table, one `probe-image: capability <name>: <status> (<detail>)` line per row, every TLS
 # decision, then `probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered
 # agent-models=skipped capabilities=checked model-fallback=on daemon-api-version=<N>` — `on` here is

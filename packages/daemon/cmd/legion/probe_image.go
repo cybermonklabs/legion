@@ -293,31 +293,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 			noVerdict = append(noVerdict, "capability "+string(line.Name)+": not checked")
 		}
 	}
-	// The sites the positive controls reached, where a TLS client's run its own limit ends with no
-	// answer has no verdict (probeTLSClients): every compromised site once the controls passed.
-	var reached []tlsSite
-	var controlsNoVerdict tlsNoVerdicts
-	switch err := newTLSPositiveControls(ctx, environ); {
-	case errors.As(err, &controlsNoVerdict):
-		noVerdict = append(noVerdict, controlsNoVerdict...)
-	case err != nil:
-		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-		return 1
-	default:
-		reached = compromisedTLSSites()
-		fmt.Fprintln(stdout, tlsPositiveControlsLine(reached))
-	}
-	tlsStateDir, removeTLSStateDir, err := newTLSStateDir()
-	if err != nil {
-		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-		return 1
-	}
-	defer removeTLSStateDir()
-	observations, clientsNoVerdict, err := probeTLSClients(ctx, newImageTLSClients(invocation, environ, tlsStateDir), reached)
-	for _, observation := range observations {
-		fmt.Fprintf(stdout, "probe-image: TLS client %s %s: %s (%s)\n",
-			observation.client, observation.site.name, observation.status, observation.detail)
-	}
+	clientsNoVerdict, err := runTLSProbe(ctx, invocation, environ, stdout)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 		return 1
