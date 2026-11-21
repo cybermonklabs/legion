@@ -24,8 +24,9 @@ import (
 // Image is what the image-site checks read.
 type Image struct {
 	// Launch is the Oh My Pi invocation as a shell fragment, run as `exec <Launch> <args>` under
-	// `sh -c`: the probe's --omp or LEGION_OMP_PATH. The shell parses it as a pod's shim parses
-	// its launch, so a prefix in it runs as it would there.
+	// `sh -c`: the probe's --omp or LEGION_OMP_PATH, a path, as one shell word (shellprefix.Word).
+	// The shell parses it as a pod's shim parses its launch, so a prefix a caller puts before the
+	// path runs as it would there.
 	Launch string
 	// Env is the environment the checks run under (PATH, PUPPETEER_EXECUTABLE_PATH, HOME,
 	// OMP_PROFILE, PI_CONFIG_FILES, …): the one the pod's Oh My Pi starts with, after the pod
