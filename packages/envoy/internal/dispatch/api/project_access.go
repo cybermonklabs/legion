@@ -358,20 +358,43 @@ func (s *server) refuseTransferOfAnotherOwnersPasskey(ctx context.Context, tx pg
 // project's owner lock (machineLoginApprovalsFirst): the removal may record the revocation of the
 // person's machine logins, which waits for an approve of theirs the broker has not answered, and
 // so that wait holds up no other write of the project's access. Where passkey sign-in is on, the
-// removal also ends, in its own transaction, the person's unused links of this project and, once
-// no list names them directly any more, a restricted member's account (endUnlistedPasskeySignIn).
+// removal takes the person's links of this project and their address before it removes them
+// (lockPasskeyRemoval), and once no list names them directly any more it ends a restricted
+// member's account (endUnlistedPasskeySignIn).
 func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
 	email := r.PathValue("email")
 	s.ownerWrite(w, r, "", s.machineLoginApprovalsFirst(email), func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+		if err := s.lockPasskeyRemoval(ctx, tx, key, email); err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
 		answer, event, err := s.removePerson(ctx, tx, s.deps.Events, key, access.PrincipalPerson, email, by)
 		if err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
-		if err := s.endUnlistedPasskeySignIn(ctx, tx, key, email); err != nil {
+		if err := s.endUnlistedPasskeySignIn(ctx, tx, email); err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
 		return answer, []model.Event{event}, nil
 	})
+}
+
+// lockPasskeyRemoval takes, in a removal's transaction tx and before it writes anything, what the
+// removal of email from project key's list may end a passkey sign-in under, where passkey sign-in
+// is on (R5): it deletes the person's unused links of key, then takes the address's lock
+// (store.LockAddressTx). That is the order an enrollment takes them in: the link, the address,
+// then the person's sessions' owner lock (store.RecordReachedProjects, through the account
+// binding). The removal itself takes that last lock (access.RemovePrincipal), so it comes after
+// these: taken the other way round, a removal holding the sessions' lock and an enrollment holding
+// the address each wait for the other, and PostgreSQL fails one of them (40P01).
+func (s *server) lockPasskeyRemoval(ctx context.Context, tx pgx.Tx, key, email string) error {
+	if s.deps.Passkeys == nil {
+		return nil
+	}
+	login := model.CanonicalLogin(email)
+	if err := store.DeleteInvitationsTx(ctx, tx, key, login); err != nil {
+		return err
+	}
+	return store.LockAddressTx(ctx, tx, login)
 }
 
 // machineLoginApprovalsFirst is the lock a write that may record the revocation of email's machine
@@ -433,27 +456,21 @@ func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, pe
 }
 
 // endUnlistedPasskeySignIn is a removal's end of a person's passkey sign-in, in its transaction tx,
-// where passkey sign-in is on (R5): it deletes the person's unused links of project key, takes the
-// address's lock (store.LockAddressTx), and when no project's owner is them and no list names them
-// directly any more (access.Listed, read after the removal and under that lock in tx), it ends
-// their account as the owner's Reset does (store.PgPasskeys.EndAccountTx): a new passkey subject,
-// which revokes their personal tokens and owes the broker the old account's revocation, and their
-// sign-in ended and passkeys deleted. So a later owner who names the address names a new account,
-// and nothing the old one made acts for it. A full member's address has nothing to end
+// where passkey sign-in is on (R5), under the address's lock the removal took first
+// (lockPasskeyRemoval): when no project's owner is them and no list names them directly any more
+// (access.Listed, read after the removal and under that lock in tx), it ends their account as the
+// owner's Reset does (store.PgPasskeys.EndAccountTx): a new passkey subject, which revokes their
+// personal tokens and owes the broker the old account's revocation, and their sign-in ended and
+// passkeys deleted. So a later owner who names the address names a new account, and nothing the
+// old one made acts for it. A full member's address has nothing to end
 // (auth.ErrAddressHeldByMember). The lock puts two removals from the last two lists that name the
 // person in order, so the second reads the first's commit and ends the account, with no broker
 // configured too.
-func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, key, email string) error {
+func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, email string) error {
 	if s.deps.Passkeys == nil {
 		return nil
 	}
 	login := model.CanonicalLogin(email)
-	if err := store.DeleteInvitationsTx(ctx, tx, key, login); err != nil {
-		return err
-	}
-	if err := store.LockAddressTx(ctx, tx, login); err != nil {
-		return err
-	}
 	listed, err := access.Listed(ctx, tx, login)
 	if err != nil {
 		return err

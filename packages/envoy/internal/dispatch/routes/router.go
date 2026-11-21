@@ -29,7 +29,9 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
+	"golang.org/x/net/idna"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 
@@ -1189,11 +1191,18 @@ func hostKey(scheme, host string) string {
 	return name + " " + port
 }
 
-// HostName is a host's name as the router compares it (sameHost): lower case, with an IPv6
-// literal's brackets and every trailing dot taken off. Boot compares the outside origin's host with
-// the canonical origin's by it (cmd/dispatch's checkOutsideOrigin), so it refuses every pair the
-// router would read as one host.
+// HostName is a host's name as a browser opens it and the router compares it (sameHost): a name
+// holding a character outside ASCII is first mapped as IDNA lookup maps it (idna.Lookup.ToASCII,
+// UTS #46, as a browser maps a URL's host and identity.WorkspaceAddress an address's domain), so
+// fullwidth letters, ideographic full stops or a U-label name the A-label host; then it is lower
+// case, with an IPv6 literal's brackets and every trailing dot taken off. Boot compares the outside
+// origin's host with the canonical origin's by it (cmd/dispatch's checkOutsideOrigin), so it
+// refuses every pair the router would read as one host.
 func HostName(name string) string {
+	if strings.ContainsFunc(name, func(r rune) bool { return r >= utf8.RuneSelf }) {
+		// A name the lookup refuses is compared as far as it maps: no browser opens it.
+		name, _ = idna.Lookup.ToASCII(name)
+	}
 	return strings.TrimRight(strings.Trim(strings.ToLower(name), "[]"), ".")
 }
 

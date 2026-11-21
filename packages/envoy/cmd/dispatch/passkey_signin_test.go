@@ -535,6 +535,41 @@ func TestBootRefusesAnOutsideOriginOnTheServerURLsHostHoweverSpelled(t *testing.
 	}
 }
 
+// TestBootRefusesAnOutsideOriginOnTheServerURLsHostAsABrowserOpensIt (R5, the tester's red test): a
+// browser opens a URL at its host as UTS #46 maps it (WHATWG URL's domain to ASCII): fullwidth
+// letters, ideographic full stops and the long s map to ASCII, and a U-label to its A-label. So
+// DISPATCH_SERVER_URL written ｏｕｔｓｉｄｅ.example.com is opened at outside.example.com, which sends
+// that Host, which the router answers as an outside origin on that host. Boot refuses each pair
+// below as it refuses the ASCII spellings
+// (TestBootRefusesAnOutsideOriginOnTheServerURLsHostHoweverSpelled). A non-ASCII server host that
+// maps to another host still boots.
+//
+// Control: compare the names without the IDNA lookup mapping (routes.HostName as at 516b5bfa981),
+// and each refused pair boots and the row fails.
+func TestBootRefusesAnOutsideOriginOnTheServerURLsHostAsABrowserOpensIt(t *testing.T) {
+	for _, pair := range []struct{ outside, server string }{
+		{"https://outside.example.com", "https://ｏｕｔｓｉｄｅ.example.com"},
+		{"http://outside.example.com:8080", "http://ＯＵＴＳＩＤＥ.example.com:8080"},
+		{"https://outside.example.com", "http://outside。example。com:8080"},
+		{"https://outside.example.com", "https://outſide.example.com"},
+		{"https://xn--bcher-kva.com", "https://bücher.com"},
+		{"https://xn--bcher-kva.com", "http://BÜCHER.com.:8080"},
+	} {
+		if err := checkOutsideOrigin(pair.outside, pair.server); err == nil || !strings.HasPrefix(err.Error(), "DISPATCH_OUTSIDE_ORIGIN: ") {
+			t.Errorf("checkOutsideOrigin(%s, %s) = %v, want a refusal naming DISPATCH_OUTSIDE_ORIGIN", pair.outside, pair.server, err)
+		}
+	}
+	for _, pair := range []struct{ outside, server string }{
+		{"https://outside.example.com", "https://ｃａｎｏｎ.example.com"},
+		{"https://xn--bcher-kva.com", "https://bucher.com"},
+		{"https://outside.example.com", "https://canon.example.com"},
+	} {
+		if err := checkOutsideOrigin(pair.outside, pair.server); err != nil {
+			t.Errorf("checkOutsideOrigin(%s, %s) = %v, want it to boot: the hosts differ", pair.outside, pair.server, err)
+		}
+	}
+}
+
 // TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff (R5): with DISPATCH_SIGNIN_PASSKEY unset
 // and DISPATCH_OUTSIDE_ORIGIN still set on the same database (a rollback, or an outside origin
 // kept for agents), GET /auth/start and GET /auth/callback still answer 404 at the outside origin:

@@ -350,8 +350,9 @@ func parseOutsideOrigin(raw string, testHooks bool) (string, error) {
 // canonical one (DISPATCH_SERVER_URL, or dispatch.serverUrl in envoy.json): one with no canonical
 // origin, and one on the canonical origin's host, whatever the port, since a browser keeps one
 // host's cookies for every port of it and a request's Host decides which origin answers. The hosts
-// are compared as the router compares them (routes.HostName: no case, no trailing dots), so a
-// canonical host written with a trailing dot is the outside origin's too. Main checks it once the
+// are compared as the router compares them (routes.HostName: a non-ASCII name mapped as IDNA
+// lookup maps it, then no case and no trailing dots), so a canonical host written with a trailing
+// dot, in fullwidth letters or as a U-label is the outside origin's too. Main checks it once the
 // canonical origin resolves; an empty outsideOrigin passes.
 func checkOutsideOrigin(outsideOrigin, serverURL string) error {
 	if outsideOrigin == "" {

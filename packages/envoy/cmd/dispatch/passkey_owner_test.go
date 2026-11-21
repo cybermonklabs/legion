@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -576,5 +577,103 @@ func TestPasskeyAccessFieldsAreTheOwnersAlone(t *testing.T) {
 	off, _ := r.serverWith(t, map[string]string{"DISPATCH_SIGNIN_PASSKEY": ""})
 	if off := call(off, canonicalOrigin, http.MethodGet, "/api/v1/projects/PRIV/access", nil, r.alice); off.Code != http.StatusOK || strings.Contains(off.Body.String(), `"passkeys"`) {
 		t.Fatalf("alice's read with passkey sign-in off: %d %s, want 200 with no passkeys", off.Code, off.Body.String())
+	}
+}
+
+// TestARemovalRacingAFirstEnrollmentCommitsBoth (R5): the person's first enrollment and the
+// owner's removal of them from their last list, run at once through the real routes. The
+// enrollment's finish takes the link, the address, and then, recording the projects the person no
+// longer sees as a restricted member, their sessions' owner lock (store.RecordReachedProjects). It
+// is held after writing the person's row, holding the link and the address, while the owner's
+// DELETE starts; once it goes on, both commit: the finish answers 200 naming the person, the
+// DELETE answers 200, and the removal, which read the lists after the enrollment, ends the account
+// it made (no passkey is left).
+//
+// Control: remove the person before taking the links and the address (deleteProjectAccessPerson
+// calling removePerson before lockPasskeyRemoval, as at 516b5bfa981), and the removal holds the
+// person's sessions' lock while it waits for the link the finish holds, PostgreSQL fails one of
+// them (40P01), and the row fails.
+func TestARemovalRacingAFirstEnrollmentCommitsBoth(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	ctx := context.Background()
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	begun := r.beginEnrollment(r.handler, r.invite(t, outsiderEmail))
+	if begun.Code != http.StatusOK {
+		t.Fatalf("the outsider's enrollment begin answered %d %s, want 200", begun.Code, begun.Body.String())
+	}
+	created := device.register(t, begun.Body.Bytes())
+	exec := func(statement string, args ...any) {
+		t.Helper()
+		if _, err := r.database.Pool.Exec(ctx, statement, args...); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	// The finish waits, after writing the person's row and before recording their projects, for a
+	// lock the test holds.
+	const hold = 386208
+	exec(`create function hold_the_enrollment() returns trigger language plpgsql as $$
+		begin
+			perform pg_advisory_xact_lock_shared(386208);
+			return null;
+		end $$`)
+	exec(`create trigger hold_the_enrollment after update on people for each row execute function hold_the_enrollment()`)
+	t.Cleanup(func() {
+		_, _ = r.database.Pool.Exec(context.Background(), `drop trigger if exists hold_the_enrollment on people`)
+		_, _ = r.database.Pool.Exec(context.Background(), `drop function if exists hold_the_enrollment()`)
+	})
+	held, err := r.database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	if _, err := held.Exec(ctx, `select pg_advisory_lock($1)`, hold); err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			if _, err := held.Exec(ctx, `select pg_advisory_unlock($1)`, hold); err != nil {
+				t.Errorf("release the enrollment: %v", err)
+			}
+		}
+	}
+	defer release()
+	waits := func(want int, what string) {
+		t.Helper()
+		for deadline := time.Now().Add(time.Minute); ; time.Sleep(20 * time.Millisecond) {
+			var n int
+			if err := r.database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
+				where datname = current_database() and wait_event_type = 'Lock'`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n >= want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: %d waits on a lock after a minute, want %d", what, n, want)
+			}
+		}
+	}
+
+	finished := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		finished <- call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/register/finish", created, ceremonyCookie(begun))
+	}()
+	waits(1, "the finish held after writing the outsider's row")
+	removed := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		removed <- r.asOwner(http.MethodDelete, "/api/v1/projects/PRIV/access/people/"+url.PathEscape(outsiderEmail), nil)
+	}()
+	waits(2, "the removal waiting behind the finish")
+	release()
+	if response := <-finished; response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"login":"`+outsiderEmail+`"`) {
+		t.Fatalf("the outsider's enrollment finish answered %d %s, want 200 naming them", response.Code, response.Body.String())
+	}
+	if response := <-removed; response.Code != http.StatusOK {
+		t.Fatalf("alice's removal of the outsider from PRIV answered %d %s, want 200", response.Code, response.Body.String())
+	}
+	if n := r.passkeysOf(t, outsiderEmail); n != 0 {
+		t.Fatalf("after the removal from their last list the outsider holds %d passkey(s), want the enrollment's ended", n)
 	}
 }
