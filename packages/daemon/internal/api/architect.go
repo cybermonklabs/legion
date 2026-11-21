@@ -1474,8 +1474,8 @@ func (s *server) signOff(w http.ResponseWriter, r *http.Request) {
 	if s.acceptance != nil {
 		judge = s.acceptance.SignOffRefusal
 	}
-	s.acceptStatus(w, r, acceptAct{act: "sign_off", issue: req.Issue, status: "retro", accepted: []phase.Phase{phase.Retro, phase.Merging}, judge: judge,
-		written: s.signOffWritten, route: "signoff", fact: func(dispatch.Issue) intake.Fact { return intake.SignOff{Issue: req.Issue} }, response: SignOffResponse{}})
+	s.acceptStatus(w, r, acceptAct{act: "sign_off", issue: req.Issue, status: "retro", judge: judge, written: s.signOffWritten,
+		route: "signoff", fact: func(dispatch.Issue) intake.Fact { return intake.SignOff{Issue: req.Issue} }, response: SignOffResponse{}})
 }
 
 // closeRoot ends the architect's tree while its root has started no phase — admitted, or waiting
@@ -1533,15 +1533,12 @@ func (s *server) closeRoot(w http.ResponseWriter, r *http.Request) {
 
 // acceptAct is one of the two acts that accept or close an issue, as acceptStatus carries it
 // out: act names it in a refusal (sign_off, close_root); status is what it writes in Dispatch
-// (retro, done); accepted is each phase of the workflow in which the record holds the act taken
-// (retro and merging for sign_off, none for close_root, whose done takes the issue out of the
-// workflow); judge is the workflow's refusal of it as the daemon records the issue now, nil to
+// (retro, done); judge is the workflow's refusal of it as the daemon records the issue now, nil to
 // judge nothing (a server built with no workflow); written is the test seam told once the status
 // is written (AfterSignOffStatusWrite), nil for none; route names its fact's id; fact is the fact
 // it applies, given the issue as Dispatch answered the write; and response is its answer.
 type acceptAct struct {
 	act, issue, status, route string
-	accepted                  []phase.Phase
 	judge                     func(ctx context.Context, tx pgx.Tx, issue string) (*intake.Refusal, error)
 	written                   func(ctx context.Context, issue string)
 	fact                      func(written dispatch.Issue) intake.Fact
@@ -1550,18 +1547,21 @@ type acceptAct struct {
 
 // acceptStatus writes the status of an acceptance in Dispatch before the daemon records it:
 //
-//  1. It takes the issue's acceptance lock (server.acceptances) and holds it to its end, so a
-//     second sign_off or close_root of the issue reads Dispatch only once this one has settled,
-//     and never reads this one's write as the status to write back. A lock of the process holds
-//     every acceptance of the project's issues, since one daemon process serves a project: its
-//     Deployment runs one replica with the Recreate strategy, and `legion start` refuses a second
-//     daemon of the project on one machine.
+//  1. It takes the issue's lock as an acceptance (issuelock.Locks.Accept), the one the outbox's
+//     status rows take and the status repair asks of, and holds it to its end. A second sign_off
+//     or close_root of the issue reads Dispatch only once this one has settled, and never reads
+//     this one's write as the status to write back; no status row of the issue writes between
+//     this act's write and its fact, and a row queued before reads the record as the fact left
+//     it; and the status repair leaves the issue alone while this act stands between the two.
 //  2. It reads the status Dispatch shows the issue in, and judges the act as the daemon records
 //     the issue, in a read-only transaction (a.judge), answering the workflow's refusal.
-//  3. It writes a.status with refuse_open_foreign_children (dispatch.Client.SetAcceptanceStatus).
-//     Dispatch refuses it while a child of another project is open under the issue, under the lock
-//     every parent write takes, so no child is filed between its check and its write; the refusal
-//     is answered 409 SIGNOFF_CHILD_OPEN, naming each such child, and nothing is written.
+//  3. It writes a.status with refuse_open_foreign_children (dispatch.Client.SetAcceptanceStatus),
+//     at the sequence of the read of step 2 (writeAtRead). Dispatch refuses it while a child of
+//     another project is open under the issue, under the lock every parent write takes, so no
+//     child is filed between its check and its write; the refusal is answered 409
+//     SIGNOFF_CHILD_OPEN, naming each such child, and nothing is written. Where someone moved the
+//     issue since that read, nothing is written over the move, and the act is answered 409
+//     ISSUE_CHANGED naming the status Dispatch shows now.
 //  4. It tells the test seam, if any, and applies the act's fact.
 //  5. A fact the workflow refuses, or that fails, leaves Dispatch showing an acceptance the daemon
 //     does not record, so the status read in step 2 is written back over the act's own write, and
@@ -1582,7 +1582,7 @@ func (s *server) acceptStatus(w http.ResponseWriter, r *http.Request, a acceptAc
 		s.writeFailure(w, r, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
 		return
 	}
-	defer s.acceptances.lock(a.issue)()
+	defer s.issueLocks.Accept(a.issue)()
 	shown, err := s.dispatch.GetIssue(r.Context(), a.issue)
 	if err != nil {
 		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED",
@@ -1600,13 +1600,23 @@ func (s *server) acceptStatus(w http.ResponseWriter, r *http.Request, a acceptAc
 			return
 		}
 	}
-	written, err := s.dispatch.SetAcceptanceStatus(r.Context(), a.issue, a.status)
+	written, now, err := s.writeAtRead(r.Context(), shown, func(ctx context.Context, read dispatch.Issue) (dispatch.Issue, error) {
+		return s.dispatch.SetAcceptanceStatus(ctx, read, a.status)
+	})
 	if children, open := dispatch.ForeignChildrenOpen(err); open {
 		s.writeFailure(w, r, http.StatusConflict, "SIGNOFF_CHILD_OPEN", foreignChildOpenRefusal(a, children, err))
 		return
 	}
 	var dispatchError *dispatch.Error
 	switch {
+	case errors.Is(err, errStatusMoved):
+		s.writeFailure(w, r, http.StatusConflict, "ISSUE_CHANGED", fmt.Sprintf("Dispatch shows %s %s, moved since this %s read it at %s, so the %s write was not made over that move and nothing was recorded; "+
+			"read the issue, and make the %s again only where it still stands for it", a.issue, now.Status, a.act, shown.Status, a.status, a.act))
+		return
+	case errors.Is(err, errChangedUnderEachRead):
+		s.writeFailure(w, r, http.StatusConflict, "ISSUE_CHANGED", fmt.Sprintf("%s changed in Dispatch under each of the %d %s writes of its %s, so none was made and nothing was recorded; retry %s",
+			a.issue, statusWriteAttempts, a.status, a.act, a.act))
+		return
 	case errors.As(err, &dispatchError):
 		s.writeFailure(w, r, http.StatusBadGateway, dispatchError.Code, fmt.Sprintf("Dispatch refused the %s write of %s's %s, so nothing was recorded: %s", a.status, a.issue, a.act, dispatchError.Message))
 		return
@@ -1646,11 +1656,45 @@ func (s *server) judgeReadOnly(ctx context.Context, issue string, judge func(con
 	return refusal, tx.Commit(ctx)
 }
 
-// acceptanceWriteBacks bounds how often one write back is refused because the issue changed since
-// the sequence it wrote at (ISSUE_CHANGED) and reads the issue again: every event moves the
-// sequence, a message on the issue among them, so a refusal usually says only that the read was
-// overtaken, as for the outbox's status row (statusWriteReads).
-const acceptanceWriteBacks = 3
+// statusWriteAttempts bounds how often one write of an acceptance's status, or of its write back,
+// is refused because the issue changed since the read it was made at (ISSUE_CHANGED) and reads
+// the issue again: every event moves the sequence, a message on the issue among them, so a refusal
+// usually says only that the read was overtaken, as for the outbox's status row
+// (statusWriteReads).
+const statusWriteAttempts = 3
+
+// errStatusMoved is writeAtRead's answer where the issue's status moved off the one its first read
+// showed, and errChangedUnderEachRead where the issue changed under each of its writes.
+var (
+	errStatusMoved          = errors.New("the issue's status moved since it was read")
+	errChangedUnderEachRead = errors.New("the issue changed under each write")
+)
+
+// writeAtRead makes write at the sequence of read, and again at the sequence of a fresh read each
+// time Dispatch refuses it because the issue changed (ISSUE_CHANGED), while that fresh read still
+// shows read's status: an event that kept the status, a message, leaves the write to make. It
+// answers the issue as Dispatch answered the write and the last read. It answers errStatusMoved,
+// with the read that shows another status, where someone moved the issue since, which no write
+// here lands over; errChangedUnderEachRead after statusWriteAttempts refusals; and any other error
+// as write or the read answered it.
+func (s *server) writeAtRead(ctx context.Context, read dispatch.Issue, write func(context.Context, dispatch.Issue) (dispatch.Issue, error)) (dispatch.Issue, dispatch.Issue, error) {
+	from := read.Status
+	for range statusWriteAttempts {
+		written, err := write(ctx, read)
+		var refusal *dispatch.Error
+		if !errors.As(err, &refusal) || refusal.Code != "ISSUE_CHANGED" {
+			return written, read, err
+		}
+		reread, err := s.dispatch.GetIssue(ctx, read.Key)
+		if err != nil {
+			return dispatch.Issue{}, read, fmt.Errorf("read %s again after it changed under the write: %w", read.Key, err)
+		}
+		if read = reread; read.Status != from {
+			return dispatch.Issue{}, read, errStatusMoved
+		}
+	}
+	return dispatch.Issue{}, read, errChangedUnderEachRead
+}
 
 // writeBack writes the status Dispatch showed before the act's own write (shown) back in Dispatch
 // once the act's fact did not take, and applies that write to the record as the daemon's own
@@ -1663,20 +1707,18 @@ const acceptanceWriteBacks = 3
 //
 //   - Nothing, where the record no longer holds the issue in the workflow (record.InWorkflow): the
 //     issue was closed since, by that event or by someone, and the done Dispatch shows is right.
-//   - Nothing, where the record holds the act taken (a.accepted): another acceptance of the issue
-//     recorded since took it to retro, whose status Dispatch shows already. Any other phase the
-//     record moved the issue to holds no acceptance, so the act's write is written back: the
-//     admission pass's move to awaiting_children, which writes no status of its own
+//   - Nothing, where the record holds the issue accepted (record.Accepted): another acceptance of
+//     the issue recorded since took it to retro, whose status Dispatch shows already. Any other
+//     phase the record moved the issue to holds no acceptance, so the act's write is written
+//     back: the admission pass's move to awaiting_children, which writes no status of its own
 //     (workflow.PhaseStatus), or the start of a root a close was judged at admitted on, which
 //     the event of the close's own done would otherwise take out of the workflow. A move that
 //     writes a status of its own finds Dispatch back at the status it read, or the status repair
 //     queues it at its next run (workflow's correctStatuses).
-//   - Only at the sequence of a read that shows the act's status (dispatch.Client.SetStatusAt), the
-//     first being the act's own write's answer (written), so Dispatch refuses the write back
-//     (ISSUE_CHANGED) where anything was recorded on the issue since. It then reads the issue
-//     again, and writes back at that read's sequence while the read still shows the act's status:
-//     an event that kept it, a message, leaves the act's write standing. A read at any other
-//     status is someone's later move, a person's close among them, and is left as it is.
+//   - Only at the sequence of a read that shows the act's status (writeAtRead), the first being
+//     the act's own write's answer (written), so Dispatch refuses the write back (ISSUE_CHANGED)
+//     where anything was recorded on the issue since. A read at another status is someone's later
+//     move, a person's close among them, and is left as it is.
 func (s *server) writeBack(ctx context.Context, a acceptAct, shown, written dispatch.Issue) string {
 	recorded, err := s.recordedIssue(ctx, a.issue)
 	if err != nil {
@@ -1686,7 +1728,7 @@ func (s *server) writeBack(ctx context.Context, a acceptAct, shown, written disp
 	if recorded == nil || !record.InWorkflow(*recorded) {
 		return ""
 	}
-	if slices.Contains(a.accepted, recorded.Phase) {
+	if record.Accepted(*recorded) {
 		s.log.Info("api: an acceptance's fact did not take, and the record holds the issue accepted since; its status write stands",
 			"issue", a.issue, "act", a.act, "wrote", a.status, "phase", recorded.Phase)
 		return ""
@@ -1696,38 +1738,36 @@ func (s *server) writeBack(ctx context.Context, a acceptAct, shown, written disp
 		return fmt.Sprintf(" Dispatch shows %s %s, which the daemon does not record, since Dispatch's read before the write named no status to write back", a.issue, a.status)
 	}
 	read := written
-	for attempt := range acceptanceWriteBacks {
-		if attempt > 0 || read.LastSeq <= 0 {
-			if read, err = s.dispatch.GetIssue(ctx, a.issue); err != nil {
-				s.log.Error("api: an acceptance's fact did not take, and the issue could not be read again to write its status back", "issue", a.issue, "act", a.act,
-					"wrote", a.status, "back", shown.Status, "error", err)
-				return fmt.Sprintf(" Dispatch shows %s %s, which the daemon does not record, since the issue could not be read again to write %s back: %v", a.issue, a.status, shown.Status, err)
-			}
-			if read.Status != a.status {
-				s.log.Info("api: an acceptance's fact did not take, and Dispatch was moved off its status since its write; nothing is written back",
-					"issue", a.issue, "act", a.act, "wrote", a.status, "dispatch", read.Status)
-				return ""
-			}
-		}
-		back, err := s.dispatch.SetStatusAt(ctx, read, shown.Status)
-		var refusal *dispatch.Error
-		if errors.As(err, &refusal) && refusal.Code == "ISSUE_CHANGED" {
-			continue
-		}
-		if err != nil {
-			s.log.Error("api: an acceptance's fact did not take, and the status it wrote in Dispatch could not be written back", "issue", a.issue, "act", a.act,
+	if read.LastSeq <= 0 {
+		if read, err = s.dispatch.GetIssue(ctx, a.issue); err != nil {
+			s.log.Error("api: an acceptance's fact did not take, and the issue could not be read to write its status back", "issue", a.issue, "act", a.act,
 				"wrote", a.status, "back", shown.Status, "error", err)
-			return fmt.Sprintf(" Dispatch shows %s %s, which the daemon does not record, since writing %s back failed: %v", a.issue, a.status, shown.Status, err)
+			return fmt.Sprintf(" Dispatch shows %s %s, which the daemon does not record, since the issue could not be read to write %s back: %v", a.issue, a.status, shown.Status, err)
 		}
-		if failure := s.recordOwnStatusWrite(ctx, back); failure != nil {
-			s.log.Warn("api: an acceptance's status was written back in Dispatch, but the record did not take the write; the event of the acceptance's own write may still reach it",
-				"issue", a.issue, "act", a.act, "status", shown.Status, "code", failure.code, "reason", failure.message)
-		}
+	}
+	if read.Status != a.status {
+		s.log.Info("api: an acceptance's fact did not take, and Dispatch was moved off its status since its write; nothing is written back",
+			"issue", a.issue, "act", a.act, "wrote", a.status, "dispatch", read.Status)
 		return ""
 	}
-	s.log.Error("api: an acceptance's fact did not take, and the issue changed under each write back of its status", "issue", a.issue, "act", a.act,
-		"wrote", a.status, "back", shown.Status, "attempts", acceptanceWriteBacks)
-	return fmt.Sprintf(" Dispatch shows %s %s, which the daemon does not record, since the issue changed under each of the %d writes of %s back", a.issue, a.status, acceptanceWriteBacks, shown.Status)
+	back, now, err := s.writeAtRead(ctx, read, func(ctx context.Context, read dispatch.Issue) (dispatch.Issue, error) {
+		return s.dispatch.SetStatusAt(ctx, read, shown.Status)
+	})
+	switch {
+	case errors.Is(err, errStatusMoved):
+		s.log.Info("api: an acceptance's fact did not take, and Dispatch was moved off its status since its write; nothing is written back",
+			"issue", a.issue, "act", a.act, "wrote", a.status, "dispatch", now.Status)
+		return ""
+	case err != nil:
+		s.log.Error("api: an acceptance's fact did not take, and the status it wrote in Dispatch could not be written back", "issue", a.issue, "act", a.act,
+			"wrote", a.status, "back", shown.Status, "error", err)
+		return fmt.Sprintf(" Dispatch shows %s %s, which the daemon does not record, since writing %s back failed: %v", a.issue, a.status, shown.Status, err)
+	}
+	if failure := s.recordOwnStatusWrite(ctx, back); failure != nil {
+		s.log.Warn("api: an acceptance's status was written back in Dispatch, but the record did not take the write; the event of the acceptance's own write may still reach it",
+			"issue", a.issue, "act", a.act, "status", shown.Status, "code", failure.code, "reason", failure.message)
+	}
+	return ""
 }
 
 // foreignChildOpenRefusal is the SIGNOFF_CHILD_OPEN refusal of a's act that Dispatch's refusal of

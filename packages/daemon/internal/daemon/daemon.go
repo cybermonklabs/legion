@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
@@ -2816,8 +2817,12 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// and answers every pause and resume PAUSE_UNAVAILABLE.
 	var pauses api.PauseService
 	// The workflow's engine judges sign_off and close_root before either writes its status in
-	// Dispatch; a daemon without one leaves it the nil interface, which judges nothing.
+	// Dispatch; a daemon without one leaves it the nil interface, which judges nothing. The
+	// issue locks are the workflow's own (workflowRuntime.issueLocks), which its outbox and its
+	// status repair share with those two routes; a daemon without a workflow has no other writer
+	// of an issue's status to coordinate with, and the server takes a set of its own.
 	var acceptance api.AcceptanceJudge
+	var issueLocks *issuelock.Locks
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
@@ -2827,7 +2832,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		consumerLag = workflow.consumers.Lag
 		pauses = workflow.pauses.service
 		architectStalls = workflow.admission.ArchitectStallArms
-		acceptance = workflow.engine
+		acceptance, issueLocks = workflow.engine, workflow.issueLocks
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2914,6 +2919,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		GateRegistrationRead:    p.gateRegistrationRead,
 		AfterSignOffStatusWrite: p.afterSignOffStatusWrite,
 		Acceptance:              acceptance,
+		IssueLocks:              issueLocks,
 		Pause:                   pauses,
 	})
 

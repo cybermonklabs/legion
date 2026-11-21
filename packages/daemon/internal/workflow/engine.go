@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -58,6 +59,12 @@ type Config struct {
 	// one spelling of the project and a wake can file no row under another. Nil, as in every
 	// engine built without the pod tables, wakes nothing and records no listener report.
 	Pods Pods
+	// IssueLocks is the daemon's one coordination of the writers of an issue's Dispatch status
+	// (issuelock.Locks), which the API's sign_off and close_root hold from their read of Dispatch
+	// until their fact commits. The status repair asks it, and never waits on it, since it runs
+	// under the fact lock those acts' facts wait for (correctStatuses). Nil, as in every engine a
+	// test builds without one, has no acceptance under way.
+	IssueLocks *issuelock.Locks
 	// Steps are the design-gate steps the deployment gates (config.Gates.Steps), in the order a
 	// root's architect takes them. Every hold the gate puts on a tree's work reads the whole list
 	// (classify.DesignGatesOpen), and the empty list gates no step, which is `gates.design: off`.

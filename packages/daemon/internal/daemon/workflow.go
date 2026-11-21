@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/issuelock"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -58,6 +59,11 @@ type workflowRuntime struct {
 	admission *admit.Admission
 	handlers  []intake.Handler
 	dispatch  dispatch.Client
+	// issueLocks is the daemon's one coordination of the writers of an issue's Dispatch status
+	// (issuelock.Locks), shared by the API's sign_off and close_root, the outbox's status rows and
+	// the engine's status repair: one daemon process serves the project, so a lock of the process
+	// holds every writer of its issues' statuses.
+	issueLocks *issuelock.Locks
 	// gatedSteps are the design-gate steps the project gates, which the send-time narrowing of a
 	// held architect task reads: a catch-up it writes to another tree's architect is composed
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
@@ -708,6 +714,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
 	// runtime's passes read too (dispatch://INFRA-3759).
 	engineCfg.Clock = clock
+	// The status repair asks these locks whether a sign_off or a close_root is under way on an
+	// issue, which the API's routes and the outbox's status rows share (issueLocks).
+	w.issueLocks = &issuelock.Locks{}
+	engineCfg.IssueLocks = w.issueLocks
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
 	// The project's declared experiments decide what each unit admission records is drawn for.
@@ -1736,6 +1746,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.hold, w.outbox.beforeStatusWrite = supervision.plan.holdOutbox, supervision.plan.beforeOutboxStatusWrite
+	w.outbox.issueLocks = w.issueLocks
 	w.dropConsumedEvent = supervision.plan.dropConsumedEvent
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow

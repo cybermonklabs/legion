@@ -34,25 +34,33 @@ import (
 //     the outbox writes a status only where Dispatch shows the row's observed or target status
 //     (daemon's (*outbox).status), which an empty observed status never matches;
 //  4. the status recorded and the phase's status agree, so there is nothing to correct;
-//  5. its tree's root is missing from the records this run reads, or that tree is not running by
+//  5. a sign_off or a close_root of the issue is under way in the daemon's API
+//     (issuelock.Locks.Accepting): the route holds the issue's lock from its read of Dispatch
+//     until its fact commits, and between its own write in Dispatch and that commit the record
+//     still stands where the act found it, while the status Dispatch shows, once its event is
+//     applied, is the act's. A correction queued then would write that phase's status over the
+//     act's own write, and stand once the fact records the acceptance. The question never waits:
+//     this runs under the fact lock the act's fact waits for. Its key goes in the run line's
+//     accepting list;
+//  6. its tree's root is missing from the records this run reads, or that tree is not running by
 //     the one rule every reader of the question asks (record.TreeRuns, read here through
 //     record.RunningRoots): its lifecycle is not open under the workflow, the root lingers after
 //     its close, or the root is itself still waiting in the line for the tree to be opened. Its
 //     key goes in the run line's passed-over list;
-//  6. it already has an unfinished dispatch_status row of any kind (PendingStatusWrites), so a
+//  7. it already has an unfinished dispatch_status row of any kind (PendingStatusWrites), so a
 //     write is on its way. Its key goes in the run line's pending list.
 //
-// Rules 5 and 6 come last, and in that order, because the run line names them as the issues the
-// run would otherwise have repaired, which holds only once every other rule has been applied.
+// Rules 5, 6 and 7 come last, and in that order, because the run line names them as the issues
+// the run would otherwise have repaired, which holds only once every other rule has been applied.
 //
 // Each repair writes its own log line, and every run writes one run line, including a run that
 // queued nothing. Those two lines are all a reader has: the daemon's state carries
 // record.Issue.Status, not record.Issue.DispatchStatus, and this repair adds no field to it. So an
-// issue whose board status still differs after a run is one of four things, and the log says which:
-// it is in the run line's passed-over list, it is in its pending list, it has a repair line of its
-// own, or it has none of the three — which by the rules above means its record holds a Dispatch
-// status equal to its phase's, so what Dispatch shows and what the record says have come apart and
-// the record is what to look at.
+// issue whose board status still differs after a run is one of five things, and the log says which:
+// it is in the run line's accepting list, its passed-over list or its pending list, it has a
+// repair line of its own, or it has none of the four — which by the rules above means its record
+// holds a Dispatch status equal to its phase's, so what Dispatch shows and what the record says
+// have come apart and the record is what to look at.
 //
 // The repair tells nobody. The record cannot tell a person's move on the board from a write the
 // daemon lost, so any notice would name both, and most of them would be the person's own move
@@ -67,7 +75,7 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 	for _, row := range pendingWrites {
 		hasPendingWrite[row.Issue] = true
 	}
-	passedOver, pending := []string{}, []string{}
+	passedOver, pending, accepting := []string{}, []string{}, []string{}
 	queued := 0
 	for _, issue := range issues {
 		if !record.InWorkflow(issue) {
@@ -75,6 +83,10 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 		}
 		want := PhaseStatus(issue.Phase)
 		if want == "" || issue.DispatchStatus == "" || record.OutOfWorkflow(issue.DispatchStatus) || issue.DispatchStatus == want {
+			continue
+		}
+		if e.cfg.IssueLocks.Accepting(issue.Key) {
+			accepting = append(accepting, issue.Key)
 			continue
 		}
 		if _, runs := running[issue.Tree]; !runs {
@@ -113,8 +125,9 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 	// returned the issues in.
 	slices.Sort(passedOver)
 	slices.Sort(pending)
+	slices.Sort(accepting)
 	e.logOnCommit(ctx, "workflow: the status repair ran", "trigger", trigger, "queued", queued,
-		"passedOver", passedOver, "pending", pending)
+		"passedOver", passedOver, "pending", pending, "accepting", accepting)
 	return nil
 }
 

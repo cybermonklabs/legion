@@ -154,18 +154,22 @@ func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string
 	return response.issue(), nil
 }
 
-// SetAcceptanceStatus is SetStatus for the daemon's own acceptance of an issue — retro, which
+// SetAcceptanceStatus is SetStatusAt for the daemon's own acceptance of an issue — retro, which
 // sign_off writes, or done, which close_root writes — sent with refuse_open_foreign_children, so
 // Dispatch refuses it while a child of another project is open under the issue. That refusal is
 // a 409 FOREIGN_CHILD_OPEN *Error whose Issues name each such child with its project and status.
 // Dispatch takes the field beside retro or done alone, and holds the lock every parent write takes
-// across its check and its write, so no child is filed under the issue between the two.
-func (c *HTTPClient) SetAcceptanceStatus(ctx context.Context, key, status string) (Issue, error) {
+// across its check and its write, so no child is filed under the issue between the two. The write
+// is fenced on the sequence of the caller's read (expected_sequence), as SetStatusAt's is:
+// Dispatch refuses it with ISSUE_CHANGED when anything was recorded on the issue since, so a
+// person's move after that read is never written over.
+func (c *HTTPClient) SetAcceptanceStatus(ctx context.Context, issue Issue, status string) (Issue, error) {
 	var response issueResponse
-	if err := c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(key), daemonWrite{
+	if err := c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(issue.Key), daemonWrite{
 		Status:                    status,
+		ExpectedSequence:          issue.LastSeq,
 		RefuseOpenForeignChildren: true,
-		Actor:                     daemonActor(key),
+		Actor:                     daemonActor(issue.Key),
 	}, &response); err != nil {
 		return Issue{}, err
 	}
