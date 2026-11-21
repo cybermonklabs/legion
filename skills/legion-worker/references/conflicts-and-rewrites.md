@@ -8,7 +8,7 @@ The implementer merges the base into the issue branch only when GitHub reports i
 
 A tree is a root issue and the issues beneath it. When another tree's open pull request changes files yours changes, the two race: the second to merge meets a conflict. Before you race it, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
 
-1. In `implementing`, commit your own edits first and point the bookmark at them (`jj -R "$LEGION_WORKSPACE" bookmark set legion/<KEY> -r @-`), so the merge carries them; if jj refuses the move as not forward, stop and tell the architect. In any other phase, commit nothing but the merge (`skill://legion-worker/references/handoff-and-completion.md`, "When your phase ends"). Then merge the bookmark, never `@`, with the base, in one new commit, and put `@` on top of it. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
+1. In `implementing`, commit your own edits first and point the bookmark at them (`jj -R "$LEGION_WORKSPACE" bookmark set legion/<KEY> -r @-`), so the merge carries them; if jj refuses the move, stop and tell the architect. In any other phase, commit nothing but the merge (`skill://legion-worker/references/handoff-and-completion.md`, "When your phase ends"). Then merge the bookmark, never `@`, with the base, in one new commit, and put `@` on top of it. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 
    ```bash
    base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
@@ -27,7 +27,7 @@ A tree is a root issue and the issues beneath it. When another tree's open pull 
 
    Skip it when there is nothing to resolve. `@-` is then the merge, with its message and your resolutions, which step 4 pushes. When `@` still holds a path, leave it there, tell the architect each such path and `@`'s change id, and run your role prompt's turn-start rule before your next commit. `@` has no description, so the daemon's adoption of the working copy before it sends a role a phase task keeps it as `@` (the adoption puts a new change on a described `@` only), and the next role that commits sets it aside at its turn start.
 
-   When one path holds both your resolution and another role's edit, push nothing, and tell the architect.
+   When one path holds both your resolution and an edit the merge must not carry, push nothing, and tell the architect.
 3. A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round. A finding's class is the defect it named wherever the head holds it, not the one line it cited: search the whole head, not the lines the merge changed alone.
 4. Push the merge as any code push, build the branch, and record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict.
 5. Post one PR comment with the Legion footer: `forward merge <old-tip-sha> → <new-tip-sha>; <the condition it meets>`, with each class search beside it. In a parent's last round, end it with `parent's last round: full test round`.
