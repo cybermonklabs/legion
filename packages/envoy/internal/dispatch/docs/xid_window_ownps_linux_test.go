@@ -15,15 +15,23 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// A window whose own goroutines take every P is not judged as passing: Measure's idle Ps are idle
+// A window whose own goroutines take every P is never judged a pass: Measure's idle Ps are idle
 // only while the operation leaves them so, and a wait on the runtime may be the code's own work as
 // well as the machine's. Here, after the window's first statement, xidOwnPsPerP goroutines for
 // each P the operation has, and one more, spin, and the transaction's goroutine gives up its turn
 // to them until xidOwnPsSpin has passed: it waits runnable on the runtime while they hold every P.
-// The rig cannot tell whose wait that is, so the window is UNKNOWN, a rig problem, never a pass.
-// Taking that wait out as the runtime's, the rig before this row read such a gap - a reviewer's
-// forcing of 145 workers at 72 Ps, 50.125 ms on the clock and 1.826 ms of the thread's CPU - as
-// 0.159 ms made, and the window kept D6 (2026-11-21).
+// The rig cannot tell whose wait that is, so the window keeps D6 only as UNKNOWN, a rig problem;
+// or it breaks D6 by the rig's own rules, which count as the code's what the rig cannot place. The
+// row takes either, and logs which, and fails by name on a pass. It does not ask for UNKNOWN alone:
+// under load the rig's conservative rules can break D6 first - its poller, a goroutine of the same
+// process, starved by the row's own spinners, places the window's start late, and the window's
+// thread may queue for its loaded CPU outside the runtime's wait - so UNKNOWN alone made the
+// verdict depend on the load: 18 of 400 runs broke D6 so, the go test pinned to 8 CPUs with 8 busy
+// loops on each (2026-11-21). The UNKNOWN path itself is proven deterministically by
+// storetest's TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown and
+// TestAWaitOnAPHandedToALockedThreadDecidesNothing. Taking the wait out as the runtime's, the rig
+// before this row read such a gap - a reviewer's forcing of 145 workers at 72 Ps, 50.125 ms on the
+// clock and 1.826 ms of the thread's CPU - as 0.159 ms made, and the window kept D6 (2026-11-21).
 //
 // The spinners run on threads of their own kept off the CPU the window's thread is pinned to. On
 // that CPU they made the window's thread queue for it outside the runtime's wait, where the rig
@@ -119,8 +127,15 @@ func TestXidWindowCannotJudgeAWaitWhileTheOperationsOwnGoroutinesHoldEveryP(t *t
 			storetest.XidMillis(gap.GoRunnable), xidOwnPsSpin, window.Detail())
 	}
 	err := report.Err()
-	if err == nil || !strings.Contains(err.Error(), "UNKNOWN: backend") || !strings.Contains(err.Error(), "keeps D6 only if its goroutine's waits on the runtime") {
-		t.Fatalf("a gap whose goroutine waited while the operation's own goroutines held every P: verdict %v, want the window UNKNOWN", err)
+	switch {
+	case err == nil:
+		t.Fatalf("a gap whose goroutine waited while the operation's own goroutines held every P was judged a pass, want the window UNKNOWN or a D6 violation")
+	case strings.Contains(err.Error(), "XID WINDOW VIOLATION"):
+		t.Logf("not a pass: the window broke D6 by the rig's rules\n%v", err)
+	case strings.Contains(err.Error(), "UNKNOWN: backend") && strings.Contains(err.Error(), "keeps D6 only if its goroutine's waits on the runtime"):
+		t.Logf("not a pass: the window is UNKNOWN")
+	default:
+		t.Fatalf("a gap whose goroutine waited while the operation's own goroutines held every P: verdict %v, want the window UNKNOWN or a D6 violation", err)
 	}
 }
 

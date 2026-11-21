@@ -261,8 +261,13 @@ func threadCPU(t *testing.T) time.Duration {
 // and its locked thread sleeps all that time. Read off the thread's clocks alone, that sleep is
 // time the code made, over the bound. Read off the execution trace it is the runtime's wait, but
 // whose the rig cannot tell: the spinner is the operation's own goroutine, and no wait on the
-// runtime can be laid to the machine (storetest.XidGap.Made), so the window is UNKNOWN, a
-// rig problem, and neither passes nor breaks D6. A receive on a channel the code waits on for as
+// runtime can be laid to the machine (storetest.XidGap.Made), so the window is never judged a
+// pass: it keeps D6 only as UNKNOWN, a rig problem, or breaks D6 by the rig's own rules, which
+// count as the code's what the rig cannot place - under load, the thread's queue for its CPU
+// outside the runtime's wait, or a window's start its starved poller places late. The arm takes
+// either, logs which, and fails by name on a pass; the UNKNOWN path itself is proven
+// deterministically by storetest's TestAWindowThatKeepsD6OnlyOnARuntimeWaitIsUnknown and
+// TestAWaitOnAPHandedToALockedThreadDecidesNothing. A receive on a channel the code waits on for as
 // long is a wait the code asked for (GoWaiting), and breaks D6. Each arm first holds that the wait
 // happened: its gap, read off the thread's clocks alone, is over the bound. The one P is set
 // inside the measured operation, since Measure runs its operation with idle Ps beside it.
@@ -292,11 +297,16 @@ func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 			}
 			err := report.Err()
 			switch {
-			case !probe.breaks && (err == nil || !strings.Contains(err.Error(), "UNKNOWN: backend") ||
-				strings.Contains(err.Error(), "XID WINDOW VIOLATION")):
-				t.Fatalf("a wait for the runtime while the operation's own spinner held the one P: verdict %v, want the window UNKNOWN\n%s", err, window.Detail())
-			case probe.breaks && (len(report.Problems) > 0 || err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
-				!strings.Contains(err.Error(), "follows statement 0: insert into projects")):
+			case !probe.breaks && err == nil:
+				t.Fatalf("a wait for the runtime while the operation's own spinner held the one P was judged a pass, want the window UNKNOWN or a D6 violation\n%s", window.Detail())
+			case !probe.breaks && strings.Contains(err.Error(), "XID WINDOW VIOLATION"):
+				t.Logf("not a pass: the window broke D6 by the rig's rules\n%v", err)
+			case !probe.breaks && strings.Contains(err.Error(), "UNKNOWN: backend"):
+				t.Logf("not a pass: the window is UNKNOWN")
+			case !probe.breaks:
+				t.Fatalf("a wait for the runtime while the operation's own spinner held the one P: verdict %v, want the window UNKNOWN or a D6 violation\n%s", err, window.Detail())
+			case len(report.Problems) > 0 || err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
+				!strings.Contains(err.Error(), "follows statement 0: insert into projects"):
 				t.Fatalf("a %s wait on a channel: verdict %v, want a D6 violation after the insert\n%s", rigInjectedGap, err, window.Detail())
 			}
 			t.Logf("%s\n%s", window.Summary(), window.Detail())
