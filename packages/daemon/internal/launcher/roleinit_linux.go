@@ -573,16 +573,23 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 			roleLogf(cfg, "role-init: %v", err)
 		}
 		// Each pass reaps as it counts, so the zombies this init adopts as the role's processes
-		// end are not counted as processes that keep the wait running.
+		// end are not counted as processes that keep the wait running. How the wait ended goes to
+		// the role's log: whether the role's processes left on the signal, or the bound came first
+		// and the kill below ends what is left, which is where a git or a jj can leave a lock.
 		ticks := time.NewTicker(namespaceReapPoll)
-		drained := time.Now().Add(roleNamespaceDrain)
+		began := time.Now()
+		drained := began.Add(roleNamespaceDrain)
 		for draining := true; draining; {
 			remaining, err := reapNamespace()
 			switch {
 			case err != nil:
 				roleLogf(cfg, "role-init: %v", err)
 				draining = false
-			case !remaining, !time.Now().Before(drained):
+			case !remaining:
+				roleLogf(cfg, "role-init: %s %s after its SIGTERM", roleDrainEmptied, time.Since(began).Round(time.Millisecond))
+				draining = false
+			case !time.Now().Before(drained):
+				roleLogf(cfg, "role-init: %s %s after its SIGTERM, the drain's bound of %s: killing them", roleDrainBounded, time.Since(began).Round(time.Millisecond), roleNamespaceDrain)
 				draining = false
 			default:
 				<-ticks.C
