@@ -135,7 +135,7 @@ jobs:
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
       # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+        run: .github/scripts/apt-install.sh --budget 300 tmux
 
       # The workspace and boundary tests drive a real jj, the one the worker image ships (its
       # working-copy filters are among what they plant), and the daemon resolves jj at boot and

@@ -128,12 +128,14 @@ jobs:
     runs-on: ubuntu-24.04
     # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a job's
     # budget is the sum of its step budgets plus the measured maximum of the steps without one.
-    # The test step's budget is the matrix's step_minutes. The steps without one, measured together
-    # over every completed leg of the runs the test step's comment names, took at most 37 s in a
-    # web leg (run 44097039165, round 2), 29 s in a web-cold leg (run 44449111716, round 2) and
-    # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1, 1 and
-    # 3 minutes: 16 + 1 = 17 minutes for a web leg, 2 + 1 = 3 for a web-cold leg and 30 + 3 = 33
-    # for a harness leg, the matrix's job_minutes. The slowest whole jobs took 845 s for a web leg
+    # The test step's budget is the matrix's step_minutes, and a harness leg's Install zsh step has
+    # one too: the 300 s it hands .github/scripts/apt-install.sh, which that script never
+    # outlasts. The steps without one, measured together over every completed leg of the runs the
+    # test step's comment names, took at most 37 s in a web leg (run 44097039165, round 2), 29 s
+    # in a web-cold leg (run 44449111716, round 2) and 151 s in a harness leg (run 44473658176,
+    # round 3), of which 125 s were the zsh install, so 26 s without it: 1, 1 and 1 minutes.
+    # 16 + 1 = 17 minutes for a web leg, 2 + 1 = 3 for a web-cold leg and 30 + 5 + 1 = 36 for a
+    # harness leg, the matrix's job_minutes. The slowest whole jobs took 845 s for a web leg
     # (run 44465013263, round 3), 125 s for a web-cold leg (run 44360597415, round 1) and 1,575 s
     # for a harness leg (run 44389203951, round 1).
     timeout-minutes: ${{ matrix.job_minutes }}
@@ -159,7 +161,7 @@ jobs:
           - lane: harness
             reruns: 20
             step_minutes: 30
-            job_minutes: 33
+            job_minutes: 36
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -172,7 +174,7 @@ jobs:
       # image has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
       - name: Install zsh
         if: matrix.lane == 'harness'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+        run: .github/scripts/apt-install.sh --budget 300 zsh
       # The harness rows that ci-job-dispatch-ui.yaml skips for want of a database repeat here,
       # as they run in a pod: e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts's "psql
       # reads its own stack's database", and the rows of replace-blocks-guard.test.ts that need a

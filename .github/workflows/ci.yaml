@@ -148,6 +148,9 @@ jobs:
       ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_report_test }}
       ci_ok_reconcile_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_reconcile_test }}
       find_pr_payload_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.find_pr_payload_test }}
+      changed_files_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.changed_files_test }}
+      apt_install_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.apt_install_test }}
+      check_retry_budgets_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_retry_budgets_test }}
       merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
       edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.edited_migrations_base_test }}
@@ -217,23 +220,29 @@ jobs:
       # why: .github/ci-notes/ci.md#the-paths-filters-own-verdict-for-every-filter-before-the-full-ci-term
       filter_verdicts: ${{ github.event_name == 'workflow_dispatch' && '{}' || toJSON(steps.filter.outputs) }}
     steps:
-      # why: .github/ci-notes/ci.md#on-pull_request-dornypaths-filter-reads-the-file-list-from-the-api-and-reads
-      - if: github.event_name != 'pull_request'
+      # why: .github/ci-notes/ci.md#why-the-changes-job-checks-out-the-github-cone-at-depth-2
+      - if: github.event_name != 'workflow_dispatch'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          sparse-checkout: .github
+          fetch-depth: 2
           persist-credentials: false
-      # why: .github/ci-notes/ci.md#on-a-pull-request-this-job-reads-the-changed-files-from-the
-      - if: github.event_name == 'pull_request'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: .github/ci-filters.yaml
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
+      # why: .github/ci-notes/ci.md#why-the-changes-job-reads-the-changes-files-in-a-script-of-its-own
+      - name: List the change's files
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/changed-files.sh --budget 300 "$RUNNER_TEMP/changed-files"
+      # why: .github/ci-notes/ci.md#why-the-filter-step-reads-the-change-from-git_dir
       # why: .github/ci-notes/ci.md#why-the-filter-step-is-skipped-on-a-dispatched-run
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         if: github.event_name != 'workflow_dispatch'
+        env:
+          GIT_DIR: ${{ runner.temp }}/changed-files/.git
+          GIT_WORK_TREE: ${{ runner.temp }}/changed-files
         with:
+          base: HEAD
           predicate-quantifier: some-with-excludes
           filters: .github/ci-filters.yaml
 
@@ -353,6 +362,9 @@ jobs:
       ci_ok_report_test: ${{ needs.changes.outputs.ci_ok_report_test }}
       ci_ok_reconcile_test: ${{ needs.changes.outputs.ci_ok_reconcile_test }}
       find_pr_payload_test: ${{ needs.changes.outputs.find_pr_payload_test }}
+      changed_files_test: ${{ needs.changes.outputs.changed_files_test }}
+      apt_install_test: ${{ needs.changes.outputs.apt_install_test }}
+      check_retry_budgets_test: ${{ needs.changes.outputs.check_retry_budgets_test }}
       merge_group_cancels_test: ${{ needs.changes.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}
       edited_migrations_base_test: ${{ needs.changes.outputs.edited_migrations_base_test }}

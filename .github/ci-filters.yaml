@@ -334,6 +334,8 @@ daemon_go_tests:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-daemon-go.yaml'
+  # The Install tmux step runs it.
+  - '.github/scripts/apt-install.sh'
   - *go_workspace
   - 'packages/daemon/**'
   - *daemon_envoy_deps
@@ -558,6 +560,8 @@ claude_envoy:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-claude-envoy.yaml'
+  # The Install zsh step runs it.
+  - '.github/scripts/apt-install.sh'
   - *bun_install
   - *biome
   - *claude_envoy_build
@@ -872,6 +876,29 @@ find_pr_payload_test: &find_pr_payload_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/find-pr-payload.test.sh'
   - '.github/scripts/find-pr-payload.sh'
+changed_files_test: &changed_files_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/changed-files.test.sh'
+  - '.github/scripts/changed-files.sh'
+  # changed-files.sh sources it for its retry ladder, which the harness counts.
+  - '.github/scripts/gh-read.sh'
+apt_install_test: &apt_install_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/apt-install.test.sh'
+  - '.github/scripts/apt-install.sh'
+check_retry_budgets_test: &check_retry_budgets_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-retry-budgets.test.sh'
+  - '.github/scripts/check-retry-budgets.sh'
 merge_group_cancels_test: &merge_group_cancels_test
   - *ci_router
   - *ci_filters_data
@@ -1024,6 +1051,9 @@ test:
   - *ci_ok_report_test
   - *ci_ok_reconcile_test
   - *find_pr_payload_test
+  - *changed_files_test
+  - *apt_install_test
+  - *check_retry_budgets_test
   - *merge_group_cancels_test
   - *main_bypass_check_test
   - *edited_migrations_base_test
@@ -1305,6 +1335,8 @@ pi_envoy:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-pi-envoy.yaml'
+  # The Install tmux step runs it.
+  - '.github/scripts/apt-install.sh'
   - *bun_install
   - 'packages/pi-envoy/**'
   - 'packages/pi-shared/src/**'
@@ -1389,6 +1421,8 @@ dispatch_ui:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-ui.yaml'
+  # The Install zsh step runs it.
+  - '.github/scripts/apt-install.sh'
   - *bun_install
   - 'packages/dispatch/**'
   - 'packages/proof-editor/**'

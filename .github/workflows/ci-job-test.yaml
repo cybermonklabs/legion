@@ -196,6 +196,18 @@ on:
         description: "ci.yaml's needs.changes.outputs.find_pr_payload_test: find-pr-payload.test.sh and what it tests."
         type: string
         required: true
+      changed_files_test:
+        description: "ci.yaml's needs.changes.outputs.changed_files_test: changed-files.test.sh and what it tests."
+        type: string
+        required: true
+      apt_install_test:
+        description: "ci.yaml's needs.changes.outputs.apt_install_test: apt-install.test.sh and what it tests."
+        type: string
+        required: true
+      check_retry_budgets_test:
+        description: "ci.yaml's needs.changes.outputs.check_retry_budgets_test: check-retry-budgets.test.sh and what it tests."
+        type: string
+        required: true
       merge_group_cancels_test:
         description: "ci.yaml's needs.changes.outputs.merge_group_cancels_test: merge-group-cancels.test.sh and what it tests."
         type: string
@@ -473,6 +485,18 @@ jobs:
       - name: Test the pull request payload both pr-title checks read (a stand-in gh)
         if: inputs.changes-result != 'success' || inputs.find_pr_payload_test == 'true'
         run: .github/scripts/find-pr-payload.test.sh
+
+      - name: Test the changes job's file list (a stand-in gh, a stand-in git)
+        if: inputs.changes-result != 'success' || inputs.changed_files_test == 'true'
+        run: .github/scripts/changed-files.test.sh
+
+      - name: Test the bounded apt install (a stand-in apt-get)
+        if: inputs.changes-result != 'success' || inputs.apt_install_test == 'true'
+        run: .github/scripts/apt-install.test.sh
+
+      - name: Test the check that holds each bounded retry to its job's timeout
+        if: inputs.changes-result != 'success' || inputs.check_retry_budgets_test == 'true'
+        run: .github/scripts/check-retry-budgets.test.sh
 
       - name: Test the merge-group cancel decision
         if: inputs.changes-result != 'success' || inputs.merge_group_cancels_test == 'true'

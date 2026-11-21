@@ -88,9 +88,9 @@ That job's one dorny/paths-filter step hands .github/ci-filters.yaml's path over
 the action reads the file off the disk against GITHUB_WORKSPACE. It takes the input as a path
 only when the text holds no newline and no colon (the action's `isPathInput`), so the value
 there stays a plain scalar: a block scalar or a quoted path with a colon in it would be read as
-inline YAML and the step would fail. On a pull request that job checks out .github/ci-filters.yaml and no
-other, paths-filter reading the changed-file list from the API and the filters from the
-tree; on a merge group it has the whole clone, which the git diff of base_sha..head_sha needs.
+inline YAML and the step would fail. On a pull request and a merge group that job checks out the
+.github cone, where this file and .github/scripts/changed-files.sh are, and the step reads the
+change from the repository that script writes (GIT_DIR), never from the API or origin itself.
 
 Why the data is a file and not the workflow's own text. Actions hands a step's input to the
 action as one environment variable, INPUT_FILTERS, and Linux caps one such string at 131,072
@@ -1361,18 +1361,35 @@ ci-ok-report.sh both already have it. It is the one filter step's outputs as one
 On a dispatched run that step is skipped and this is `{}`, which is right - the label
 holds nothing back there, and the changes job's other outputs are all 'true'.
 
-## On pull_request dorny/paths-filter reads the file list from the API and reads
+## Why the changes job reads the change's files in a script of its own
 
-On pull_request dorny/paths-filter reads the file list from the API and reads only the
-filters from the tree; merge_group diffs with git and needs the clone (a merge group diffs its
-base_sha..head_sha, fetching what the clone lacks). A dispatched run clones too, and
-filters nothing.
+dorny/paths-filter reads the change's files with one try and no retry: on a pull request one
+GitHub API read, on a merge group one fetch of the group's base. One answer of "this diff is
+temporarily unavailable due to heavy server load" failed this job, and every job waiting on it,
+on pull request #4449 (run 44595619799, attempt 1). So .github/scripts/changed-files.sh makes
+that read: three attempts, counted, each bounded inside the step's budget, and an `::error::`
+line naming the read after the third. On a pull request gh parses each page, and an attempt also
+fails unless it lists exactly the files the event's `pull_request.changed_files` counts, so a
+cut-off or short answer is retried rather than filtered. The script's header says how it divides
+its budget and how the repository it writes keeps every filter's verdict the one paths-filter's
+own read reached. .github/scripts/check-retry-budgets.sh, in the lint job, holds the budget to
+half the job's timeout.
 
-## On a pull request this job reads the changed files from the
+## Why the changes job checks out the .github cone at depth 2
 
-On a pull request this job reads the changed files from the API and the filters from
-.github/ci-filters.yaml, which dorny/paths-filter reads off the disk: so a pull
-request checks out that one file, and nothing else.
+The script and .github/ci-filters.yaml are under .github, so that cone is the whole checkout on
+a pull request and a merge group. Its depth is 2 so that a merge group's base, the head's parent,
+comes in checkout's own fetch, which makes three attempts too, and the script reaches origin only
+for a base that is not a parent of the head. The sparse checkout is a blob:none partial clone, in
+which git would fetch a missing object by itself, with no retry and no bound; the script turns
+that off (GIT_NO_LAZY_FETCH=1). A dispatched run makes no checkout: it filters nothing.
+
+## Why the filter step reads the change from GIT_DIR
+
+With `base: HEAD` dorny/paths-filter reads the changes of the repository git finds,
+`git diff --no-renames --name-status -z HEAD`, on every event, and reaches neither the API nor
+origin. GIT_DIR and GIT_WORK_TREE point git at the repository changed-files.sh wrote, while the
+step still runs in the workspace, where it reads .github/ci-filters.yaml by that path.
 
 ## Why the filter step is skipped on a dispatched run
 

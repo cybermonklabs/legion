@@ -50,7 +50,7 @@ jobs:
       # the only way the place a session registers can be read from the session itself, and refuses
       # on GitHub Actions without a tmux.
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+        run: .github/scripts/apt-install.sh --budget 300 tmux
       - run: bun install --frozen-lockfile
       - name: Build contracts for pi-envoy
         run: bun run build

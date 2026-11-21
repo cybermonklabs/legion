@@ -92,6 +92,12 @@ jobs:
       - name: Check every remote action is pinned to a commit SHA
         run: .github/scripts/check-action-pins.sh
 
+      # Here because this job runs on every change: the check reads every workflow and composite
+      # action, and a call of apt-install.sh or changed-files.sh, or a step that runs apt itself,
+      # can be added to any of them.
+      - name: Check every bounded retry fits half the timeout it runs under
+        run: .github/scripts/check-retry-budgets.sh
+
       - name: Check no current file names the pre-split Oh My Pi plugin
         run: .github/scripts/check-plugin-names.sh
 
