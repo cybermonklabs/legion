@@ -483,11 +483,28 @@ psql_stack() { psql "$STACK_DB_URL" -Atq -v ON_ERROR_STOP=1 "$@"; }
 # k1
 ###############################################################################################
 
+# k1_python prints the interpreter python3 names, asked in this script's environment, for k1's
+# scanner to run on by that path. The scanner starts agent-secrets by name, and the one that must
+# answer is the stack's own build, first on this script's PATH once start_stack has evaluated the
+# banner's `export PATH`. The first python3 on PATH can be a version manager's shim that starts the
+# interpreter with a PATH of its own: mise 2026.10.11's python3 shim, in a mise-activated
+# environment, put that environment's PATH in front of the entries put first, so the scanner would
+# run an installed agent-secrets and not this checkout's.
+k1_python() {
+	local python
+	python="$(python3 -I -c 'import sys; print(sys.executable)')" || return 1
+	[[ "$python" == /* && -x "$python" ]] || {
+		echo "airlock-check: python3 did not report an absolute executable path: $python" >&2
+		return 1
+	}
+	printf '%s\n' "$python"
+}
+
 # k1_case runs one of k1's two commands under the scanner and judges the five places.
 # bound is true when the name has a rules entry, which is the check itself; false is its
 # negative control, where the same run must find the value in env.txt and in the environment.
 k1_case() { # <name> <label> <value> <bound true|false>
-	local name="$1" label="$2" value="$3" bound="$4"
+	local name="$1" label="$2" value="$3" bound="$4" python
 	local dir="$WORK_DIR/k1-$label"
 	mkdir -p "$dir"
 	printf '%s' "$value" | od -An -tx1 -v | tr -d ' \n' >"$dir/needles"
@@ -499,7 +516,8 @@ env > env.txt
 : > ready
 sleep 5
 EOF
-	python3 "$SCRIPT_DIR/airlock/memscan.py" "$dir/ready" "$dir/needles" "$dir/scan.json" "$dir" \
+	python="$(k1_python)"
+	"$python" "$SCRIPT_DIR/airlock/memscan.py" "$dir/ready" "$dir/needles" "$dir/scan.json" "$dir" \
 		agent-secrets "$name" -- sh "$dir/command.sh" 2>"$dir/cli.err" || true
 	K1_EXIT="$(jq -r '.exit' "$dir/scan.json")"
 	K1_MEM="$(jq -r '.memory_hits[0]' "$dir/scan.json")"
