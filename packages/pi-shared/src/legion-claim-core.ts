@@ -2,10 +2,12 @@ import type { LegionRegistration } from "@legion/contracts/legion-api";
 import { isNoRelaySubjectRefusal, messageFor } from "@legion/envoy-client/errors";
 import {
   callReadyWithRetry,
+  type DaemonRestartRetry,
   LegionDaemonApiError,
   type LegionDaemonClient,
   type ReadyInput,
   type RegisterInput,
+  retryWhileDaemonRestarts,
 } from "./daemon-client";
 import type { ClaimCapability } from "./legion-phase-ops";
 
@@ -70,6 +72,11 @@ export interface LegionClaimHost {
   readonly stopping: string;
   /** Ends the claim's agent, so the daemon launches it again. */
   readonly stop: () => void;
+  /** How the boot's two calls wait out a daemon that is not serving
+   * (`retryWhileDaemonRestarts`): the host's sentence to the agent, and a test's clock. The
+   * host passes no abort signal of its own, because the wait runs inside the plugin's
+   * `session_start` handler and must outlive that handler's own budget (R1). */
+  readonly restart?: DaemonRestartRetry;
 }
 
 /** What the boot answers: the claim step it left to run after it, for a caller that waits on it
@@ -88,10 +95,15 @@ export interface LegionClaimBoot {
  * Boots a claim on `/legion/v1/claims/*`, the same on every harness: `claims/register`; the
  * host's first-turn signal registered (`onFirstTurn`), which is why a turn that starts while the
  * ready below is still being retried is not lost; `afterRegister`; the capability recorded;
- * `claims/ready`, retried on a 5xx or transport failure (`callReadyWithRetry`); the regain
+ * `claims/ready`; the regain
  * listener, which re-runs that same ready each time the heartbeat regains the role; and then,
  * after this function has settled, the Envoy role claimed at the first turn the signal reported
  * or at the bound, whichever comes first.
+ *
+ * Both calls wait for a daemon that is not serving, for up to an hour, and are made once it serves
+ * again (`retryWhileDaemonRestarts`, R1): a worker whose start falls in a daemon's restart is not
+ * retired by the registration deadline and charged a launch failure for it. The ready keeps its
+ * three tries of a 5xx the daemon itself answered inside that wait (`callReadyWithRetry`).
  *
  * The name is taken last because the Envoy listener keeps a message published to a role no
  * session holds and hands the whole kept lane over the moment the role is claimed: claimed before
@@ -110,9 +122,10 @@ export interface LegionClaimBoot {
  * interval it runs while it is idle (`packages/pi-legion/src/capability-schedule.ts`).
  *
  * A registration the daemon refuses (a 4xx: a spent boot token, another contract) and any failure
- * after a registration are logged and `stop` the agent, since neither changes on retry. Any other
- * refusal of the registration (a 5xx) is logged and rejects, as a request that never reached the
- * daemon does unlogged: both leave the agent to the daemon's registration deadline. A claim the
+ * after a registration are logged and `stop` the agent, since neither changes on retry. A 5xx
+ * the daemon itself answered to the registration is logged and rejects, as a request the wait
+ * gave up on after an hour does unlogged: both leave the agent to the daemon's registration
+ * deadline. A claim the
  * listener refuses is logged and stops the agent in exactly the same words, now after the daemon
  * may have delivered a task: the relaunch re-sends a delivery that is pending and unconfirmed,
  * the path a death inside a turn already takes.
@@ -121,7 +134,11 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
   const { daemon } = host;
   let claim: LegionRegistration;
   try {
-    claim = await daemon.register(host.registration);
+    claim = await retryWhileDaemonRestarts(
+      "claims/register",
+      (attempt) => daemon.register(host.registration, { signal: attempt }),
+      host.restart
+    );
   } catch (error) {
     if (!(error instanceof LegionDaemonApiError)) throw error;
     host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
@@ -152,11 +169,11 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       secret: claim.secret,
       generation: claim.generation,
     };
-    await callReadyWithRetry("claims/ready", () => daemon.ready(ready));
+    await readyWaitingForTheDaemon(host, "claims/ready", ready);
     host.onRoleRegained(async (role, reason) => {
       if (role !== claim.claimToken) return;
       try {
-        await callReadyWithRetry("claims/ready after role regain", () => daemon.ready(ready));
+        await readyWaitingForTheDaemon(host, "claims/ready after role regain", ready);
         host.log(`re-ran claims/ready after role ${role} was ${reason}`);
       } catch (error) {
         host.log(
@@ -169,6 +186,24 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     return { claimed: Promise.resolve() };
   }
   return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, firstTurn) };
+}
+
+/** One `claims/ready`, under both rules it answers to: the wait for a daemon that is not
+ * serving, which owns the hour (`retryWhileDaemonRestarts`), and inside each of its attempts
+ * the three tries of a 5xx the daemon itself answered, which it has always had
+ * (`callReadyWithRetry`). The attempt's own signal reaches the request, so an attempt the
+ * daemon takes and never answers is ended rather than left open. */
+function readyWaitingForTheDaemon(
+  host: LegionClaimHost,
+  label: string,
+  ready: ReadyInput
+): Promise<void> {
+  return retryWhileDaemonRestarts(
+    label,
+    (attempt) =>
+      callReadyWithRetry(label, () => host.daemon.ready(ready, { signal: attempt }), host.restart),
+    host.restart
+  );
 }
 
 /** The one path every failure after a registration takes, wherever it happens: the boot's own

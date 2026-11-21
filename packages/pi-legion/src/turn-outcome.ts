@@ -1,5 +1,9 @@
 import { messageFor } from "@legion/envoy-client/errors";
-import { type LegionDaemonClient, retryWhileDaemonRestarts } from "@legion/pi-shared/daemon-client";
+import {
+  type DaemonRestartRetry,
+  type LegionDaemonClient,
+  retryWhileDaemonRestarts,
+} from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import { assistantRefusal } from "@legion/pi-shared/phase-stall";
 import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
@@ -36,6 +40,9 @@ export interface TurnOutcomeReporterDeps {
    * instance of its own and registers nothing. */
   readonly claim: (sessionID: string) => ClaimCapability | undefined;
   readonly log: TurnOutcomeLog;
+  /** The clock a report waits out a daemon restart on, and how one attempt's limit is timed; a
+   * test's own. */
+  readonly restart?: Pick<DaemonRestartRetry, "now" | "sleep" | "attemptLimit">;
 }
 
 export interface TurnOutcomeReporter {
@@ -85,9 +92,13 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         // writes the same cell and changes no count, and a turn that goes unreported is a turn
         // the daemon counts neither way — a refusal silently dropped is a claim that never
         // fails. A refusal the daemon itself gives (a 4xx) will not pass on retry: it is warned
-        // about once and the turn goes uncounted, since nothing this pane can do fixes it.
-        const outcome = await retryWhileDaemonRestarts("claims/turn-outcome", () =>
-          deps.daemon().turnOutcome(request)
+        // about once and the turn goes uncounted, since nothing this pane can do fixes it. Each
+        // attempt's post carries the attempt's signal, so one the daemon took and did not answer
+        // is ended before the report is sent again.
+        const outcome = await retryWhileDaemonRestarts(
+          "claims/turn-outcome",
+          (attempt) => deps.daemon().turnOutcome(request, { signal: attempt }),
+          deps.restart
         );
         deps.log.debug("legion: reported a turn's outcome", {
           issue: claim.issue,

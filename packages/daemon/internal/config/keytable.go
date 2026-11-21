@@ -334,7 +334,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "pod_update_grace_minutes", Default: "`30`", RequiredBy: "no",
-			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered and whatever still runs, and an answer from every role ends it sooner once no turn runs and each role's report since its last turn names no running background work; decimals allowed.",
+			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered and whatever still runs, and an answer from every role the round asks ends it sooner once no turn runs and each role's report since its last turn names no running background work; decimals allowed.",
 			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.PodUpdateGrace = v }),
 		},
 		{
@@ -344,7 +344,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "pod_update_max_open_rounds", Default: "no limit at all: the daemon opens a round for any number of issues at once", RequiredBy: "no",
-			Description: "How many issues may hold an open pod-update round at once, a round being the ask to every worker of its issue to push its work, let its subagents and background jobs finish or stop them, push what they made and wait.",
+			Description: "How many issues may hold an open pod-update round at once, a round being the ask, to each role of its issue that it waits for, to push its work, let its subagents and background jobs finish or stop them, push what they made and wait.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.PodUpdateMaxOpenRounds = v }),
 		},
 		{
@@ -378,7 +378,7 @@ var topLevelKeys = func() []keyDescriptor {
 			Positive:    &positiveKey{Value: 2, Count: func(c *Config) *int { return &c.PromptRetireLimit }},
 		},
 		{
-			Name: stallBackstopKey, Default: "twice the bound that role's own worker holds a tool call no deadline judges to: eight hours for an implementer and a reviewer, two for every other role and the controller", RequiredBy: "no",
+			Name: stallBackstopKey, Default: "twice the bound that role's own worker holds a tool call no deadline judges to, and never below that role's whole stall ladder: eight hours for an implementer and a reviewer, and the ladder itself, 2h9m, for every other role and the controller", RequiredBy: "no",
 			Description: "The daemon's own backstop under a worker whose turn has stopped: per role, how many hours after that role's last recorded step the daemon ends the turn that step belongs to, so the task goes back to waiting and the session is sent it again, charging the claim nothing; `0` switches the backstop off for that role, and a bound below the role's whole stall ladder is refused.",
 			Read:        reads(readStallBackstops, func(f *fileConfig, v map[claim.Role]time.Duration) { f.WorkerStallBackstops = v }),
 		},

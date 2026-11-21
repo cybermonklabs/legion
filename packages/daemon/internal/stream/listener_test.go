@@ -77,13 +77,14 @@ func TestListenRefusesANonPositiveRPCTimeout(t *testing.T) {
 	}
 }
 
-// Every way a hello is refused: the connection is closed with nothing written, one exact line
-// is logged, the token is resolved at most once, and nothing changes — no registration, no
-// event (worker-stream-listener.ts:112-161).
+// Every way a hello is refused with nothing written: the connection is closed, one exact line is
+// logged, the token is resolved at most once, and nothing changes — no registration, no event
+// (worker-stream-listener.ts:112-161). A hello whose boot token the daemon does not know at all
+// is one of them, and its shim keeps running, because an unknown token can also mean a wrong or
+// restored database or another project's daemon (R3). The one refusal that writes first is a
+// generation the claim has left, which is told to stop
+// (TestAHelloOfAGenerationTheClaimHasLeftIsToldToStop).
 func TestHelloRejectionsCloseLogAndChangeNothing(t *testing.T) {
-	stale := &resolver{fn: func(string) (claim.Token, uint64, bool, bool, error) {
-		return testClaim, testGeneration - 1, true, true, nil
-	}}
 	for _, test := range []struct {
 		name          string
 		reason        string
@@ -98,7 +99,6 @@ func TestHelloRejectionsCloseLogAndChangeNothing(t *testing.T) {
 		{"an empty boot token", "malformed hello", `{"type":"hello2","bootToken":""}` + "\n", nil, 0},
 		{"a boot token that is not a string", "malformed hello", `{"type":"hello2","bootToken":7}` + "\n", nil, 0},
 		{"an unknown boot token", "unknown boot token", `{"type":"hello2","bootToken":"boot-token-2"}` + "\n", nil, 1},
-		{"a stale generation", "stale worker generation", `{"type":"hello2","bootToken":"boot-token-1"}` + "\n", stale, 1},
 		{"no newline within MaxHelloBytes", "hello too long", strings.Repeat("a", shimwire.MaxHelloBytes+1), nil, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -153,7 +153,7 @@ func TestAHelloTheDaemonCouldNotResolveClosesUnrefused(t *testing.T) {
 	redial := dial(t, h.listener.Addr())
 	redial.writeRaw(`{"type":"hello2","bootToken":"boot-token-1"}` + "\n")
 	redial.expect(shimwire.TypeHelloAck)
-	if events := h.stop(); !slices.Equal(events, []Event{Hello{Claim: testClaim, Generation: testGeneration}, Closed{Claim: testClaim}}) {
+	if events := h.stop(); !slices.Equal(events, []Event{Hello{Claim: testClaim, Generation: testGeneration}, Closed{Claim: testClaim, Generation: testGeneration}}) {
 		t.Fatalf("events = %#v, want only the redial's hello and its close", events)
 	}
 	if lines := h.logs.Lines(); len(lines) != 1 {
@@ -191,7 +191,7 @@ func TestNarrowKeepsTheNamedClaimsAndAnswersOnlyLaunchers(t *testing.T) {
 	h.listener.Narrow(func(token claim.Token) bool { return token == testClaim })
 
 	other.awaitClosed()
-	if event := h.next(); event != (Closed{Claim: otherClaim}) {
+	if event := h.next(); event != (Closed{Claim: otherClaim, Generation: testGeneration}) {
 		t.Fatalf("event = %#v, want the other claim's close", event)
 	}
 	if _, ok := h.listener.Conn(testClaim); !ok {
@@ -214,7 +214,7 @@ func TestNarrowKeepsTheNamedClaimsAndAnswersOnlyLaunchers(t *testing.T) {
 	if lines := h.logs.Lines(); len(lines) != 0 {
 		t.Fatalf("logs = %q, want nothing logged for a hello the stopping daemon does not answer", lines)
 	}
-	if events := h.stop(); !slices.Equal(events, []Event{Closed{Claim: testClaim}}) {
+	if events := h.stop(); !slices.Equal(events, []Event{Closed{Claim: testClaim, Generation: testGeneration}}) {
 		t.Fatalf("events = %#v, want only the kept connection's close at the listener's end", events)
 	}
 }
@@ -268,8 +268,9 @@ func TestAConnectionThatClosesBeforeItsHelloLogsNothing(t *testing.T) {
 	}
 }
 
-// A claim bound by a live connection keeps it: the second hello is refused and the first
-// stream is untouched.
+// A second process of the claim's current generation stays refused, as it was before R3: the
+// binding keeps the live connection, which is told nothing, since there is no newer process to
+// make room for. The refusal's line names the claim and both connections' generations (R3).
 func TestAHelloForAClaimBoundByALiveConnectionIsRejected(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	first := h.connect(testToken)
@@ -279,19 +280,25 @@ func TestAHelloForAClaimBoundByALiveConnectionIsRejected(t *testing.T) {
 	second.hello(testToken)
 	second.awaitClosed()
 
-	want := []string{"worker-stream: rejected hello (already bound to a live stream)"}
+	want := []string{"worker-stream: rejected hello (already bound to a live stream) " +
+		"claim=" + string(testClaim) + " generation=3 boundGeneration=3"}
 	if got := h.logs.Lines(); !slices.Equal(got, want) {
 		t.Fatalf("logs = %q, want %q", got, want)
 	}
 	if h.conn() != bound {
 		t.Fatal("the rejected hello replaced the live binding")
 	}
-	// The first stream still speaks.
+	// The first stream still speaks, and was never told to stop.
 	first.send(shimwire.AgentStart{})
 	if event := h.next(); event != (TurnStart{Claim: testClaim}) {
 		t.Fatalf("event = %#v, want the first stream's TurnStart", event)
 	}
-	if events := h.stop(); !slices.Equal(events, []Event{Closed{Claim: testClaim}}) {
+	select {
+	case frame := <-first.frames:
+		t.Fatalf("the bound connection was sent %s; only an older generation is told to stop", frame.FrameType())
+	default:
+	}
+	if events := h.stop(); !slices.Equal(events, []Event{Closed{Claim: testClaim, Generation: testGeneration}}) {
 		t.Fatalf("remaining events = %#v, want only the first stream's Closed", events)
 	}
 }
@@ -303,7 +310,7 @@ func TestAHelloReplacesABindingWhoseConnectionClosed(t *testing.T) {
 	first := h.connect(testToken)
 	old := h.conn()
 	first.conn.Close()
-	if event := h.next(); event != (Closed{Claim: testClaim}) {
+	if event := h.next(); event != (Closed{Claim: testClaim, Generation: testGeneration}) {
 		t.Fatalf("event = %#v, want Closed", event)
 	}
 	if _, ok := h.listener.Conn(testClaim); ok {
@@ -386,7 +393,7 @@ func TestTheListenerEndsWithItsContext(t *testing.T) {
 		return err
 	})
 	events := h.stop()
-	if !slices.Equal(events, []Event{Closed{Claim: testClaim}}) {
+	if !slices.Equal(events, []Event{Closed{Claim: testClaim, Generation: testGeneration}}) {
 		t.Fatalf("events after the context ended = %#v, want the one Closed", events)
 	}
 	if err := awaitResult(t, awaited); !errors.Is(err, ErrListenerClosed) {

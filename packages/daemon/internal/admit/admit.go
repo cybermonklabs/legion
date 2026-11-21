@@ -516,6 +516,16 @@ func (a *Admission) TellController(ctx context.Context, tx pgx.Tx, notice record
 	return err
 }
 
+// TellControllerQueued is TellController that answers whether it queued the notice, for a caller
+// that records something of its own about the telling: the daemon's reach keeper marks a claim it
+// lists in an unreachable-claims notice as reported only once that notice is in the outbox, in this
+// transaction (R5), so a claim the wake dropped — no controller registered, or an older notice of
+// the same kind still waiting unsent — is listed again at the keeper's next pass rather than marked
+// told and never sent, as the stalled-tree rule marks a root (tellStalledTrees).
+func (a *Admission) TellControllerQueued(ctx context.Context, tx pgx.Tx, notice record.ControllerNotice, issue string) (bool, error) {
+	return a.wakeController(ctx, tx, notice, issue, a.now())
+}
+
 // queuePersonHandover queues the todo write of a person's handover of key: a root a person handed
 // to Legion, which the daemon admits without an agent's act. Today that is a person's legion label
 // on an unrecorded root in triage (applyFact for the event, applySummary for the boot listing);

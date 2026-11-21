@@ -237,6 +237,22 @@ Each item below names a script, then what it proves.
   this build answers that path narrowed, and answers `GET /api/v1/search` carrying the member the same way, so a page an earlier release served is still answered correctly.
   Commenting out the `GET /api/v1/search/results` row of `routes_table.go` leaves neither build serving the path, which is the negative control
 
+- `rollback-notices.sh`
+
+  a daemon of the release before, rolled back onto a database this change migrated and queued its claim-reach notices in, leaves each of those notices as it stands and decodes no row it cannot read, and the roll forward delivers each once, through two real daemons against one loopback PostgreSQL the caller names (`LEGION_TEST_PG_DSN`) — the build of the commit `--base-commit` names and the build of `--new-commit`, this checkout's head by default:
+  the release before records one claim in each state, this build migrates the database, reads each claim back, launches each twice and queues a tick and the eight new notices, the release before boots, launches its claims again, delivers the tick and leaves all eight rows with no attempt, the database holds the boot token each of those launches replaced, and this build boots again and delivers each of the eight once.
+  Run with `--new-commit` at a build that queues those notices under the release before's own outbox kinds, it is the change's negative control: every such row fails to decode there, is retried for ever, and the state route answers 500.
+  Run with `--new-commit` at a build that has those kinds and no trigger on `claims.boot_token_hash`, it is the control of the kept tokens: the roll forward names each claim the release before launched whose replaced boot token is not kept
+
+- `live-rig-smoke.sh`
+
+  the rig of this change's checks (`packages/daemon/internal/daemon/RIG.md`) runs each of its seams that `lockout-generations.sh` does not: the listener production pins, built from commit 8b8fac664c, refuses a client with no credential a publish its `members` grant does not hold; the listener's front refuses a blocked session's registration; NATS stops and starts on its own ports and a pane reconnects as `members`; the daemon restarts on its own port and the pane binds again; and an event a scratch Dispatch publishes reaches the rig's stream
+
+- `lockout-generations.sh`
+
+  check w3 of this change on that rig: a claim's newer generation sends the older connection its stop frame at its first hello and binds once that connection closes, a second process of the current generation stays refused, an older process that reads the stop frame and does not stop leaves the newer one refused with no charge and no newer launch and is reported once to the controller and on R6's line 5 minutes after the newer one's first hello, an older generation's redial after a cut or a daemon restart is refused as stale and told to stop, and a boot token the daemon never minted is refused and left running.
+  Run with `--base-commit`, it lays the rig over the base and runs the first step there, which is its negative control: the base sends no stop frame and refuses the newer generation until the older connection ends
+
 - `verification-results.sh`
 
   a recorded check result says where its commit stands against the commits and branches its check compares with, and the head it is compared with moves with the pull-request events Dispatch takes off the bus, driven over HTTP through the real `envoy-dispatch` against a loopback PostgreSQL the caller names, a NATS of the run's own and the e2e harness's fake GitHub:

@@ -5,7 +5,7 @@ import { NoRelaySubjectError } from "@legion/envoy-client/consumer-delivery";
 import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./claim-first-turn-bound";
-import { createLegionDaemonClient } from "./daemon-client";
+import { createLegionDaemonClient, type DaemonRestartRetry } from "./daemon-client";
 import {
   bootLegionClaim,
   claimAgainCures,
@@ -37,14 +37,29 @@ const registration = {
   pluginContract: 29,
 };
 
+/** The clock the boot's waits run on here: no case waits in real time, every sleep moves this
+ * clock instead, and no attempt's limit fires unless the case's own `restart` fires it. */
+function instantWaits(): DaemonRestartRetry {
+  let clock = 0;
+  return {
+    now: () => clock,
+    sleep: async (ms: number) => {
+      clock += ms;
+    },
+    attemptLimit: () => new Promise<void>(() => {}),
+  };
+}
+
 /** A host over a stub daemon whose `register` and `ready` answer as given, recording every step
- * it is asked for, in order, beside the daemon's requests. The boot registers its first-turn
- * signal at the registration, before `claims/ready`, and this host keeps it rather than firing
- * it: a case fires it with `firstTurn()`, and a case that leaves it unfired is a session no turn
- * ever started. */
+ * it is asked for, in order, beside the daemon's requests. `register` is handed the attempt's
+ * own signal, which a case about an attempt the daemon never answered reads. The boot registers
+ * its first-turn signal at the registration, before `claims/ready`, and this host keeps it
+ * rather than firing it: a case fires it with `firstTurn()`, and a case that leaves it unfired
+ * is a session no turn ever started. */
 function claimHost(options: {
-  readonly register?: () => Response;
+  readonly register?: (attempt: AbortSignal | null | undefined) => Response | Promise<Response>;
   readonly ready?: () => Response;
+  readonly restart?: DaemonRestartRetry;
   readonly overrides?: Partial<LegionClaimHost>;
 }) {
   const steps: string[] = [];
@@ -55,7 +70,8 @@ function claimHost(options: {
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname.replace("/legion/v1/", "");
     steps.push(`${route} ${init?.body ?? ""}`);
-    if (route === "claims/register") return options.register?.() ?? Response.json(registered);
+    if (route === "claims/register")
+      return options.register?.(init?.signal) ?? Response.json(registered);
     return options.ready?.() ?? new Response(null, { status: 204 });
   }) as typeof fetch;
   const host: LegionClaimHost = {
@@ -64,6 +80,7 @@ function claimHost(options: {
       fetch: stub,
     }),
     registration,
+    restart: options.restart ?? instantWaits(),
     setCapability: (capability) => {
       steps.push("setCapability");
       capabilities.push(capability);
@@ -159,24 +176,106 @@ for (const status of [400, 403, 409]) {
   });
 }
 
-test("a 5xx at claims/register is logged and rejects without stopping; a request that never reached the daemon rejects unlogged", async () => {
-  const failed = claimHost({
-    register: () => Response.json({ error: "register failed" }, { status: 503 }),
-  });
-  await expect(bootLegionClaim(failed.host)).rejects.toThrow(
-    "POST /legion/v1/claims/register failed with 503: register failed"
-  );
-  expect(failed.steps).not.toContain("stop");
-  expect(failed.lines).toEqual(["claims/register registration failed (503): register failed"]);
+// A 5xx the daemon itself answered is the daemon serving and refusing, which no wait cures: it
+// is logged and left to the daemon's registration deadline, as it always was. An uncoded 502,
+// 503 or 504 is not such an answer — it is a proxy in front of a daemon that is not serving —
+// and is waited out instead, below.
+test("a 5xx the daemon itself answered at claims/register is logged and rejects without stopping", async () => {
+  for (const [status, code] of [
+    [500, undefined],
+    [503, "DISPATCH_UNAVAILABLE"],
+  ] as const) {
+    const failed = claimHost({
+      register: () =>
+        Response.json(
+          { error: "register failed", ...(code === undefined ? {} : { code }) },
+          { status }
+        ),
+    });
+    await expect(bootLegionClaim(failed.host)).rejects.toThrow(
+      `POST /legion/v1/claims/register failed with ${status}`
+    );
+    expect(failed.steps).not.toContain("stop");
+    expect(failed.lines).toEqual([
+      `claims/register registration failed (${status}): register failed`,
+    ]);
+  }
+});
 
-  const unreachable = claimHost({
+test("claims/register waits for a daemon that is not serving and registers once it serves again, with nothing charged to the claim", async () => {
+  let attempts = 0;
+  const { host, steps, lines, capabilities } = claimHost({
     register: () => {
-      throw new TypeError("fetch failed");
+      attempts += 1;
+      if (attempts === 1)
+        throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+      if (attempts === 2) return Response.json({ error: "bad gateway" }, { status: 502 });
+      if (attempts === 3) throw new TypeError("fetch failed");
+      return Response.json(registered);
     },
   });
-  await expect(bootLegionClaim(unreachable.host)).rejects.toThrow("fetch failed");
-  expect(unreachable.steps).not.toContain("stop");
-  expect(unreachable.lines).toEqual([]);
+
+  // The name is taken at the first turn, which this case never fires: the boot itself is the
+  // whole of what the wait had to finish.
+  await bootLegionClaim(host);
+
+  expect(attempts).toBe(4);
+  expect(capabilities).toHaveLength(1);
+  expect(steps).not.toContain("stop");
+  expect(steps).toContain(`claims/ready ${readyBody()}`);
+  expect(lines).toEqual([]);
+});
+
+test("claims/ready waits for a daemon that is not serving and readies once it serves again", async () => {
+  let attempts = 0;
+  const { host, steps } = claimHost({
+    ready: () => {
+      attempts += 1;
+      if (attempts <= 2) return Response.json({ error: "bad gateway" }, { status: 503 });
+      return new Response(null, { status: 204 });
+    },
+  });
+
+  await bootLegionClaim(host);
+
+  expect(attempts).toBe(3);
+  expect(steps).not.toContain("stop");
+  expect(steps.at(-1)).toBe("onRoleRegained");
+});
+
+// The daemon's register route runs to its end whatever the caller does
+// (`packages/daemon/internal/api/claims.go`: "a caller that hangs up mid-request does not get to
+// leave a registration half-recorded"), so what orders two attempts of one boot is this client:
+// it ends the attempt it gave up on before it sends the next one, and the claim's machine takes
+// them in that order. The worker therefore holds the secret of the registration the daemon
+// applied last. This case holds the client's half, over a stub that applies the given-up
+// registration when its attempt is ended; the daemon's half, a given-up registration the real
+// server finishes after the client hung up while the repeat waits behind it, is
+// `TestARegistrationTheClientGaveUpOnIsAppliedBeforeItsRepeat` in `packages/daemon/internal/api`.
+test("a register attempt the daemon finishes after the client gave it up is ended before the next one is sent", async () => {
+  const applied: string[] = [];
+  let attempts = 0;
+  const { host, capabilities } = claimHost({
+    register: (attempt) => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Promise<Response>(() => {
+          attempt?.addEventListener("abort", () => applied.push("secret-1"), { once: true });
+        });
+      }
+      applied.push("secret-2");
+      return Response.json({ ...registered, secret: "secret-2" });
+    },
+    restart: {
+      ...instantWaits(),
+      attemptLimit: () => (attempts === 1 ? Promise.resolve() : new Promise<void>(() => {})),
+    },
+  });
+
+  await bootLegionClaim(host);
+
+  expect(applied).toEqual(["secret-1", "secret-2"]);
+  expect(capabilities.at(0)?.secret).toBe("secret-2");
 });
 
 test("a claim the listener refuses is logged naming the claim token and what stop does, then stops the agent — after the daemon has been told ready", async () => {

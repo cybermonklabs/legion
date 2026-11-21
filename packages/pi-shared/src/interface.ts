@@ -20,7 +20,7 @@ import type { LegionRoleClaimBridge } from "./role-claim-bridge";
  * `task` subagent, so a per-instance callback stored here would be the last instance's, not the
  * pane's (docs/solutions/envoy/heartbeat-role-reassertion-and-regain-hooks.md).
  */
-export const ENVOY_PLUGIN_INTERFACE_VERSION = 5;
+export const ENVOY_PLUGIN_INTERFACE_VERSION = 6;
 export const ENVOY_PLUGIN_INTERFACE_KEY = Symbol.for("legion.pi-shared.envoy-plugin-interface");
 /** Set by the Legion entry's factory to `{ from: import.meta.url, envoyInterface: <version> }`;
  * the daemon's boot gate reads it from `globalThis` to prove the Legion plugin loaded. */
@@ -60,6 +60,46 @@ export interface EnvoyPluginInterface {
    * start turn.
    */
   startupTurn: { readonly session: string; readonly sentAt: number | undefined } | undefined;
+  /**
+   * The cut-turn note the Envoy entry sent into a session at its start and the host has not yet
+   * written (R2), with a promise that settles once it has: undefined while no such note is on its
+   * way. The host holds a send made in `session_start` until its startup discovery has run, so a
+   * turn something else opens meanwhile would take the note after its own opening message. Every
+   * start of a turn waits on it (`waitForCutTurnNote`): the Envoy entry's `input` handler, before
+   * the host prompts a task or a person's input, and the Legion entry's phase reminder, before it
+   * sends.
+   */
+  cutTurnNote: CutTurnNote | undefined;
+}
+
+/** A cut-turn note on its way: the session it is for, and a promise the host's write settles. */
+export interface CutTurnNote {
+  readonly session: string;
+  readonly written: Promise<void>;
+}
+
+/** How long a turn start waits for a cut-turn note the host has not written: a note it never
+ *  writes must not hold a task, a person's input or a reminder back for longer than this. */
+export const CUT_TURN_NOTE_BOUND_MS = 10_000;
+
+/**
+ * Waits for `note`, when it is the note on its way to `session`, until the host has written it or
+ * `boundMs` have passed: `none` when no note is on its way to that session, `written` once it is
+ * in the transcript, `bound` when the bound passed first, which the caller logs.
+ */
+export async function waitForCutTurnNote(
+  note: CutTurnNote | undefined,
+  session: string,
+  boundMs: number
+): Promise<"none" | "written" | "bound"> {
+  if (note === undefined || note.session !== session) return "none";
+  const bound = Promise.withResolvers<"bound">();
+  const timer = setTimeout(() => bound.resolve("bound"), boundMs);
+  try {
+    return await Promise.race([note.written.then(() => "written" as const), bound.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 type EnvoyPluginInterfaceReading =
@@ -104,6 +144,7 @@ export function envoyPluginInterface(): EnvoyPluginInterface {
     injectedUserTurns: new Map(),
     bootstrappedSession: { file: undefined },
     startupTurn: undefined,
+    cutTurnNote: undefined,
   };
   store[ENVOY_PLUGIN_INTERFACE_KEY] = created;
   return created;

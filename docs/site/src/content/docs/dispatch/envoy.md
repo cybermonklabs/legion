@@ -372,7 +372,7 @@ modification time.
 | State | What it means |
 | --- | --- |
 | `live` | It registered within the live window, `ENVOY_SESSION_LIVE_WINDOW` (5 minutes by default). |
-| `unresponsive` | It last registered longer ago than the live window but inside the gone horizon, `ENVOY_SESSION_GONE_HORIZON` (1 hour by default). **It is not dead.** It keeps its role claims and its issue claims, a message sent to it is stored and reaches it when it answers again, and nothing starts a replacement for it. |
+| `unresponsive` | It last registered longer ago than the live window but inside the gone horizon, `ENVOY_SESSION_GONE_HORIZON` (1 hour by default). **It is not dead.** It keeps its role claims and its issue claims, a message sent to it is stored and reaches it when it answers again, and nothing starts a replacement for it while its `last_seen` is 20 minutes old or less. Past that, Legion's controller relaunches a claim that session holds on that same session, which starts the claim's process again and replaces no session. |
 | `gone` | It last registered before the gone horizon, or Envoy holds no record of it. |
 
 Only the role claim reaper releases a role claim. A claim renewed inside the live window is kept

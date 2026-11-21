@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
+	"github.com/sjawhar/legion/daemon/internal/ompbroker"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -741,7 +742,8 @@ func (r *Runtime) Release(ctx context.Context, k runtime.Known) error {
 // verifies and the claim has a connection, the connection carries a shutdown frame — the shim
 // ends OMP itself — and stop waits up to the stop grace for the process to go. Whatever is left
 // then is killed with kill-pane, and only a pane that verifies as the recorded process is ever
-// killed.
+// killed. Once the process is gone, the named services its OMP started through its worker-daemon
+// broker, which neither the pane nor its process group holds, are ended too (endServices).
 //
 // The connection is used only while the recorded process verifies: a claim's connection belongs
 // to its live incarnation, and a stale locator must not shut down the claim's newer process. A
@@ -789,6 +791,7 @@ func (r *Runtime) stop(ctx context.Context, loc runtime.Locator) error {
 		return fmt.Errorf("stop %s: kill-pane %s%s", loc.Claim, pane, exited(res))
 	}
 	r.untrack(loc)
+	r.endServicesOf(loc.Claim)
 	return nil
 }
 
@@ -804,7 +807,45 @@ func (r *Runtime) settleUnverified(loc runtime.Locator, pane string, inc incarna
 			"claim", loc.Claim, "detail", describeVerdict(pane, inc, v))
 	}
 	r.untrack(loc)
+	if v.reason == reasonPaneGone {
+		r.endServicesOf(loc.Claim)
+	}
 	return nil
+}
+
+// endServicesOf ends the named services the claim's Oh My Pi started through its worker-daemon
+// broker (internal/ompbroker), which outlive the claim's pane: the broker runs in a session of its
+// own and stops a service only when asked or at its own idle shutdown, and a resumed session would
+// take the old process's services over. A stop runs it once the claim's process is gone, unless
+// the runtime still watches another process of the claim, which would be a newer generation's,
+// whose services are its own; the claim's next launch ends whatever an older generation left
+// (launch), which also covers a process that died.
+func (r *Runtime) endServicesOf(token claim.Token) {
+	r.trackedMu.Lock()
+	live := false
+	for _, entry := range r.tracked {
+		if entry.locator.Claim == token {
+			live = true
+		}
+	}
+	r.trackedMu.Unlock()
+	if live {
+		return
+	}
+	r.endServices(ompbroker.Claim{StateDir: r.stateDir, Token: token})
+}
+
+// endServices ends the services c names, logging each; a service it cannot end is logged, since
+// what it follows — a stop, a launch — has already settled the claim's process.
+func (r *Runtime) endServices(c ompbroker.Claim) {
+	ended, err := ompbroker.End(c, r.stopGrace)
+	for _, service := range ended {
+		r.log.Info("tmux runtime: ended a named service its claim's Oh My Pi started",
+			"claim", c.Token, "pid", service.Pid, "generation", service.Generation, "broker", service.Broker, "killed", service.Killed)
+	}
+	if err != nil {
+		r.log.Warn("tmux runtime: a named service its claim's Oh My Pi started may still run", "claim", c.Token, "err", err)
+	}
 }
 
 // awaitNotRunning re-verifies the pane until the recorded process no longer verifies, or grace

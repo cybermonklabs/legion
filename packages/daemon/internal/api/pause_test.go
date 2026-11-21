@@ -455,6 +455,7 @@ func TestPauseRoutes(t *testing.T) {
 		}{
 			{"the controller's compact", "/legion/v1/claims/compact", ClaimRequest{GrantID: grant, Issue: "LEGION-208", Role: string(claim.RoleImplementer)}, nil},
 			{"the controller's fresh_session", "/legion/v1/claims/fresh-session", ClaimRequest{GrantID: grant, Issue: "LEGION-208", Role: string(claim.RoleImplementer)}, nil},
+			{"the controller's relaunch", "/legion/v1/claims/relaunch", RelaunchRequest{GrantID: grant, Claim: string(implementer)}, nil},
 			{"legion claims resume", route(tester, "resume"), nil, bearer},
 			{"legion claims retry", route(implementer, "retry"), nil, bearer},
 			{"legion claims compact", route(implementer, "compact"), nil, bearer},

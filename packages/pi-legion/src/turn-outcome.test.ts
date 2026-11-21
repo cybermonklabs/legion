@@ -159,3 +159,74 @@ test("a report the daemon refuses is warned about, and the next turn still repor
   expect(warned).toEqual(["legion: a turn's outcome did not reach the daemon"]);
   expect(posted.map((body) => body.sequence)).toEqual([1, 2]);
 });
+
+// A report the daemon takes and does not answer within the attempt's limit is made again, and
+// the attempt given up on is ended at the daemon before the repeat is sent: its open request is
+// closed, so the daemon never holds two reports of one turn in flight, and nothing of that
+// attempt goes on when the daemon answers it late.
+test("a report the daemon takes and does not answer is ended at the daemon, and the repeat is the one that answers", async () => {
+  const arrived: Request[] = [];
+  const first = Promise.withResolvers<Request>();
+  const released = Promise.withResolvers<void>();
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    // The held report stays open until the case releases it: Bun's own 10-second idle limit
+    // would otherwise close it for the client.
+    idleTimeout: 0,
+    fetch: async (request) => {
+      arrived.push(request);
+      if (arrived.length === 1) {
+        first.resolve(request);
+        await released.promise;
+      }
+      return Response.json({ refusedRun: 0, failed: false });
+    },
+  });
+  try {
+    const debugged: string[] = [];
+    const warned: string[] = [];
+    const client = createLegionDaemonClient(`http://127.0.0.1:${server.port}`, {
+      pluginContract: CONTRACT,
+    });
+    let clock = 0;
+    let attempts = 0;
+    const reporter = createTurnOutcomeReporter({
+      daemon: () => client,
+      claim: (sessionID) => (sessionID === SESSION ? implementer : undefined),
+      log: {
+        debug: (message) => debugged.push(message),
+        warn: (message) => warned.push(message),
+      },
+      restart: {
+        now: () => clock,
+        sleep: async (ms: number) => {
+          clock += ms;
+        },
+        // The first attempt's limit runs out once its report is open at the daemon.
+        attemptLimit: () => {
+          attempts += 1;
+          return attempts === 1
+            ? first.promise.then(() => undefined)
+            : Promise.withResolvers<void>().promise;
+        },
+      },
+    });
+
+    await reporter.report(SESSION, clean);
+
+    expect(arrived).toHaveLength(2);
+    expect(debugged).toEqual(["legion: reported a turn's outcome"]);
+    expect(warned).toEqual([]);
+    // The daemon saw the client end the first report (Bun aborts a request's own signal when its
+    // client closes the connection before the answer); a client that never ends it leaves this
+    // pending, and the case fails on its timeout.
+    const ended = Promise.withResolvers<void>();
+    if (arrived[0]?.signal.aborted) ended.resolve();
+    arrived[0]?.signal.addEventListener("abort", () => ended.resolve(), { once: true });
+    await ended.promise;
+  } finally {
+    released.resolve();
+    server.stop(true);
+  }
+}, 30_000);

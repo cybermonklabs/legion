@@ -1,5 +1,5 @@
 import { claimFirstTurnBoundMs } from "@legion/pi-shared/claim-first-turn-bound";
-import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import type { DaemonRestartRetry, LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
   exportJjSessionAttribution,
   type PaneAttribution,
@@ -77,6 +77,11 @@ export function attributionInputs(
  * The transcript is recorded as the bootstrapped session before the registration; the jj
  * attribution (`exportJjSessionAttribution`) runs once it answered, before the capability is set.
  * A 4xx registration refusal, and any failure after a registration, exit the process.
+ *
+ * `claims/register` and `claims/ready` wait out a daemon that is not serving for up to an hour (R1,
+ * `bootLegionClaim`). The wait runs inside `session_start` with no abort signal of its own, since
+ * that hook's budget is not the daemon's outage; `restart` is the clock it waits on, read at each
+ * boot, which is the real one unless a test sets its own.
  */
 export function createClaimSession(deps: {
   readonly daemon: () => LegionDaemonClient;
@@ -91,6 +96,7 @@ export function createClaimSession(deps: {
   /** The first wait before a role claim is made again (`claimRoleAgain`); undefined keeps its own.
    *  A test sets it short. */
   readonly roleClaimRetryFirstDelayMs: () => number | undefined;
+  readonly restart?: () => Pick<DaemonRestartRetry, "now" | "sleep"> | undefined;
 }): ClaimSession {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
@@ -111,6 +117,7 @@ export function createClaimSession(deps: {
   ): Promise<void> => {
     const { sessionFile, agentId } = await deps.persistedTranscript(context);
     recordBootstrappedSession(sessionFile);
+    const restart = deps.restart?.();
     await bootLegionClaim({
       daemon,
       registration: {
@@ -144,6 +151,7 @@ export function createClaimSession(deps: {
       log: (line) => console.error(`[legion] ${line}`),
       stopping: "exiting so the daemon launches it again",
       stop: () => deps.exitProcess(1),
+      ...(restart === undefined ? {} : { restart }),
     });
   };
 

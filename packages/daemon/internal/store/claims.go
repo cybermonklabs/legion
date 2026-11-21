@@ -53,7 +53,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.update_left_round, c.provider_error_run, c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
-	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
+	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at, c.reach, c.relaunched_at,
+	c.relaunch_generation,
 	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
@@ -95,69 +96,6 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 // its transaction has committed.
 func (s *Store) PutClaimTx(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
 	return s.putClaim(ctx, tx, c)
-}
-
-// PutClaimActivity writes the four activity columns of token's claim row and nothing else: what
-// that claim's session last reported of what it is doing (INFRA-945). The report is no part of
-// the claim's machine state — it arrives between a machine's writes, and the machine's in-memory
-// claim does not carry it — so one write of the whole row would erase every report sent since
-// that machine read its claim; the claim's own writes carry no report and leave these columns
-// alone but for a launch's, which clears them (putClaim), and the idle rule reads them through
-// its own view (IdleClaim).
-//
-// It writes only onto the launch the report belongs to, generation: a report of the claim's
-// earlier launch — a dead process's, authenticated just before the relaunch — is never written
-// over the launch's clear and the new process's empty report, since the update's own condition
-// names the generation.
-//
-// A report older than the one recorded is dropped rather than written: a session fires its
-// reports without an in-flight guard, so an earlier reading can land after a later one, and the
-// pod would then be released on a reading the session has already replaced.
-//
-// It answers whether the store held the claim at generation when the statement began, which is
-// not always whether it wrote. The answer is the outer select's, read from the snapshot the
-// statement took as it began, while an update that waits on a row lock checks its condition
-// again against the row the lock's holder committed (Postgres's READ COMMITTED). So a report of
-// the earlier launch whose statement began after the launch's write committed finds no row at
-// generation and is answered unknown, as the route answers a secret of a launch that is gone;
-// and one whose update waited behind that write's row lock writes nothing, since the row it
-// reads again is at the next generation, and is answered known all the same, so the route
-// answers it 204. A report dropped as older than the one recorded is answered known too.
-//
-// The report's own clock is bounded to the daemon's, as the listener's is (decodeListenerWake):
-// the session chooses every field of what it sends, and one reading dated ahead of the daemon's
-// clock — a session whose host stepped its clock forward, corrected back afterwards — would
-// drop every honest report after it under that same ordering guard, while the stale reading it
-// left behind went on counting as current, background work and all.
-func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, a claim.SessionActivity) (bool, error) {
-	if generation > math.MaxInt64 {
-		// No row holds it (putClaim refuses one), so no launch of the claim is this.
-		return false, nil
-	}
-	var reminder *time.Time
-	if a.Phase.NextReminderAt != nil && !a.Phase.NextReminderAt.IsZero() {
-		at := a.Phase.NextReminderAt.UTC()
-		reminder = &at
-	}
-	at := a.At.UTC()
-	if received := time.Now().UTC(); at.After(received) {
-		at = received
-	}
-	var known bool
-	err := s.pool.QueryRow(ctx, `with reported as (
-		update claims set activity_at = $2, activity_background = $3, activity_kinds = $4,
-			activity_next_reminder_at = $5, updated_at = now()
-		where token = $1 and generation = $6 and (activity_at is null or activity_at <= $2) returning token)
-		select exists (select 1 from claims where token = $1 and generation = $6)`,
-		// Only the three known kinds are kept (claim.BackgroundWork.KnownKinds): they reach the
-		// architect's worker-background-stalled notice and the daemon's log.
-		string(token), at, a.BackgroundWork.Running,
-		strings.Join(a.BackgroundWork.KnownKinds(), ","), reminder, int64(generation),
-	).Scan(&known)
-	if err != nil {
-		return false, fmt.Errorf("put the activity of claim %s: %w", token, err)
-	}
-	return known, nil
 }
 
 // PutClaimStep writes the eight step columns of token's claim row and nothing else: what the
@@ -245,46 +183,6 @@ func (s *Store) ClaimStep(ctx context.Context, token claim.Token) (supervise.Ste
 	step.At, step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
 	step.StartedAt, step.EndedAt = orZero(stepStarted), orZero(stepEnded)
 	return step, nil
-}
-
-// ClaimActivity is the activity report the store holds for launch generation of token's claim
-// (PutClaimActivity's columns, the phase reminder aside), and whether it holds one: what a
-// machine reads of the process it is letting go, which its own claim carries only as the machine
-// read it at boot (supervise.Deps.ClaimActivity, the machine's recordEnd). It is read before the
-// launch's own write, which clears the four columns as it moves the generation (putClaim).
-//
-// Only a report of that launch is answered. The columns hold the report of the launch the row
-// records and of no other — a report is written onto the launch it was authenticated for alone
-// (PutClaimActivity), and the write that moves the generation clears them — so a row at another
-// generation, a row whose launch has reported nothing (activity_at null) and a token no claim
-// holds all answer no report.
-func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation uint64) (supervise.ActivityReport, bool, error) {
-	if generation > math.MaxInt64 {
-		// No row holds it (putClaim refuses one), so no launch of the claim is this.
-		return supervise.ActivityReport{}, false, nil
-	}
-	var (
-		reportedAt *time.Time
-		report     supervise.ActivityReport
-		kinds      string
-	)
-	err := s.pool.QueryRow(ctx, `select activity_at, activity_background, activity_kinds from claims
-		where token = $1 and generation = $2`, string(token), int64(generation)).Scan(&reportedAt, &report.Background, &kinds)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return supervise.ActivityReport{}, false, nil
-	}
-	if err != nil {
-		return supervise.ActivityReport{}, false, fmt.Errorf("read the activity of claim %s at generation %d: %w", token, generation, err)
-	}
-	if reportedAt == nil {
-		return supervise.ActivityReport{}, false, nil
-	}
-	report.At = *reportedAt
-	// Kept comma-joined in the session's order, as scanClaim reads them: no kind is no slice.
-	if kinds != "" {
-		report.Kinds = strings.Split(kinds, ",")
-	}
-	return report, true, nil
 }
 
 // putClaim writes claim c inside tx, the transaction of a claim write and whatever goes with it,
@@ -412,6 +310,25 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
+	// The write that moves the generation is a launch, which mints a new boot token and writes its
+	// hash over the row's (supervise's launchNow). The database keeps the hash it replaces, with
+	// the generation it was minted for, in this same statement (the claims_archive_boot_token
+	// trigger), so the older launch's shim is still known for what it is after a daemon restart
+	// (ClaimByPriorBootTokenHash, R3), and so whatever binary writes the launch keeps it, a daemon
+	// a rollback runs included.
+	//
+	// relaunched_at is the claim's last relaunch on its same session (supervise.Claim.LastRelaunch),
+	// which the relaunch puts on the machine's claim before the launch it makes, so it is written
+	// by that launch's own statement at the latest and never by a write of the keeper's after it:
+	// the record a second relaunch within 6 hours is refused by is written with the relaunch, or
+	// not at all. A write takes the later of the row's moment and its own, so a writer that does
+	// not carry it — a claim admitted again, a fixture — never moves it back.
+	//
+	// relaunch_generation is the generation that relaunch's launch left the claim at
+	// (supervise.Claim.LastRelaunchGeneration), which that launch's own write carries. It
+	// goes with relaunched_at: a write that carries a later relaunch, or the same one, writes it,
+	// null while the relaunch's launch is still to be recorded (0), and a write that carries an
+	// earlier relaunch, or none, leaves the row's own.
 	_, err := db.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
@@ -424,10 +341,11 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
+		relaunched_at, relaunch_generation,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59,
+		$55, $56, $57, $58, $59, $60, $61,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -476,7 +394,11 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		handshake_generation = excluded.handshake_generation,
 		handshake_queued_at = excluded.handshake_queued_at,
 		handshake_confirmed_at = excluded.handshake_confirmed_at,
-		-- The four activity columns (activity_at, activity_background, activity_kinds,
+		-- The later of the two, so no writer moves the claim's last relaunch back (the doc above).
+		relaunched_at = greatest(claims.relaunched_at, excluded.relaunched_at),
+		relaunch_generation = case when excluded.relaunched_at is null or excluded.relaunched_at < claims.relaunched_at
+			then claims.relaunch_generation else excluded.relaunch_generation end,
+		-- The five activity columns (activity_at, activity_sent_at, activity_background, activity_kinds,
 		-- activity_next_reminder_at) and the eight step columns (step_at, turn_started_at,
 		-- step_tool, step_call_id, step_args_bytes, step_args_hash, step_started_at,
 		-- step_ended_at) are no part of a claim's write: PutClaimActivity and PutClaimStep own
@@ -495,6 +417,8 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		-- view of another launch is a process the row's report does not describe.
 		activity_at = case when claims.generation <> excluded.generation
 			then null else claims.activity_at end,
+		activity_sent_at = case when claims.generation <> excluded.generation
+			then null else claims.activity_sent_at end,
 		activity_background = case when claims.generation <> excluded.generation
 			then false else claims.activity_background end,
 		activity_kinds = case when claims.generation <> excluded.generation
@@ -515,11 +439,23 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
+		instant(c.LastRelaunch), relaunchGeneration(c.LastRelaunchGeneration),
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
 	return nil
+}
+
+// relaunchGeneration is a relaunch's launch generation as its nullable column: 0 is a launch not
+// recorded yet, which SQL says as null. A generation fits a bigint, as upsertClaim checks of the
+// claim's own.
+func relaunchGeneration(generation uint64) *int64 {
+	if generation == 0 || generation > math.MaxInt64 {
+		return nil
+	}
+	g := int64(generation)
+	return &g
 }
 
 // Claims reads every claim with its pending delivery, in token order. A stored locator that does
@@ -878,6 +814,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		stepStarted, stepEnded      *time.Time
 		reportedAt, reminderAt      *time.Time
 		kinds                       string
+		reach                       []byte
+		relaunchedAt                *time.Time
+		relaunchGen                 *int64
 	)
 	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
 		&c.SessionFile, &locator, &state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
@@ -895,7 +834,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
-		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
+		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt, &reach, &relaunchedAt, &relaunchGen,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &roundNamed)
@@ -905,6 +844,14 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	if err != nil {
 		return supervise.Claim{}, fmt.Errorf("read claim: %w", err)
 	}
+	// The column is never null: '{}' is a claim nothing has been read of yet (PutClaimReach). The
+	// claim's last relaunch is a column of its own beside it, which the claim's own write carries
+	// (putClaim), and no part of the record the keeper writes.
+	if err := json.Unmarshal(reach, &c.Reach); err != nil {
+		return supervise.Claim{}, fmt.Errorf("read claim %s: decode its reach record: %w", token, err)
+	}
+	c.LastRelaunch = orZero(relaunchedAt)
+	c.LastRelaunchGeneration = uint64(orZeroInt(relaunchGen))
 	// An empty array is a claim no row has given a task, which the supervisor holds as no slice at
 	// all: the two read the same everywhere, and a restored claim equals the one that was written.
 	if len(c.DeliveredRows) == 0 {

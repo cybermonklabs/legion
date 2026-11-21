@@ -3,10 +3,13 @@ package claudebridge
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -19,17 +22,35 @@ type reportingRig struct {
 	*rig
 	reports chan claim.TurnOutcomeRequest
 	answer  func(claim.TurnOutcomeRequest) claim.TurnOutcomeResponse
+	// daemon is the stub, and address where the pane is told it listens. listening is how the
+	// stub of a daemon that is down at first comes to listen there (refusingPort).
+	daemon    *httptest.Server
+	address   string
+	listening func() net.Listener
 }
 
 const testBootToken = "boot-token-of-this-launch"
 
+// newReportingRig is a reportingRig whose daemon serves from the start.
 func newReportingRig(t *testing.T, args ...string) *reportingRig {
+	t.Helper()
+	return startReportingRig(t, true, args...)
+}
+
+// newDownReportingRig is a reportingRig whose daemon is not serving: every connection to its
+// address is refused, as a restarting daemon's is, until serve.
+func newDownReportingRig(t *testing.T, args ...string) *reportingRig {
+	t.Helper()
+	return startReportingRig(t, false, args...)
+}
+
+func startReportingRig(t *testing.T, serving bool, args ...string) *reportingRig {
 	t.Helper()
 	r := &reportingRig{
 		reports: make(chan claim.TurnOutcomeRequest, 16),
 		answer:  func(claim.TurnOutcomeRequest) claim.TurnOutcomeResponse { return claim.TurnOutcomeResponse{} },
 	}
-	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+	r.daemon = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/legion/v1/claims/turn-outcome" {
 			t.Errorf("the bridge posted to %s, want the turn-outcome route", request.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -49,17 +70,77 @@ func newReportingRig(t *testing.T, args ...string) *reportingRig {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(r.answer(report))
 	}))
-	t.Cleanup(daemon.Close)
+	if serving {
+		r.address = r.daemon.Listener.Addr().String()
+		r.listen(t, r.daemon.Listener)
+	} else {
+		if err := r.daemon.Listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		r.address, r.listening = refusingPort(t)
+	}
 	tokenFile := filepath.Join(t.TempDir(), "boot-token")
 	if err := os.WriteFile(tokenFile, []byte(testBootToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	r.rig = newRigWithEnv(t, []string{
-		"LEGION_DAEMON_URL=" + daemon.URL,
+		"LEGION_DAEMON_URL=http://" + r.address,
 		"LEGION_BOOT_TOKEN_FILE=" + tokenFile,
 		"LEGION_GENERATION=4",
 	}, args...)
 	return r
+}
+
+// listen has the stub daemon serve on listener from now on.
+func (r *reportingRig) listen(t *testing.T, listener net.Listener) {
+	r.daemon.Listener = listener
+	r.daemon.Start()
+	t.Cleanup(r.daemon.Close)
+}
+
+// serve has the daemon of a newDownReportingRig serve at its address from now on.
+func (r *reportingRig) serve() {
+	r.t.Helper()
+	r.listen(r.t, r.listening())
+}
+
+// refusingPort holds a loopback port bound and not listening for the rest of the test: every
+// connection to it is refused, as a restarting daemon's port refuses it, and since the port stays
+// bound no other socket of the machine is given it meanwhile, as a port a test closed to refuse
+// connections and listened on again later could be. listen has the port listen from then on,
+// and is the listener's only maker.
+func refusingPort(t *testing.T) (address string, listen func() net.Listener) {
+	t.Helper()
+	syscall.ForkLock.RLock()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err == nil {
+		syscall.CloseOnExec(fd)
+	}
+	syscall.ForkLock.RUnlock()
+	if err != nil {
+		t.Fatalf("make the daemon's socket: %v", err)
+	}
+	socket := os.NewFile(uintptr(fd), "the daemon's port")
+	t.Cleanup(func() { _ = socket.Close() })
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatalf("bind the daemon's port: %v", err)
+	}
+	bound, err := syscall.Getsockname(fd)
+	if err != nil {
+		t.Fatalf("read the daemon's bound port: %v", err)
+	}
+	address = net.JoinHostPort("127.0.0.1", strconv.Itoa(bound.(*syscall.SockaddrInet4).Port))
+	return address, func() net.Listener {
+		t.Helper()
+		if err := syscall.Listen(fd, syscall.SOMAXCONN); err != nil {
+			t.Fatalf("listen on the daemon's port %s: %v", address, err)
+		}
+		listener, err := net.FileListener(socket)
+		if err != nil {
+			t.Fatalf("serve on the daemon's port %s: %v", address, err)
+		}
+		return listener
+	}
 }
 
 // reported is the next turn the bridge reported.
@@ -195,4 +276,31 @@ func TestABridgeWithNoDaemonReportsNothingAndStillBridges(t *testing.T) {
 	r.expect("agent_start", nil)
 	r.untilTurnEnds()
 	r.quiet()
+}
+
+// A report the daemon cannot take because it is not serving is not lost: the bridge waits for a
+// daemon that refuses the connection, as a restarting one does, as long as an Oh My Pi worker's
+// call waits (pi-shared's retryWhileDaemonRestarts, R1), and the report lands once the daemon
+// serves again. The daemon here refuses for longer than the 15 s that one report's post was
+// bounded by, on a port it holds for the whole run (refusingPort).
+func TestATurnOutcomeWaitsForADaemonThatRefusesAndLandsOnceItServes(t *testing.T) {
+	r := newDownReportingRig(t, "-p", "--resume", sessionID)
+
+	r.prompt("p1", "say hello")
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+	// The daemon's port is bound and not listening meanwhile, so every post the bridge makes is
+	// refused.
+	time.Sleep(16 * time.Second)
+	r.serve()
+
+	select {
+	case report := <-r.reports:
+		want := claim.TurnOutcomeRequest{BootToken: testBootToken, Generation: 4, Sequence: 1, Outcome: claim.TurnClean}
+		if report != want {
+			t.Fatalf("the turn was reported %+v, want %+v", report, want)
+		}
+	case <-time.After(time.Minute):
+		t.Fatalf("the daemon refused for 16 s and then served for a minute, and the turn's outcome never reached it; the bridge logged:\n%s", r.log)
+	}
 }

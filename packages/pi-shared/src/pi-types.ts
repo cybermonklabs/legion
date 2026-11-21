@@ -254,7 +254,7 @@ export interface AsyncJobDelivery {
  * Read out of Oh My Pi 18.16.0-sami.20261105-032528 (the fork's build of 2026-11-05), which builds
  * the extension context with `getContextUsage: () => this.#d()` over a session method answering
  * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`. The pinned
- * build (18.18.6-sami.20261119-162325, `.omp-pin`) answers undefined only before its runner is
+ * build (18.18.6-sami.20261120-192530, `.omp-pin`) answers undefined only before its runner is
  * initialised, and `contextWindow: 0` for a model with no window or for no model at all.
  * `percent` is nullable because the older build's status-line startup wiring answered
  * `{tokens: 0, contextWindow, percent: null}`: a reader of these figures handles a host that

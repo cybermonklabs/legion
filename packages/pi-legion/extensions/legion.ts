@@ -12,7 +12,11 @@ import {
   sessionEnvoySettings,
 } from "@legion/envoy-client/session-settings";
 import { createEnvoyClient } from "@legion/envoy-client/transport";
-import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import {
+  createLegionDaemonClient,
+  type DaemonRestartRetry,
+  type LegionDaemonClient,
+} from "@legion/pi-shared/daemon-client";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
 import { nextFallbackModel } from "@legion/pi-shared/fallback-chain";
 import {
@@ -24,10 +28,12 @@ import {
 import { findPushedBranchHead, paneHandoffReport } from "@legion/pi-shared/handoff-record";
 import { matchInjectedUserTurn } from "@legion/pi-shared/injected-user-turns";
 import {
+  CUT_TURN_NOTE_BOUND_MS,
   ENVOY_PLUGIN_INTERFACE_VERSION,
   LEGACY_LEGION_LOADED_KEY,
   LEGION_PLUGIN_LOADED_KEY,
   readEnvoyPluginInterface,
+  waitForCutTurnNote,
 } from "@legion/pi-shared/interface";
 import { createPhaseReminder, type EnvoyPublish } from "@legion/pi-shared/phase-reminder";
 import {
@@ -45,6 +51,7 @@ import {
   sameSessionActivity,
   sessionActivity,
   sessionActivityRequest,
+  turnActivityHeartbeatMs,
 } from "@legion/pi-shared/session-activity";
 import { stallLimits } from "@legion/pi-shared/stall-limits";
 import {
@@ -139,6 +146,17 @@ export function setLegionCapabilitySendTimeoutForTests(ms: number | undefined): 
 let roleClaimRetryFirstDelayMs: number | undefined;
 export function setLegionClaimRetryDelayForTests(ms: number | undefined): void {
   roleClaimRetryFirstDelayMs = ms;
+}
+
+// The clock the claim boot waits out a daemon that is not serving on (`createClaimSession`'s
+// `restart`, R1). Production never sets this, so the boot waits on the real clock for up to an
+// hour; a test sets a virtual one, since that wait's backoff alone is past Bun's 5 s default for a
+// single test, and a boot left waiting would outlive its test.
+let claimBootRestart: Pick<DaemonRestartRetry, "now" | "sleep"> | undefined;
+export function setLegionClaimBootRestartForTests(
+  restart: Pick<DaemonRestartRetry, "now" | "sleep"> | undefined
+): void {
+  claimBootRestart = restart;
 }
 
 async function persistedTranscript(
@@ -271,11 +289,32 @@ export default function legionExtension(pi: PiApi): void {
     return noticePublisher.publish;
   };
   const phaseReminder = createPhaseReminder({
-    sendReminder: (reminder) =>
+    // A resumed session whose previous process ended in a turn is told so before the first turn it
+    // runs, whatever starts that turn (R2). The Envoy entry sends that note at `session_start` and
+    // the host writes it later, so a reminder that would open a turn first waits for it, for
+    // `CUT_TURN_NOTE_BOUND_MS` at most, and then goes with a warning.
+    sendReminder: async (reminder) => {
+      const reading = readEnvoyPluginInterface();
+      const session = paneContext?.sessionManager.getSessionId() ?? "";
+      const waited = await waitForCutTurnNote(
+        reading.kind === "present" ? reading.iface.cutTurnNote : undefined,
+        session,
+        CUT_TURN_NOTE_BOUND_MS
+      );
+      if (waited === "bound") {
+        logger.warn(
+          "legion: the cut-turn note was not written in time; the reminder goes ahead of it",
+          {
+            sessionID: session,
+            waitedMs: CUT_TURN_NOTE_BOUND_MS,
+          }
+        );
+      }
       pi.sendMessage(
         { customType: "legion-phase-reminder", content: reminder, display: true },
         { deliverAs: "steer", triggerTurn: true }
-      ),
+      );
+    },
     armTimer: (callback, delayMs) => paneContext?.setTimeout(callback, delayMs),
     saveEntry: (entry) => pi.appendEntry(PHASE_STALL_ENTRY, entry),
     claim: paneClaim,
@@ -330,7 +369,8 @@ export default function legionExtension(pi: PiApi): void {
    * INFRA-945: what this pane is doing, which the daemon reads to decide whether its issue pod
    * may be released. A report is sent at every settle, change or no change — the daemon releases
    * no claim whose last report predates its last turn, so a quiet turn that sent nothing would
-   * hold the pod for ever — and between turns only when the report's content changes.
+   * hold the pod for ever — and between turns only when the report's content changes. Inside a
+   * turn it goes on a change and every 5 minutes whatever it says (`startTurnHeartbeat`, below).
    *
    * Oh My Pi fires no event for background work, so what it is running is read rather than
    * waited for: `SESSION_ACTIVITY_PERIOD_MS` apart, the host's own managed interval reads
@@ -346,10 +386,15 @@ export default function legionExtension(pi: PiApi): void {
     context: SessionContext,
     options: { readonly onlyWhenChanged: boolean }
   ): Promise<void> => {
-    const claim = claimSession.capability(context.sessionManager.getSessionId());
-    if (claim === undefined) return;
-    // An architect arms no phase reminder, so it waits on no reminder of its own; what it
-    // reports is its background work.
+    const sessionID = context.sessionManager.getSessionId();
+    const claim = claimSession.capability(sessionID);
+    // The controller the daemon launched reports too (R5): the daemon's relaunch of it reads its
+    // last report, as the controller's `relaunch` of a role reads the role's. Its claim is no
+    // issue's role, so the request carries its registration's own token.
+    const controller = claim === undefined ? controllerSession.activityClaim(sessionID) : undefined;
+    if (claim === undefined && controller === undefined) return;
+    // An architect and the controller arm no phase reminder, so neither waits on a reminder of
+    // its own; what each reports is its background work.
     const report = sessionActivity(
       asyncJobKinds(context.getAsyncJobSnapshot?.() ?? null),
       phaseWorkerSession(context) ? phaseReminder.phaseWake() : { nextReminderAt: null }
@@ -361,11 +406,10 @@ export default function legionExtension(pi: PiApi): void {
     ) {
       return;
     }
-    const request = sessionActivityRequest({
-      project: process.env.LEGION_PROJECT,
-      claim,
-      report,
-    });
+    const request =
+      claim === undefined
+        ? controller && { ...controller, activity: report }
+        : sessionActivityRequest({ project: process.env.LEGION_PROJECT, claim, report });
     if (request === undefined) return;
     lastActivity = report;
     try {
@@ -375,10 +419,42 @@ export default function legionExtension(pi: PiApi): void {
       // again whether or not its content moved.
       lastActivity = undefined;
       logger.warn("legion: this session's activity report did not reach the daemon", {
-        issue: claim.issue,
+        claim: request.claimToken,
         error: messageFor(error),
       });
     }
+  };
+
+  /**
+   * R5: while a turn of this session is open, its report goes again every
+   * `TURN_ACTIVITY_HEARTBEAT_MS` (5 minutes; `@legion/pi-shared/session-activity`), whatever it
+   * says. The daemon's relaunch guard reads a report made in the turn in the last 20 minutes as
+   * this process still running that turn, since a `wait` on a named `bash` service blocks with no
+   * step on the pinned Oh My Pi and no report names the service. The controller the daemon launched
+   * sends it too: the daemon's relaunch of it reads the same guard.
+   *
+   * **It runs on this process's own timer, never the host's**: what it says is that this event
+   * loop still runs, so a process that is frozen or whose loop is held sends none, and the guard
+   * lets it through 20 minutes after its last report. A host interval could stop on its own (the
+   * reason pi-envoy's registration watchdog runs on a timer of its own too) and would read as a
+   * frozen process. The timer is unreferenced, so it holds no process open. It starts at the
+   * turn's `agent_start` and stops at its `agent_end` and at `session_shutdown`; a `task`
+   * subagent's events are not this session's turns (`subagentEvent`) and move it neither way.
+   */
+  const turnHeartbeatMs = turnActivityHeartbeatMs(process.env, logger);
+  let turnHeartbeat: Timer | undefined;
+  const stopTurnHeartbeat = (): void => {
+    if (turnHeartbeat === undefined) return;
+    clearInterval(turnHeartbeat);
+    turnHeartbeat = undefined;
+  };
+  const startTurnHeartbeat = (): void => {
+    stopTurnHeartbeat();
+    const beat = setInterval(() => {
+      if (paneContext !== undefined) void reportActivity(paneContext, { onlyWhenChanged: false });
+    }, turnHeartbeatMs);
+    beat.unref();
+    turnHeartbeat = beat;
   };
 
   let daemonClient: LegionDaemonClient | undefined;
@@ -414,6 +490,7 @@ export default function legionExtension(pi: PiApi): void {
     exitProcess: (code) => exitProcess(code),
     signal: claimsEnded.signal,
     roleClaimRetryFirstDelayMs: () => roleClaimRetryFirstDelayMs,
+    restart: () => claimBootRestart,
   });
   const controllerSession = createControllerSession({
     daemon: roleDaemon,
@@ -597,6 +674,9 @@ export default function legionExtension(pi: PiApi): void {
   pi.on("agent_end", async (_event, context) => {
     if (subagentEvent(context)) return;
     stallWatch?.turnEnded();
+    // The turn is over, so its own report stops (`startTurnHeartbeat`); the settle reports for
+    // itself (`session_stop`), and between turns a report goes on a change alone.
+    stopTurnHeartbeat();
   });
 
   /**
@@ -658,10 +738,17 @@ export default function legionExtension(pi: PiApi): void {
     // mints its own controller grant.
     if (session.kind === "controller") {
       await controllerSession.handleSessionStart(context);
-      // The controller reports no activity — the daemon releases no pod of its — so it has no
-      // managed interval of its own, and the stall watch takes one here: its session runs tool
+      // The daemon releases no pod of the controller's, but the controller the daemon launched
+      // reports its activity between turns all the same, since the daemon's relaunch of it reads
+      // that report; any other controller has no claim to report under, and the report returns
+      // at once. The stall watch rides the same interval: the controller's session runs tool
       // calls that can stick like any other's.
-      context.setInterval(stallSweep, SESSION_ACTIVITY_PERIOD_MS);
+      context.setInterval(() => {
+        if (paneContext !== undefined) {
+          void reportActivity(paneContext, { onlyWhenChanged: true });
+        }
+        stallSweep();
+      }, SESSION_ACTIVITY_PERIOD_MS);
     } else {
       // A resume whose role launcher found the workspace recreated since the session was last
       // written (src/workspace-recreated.ts) is told so in a message saved to the session ahead of
@@ -788,10 +875,19 @@ export default function legionExtension(pi: PiApi): void {
     // turn of this session (`subagentEvent`), and the controller's own claim is not this one's:
     // it sends its first turn and claims its role after it (`src/controller-session.ts`), and
     // this signal reaches a claim session that booted nothing there.
-    if (!subagentEvent(context)) claimSession.firstTurnStarted();
+    if (subagentEvent(context)) return;
+    claimSession.firstTurnStarted();
+    // R5: the turn's own report goes every 5 minutes until the turn ends (`startTurnHeartbeat`).
+    // A person's own session is no claim's and reports nothing, and a subagent's instance of this
+    // module took no pane at its start, so neither runs the timer.
+    if (paneContext !== undefined && classifySession(process.env).kind !== "not-legion") {
+      startTurnHeartbeat();
+    }
   });
   pi.on("session_shutdown", async (_event, context) => {
     clearStartupTurn(context.sessionManager.getSessionId());
+    // A session going down sends no report of a turn any more.
+    stopTurnHeartbeat();
     // Whatever this session had open is not this watch's business any more.
     stallWatch?.sessionChanged();
     // A role claim the boot or the controller is still making again makes no more: the session it
@@ -918,7 +1014,8 @@ export default function legionExtension(pi: PiApi): void {
     if (event.signal.aborted) return undefined;
     if (!phaseWorkerSession(context)) {
       // An architect has no phase of its own to settle, and its pod is released on the same rule
-      // as a worker's, so its turn ends with a report of its own.
+      // as a worker's, so its turn ends with a report of its own; so does the daemon's own
+      // controller's, whose relaunch reads it.
       await reportActivity(context, { onlyWhenChanged: false });
       return undefined;
     }
@@ -974,14 +1071,16 @@ export default function legionExtension(pi: PiApi): void {
         onUpdateAnswered,
         // The pane's own environment: its workspace and issue; PATH's jj, the one its shell runs;
         // and the Dispatch pi-envoy's session reads (Oh My Pi's rule, in the same process), which
-        // the pane's `dispatch handoff-write` wrote the record to.
-        handoffReport: (phase, role) =>
+        // the pane's `dispatch handoff-write` wrote the record to. The read carries the attempt's
+        // signal, so the agent's abort of the call stops its jj and ends its Dispatch request; the
+        // read is no request to the daemon, so the attempt's limit does not run while it does.
+        handoffReport: (phase, role, signal) =>
           paneHandoffReport(
             sessionConfigFile("omp", process.env),
             process.env,
             process.cwd(),
             currentSessionID()
-          )(phase, role),
+          )(phase, role, signal),
         branchHead: () => findPushedBranchHead({ env: process.env }),
         resolveDocument: async (issue, reference) => {
           // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.

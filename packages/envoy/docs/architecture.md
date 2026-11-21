@@ -105,7 +105,7 @@ and from nothing else — never from whether a cache, a list or the bucket's key
 | State | Rule |
 | --- | --- |
 | `live` | It registered within `ENVOY_SESSION_LIVE_WINDOW` (a Go duration, default 5m) |
-| `unresponsive` | Its last registration is older than the live window and newer than `ENVOY_SESSION_GONE_HORIZON` (a Go duration, default 1h). It is not dead: it keeps its role claims and its issue claims, a message sent to it is stored and reaches it when it answers again, and nothing starts a replacement for it |
+| `unresponsive` | Its last registration is older than the live window and newer than `ENVOY_SESSION_GONE_HORIZON` (a Go duration, default 1h). It is not dead: it keeps its role claims and its issue claims, a message sent to it is stored and reaches it when it answers again, and nothing starts a replacement for it while its last registration is 20 minutes old or less. Past that, Legion's controller relaunches a claim that session holds on that same session, which starts the claim's process again and replaces no session |
 | `gone` | Its last registration is older than the gone horizon, or the registry holds no record of it |
 
 Every list row, every one-session lookup, every send or publish refusal that names a session and

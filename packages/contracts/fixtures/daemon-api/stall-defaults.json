@@ -3,6 +3,7 @@
   "callBoundMs": 3600000,
   "stepMs": 120000,
   "declaredDeadlineMostMs": 3600000,
+  "daemonWaitBudgetMs": 3600000,
   "callBoundMsByRole": {
     "architect": 3600000,
     "controller": 3600000,

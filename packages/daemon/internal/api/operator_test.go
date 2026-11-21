@@ -1376,6 +1376,51 @@ func TestListShowsTheStoredStepOfASupervisedClaim(t *testing.T) {
 	}
 }
 
+// The mark of a claim Envoy cannot reach that the listing and every answer about one claim show is
+// the store's, as the step record is. The reach keeper writes the mark through a narrow call of its
+// own (store.PutClaimReach) and never into the machine's claim, so a machine's copy is the mark as
+// it stood when that machine was built: an answer from it would show a claim marked at this
+// daemon's boot as marked long after its session registered again, and a claim marked since as
+// reachable.
+func TestOperatorAnswersShowTheStoredReachOfASupervisedClaim(t *testing.T) {
+	h := newHarness(t)
+	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	if _, supervised := h.supervisor.Machine(architectToken); !supervised {
+		t.Fatal("the spawned claim has no machine: this case is about what a supervised claim shows")
+	}
+	since := time.Date(2026, 11, 17, 11, 8, 20, 0, time.UTC)
+	marked := supervise.Reach{Session: "ses_architect", Since: since, LastSeen: since.Add(-20 * time.Minute)}
+	if known, err := h.store.PutClaimReach(h.ctx, architectToken, marked); err != nil || !known {
+		t.Fatalf("mark the supervised claim = %t, %v", known, err)
+	}
+	listed := func() *UnreachableView {
+		t.Helper()
+		var got OperatorClaims
+		decodeInto(t, h.operator(http.MethodGet, "/legion/v1/operator/claims", nil), &got)
+		if len(got.Claims) != 1 {
+			t.Fatalf("list answered %+v, want the one claim", got.Claims)
+		}
+		return got.Claims[0].Unreachable
+	}
+	if got, want := listed(), UnreachableViewOf(marked); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the listed mark = %+v, want the mark the store holds, %+v", got, want)
+	}
+	suspended := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/suspend", nil)
+	var answer OperatorClaim
+	decodeInto(t, suspended, &answer)
+	if want := UnreachableViewOf(marked); !reflect.DeepEqual(answer.Unreachable, want) {
+		t.Fatalf("the suspend answer's mark = %+v, want the mark the store holds, %+v", answer.Unreachable, want)
+	}
+
+	// The session registers again: the keeper ends the episode in the store alone.
+	if known, err := h.store.PutClaimReach(h.ctx, architectToken, marked.EndEpisode()); err != nil || !known {
+		t.Fatalf("clear the mark = %t, %v", known, err)
+	}
+	if got := listed(); got != nil {
+		t.Fatalf("the listed mark = %+v after the store cleared it, want none", got)
+	}
+}
+
 // Every operator answer about one claim carries the record the store holds, as the listing
 // does: the routes an operator runs on a worker that has stopped moving are these, and an
 // answer built from the machine's own copy would print `-`, or a call hours old, on the very

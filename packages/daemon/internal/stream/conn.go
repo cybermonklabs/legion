@@ -13,6 +13,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -33,7 +34,8 @@ var (
 )
 
 // RefusedError is the far side answering a request with a refusal — OMP's `{success:false}`, or
-// a shim's failed adoption, enrollment or token read. The connection is fine; the agent said no.
+// a shim's failed adoption, enrollment, token read, bundle or workspace read. The connection is
+// fine; the agent said no.
 //
 // A refused prompt is runtime.ErrPromptRefused, which is what the supervisor charges a prompt
 // budget on unless Reason is OMP's busy answer (runtime.RefusalReason); a refused adoption is
@@ -83,8 +85,11 @@ const protocolVersion = 2
 type Conn struct {
 	// seq is the order the listener registered the connection in (Sequence).
 	seq uint64
-	// generation is the launch the connection's hello was registered for (Hello.Generation),
-	// which each Answered it reads carries.
+	// generation is the launch this connection's boot token was minted for, the one its hello was
+	// registered for (Hello.Generation): which process of the claim is on the other end. It is what
+	// tells a second process of the claim's current generation from the older process of a lock-out
+	// (listener.refuseBound), whose close a Closed event is (R3), and which launch each Answered it
+	// reads carries.
 	generation uint64
 	claim      claim.Token
 	nc         net.Conn
@@ -92,6 +97,10 @@ type Conn struct {
 	rpcTimeout time.Duration
 	log        *slog.Logger
 	events     *eventQueue
+	// heard counts the lines the reader has read from the peer, whatever they hold: a count that
+	// moved says a process is still writing on the other end. The listener reads it for an older
+	// generation's connection it has told to stop (lockout.go).
+	heard atomic.Uint64
 
 	mu      sync.Mutex
 	pending map[string]pendingRequest
@@ -124,9 +133,10 @@ type ackedPrompt struct {
 	deliveryID string
 }
 
-func newConn(nc net.Conn, token claim.Token, rpcTimeout time.Duration, log *slog.Logger, events *eventQueue) *Conn {
+func newConn(nc net.Conn, token claim.Token, generation uint64, rpcTimeout time.Duration, log *slog.Logger, events *eventQueue) *Conn {
 	return &Conn{
 		claim:       token,
+		generation:  generation,
 		nc:          nc,
 		writer:      shimwire.NewWriter(connWriter{nc: nc, timeout: rpcTimeout}),
 		rpcTimeout:  rpcTimeout,
@@ -319,6 +329,39 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 	return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeBundleWorkspace, answer.FrameType())
 }
 
+// WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag on
+// origin holds. The shim runs its two jj reads within timeout; the answer is awaited for that plus
+// the RPC timeout, the round trip. A shim built before the read forwards it to OMP, whose
+// unknown-command answer is a refusal like the shim's own.
+func (c *Conn) WorkspaceWork(ctx context.Context, issue string, timeout time.Duration) (runtime.WorkspaceWork, error) {
+	id := rand.Text()
+	frame := shimwire.WorkspaceWork{ID: id, Issue: issue, TimeoutMs: int(timeout.Milliseconds())}
+	if err := frame.Validate(); err != nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+	}
+	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
+	if err != nil {
+		return runtime.WorkspaceWork{}, err
+	}
+	switch answer := answer.(type) {
+	case shimwire.WorkspaceWorkResult:
+		if err := answer.Validate(); err != nil {
+			return runtime.WorkspaceWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+		}
+		if !answer.OK {
+			return runtime.WorkspaceWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeWorkspaceWork, Reason: answer.Error}
+		}
+		return runtime.WorkspaceWork{Head: answer.Head, Changed: answer.Changed, Commits: answer.Commits, Count: answer.Count}, nil
+	case shimwire.Response:
+		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
+		// it does not know.
+		if !answer.Success {
+			return runtime.WorkspaceWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeWorkspaceWork, Reason: answer.Error}
+		}
+	}
+	return runtime.WorkspaceWork{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeWorkspaceWork, answer.FrameType())
+}
+
 // AgentSecretsEnrollment hands the shim the broker's enrollment id for its pod; the shim writes it
 // beside the key and starts the lease renewer, and answers. Bounded by the RPC timeout: a file
 // write, not a command.
@@ -446,8 +489,8 @@ func (c *Conn) write(frame shimwire.Frame) error {
 	return nil
 }
 
-// read is the connection's reader: every line from the shim, rpc_chunk sequences reassembled,
-// dispatched in wire order until the stream ends.
+// read is the connection's reader: every line from the shim counted (heard), rpc_chunk sequences
+// reassembled, dispatched in wire order until the stream ends.
 func (c *Conn) read(src io.Reader) {
 	reader := shimwire.NewReader(src)
 	var chunks shimwire.Reassembler
@@ -459,6 +502,7 @@ func (c *Conn) read(src io.Reader) {
 			}
 			return
 		}
+		c.heard.Add(1)
 		frame, err := shimwire.Decode(line)
 		if err != nil {
 			c.logNotAFrame(line, err)
@@ -561,6 +605,8 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 	case shimwire.AgentSecretsTokenResult:
 		c.answerShim(frame.ID, frame)
 	case shimwire.BundleWorkspaceResult:
+		c.answerShim(frame.ID, frame)
+	case shimwire.WorkspaceWorkResult:
 		c.answerShim(frame.ID, frame)
 	}
 }

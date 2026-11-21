@@ -94,9 +94,12 @@ const REPORT_PERIOD_MS = 5_000;
 const QUIET_WATCH_MS = 3 * REPORT_PERIOD_MS + 2_000;
 
 const cleanup: Cleanup = [];
+// The bound is 30 s rather than bun's 5 s: the removal of the scratch root, whose workspace the
+// named service each case starts writes into, was measured at 4,579 ms on omp 18.16.0 on
+// 2026-11-17, and a removal that outran the 5 s failed a case whose every assertion had passed.
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, 30_000);
 
 /** A Messages request's whole conversation, as one string to find texts in. */
 function conversation(request: Request): string {
@@ -159,6 +162,13 @@ interface RolePane {
   readonly workspace: string;
   /** Waits for a held Messages request `match` accepts that the case has not taken yet. */
   next(what: string, match: (request: Request) => boolean): Promise<Held>;
+  /** How many Messages requests `match` accepts the pane has made, taken or not. */
+  requested(match: (request: Request) => boolean): number;
+  /** Answers every held Messages request `match` accepts with `blocks` at once, from now on and
+   *  any already held: the loop a live agent runs when a `wait` comes back with nothing done. */
+  answerEach(match: (request: Request) => boolean, blocks: readonly Block[]): void;
+  /** Sends the omp process `signal`: SIGSTOP holds it where it stands, SIGCONT lets it go on. */
+  signal(signal: NodeJS.Signals): void;
   /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
@@ -172,9 +182,10 @@ interface RolePane {
  * unchanging — so a report the pane sends between turns is one its background work changed. Every
  * Messages request is held for the case except a side request — the task label, a self-check, a
  * skill's routing-hint compression — which is answered at once with one word, since none of them
- * is a turn and a held one would stall the host inside the work the case is reading.
+ * is a turn and a held one would stall the host inside the work the case is reading. `env` is
+ * added to the role's environment, which is how a case shortens the turn heartbeat.
  */
-async function startRolePane(): Promise<RolePane> {
+async function startRolePane(env: Record<string, string> = {}): Promise<RolePane> {
   const { binary, nats } = setup();
   const registered: Record<string, unknown> = JSON.parse(
     await readFile(
@@ -185,6 +196,11 @@ async function startRolePane(): Promise<RolePane> {
   const { home, workspace, sessions } = await ompRoot(binary, "legion-activity-", cleanup);
 
   const held: Held[] = [];
+  const taken = new Set<Held>();
+  /** What `answerEach` answers at once: every held request `match` accepts, with `blocks`. */
+  let answering:
+    | { readonly match: (request: Request) => boolean; readonly blocks: readonly Block[] }
+    | undefined;
   const reports: LegionSessionActivityBody[] = [];
   const malformed: string[] = [];
   let sides = 0;
@@ -201,12 +217,17 @@ async function startRolePane(): Promise<RolePane> {
       }
       const answer = Promise.withResolvers<string>();
       const index = held.length;
-      held.push({
+      const entry: Held = {
         request,
         reply(blocks) {
           answer.resolve(messageStream(blocks, `msg_${index}`));
         },
-      });
+      };
+      held.push(entry);
+      if (answering?.match(request)) {
+        taken.add(entry);
+        entry.reply(answering.blocks);
+      }
       return new Response(await answer.promise, {
         headers: { "content-type": "text/event-stream" },
       });
@@ -293,6 +314,7 @@ async function startRolePane(): Promise<RolePane> {
         LEGION_BOOT_TOKEN: "act-boot",
         LEGION_STATE_DIR: path.join(workspace, ".state"),
         LEGION_WORKSPACE: workspace,
+        ...env,
       },
       onFrame: () => undefined,
     },
@@ -309,7 +331,6 @@ async function startRolePane(): Promise<RolePane> {
     closed
   );
 
-  const taken = new Set<Held>();
   return {
     reports,
     malformed,
@@ -323,6 +344,16 @@ async function startRolePane(): Promise<RolePane> {
       taken.add(request);
       return request;
     },
+    requested: (match) => held.filter((candidate) => match(candidate.request)).length,
+    answerEach(match, blocks) {
+      answering = { match, blocks };
+      for (const candidate of held) {
+        if (taken.has(candidate) || !match(candidate.request)) continue;
+        taken.add(candidate);
+        candidate.reply(blocks);
+      }
+    },
+    signal: (signal) => rpc.kill(signal),
     until: (what, probe) => until(what, probe, closed),
   };
 }
@@ -464,6 +495,103 @@ test.skipIf(skip)(
         `the task subagent brought the report to ${JSON.stringify(bothReport.backgroundWork.kinds)}; ` +
         `the named bash service wrote ${await ticks()} heartbeats and was reported by nothing, ` +
         `across ${pane.reports.length} reports`
+    );
+  },
+  300_000
+);
+
+/**
+ * The turn heartbeat's period in the case below (`LEGION_TURN_ACTIVITY_HEARTBEAT_MS`, 5 minutes in
+ * production: `TURN_ACTIVITY_HEARTBEAT_MS` in packages/pi-shared/src/session-activity.ts), and how
+ * long the case watches a stopped process for the reports it must not send: three periods and a
+ * margin.
+ */
+const HEARTBEAT_MS = 2_000;
+const STOPPED_WATCH_MS = 3 * HEARTBEAT_MS + 1_000;
+
+// R5: the daemon's relaunch guard reads a report made in a turn in the last 20 minutes as the
+// process still running that turn. The turn this case holds is the measured one: a `wait` on a
+// named `bash` service, with no report naming the service. The pinned Oh My Pi blocks in that wait
+// until the service ends, with no step; a later build returns from it on a ladder of its own (5,
+// 10, 30 and 60 seconds, then every 5 minutes), and the case answers each return with `wait`
+// again, as a live agent does. Either way nothing the report says changes, so the change interval
+// sends nothing, and every report inside the turn is the heartbeat's. A process held by SIGSTOP
+// runs no timer, so it sends none; once it runs again it sends again, which is the control that
+// the quiet was the stop's. LEGION_TEST_OMP names the binary, so the same case runs on each build
+// a deployment may pin.
+test.skipIf(skip)(
+  "a session blocked in wait on a named bash service keeps sending its report on the real Oh My Pi, and a stopped process sends none",
+  async () => {
+    const pane = await startRolePane({ LEGION_TURN_ACTIVITY_HEARTBEAT_MS: String(HEARTBEAT_MS) });
+    const heartbeat = path.join(pane.workspace, "service-heartbeat.log");
+    const ticks = async (): Promise<number> => {
+      try {
+        return (await readFile(heartbeat, "utf8")).split("\n").filter(Boolean).length;
+      } catch {
+        return 0;
+      }
+    };
+
+    const first = await pane.next("the role's first turn", isRoleTurn);
+    first.reply([
+      call("bash", {
+        command: `while true; do printf 'tick\\n' >> ${JSON.stringify(heartbeat)}; sleep 0.2; done`,
+        name: SERVICE_NAME,
+      }),
+    ]);
+    const serviceTurn = await pane.next("the role's turn after the service started", isRoleTurn);
+    await pane.until("the service's first heartbeat", async () =>
+      (await ticks()) > 0 ? true : undefined
+    );
+
+    // The turn calls `wait`, which waits on the one thing this session started: the service.
+    const waitAgain = [call("wait", {})];
+    const turnsBefore = pane.requested(isRoleTurn);
+    const toolResult = (request: Request) =>
+      isRoleTurn(request) && lastMessage(request).includes('"tool_result"');
+    const resultsBefore = pane.requested(toolResult);
+    pane.answerEach(isRoleTurn, waitAgain);
+    serviceTurn.reply(waitAgain);
+    const waitCalled = Date.now();
+    const reportsBefore = pane.reports.length;
+    const ticksBefore = await ticks();
+    await pane.until("three reports inside the wait", () =>
+      pane.reports.length - reportsBefore >= 3 ? true : undefined
+    );
+    const waited = Date.now() - waitCalled;
+
+    // Still in the turn: every role turn since is a `wait` that came back and was called again,
+    // and the service still runs.
+    const returns = pane.requested(isRoleTurn) - turnsBefore;
+    expect(pane.requested(toolResult) - resultsBefore).toBe(returns);
+    expect(await ticks()).toBeGreaterThan(ticksBefore);
+    const inWait = pane.reports.slice(reportsBefore);
+    for (const report of inWait) {
+      expect(report.backgroundWork).toEqual({ running: false, kinds: [] });
+      expect(Date.parse(report.at)).toBeGreaterThanOrEqual(waitCalled - 1_000);
+    }
+
+    // The process stops where it stands. A report already on its way may land just after the
+    // signal, so the count is read once that has had time to arrive. These two waits are real
+    // time on purpose: the proposition is that another process sends nothing while it is held,
+    // which no fake clock of this one reaches and no signal of its announces.
+    pane.signal("SIGSTOP");
+    await Bun.sleep(500);
+    const atStop = pane.reports.length;
+    await Bun.sleep(STOPPED_WATCH_MS);
+    const whileStopped = pane.reports.length - atStop;
+    pane.signal("SIGCONT");
+    expect(whileStopped).toBe(0);
+    await pane.until("a report once the process runs again", () =>
+      pane.reports.length > atStop ? true : undefined
+    );
+    expect(pane.malformed).toEqual([]);
+
+    console.error(
+      `in the wait on the service: ${inWait.length} reports in ${waited} ms at a ` +
+        `${HEARTBEAT_MS} ms heartbeat, the wait came back ${returns} times, ${whileStopped} ` +
+        `reports while the process was stopped for ${STOPPED_WATCH_MS} ms, and the service ` +
+        `wrote ${await ticks()} heartbeats`
     );
   },
   300_000

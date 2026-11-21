@@ -148,6 +148,9 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		},
 		ActivityAt: at.Add(-3 * time.Minute), ActivityBackground: true,
 		ActivityKinds: []string{"async-job"}, ActivityNextReminderAt: at.Add(10 * time.Minute),
+		LastRelaunch: at.Add(-4 * time.Hour), LastRelaunchGeneration: 3,
+		Reach: supervise.Reach{Session: "ses_implementer", FirstReady: at.Add(-2 * time.Hour), Since: at.Add(-25 * time.Minute),
+			LastSeen: at.Add(-25 * time.Minute), Generation: 2, Reported: true},
 	}
 	fields := reflect.ValueOf(current)
 	for i := range fields.NumField() {

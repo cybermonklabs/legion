@@ -37,6 +37,13 @@ interface ClaimProgress {
   registered: boolean;
 }
 
+/** The claim the daemon's own controller reports its activity under on `claims/activity`: the
+ * token and secret its registration answered, and its session. */
+export interface ControllerActivityClaim {
+  readonly claimToken: string;
+  readonly sessionId: string;
+  readonly secret: string;
+}
 /** Who started a claim: the controller's own claim at `session_start` or after a session change
  * (`daemon`), or a command a person typed (`typed`). It decides how long an answer a later claim
  * cures (`claimAgainCures`) is waited out. */
@@ -50,6 +57,7 @@ export interface ControllerSession {
   readonly startCommand: (context: CommandContext) => Promise<void>;
   readonly isClaimedSession: (sessionID: string) => boolean;
   readonly mintGrant: (sessionID: string) => Promise<LegionGrant>;
+  readonly activityClaim: (sessionID: string) => ControllerActivityClaim | undefined;
 }
 
 /** The host widget a session change's re-claim shows its outcome in (`reclaimAfterSessionChange`). */
@@ -94,6 +102,9 @@ export function createControllerSession(deps: {
   let controllerSessionID: string | undefined;
   let controllerCapability: string | undefined;
   let mintControllerGrant: (() => Promise<LegionGrant>) | undefined;
+  // The claim token and secret of the last registration, kept only where the daemon launched this
+  // controller and supervises it as a claim: that controller reports its activity under them.
+  let supervisedClaim: { readonly claimToken: string; readonly secret: string } | undefined;
   // Whether this process has ever sent LEGION_CONTROLLER_START_MESSAGE.
   let startMessageSent = false;
   // Whether the claim that made the last registration went on to hold the role and its topics: a
@@ -344,6 +355,9 @@ export function createControllerSession(deps: {
     mintControllerGrant = () =>
       client.controllerGrant({ sessionId: sessionID, secret: registration.secret });
     controllerSessionID = sessionID;
+    supervisedClaim = supervised
+      ? { claimToken: registration.claimToken, secret: registration.secret }
+      : undefined;
     controllerTranscript = launched ? sessionFile : undefined;
     progress.registered = true;
     const envoyContext = "setInterval" in context ? context : undefined;
@@ -734,6 +748,18 @@ export function createControllerSession(deps: {
     return mintControllerGrant();
   };
 
+  /**
+   * R5: the daemon relaunches its own controller when Envoy cannot reach it, under the guard every
+   * relaunch runs under, which reads the claim's last activity report since its launch. So the
+   * controller the daemon launched reports its activity as a worker does, under the claim its
+   * registration answered, from the moment that registration is in. Any other session, and the
+   * operator's controller, which no daemon supervises or relaunches, has none to report under.
+   */
+  const activityClaim = (sessionID: string): ControllerActivityClaim | undefined =>
+    controllerSessionID === sessionID && supervisedClaim !== undefined
+      ? { ...supervisedClaim, sessionId: sessionID }
+      : undefined;
+
   return {
     claim,
     handleSessionStart,
@@ -742,5 +768,6 @@ export function createControllerSession(deps: {
     startCommand,
     isClaimedSession,
     mintGrant,
+    activityClaim,
   };
 }

@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+    The sentence that tells a relaunched agent what its last process ended is no longer lost when
+    the prompt that carried it comes to nothing after the claim stopped holding its delivery. A
+    turn that starts while such a prompt is on its way is taken for the delivery's and marks the
+    sentence told. When a newer task then took the delivery's place, or that turn ended, the mark
+    stayed whatever became of the prompt, and no later prompt carried the sentence: its send came
+    back refused or with no answer within `worker_rpc_timeout_seconds`, or Oh My Pi answered it late
+    with a refusal, a result that ran no turn, or a result of a turn that ended in a provider error.
+    Each of these now takes the mark back, as the end of a process does: the next task carries the
+    sentence in front of it, and a claim that holds no task is given the daemon's own delivery of
+    it again.
+time: 2026-11-17T13:49:43Z
+custom:
+    Issue: pr4175

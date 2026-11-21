@@ -116,7 +116,7 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"role_config_files.<role> …": func(t *testing.T) string {
 		return refusalFile{top: "role_config_files: {implementer: []}\n"}.refuse(t)
 	},
-	"worker_stall_backstop_hours.<role> (<bound>) is below the whole stall ladder the <role>'s own plugin runs (<longest call> + <grace> + 2 × <step> = <ladder>, where the first number is …): …": func(t *testing.T) string {
+	"worker_stall_backstop_hours.<role> (<bound>) is below the whole stall ladder the <role>'s own plugin runs (<longest call> + <daemon wait> + <grace> + 2 × <step> = <ladder>, where the first number is …): …": func(t *testing.T) string {
 		return refusalFile{top: "worker_stall_backstop_hours: {implementer: 4}\n"}.refuse(t)
 	},
 	`projects.<KEY>.memory.mode must be off, on, or random (got "…")`: func(t *testing.T) string {

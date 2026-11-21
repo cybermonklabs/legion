@@ -104,6 +104,7 @@ import type {
   setLegionCapabilityHostForTests as SetLegionCapabilityHostForTests,
   setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
   setLegionClaimRetryDelayForTests as SetLegionClaimRetryDelayForTests,
+  setLegionClaimBootRestartForTests as SetLegionClaimBootRestartForTests,
   setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
 } from "./legion";
 
@@ -310,6 +311,7 @@ let setLegionCapabilityBudgetsForTests: typeof SetLegionCapabilityBudgetsForTest
 let setLegionCapabilityHostForTests: typeof SetLegionCapabilityHostForTests;
 let setLegionCapabilitySendTimeoutForTests: typeof SetLegionCapabilitySendTimeoutForTests;
 let setLegionClaimRetryDelayForTests: typeof SetLegionClaimRetryDelayForTests;
+let setLegionClaimBootRestartForTests: typeof SetLegionClaimBootRestartForTests;
 let setLegionStallProcessesForTests: typeof SetLegionStallProcessesForTests;
 
 beforeAll(async () => {
@@ -333,6 +335,7 @@ beforeAll(async () => {
   setLegionCapabilityHostForTests = legionEntry.setLegionCapabilityHostForTests;
   setLegionCapabilitySendTimeoutForTests = legionEntry.setLegionCapabilitySendTimeoutForTests;
   setLegionClaimRetryDelayForTests = legionEntry.setLegionClaimRetryDelayForTests;
+  setLegionClaimBootRestartForTests = legionEntry.setLegionClaimBootRestartForTests;
   setLegionStallProcessesForTests = legionEntry.setLegionStallProcessesForTests;
   // The suite's baseline is "not a Legion pane": every key above except HOME starts unset, and
   // `beforeEach` deletes them again before each test and hands on the Envoy entry's file as
@@ -491,6 +494,8 @@ afterEach(async () => {
   // And the stall watch's process half: back to the real `/proc` reader and `process.kill`, which
   // no test may be left pointing at.
   setLegionStallProcessesForTests(undefined);
+  // And the clock the claim boot waits out a daemon that is not serving on: back to the real one.
+  setLegionClaimBootRestartForTests(undefined);
   delete (globalThis as Record<symbol, unknown>)[LEGACY_LEGION_LOADED_KEY];
   testAgentRoster().splice(0);
   await Promise.all(
@@ -883,6 +888,10 @@ interface ClaimPane {
   readonly exits: number[];
   /** What `console.error` printed while `start()` ran. */
   readonly errors: string[];
+  /** Every wait the boot's `claims/register` and `claims/ready` took for a daemon that was not
+   * serving, in milliseconds, on the pane's own virtual clock (`setLegionClaimBootRestartForTests`):
+   * the boot waits out such a daemon for an hour of that clock and none of the test's. */
+  readonly bootWaits: number[];
   readonly intervals: (() => void)[];
   /** Every one-shot timer the pane armed on its session context, in order: the phase reminder's
    * and the model fallback's return. This repository's `SessionContext` slice keeps no handle to
@@ -940,7 +949,8 @@ async function claimPane(options: {
   /** The host's `ctx.abort()`, which the stall ladder's second step ends the turn with. Absent
    * leaves the context without the member, as a host that predates it is. */
   readonly abort?: () => void | Promise<void>;
-  readonly register?: () => Response | Promise<Response>;
+  /** The `claims/register` answer; undefined falls back to the claim this pane is issued. */
+  readonly register?: () => Response | undefined | Promise<Response | undefined>;
   readonly ready?: (attempt: number) => Response | Promise<Response>;
   readonly readyPosted?: () => void;
   readonly roleHolder?: () => string | undefined;
@@ -1043,6 +1053,18 @@ async function claimPane(options: {
   }) as typeof fetch;
 
   const exits: number[] = [];
+  // The boot waits out a daemon that is not serving for up to an hour (R1), on this clock and not
+  // the test's: each wait moves it on at once and is recorded, so a pane whose daemon never answers
+  // ends its wait inside its own test rather than outliving it.
+  let bootClock = 0;
+  const bootWaits: number[] = [];
+  setLegionClaimBootRestartForTests({
+    now: () => bootClock,
+    sleep: async (ms: number) => {
+      bootWaits.push(ms);
+      bootClock += ms;
+    },
+  });
   setLegionBootstrapExitForTests((code) => {
     exits.push(code);
     throw new Error("process would exit");
@@ -1111,6 +1133,7 @@ async function claimPane(options: {
     bootToken,
     requests,
     exits,
+    bootWaits,
     errors,
     intervals,
     timers,
@@ -1316,6 +1339,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       injectedUserTurns: new Map(),
       bootstrappedSession: { file: undefined },
       startupTurn: undefined,
+      cutTurnNote: undefined,
     });
 
     test("a worker whose process has no Envoy plugin logs one line naming @sjawhar/pi-envoy, the version it needs and none, exits, and claims nothing", async () => {
@@ -2262,6 +2286,71 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       );
     });
 
+    /** Moves the fake clock on by `minutes`, a minute at a time, letting what each tick started
+     * reach the daemon's route before the next: a report's send awaits nothing of the clock. */
+    const fakeMinutes = async (minutes: number) => {
+      for (let minute = 0; minute < minutes; minute++) {
+        jest.advanceTimersByTime(60_000);
+        for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+      }
+    };
+
+    // R5: the daemon's relaunch guard reads a report made in a turn in the last 20 minutes as the
+    // process still running that turn, since a `wait` on a named `bash` service shows no step on
+    // the pinned Oh My Pi and no report names the service. So while a turn is open the report goes
+    // again every 5 minutes whatever it says, from this process's own timer, and goes no more once
+    // the turn ends or the session shuts down. A subagent's run ending inside the turn ends
+    // nothing of it.
+    test("while a turn is open the report goes every 5 minutes, changed or not, and stops at the turn's end and at shutdown", async () => {
+      const worker = await bootStalling({
+        asyncJobs: () => ({
+          running: [],
+          recent: [],
+          delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+        }),
+      });
+      const turnStarts = hook(worker.handlers, "agent_start");
+      const subagent: SessionContext = { ...worker.context, agent: { kind: "sub" } };
+      jest.useFakeTimers();
+      try {
+        await turnStarts({}, worker.context);
+        const atStart = activityReports(worker).length;
+
+        await fakeMinutes(16);
+        expect(activityReports(worker).length - atStart).toBeGreaterThanOrEqual(3);
+        await hook(worker.handlers, "agent_end")(
+          { messages: [{ role: "assistant", stopReason: "stop" }] },
+          subagent
+        );
+        await fakeMinutes(4);
+
+        const inTurn = activityReports(worker).slice(atStart);
+        expect(inTurn.length).toBeGreaterThanOrEqual(4);
+        for (const report of inTurn) {
+          expect(report).toMatchObject({
+            claimToken: worker.claimToken,
+            activity: { backgroundWork: { running: false, kinds: [] } },
+          });
+        }
+
+        // The turn ends: nothing more goes, however long the session is idle.
+        await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+        const atEnd = activityReports(worker).length;
+        await fakeMinutes(16);
+        expect(activityReports(worker)).toHaveLength(atEnd);
+
+        // The next turn sends again, until the session shuts down in it.
+        await turnStarts({}, worker.context);
+        await fakeMinutes(5);
+        expect(activityReports(worker)).toHaveLength(atEnd + 1);
+        await hook(worker.handlers, "session_shutdown")({}, worker.context);
+        await fakeMinutes(16);
+        expect(activityReports(worker)).toHaveLength(atEnd + 1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     // A session that holds no claim is no claim's pod: it has nothing to report and no secret to
     // report with.
     test("a session with no claim sends no activity report", async () => {
@@ -2546,6 +2635,52 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
       expect(steered(resumed)).toEqual([steeredReminder(REMINDER)]);
       expect(recorded(resumed)).toEqual([{ state: "open", count: 3, reported: false }]);
+    });
+
+    // R2: a resumed session whose previous process ended in a turn is told so before the first turn
+    // it runs, whatever starts that turn, and the resume reminder is one such start. The Envoy
+    // entry sends the note at `session_start`, but the host writes it later, since it holds a
+    // startup send until its discovery has run (`initializeExtensions`,
+    // packages/coding-agent/src/modes/runtime-init.ts:546-554 at the pin): a reminder sent before
+    // the note is written opens a turn the note then lands in.
+    test("a resume reminder due while the cut-turn note is on its way is sent after the note", async () => {
+      const resumed = await bootStalling({
+        branch: [
+          ...branchAt({ state: "open", count: 2, reported: false }),
+          {
+            type: "custom",
+            customType: "legion-managed-session",
+            data: { session_id: "ses_stall" },
+          },
+          {
+            type: "message",
+            message: { role: "user", content: [{ type: "text", text: "take the issue on" }] },
+          },
+          { type: "message", message: { role: "assistant", stopReason: "toolUse", content: [] } },
+        ],
+      });
+      const note = resumed.sentMessages.find(
+        (message) =>
+          "content" in message && String(message.content).includes("previous turn interrupted")
+      );
+      if (note === undefined) throw new Error("the Envoy entry sent no cut-turn note");
+
+      const fired = fires(resumed);
+      for (let turn = 0; turn < 25; turn += 1) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setImmediate(resolve);
+        await promise;
+      }
+      // The reminder is due, its record check has answered, and the note is not written yet.
+      expect(steered(resumed)).toEqual([]);
+
+      // The host writes the note and ends its message; only then does the reminder go.
+      await resumed.handlers.get("message_end")?.(
+        { message: { role: "custom", ...note } },
+        resumed.context
+      );
+      await fired;
+      expect(steered(resumed)).toEqual([steeredReminder(REMINDER)]);
     });
 
     // What the worker said before the relaunch rides the record with the count, so the architect
@@ -3321,25 +3456,63 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
   }
 
-  for (const status of [500, 503]) {
-    test(`a ${status} at claims/register propagates and the process stays for the registration deadline`, async () => {
+  // A 5xx the daemon itself answered is the daemon serving and refusing, which no wait cures,
+  // so it propagates at once and leaves the pane to the registration deadline, as it always did.
+  // An uncoded 502, 503 or 504 is not such an answer — it is a proxy in front of a daemon that is
+  // not serving — and is waited out instead (R1, the case below).
+  for (const [status, code] of [
+    [500, undefined],
+    [503, "DISPATCH_UNAVAILABLE"],
+  ] as const) {
+    test(`a ${status}${code === undefined ? "" : ` ${code}`} the daemon itself answered at claims/register propagates and the process stays for the registration deadline`, async () => {
       const pane = await claimPane({
         role: "implementer",
         sessionId: `ses_daemon_${status}`,
-        register: () => Response.json({ error: "register failed" }, { status }),
+        register: () =>
+          Response.json(
+            { error: "register failed", ...(code === undefined ? {} : { code }) },
+            { status }
+          ),
       });
 
       await expect(pane.start()).rejects.toThrow(
-        `POST /legion/v1/claims/register failed with ${status}: register failed`
+        `POST /legion/v1/claims/register failed with ${status}${code === undefined ? "" : ` ${code}`}: register failed`
       );
       expect(pane.exits).toEqual([]);
+      expect(pane.bootWaits).toEqual([]);
       expect(pane.errors).toEqual([
         `[legion] claims/register registration failed (${status}): register failed`,
       ]);
     });
   }
 
-  test("a registration that never reached the daemon propagates and the process stays", async () => {
+  test("a 503 at claims/register that carries no daemon code is waited out, and the pane registers once the daemon serves again", async () => {
+    let registers = 0;
+    const pane = await claimPane({
+      role: "implementer",
+      sessionId: "ses_daemon_restarting",
+      register: () => {
+        registers += 1;
+        return registers <= 2
+          ? new Response("<html>503 Service Unavailable</html>", { status: 503 })
+          : undefined;
+      },
+    });
+
+    await pane.start();
+
+    expect(registers).toBe(3);
+    expect(pane.bootWaits).toEqual([500, 1_000]);
+    expect(pane.exits).toEqual([]);
+    expect(daemonRequests(pane.requests).map((request) => request.path)).toContain(
+      "/legion/v1/claims/ready"
+    );
+  });
+
+  // A registration that never reached the daemon is the daemon not serving, so it is waited out,
+  // for an hour and no longer; past that it propagates and the process stays for the
+  // registration deadline, as such a registration always did.
+  test("a registration that never reaches the daemon is waited out for an hour, then propagates, and the process stays", async () => {
     const pane = await claimPane({
       role: "implementer",
       sessionId: "ses_unreachable",
@@ -3348,39 +3521,57 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       },
     });
 
-    await expect(pane.start()).rejects.toThrow("fetch failed");
+    await expect(pane.start()).rejects.toThrow(
+      "claims/register: the Legion daemon was unreachable (fetch failed) and stayed so for 60 minutes"
+    );
+    expect(pane.bootWaits.reduce((sum, wait) => sum + wait, 0)).toBe(60 * 60_000);
+    expect(Math.max(...pane.bootWaits)).toBe(30_000);
     expect(pane.exits).toEqual([]);
   });
 
-  test("claims/ready is retried on a 5xx and on a transport failure, three attempts a second apart", async () => {
+  // Two rules, one inside the other: a 5xx the daemon itself answered keeps the three tries a
+  // second apart it always had, and a transport failure is the daemon not serving, which the
+  // hour's wait around them owns.
+  test("claims/ready is tried again a second after a 5xx the daemon answered and waited out after a transport failure", async () => {
     const recovered = await claimPane({
       role: "implementer",
       sessionId: "ses_ready_recovers",
       ready: (attempt) => {
-        if (attempt === 1) return Response.json({ error: "daemon unavailable" }, { status: 503 });
+        if (attempt === 1) return Response.json({ error: "daemon unavailable" }, { status: 500 });
         if (attempt === 2) throw new TypeError("fetch failed");
         return new Response(null, { status: 204 });
       },
     });
-    const started = Date.now();
     await recovered.start();
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1_900);
     expect(
       daemonRequests(recovered.requests).filter((r) => r.path === "/legion/v1/claims/ready")
     ).toHaveLength(3);
+    expect(recovered.bootWaits).toEqual([1_000, 500]);
     expect(recovered.exits).toEqual([]);
   });
 
-  test("claims/ready failing transiently three times ends the boot and exits once", async () => {
+  test("claims/ready failing three times with a 5xx the daemon answered ends the boot and exits once", async () => {
     const exhausted = await claimPane({
       role: "implementer",
       sessionId: "ses_ready_exhausted",
-      ready: () => Response.json({ error: "daemon unavailable" }, { status: 503 }),
+      ready: () => Response.json({ error: "daemon unavailable" }, { status: 500 }),
     });
     await expect(exhausted.start()).rejects.toThrow("process would exit");
     expect(
       daemonRequests(exhausted.requests).filter((r) => r.path === "/legion/v1/claims/ready")
     ).toHaveLength(3);
+    expect(exhausted.bootWaits).toEqual([1_000, 1_000]);
+    expect(exhausted.exits).toEqual([1]);
+  });
+
+  test("claims/ready that finds the daemon not serving for an hour ends the boot and exits once", async () => {
+    const exhausted = await claimPane({
+      role: "implementer",
+      sessionId: "ses_ready_outage",
+      ready: () => new Response("<html>503 Service Unavailable</html>", { status: 503 }),
+    });
+    await expect(exhausted.start()).rejects.toThrow("process would exit");
+    expect(exhausted.bootWaits.reduce((sum, wait) => sum + wait, 0)).toBe(60 * 60_000);
     expect(exhausted.exits).toEqual([1]);
   });
 
@@ -5621,6 +5812,211 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(commandNotices).toEqual([NOTHING_TO_DO]);
     expect(controller.sentUserMessages).toEqual([]);
     expect(controller.exits).toEqual([]);
+  });
+
+  /** A run of the controller about to settle, as `session_stop` carries it. */
+  const controllerSettle = (sessionId: string) => ({
+    messages: [],
+    turn_id: 0,
+    last_assistant_message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Read the state; nothing to do." }],
+      stopReason: "stop",
+    },
+    session_id: sessionId,
+    stop_hook_active: false,
+    signal: new AbortController().signal,
+  });
+  /** The body of each `POST /legion/v1/claims/activity` the controller made, in order. */
+  const controllerActivity = (controller: LaunchedController) =>
+    controller.requests
+      .filter((request) => request.path === "/legion/v1/claims/activity")
+      .map((request) => request.body);
+
+  // R5: Envoy cannot reach a controller nobody else can relaunch, so the daemon relaunches its own,
+  // under the guard a `relaunch` of any claim runs under, which reads the claim's last activity
+  // report since its launch and refuses a claim that has made none. The controller the daemon
+  // launched therefore reports as a worker does, with the claim token, session and secret its
+  // registration answered: at every settle, whatever it says, and between turns on its interval
+  // when what it says changed. It arms no phase reminder, so it waits on none, and its background
+  // work is its subagents and jobs, which the guard reads.
+  test("a controller the daemon launched reports its activity under its registration, at every settle and on a change between turns", async () => {
+    let jobs: AsyncJobSnapshot | null = {
+      running: [{ id: "t_1", type: "task", status: "running", label: "explore", startTime: 1 }],
+      recent: [],
+      delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+    };
+    const controller = await launchedController({
+      sessionId: "ses_controller_pod",
+      stateFixture: "state-controller-claim.json",
+      answer: (path) =>
+        path === "/legion/v1/claims/activity" ? new Response(null, { status: 204 }) : undefined,
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    const intervals: (() => void)[] = [];
+    const context: SessionContext = {
+      ...controller.context("ses_controller_pod"),
+      setInterval: (callback) => {
+        intervals.push(callback);
+      },
+      getAsyncJobSnapshot: () => jobs,
+    };
+    try {
+      await hook(controller.handlers, "session_start")({}, context);
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(controllerActivity(controller)).toEqual([]);
+
+    await hook(controller.handlers, "session_stop")(
+      controllerSettle("ses_controller_pod"),
+      context
+    );
+    expect(controllerActivity(controller)).toEqual([
+      {
+        claimToken: controller.token,
+        sessionId: "ses_controller_pod",
+        secret: controller.registration.secret,
+        activity: {
+          at: expect.any(String),
+          backgroundWork: { running: true, kinds: ["subagent"] },
+          phase: { nextReminderAt: null },
+        },
+      },
+    ]);
+
+    // Nothing changed, so a tick between turns sends nothing.
+    for (const tick of intervals) await tick();
+    expect(controllerActivity(controller)).toHaveLength(1);
+
+    // The subagent ended: the next tick says so, and the one after it sends nothing again.
+    jobs = {
+      running: [],
+      recent: [],
+      delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+    };
+    for (const tick of intervals) await tick();
+    for (const tick of intervals) await tick();
+    expect(controllerActivity(controller)).toHaveLength(2);
+    expect(controllerActivity(controller).at(-1)).toMatchObject({
+      claimToken: controller.token,
+      activity: { backgroundWork: { running: false, kinds: [] } },
+    });
+
+    // Every settle reports, changed or not: the guard reads the last report since the launch.
+    await hook(controller.handlers, "session_stop")(
+      controllerSettle("ses_controller_pod"),
+      context
+    );
+    expect(controllerActivity(controller)).toHaveLength(3);
+    expect(controller.exits).toEqual([]);
+  });
+
+  // The daemon's own relaunch of its controller reads the same guard, a report made in the turn
+  // included, so the controller it launched sends its report every 5 minutes while a turn is open,
+  // as a role's session does, and none once the turn has ended.
+  test("a controller the daemon launched sends its report every 5 minutes while a turn is open", async () => {
+    const controller = await launchedController({
+      sessionId: "ses_controller_beat",
+      stateFixture: "state-controller-claim.json",
+      answer: (path) =>
+        path === "/legion/v1/claims/activity" ? new Response(null, { status: 204 }) : undefined,
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    const context: SessionContext = {
+      ...controller.context("ses_controller_beat"),
+      setInterval: () => undefined,
+      getAsyncJobSnapshot: () => ({
+        running: [],
+        recent: [],
+        delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+      }),
+    };
+    try {
+      await hook(controller.handlers, "session_start")({}, context);
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    const turnStarts = hook(controller.handlers, "agent_start");
+    const settled = async () => {
+      for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+    };
+    jest.useFakeTimers();
+    try {
+      await turnStarts({}, context);
+      for (let minute = 0; minute < 16; minute++) {
+        jest.advanceTimersByTime(60_000);
+        await settled();
+      }
+      const inTurn = controllerActivity(controller);
+      expect(inTurn.length).toBeGreaterThanOrEqual(3);
+      for (const report of inTurn) {
+        expect(report).toMatchObject({
+          claimToken: controller.token,
+          sessionId: "ses_controller_beat",
+          secret: controller.registration.secret,
+          activity: { backgroundWork: { running: false, kinds: [] } },
+        });
+      }
+
+      await hook(controller.handlers, "agent_end")(
+        { messages: [{ role: "assistant", stopReason: "stop" }] },
+        context
+      );
+      const atEnd = controllerActivity(controller).length;
+      for (let minute = 0; minute < 16; minute++) {
+        jest.advanceTimersByTime(60_000);
+        await settled();
+      }
+      expect(controllerActivity(controller)).toHaveLength(atEnd);
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(controller.exits).toEqual([]);
+  });
+
+  // The operator's controller is no claim the daemon supervises or relaunches, so it has no
+  // report to make, and none of its turns sends one.
+  test("the operator's controller reports no activity", async () => {
+    const controller = await launchedController({
+      sessionId: "ses_controller_pane",
+      answer: (path) =>
+        path === "/legion/v1/claims/activity" ? new Response(null, { status: 204 }) : undefined,
+    });
+    const intervals: (() => void)[] = [];
+    const context: SessionContext = {
+      ...controller.context("ses_controller_pane"),
+      setInterval: (callback) => {
+        intervals.push(callback);
+      },
+      getAsyncJobSnapshot: () => ({
+        running: [{ id: "t_1", type: "task", status: "running", label: "explore", startTime: 1 }],
+        recent: [],
+        delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+      }),
+    };
+    await startOperatorController(controller, context);
+    expect(controller.requests.map((request) => request.path)).toContain(
+      "/legion/v1/claims/register"
+    );
+
+    await hook(controller.handlers, "session_stop")(
+      controllerSettle("ses_controller_pane"),
+      context
+    );
+    for (const tick of intervals) await tick();
+
+    expect(controllerActivity(controller)).toEqual([]);
   });
 
   // A daemon-launched controller whose claim cannot complete exits Oh My Pi, and the daemon
@@ -8254,7 +8650,7 @@ describe("the stall watch the plugin's entry arms", () => {
     expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
   });
 
-  test("the controller's session arms a sweep of its own, which it has none of to report activity on", async () => {
+  test("the operator's controller's session arms a sweep of its own, though it reports no activity", async () => {
     shortLimits();
     const ended: StallCall[] = [];
     setLegionStallProcessesForTests(() => fakeProcesses(ended));
@@ -8267,9 +8663,9 @@ describe("the stall watch the plugin's entry arms", () => {
       },
     };
     await hook(controller.handlers, "session_start")({}, context);
-    // Its `session_start` had no interval of its own before this change — the one the activity
-    // report rides is armed in the non-controller branch — so a sweep here is this entry's, and
-    // the records below are the proof that it runs.
+    // Its `session_start` armed no interval before the stall watch came in — a role's activity
+    // report rides the one the non-controller branch arms, and the operator's controller reports
+    // none — so a sweep here is this entry's, and the records below are the proof that it runs.
     expect(intervals.length).toBeGreaterThan(0);
 
     await hook(controller.handlers, "tool_call")(stuckCall, context);

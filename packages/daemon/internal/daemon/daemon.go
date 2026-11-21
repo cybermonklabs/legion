@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
+	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
@@ -544,12 +545,18 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		apps, pauses = workflow.apps, workflow.pauses
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate, pauses)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate, workflow.reachNotify(), pauses)
 	if err != nil {
 		listener.Close()
 		workflow.stop()
 		st.Close()
 		return err
+	}
+	// The Sandbox runtime's launches read the update round over a pod they would keep through the
+	// supervision, which exists only now; the runtime was built inside openSupervision before it
+	// (launchRounds). No machine exists yet, so no launch has asked.
+	if plan.launchRounds != nil {
+		plan.launchRounds.bind(s.roundPodEndsAtLaunch)
 	}
 	if plan.probe != nil {
 		report, err := plan.probe(ctx, s.runtime)
@@ -897,6 +904,12 @@ type plan struct {
 	// factory built before the workflow opens and the boot that fills it once it has hold the
 	// one holder. Nil under tmux, and for a replaced runtime, where no launcher reports.
 	volumeReports *volumeTrimReports
+	// launchRounds is how the Kubernetes runtime's launches read the update round over a pod
+	// they would keep (launchRounds, prepareSandbox, sandbox.Options.RoundPodEnds): a pointer, so
+	// the runtime built inside openSupervision and the boot that fills it once the supervision is
+	// open hold the one holder. Nil under tmux, whose panes run in no pod, and for a replaced
+	// runtime, which is handed no such reading.
+	launchRounds *launchRounds
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// sessionLost and sessionStoreFault tell the workflow that a claim forgot its recorded session
@@ -1483,13 +1496,14 @@ type supervision struct {
 	reportMu     sync.Mutex
 	reportedGaps []string
 	reports      map[claim.Token]capabilities.Report
-	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, the whole of what the update-round
-	// sweep keeps between ticks (reconcilePodUpdates): when this daemon last opened a pod round,
-	// and the rounds it has opened whose claims have not recorded one yet, by issue. The two pace
-	// the sweep's openings under `pod_update_rounds_per_minute` and `pod_update_max_open_rounds`;
-	// nothing of either is in the store, because neither decides a round, and a daemon that has
-	// just booted opens its first round at its first sweep. The sweep is one goroutine, and the
-	// mutex is what makes that a fact of this code rather than of its caller.
+	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, what the update-round sweep keeps
+	// between ticks to pace its openings (reconcilePodUpdates): when this daemon last opened a pod
+	// round, and the rounds it has opened whose claims have not recorded one yet, by issue. The two
+	// pace the sweep's openings under `pod_update_rounds_per_minute` and
+	// `pod_update_max_open_rounds`; nothing of either is in the store, because neither decides a
+	// round, and a daemon that has just booted opens its first round at its first sweep. The sweep
+	// is one goroutine, and the mutex is what makes that a fact of this code rather than of its
+	// caller.
 	podUpdateMu       sync.Mutex
 	podUpdateOpenedAt time.Time
 	podUpdateOpened   map[string]string
@@ -1502,6 +1516,50 @@ type supervision struct {
 	// neither waits on what the other is doing.
 	podUpdateRoundsMu sync.Mutex
 	podUpdateRounds   api.PodUpdateRounds
+	// podUpdateWorkspaceMu guards podUpdateWorkspace, what the update-round sweep keeps between
+	// ticks of a round's read of its issue's workspace: the one read that a round made before its
+	// pod's replacement (readRoundWorkspace), by issue, naming the round it was made for and
+	// holding the answer or the read's error. A replacement the read stood in front of can be
+	// refused under the pod's launch turn or can fail, and the next sweep that reaches the same
+	// round's replacement reuses the answer rather than read again, so the round reads the
+	// workspace once and its line and message name that read. The entry goes where the sweep ends
+	// the round (endPodUpdates) and where the sweep finds the issue in another round or in none
+	// (forgetWorkspaceReads). Nothing of it is in the store, because it decides nothing: the
+	// replacement is made whatever the read found. A restart forgets it, and the round's next
+	// replacement reads the workspace again. A mutex of its own, because it has nothing to do with
+	// the pace podUpdateMu guards; the sweep is its one goroutine all the same.
+	podUpdateWorkspaceMu sync.Mutex
+	podUpdateWorkspace   map[string]workspaceRead
+	// podUpdateEndedMu guards podUpdateEnded, what the update-round sweep keeps between ticks of
+	// the rounds it has ended: by issue, the round whose end the sweep last posted to the round's
+	// members (endPodUpdates). The post is asynchronous (supervisor.post), and a member whose
+	// machine is in a relaunch takes it only once that relaunch is done, so its claim records the
+	// round until then. While a claim of the issue records that round, the sweep reads the claim
+	// as the end leaves it and decides nothing of that round again (reconcileIssuePodUpdate), and
+	// the round holds no open-round slot (beginPodUpdateSweep). The entry goes at the first sweep
+	// where no claim of the issue records the round (endedRounds). Within one daemon a post to a
+	// machine's queue is never lost (inbox), so the end reaches every member. Nothing of it is in
+	// the store: a restart forgets it with the posts not taken yet, and the next boot makes the end
+	// once more for a claim the store still holds in the round (dispatch://INFRA-3276 R5). A mutex
+	// of its own, for the reason podUpdateWorkspaceMu has one.
+	podUpdateEndedMu sync.Mutex
+	podUpdateEnded   map[string]string
+	// podUpdateLaunchMu guards podUpdateLaunchReplaced, what the launches into an issue's pod
+	// decided of the update round open over it (roundPodEndsAtLaunch, launchRound): by issue, the
+	// round, whether a launch replaced its pod as the round's own replacement and what that launch
+	// read of the round's end, and each claim whose launch into the pod the hook kept the pod for.
+	// The hook writes it inside a launching machine's decision and under the pod's launch turn; the
+	// next launch into the pod reads the claims it kept the pod for (dispatch://INFRA-4109 R7), and
+	// the sweep that reads a replaced pod gone, or another pod in its place, ends the round as the
+	// replacement the round made (endRoundALaunchReplaced). The entry goes where the sweep ends the
+	// round (endPodUpdates), where the hook writes one of another round of the issue, and at the
+	// first sweep that finds no claim of the issue that has not retired (forgetLaunchRounds).
+	// Nothing of it is in the store: a restart forgets it, and the sweep then reads a pod a launch
+	// replaced as a pod gone, whose message names the same members. A mutex of its own, never held
+	// across a runtime call, because the hook runs on a launching machine's goroutine beside the
+	// sweep.
+	podUpdateLaunchMu       sync.Mutex
+	podUpdateLaunchReplaced map[string]*launchRound
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore
@@ -1537,6 +1595,13 @@ type supervision struct {
 	// the same claim carries the record its owner wants.
 	backstopMu   sync.Mutex
 	backstopOwed map[claim.Token]stallNoticeOwed
+	// reach is the daemon's reading of which claims Envoy cannot reach, and what it tells and does
+	// about them (R5): swept with the orphan sweep, asked by the `relaunch` route, and holding the
+	// one R6 writer the worker stream writes its lock-out line through as well, so one case opens
+	// one line. lockOuts keeps the controller's notices of R3's lock-outs, resent at the same
+	// sweep. Neither is nil once openSupervision returns.
+	reach    *reachKeeper
+	lockOuts *lockOutNotices
 
 	cancel context.CancelFunc
 	// draining is the worker stream's life and what the API's routes run their decisions on
@@ -1670,7 +1735,7 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // (Deps.Paused, the service's one atomic load), write a pause's stop through its stop transaction
 // (Deps.PauseStopped) and stamp each paced launch's let-out moment through it (Deps.WakeLetOut);
 // it reads the machines this supervisor holds for its catch-up and its resume.
-func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
+func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter, notices reachNotify, pauses *projectPause) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -1680,14 +1745,30 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	if err != nil {
 		return nil, err
 	}
+	// One writer of R6's lines for the daemon: the worker stream's lock-out and the reach keeper's
+	// cases go through it, so one case writes one line. It reads the lines the last daemon left
+	// open before anything can write one, so a case that holds through the restart writes none.
+	alerts := fleetalert.New(log, cfg.Project)
+	if err := alerts.Load(boot, fleetAlertLines{st: st, project: cfg.Project}); err != nil {
+		return nil, err
+	}
 
 	supervising, cancel := context.WithCancel(context.Background())
 	draining, endDrain := context.WithCancel(context.Background())
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
 	sup.beforeDecision = p.beforeDecision
-	listener, err := stream.Listen(draining, p.stream,
-		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
+	// The lock-out's notices are the controller's, which the workflow's admission queues
+	// (notices), and the stream reports each lock-out to them LockOutReportAfter after a first
+	// refused hello. They read the stream's own lock-outs back, so the listener is named here and
+	// set just below, before any report or sweep can read it.
+	var listener *stream.Listener
+	lockOuts := newLockOutNotices(lockOutOptions{log: log, project: cfg.Project, tell: notices.tell, records: st, alerts: alerts,
+		lockedOut: func(token claim.Token) (stream.LockOut, bool) { return listener.LockedOut(token) },
+		claimOf:   supervisedClaimOf(sup)})
+	listener, err = stream.Listen(draining, p.stream,
+		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log,
+			Alerts: alerts, ReportLockOut: lockOuts.report})
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1727,10 +1808,14 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
 			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
 		},
-		Identity:                adoptIdentity(p.identity, p.repository),
-		IssueInTurn:             sup.claimInTurn,
-		Secrets:                 p.secretsEnroller,
-		Registrar:               p.secretsRegistrar,
+		Identity:    adoptIdentity(p.identity, p.repository),
+		IssueInTurn: sup.claimInTurn,
+		Secrets:     p.secretsEnroller,
+		Registrar:   p.secretsRegistrar,
+		LockedOut: func(token claim.Token) bool {
+			_, locked := listener.LockedOut(token)
+			return locked
+		},
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
@@ -1740,10 +1825,11 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,
-		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
-		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
-		Clock:                   p.clock,
-		Log:                     log,
+		// SessionGone is set once the reach keeper exists, below: the clean stop hands it the
+		// registration it deletes.
+		RoleHolder: roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
+		Clock:      p.clock,
+		Log:        log,
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
 		Worker: store.ForConcurrentWorker,
@@ -1785,6 +1871,19 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// after their deps: the one callback whose receiver is supervision itself, set here before
 	// any machine exists, as the workflow sets enqueue where it attaches.
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
+	supervisionOf.reach = newReachKeeper(reachKeeperOptions{
+		log: log, project: cfg.Project, boot: p.clock.Now(), now: p.clock.Now,
+		daemonController:   cfg.ControllerLaunch == config.ControllerLaunchDaemon,
+		list:               listSessions(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
+		put:                st.PutClaimReach,
+		reachNotify:        notices,
+		alerts:             alerts,
+		relaunchController: supervisionOf.relaunchOwnController,
+		step:               st.ClaimStep,
+		notices:            st,
+	})
+	supervisionOf.lockOuts = lockOuts
+	sup.deps.SessionGone = cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log, supervisionOf.reach.registrationRead)
 	return supervisionOf, nil
 }
 
@@ -1828,12 +1927,13 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // A listener that refuses the delete, keeps the registration, or cannot be reached costs the
 // session nothing beyond the wait it already had: the registration lapses on its own when its
 // record expires (the session bucket's maximum age, 5 minutes by default). With no listener
-// configured nothing is told.
-func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL, token string, log *slog.Logger) func(string) {
+// configured nothing is told. seen is told the session's last registration the read answered
+// (reachKeeper.registrationRead), nil for none.
+func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL, token string, log *slog.Logger, seen func(string, time.Time)) func(string) {
 	if envoyURL == "" {
 		return nil
 	}
-	stop := sessionStop{sessions: notify.New(envoyURL, token), log: log}
+	stop := sessionStop{sessions: notify.New(envoyURL, token), log: log, seen: seen}
 	return func(session string) {
 		goneAt := time.Now()
 		counted := inFlight.start()
@@ -1923,12 +2023,16 @@ func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role str
 
 // sessionStop sends this daemon's clean stops, one call of send each; cleanSessionStop says when a
 // machine asks for one and what the delete's two conditions keep. It holds what every stop
-// shares: the listener client, the log that says what became of each stop, and the budget a
-// stop's read and delete share, cleanSessionStopBudget when zero; only a test sets another.
+// shares: the listener client, the log that says what became of each stop, the budget a stop's
+// read and delete share, cleanSessionStopBudget when zero (only a test sets another), and seen,
+// which is told the session's last registration the read answered (reachKeeper.registrationRead),
+// nil for none: the delete takes that registration out of Envoy's list, which is otherwise the
+// only place the daemon reads it from.
 type sessionStop struct {
 	sessions *notify.HTTPPublisher
 	log      *slog.Logger
 	budget   time.Duration
+	seen     func(session string, lastSeen time.Time)
 }
 
 // send is the work of the goroutine cleanSessionStop starts, with goneAt the moment the machine
@@ -1979,6 +2083,11 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 	if !registration.Registered {
 		s.log.Info("the Envoy listener answered no registration of a dead role's session, so none was stopped", "session", session)
 		return
+	}
+	// The delete takes this registration out of Envoy's list, so its moment is handed on first: the
+	// 20 minutes before a claim is marked unreachable count from it (reachKeeper.registrationRead).
+	if s.seen != nil && registration.LastSeen > 0 {
+		s.seen(session, time.UnixMilli(registration.LastSeen))
 	}
 	stopped, err := s.sessions.DeleteSession(ctx, session, notify.DeleteConditions{
 		ClientInstanceID:   registration.ClientInstanceID,
@@ -2590,6 +2699,10 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		s.reconcilePodUpdates(ctx, claims)
 		s.backstopStalledTurns(ctx, claims)
 		s.tellSilentPhaseWorkers(ctx, claims)
+		// Once a minute, as the requirement asks, over the claims this tick already read (R5), and
+		// the lock-out notices the controller's lane has not queued yet (R3).
+		s.lockOuts.resend(ctx)
+		s.reach.sweep(ctx, claims)
 	}
 }
 
@@ -2648,7 +2761,9 @@ func drainOf(budget time.Duration) time.Duration {
 // stop ends supervision without ending a single agent: it halts it, if nothing has yet, ends the
 // drain (endDrain: the routes' decisions and the worker stream), then waits until every decision
 // in flight has returned and every send already out has its outcome handled, so nothing writes to
-// the store once it closes. Last it waits for the clean stops of session registrations, which the
+// the store once it closes, and then for the reach keeper's own controller relaunch and the fleet
+// alert records it still owes the store (reachKeeper.wait), whose relaunch can send a clean stop.
+// Last it waits for the clean stops of session registrations, which the
 // halt does not end (sessionStopsInFlight says which it waits for and what becomes of the rest):
 // an idle release decided on serve's context can return just before the halt with its stop in
 // flight, and a released claim is the one a wake acts on (sessionStop.send). The panes and pods
@@ -2661,6 +2776,7 @@ func (s *supervision) stop() {
 		s.supervisor.stop()
 		s.supervisor.wait()
 		s.wg.Wait()
+		s.reach.wait()
 		s.sessionStops.wait()
 	})
 }
@@ -2806,6 +2922,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
+		Relaunch:           s.relaunch,
 		Pause:              pauses,
 	})
 
@@ -3395,6 +3512,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		return api.State{}, nil, err
 	}
 	state.ControllerLocator = api.ControllerLocatorOf(s.runtime, controller)
+	markControllerLocator(state.ControllerLocator, s.projectToken, claims)
 	if s.secretsLogin != nil {
 		state.AgentSecretsLogin = &api.AgentSecretsLoginView{State: s.secretsLogin.LoginStatus().State}
 	}

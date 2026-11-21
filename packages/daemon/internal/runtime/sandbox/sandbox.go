@@ -137,6 +137,10 @@ type Runtime struct {
 	// volumeTrim is Options.VolumeTrim: the cache trimmer settings an issue pod's launcher is
 	// handed on the answer to its hello (LauncherResolver), nil for a deployment that runs none.
 	volumeTrim *shimwire.LauncherVolumeTrim
+	// roundPodEnds is Options.RoundPodEnds: the daemon's reading of whether the update round over
+	// a live pod a launch would keep has ended (relaunch), nil for a runtime that keeps every such
+	// pod.
+	roundPodEnds runtime.RoundPodEnds
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
 	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
@@ -424,7 +428,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard, leakCheck: opts.LeakCheckSetting, volumeTrim: opts.VolumeTrim,
+		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard, leakCheck: opts.LeakCheckSetting, volumeTrim: opts.VolumeTrim, roundPodEnds: opts.RoundPodEnds,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
@@ -923,30 +927,46 @@ func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 	if err := r.checkLocator(loc); err != nil {
 		return err
 	}
-	s, err := r.storedSandbox(loc.Sandbox.Name)
+	runs, err := r.mayRun(loc)
 	if err != nil {
 		return fmt.Errorf("suspend %s: %w", loc.Claim, err)
 	}
-	if s == nil {
-		r.forgetIf(loc)
-		return nil
-	}
-	pod := r.storedPod(loc.Sandbox.Name)
-	if !ownedBy(pod, s.UID) || string(pod.UID) != loc.Sandbox.PodUID || terminal(pod) {
-		r.forgetIf(loc)
-		return nil
-	}
-	if state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID); connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
-		r.forgetIf(loc)
-		return nil
-	}
-	stopping, cancel := context.WithTimeout(ctx, r.bootTimeout+r.terminationGrace)
-	defer cancel()
-	if err := r.launchers.stop(stopping, loc.Claim, loc.Sandbox.PodUID, r.stopFrame(loc.Sandbox.Generation)); err != nil {
-		return fmt.Errorf("suspend %s: %w", loc.Claim, err)
+	if runs {
+		if err := r.stopGeneration(ctx, loc); err != nil {
+			return fmt.Errorf("suspend %s: %w", loc.Claim, err)
+		}
 	}
 	r.forgetIf(loc)
 	return nil
+}
+
+// mayRun is whether loc's process may still be running, as the stores and its launcher read: its
+// Sandbox there, its pod there, still loc's and not ended, and its launcher, where it is connected,
+// running loc's generation. A process its pod or launcher shows already ended — the Sandbox gone,
+// the pod replaced or gone, the launcher running no child or another generation — is stopped
+// already, and nothing is sent to stop it (Suspend, StopForRelaunch).
+func (r *Runtime) mayRun(loc runtime.Locator) (bool, error) {
+	s, err := r.storedSandbox(loc.Sandbox.Name)
+	if err != nil || s == nil {
+		return false, err
+	}
+	pod := r.storedPod(loc.Sandbox.Name)
+	if !ownedBy(pod, s.UID) || string(pod.UID) != loc.Sandbox.PodUID || terminal(pod) {
+		return false, nil
+	}
+	if state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID); connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
+		return false, nil
+	}
+	return true, nil
+}
+
+// stopGeneration stops loc's generation through its role's launcher, which answers once the child
+// has exited: bounded by the boot timeout, for a launcher that has not connected yet, and the stop
+// grace the frame hands it (stopFrame).
+func (r *Runtime) stopGeneration(ctx context.Context, loc runtime.Locator) error {
+	stopping, cancel := context.WithTimeout(ctx, r.bootTimeout+r.terminationGrace)
+	defer cancel()
+	return r.launchers.stop(stopping, loc.Claim, loc.Sandbox.PodUID, r.stopFrame(loc.Sandbox.Generation))
 }
 
 // stopFrame stops generation's child within the runtime's stop grace. Its id is the generation's,
@@ -1049,20 +1069,12 @@ func (r *Runtime) controllerSandbox(ctx context.Context, token claim.Token) (*sa
 // AdoptWorkingCopy has the agent's shim set its working copy's author (the shared `jj metaedit
 // --update-author`, run in the pod's own workspace on the issue's volume) over the claim's
 // connection. The recorded process must still be the claim's running pod: the connection is its.
+// That is the one rule for a request a role's shim answers in the issue's workspace
+// (runningProcessConn), and each of its refusals opens with "adopt <claim>'s working copy".
 func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
-	if err := r.checkLocator(loc); err != nil {
-		return err
-	}
-	view, err := r.view(loc.Sandbox.Name)
+	conn, err := r.runningProcessConn(loc)
 	if err != nil {
 		return fmt.Errorf("adopt %s's working copy: %w", loc.Claim, err)
-	}
-	if view.pod == nil || string(view.pod.UID) != loc.Sandbox.PodUID || terminal(view.pod) {
-		return fmt.Errorf("adopt %s's recorded role process %s is not in its running issue pod", loc.Claim, loc.Incarnation)
-	}
-	conn, ok := r.conns.Conn(loc.Claim)
-	if !ok {
-		return fmt.Errorf("adopt %s's working copy: the claim has no connection to ask over", loc.Claim)
 	}
 	if err := conn.AdoptWorkingCopy(ctx, id, r.adoptTimeout); err != nil {
 		return fmt.Errorf("adopt %s's working copy for %s <%s>: %w", loc.Claim, id.Name, id.Email, err)
@@ -1074,42 +1086,19 @@ var _ runtime.WorkspaceBundler = (*Runtime)(nil)
 
 // BundleWorkspace has role's shim bundle the unpushed work of the issue workspace every role of
 // the issue shares, over that claim's connection, for a release about to take the pod and its
-// disk away. The role named must be one whose process runs in the issue's own running pod: its
-// shim builds the bundle in the workspace it already works in, so a claim with no locator, one
-// whose pod is not the recorded one, and one with no connection are each a refusal rather than an
-// empty bundle.
+// disk away. The role named must be one whose process runs in the issue's own running pod
+// (runningRoleConn): its shim builds the bundle in the workspace it already works in, so a claim
+// with no locator, one whose pod is not the recorded one, and one with no connection are each a
+// refusal rather than an empty bundle.
 //
 // It is the role's shim that answers, never its launcher, so a release has to ask before it stops
 // the role's process: the idle release's save is a row of its own ahead of its role stops
 // (record.IssueBundle, the daemon's idleReleaseRows), and asking after them refuses with "holds
 // no role process to bundle it".
 func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
-	token, err := claim.NewToken(r.project, issue, role)
+	conn, token, loc, err := r.runningRoleConn(ctx, issue, role, "bundle")
 	if err != nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %w", issue, err)
-	}
-	claims, err := r.store.Claims(ctx)
-	if err != nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %w", issue, err)
-	}
-	index := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == token })
-	if index < 0 || claims[index].Locator == nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %s holds no role process to bundle it", issue, token)
-	}
-	loc := *claims[index].Locator
-	if err := r.checkLocator(loc); err != nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %w", issue, err)
-	}
-	view, err := r.view(loc.Sandbox.Name)
-	if err != nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %w", issue, err)
-	}
-	if view.pod == nil || string(view.pod.UID) != loc.Sandbox.PodUID || terminal(view.pod) {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %s's recorded role process %s is not in its running issue pod", issue, token, loc.Incarnation)
-	}
-	conn, ok := r.conns.Conn(token)
-	if !ok {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %s has no connection to ask over", issue, token)
+		return runtime.WorkspaceBundle{}, err
 	}
 	bundle, err := conn.BundleWorkspace(ctx, issue, runtime.WorkspaceBundleTimeout)
 	if err != nil {
@@ -1118,10 +1107,83 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	// The shim knows nothing of the pod it runs in, and the row the save writes has to: the pod
 	// this work came off is the one pod the restore refuses by name, so that a role relaunched
 	// in it before the teardown is answered nothing and leaves the bundle's one attempt for the
-	// pod that replaces it (store.TakeWorkspaceBundleForRestore). It is the pod checked above,
-	// the running pod the claim's locator records.
+	// pod that replaces it (store.TakeWorkspaceBundleForRestore). It is the pod runningRoleConn
+	// checked, the running pod the claim's locator records.
 	bundle.PodUID = loc.Sandbox.PodUID
 	return bundle, nil
+}
+
+var _ runtime.WorkspaceWorkReader = (*Runtime)(nil)
+
+// WorkspaceWork has role's shim read whether the issue workspace every role of the issue shares
+// holds work that no branch or tag on origin holds, over that claim's connection. It makes
+// BundleWorkspace's checks (runningRoleConn): the role named must be one whose process runs in
+// the issue's own running pod, since its shim reads the workspace it already works in, so a claim
+// with no locator, one whose pod is not the recorded one, and one with no connection are each a
+// refusal rather than an answer of no work.
+func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+	conn, token, _, err := r.runningRoleConn(ctx, issue, role, "read")
+	if err != nil {
+		return runtime.WorkspaceWork{}, err
+	}
+	work, err := conn.WorkspaceWork(ctx, issue, runtime.WorkspaceWorkTimeout)
+	if err != nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace over %s: %w", issue, token, err)
+	}
+	return work, nil
+}
+
+// runningRoleConn finds role's process for a request its shim answers in the issue's workspace
+// (BundleWorkspace, WorkspaceWork), and makes the one rule for such a request
+// (runningProcessConn) of it. It answers the connection to that role's shim, the role's claim and
+// the locator of its process, read from the store. A claim with no locator is a refusal, and so
+// is each refusal of the rule. verb is what the caller does to the workspace ("bundle", "read"),
+// and every refusal opens with it: "<verb> <issue>'s workspace: ", and a claim with no locator
+// holds "no role process to <verb> it".
+func (r *Runtime) runningRoleConn(ctx context.Context, issue string, role claim.Role, verb string) (runtime.Conn, claim.Token, runtime.Locator, error) {
+	token, err := claim.NewToken(r.project, issue, role)
+	if err != nil {
+		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
+	}
+	claims, err := r.store.Claims(ctx)
+	if err != nil {
+		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
+	}
+	index := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == token })
+	if index < 0 || claims[index].Locator == nil {
+		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %s holds no role process to %s it", verb, issue, token, verb)
+	}
+	loc := *claims[index].Locator
+	conn, err := r.runningProcessConn(loc)
+	if err != nil {
+		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
+	}
+	return conn, token, loc, nil
+}
+
+// runningProcessConn is the one rule for a request a role's shim answers in the issue's workspace
+// (AdoptWorkingCopy, and BundleWorkspace and WorkspaceWork through runningRoleConn): the process
+// loc records must run in the issue's own running pod, since the shim of loc's claim works in that
+// workspace. It answers the connection to that claim's shim. A locator this runtime did not mint,
+// a pod that is not the recorded one or not running, and a claim with no connection are each a
+// refusal, which names what failed and, for the last two, loc's claim. Each caller opens the
+// refusal with its own prefix.
+func (r *Runtime) runningProcessConn(loc runtime.Locator) (runtime.Conn, error) {
+	if err := r.checkLocator(loc); err != nil {
+		return nil, err
+	}
+	view, err := r.view(loc.Sandbox.Name)
+	if err != nil {
+		return nil, err
+	}
+	if view.pod == nil || string(view.pod.UID) != loc.Sandbox.PodUID || terminal(view.pod) {
+		return nil, fmt.Errorf("%s's recorded role process %s is not in its running issue pod", loc.Claim, loc.Incarnation)
+	}
+	conn, ok := r.conns.Conn(loc.Claim)
+	if !ok {
+		return nil, fmt.Errorf("%s has no connection to ask over", loc.Claim)
+	}
+	return conn, nil
 }
 
 // ReconcileOrphans deletes the project's Sandboxes nothing owns, once older than grace. An issue

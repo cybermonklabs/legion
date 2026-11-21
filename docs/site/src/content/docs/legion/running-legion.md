@@ -28,9 +28,13 @@ your cluster, from one published worker image.
 `legion.yaml` names no repository of the project. Each issue targets the repository Dispatch
 resolves for it: its own (the issue header's Repository picker, or `dispatch issue-update --repo
 owner/name`), else its nearest ancestor's, else the project's default repository, which is set in
-Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository, and
+Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository as
+Dispatch resolved it when the daemon read the issue (its event, or a listing of the project), and
 its default branch as GitHub names it, when it first records the issue, and keeps both: a later
 change of the issue's repository in Dispatch is not applied, and the daemon says so on the issue.
+A change that sends no event of the issue, as a move of the project's default repository does,
+and that lands between that read and the record, is such a later change, said on the issue at
+its next event or the next boot's listing.
 An issue whose repository resolves to none, or to one a role App is not installed on, is not
 admitted, and the daemon says why on the issue. A claim an operator starts on an issue the
 workflow does not record works the repository Dispatch resolves for that issue, read at the
@@ -877,7 +881,7 @@ What each part is for:
   ```yaml
   worker_stall_backstop_hours:
     implementer: 6
-    controller: 1.5
+    controller: 3
   ```
 
   Each key is a Legion role (`architect`, `planner`, `implementer`, `tester`, `reviewer`,
@@ -894,12 +898,14 @@ What each part is for:
   the controller as well.
 
   A role the file leaves out runs on twice its own worker's bound for a tool call no deadline
-  judges — 8 hours for an implementer and a reviewer, 2 for every other role and the controller —
-  so the worker acts first wherever it can act at all, and never on less than the floor under any
-  bound you set: the whole stall ladder that worker's plugin runs, which on the shipped numbers is
-  the shorter of the two, and which a bound below about 35 minutes makes the default itself. The
-  ladder is the longest one of its calls can legitimately run — the larger of that bound and the
-  hour the host clamps a deadline a call declares for itself to — plus the grace over it and the
+  judges — 8 hours for an implementer and a reviewer — and never on less than the floor under any
+  bound you set, which is what every other role and the controller run on, 2 hours 9 minutes,
+  since twice their hour is under it.
+  The floor is the whole stall ladder that worker's plugin runs: the longest one of its calls can
+  legitimately run — the larger of that bound and the hour the host clamps a deadline a call
+  declares for itself to — plus the hour such a call may wait for a daemon that is not serving,
+  which that worker's own watch does not count against it, plus the grace over a declared
+  deadline and the
   two gaps between the plugin's three recovery steps. The loader refuses a bound below it, naming
   the role and that arithmetic
   ([Troubleshooting](/legion/legion/troubleshooting/#the-daemon-will-not-start)), because the

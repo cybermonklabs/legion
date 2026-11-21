@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -359,6 +360,99 @@ func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing
 			}
 			if displaced := g.sandbox(name).Annotations[displacedAnnotation]; displaced == string(stuck) {
 				t.Errorf("the Sandbox names the pod that never started, %s, displaced", stuck)
+			}
+		})
+	}
+}
+
+// replacement judges a pod its node never started by one reading of the clock (runsNoRole): the
+// reading that replaces such a pod is the one that says no role ran in it, so its answer never
+// names that pod's roles displaced. The pod here is the one a launch timed out on, its launcher
+// Secrets bound to it and nothing about it drifted, so never having started is the one reason
+// replacement could replace it. Past the boot timeout it is replaced, displacing nothing. At the
+// boot timeout's edge, with the clock past the edge from the second reading on, its one reading
+// keeps it — or, where something else read the clock first, replaces it displacing nothing — and a
+// replacement that read the clock twice would judge the pod live by the first reading and replace
+// it by the second, naming roles that never ran in it displaced.
+func TestReplacementJudgesAPodItsNodeNeverStartedByOneReadingOfTheClock(t *testing.T) {
+	boot := testOptions().BootTimeout
+	for _, tc := range []struct {
+		name string
+		// past is how far past the boot timeout after the pod's creation each reading of the
+		// clock is, in turn; the last one answers every reading after it.
+		past []time.Duration
+		// replaced is the pod replaced as never started whatever reading replacement takes; a row
+		// at the edge may see it kept.
+		replaced bool
+	}{
+		{name: "past the boot timeout", past: []time.Duration{time.Second}, replaced: true},
+		{name: "at the boot timeout's edge, the clock moving past it between readings", past: []time.Duration{0, time.Second}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var readings []time.Time
+			g := newRig(t, nil, func(g *rig, o *Options) {
+				o.Now = func() time.Time {
+					mu.Lock()
+					defer mu.Unlock()
+					if len(readings) == 0 {
+						return *g.now.Load()
+					}
+					at := readings[0]
+					if len(readings) > 1 {
+						readings = readings[1:]
+					}
+					return at
+				}
+			})
+			g.autoStart.Store(false)
+			spec := workerSpec(t)
+			name := SandboxName(spec.Claim)
+			result := make(chan error, 1)
+			go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
+			g.pendingPod(name, notReadyToStart(*g.now.Load()))
+			select {
+			case err := <-result:
+				want := "wait for its role launcher: timed out after " + boot.String()
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("Spawn = %v, want %q, the failure the supervisor charges", err, want)
+				}
+			case <-time.After(90 * time.Second):
+				t.Fatal("hang guard: the launch never ended for a pod that never started")
+			}
+			s, err := g.r.storedSandbox(name)
+			if err != nil || s == nil {
+				t.Fatalf("the stored Sandbox %s = %v, %v", name, s, err)
+			}
+			pod := g.r.storedPod(name)
+			spec.Generation = 2
+			l, err := g.r.prepare(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			created := pod.CreationTimestamp.Time
+			mu.Lock()
+			for _, past := range tc.past {
+				readings = append(readings, created.Add(boot+past))
+			}
+			mu.Unlock()
+
+			decided, err := g.r.replacement(g.ctx, s, pod, &l, nil)
+			mu.Lock()
+			readings = nil
+			mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			never := decided.unstarted > 0
+			switch {
+			case decided.displacesRoles:
+				t.Fatalf("replacement = %+v, want it to name nothing displaced: no role ran in a pod its node never started", decided)
+			case decided.why != "" && !never, tc.replaced && !never:
+				t.Fatalf("replacement = %+v, want the pod replaced as one its node never started, and for nothing else", decided)
+			case never && decided.unstarted <= boot:
+				t.Fatalf("replacement = %+v, want the pod replaced for an age past the boot timeout %s", decided, boot)
 			}
 		})
 	}

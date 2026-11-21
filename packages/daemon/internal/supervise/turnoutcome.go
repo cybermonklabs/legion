@@ -17,8 +17,10 @@ import (
 // The producer is the one counter. Oh My Pi's turns are reported by pi-legion's agent_end hook and
 // Claude Code's by the Claude bridge, each over POST /legion/v1/claims/turn-outcome; the turn's end
 // on the worker stream (StreamTurnEnd) and every turn ordinal the daemon keeps take no part in
-// this, so no two counters can drift. A turn no report arrived for — the process died before it
-// could send one — is a key the window never holds, which counts neither way.
+// this, so no two counters can drift. A turn no report has arrived for is a key the window does not
+// hold: inside a generation it is a gap in the sequence, which ends a run of refused turns
+// (RefusedRun), and a generation's last turns that went unreported — the process died before it
+// could send them — count neither way.
 //
 // The tags are the shape the store keeps the window in (the claims table's turn_outcomes), which
 // is the one place a report is written.
@@ -56,8 +58,11 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 // recordTurnOutcome puts a report in the claim's window, in (generation, sequence) order, and
 // trims the window to its bound (turnOutcomeWindow). A report whose key the window already holds
 // replaces it, so a producer that repeats one changes nothing. No count is kept anywhere: every
-// reader derives what it needs from the window as it stands (RefusedRun), which is what makes a
-// late report and an in-order one leave the same answer.
+// reader derives what it needs from the window as it stands (RefusedRun), so reports that arrive
+// in any order leave the same window once all of them have landed. The failure turnOutcome
+// decides on the way is never one a report still to come would undo: RefusedRun ends a run at a
+// turn whose report has not landed, so a run reaches the limit only over turns that ran one after
+// another and were all reported.
 //
 // The message is the provider's text, so it is kept as the daemon keeps a far side's text
 // (storetext.FarSideText: made valid, then read whole by the URL rule) before redact.Runes cuts
@@ -78,16 +83,34 @@ func (m *Machine) recordTurnOutcome(o TurnOutcome) {
 
 // RefusedRun is the run of refused turns the claim's reports end with, in the order the turns ran.
 // It is derived on every read and stored nowhere, so no count is ever mutated and a report that
-// arrives late lands in its place and is counted there. The run carries across generations: a
-// session the provider refused is refused again when it is resumed, which is why the retry of a
-// claim this failed starts a new session (freshSession), and a new session starts a fresh run
-// (freshRun).
+// arrives late lands in its place and is counted there. The run is of turns that ran one after
+// another, each reported, and ends at a gap in the sequence (follows): each turn's report is sent
+// from a goroutine of its own, and through an outage each waits on a backoff of its own, so a
+// refused turn's report can land before the report of the clean turn ahead of it, and read across
+// the gap that refusal would complete a run its provider never refused. The run carries across
+// generations: a session the provider refused is refused again when it is resumed, which is why
+// the retry of a claim this failed starts a new session (freshSession), and a new session starts a
+// fresh run (freshRun).
 func (c Claim) RefusedRun() int {
 	run := 0
 	for i := len(c.TurnOutcomes) - 1; i >= 0 && c.TurnOutcomes[i].Refused; i-- {
 		run++
+		if i > 0 && !follows(c.TurnOutcomes[i-1], c.TurnOutcomes[i]) {
+			break
+		}
 	}
 	return run
+}
+
+// follows reports whether next is the turn that ran right after prev, two reports the window holds
+// side by side: the next sequence of prev's generation, or the first turn of a later generation,
+// which the run of the generation before carries into. A turn between them whose report has not
+// landed is a gap, and so is a later generation's turn past its first.
+func follows(prev, next TurnOutcome) bool {
+	if next.Generation == prev.Generation {
+		return next.Sequence == prev.Sequence+1
+	}
+	return next.Sequence == 1
 }
 
 // LastRefusal is what the provider said about the newest refused turn the claim keeps, and "" when

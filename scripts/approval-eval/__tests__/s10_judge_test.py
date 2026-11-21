@@ -855,11 +855,6 @@ class JudgingTest(Base):
         cases = {
             "a read of another bundle": own(lambda bundle, directory: [("read", {"path": other(bundle, directory)}, None)]),
             "a read of no file": own(lambda bundle, directory: [("read", {"path": bundle[:-4] + "x.md"}, None)]),
-            "a read reporting another bundle": own(lambda bundle, directory: [
-                ("read", {"path": bundle}, {"resolvedPath": bundle, "fileMatches": [{"path": other(bundle, directory)}]})]),
-            "a grep reporting another bundle": own(lambda bundle, directory: [
-                ("grep", {"pattern": "x", "path": bundle},
-                 {"searchPath": bundle, "fileMatches": [{"path": other(bundle, directory)}]})]),
             "a grep of the skill tree reporting a bundle": own(lambda bundle, directory: [
                 ("grep", {"pattern": "x", "path": HARNESS}, {"searchPath": HARNESS, "files": [other(bundle, directory)]})]),
             "a directory read no answer establishes": own(lambda bundle, directory: [
@@ -1270,16 +1265,43 @@ class StageTest(Base):
         self.assertIn(f"requests/{ask_id('a1')}/{STORE.UNREAD_FILE}", self.record()["files"])
         self.assertEqual(self.outcome("a2")["verdict"], "approve")
 
-    def test_a_read_back_that_cannot_run_stops_the_run(self):
+    def test_a_read_back_that_cannot_run_stops_the_run_and_its_outcome_is_committed_on_resume(self):
         def read_back(text, path):
             raise J.Stopped("bun could not run")
 
-        self.assertEqual(self.judge(self.one_request(), FakeSandbox(self), read_back_of=read_back), 2)
+        admission = self.one_request()
+        first = FakeSandbox(self)
+        self.assertEqual(self.judge(admission, first, read_back_of=read_back), 2)
+        self.assertEqual([run["ask"] for run in first.runs], [ask_id("a1")])
         self.assertFalse(self.has_outcome("a1"))
         self.assertIn("bun could not run", self.record()["stops"][0]["reason"])
+        # The outcome built whole is kept, held to its sha256 like every file of the stage.
+        pending = f"requests/{ask_id('a1')}/{STORE.PENDING_FILE}"
+        self.assertIn(pending, self.record()["files"])
+        kept = got(os.path.join(self.out, pending))
+        self.assertEqual(json.loads(kept)["verdict"], "approve")
+        # A second run whose read-back cannot run either stops again, the same outcome kept.
+        self.assertEqual(self.judge(admission, FakeSandbox(self), read_back_of=read_back), 2)
+        self.assertEqual(len(self.record()["stops"]), 2)
+        self.assertEqual(got(os.path.join(self.out, pending)), kept)
+        # A run whose read-back runs commits that outcome, and judges nothing again (point 6).
+        resumed = FakeSandbox(self)
+        self.assertEqual(self.judge(admission, resumed), 0, self.stderr)
+        self.assertEqual(resumed.runs, [])
+        self.assertEqual(self.outcome("a1")["verdict"], "approve")
+        self.assertEqual(got(os.path.join(self.out, "requests", ask_id("a1"), STORE.OUTCOME_FILE)), kept)
         with mock.patch.object(J, "BUN", os.path.join(self.root, "no-bun")):
             with self.assertRaisesRegex(J.Stopped, "could not read back"):
                 J.read_back_with_bun("{}", "requests/a/outcome.json")
+        # A Bun whose check prints no JSON, or exits 2 with its usage, stops the run the same way.
+        for name, body in {"no JSON": "echo not json", "exit 2": "echo usage >&2; exit 2"}.items():
+            with self.subTest(bun=name):
+                stand_in = os.path.join(self.root, "bun-" + name.replace(" ", "-"))
+                put(stand_in, f"#!/bin/sh\n{body}\n")
+                os.chmod(stand_in, 0o755)
+                with mock.patch.object(J, "BUN", stand_in):
+                    with self.assertRaisesRegex(J.Stopped, "could not read back"):
+                        J.read_back_with_bun("{}", "requests/a/outcome.json")
 
     def test_the_analysis_parser_reads_each_outcome_back_through_bun(self):
         bun = os.environ.get("S10_BUN")
@@ -1835,17 +1857,19 @@ class JobSpecTest(unittest.TestCase):
 class ScriptedRunner(JOB.KubeRunner):
     """`KubeRunner`, built by its own constructor, over a stand-in `kubectl`: each call answered from
     `script` by its verb, the driver's own pod (`get pod`) the one the constructor reads, running the
-    image the runner is given. `calls` holds the verbs called after the constructor's."""
+    image the runner is given unless `image` names another, under `account` where one is named.
+    `calls` holds the verbs called after the constructor's; a list handed in as `calls` holds every
+    verb, the constructor's too, which a constructor that refuses leaves for the caller to read."""
 
-    def __init__(self, script, namespace_file):
+    def __init__(self, script, namespace_file, image=None, account=JOB.SERVICE_ACCOUNT, calls=None):
         pod = own_pod()
         container = pod["spec"]["containers"][0]
         pod["status"] = {"containerStatuses": [{"name": container["name"], "imageID": container["image"]}]}
         self.script = {"get pod": [(0, json.dumps(pod))], **script}
-        self.calls = []
+        self.calls = [] if calls is None else calls
         with mock.patch.object(JOB, "NAMESPACE_FILE", namespace_file), \
                 mock.patch.object(SANDBOX, "gateway_key", return_value=None):
-            super().__init__(container["image"], JOB.SERVICE_ACCOUNT, {}, poll=0, pauses=(0, 0))
+            super().__init__(image or container["image"], account, {}, poll=0, pauses=(0, 0))
         self.constructed = list(self.calls)
         self.calls.clear()
 
@@ -1874,6 +1898,19 @@ class KubeRunnerTest(unittest.TestCase):
         self.assertEqual(runner.constructed, ["get pod"])
         self.assertEqual((runner.namespace, runner.own_pod()["metadata"]["name"]), ("sessions", "session-1"))
         self.assertEqual(runner.calls, [])
+
+    def test_the_constructor_refuses_another_image_and_the_drivers_own_account_before_any_call(self):
+        cases = {
+            "another image": ({"image": IMAGE}, "the sandbox runs only the image its driver runs"),
+            "the driver's own account": ({"account": "session"}, "the account this driver's own pod runs as"),
+        }
+        for name, (given, refusal) in cases.items():
+            with self.subTest(name=name):
+                calls = []
+                with self.assertRaisesRegex(STORE.CannotRun, refusal):
+                    ScriptedRunner({}, self.namespace_file, calls=calls, **given)
+                # The constructor read its own pod and called nothing past it.
+                self.assertEqual(calls, ["get pod"])
 
     def pods(self):
         return json.dumps({"items": [{"metadata": {"name": "pod-1"}, "status": {

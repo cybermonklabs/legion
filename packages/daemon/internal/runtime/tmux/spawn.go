@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/ompbroker"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
@@ -543,6 +544,10 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err
 	}
+	// A process of an older generation that died, rather than being stopped, left the named
+	// services its OMP started through its broker running; the new generation must not take them
+	// over (endServicesOf).
+	r.endServices(ompbroker.Claim{StateDir: r.stateDir, Token: spec.Claim, Before: spec.Generation})
 	prompt, err := runtime.ComposePrompt(spec.Prompt)
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)

@@ -1,0 +1,68 @@
+kind: Added
+body: |-
+    Work in flight survives the end of a worker's process, of its connection and of the daemon.
+    Daemon API contract 203.
+    A claim that is ready, idle or working and whose session has not registered with Envoy for
+    more than 20 minutes is marked unreachable. The daemon reads Envoy's session list once a
+    minute, unresponsive sessions included. The mark is `unreachable`, `{since, lastSeen?}`, on
+    every claim view of `GET /legion/v1/state`, on the controller's locator and on the operator's
+    claim routes, and the claim keeps its state. The controller gets an `unreachable-claims`
+    notice, and each tree's architect is told of the claims of its tree other than its own. Six
+    more notices go to the controller: `relaunch-ready`, `relaunch-guard-held`, `relaunch-not-back`,
+    `unreachable-exit`, `worker-locked-out` and `envoy-no-live-session`.
+    `POST /legion/v1/claims/relaunch`, the controller's `relaunch`, stops an unreachable claim's
+    process through its launcher and starts it again on the same session, and charges the claim
+    nothing. A guard refuses it (`RELAUNCH_GUARD`) while the claim's worker stream has shown a step
+    in the last 20 minutes, while its session has sent an activity report in its open turn in the
+    last 20 minutes, while its open call is not a `wait`, and while its last activity report since
+    its launch is missing or shows background work. The daemon also refuses a second relaunch of
+    a claim within 6 hours, a role whose launcher is not connected, a launch that would replace the
+    pod for a reason of its own and so end the other roles running in it, and a claim whose pod
+    holds two or more claims that are all unreachable, and it does nothing more after a stop that
+    the claim's process outlived. When the relaunched claim has not answered an update round over
+    its pod, and the round does not pass the claim over, the relaunch holds the pod from its stop
+    until its launch starts, even when that launch waits for a retry, and at most until the round's
+    bound, so the claim comes back where its unpushed work is. Reaching the bound ends that hold;
+    an operator's suspension or a pause's hold still keeps the pod. Under `controller: daemon` the
+    daemon relaunches its own controller on its same session, at most once in 6 hours, and replaces
+    the controller's pod where the launch needs that or the launcher is not connected.
+    A role message or hook prompt to a claim that keeps the session it recorded is held in the
+    outbox until a session holds the role again, the claim ends, or the issue leaves its phase, on
+    every listener: a hook prompt for such a claim is published without Envoy's keep flag, so the
+    daemon, not the listener's one-hour copy, is its keeper.
+    The worker stream tells an older generation's connection to stop when the claim's newer
+    process says hello, and tells a hello of an older generation to stop, after a daemon restart
+    too: the database keeps the hash of every boot token a launch replaced. The daemon closes an
+    older connection that sends nothing for 2 minutes after its stop frame, and reports a newer
+    process that is still refused after 5 minutes (`worker-locked-out`). Every accepted TCP
+    connection of the worker stream carries keepalive (15 s idle, 9 probes 15 s apart) and a
+    2-minute `TCP_USER_TIMEOUT`, so a connection whose sent data stays unacknowledged for 2 minutes
+    ends.
+    For a case no agent can hear, the daemon writes an error line that starts `LEGION FLEET ALERT`,
+    with a `case` field: `controller_unreachable`, `controller_relaunch_refused`,
+    `envoy_no_live_session`, `envoy_session_list_unreadable` or `newer_process_refused`. It writes
+    one line for each case and claim until that case ends, for a log-match alert policy to page on.
+    A worker's claim boot and each call of it that the daemon applies at most once now wait up to an
+    hour for a daemon that is not serving, and an Oh My Pi worker's own stall watch does not count
+    that wait. So the stall backstop's floor gains that hour: from 1 hour 9 minutes to 2 hours 9
+    minutes for the planner, tester, architect, merger and controller, and from 4 hours 9 minutes
+    to 5 hours 9 minutes for the implementer and reviewer. A `worker_stall_backstop_hours` value
+    below the floor is refused at load, and the message names the four terms. Where the file leaves
+    a role out, the planner, tester, architect, merger and controller run on 2 hours 9 minutes,
+    where they ran on 2 hours, and the implementer and reviewer on 8 hours, as before.
+    An Oh My Pi session whose previous process ended in a turn is told so when it is resumed, and
+    a session whose Envoy heartbeat stopped registers again (`@sjawhar/pi-envoy`).
+    Six migrations add what this needs: the claims' reach record and the hash of every boot token
+    a launch replaced (`20261116012459_claim_reach_and_prior_boot_tokens`), the two outbox kinds of
+    the reach notices (`20261116082000_reach_notice_kinds`), the records a restart must keep of a
+    held outbox row, of a relaunch's generation and of the notices no claim's reach record holds
+    (`20261116092312_reach_records_kept_with_their_acts`), the session the listener stored a role
+    message's or hook prompt's copy for (`20261116164153_outbox_copy_stored_for_its_session`), the
+    open fleet alert lines (`20261118133133_fleet_alert_lines`), and the session's own time of an
+    activity report and its launch generation (`20261118134019_claim_activity_sent_at`), since
+    `activity_at` is now the time the daemon received the report. A rollback runs one statement,
+    which puts `activity_at` back to the session's time (`docs/kubernetes.md`, "Rolling back the
+    release that reports claims out of reach").
+time: 2026-11-18T13:20:10Z
+custom:
+    Issue: pr4175

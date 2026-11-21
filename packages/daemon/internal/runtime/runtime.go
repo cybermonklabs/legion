@@ -205,18 +205,92 @@ var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a s
 // not come before the roles are relaunched into the pod that replaced this one.
 var ErrPodGone = errors.New("the pod the locator records is not there")
 
+// The three reasons a relaunch of an unreachable claim refuses (R5), which a runtime answers
+// through InPlaceRelauncher and the daemon's `relaunch` names to its caller as a case for a person.
+// ErrLauncherNotConnected and ErrRelaunchReplacesPod are answered before anything is stopped: a
+// start through a launcher that does not connect waits out the launch bound and is charged, and a
+// launch that replaces the pod for a reason of its own (a drift, a lost binding, a disk to
+// replace) ends every other role running in it, so neither may follow a stop the relaunch made.
+// The update round's own replacement of a pod it is done with is no such reason: no other role
+// runs in such a pod, and the daemon holds it for the relaunch, from its stop until its launch
+// starts, where the claim has not answered the round and the round does not pass it over, at most
+// until the round's bound; a relaunch whose launch never starts, one that failed for good among
+// them, holds it until the bound, so it costs the round at most its remaining time.
+// ErrProcessOutlivedStop is answered after the stop, which did not end the process: starting the
+// next one beside it would leave two processes writing one session.
+var (
+	ErrLauncherNotConnected = errors.New("the role's launcher is not connected")
+	ErrRelaunchReplacesPod  = errors.New("the launch would replace the pod, which ends every other role running in it")
+	ErrProcessOutlivedStop  = errors.New("the process outlived its stop")
+)
+
+// InPlaceRelauncher is a runtime whose processes share a place they are started into through a
+// launcher of their own — the Sandbox runtime's issue pod and the project controller's pod — so
+// a relaunch of one process can be refused before it stops anything, and its stop can be told from
+// a stop the process outlived (R5). A runtime whose processes share nothing (tmux) implements
+// nothing here: the relaunch stops the process with Suspend and refuses where that stop answers an
+// error.
+//
+// mayReplacePod is whether the relaunch may replace the process's pod, which only the daemon's
+// own relaunch of its controller may: no other role runs in that pod, so a launcher that is not
+// connected or a launch that needs a new pod is answered by replacing it rather than refused.
+type InPlaceRelauncher interface {
+	// RelaunchRefusal is why a relaunch of loc's process, started as its claim's next launch
+	// would start it, would end another role running in its pod or wait out the launch bound:
+	// ErrLauncherNotConnected or ErrRelaunchReplacesPod, wrapped with what the runtime read, and
+	// nil where neither holds. It stops, starts and writes nothing. Any other error is a runtime
+	// that could not be asked, which refuses the relaunch as surely and says so. It asks nothing
+	// of the update round over the pod, which the daemon reads at the launch itself
+	// (Options.RoundPodEnds in the Kubernetes runtime) and may answer by having the launch replace
+	// a pod the round is done with; the daemon holds the pod for the relaunch, from its stop until
+	// its launch starts, only where the claim has not answered the round and the round does not
+	// pass it over, and at most until the round's bound, which ends it too for a relaunch whose
+	// launch never starts. So a nil promises that the relaunch ends no other running role, and not
+	// that the next process starts in the same pod.
+	RelaunchRefusal(ctx context.Context, loc Locator, mayReplacePod bool) error
+	// StopForRelaunch stops loc's process for its relaunch: through its launcher, which answers
+	// once the process has ended, or, where mayReplacePod and the launcher is not connected, by
+	// ending its pod. ErrProcessOutlivedStop, wrapped with the launcher's or the cluster's own
+	// answer, is a stop that did not end the process in its grace; nothing more is done then,
+	// and the caller starts nothing.
+	StopForRelaunch(ctx context.Context, loc Locator, mayReplacePod bool) error
+}
+
 // IssuePodReader reads which pod an issue's Sandbox holds now, asked by the issue alone: the uid
 // of that pod, "" where the runtime holds no Sandbox of the issue or the Sandbox holds no pod, and
 // read false where the runtime cannot say at all. It exists beside PodDrift because it needs no
 // locator: an update round whose claims record no pod — every claim suspended, since a suspension
 // lets the process go and its locator with it (supervise's letGo) — has no claim left to ask
 // PodDrift through, and only the issue to ask by (internal/daemon's podlessRound). A pod other
-// than the round's own, or none, is that round's pod gone, and the round ends; the round's own
-// pod, or no answer, leaves it waiting. A runtime whose processes run in no pod implements
-// nothing here, and the daemon then reads no answer, which a round never needs from it, since
-// such a runtime answers no drift and so opens no pod round.
+// than the round's own, or none, is that round's pod gone, and the round ends. The round's own pod
+// is replaced by the issue where nothing holds it (IssuePodReplacer), and otherwise, or with no
+// answer, the round waits. A runtime whose processes run in no pod implements nothing here, and
+// the daemon then reads no answer, which a round never needs from it, since such a runtime
+// answers no drift and so opens no pod round.
 type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
+}
+
+// IssuePodReplacer ends the pod of an update round that has no role process in it, asked by the
+// issue alone, and returns when the runtime no longer has that pod. It is ReplacePod for a round
+// with no claim left to name the pod through: every role of the pod is suspended or between
+// launches, so no claim records a locator in it, and ReplacePod has no process to act through
+// (internal/daemon's podlessRound and roundWithNoProcessInItsPod, dispatch://INFRA-4109 R7).
+// Without it such a round holds the pod, and the issue's next launch goes into a pod that the
+// round is about to replace.
+//
+// podUID is the round's own pod. The call is a no-op returning nil where the runtime holds no
+// Sandbox of the issue, where the Sandbox is already suspended, and where the pod the Sandbox
+// holds is not podUID: there is then no pod of that round to end. It creates nothing in its
+// stead, as ReplacePod creates nothing: the issue's next launch builds a pod from the current
+// configuration.
+//
+// due is the caller's last word, with ReplacePod's contract: it is asked under whatever the
+// runtime holds the pod with and immediately before the runtime ends anything, nil goes on, and
+// any error is returned having changed nothing. A runtime whose processes run in no pod
+// implements nothing here.
+type IssuePodReplacer interface {
+	ReplaceIssuePod(ctx context.Context, issue, podUID string, due func(context.Context) error) error
 }
 
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
@@ -284,6 +358,40 @@ type IssueVolumeReader interface {
 type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
 }
+
+// WorkspaceWorkReader asks one live role's process whether the issue workspace every role of the
+// issue shares holds work that no branch or tag on origin holds. It is the read a pod update round
+// makes before it replaces a pod without waiting for every role, so that the replacement can name
+// what goes with the pod, and it is one runtime call so that INFRA-3271 can make the same read with
+// its own reading (spec R1 of INFRA-4109). The role named must be one whose process runs in the
+// issue's pod: its shim reads the workspace with the jj it already works with. The read keeps
+// nothing of the work and saves no bundle; the one thing it writes is jj's snapshot of the working
+// copy (Conn.WorkspaceWork). A runtime whose processes share no workspace implements nothing
+// here.
+type WorkspaceWorkReader interface {
+	WorkspaceWork(ctx context.Context, issue string, role claim.Role) (WorkspaceWork, error)
+}
+
+// WorkspaceWork is what one read of an issue's workspace found (WorkspaceWorkReader). Work is a
+// commit under a workspace's working copy or a local bookmark that no branch or tag on origin
+// holds. A commit with no change and no description is no work, and neither is a commit a fetch
+// left visible or a side head that no working copy and no bookmark reaches (the shim's
+// workspaceWorkRevset says why).
+type WorkspaceWork struct {
+	// Head is the commit id of the working copy the read was made in.
+	Head string
+	// Changed is that working-copy commit holding a change: it is not empty.
+	Changed bool
+	// Commits are the first work commit ids, newest first, at most
+	// shimwire.MaxWorkspaceWorkCommits of them.
+	Commits []string
+	// Count is how many work commits there are in all, those Commits lists included.
+	Count int
+}
+
+// HoldsWork is whether the read found work: a change in the working copy, or a commit origin does
+// not hold.
+func (w WorkspaceWork) HoldsWork() bool { return w.Changed || w.Count > 0 }
 
 // SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,
 // created at podCreated, to restore, and what that ask did to the bundle. It is the other half
@@ -387,6 +495,15 @@ type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token
 // comment says of its delete). The report that the trimmer switched itself off is its last, and
 // one dropped here is not sent again.
 type VolumeReported func(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error
+
+// RoundPodEnds is the daemon's reading of the pod update round over a live issue pod a launch
+// would keep: whether the round open over podUID, the live pod of token's issue, has ended by the
+// daemon's rule for a round with no role process in its pod (internal/daemon's
+// roundPodEndsAtLaunch, dispatch://INFRA-4109 R7). The runtime asks it under the pod's launch turn.
+// A yes has the launch replace the pod as the round's own replacement and start its role in a new
+// pod, so the role is launched once rather than into a pod the round is about to replace. An error
+// fails the launch as any of its steps does.
+type RoundPodEnds func(ctx context.Context, token claim.Token, podUID string) (bool, error)
 
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
 // grace: the supervisor's armRegistration calls it with ProvisionBound before a claim's hello and

@@ -282,6 +282,11 @@ type Options struct {
 	// claim route `POST /legion/v1/claims/activity` writes. Nil answers that route 500 and
 	// changes nothing else.
 	ClaimActivity ClaimActivityStore
+	// Relaunch is the controller's `relaunch` of a claim Envoy cannot reach, on its same session
+	// (R5): the daemon's reach keeper checks the mark, the 6-hour limit and the claim's pod, and
+	// then asks the machine (internal/daemon's supervision.relaunch). Nil answers the route 500 and
+	// changes nothing.
+	Relaunch func(ctx context.Context, m *supervise.Machine) error
 	// Pause is the project's pause service (internal/pause's Service), which the four pause and
 	// resume routes act through and whose flag the claim routes read to refuse a turn while the
 	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
@@ -313,7 +318,7 @@ type ReleaseRecordStore interface {
 // launch generation names and answers whether the store holds the claim at that launch at all;
 // a report older than the one recorded is dropped and still answers true.
 type ClaimActivityStore interface {
-	PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, activity claim.SessionActivity) (bool, error)
+	PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, activity claim.SessionActivity, received time.Time) (bool, error)
 }
 
 type server struct {
@@ -389,6 +394,7 @@ type server struct {
 	roleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
+	relaunch           func(ctx context.Context, m *supervise.Machine) error
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
@@ -464,6 +470,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		roleHoldersChanged: opts.RoleHoldersChanged,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
+		relaunch:           opts.Relaunch,
 		pause:              opts.Pause,
 		readiness:          opts.Ready,
 		log:                opts.Log,
@@ -565,6 +572,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/issues/status", s.issueStatus},
 		{"POST /legion/v1/claims/fresh-session", s.claimFreshSession},
 		{"POST /legion/v1/claims/compact", s.claimCompact},
+		{"POST /legion/v1/claims/relaunch", s.claimRelaunch},
 		{"POST /legion/v1/gates/register", s.gateRegister},
 		{"POST /legion/v1/waves/release", s.waveRelease},
 		{"POST /legion/v1/phase/backward", s.phaseBackward},

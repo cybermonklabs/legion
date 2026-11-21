@@ -187,6 +187,14 @@
       "needs": "a throwaway kind cluster with gVisor on an amd64 Linux host, with docker, go, kubectl, curl, zstd, a tar that supports --zstd and kind, and a worker image by digest (LEGION_E2E_IMAGE)"
     },
     {
+      "script": "cut-turn-note.sh",
+      "needs": "the rig of this change's checks on a host that reaches a model: the pinned Oh My Pi every pane runs (LEGION_OMP_PATH), a model route (LEGION_E2E_MODEL_BASE_URL and LEGION_E2E_MODEL_KEY_COMMAND or LEGION_E2E_MODEL_KEY_FILE), a loopback PostgreSQL (LEGION_TEST_PG_DSN) on which it also makes the database its SQL sessions are stored in, XDG_CACHE_HOME on the driver's temporary filesystem, and, for its negative control, a full checkout holding the base commit `--base-commit` names; it builds the listener from the checkout's own commit (LEGION_E2E_LISTENER_FROM_CHECKOUT=1), installs its own nats-server with `go install`, and runs its steps twice, on a rig for each session store"
+    },
+    {
+      "script": "daemon-wait.sh",
+      "needs": "the rig of this change's checks: the pinned Oh My Pi every pane runs (LEGION_OMP_PATH), a model route the run asks for though its panes talk to scripted stand-ins (LEGION_E2E_MODEL_BASE_URL and LEGION_E2E_MODEL_KEY_COMMAND or LEGION_E2E_MODEL_KEY_FILE), a jj that runs under a HOME of its own (LEGION_E2E_W1_JJ), a loopback PostgreSQL (LEGION_TEST_PG_DSN), XDG_CACHE_HOME on the driver's temporary filesystem, and a full checkout holding commit 8b8fac664c, which it builds the listener production pins from, and, for its negative control, the base commit `--base-commit` names; it installs its own nats-server with `go install`, and its two 55-minute outages take about two and a half hours of wall clock"
+    },
+    {
       "script": "dispatch-two-builds.sh",
       "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is `the build before the change` is a caller's choice no job can make. The property the script proves is covered in CI by the Go tests that write an older build's row by raw SQL and assert the drain re-indexes it (`store/refs_grammar_migrations_test.go`, `docs/refs_grammar_drain_test.go`); the script is the live proof of the same thing through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
     },
@@ -223,6 +231,14 @@
       "needs": "the worker image and the Job leak-guard-image-job.sh creates: it is that proof's probe, not a proof of its own, and the harness writes it into the Job's command because a Job holds no checkout to read it from; it runs inside the image against a scratch repository on the Job's emptyDir and judges nothing a runner could give it"
     },
     {
+      "script": "live-rig-smoke.sh",
+      "needs": "the rig of this change's checks on a host that reaches a model: the pinned Oh My Pi every pane runs (LEGION_OMP_PATH), a model route (LEGION_E2E_MODEL_BASE_URL and LEGION_E2E_MODEL_KEY_COMMAND or LEGION_E2E_MODEL_KEY_FILE), a loopback PostgreSQL (LEGION_TEST_PG_DSN), XDG_CACHE_HOME on the driver's temporary filesystem, and a full checkout holding commit 8b8fac664c, which it builds the listener production pins from; it installs its own nats-server with `go install`"
+    },
+    {
+      "script": "lockout-generations.sh",
+      "needs": "the rig of this change's checks on a host that reaches a model: the pinned Oh My Pi every pane runs (LEGION_OMP_PATH), a model route (LEGION_E2E_MODEL_BASE_URL and LEGION_E2E_MODEL_KEY_COMMAND or LEGION_E2E_MODEL_KEY_FILE), a loopback PostgreSQL (LEGION_TEST_PG_DSN), XDG_CACHE_HOME on the driver's temporary filesystem, and a full checkout holding commit 8b8fac664c, which it builds the listener production pins from, and, for its negative control, the base commit `--base-commit` names; it installs its own nats-server with `go install`, and a run takes about twelve minutes of wall clock"
+    },
+    {
       "script": "multi-repo-acceptance.sh",
       "needs": "a live multi-repository run on the production cluster: it is the operator's acceptance observer, reads that run's daemon, Dispatch, GitHub and kubectl, and starts nothing of its own"
     },
@@ -252,6 +268,14 @@
       "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
     },
     {
+      "script": "rollback-notices.sh",
+      "needs": "a commit of this repository's own history to build the release before from, which it builds from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is the release a deployment would roll back to is a caller's choice no job can make. The property is covered in CI by the record and store tests that hold each new notice to an outbox kind no earlier lane selects (`record/reach_notice_kind_test.go`, `store/migration_20261116082000_test.go`); the script is the live proof through two real daemons on one database, run by hand from a full checkout with go and psql and a loopback PostgreSQL (LEGION_TEST_PG_DSN); it installs its own nats-server with `go install`"
+    },
+    {
+      "script": "session-reconnect.sh",
+      "needs": "the rig of this change's checks on a host that reaches a model: the pinned Oh My Pi its pane runs (LEGION_OMP_PATH), a model route (LEGION_E2E_MODEL_BASE_URL and LEGION_E2E_MODEL_KEY_COMMAND or LEGION_E2E_MODEL_KEY_FILE), a loopback PostgreSQL (LEGION_TEST_PG_DSN), XDG_CACHE_HOME on the driver's temporary filesystem, and a full checkout holding commit 8b8fac664c, which it builds the listener production pins from, and, for its negative control, the base commit `--base-commit` names; it installs its own nats-server with `go install`, each of its ten runs takes 30 to 45 minutes of wall clock, and the negative control several hours"
+    },
+    {
       "script": "share-volumes-kind.sh",
       "needs": "a throwaway kind cluster with gVisor on an amd64 Linux host, an NFS server in that cluster, with docker, go, kubectl, curl, zstd, a tar that supports --zstd and kind, and a worker image by digest (LEGION_E2E_IMAGE)"
     },
@@ -278,6 +302,10 @@
     {
       "script": "step-records-read.sh",
       "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, and the key of one issue a deployed Legion ran to done after the release that records each step; it reads that issue's step records and starts nothing"
+    },
+    {
+      "script": "unreachable-claims.sh",
+      "needs": "the rig of this change's checks with its scratch Dispatch: the pinned Oh My Pi every pane runs (LEGION_OMP_PATH), a model route the run asks for though its panes talk to scripted stand-ins (LEGION_E2E_MODEL_BASE_URL and LEGION_E2E_MODEL_KEY_COMMAND or LEGION_E2E_MODEL_KEY_FILE), a loopback PostgreSQL (LEGION_TEST_PG_DSN), XDG_CACHE_HOME on the driver's temporary filesystem, and a full checkout holding commit 8b8fac664c, which it builds the listener production pins from, and, for its negative control, the base commit `--base-commit` names; it installs its own nats-server with `go install`, and its main run takes about 5 hours of wall clock"
     },
     {
       "script": "verifiers-staging-token.sh",

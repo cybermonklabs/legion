@@ -94,7 +94,7 @@ func TestPromptReturnsATransportErrorWhenTheConnectionClosesFirst(t *testing.T) 
 		t.Fatalf("Prompt = %v, want ErrClosed", err)
 	}
 	// And after the close, at once, with nothing written.
-	if event := h.next(); event != (Closed{Claim: testClaim}) {
+	if event := h.next(); event != (Closed{Claim: testClaim, Generation: testGeneration}) {
 		t.Fatalf("event = %#v, want Closed", event)
 	}
 	if err := conn.Prompt(context.Background(), "delivery-2", "again"); !isClosed(err) {
@@ -323,7 +323,7 @@ func TestEventsCarryTheTurnInWireOrderAndNoAck(t *testing.T) {
 		ToolStep{Claim: testClaim, Tool: "bash", CallID: "toolu_turn1_0",
 			ArgsBytes: 21, ArgsHash: "1eab1ef18bb109ae", ConnSequence: conn.Sequence()},
 		TurnEnd{Claim: testClaim},
-		Closed{Claim: testClaim},
+		Closed{Claim: testClaim, Generation: testGeneration},
 	}
 	var got []Event
 	for range want {
@@ -351,7 +351,7 @@ func TestAToolStepEventRecordsACallsEndAndAnUnmodelledFrameIsDropped(t *testing.
 	if got := h.next(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("event = %#v, want %#v", got, want)
 	}
-	if got := h.next(); got != (Closed{Claim: testClaim}) {
+	if got := h.next(); got != (Closed{Claim: testClaim, Generation: testGeneration}) {
 		t.Fatalf("event after the unmodelled frame = %#v, want the close: that frame is no event", got)
 	}
 	if rest := h.stop(); len(rest) != 0 {
@@ -375,7 +375,7 @@ func TestAMessageEndNamesTheModelThatAnswered(t *testing.T) {
 	if got := h.next(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("event = %#v, want %#v: the user's and the synthetic message name no model that answered", got, want)
 	}
-	if got := h.next(); got != (Closed{Claim: testClaim}) {
+	if got := h.next(); got != (Closed{Claim: testClaim, Generation: testGeneration}) {
 		t.Fatalf("event after the answer = %#v, want the close", got)
 	}
 	if rest := h.stop(); len(rest) != 0 {
@@ -401,7 +401,7 @@ func TestAMessageEndNamingAModelNoStoreTakesAnswersWithNoModel(t *testing.T) {
 		Answered{Claim: testClaim, Generation: testGeneration},
 		Answered{Claim: testClaim, Generation: testGeneration},
 		Answered{Claim: testClaim, Provider: "second", Model: "second-model", Generation: testGeneration},
-		Closed{Claim: testClaim},
+		Closed{Claim: testClaim, Generation: testGeneration},
 	} {
 		if got := h.next(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("event = %#v, want %#v: a model or a provider holding U+0000 answers with no model", got, want)
@@ -433,7 +433,7 @@ func TestAWorkersExtensionErrorIsLogged(t *testing.T) {
 	p.expect(shimwire.TypeHelloAck)
 	p.send(shimwire.Raw{Type: "extension_error", JSON: json.RawMessage(`{"type":"extension_error","extensionPath":"/opt/legion/pi-legion/dist/legion.js","event":"session_start","error":"LEGION_DAEMON_URL is required for Legion"}`)})
 	p.conn.Close()
-	for _, want := range []Event{Hello{Claim: testClaim, Generation: testGeneration}, Closed{Claim: testClaim}} {
+	for _, want := range []Event{Hello{Claim: testClaim, Generation: testGeneration}, Closed{Claim: testClaim, Generation: testGeneration}} {
 		if got := h.next(); got != want {
 			t.Fatalf("event = %#v, want %#v", got, want)
 		}
@@ -568,7 +568,7 @@ func TestALateRefusalIsOneEventCarryingTheDeliveryID(t *testing.T) {
 	want := []Event{
 		TurnStart{Claim: testClaim},
 		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", ConnSequence: conn.Sequence()},
-		Closed{Claim: testClaim},
+		Closed{Claim: testClaim, Generation: testGeneration},
 	}
 	var got []Event
 	for range want {
@@ -632,7 +632,7 @@ func TestARefusalForNoAcknowledgedPromptEmitsNothingAndLogsOnce(t *testing.T) {
 			p, id := test.drive(h, h.connect(testToken))
 			p.send(refusal(id))
 			p.conn.Close()
-			if event := h.next(); event != (Closed{Claim: testClaim}) {
+			if event := h.next(); event != (Closed{Claim: testClaim, Generation: testGeneration}) {
 				t.Fatalf("event = %#v, want only Closed", event)
 			}
 			logs := h.logs.Lines()
@@ -657,7 +657,7 @@ func TestARefusalReplayedOnAReplacementConnectionNamesItsDelivery(t *testing.T) 
 	}
 	first := h.conn()
 	p.conn.Close()
-	if event := h.next(); event != (Closed{Claim: testClaim}) {
+	if event := h.next(); event != (Closed{Claim: testClaim, Generation: testGeneration}) {
 		t.Fatalf("event = %#v, want Closed", event)
 	}
 	replacement := h.connect(testToken)
@@ -666,7 +666,7 @@ func TestARefusalReplayedOnAReplacementConnectionNamesItsDelivery(t *testing.T) 
 	replacement.conn.Close()
 	want := []Event{
 		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Replayed: true, ConnSequence: replaced.Sequence()},
-		Closed{Claim: testClaim},
+		Closed{Claim: testClaim, Generation: testGeneration},
 	}
 	var got []Event
 	for range want {
@@ -857,7 +857,7 @@ func TestShutdownWritesTheFrame(t *testing.T) {
 	}
 	p.expect(shimwire.TypeShutdown)
 	p.conn.Close()
-	if event := h.next(); event != (Closed{Claim: testClaim}) {
+	if event := h.next(); event != (Closed{Claim: testClaim, Generation: testGeneration}) {
 		t.Fatalf("event = %#v, want Closed", event)
 	}
 	if err := conn.Shutdown(context.Background()); !isClosed(err) {
@@ -981,5 +981,34 @@ func TestATokenRequestTheShimCannotAnswerIsRefused(t *testing.T) {
 				t.Fatal("a refused token request reads as a refused prompt")
 			}
 		})
+	}
+}
+
+// A shim built before the workspace read forwards the frame to Oh My Pi, which refuses it as an
+// unknown command. The read is then a refusal that carries Oh My Pi's words, which the caller
+// reads as a failed read: never as a workspace with no work, and never as a refused prompt, which
+// the supervisor would charge to the claim's prompt budget.
+func TestWorkspaceWorkOfAnOlderShimIsARefusal(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	result := async(func() error {
+		_, err := h.conn().WorkspaceWork(context.Background(), "INFRA-945", runtime.WorkspaceWorkTimeout)
+		return err
+	})
+	request := p.expect(shimwire.TypeWorkspaceWork).(shimwire.WorkspaceWork)
+	if request.ID == "" || request.Issue != "INFRA-945" || request.TimeoutMs != int(runtime.WorkspaceWorkTimeout.Milliseconds()) {
+		t.Fatalf("the shim received %+v, want the issue and the read's budget", request)
+	}
+	p.send(shimwire.Response{ID: request.ID, Command: shimwire.TypeWorkspaceWork, Success: false, Error: "Unknown command: workspace-work"})
+	err := awaitResult(t, result)
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.Command != shimwire.TypeWorkspaceWork {
+		t.Fatalf("err = %v, want a RefusedError of %s", err, shimwire.TypeWorkspaceWork)
+	}
+	if reason := runtime.RefusalReason(err); reason != "Unknown command: workspace-work" {
+		t.Fatalf("the refusal carries %q, want Oh My Pi's words", reason)
+	}
+	if errors.Is(err, runtime.ErrPromptRefused) {
+		t.Fatal("a refused workspace read reads as a refused prompt")
 	}
 }

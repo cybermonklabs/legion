@@ -49,7 +49,7 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job", "subagent"}},
 		Phase:          claim.PhaseActivity{NextReminderAt: &reminder},
 	}
-	if wrote, err := st.PutClaimActivity(ctx, token, c.Generation, reported); err != nil || !wrote {
+	if wrote, err := st.PutClaimActivity(ctx, token, c.Generation, reported, reported.At); err != nil || !wrote {
 		t.Fatalf("PutClaimActivity = %t, %v", wrote, err)
 	}
 	if _, err := st.Pool().Exec(ctx, `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error) values
@@ -172,7 +172,7 @@ func TestAClaimWriteAfterAReportLeavesTheReportStanding(t *testing.T) {
 		t.Fatal(err)
 	}
 	reported := claim.SessionActivity{At: time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)}
-	if _, err := st.PutClaimActivity(ctx, token, c.Generation, reported); err != nil {
+	if _, err := st.PutClaimActivity(ctx, token, c.Generation, reported, reported.At); err != nil {
 		t.Fatal(err)
 	}
 	// The machine, which never read the report, persists its next state.
@@ -571,6 +571,30 @@ func TestEveryRoleMessageKindWaitsForARoleOfThePod(t *testing.T) {
 		if !slices.Contains(idleWaitingKinds, string(kind)) {
 			t.Errorf("the role-message kind %q stands in no idleWaitingKinds %v: a release would stop the role before it reads the row", kind, idleWaitingKinds)
 		}
+	}
+}
+
+// An architect's notice holds its issue's pod whichever kind it is queued as: the notice of a claim
+// out of reach is queued under a kind of its own, which the release before this change never runs
+// (record.OutboxKindReachNotice), and it speaks to the architect's session as every other notice
+// does, so a release must not stop the architect before it reads the row.
+func TestAnArchitectsNoticeOfAClaimOutOfReachWaitsForARoleOfThePod(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	if view := idleViewOf(t, st, rootIssue); view.Waiting {
+		t.Fatalf("view = %+v before any row is queued, want nothing waiting", view)
+	}
+	row, err := record.NewOutboxRow(rootIssue, record.Notice{Kind: record.ClaimOutOfReachNotice, Role: claim.RoleImplementer,
+		Claim: "legion-legion-legion-208-implementer", Reason: "its session has not registered with Envoy for 20 minutes"}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Tx(ctx, func(tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, row) }); err != nil {
+		t.Fatalf("queue the architect's %s row: %v", row.Kind, err)
+	}
+	if view := idleViewOf(t, st, rootIssue); !view.Waiting {
+		t.Fatalf("the view reads nothing waiting, though the architect's %s notice is queued as %s", record.ClaimOutOfReachNotice, row.Kind)
 	}
 }
 

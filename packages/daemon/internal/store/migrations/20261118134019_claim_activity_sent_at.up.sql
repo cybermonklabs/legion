@@ -1,0 +1,40 @@
+-- 20261118134019_claim_activity_sent_at.up.sql — a session's activity report is dated by the daemon
+-- that received it, and ordered by the session that sent it.
+--
+-- claims.activity_at was the time the session read the report, by the session's own clock, capped
+-- only against a time ahead of the daemon's. A pod whose clock ran more than 20 minutes behind
+-- then sent reports that read as 20 minutes old the moment they arrived, which turned the relaunch
+-- guard's turn report rule off (R5): a relaunch could cut a turn whose process was still running.
+-- From this version activity_at is the moment the daemon received the report, on the daemon's own
+-- clock, which every rule that reads it compares with the daemon's times.
+--
+-- activity_sent_at is the session's own time of the report, bounded to its receipt, which only
+-- the guard that drops an earlier reading arriving after a later one reads (store's
+-- PutClaimActivity): a session sends its reports without an in-flight guard, so the order they
+-- arrive in is not the order it read them in. activity_sent_generation is the launch that report
+-- was of: the guard compares two readings of one process alone, so a report of a later launch is
+-- written whatever the process before it last said. The launch's write that clears the other
+-- activity columns clears activity_sent_at too. Every existing row takes null in both, which that
+-- guard reads as no report yet, so the next report of each claim is written.
+--
+-- Rolling the image back needs one statement, run with the daemon stopped and before the earlier
+-- image is pinned:
+--
+--   update claims set activity_at = activity_sent_at
+--     where activity_sent_at is not null and activity_sent_generation = generation;
+--
+-- The release before this one names neither column and orders a session's reports by activity_at
+-- alone: it drops a report whose session time is before activity_at. This release writes
+-- activity_at as the daemon's receipt, so without the statement that release drops every report
+-- of a session whose clock runs X behind the daemon's for up to X after the rollback, and its idle
+-- rule meanwhile reads the last report this release wrote, which can say that nothing runs while a
+-- job of that session does. The statement dates each claim's last report by the session's own
+-- time again, the time that release compares, and only where this release wrote that report for
+-- the launch the row holds. Otherwise that release leaves both columns as they stand, and a daemon
+-- rolled forward again orders by them from its next report on. A launch that release made moves
+-- the generation and leaves them as the process before it left them, which the guard then reads
+-- as another launch's report, so the launched process's first report is written.
+--
+-- There is no down file: migrations here are forward-only.
+alter table claims add column activity_sent_at timestamptz;
+alter table claims add column activity_sent_generation bigint;

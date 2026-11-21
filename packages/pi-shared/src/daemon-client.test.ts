@@ -3,18 +3,24 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import * as legionApi from "@legion/contracts/legion-api";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
+import { messageFor } from "@legion/envoy-client/errors";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import * as ts from "typescript";
 import { z } from "zod";
 import {
+  callReadyWithRetry,
   createLegionDaemonClient,
+  DAEMON_ATTEMPT_LIMIT_MS,
+  type DaemonRestartRetry,
   daemonUnreachable,
   LegionDaemonApiError,
   type LegionDaemonClient,
   LegionDaemonContractError,
+  LegionDaemonNoAnswerError,
   type ReadyInput,
   retryWhileDaemonRestarts,
 } from "./daemon-client";
+import { daemonWaitMs, forgetDaemonWaitsForTests } from "./daemon-wait";
 import { type ClaimCapability, executePhaseOp } from "./legion-phase-ops";
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
@@ -374,6 +380,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly issueStatus: (body: object) => Promise<unknown>;
     readonly freshSession: (body: object) => Promise<unknown>;
     readonly compact: (body: object) => Promise<unknown>;
+    readonly relaunch: (body: object) => Promise<unknown>;
     readonly projectPause: (body: object) => Promise<unknown>;
     readonly projectResume: (body: object) => Promise<unknown>;
     readonly gateRegister: (body: object) => Promise<unknown>;
@@ -425,6 +432,13 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "/legion/v1/claims/compact",
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
       "compact.json",
+    ],
+    // The relaunch names its claim by token, not by issue and role, and answers an empty object.
+    [
+      "relaunch",
+      "/legion/v1/claims/relaunch",
+      { grantId: "grant-208", claim: "legion-legion-legion-209-implementer" },
+      "relaunch.json",
     ],
     // The controller's pause and resume name no project: the daemon pauses its own. Each
     // answers the pause as the daemon's golden wrote it, the resume with how many held rows it
@@ -712,7 +726,7 @@ test("a 409 refusal keeps its stable code through a key no schema names", async 
   });
 });
 
-test("a 502 refusal keeps its stable code through a key no schema names, and is the daemon's own answer, which is handed back rather than retried for ten minutes", async () => {
+test("a 502 refusal keeps its stable code through a key no schema names, and is the daemon's own answer, which is handed back rather than waited out", async () => {
   const client = refusing(502, "DISPATCH_FAILED");
   const refused = await client.state().catch((error: unknown) => error);
 
@@ -742,6 +756,361 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(retried).toMatchObject({ status: 502, code: "DISPATCH_FAILED" });
   expect(attempts).toBe(1);
   expect(waits).toEqual([]);
+});
+
+/** One `LegionDaemonApiError` as a route of the daemon's would raise it. */
+function api(status: number, code?: string): LegionDaemonApiError {
+  return new LegionDaemonApiError(
+    "POST",
+    "/legion/v1/handoff/complete",
+    status,
+    code,
+    "the gateway could not reach the daemon"
+  );
+}
+
+/** One of the ends Bun's fetch reports by a code on an `Error`. */
+function network(code: string): Error {
+  return Object.assign(new Error(`connect ${code} 10.0.0.1:8437`), { code });
+}
+
+/** A fake clock for the wait: `now` moves only when the retry sleeps, every sleep is recorded,
+ * and no attempt of the case that uses it hangs, so the attempt's own limit never fires. */
+function waitClock(): {
+  readonly options: DaemonRestartRetry;
+  readonly waits: number[];
+  readonly elapsed: () => number;
+} {
+  let clock = 0;
+  const waits: number[] = [];
+  return {
+    options: {
+      now: () => clock,
+      sleep: async (ms: number) => {
+        waits.push(ms);
+        clock += ms;
+      },
+      attemptLimit: () => new Promise<void>(() => {}),
+    },
+    waits,
+    elapsed: () => clock,
+  };
+}
+
+// The w1 error table, read as the one question the wait asks of an answer: is the daemon
+// serving? A refused, reset or closed connection, a host that does not resolve or cannot be
+// reached, an attempt with no answer, and an uncoded 502, 503 or 504 all say it is not. Every
+// other answer is the daemon's own and is the caller's to act on, the two 500s among them.
+test("the answers that say the daemon is not serving are the w1 table's, and every other answer is the caller's", () => {
+  for (const code of ["ConnectionRefused", "ECONNREFUSED"]) {
+    expect(daemonUnreachable(network(code)), code).toBe("refused");
+  }
+  for (const code of ["ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"]) {
+    expect(daemonUnreachable(network(code)), code).toBe("refused");
+  }
+  for (const code of [
+    "ConnectionClosed",
+    "ECONNRESET",
+    "EPIPE",
+    "ETIMEDOUT",
+    "ConnectionTimeout",
+  ]) {
+    expect(daemonUnreachable(network(code)), code).toBe("dropped");
+  }
+  for (const message of ["fetch failed", "Failed to fetch"]) {
+    expect(daemonUnreachable(new TypeError(message)), message).toBe("dropped");
+  }
+  for (const status of [502, 503, 504]) {
+    expect(daemonUnreachable(api(status)), `${status}`).toBe("dropped");
+  }
+  expect(daemonUnreachable(new LegionDaemonNoAnswerError("handoff_complete", 300_000))).toBe(
+    "dropped"
+  );
+
+  expect(daemonUnreachable(api(500))).toBeUndefined();
+  for (const code of ["DISPATCH_UNAVAILABLE", "FACTS_UNAVAILABLE"]) {
+    expect(daemonUnreachable(api(500, code)), code).toBeUndefined();
+  }
+  for (const status of [502, 503, 504]) {
+    expect(daemonUnreachable(api(status, "DISPATCH_FAILED")), `${status}`).toBeUndefined();
+  }
+  expect(daemonUnreachable(api(409, "HANDOFF_ALREADY_RECORDED"))).toBeUndefined();
+  expect(daemonUnreachable(api(403))).toBeUndefined();
+});
+
+test("a call that finds the daemon not serving is made again once it serves, for every answer of that table", async () => {
+  for (const failure of [
+    network("ECONNREFUSED"),
+    network("ECONNRESET"),
+    network("ConnectionClosed"),
+    network("ENOTFOUND"),
+    network("EAI_AGAIN"),
+    network("EHOSTUNREACH"),
+    network("ENETUNREACH"),
+    new TypeError("fetch failed"),
+    api(502),
+    api(503),
+    api(504),
+  ]) {
+    const clock = waitClock();
+    let attempts = 0;
+    const told: string[] = [];
+    const answered = await retryWhileDaemonRestarts(
+      "handoff_complete",
+      async () => {
+        attempts += 1;
+        if (attempts === 1) throw failure;
+        return "recorded";
+      },
+      { ...clock.options, onRetrying: (message) => told.push(message) }
+    );
+
+    expect(answered, messageFor(failure)).toBe("recorded");
+    expect(attempts, messageFor(failure)).toBe(2);
+    expect(clock.waits, messageFor(failure)).toEqual([500]);
+    expect(told, messageFor(failure)).toHaveLength(1);
+    expect(told[0], messageFor(failure)).toContain("for up to 60 minutes");
+  }
+});
+
+test("a call waits up to 60 minutes for a daemon that is not serving, and past that ends as today", async () => {
+  const clock = waitClock();
+  let attempts = 0;
+
+  const ended = await retryWhileDaemonRestarts(
+    "handoff_complete",
+    async () => {
+      attempts += 1;
+      throw network("ECONNREFUSED");
+    },
+    clock.options
+  ).catch((error: unknown) => error);
+
+  expect(clock.elapsed()).toBe(60 * 60_000);
+  expect((ended as Error).message).toContain("stayed so for 60 minutes");
+  expect((ended as Error).message).toContain("call it again once the daemon is back");
+  // 500 ms doubling to 30 s and then 30 s each: an hour is well over a hundred attempts, where
+  // the ten minutes this replaces was twenty-six.
+  expect(attempts).toBeGreaterThan(120);
+});
+
+test("an attempt the daemon takes and does not answer in five minutes is ended and made again", async () => {
+  const limits: number[] = [];
+  const signals: (AbortSignal | undefined)[] = [];
+  const waits: number[] = [];
+  let clock = 0;
+  let attempts = 0;
+
+  const answered = await retryWhileDaemonRestarts(
+    "handoff_complete",
+    async (attempt) => {
+      attempts += 1;
+      signals.push(attempt);
+      if (attempts === 1) return new Promise<string>(() => {});
+      return "recorded";
+    },
+    {
+      now: () => clock,
+      sleep: async (ms: number) => {
+        waits.push(ms);
+        clock += ms;
+      },
+      // The first attempt's limit runs out; the second answers, so its limit never does.
+      attemptLimit: (ms: number) => {
+        limits.push(ms);
+        return attempts === 1 ? Promise.resolve() : new Promise<void>(() => {});
+      },
+    }
+  );
+
+  expect(answered).toBe("recorded");
+  expect(limits).toEqual([DAEMON_ATTEMPT_LIMIT_MS, DAEMON_ATTEMPT_LIMIT_MS]);
+  expect(waits).toEqual([500]);
+  // The attempt the client gave up on is ended before the next one is sent, so no second
+  // request of the same call is ever in flight beside it.
+  expect(signals[0]?.aborted).toBe(true);
+  expect(signals[1]?.aborted).toBe(false);
+});
+
+test("a repeat after an attempt with no answer is told the earlier attempt may have been applied", async () => {
+  const clock = waitClock();
+  let attempts = 0;
+
+  const refused = await retryWhileDaemonRestarts(
+    "handoff_complete",
+    async () => {
+      attempts += 1;
+      if (attempts === 1) return new Promise<string>(() => {});
+      throw api(409, "HANDOFF_ALREADY_RECORDED");
+    },
+    {
+      ...clock.options,
+      attemptLimit: () => (attempts === 1 ? Promise.resolve() : new Promise<void>(() => {})),
+    }
+  ).catch((error: unknown) => error);
+
+  expect(refused).toBeInstanceOf(LegionDaemonApiError);
+  expect(refused).toMatchObject({ status: 409, code: "HANDOFF_ALREADY_RECORDED" });
+  expect((refused as Error).message).toContain(
+    "an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read_record of your own issue says whether it landed"
+  );
+});
+
+test("an uncoded 500 and a coded one are the caller's at once, with no wait", async () => {
+  for (const failure of [
+    api(500),
+    api(500, "DISPATCH_UNAVAILABLE"),
+    api(500, "FACTS_UNAVAILABLE"),
+  ]) {
+    const clock = waitClock();
+    let attempts = 0;
+    const refused = await retryWhileDaemonRestarts(
+      "handoff_complete",
+      async () => {
+        attempts += 1;
+        throw failure;
+      },
+      clock.options
+    ).catch((error: unknown) => error);
+
+    expect(refused, messageFor(failure)).toBe(failure);
+    expect(attempts, messageFor(failure)).toBe(1);
+    expect(clock.waits, messageFor(failure)).toEqual([]);
+  }
+});
+
+// `claims/ready` keeps the three tries it has always had of a 5xx the daemon itself answered,
+// and hands an answer that says the daemon is not serving to the wait around it, which is where
+// the sixty minutes are. Without that, the three tries would spend the outage in three seconds.
+test("claims/ready tries another 5xx three times and leaves an answer of the not-serving table to the wait", async () => {
+  const waits: number[] = [];
+  const options: DaemonRestartRetry = { sleep: async (ms: number) => void waits.push(ms) };
+
+  let fives = 0;
+  const failed = await callReadyWithRetry(
+    "claims/ready",
+    async () => {
+      fives += 1;
+      throw api(500);
+    },
+    options
+  ).catch((error: unknown) => error);
+  expect(failed).toBeInstanceOf(LegionDaemonApiError);
+  expect(fives).toBe(3);
+  expect(waits).toEqual([1_000, 1_000]);
+
+  for (const failure of [api(503), network("ECONNREFUSED"), new TypeError("fetch failed")]) {
+    let attempts = 0;
+    const handed = await callReadyWithRetry(
+      "claims/ready",
+      async () => {
+        attempts += 1;
+        throw failure;
+      },
+      options
+    ).catch((error: unknown) => error);
+    expect(handed, messageFor(failure)).toBe(failure);
+    expect(attempts, messageFor(failure)).toBe(1);
+  }
+});
+
+// The worker's own stall watch judges a call that has been open with no step, and a call
+// waiting out a daemon restart is exactly that shape. So the wait is recorded under the tool
+// call that waits, and the watch takes it off that call's clock alone
+// (`src/stall-watchdog.ts`, callOverdue).
+test("the time a tool call spends waiting for a daemon that is not serving is recorded under that call", async () => {
+  forgetDaemonWaitsForTests();
+  let clock = 1_000;
+  let attempts = 0;
+  const flaky = async () => {
+    attempts += 1;
+    if (attempts % 4 !== 0) throw network("ECONNREFUSED");
+    return "recorded";
+  };
+  const clockOptions = {
+    now: () => clock,
+    sleep: async (ms: number) => {
+      clock += ms;
+    },
+    attemptLimit: () => new Promise<void>(() => {}),
+  };
+
+  await retryWhileDaemonRestarts("handoff_complete", flaky, {
+    ...clockOptions,
+    toolCallId: "toolu_legion",
+  });
+
+  // 500 + 1,000 + 2,000 ms of waiting, from the call's first request to the answer that came,
+  // and none of it any other call's.
+  expect(clock).toBe(4_500);
+  expect(daemonWaitMs("toolu_legion", 0, clock)).toBe(3_500);
+  expect(daemonWaitMs("toolu_bash", 0, clock)).toBe(0);
+
+  // A wait no tool call owns — the boot's, a role regain's `claims/ready`, a turn's outcome —
+  // pauses nothing, so it records nothing.
+  forgetDaemonWaitsForTests();
+  const from = clock;
+  await retryWhileDaemonRestarts("claims/ready after role regain", flaky, clockOptions);
+  expect(clock).toBe(from + 3_500);
+  expect(daemonWaitMs("claims/ready after role regain", from, clock)).toBe(0);
+
+  // The wait begins at the call's first request, not at its first failure: a daemon that takes
+  // the connection and answers four minutes later, with no failure at all, charged the call's
+  // stall clock none of those four minutes.
+  forgetDaemonWaitsForTests();
+  const asked = clock;
+  await retryWhileDaemonRestarts(
+    "handoff_complete",
+    async () => {
+      clock += 4 * 60_000;
+      return "recorded";
+    },
+    {
+      now: () => clock,
+      attemptLimit: () => Promise.withResolvers<void>().promise,
+      toolCallId: "toolu_legion",
+    }
+  );
+  expect(daemonWaitMs("toolu_legion", asked, clock)).toBe(4 * 60_000);
+});
+
+// The agent's abort ends the call wherever it is. A call aborted before its first attempt sends
+// nothing at all; one aborted while an attempt waits on the daemon ends that attempt, whose
+// signal is aborted, at once rather than at the attempt's limit, and says that attempt may have
+// been applied.
+test("an aborted call sends nothing more, and an abort during an attempt ends that attempt at once", async () => {
+  const before = new AbortController();
+  before.abort();
+  let sent = 0;
+  const refused = await retryWhileDaemonRestarts(
+    "sign_off",
+    async () => {
+      sent += 1;
+      return "signed off";
+    },
+    { signal: before.signal, attemptLimit: () => Promise.withResolvers<void>().promise }
+  ).catch((error: unknown) => error);
+  expect(sent).toBe(0);
+  expect((refused as Error).message).toBe(
+    "sign_off: the call was aborted before it was sent; nothing was sent"
+  );
+
+  const during = new AbortController();
+  const signals: AbortSignal[] = [];
+  const pending = retryWhileDaemonRestarts(
+    "sign_off",
+    async (attempt) => {
+      signals.push(attempt);
+      during.abort();
+      return Promise.withResolvers<string>().promise;
+    },
+    { signal: during.signal, attemptLimit: () => Promise.withResolvers<void>().promise }
+  ).catch((error: unknown) => error);
+  expect(((await pending) as Error).message).toBe(
+    "sign_off: the call was aborted while an attempt waited for the daemon's answer; that attempt may have been applied, so read the record before calling again"
+  );
+  expect(signals).toHaveLength(1);
+  expect(signals[0]?.aborted).toBe(true);
 });
 
 /** A daemon that answers `body` with `contract` in its `Legion-Daemon-Contract` header, and

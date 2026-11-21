@@ -1651,6 +1651,16 @@ type OutboxRow struct {
 	CreatedAt  time.Time
 	LeaseToken string
 	LeaseUntil *time.Time
+	// HeldAt is when a try first held the row for a claim that keeps its session while Envoy had
+	// no holder for its role (HoldOutbox), and the zero time for a row no try held. Its next tries
+	// ask first whether that hold has ended (internal/daemon's holdEnded).
+	HeldAt time.Time
+	// StoredFor is the session a publish of the row was answered 504 receipt_timeout for, which
+	// the listener stored the forward for (StoreOutboxCopy), and StoredGeneration the generation of
+	// the claim's process when that copy was first stored; "" and 0 for a row no copy of is known
+	// to be stored. internal/daemon's storedForItsSession reads both.
+	StoredFor        string
+	StoredGeneration uint64
 	// HeldByPause is the id of the project pause that held the row, and 0 for a row no pause
 	// held. The resume writes it, in its own transaction, on every row the pause it ends holds
 	// (Postgres.MarkPauseHeldRows), whatever the row's kind or due time, and nothing else writes it:
@@ -2297,6 +2307,14 @@ type Store interface {
 	// committing it beside the replacement worker's own.
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
+	// HoldOutbox marks a leased row held, the first time a try holds it (OutboxRow.HeldAt), in the
+	// caller's transaction, which returns the row to the outbox after that try.
+	HoldOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
+	// StoreOutboxCopy records that the listener stored a leased row's publish for holder
+	// (OutboxRow.StoredFor), with generation the claim's process then, in the caller's transaction,
+	// which returns the row to the outbox after that try. A later record naming the same holder
+	// keeps the first generation; one naming another holder replaces both.
+	StoreOutboxCopy(ctx context.Context, tx pgx.Tx, id int64, leaseToken, holder string, generation uint64) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
 	Handover(ctx context.Context, tx pgx.Tx, issue string) (*Handover, error)
 	PutHandover(ctx context.Context, tx pgx.Tx, handover Handover) error

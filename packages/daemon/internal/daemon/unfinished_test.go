@@ -355,8 +355,15 @@ func TestAPreRestartProcessAdmittedBeforeItsRelaunchNeitherMovesItsClaimNorLocks
 	registerReady(t, d, spec)
 	wantRelaunchedReady(t, d, token)
 
+	// The old process's token is a generation the claim has left, so its hello is refused as stale
+	// and told to stop before its connection closes (R3): an older process cut off by a network or
+	// a daemon restart stops when it next reaches the daemon, rather than dialling a claim it no
+	// longer holds for as long as it runs.
 	stale := dialRaw(t, record.address)
 	stale.send(shimwire.Hello2{BootToken: oldBootToken})
+	if frame, ok := stale.next().(shimwire.Shutdown); !ok {
+		t.Fatalf("the stale hello was answered %#v, want the stop frame before its close", frame)
+	}
 	stale.closed()
 }
 
