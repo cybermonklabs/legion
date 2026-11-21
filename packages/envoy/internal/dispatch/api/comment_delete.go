@@ -2,22 +2,18 @@
 // row and its place in the thread stay; the body goes, and with it every copy a read serves as
 // the comment's own text that does not follow the cleared column — the block index, each
 // block's stored excerpt, the text each revision recorded of a block, the document margin mark,
-// the quote of an insert suggestion's anchor that no accept made document text, that insert's
-// words in the quote of every other anchor on them, the name of the document version an
-// accepted suggestion made, and the vector of each keyword row of a past version of the issue
-// whose document version holds that insert's words (store.QueueTextVersionsMask) — each
-// rewritten in the one transaction that clears it. The event log's payloads stay as written and
-// are masked at each read (attachPostMarks), and so do the stored document versions that hold a
-// pending insert's words, which every read of a version gives without them
-// (docs.MaskedVersionText); a reply's events that quote the comment - its
-// creation, and each later event of the reply but its own delete, written before this one - keep
-// the preview they froze, as another anchor's events written before this delete keep the quote
-// they froze. The delete's own comment.deleted, of a comment that is itself a reply, carries no
-// text of the post it answers
-// (commentCorrectionPayload). A pending suggestion's proof is in the document itself, so the same
-// transaction rejects it before the clear, and where that reject takes an insert's words out of
-// the document, writes the document's next version as its settlement would (docs.SettleVersion),
-// so every store built from the latest version is written without the words before it commits.
+// the quote of an insert suggestion's anchor that no accept made document text, and the name of
+// the document version an accepted suggestion made — each rewritten in the one transaction that
+// clears it. The event log's payloads stay as written and are masked at each read
+// (attachPostMarks); a reply's events that quote the comment - its creation, and each later event
+// of the reply but its own delete, written before this one - keep the preview they froze. The
+// delete's own comment.deleted, of a comment that is itself a reply, carries no text of the post
+// it answers (commentCorrectionPayload). A pending suggestion's proof is in the document itself,
+// so the same transaction rejects it before the clear, and where that reject takes an insert's
+// words out of the document, writes the document's next version as its settlement would
+// (docs.SettleVersion), so every store built from the latest version is written without the words
+// before it commits. The document's history keeps them, as it keeps the words of every reject:
+// its stored versions and what is read from them, and the quotes other anchors took of them.
 package api
 
 import (
@@ -116,19 +112,6 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// orphaned one does: markGone is that the suggestion's mark is out of the document, by a
 	// reject or by a browser edit.
 	//
-	// An insert's words can carry other anchors' marks too - an ask's or another comment's, open
-	// or closed, quoting words the insert added - and each such row's quote gives those words to
-	// every read of it. The removal of the words names those marks (docs.TakenAnchorMarks): the
-	// reject below answers them, and an earlier reject recorded them on the row
-	// (storedSuggestion.Taken), which a pending suggestion's row holds none of. The delete has
-	// every row on them written without the words (docs.RewriteTakenAnchors), here, before the
-	// margin write below refreshes the document's anchors. A row rejected before the reject
-	// recorded them holds none, and nothing stored tells which anchors that reject's removal took
-	// text from, so the delete of such a row rewrites no other anchor. That holds only for a reject
-	// made before this release, and no later reject can make such a row. The production Dispatch
-	// held no reject at all when its whole event log was read on 2026-11-20 (dispatch://INFRA-1523,
-	// census row 11.4).
-	//
 	// Everything up to Commit is the read phase (Docs.Join): this route and the document
 	// operations queue their writes on the ledger, in the order made, and Commit sends them as
 	// one batch.
@@ -137,7 +120,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// document, which the delete then settles (docs.SettleVersion, below).
 	rejectedInsert := false
 	if comment.Suggestion != nil && comment.Anchor != nil && (comment.Suggestion.Accepted == nil || !*comment.Suggestion.Accepted) {
-		storedKind, taken, err := loadStoredSuggestion(r.Context(), tx, comment.ID)
+		storedKind, err := loadStoredSuggestion(r.Context(), tx, comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -145,7 +128,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		var kind string
 		markGone := comment.Suggestion.Accepted != nil
 		if !markGone {
-			kind, taken, err = s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
+			kind, err = s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
 			if err != nil {
 				if !errors.Is(err, docs.ErrAnchorOrphaned) {
 					s.writeHandlerError(w, err)
@@ -161,10 +144,6 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		rejectedInsert = kind == "insert"
 		quoteIsBody = rejectedInsert || storedKind == "insert" ||
 			(markGone && storedKind == "" && comment.Anchor.Quote == comment.Suggestion.ReplaceWith)
-		if err := s.deps.Docs.RewriteTakenAnchors(documentCtx, comment.Anchor.ArtifactID, taken, actor); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
 	}
 	// An accepted suggestion's proof is a version of the document, which the accept named
 	// after the comment's body (acceptedVersionName); every read of the document's versions
@@ -197,31 +176,6 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if err := ledger.Queue(clear); err != nil {
 		s.writeHandlerError(w, err)
 		return
-	}
-	// A stored version that holds the words of an insert this comment suggested gives them to no
-	// read once the delete commits (docs.MaskedVersionText), but the keyword table holds, for each
-	// past version of the issue, the vector of its primary document version's stored markdown,
-	// which a read cannot mask. The delete rewrites each such row's vector from the masked text in
-	// its own write phase, after the clear, under the lock of the comment's owner it took before it
-	// read the comment, which the keyword fill takes before it writes such rows, so a batch either
-	// commits its rows before the rewrite reads them or reads the comment deleted
-	// (store.QueueTextVersionsMask). An accepted insert's words are document text and stay.
-	if comment.Anchor != nil {
-		artifactID := comment.Anchor.ArtifactID
-		numbers, texts, err := docs.MaskedVersionsOnDelete(r.Context(), tx, artifactID, comment.Anchor.MarkID, comment.ID)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if len(numbers) > 0 {
-			if err := ledger.Queue(func(b *store.WriteBatch) error {
-				store.QueueTextVersionsMask(b, artifactID, numbers, texts)
-				return nil
-			}); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-		}
 	}
 	comment.Body = ""
 	comment.Suggestion = nil

@@ -335,14 +335,7 @@ func (s *server) goingWithdrawal(ctx context.Context, requestID string, state go
 // body the answerer then leaves out for the run's rune budget is recorded all the same, since
 // only the answerer knows which it kept, and a post two searches of one run both found is two
 // rows, which the verdict reads as one.
-//
-// inserts are the comments whose words a document's or an issue's text among them holds as a
-// pending insert suggestion's (goingItemText): those words are the comment's own, so the run is
-// given that comment's text as surely as a hit of the comment's own, and is recorded with it. The
-// delete of such a comment withdraws the run's answer, which may quote the words as the
-// document's: the fact recorded is which comments' words the version the run read holds, by that
-// version's insert tree, so no time decides it.
-func (s *server) recordGoingPosts(ctx context.Context, requestID string, hits []going.Hit, texts map[string]string, inserts []string) error {
+func (s *server) recordGoingPosts(ctx context.Context, requestID string, hits []going.Hit, texts map[string]string) error {
 	var comments, messages []string
 	for _, hit := range hits {
 		if _, given := texts[hit.Key()]; !given {
@@ -355,7 +348,6 @@ func (s *server) recordGoingPosts(ctx context.Context, requestID string, hits []
 			messages = append(messages, hit.ID)
 		}
 	}
-	comments = append(comments, inserts...)
 	if len(comments) == 0 && len(messages) == 0 {
 		return nil
 	}

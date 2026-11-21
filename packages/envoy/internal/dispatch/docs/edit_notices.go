@@ -474,24 +474,18 @@ func listItemHoldsTypedBlock(list *pmdoc.Node) bool {
 	return false
 }
 
-// editNoticeVersionMarkdown reads the markdown of artifactID's version number as every read of a
-// version answers it (MaskedVersionText), so the diff a notice carries gives no word of a pending
-// insert whose comment was deleted, and reports whether that version is stored: a rebuild can
-// leave a notice naming a version that is not.
+// editNoticeVersionMarkdown reads the markdown of artifactID's version number, and reports whether that
+// version is stored: a rebuild can leave a notice naming a version that is not.
 func editNoticeVersionMarkdown(ctx context.Context, tx pgx.Tx, artifactID string, number int) (string, bool, error) {
 	var markdown string
-	var insertTree []byte
 	err := tx.QueryRow(ctx, `
-		select coalesce(markdown, ''), insert_tree from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, number).Scan(&markdown, &insertTree)
+		select coalesce(markdown, '') from artifact_versions where artifact_id = $1 and number = $2
+	`, artifactID, number).Scan(&markdown)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("read document version %d: %w", number, err)
-	}
-	if markdown, err = MaskedVersionText(ctx, tx, artifactID, markdown, insertTree); err != nil {
-		return "", false, err
 	}
 	return markdown, true, nil
 }

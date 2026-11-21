@@ -12,39 +12,34 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // ruleSet is a version of the event rules as a fill runs it: the version, the rule of each event
 // type it reads, the read of each kind of post's whole body (its present row's later types and
-// its body history), whether it reads the body history, and whether it makes an issue's vector
-// from its document version's masked text, writing such rows under their issues' owner locks
-// (maskPlan). types and askTypes are the types its rules read and the ask's among them, sorted. A
-// fill runs this build's (currentRules); a test runs an earlier version's to stand for a fill of
-// an earlier build, which wrote the rows this build's re-read reads again (rereadBatch).
+// its body history), and whether it reads the body history. types and askTypes are the types its
+// rules read and the ask's among them, sorted. A fill runs this build's (currentRules); a test
+// runs an earlier version's to stand for a fill of an earlier build, which wrote the rows this
+// build's re-read reads again (rereadBatch).
 type ruleSet struct {
 	version         int
 	rules           map[string]rule
 	posts           map[string]postBodyRead
-	history, masks  bool
+	history         bool
 	types, askTypes []string
 }
 
-// newRuleSet is the rule set of version, with rules, posts and whether it reads the body history
-// and masks.
-func newRuleSet(version int, rules map[string]rule, posts map[string]postBodyRead, history, masks bool) ruleSet {
+// newRuleSet is the rule set of version, with rules, posts and whether it reads the body history.
+func newRuleSet(version int, rules map[string]rule, posts map[string]postBodyRead, history bool) ruleSet {
 	types := slices.Sorted(maps.Keys(rules))
 	asks := slices.DeleteFunc(slices.Clone(types), func(eventType string) bool {
 		return !strings.HasPrefix(eventType, "ask.")
 	})
-	return ruleSet{version: version, rules: rules, posts: posts, history: history, masks: masks, types: types, askTypes: asks}
+	return ruleSet{version: version, rules: rules, posts: posts, history: history, types: types, askTypes: asks}
 }
 
-// currentRules is this build's rules: version rulesVersion, versionRules, postBodyReads, the
-// body history read and the mask.
-var currentRules = newRuleSet(rulesVersion, versionRules, postBodyReads, true, true)
+// currentRules is this build's rules: version rulesVersion, versionRules, postBodyReads and the
+// body history read.
+var currentRules = newRuleSet(rulesVersion, versionRules, postBodyReads, true)
 
 // rulesAdded names, for each rules version after the first, the event types its rules read that
 // the version before it did not: the types a fill of a lower stored version passed over, which a
@@ -100,15 +95,8 @@ type rereadProgress struct {
 //     above it a batch of this build writes after the re-read.
 //   - It redoes each row of the posts those events name whose body the row's event cut and that
 //     version stored read from another source than this build reads first (decider.redo).
-//   - Its last batch, the one whose read reaches the log's end, rewrites the vector of each issue
-//     row that names a document version holding the words of a deleted comment's pending insert
-//     from the version's masked text, as the delete's rewrite does (store.QueueTextVersionsMask):
-//     a fill of an earlier build wrote an issue's vector from the version's stored markdown after
-//     that rewrite. It finds those versions through the deleted comments' anchors
-//     (deletedInsertVersionsQuery) and renders their texts outside any lock (readMaskPlan); then,
-//     last, under the owner locks of their issues, it checks them again and writes the rows
-//     (maskPlan.lockAndRecheck, store.MaskTextVersions). It raises the cursor row's rules version
-//     (raiseRulesQuery) in the same transaction.
+//   - Its last batch, the one whose read reaches the log's end, raises the cursor row's rules
+//     version (raiseRulesQuery) in the same transaction.
 //
 // Its decisions, its redo and its inserts write only rows of posts, which only the fill writes,
 // one batch at a time under the cursor row: a delete of a comment writes no row of the post, whose
@@ -117,13 +105,10 @@ type rereadProgress struct {
 // counts, under the statement time batchBoundsQuery set; its decision ends it at the first event
 // that takes what the batch reads of the events, of their versions' whole bodies and of the bodies
 // it redoes past maxBytes; its writes take the statement time of its bytes; the pause runs before
-// it and the rest after it (batchesTo). The last batch's rewrite of the issue rows is not bounded
-// by count: it reads the stored versions that hold a deleted comment's insert, a few of each such
-// delete, whose markdown it counts in the statement time. The cursor does not move. A re-read
-// stopped before its last batch commits leaves the rules version stored as it was, so the next
-// batch reads again; and a batch of a lower version that writes again lowers it again
-// (advanceCursorQuery), so the next batch of this build reads again everything up to the new
-// cursor.
+// it and the rest after it (batchesTo). The cursor does not move. A re-read stopped before its
+// last batch commits leaves the rules version stored as it was, so the next batch reads again; and
+// a batch of a lower version that writes again lowers it again (advanceCursorQuery), so the next
+// batch of this build reads again everything up to the new cursor.
 func (f *filler) rereadBatch(ctx context.Context, tx pgx.Tx, started time.Time, cursor int64, stored int) (batchResult, error) {
 	if f.reread.cursor != cursor {
 		f.reread = rereadProgress{cursor: cursor}
@@ -151,26 +136,13 @@ func (f *filler) rereadBatch(ctx context.Context, tx pgx.Tx, started time.Time, 
 		result.first = read[0].ID
 	}
 	raise := unreadable == nil && whole && end
-	var trees []treeVersion
-	if raise && f.rules.masks {
-		if trees, err = scanTreeVersions(ctx, tx, deletedInsertVersionsQuery, docs.InsertMarkPath); err != nil {
-			return batchResult{}, fmt.Errorf("keyword fill: read again: %w", err)
-		}
-		for _, one := range trees {
-			result.bytes += int64(len(one.markdown))
-		}
-	}
 	if _, err := tx.Exec(ctx, batchStatementQuery, statementTimeout(result.bytes)); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: bound the re-read's statements: %w", err)
-	}
-	plan, err := readMaskPlan(ctx, tx, trees)
-	if err != nil {
-		return batchResult{}, fmt.Errorf("keyword fill: read again: %w", err)
 	}
 	if err := writeRedone(ctx, tx, got.redone); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: read again: %w", err)
 	}
-	if err := insertVersions(ctx, tx, got.Versions, nil, true); err != nil {
+	if err := insertVersions(ctx, tx, got.Versions, true); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: read again: %w", err)
 	}
 	if raise {
@@ -178,16 +150,6 @@ func (f *filler) rereadBatch(ctx context.Context, tx pgx.Tx, started time.Time, 
 			return batchResult{}, fmt.Errorf("keyword fill: raise the rules version to %d: %w", f.rules.version, err)
 		}
 		result.raised = true
-	}
-	if _, err := plan.lockAndRecheck(ctx, tx); err != nil {
-		return batchResult{}, fmt.Errorf("keyword fill: read again: %w", err)
-	}
-	for _, document := range plan.maskedByDocument() {
-		rows, err := store.MaskTextVersions(ctx, tx, document.artifact, document.numbers, document.texts)
-		if err != nil {
-			return batchResult{}, fmt.Errorf("keyword fill: read again: %w", err)
-		}
-		result.masked += int(rows)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: commit the re-read's batch: %w", err)
@@ -467,9 +429,7 @@ func priorVersions(ctx context.Context, tx pgx.Tx, keys []priorKey) (map[int64]*
 
 // redoQuery writes the rows a re-read redid ($1 kinds, $2 ids, $3 event_seqs): each one's body
 // ($4), its body_from ($5) and its vector, made from the body as the fill's insert makes a post's
-// (insertVersionsQuery). It is an update of a row the fill wrote, the one this table takes besides
-// the delete's rewrite of an issue's vector (store.QueueTextVersionsMask) and the re-read's of it
-// (store.MaskTextVersions).
+// (insertVersionsQuery). It is the one update of a row the fill wrote that this table takes.
 const redoQuery = `
 	update public.search_text_versions t
 	   set body = r.body, body_from = r.body_from, search = search_vector('', search_text(r.body))
@@ -492,29 +452,3 @@ func writeRedone(ctx context.Context, tx pgx.Tx, rows []version) error {
 	}
 	return nil
 }
-
-// deletedInsertVersionsQuery reads each stored version of an issue's primary document whose insert
-// tree holds the mark of an insert a deleted comment's anchor names (docs.InsertMarkPath, $1): its
-// document, its number, its issue, its markdown and its tree. It finds the deleted comments
-// through the body history (post_body_history_comment): every delete keeps the body it clears
-// there, so a deleted comment has a row, and the table holds only the posts edited or deleted,
-// few beside the comments. From each such comment's anchor it reads its document, which must be
-// an issue's primary one (artifacts' primary key), and the document's versions through
-// artifact_versions' unique (artifact_id, number), walking the tree of each that stores one once
-// for all the document's deleted marks. Only a build with these rules deletes a comment, so these
-// are the versions whose issue rows a fill of an earlier build can have written from the stored
-// markdown after the delete's rewrite.
-const deletedInsertVersionsQuery = `
-	with deleted as (
-	       select (c.anchor->>'artifact_id')::uuid as artifact_id, jsonb_agg(distinct c.anchor->>'mark_id') as marks
-	         from (select distinct h.comment_id from public.post_body_history h where h.comment_id is not null) h
-	         join public.comments c on c.id = h.comment_id
-	        where c.deleted_at is not null and c.anchor->>'mark_id' is not null and c.anchor->>'artifact_id' is not null
-	        group by 1)
-	select v.artifact_id::text, v.number, a.issue_key, coalesce(v.markdown, ''), v.insert_tree
-	  from deleted d
-	  join public.artifacts a on a.id = d.artifact_id and a.is_primary and a.issue_key is not null
-	  join public.artifact_versions v on v.artifact_id = d.artifact_id
-	 where v.insert_tree is not null
-	   and jsonb_path_exists(v.insert_tree, $1::jsonpath, jsonb_build_object('ids', d.marks))
-	 order by v.artifact_id, v.number`

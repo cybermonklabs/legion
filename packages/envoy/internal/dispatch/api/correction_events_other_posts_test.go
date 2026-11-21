@@ -50,20 +50,25 @@ func correctionDeleteRoutes(t *testing.T) map[refs.ItemKind]string {
 // suggestion with a comment anchored on the words it inserted, and a comment of a project
 // document with a reply to its first block - each with words of its own. It deletes each one
 // through the route the route table names for its kind (correctionDeleteRoutes), every reply
-// while the post it answers still stands and the anchored comment while the insert does, and
-// takes the event kinds a correction writes from what each delete appended about the posts made
-// here, not from a list of names: the insert's delete appends the anchor refresh of the comment on
-// its words, which empties that comment's quote (the architect's ruling of 2026-11-20 16:33Z), a
-// correction event about another post. Then it reads every event of those kinds the issue and the
-// project document hold, as the events table stores it and as GET /api/v1/issues/{key}/events and
+// while the post it answers still stands and the comment on the inserted words while the insert
+// does, and takes the event kinds a correction writes from what each delete appended about the
+// posts made here, not from a list of names: the insert's delete appends the anchor refresh of the
+// comment on its words, which its reject's removal of the words orphans, a correction event about
+// another post. Then it reads every event of those kinds the issue and the project document hold,
+// as the events table stores it and as GET /api/v1/issues/{key}/events and
 // GET /api/v1/artifacts/{id}/events give it - a project document belongs to no issue, so its
 // comments' events are the document's own - and fails on any that carries a phrase of a post other
 // than the one the event is about. The ask a reply answers is a post no route deletes, so its
 // words are only ever another post's.
 //
-// The control: before the deletes, the creation of each post that freezes words of another post -
-// a reply's preview of the post it answers, the anchored comment's quote of the inserted words -
-// carries those words, so a delete event that copied them would be seen.
+// The inserted words are no phrase of the insert's post here. The spec holds them, and the comment
+// on them quoted them as document text; the document's history keeps them, that quote included,
+// though the insert's delete takes them out of the live document (the architect's ruling of
+// 2026-11-21 19:47Z on dispatch://INFRA-1523). So that comment's events, its anchor refresh and its
+// own delete among them, may carry them; what none may carry is the insert's body.
+//
+// The control: before the deletes, the creation of each reply that freezes words of the post it
+// answers carries those words in its preview, so a delete event that copied them would be seen.
 func TestNoCorrectionEventCarriesTextOfAnotherPost(t *testing.T) {
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Every correction event", "The zarquoninsertedwords quick brown fox")
@@ -140,10 +145,11 @@ func TestNoCorrectionEventCarriesTextOfAnotherPost(t *testing.T) {
 
 	// A post this test makes. words are phrases of the post's own text: its body, a suggestion's
 	// replacement and an ask's parts. An accepted suggestion's replacement is the document's own
-	// text since the accept, and no word of the post. froze is the phrase of another post the post's
-	// creation carries - a reply's preview of the post it answers, an anchor's quote of the words a
-	// pending insert put in the document - "" for a post whose creation carries none. standing is a
-	// post no route deletes.
+	// text since the accept, and no word of the post; nor is the pending insert's, which the spec
+	// holds and another comment quotes as document text, while the plain suggestion's replacement,
+	// which no anchor quotes, stands for a suggestion's own words. froze is the phrase of another
+	// post the post's creation carries - a reply's preview of the post it answers - "" for a post
+	// whose creation carries none. standing is a post no route deletes.
 	type madePost struct {
 		name, id, author string
 		kind             refs.ItemKind
@@ -175,9 +181,9 @@ func TestNoCorrectionEventCarriesTextOfAnotherPost(t *testing.T) {
 		{name: "the accepted suggestion", id: accepted.ID, author: "alice", kind: refs.ItemComment,
 			words: []string{"zarquonacceptedbody"}},
 		{name: "the pending insert", id: insert.ID, author: "alice", kind: refs.ItemComment,
-			words: []string{"zarquoninsertbody", "zarquoninsertedwords"}},
+			words: []string{"zarquoninsertbody"}},
 		{name: "the comment on the inserted words", id: onInsert.ID, author: "bob", kind: refs.ItemComment,
-			words: []string{"zarquonquoter"}, froze: "zarquoninsertedwords"},
+			words: []string{"zarquonquoter"}},
 		{name: "the document comment's block reply", id: documentReply.ID, author: "bob", kind: refs.ItemComment,
 			words: []string{"zarquondocumentreply"}, froze: "zarquondocumentroot"},
 		{name: "the document comment", id: documentRoot.ID, author: "alice", kind: refs.ItemComment,
@@ -215,8 +221,8 @@ func TestNoCorrectionEventCarriesTextOfAnotherPost(t *testing.T) {
 
 	// Each delete, and the kinds of the events it appended about the posts deleted here - its own,
 	// and the anchor refresh of the comment on the inserted words, which the insert's delete
-	// appends (docs.RewriteTakenAnchors) - which are the kinds a correction writes, as its writer
-	// writes them.
+	// appends as its reject's removal of the words orphans that comment - which are the kinds a
+	// correction writes, as its writer writes them.
 	kinds := map[string]bool{}
 	refreshedByInsert := false
 	for _, post := range posts {

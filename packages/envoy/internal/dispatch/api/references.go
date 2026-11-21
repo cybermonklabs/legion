@@ -328,13 +328,6 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 // (refs.RemovedBlockNode); a pin to a current block carries the current block's facts. A pin to
 // a version the document lacks, to one whose blocks are not on record (an older build wrote it and
 // none indexed it) or to one that did not hold the block answers 404, each saying which.
-//
-// N's text of the block is read as every read of version N reads its text: without the words of
-// an insert suggestion whose comment its author deleted and no accept made document text, which
-// N's insert tree finds by the mark's id (docs.MaskedVersionBlockTexts, the lookup
-// docs.MaskedVersionText masks the version by). The block index recorded the block's text with
-// those words, and a row of it is never rewritten, so the pin's text is the block's in that tree
-// rendered without them, where the block holds them, and the text recorded otherwise.
 func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
@@ -370,16 +363,8 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 	case at.Text == nil:
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s at version %d", ref.Block, document.Ref, ref.Pin)
 	}
-	pinText := *at.Text
-	masked, err := docs.MaskedVersionBlockTexts(ctx, pool, document.ID, at.InsertTree, []string{ref.Block})
-	if err != nil {
-		return model.GraphNode{}, err
-	}
-	if maskedText, held := masked[ref.Block]; held {
-		pinText = maskedText
-	}
 	blockRef := refs.BlockRef(document.Ref, ref.Block)
-	pin := &model.BlockPin{Version: ref.Pin, Ref: blockRef + "@v" + strconv.Itoa(ref.Pin), Text: pinText}
+	pin := &model.BlockPin{Version: ref.Pin, Ref: blockRef + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
 		pin.State, pin.RemovedVersion = "removed", at.RemovedVersion
 		removed, err := refs.RemovedBlockNode(ctx, pool, document, query.ID, ref.Block, at.RemovedVersion)

@@ -264,11 +264,10 @@ type batchResult struct {
 	reset, oldHorizon bool
 	// reread is a re-read batch (rereadBatch): events is then how many events of the types it
 	// reads it read, from first, rows the versions it decided of those it read again, redone
-	// the rows it decided again and changed, masked the issue rows whose vectors it made again
-	// from their versions' masked text, and raised whether it read everything and raised the
+	// the rows it decided again and changed, and raised whether it read everything and raised the
 	// cursor row's rules version, so the next batch writes the events above the cursor.
 	reread, raised bool
-	redone, masked int
+	redone         int
 }
 
 // The statements of a batch's transaction (filler.batch) but its read of the events.
@@ -409,14 +408,11 @@ select s.id, s.type, s.issue_key, s.artifact_id::text,
 // the cursor up to safe within the batch's bounds on what that read counts (readEventsQuery);
 // decides their versions with the rules, which count what the versions read and end the batch
 // where its bytes reach the bound (decideVersions, batchBytes); bounds its statements by the bytes
-// the rules counted (statementTimeout); reads, of the issue rows that name a document version
-// holding an insert tree, each version's text as every read gives it (readMaskPlan); writes every
-// other row; moves the cursor to the last event decided; computes the reach
-// (store.ComputeTextVersionsReach) and stores it where it is later than the one stored; and last,
-// under the owner locks of those rows' issues, checks their texts again and writes them
-// (maskPlan.lockAndRecheck), and commits. A batch that reads no event still stores the reach, so a
-// fill caught up keeps it current. An event whose payload the rules cannot read stops the batch
-// there: the events before it are written and answered, with the error that names it.
+// the rules counted (statementTimeout) and writes the versions; moves the cursor to the last event
+// decided; computes the reach (store.ComputeTextVersionsReach) and stores it where it is later
+// than the one stored; and commits. A batch that reads no event still stores the reach, so a fill
+// caught up keeps it current. An event whose payload the rules cannot read stops the batch there:
+// the events before it are written and answered, with the error that names it.
 func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	started := time.Now()
 	ctx = store.WithTransactionTracking(ctx)
@@ -494,18 +490,7 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 		last := read[len(read)-1]
 		result.first, result.cursor, eventAt = read[0].ID, last.ID, &last.CreatedAt
 	}
-	var plan maskPlan
-	if f.rules.masks {
-		trees, err := readSpecTrees(ctx, tx, got.Versions)
-		if err != nil {
-			return batchResult{}, fmt.Errorf("keyword fill: %w", err)
-		}
-		if plan, err = readMaskPlan(ctx, tx, trees); err != nil {
-			return batchResult{}, fmt.Errorf("keyword fill: %w", err)
-		}
-	}
-	plain, held := splitVersions(got.Versions, plan.holds)
-	if err := insertVersions(ctx, tx, plain, nil, false); err != nil {
+	if err := insertVersions(ctx, tx, got.Versions, false); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
 	}
 	reach, computed, err := store.ComputeTextVersionsReach(ctx, tx, result.cursor)
@@ -527,12 +512,6 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 			}
 		}
 	}
-	if _, err := plan.lockAndRecheck(ctx, tx); err != nil {
-		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
-	}
-	if err := insertVersions(ctx, tx, held, plan.masked(), false); err != nil {
-		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
-	}
 	if err := tx.Commit(ctx); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: commit the batch: %w", err)
 	}
@@ -546,13 +525,11 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 // insertVersionsQuery writes the rows of decided versions, given as parallel arrays, in one
 // statement. Each row's body is its version's Body, and its vector is made with the functions the
 // items' own search triggers call, so the vector of a version of an unchanged item equals the
-// item's search column: an issue's from its key, its title and the text of the version of its
+// item's search column: an issue's from its key, its title and the markdown of the version of its
 // primary document the row names (issue_search_vector, 20261105145242), and a comment's, a
 // message's or an ask's from its body (search_vector over search_text, 0087), an ask's body being
 // the question, a space and ask_search_suffix of the options and the answer that the ask's
-// trigger reads too, as readEventsQuery made it (askBodySQL). A document version's text is the one
-// every read of it gives: its markdown, or, where a read masks a deleted insert's words out of it,
-// the masked text the statement is given ($12, null for a version read as stored: maskPlan).
+// trigger reads too, as readEventsQuery made it (askBodySQL).
 const insertVersionsQuery = `
 	insert into public.search_text_versions
 	       (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
@@ -560,15 +537,15 @@ const insertVersionsQuery = `
 	select r.kind, r.id, r.issue_key, r.project_key, r.event_id, r.event_seq, r.started_at, r.body,
 	       r.body_from, r.spec_artifact_id::uuid, r.spec_version,
 	       case r.kind
-	         when 'issue' then issue_search_vector(r.id, r.body, coalesce(r.masked,
+	         when 'issue' then issue_search_vector(r.id, r.body,
 	           (select a.markdown from public.artifact_versions a
-	             where a.artifact_id = r.spec_artifact_id::uuid and a.number = r.spec_version)))
+	             where a.artifact_id = r.spec_artifact_id::uuid and a.number = r.spec_version))
 	         else search_vector('', search_text(r.body))
 	       end
 	  from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::integer[],
-	              $7::timestamptz[], $8::text[], $9::text[], $10::text[], $11::integer[], $12::text[])
+	              $7::timestamptz[], $8::text[], $9::text[], $10::text[], $11::integer[])
 	       as r (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
-	             spec_artifact_id, spec_version, masked)`
+	             spec_artifact_id, spec_version)`
 
 // insertAgainSQL ends insertVersionsQuery for a re-read batch, whose versions the table can hold
 // already: those an earlier re-read wrote, of a pass a later rules version 1 batch made run again.
@@ -576,18 +553,16 @@ const insertAgainSQL = `
 	    on conflict (kind, id, event_seq) do nothing`
 
 // insertVersions writes versions as rows of the keyword table in tx, in one statement
-// (insertVersionsQuery), and writes nothing for none. Each row's body is its version's Body, and
-// an issue's row's vector reads masked's text of its primary document version where masked holds
-// one (maskPlan.masked), else the version's markdown. A batch's row is never written twice: a
-// version whose (kind, id, event_seq) the table holds fails the statement. A re-read batch's
-// (again) writes nothing for such a version and keeps the row.
-func insertVersions(ctx context.Context, tx pgx.Tx, versions []version, masked map[specVersion]string, again bool) error {
+// (insertVersionsQuery), and writes nothing for none. Each row's body is its version's Body. A
+// batch's row is never written twice: a version whose (kind, id, event_seq) the table holds fails
+// the statement. A re-read batch's (again) writes nothing for such a version and keeps the row.
+func insertVersions(ctx context.Context, tx pgx.Tx, versions []version, again bool) error {
 	if len(versions) == 0 {
 		return nil
 	}
 	n := len(versions)
 	kinds, ids, projects, bodies, bodyFroms := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
-	issueKeys, specArtifacts, maskedTexts := make([]*string, n), make([]*string, n), make([]*string, n)
+	issueKeys, specArtifacts := make([]*string, n), make([]*string, n)
 	eventIDs, seqs, specVersions := make([]int64, n), make([]int32, n), make([]*int32, n)
 	startedAts := make([]time.Time, n)
 	for index, v := range versions {
@@ -595,18 +570,13 @@ func insertVersions(ctx context.Context, tx pgx.Tx, versions []version, masked m
 		eventIDs[index], seqs[index], startedAts[index] = v.EventID, v.EventSeq, v.StartedAt
 		bodies[index], bodyFroms[index] = v.Body, v.BodyFrom
 		specArtifacts[index], specVersions[index] = v.SpecArtifactID, v.SpecVersion
-		if key, ok := v.spec(); ok {
-			if text, found := masked[key]; found {
-				maskedTexts[index] = &text
-			}
-		}
 	}
 	query := insertVersionsQuery
 	if again {
 		query += insertAgainSQL
 	}
 	tag, err := tx.Exec(ctx, query, kinds, ids, issueKeys, projects, eventIDs, seqs, startedAts, bodies,
-		bodyFroms, specArtifacts, specVersions, maskedTexts)
+		bodyFroms, specArtifacts, specVersions)
 	if err != nil {
 		return fmt.Errorf("write %d keyword versions: %w", n, err)
 	}
@@ -614,18 +584,6 @@ func insertVersions(ctx context.Context, tx pgx.Tx, versions []version, masked m
 		return fmt.Errorf("write %d keyword versions: the insert wrote %d", n, tag.RowsAffected())
 	}
 	return nil
-}
-
-// splitVersions splits versions, in their order, into those held does not hold and those it does.
-func splitVersions(versions []version, held func(version) bool) (rest, holding []version) {
-	for _, v := range versions {
-		if held(v) {
-			holding = append(holding, v)
-		} else {
-			rest = append(rest, v)
-		}
-	}
-	return rest, holding
 }
 
 // lockCursor locks the cursor row for tx, creating it at no event where none is, with the fill's
@@ -731,7 +689,7 @@ func (f *filler) record(r batchResult) {
 	if r.reread {
 		f.logger.Info(rereadMessage,
 			"events", r.events, "first_event", r.first, "cursor", r.cursor, "rows", r.rows, "redone", r.redone,
-			"masked", r.masked, "cut_bodies", r.cut, "bytes", r.bytes, "raised", r.raised, "batch_ms", r.took.Milliseconds())
+			"cut_bodies", r.cut, "bytes", r.bytes, "raised", r.raised, "batch_ms", r.took.Milliseconds())
 		return
 	}
 	f.logger.Debug(batchMessage,

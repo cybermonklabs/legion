@@ -15,7 +15,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -601,75 +600,6 @@ func TestEditNoticeSweepSendsAnEmptyDiffForAMissingVersion(t *testing.T) {
 	}
 	if edits := humanEdits(t, service.store, document); len(edits) != 1 || edits[0].payload.Diff != "" || edits[0].payload.DiffTruncated {
 		t.Fatalf("edit notices = %+v, want one with an empty diff", edits)
-	}
-}
-
-// Census v20 of dispatch://INFRA-1523, V.4: a notice's diff is read from its two versions as every
-// read of a version answers them (editNoticeVersionMarkdown, MaskedVersionText). A version named
-// while a pending insert suggestion stood holds the insert's words and stores the insert tree that
-// marks them; once the insert's comment is deleted, a notice from that version carries none of the
-// words, though the version still stores them. The row sends a notice from that version before the
-// delete, which carries the words (the positive control), and the same notice again after it.
-func TestEditNoticeSweepGivesNoWordOfAPendingInsertDeletedSince(t *testing.T) {
-	const words = "zarquoninserted"
-	service, artifactID := newTestService(t)
-	service.settle = time.Hour
-	seedServiceText(t, service, artifactID, "The "+words+" brown fox\n")
-	browserMarkWithAttrs(t, service, artifactID, "proofSuggestion", words+" ", pmdoc.Attrs{
-		"id": "m-insert", "by": "user:alice", "kind": "insert",
-	})
-	pending := commitNamedVersion(t, service, artifactID, model.Actor{Kind: "session", ID: "session-0123456789abcdef"}).Number
-	var insertTree *string
-	if err := service.store.Pool.QueryRow(context.Background(), `
-		select insert_tree::text from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, pending).Scan(&insertTree); err != nil || insertTree == nil || !strings.Contains(*insertTree, `"m-insert"`) {
-		t.Fatalf("version %d, named while the insert stood, stores insert tree %v (%v), want one naming the mark m-insert", pending, insertTree, err)
-	}
-	// Alice's comment is the insert suggestion on that mark, which no accept made document text.
-	const commentID = "00000000-0000-4000-8000-0000000000e4"
-	if _, err := service.store.Pool.Exec(context.Background(), `
-		insert into comments (id, issue_key, author, body, anchor)
-		values ($1, 'DOC-1', '{"kind":"user","id":"alice"}', 'Add this word.',
-			jsonb_build_object('artifact_id', $2::text, 'mark_id', 'm-insert', 'quote', $3::text))
-	`, commentID, artifactID, words+" "); err != nil {
-		t.Fatalf("insert the insert suggestion's comment: %v", err)
-	}
-	// The notice is the one a person's settled edit after that version opens, from it to her
-	// version; any window the named version left is taken out first, so this is the only one.
-	if _, err := service.store.Pool.Exec(context.Background(), `delete from document_edit_notices where artifact_id = $1`, artifactID); err != nil {
-		t.Fatalf("clear the document's notice: %v", err)
-	}
-	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
-	addPersonsVersion(t, service.store, artifactID, pending+1, "The brown fox jumps\n", alice)
-
-	// The positive control: before the delete the notice's diff gives the insert's words.
-	if sent, err := service.sendDueEditNotices(context.Background()); err != nil || sent != 1 {
-		t.Fatalf("sweep before the delete = %d sent, %v; want 1 sent", sent, err)
-	}
-	if edits := humanEdits(t, service.store, artifactID); len(edits) != 1 || !strings.Contains(edits[0].payload.Diff, words) {
-		t.Fatalf("edit notices before the delete = %+v, want one whose diff gives %q, so the check after the delete can fail", edits, words)
-	}
-
-	if _, err := service.store.Pool.Exec(context.Background(), `
-		update comments set body = '', deleted_at = now(), deleted_by = author where id = $1
-	`, commentID); err != nil {
-		t.Fatalf("delete the insert suggestion's comment: %v", err)
-	}
-	if _, err := service.store.Pool.Exec(context.Background(), `
-		insert into document_edit_notices (artifact_id, from_version, to_version, editors, last_editor, due_at)
-		values ($1, $2, $2 + 1, jsonb_build_array($3::text), jsonb_build_object('kind', 'user', 'id', $3::text), now() - interval '1 second')
-	`, artifactID, pending, alice.ID); err != nil {
-		t.Fatalf("open the same notice again: %v", err)
-	}
-	if sent, err := service.sendDueEditNotices(context.Background()); err != nil || sent != 1 {
-		t.Fatalf("sweep after the delete = %d sent, %v; want 1 sent", sent, err)
-	}
-	edits := humanEdits(t, service.store, artifactID)
-	if len(edits) != 2 {
-		t.Fatalf("edit notices = %d, want 2", len(edits))
-	}
-	if diff := edits[1].payload.Diff; strings.Contains(diff, words) || !strings.Contains(diff, "+The brown fox jumps") {
-		t.Errorf("the notice after the insert's delete carries the diff\n%s\nwant one that gives no %q and still holds alice's line", diff, words)
 	}
 }
 

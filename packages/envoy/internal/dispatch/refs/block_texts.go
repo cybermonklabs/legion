@@ -20,10 +20,6 @@ type BlockVersion struct {
 	Text *string
 	// RemovedVersion is the latest version that recorded the block deleted, or 0.
 	RemovedVersion int
-	// InsertTree is the version's artifact_versions.insert_tree, nil where it stores none: the
-	// tree a read of Text masks a deleted insert suggestion's words by (docs.MaskedVersionBlockTexts),
-	// as every read of the version's text masks them.
-	InsertTree []byte
 }
 
 // BlockTextAt reads block blockID of document artifactID as version records it. The text is
@@ -43,9 +39,8 @@ func BlockTextAt(ctx context.Context, q Queryer, artifactID, blockID string, ver
 		       (select min(version) from document_indexed_versions where artifact_id = $1),
 		       (select text from document_block_texts where artifact_id = $1 and block_id = $2 and version <= $3
 		        order by version desc limit 1),
-		       (select max(version) from document_block_texts where artifact_id = $1 and block_id = $2 and text is null),
-		       (select insert_tree from artifact_versions where artifact_id = $1 and number = $3)
-	`, artifactID, blockID, version).Scan(&read.Exists, &read.Indexed, &earliest, &read.Text, &removed, &read.InsertTree); err != nil {
+		       (select max(version) from document_block_texts where artifact_id = $1 and block_id = $2 and text is null)
+	`, artifactID, blockID, version).Scan(&read.Exists, &read.Indexed, &earliest, &read.Text, &removed); err != nil {
 		return BlockVersion{}, fmt.Errorf("read block %q of %s at version %d: %w", blockID, artifactID, version, err)
 	}
 	if !read.Indexed {

@@ -5966,8 +5966,7 @@ func joinedAcceptSuggestion(service *Service, artifactID, id, replaceWith string
 
 func joinedRejectSuggestion(service *Service, artifactID, id string, actor model.Actor) error {
 	return joinedWrite(service, func(ctx context.Context) error {
-		_, err := service.RejectSuggestion(ctx, artifactID, id, actor)
-		return err
+		return service.RejectSuggestion(ctx, artifactID, id, actor)
 	})
 }
 

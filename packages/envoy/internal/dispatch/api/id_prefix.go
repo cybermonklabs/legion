@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -191,8 +190,7 @@ func (s *server) resolvePathValue(
 // of that kind (resolvePathValue), and the reference reads by leaving the reference as written.
 // An error is the answer the caller has to write rather than one it can go on from, and
 // writeIDPrefixError writes it: the 409 of a prefix two items or more carry, or a database that
-// could not be read. The 409 of a block prefix pinned to a version lists each block with the
-// first line of its text as that version is read (maskPinnedBlockCandidates).
+// could not be read.
 func (s *server) wholeID(
 	ctx context.Context,
 	kind string,
@@ -201,55 +199,13 @@ func (s *server) wholeID(
 	viewer refs.Viewer,
 ) (string, error) {
 	candidate, err := refs.ResolvePrefix(ctx, s.deps.Store.Pool, kind, scope, prefix, viewer)
-	var ambiguous *refs.ErrPrefixAmbiguous
 	switch {
 	case err == nil:
 		return candidate.ID, nil
 	case errors.Is(err, pgx.ErrNoRows):
 		return "", nil
-	case kind == "block" && scope.Version > 0 && errors.As(err, &ambiguous):
-		if maskErr := s.maskPinnedBlockCandidates(ctx, scope, ambiguous.Candidates); maskErr != nil {
-			return "", maskErr
-		}
 	}
 	return "", err
-}
-
-// maskPinnedBlockCandidates gives each of candidates, blocks of version scope.Version of the
-// document scope.Document names (refs.ResolvePrefix answers them with the first line of the text
-// the block index recorded at that version), the first line of its text as every read of that
-// version reads it: without the words of an insert suggestion whose comment its author deleted
-// and no accept made document text, which the version's insert tree finds by the mark's id
-// (docs.MaskedVersionBlockTexts). A candidate whose block holds no such words keeps its line. A
-// document or a version that is not there is left to the read that follows, which answers it.
-func (s *server) maskPinnedBlockCandidates(ctx context.Context, scope refs.Scope, candidates []refs.Candidate) error {
-	var artifactID string
-	var insertTree []byte
-	err := s.deps.Store.Pool.QueryRow(ctx, `
-		select a.id::text, v.insert_tree
-		from artifacts a join artifact_versions v on v.artifact_id = a.id and v.number = $2
-		where a.ref_key = $1
-	`, scope.Document, scope.Version).Scan(&artifactID, &insertTree)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("read the insert tree of version %d of %s: %w", scope.Version, scope.Document, err)
-	}
-	ids := make([]string, len(candidates))
-	for index, candidate := range candidates {
-		ids[index] = candidate.ID
-	}
-	masked, err := docs.MaskedVersionBlockTexts(ctx, s.deps.Store.Pool, artifactID, insertTree, ids)
-	if err != nil {
-		return err
-	}
-	for index := range candidates {
-		if maskedText, held := masked[candidates[index].ID]; held {
-			candidates[index].FirstLine = contracts.OneLineSummary(maskedText)
-		}
-	}
-	return nil
 }
 
 // writeIDPrefixError writes what wholeID could not resolve a prefix through: the 409 of a prefix

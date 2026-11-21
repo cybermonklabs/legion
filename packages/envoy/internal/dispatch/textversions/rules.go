@@ -18,8 +18,7 @@ import (
 // that wrote the rows up to the cursor. Version 1 read issues, primary documents, the creates,
 // replies and edits of comments, the creates and replies of issue messages, and asks; version 2
 // reads, besides, message.edited, comment.deleted and message.deleted (dispatch://INFRA-1523,
-// rulesAdded), takes a post's whole body from its body history (bodyFromHistory), and makes an
-// issue's vector from its document version's masked text (maskPlan).
+// rulesAdded), and takes a post's whole body from its body history (bodyFromHistory).
 //
 // A batch of this build that finds a lower version stored reads again what that version's fill
 // passed over before it writes the events above the cursor (filler.rereadBatch): every event of

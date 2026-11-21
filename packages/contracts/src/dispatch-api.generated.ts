@@ -560,7 +560,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. A document version that holds the words of a pending insert suggestion whose comment its author deleted, and that no accept made document text, answers its Markdown without them, as JSON and as the download alike: the version still stores them, and its sha256 and size are the stored text's, so a masked answer's text no longer hashes to sha256, nor to the document_token the version was written with. */
+    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. */
     get: operations["getApiV1ArtifactsByIdVersionsByNumber"];
     put?: never;
     post?: never;
@@ -1504,7 +1504,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. A document version that holds the words of a pending insert suggestion whose comment its author deleted, and that no accept made document text, answers its Markdown without them: its sha256 and size are the stored text's, so a masked answer's text no longer hashes to sha256, nor to the document_token the version was written with. */
+    /** @description One version of an issue's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;
@@ -2728,7 +2728,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. A document version that holds the words of a pending insert suggestion whose comment its author deleted, and that no accept made document text, answers its Markdown without them: its sha256 and size are the stored text's, so a masked answer's text no longer hashes to sha256, nor to the document_token the version was written with. */
+    /** @description One version of a project's document, file or image, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/versions/{number} answers it: a document as JSON, a file or an image as its bytes with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugVersionsByNumber"];
     put?: never;
     post?: never;

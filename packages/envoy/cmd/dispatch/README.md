@@ -2667,13 +2667,6 @@ Such a repository is one with an open or merged linked pull request that GitHub 
 The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one, and reads a `before_merge` result's pull requests through it.
 A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `check_results` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
 
-Migration `20261120213507_artifact_versions_insert_tree` adds the nullable `jsonb` column `artifact_versions.insert_tree`: the tree a document version's markdown was rendered from, as pmdoc's JSON, written in the insert that stores the markdown and only when that tree holds an insert suggestion's mark (`docs.InsertTree`), and null for every other row, the rows before it included.
-The markdown carries no anchor mark, so the column is the one record of which of a version's words a pending insert put there, by the mark's id: every read of a version's text - the three document version routes, the diff a named version's `artifact.version` event carries, the diff of an `artifact.human_edited` notice, the text of a block reference pinned to the version (`#b-<id>@vN`) and the first lines of the candidates of a short block id pinned to it - drops the words of each insert whose comment (`anchor.mark_id`) its author deleted and that no accept made document text (`docs.MaskedVersionText`, `docs.MaskedVersionBlockTexts`), while the stored markdown, its `sha256` and every approval pinned to it stay as they were.
-Two reads find such an insert in the stored trees themselves, in SQL, by the rule the mask reads a mark by: the end of a kept answer whose related-item check listed the document, whenever the insert's comment was made and whenever the delete came (`answerEndedByDelete`, through `docs.InsertMarkPath`, which walks each stored tree once for all the document's deleted comments), and the record of the comments whose words an answer run read in a document's text (`goingItemText`, through `docs.InsertMarkIDsPath`), so the insert's delete ends that answer and withdraws that run.
-An upload that changes nothing stores a version all the same, and that version stores the insert tree of the live tree the upload found rendering as its text (`docs.unchangedStampOf`), so it is masked like every other.
-A version stored before the column, or by the release before this one during the roll, is read as stored.
-A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `artifact_versions` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
-
 Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
 The `role` check names the six Legion roles, and a row goes with its issue.
@@ -2697,7 +2690,7 @@ This release also writes both again for every unpublished event a batch reads no
 Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
 Its key is `(kind, id, event_seq)`, and a new version is a new row.
-A row is updated in two cases alone: the delete of a comment whose insert suggestion's words a stored document version holds rewrites, in its own transaction, the vector of each issue row that names such a version from the version's masked text (Search, below); and the fill's re-read, below, writes again the rows a fill of a lower rules version decided otherwise than this build's rules.
+A row is updated in one case alone: the fill's re-read, below, writes again the rows a fill of a lower rules version decided otherwise than this build's rules.
 `search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
 `search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
 `search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
@@ -2708,12 +2701,11 @@ At production's counts the table and its indexes take about 2 GB (1.9 GB measure
 So once the table is filled, the census refuses a later migration that names it unless the census admits every statement of that migration.
 A change to its shape is a new table that the fill writes again.
 The cursor row's `rules` holds the lowest version of the event rules that wrote the rows up to the cursor: each batch keeps the lower of its own version and the one stored, so a newer build that takes the hold after an older one does not hide the older one's events.
-Version 2 reads, besides version 1's, `message.edited`, `comment.deleted` and `message.deleted`, takes a cut post body from the post's body history (`post_body_history`), and makes an issue's vector from its document version's masked text, writing the rows of a version that holds an insert under the lock of the row's issue's owner.
-A version 1 fill that runs beside a version 2 build during a roll passes over the events of those three types, reads a cut body from a post's row after a later edit or delete changed it, and writes an issue's vector from the stored markdown after a delete's rewrite masked it; and it lowers `rules` to 1.
+Version 2 reads, besides version 1's, `message.edited`, `comment.deleted` and `message.deleted`, and takes a cut post body from the post's body history (`post_body_history`).
+A version 1 fill that runs beside a version 2 build during a roll passes over the events of those three types and reads a cut body from a post's row after a later edit or delete changed it; and it lowers `rules` to 1.
 So a batch of version 2 that finds `rules` below 2 reads again before it writes past the cursor (`textversions`' `rereadBatch`), in batches bounded as the fill's are, each after the pause and before the rest:
 every event of the three types up to the cursor, decided against the row its post held just before it, each version written unless the table holds it;
-each row of a post with a later edit or delete whose body its event cut and that was read from another source than the post's body history, written again as version 2 decides it;
-and the vector of each issue row naming a document version that holds a deleted comment's insert, from the masked text, the versions found through the deleted comments' anchors and the rows written last, under their issues' owner locks.
+and each row of a post with a later edit or delete whose body its event cut and that was read from another source than the post's body history, written again as version 2 decides it.
 Its last batch raises `rules` to 2, and only it does: a re-read stopped before then, or a later version 1 batch that lowers `rules` again, has the next version 2 batch read again from the log's first event, which writes nothing twice.
 Only a build with version 2 writes an event of the three types, so every one in the log was written by the roll that brought them or later, and the re-read misses none.
 Its read takes the events of the types that change a post's text through `events_post_text_changes` (below), under a batch's statement time.
@@ -3487,8 +3479,6 @@ A version starts at the event that changed that text, and an event that changes 
 An edit of a comment or an issue message starts a version of its new body, and a delete of one starts a version of the empty body.
 Where an event cut a post's body, the fill reads the whole body from the post's present row, else from its body history (`post_body_history`), the body the next edit or delete kept, else from a comment's first blocks.
 The functions that make the item's own `search` column make the vector of each version, so the vector of an item unchanged since its version started equals that column.
-An issue's vector reads its primary document version's text as every read of that version gives it, without the words of a pending insert suggestion whose comment was deleted.
-The delete of such a comment rewrites the vector of each row the fill already wrote of a version holding those words, under the lock of the comment's owner, and the fill writes a row of such a version under the same lock, after it reads the document's comments again, so neither misses the other's write (`internal/dispatch/store/README.md`).
 The keyword fill writes the rows from the event log while Dispatch serves (Background loops, above); after a fill of an earlier rules version wrote during a roll, it reads again what that version passed over or decided otherwise (Database migrations, above).
 `store.TextVersionsAt(ctx, cut)` answers `store.TextVersions`, the relation of the version of each item that held at the cut.
 A statement joins it as `from <SQL()> v` and matches, ranks and cuts snippets in itself, as the arms of the present search do over the items' own tables.
@@ -3769,7 +3759,7 @@ Each item below names a status and code, then its meaning.
 
 - The first status with `ANSWER_NOT_KEPT`
 
-  A repeat whose first answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or one that holds a comment or a message that was deleted or a document version name a delete replaced, or a related-item hit for a document in which a comment's insert suggestion, deleted since, was made at any time, so the answer may hold its words.
+  A repeat whose first answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or one that holds a comment or a message that was deleted or a document version name a delete replaced.
   What a caller does with it - what a request that wrote made is read back, and a call that wrote nothing may be sent again under a new key - is `IDEMPOTENCY_ANSWER_NOT_KEPT`'s description in `packages/contracts/src/dispatch-api-limits.ts`.
 
 - `409 KEY_IN_FLIGHT`, `Retry-After: 1`

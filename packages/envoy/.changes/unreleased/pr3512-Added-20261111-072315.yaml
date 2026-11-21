@@ -8,11 +8,7 @@ body: |-
   its thread and gives its body to no read: the events written before the delete keep their
   payloads in the event log, and every read of them gives the post's marks and no body. The delete
   of a comment whose insert suggestion no accept made document text, pending or rejected, empties
-  its anchor's quote, which is the suggestion's own words, and takes those words out of the quote
-  of every other comment or ask anchored on them, open or closed: an anchor that quoted nothing
-  else is emptied and orphaned, one that quoted document text too keeps that text, and each is
-  announced in its anchor_refreshed event. A suggestion rejected before this release records no
-  anchors, so its delete leaves other anchors as they are.
+  its anchor's quote, which is the suggestion's own words.
   The delete of a comment whose accepted suggestion named a document version after its body renames
   that version, and its comment.deleted event names the version and its new name (renamed_version).
   The comment PATCH, which before took a person's edit alone and refused one on a closed

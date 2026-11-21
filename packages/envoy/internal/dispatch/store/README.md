@@ -45,10 +45,7 @@ The decoders that make this true are the listener's (`cmd/listener/delivery.go`)
 **The keyword table holds each past version of the searchable text.**
 Migration `20261120021308_search_text_versions` creates two tables, with no foreign key.
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, with the vector of that text.
-A new version is a new row, and a row is updated in two cases alone.
-The delete of a comment whose insert suggestion's words a stored document version holds rewrites the vector of each issue row that names such a version, from the version's text as every read gives it once the delete commits (`QueueTextVersionsMask`, in the delete's own transaction, under the lock of the comment's owner it took before it read the comment).
-The fill makes the vector of a row it writes later from that masked text too, and writes such a row under the owner lock of the row's issue (`LockOwners`), after it reads the issue's document's comments again, so neither misses the other's write.
-The other case is the fill's re-read, after a fill of a lower rules version wrote (`textversions`' `rereadBatch`): it writes again a post's row whose cut body that version read from another source than this build reads first, with its body, its `body_from` and its vector, and, as the delete does and under the same lock, the vector of each issue row naming a version that holds a deleted comment's insert (`MaskTextVersions`).
+A new version is a new row, and a row is updated in one case alone: the fill's re-read, after a fill of a lower rules version wrote (`textversions`' `rereadBatch`), writes again a post's row whose cut body that version read from another source than this build reads first, with its body, its `body_from` and its vector.
 `search_text_versions_fill` holds the one cursor row of the keyword fill (`internal/dispatch/textversions`): every event at or below its `event_id` has its rows.
 Its `rules` is the lowest rules version that wrote the rows up to the cursor; a batch of a higher version that finds a lower one stored reads again what that version passed over before it writes past the cursor, and only that re-read raises the column.
 The fill writes both tables from the event log while Dispatch serves, under the hold `search-text-versions-fill`.

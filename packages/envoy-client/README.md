@@ -890,9 +890,7 @@ made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `Idempoten
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
 answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or a success that holds a
-comment or a message that was deleted, or a document version name a delete replaced, or a
-related-item hit for a document in which a comment's insert suggestion, deleted since, was made at
-any time, so it may hold that suggestion's words
+comment or a message that was deleted, or a document version name a delete replaced
 (`answerNotKept`, shared with the page; `IDEMPOTENCY_ANSWER_NOT_KEPT` in `@legion/contracts`). It
 is no refusal and no `DispatchServiceError`, and it is never asked again. Its message is the one
 line the session reads: the method and URL were made, why the answer is gone, and to read what it

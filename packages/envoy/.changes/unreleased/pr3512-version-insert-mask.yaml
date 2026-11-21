@@ -1,26 +1,9 @@
 kind: Added
 body: |-
-  A stored document version gives no word of a pending insert suggestion whose comment its author
-  deleted, unless an accept made the words document text: GET on
-  /api/v1/artifacts/{id}/versions/{number} and on the issue and project slug forms answers the
-  version's Markdown without them, as JSON and as the download, and so do the diff a named
-  version's artifact.version event carries, the diff of an artifact.human_edited notice, the text
-  of a block reference pinned to the version (#b-<id>@vN) and the first lines of the candidates of
-  a short block id pinned to it. The version still stores the words, and its sha256 and size stay
-  the stored text's, so an approval pinned to the version stays as it was and a masked answer's
-  text no longer hashes to sha256.
-  Every version write stores the tree its markdown was rendered from when that tree holds an insert
-  suggestion's mark, in the new nullable column artifact_versions.insert_tree (migration
-  20261120213507), which the read masks by the mark's id; the version an upload that changes
-  nothing stores keeps the live tree the upload found. The end of a kept related-item check that
-  listed the document, whenever the insert's comment was made and whenever the delete came, and
-  the record of the comments whose words an answer run read, read insert_tree too
-  (docs.InsertMarkPath, docs.InsertMarkIDsPath), so the insert's delete ends that answer and
-  withdraws that run. The delete of a comment whose pending insert it rejects also writes the
-  document's next version, without the words, in its own transaction (docs.SettleVersion), so no
-  store built from the latest version - search, the related-item check, a block's latest text and
-  name - gives them once the delete commits. A version stored before this release holds no such
-  tree and is read as stored.
+  The delete of a comment whose pending insert suggestion it rejects writes the document's next
+  version, without the insert's words, in its own transaction (docs.SettleVersion), so no store
+  built from the latest version - search, the related-item check, a block's latest text and name -
+  gives them once the delete commits.
 time: 2026-11-20T21:35:07Z
 custom:
     Issue: pr3512

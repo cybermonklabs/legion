@@ -592,11 +592,9 @@ type server struct {
 	// deleteLeavesSettlement has the delete of a comment whose pending insert suggestion it
 	// rejects leave the document's next version to the settlement the reject arms, as the delete
 	// did before it wrote that version itself (deleteComment, docs.SettleVersion); false, which
-	// every server the deployment builds leaves it, settles in the delete. Only test code sets it:
-	// a benchmark, to time the delete without its settle beside the delete with it
-	// (BenchmarkDeleteOfAPendingInsertSettle), and a test, to reach a document
-	// whose latest version still holds a deleted insert's words, as one does where a build
-	// without the settle served the delete during a rollout, for the readers that mask them.
+	// every server the deployment builds leaves it, settles in the delete. Only a benchmark sets
+	// it, to time the delete without its settle beside the delete with it
+	// (BenchmarkDeleteOfAPendingInsertSettle).
 	deleteLeavesSettlement bool
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
@@ -1975,22 +1973,17 @@ func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, ledger *docs.L
 
 // transactionVersionMarkdown is the markdown of version number of artifactID as tx sees it once its
 // queue has run: the ledger's, when it is the version this transaction queued
-// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it. Either
-// is the text every read of the version answers (docs.MaskedVersionText), so the diff a version's
-// event carries gives no word of a pending insert whose comment was deleted.
+// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it.
 func transactionVersionMarkdown(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, number int) (string, bool, error) {
-	markdown, insertTree, pending := ledger.PendingVersionMarkdown(artifactID, number)
-	if !pending {
-		err := tx.QueryRow(ctx, `
-			select markdown, insert_tree from artifact_versions where artifact_id = $1 and number = $2
-		`, artifactID, number).Scan(&markdown, &insertTree)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", false, nil
-		}
-		if err != nil {
-			return "", false, err
-		}
+	if markdown, pending := ledger.PendingVersionMarkdown(artifactID, number); pending {
+		return markdown, true, nil
 	}
-	masked, err := docs.MaskedVersionText(ctx, tx, artifactID, markdown, insertTree)
-	return masked, err == nil, err
+	var markdown string
+	err := tx.QueryRow(ctx, `
+		select markdown from artifact_versions where artifact_id = $1 and number = $2
+	`, artifactID, number).Scan(&markdown)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	return markdown, err == nil, err
 }

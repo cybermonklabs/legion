@@ -990,7 +990,7 @@ func MarkSpans(doc *Node, markType, id string) []Range {
 		if node.Type != "text" {
 			return true
 		}
-		if !NodeHasMarkID(node, markType, id) {
+		if !nodeHasMarkID(node, markType, id) {
 			between = true
 			return true
 		}
@@ -1273,10 +1273,10 @@ func MarkAttrs(doc *Node, markType, id string) (Attrs, bool) {
 	return cloneAttrs(f.Attrs), ok
 }
 
-// NodeHasMarkID reports whether node carries a markType mark whose id is id. A record mark's type
+// nodeHasMarkID reports whether node carries a markType mark whose id is id. A record mark's type
 // does not exclude itself (anchorMarkTypes), so a run may carry two of one type, and the mark asked
 // for need not be the first of them.
-func NodeHasMarkID(node *Node, markType, id string) bool {
+func nodeHasMarkID(node *Node, markType, id string) bool {
 	for _, mark := range node.Marks {
 		if markHasID(mark, markType, id) {
 			return true

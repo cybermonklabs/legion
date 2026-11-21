@@ -829,8 +829,7 @@ func readBatch(t *testing.T, database *store.Store, after, through int64) []even
 }
 
 // decideAndWrite decides the versions of a batch of events and writes them, in one transaction,
-// as the fill's batch does, with the warnings logged to logs: an issue row of a document version
-// that holds an insert tree from the version's text as every read gives it (maskPlan).
+// as the fill's batch does, with the warnings logged to logs.
 func decideAndWrite(t *testing.T, database *store.Store, logs *logtest.Buffer, batch []event) decided {
 	t.Helper()
 	ctx := t.Context()
@@ -840,18 +839,7 @@ func decideAndWrite(t *testing.T, database *store.Store, logs *logtest.Buffer, b
 		if err != nil {
 			t.Fatalf("decide the versions: %v", err)
 		}
-		trees, err := readSpecTrees(ctx, tx, decidedVersions.Versions)
-		if err != nil {
-			t.Fatalf("read the versions' insert trees: %v", err)
-		}
-		plan, err := readMaskPlan(ctx, tx, trees)
-		if err != nil {
-			t.Fatalf("read the versions' masked texts: %v", err)
-		}
-		if _, err := plan.lockAndRecheck(ctx, tx); err != nil {
-			t.Fatalf("lock the versions' issues: %v", err)
-		}
-		if err := insertVersions(ctx, tx, decidedVersions.Versions, plan.masked(), false); err != nil {
+		if err := insertVersions(ctx, tx, decidedVersions.Versions, false); err != nil {
 			t.Fatalf("write the versions: %v", err)
 		}
 		got = decidedVersions

@@ -713,10 +713,6 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	var canonical string
 	var read pmdoc.WrittenReadBack
 	var unchanged bool
-	// unchangedTree is the live tree a write that changes nothing found rendering as the
-	// replacement, the markdown its caller's version stores (unchangedStampOf), and nil for every
-	// other write.
-	var unchangedTree *pmdoc.Node
 	// The rendering of the replacement, which this write makes to tell whether the upload changes
 	// the document and answers its caller with: the write leaves that very tree in the fork,
 	// unless it has anchors to carry over, so applyLive takes this rendering for the fork it
@@ -790,7 +786,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		}
 		written = renderedTree{tree: target, markdown: canonical, offsets: offsets, layout: layout}
 		if !repairing && currentMarkdown == canonical {
-			unchanged, unchangedTree = true, current
+			unchanged = true
 			return nil
 		}
 		type reanchor struct {
@@ -897,13 +893,6 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	// markdown back as one the fragment took.
 	if err != nil && !(unchanged && errors.Is(err, websocket.ErrNoChanges)) {
 		return "", wrapUnlessTooLarge(err, "replace live document")
-	}
-	// A write that changed nothing recorded no operation, so this transaction holds no tree of the
-	// markdown its caller's version stores (writtenRendering, Ledger.QueueVersion). The live tree
-	// it found renders as that markdown, a pending insert's words included, so that version stores
-	// its insert tree (RenderStampOf).
-	if unchanged {
-		ledgerFrom(ctx).wroteUnchanged(artifactID, canonical, unchangedStampOf(artifactID, unchangedTree))
 	}
 	// The parse read its markdown back already, to refuse a document that reads back otherwise;
 	// the rest of the request reads the rendering through that parse rather than making a second
@@ -2567,7 +2556,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 		return model.Version{}, err
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, insertTree: stamp.InsertTree, docUpdateVersion: cursor})
+		ledger.queuedVersion(artifactID, pendingVersion{version: version, markdown: markdown, docUpdateVersion: cursor})
 	}
 	return version, nil
 }
@@ -2577,10 +2566,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 // what the markdown was rendered from, stored with the head this insert meets, so a text read of
 // a document still standing there serves the stored markdown rather than rendering the document
 // again (storedText): the head and the transaction standing at it are read in the insert itself,
-// which the write phase runs after the appends this transaction queued before it. The same insert
-// stores the stamp's insert tree (artifact_versions.insert_tree, null where the tree holds no
-// insert suggestion's mark), which every read of the version's text masks it by
-// (MaskedVersionText).
+// which the write phase runs after the appends this transaction queued before it.
 func versionInsert(artifactID, markdown string, authors []model.Actor, number int, createdAt time.Time, named bool, summary *string, docUpdateVersion int64, stamp RenderStamp) (model.Version, WriteStep, error) {
 	encodedAuthors, err := json.Marshal(authors)
 	if err != nil {
@@ -2592,9 +2578,9 @@ func versionInsert(artifactID, markdown string, authors []model.Actor, number in
 		return model.Version{}, nil, fmt.Errorf("decode document version authors: %w", err)
 	}
 	return version, execStep("write document version", RenderStampHead+`
-		insert into artifact_versions (artifact_id, number, markdown, authors, named, summary, doc_update_version, created_at, `+RenderStampColumns+`, insert_tree)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, `+RenderStampValues+`, $9, $10, $11)
-	`, artifactID, number, markdown, encodedAuthors, named, summary, docUpdateVersion, createdAt, stamp.Token, stamp.Renderer, stamp.InsertTree), nil
+		insert into artifact_versions (artifact_id, number, markdown, authors, named, summary, doc_update_version, created_at, `+RenderStampColumns+`)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, `+RenderStampValues+`, $9, $10)
+	`, artifactID, number, markdown, encodedAuthors, named, summary, docUpdateVersion, createdAt, stamp.Token, stamp.Renderer), nil
 }
 
 // versionSlot numbers and dates the next version of artifactID tx writes: through the ledger tx's

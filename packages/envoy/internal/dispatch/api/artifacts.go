@@ -1204,17 +1204,8 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	// under its new name, and an older version's carries its number (versionFilename).
 	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
 	if artifact.Kind == "doc" {
-		var stored string
-		var insertTree []byte
-		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &stored, &insertTree)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		// The text every arm answers gives no word of a pending insert whose comment its author
-		// deleted, though the version stores them (docs.MaskedVersionText); the version's sha256
-		// and size stay the stored text's, which an approval is pinned to.
-		markdown, err := docs.MaskedVersionText(r.Context(), s.deps.Store.Pool, artifact.ID, stored, insertTree)
+		var markdown string
+		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &markdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1231,7 +1222,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, markdown)
 			return
 		}
-		hash := sha256.Sum256([]byte(stored))
+		hash := sha256.Sum256([]byte(markdown))
 		sha := hex.EncodeToString(hash[:])
 		version.SHA256 = &sha
 		// A past version's text is read in the version mode: the attributes the server wrote
@@ -2157,19 +2148,17 @@ func (s *server) loadVersions(ctx context.Context, q queryer, artifactID string)
 	return versions, rows.Err()
 }
 
-// loadVersion reads one version of a document with its stored markdown, which the content route
-// answers, so its size is that markdown's length rather than a second read of the column, and the
-// version's insert tree (artifact_versions.insert_tree), which that route masks the markdown by
-// (docs.MaskedVersionText).
-func (s *server) loadVersion(ctx context.Context, q queryer, artifactID string, number int, markdown *string, insertTree *[]byte) (model.Version, error) {
+// loadVersion reads one version of a document with its markdown, which the content route answers,
+// so its size is that markdown's length rather than a second read of the column.
+func (s *server) loadVersion(ctx context.Context, q queryer, artifactID string, number int, markdown *string) (model.Version, error) {
 	var version model.Version
 	var authors []byte
 	if err := q.QueryRow(ctx, `
-		select v.number, v.named, v.summary, v.authors, v.created_at, v.mime, v.sha256, v.markdown, v.insert_tree
+		select v.number, v.named, v.summary, v.authors, v.created_at, v.mime, v.sha256, v.markdown
 		from artifact_versions v where v.artifact_id = $1 and v.number = $2
 	`, artifactID, number).Scan(
 		&version.Number, &version.Named, &version.Summary, &authors, &version.CreatedAt,
-		&version.MIME, &version.SHA256, markdown, insertTree,
+		&version.MIME, &version.SHA256, markdown,
 	); err != nil {
 		return model.Version{}, err
 	}

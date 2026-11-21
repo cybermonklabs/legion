@@ -249,17 +249,16 @@ func goingHitTitle(result model.SearchResult) string {
 
 // goingBodies is each hit's own stored text, the text search ranked, cut to
 // contracts.GoingHitRuneMax runes a hit and keyed as going.Hit.Key keys it (goingItemText), read
-// for run requestID: the comments and messages among them, and the comments whose pending insert
-// suggestion's words a document's or an issue's text holds, are recorded as the run's before the
+// for run requestID: the comments and messages among them are recorded as the run's before the
 // texts are handed on (recordGoingPosts), so a delete of one withdraws the run's answer
 // (goingWithdrawal).
 func (s *server) goingBodies(requestID string) func(context.Context, []going.Hit) (map[string]string, error) {
 	return func(ctx context.Context, hits []going.Hit) (map[string]string, error) {
-		texts, inserts, err := goingItemText(ctx, s.deps.Store.Pool, hits, contracts.GoingHitRuneMax)
+		texts, err := goingItemText(ctx, s.deps.Store.Pool, hits, contracts.GoingHitRuneMax)
 		if err != nil {
 			return nil, err
 		}
-		if err := s.recordGoingPosts(ctx, requestID, hits, texts, inserts); err != nil {
+		if err := s.recordGoingPosts(ctx, requestID, hits, texts); err != nil {
 			return nil, err
 		}
 		return texts, nil

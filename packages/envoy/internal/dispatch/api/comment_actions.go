@@ -480,15 +480,12 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		if kindErr == nil {
 			projectionKind = kind
 		}
-		// What a reject's removal of an insert's text took from other anchors' marks
-		// (docs.TakenAnchorMarks), which the column keeps below for the comment's delete.
-		var taken docs.TakenAnchorMarks
 		if comment.Anchor != nil {
 			var markErr error
 			if action == "accept" {
 				markErr = s.deps.Docs.AcceptSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, comment.Suggestion.ReplaceWith, actor)
 			} else {
-				taken, markErr = s.deps.Docs.RejectSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
+				markErr = s.deps.Docs.RejectSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
 			}
 			if markErr != nil {
 				if !errors.Is(markErr, docs.ErrAnchorOrphaned) {
@@ -518,11 +515,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		// The decision is merged into the column (jsonb ||), so every key the create stored and
 		// this write does not name stays: the kind, which the delete of a rejected suggestion reads
 		// to tell an insert's quote, the comment's own words, from document text (deleteComment).
-		// The write names the suggestion's own keys and the anchor marks a reject's removal took
-		// text from, which that delete reads to take the inserted words out of the quotes of the
-		// asks and comments on them. Nothing but the reject records those marks: once the words
-		// are out of the document, no fact of it tells which anchors lay on them.
-		suggestion, err := encodeJSON(storedSuggestion{Suggestion: *comment.Suggestion, Taken: taken})
+		suggestion, err := encodeJSON(comment.Suggestion)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

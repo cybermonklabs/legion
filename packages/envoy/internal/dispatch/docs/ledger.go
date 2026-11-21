@@ -86,13 +86,6 @@ type Ledger struct {
 	// of the same request that reads that markdown again shares the parse (ReadBackOf). Discard
 	// drops them when the request ends: each is a whole parsed tree of its document.
 	readBacks map[string]pmdoc.WrittenReadBack
-	// unchanged holds, per document this transaction replaced whole with the text it already held
-	// (ReplaceText), the markdown that write found the live tree rendering as, which its version
-	// stores, with the stamp of that tree (unchangedStampOf): the write recorded no operation, so
-	// writtenRendering holds no tree of it, and RenderStampOf answers this stamp instead. Discard
-	// drops them when the request ends, as it drops the read-backs: each holds its document's whole
-	// markdown.
-	unchanged map[string]unchangedWrite
 	// copies are the documents showing a copy of an ask this transaction answered or resolved,
 	// whose settlement it marked owed (SettleCopiesOf); Commit arms each once it has committed.
 	copies []string
@@ -125,7 +118,7 @@ type Ledger struct {
 	// latestVersion answers for it; now is the transaction's start, read once (Now). latest is read
 	// only while the ledger is unsealed (PendingVersionMarkdown, PendingVersionNumber,
 	// PendingMarkdown, queueFor), and Discard drops it: each entry holds its version's whole
-	// markdown and insert tree.
+	// markdown.
 	numbers map[string]int
 	latest  map[string]pendingVersion
 	now     *time.Time
@@ -387,28 +380,27 @@ func (l *Ledger) NextVersion(ctx context.Context, artifactID string) (int, time.
 }
 
 // pendingVersion is a version this transaction has queued and not yet written, as latestVersion
-// reads a stored one, with the insert tree its row will store (RenderStamp.InsertTree).
+// reads a stored one.
 type pendingVersion struct {
 	version          model.Version
 	markdown         string
-	insertTree       []byte
 	docUpdateVersion int64
 }
 
-// PendingVersionMarkdown is the markdown of version number of artifactID, and the insert tree its
-// row will store, when it is the version this transaction last numbered and queued
-// (writeVersionTx) and has not written yet: a route that reads the version it just made - the diff
-// a named version's event carries - takes it from here, since the table holds the row only once
-// Commit has run the queue. False when this transaction queued no such version.
-func (l *Ledger) PendingVersionMarkdown(artifactID string, number int) (string, []byte, bool) {
+// PendingVersionMarkdown is the markdown of version number of artifactID when it is the version
+// this transaction last numbered and queued (writeVersionTx) and has not written yet: a route that
+// reads the version it just made - the diff a named version's event carries - takes it from here,
+// since the table holds the row only once Commit has run the queue. False when this transaction
+// queued no such version.
+func (l *Ledger) PendingVersionMarkdown(artifactID string, number int) (string, bool) {
 	if l.sealed {
-		return "", nil, false
+		return "", false
 	}
 	pending, queued := l.latest[artifactID]
 	if !queued || pending.version.Number != number {
-		return "", nil, false
+		return "", false
 	}
-	return pending.markdown, pending.insertTree, true
+	return pending.markdown, true
 }
 
 // PendingVersionNumber is the number of the version of artifactID this transaction last numbered
@@ -494,9 +486,7 @@ func (l *Ledger) queuedAskAuthors(artifactID string, authors map[string]model.Ac
 // The row records what its markdown was rendered from (RenderStampOf), the tree this
 // transaction's own write of the document left where that tree is what markdown came from, so a
 // text read of a document still standing there serves the stored markdown rather than rendering
-// the document again. An upload that changed nothing left no tree, and the row records the insert
-// tree of the live tree it found (unchangedStampOf), so every read of it masks a deleted pending
-// insert's words.
+// the document again.
 func (l *Ledger) QueueVersion(ctx context.Context, artifactID, markdown string, authors []model.Actor, summary *string) (model.Version, error) {
 	if l.writer == nil {
 		return model.Version{}, errUnjoined
@@ -1253,8 +1243,8 @@ func (s *Service) commitConsuming(ctx context.Context, tx pgx.Tx, captures []roo
 // Discard drops what a transaction that did not commit left behind: its queued writes, which
 // never ran, its live writes, which no room ever saw, and the rooms its rebuilds held. A version
 // it wrote marked nothing it read, so its authors stay where they were. After Commit only the
-// read-backs, the unchanged writes' stamps and the queued versions (latest) are left to drop.
-// Every caller defers it, so it is where the request's use of the ledger ends.
+// read-backs and the queued versions (latest) are left to drop. Every caller defers it, so it is
+// where the request's use of the ledger ends.
 func (l *Ledger) Discard() {
 	l.sealed = true
 	l.queue = nil
@@ -1271,12 +1261,9 @@ func (l *Ledger) Discard() {
 	// wrote whole stayed resident beside the document's room
 	// (TestAnUploadsReadBackTreeGoesWhenItsRequestEnds).
 	l.readBacks = nil
-	// The stamps an upload that changed nothing kept for its version (wroteUnchanged) serve that
-	// version's write alone, and the same pooled context would keep each one's whole markdown.
-	l.unchanged = nil
 	// The versions this transaction queued (queuedVersion) are read only until its write phase
-	// seals the ledger, when the table holds them, and each holds its version's whole markdown and
-	// insert tree, which the same pooled context would keep.
+	// seals the ledger, when the table holds them, and each holds its version's whole markdown,
+	// which the same pooled context would keep.
 	l.latest = nil
 	l.endRebuilds()
 }
@@ -1541,27 +1528,6 @@ func (l *Ledger) wroteReadBack(artifactID string, read pmdoc.WrittenReadBack) {
 		l.readBacks = make(map[string]pmdoc.WrittenReadBack)
 	}
 	l.readBacks[artifactID] = read
-}
-
-// unchangedWrite is what a write of a document's whole text that changed nothing kept for the
-// version it stores (Ledger.wroteUnchanged): the markdown the live tree it read renders as, and
-// the render stamp of that tree (unchangedStampOf).
-type unchangedWrite struct {
-	markdown string
-	stamp    RenderStamp
-}
-
-// wroteUnchanged records that this transaction's write of artifactID's whole text changed nothing
-// (ReplaceText): the live tree it read renders as markdown, and stamp is that tree's
-// (unchangedStampOf), which RenderStampOf answers for a version storing markdown.
-func (l *Ledger) wroteUnchanged(artifactID, markdown string, stamp RenderStamp) {
-	if l == nil {
-		return
-	}
-	if l.unchanged == nil {
-		l.unchanged = make(map[string]unchangedWrite)
-	}
-	l.unchanged[artifactID] = unchangedWrite{markdown: markdown, stamp: stamp}
 }
 
 // ReadBackOf is markdown's tree, read back by this transaction's own write of artifactID while it

@@ -138,11 +138,8 @@ var itemRowWriters = map[string]map[string]string{
 			"the row is read (refs.LockItemOwner)",
 	},
 	"internal/dispatch/docs/anchor_refresh.go": {
-		"writeChangedAnchors": "the document's owner lock, which the version write that refreshes " +
-			"the anchors holds (lockArtifactOwner, writeVersionTx), or which the comment delete " +
-			"that rewrites the anchors its reject took text from takes before it reads the comment " +
-			"(RewriteTakenAnchors; api's lockedCommentForCorrection, through lockOwnerOfComment): " +
-			"every comment and ask anchored on the document shares that owner",
+		"refreshAnchors": "the document's owner lock, which the version write that calls it " +
+			"holds (lockArtifactOwner, writeVersionTx)",
 	},
 	"internal/dispatch/docs/approval_ask.go": {
 		"rewriteApprovalAsk": "the document's owner lock, held by the version write that moves " +
@@ -306,15 +303,15 @@ func TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus(t *testing.T) {
 			if located.function == "" {
 				return
 			}
-			file, _, listed := censusEntryIn(itemRowWriters, path, located.function)
-			if !listed {
+			file, function := censusEntry(path, located.function)
+			if file == "" {
 				unlisted = append(unlisted, fmt.Sprintf("%s %s: %s", path, located.function, located.statement))
 				return
 			}
 			if answered[file] == nil {
 				answered[file] = map[string]bool{}
 			}
-			answered[file][located.function] = true
+			answered[file][function] = true
 		}
 		for _, located := range sqlStatementsByFunction(source.file, constants) {
 			if writesAnItemRow(located.statement) {
@@ -370,7 +367,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
 	"internal/dispatch/api/comment_actions.go": {"recordOrphanedCommentAnchor": itemRowCallersTransaction},
 	"internal/dispatch/api/post_history.go":    {"queueDeletedPostSettlement": itemRowCallersTransaction},
-	"internal/dispatch/docs/anchor_refresh.go": {"writeChangedAnchors": itemRowCallersTransaction},
+	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_carry.go": {"answerApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/ask_blocks.go": {
@@ -489,21 +486,20 @@ func writesAnItemRow(statement string) bool {
 	return itemRowWrite.MatchString(statement) || formattedTableWrite.MatchString(statement)
 }
 
-// censusEntryIn is the entry of census that covers function, declared in the file at path, with
-// the file key that found it; false when no entry does. A census (itemRowWriters,
-// versionRowWriters) is keyed by the path within the module, so a file is matched by its suffix,
-// as the lock-level guard's allowlist matches one (ownerRowLockSite).
-func censusEntryIn[E any](census map[string]map[string]E, path, function string) (string, E, bool) {
-	for file, functions := range census {
+// censusEntry is the entry of itemRowWriters that covers function, declared in the file at path,
+// as the file and function keys that found it; the file is empty when no entry does. The census
+// is keyed by the path within the module, so a file is matched by its suffix, as the lock-level
+// guard's allowlist matches one (ownerRowLockSite).
+func censusEntry(path, function string) (string, string) {
+	for file, functions := range itemRowWriters {
 		if !strings.HasSuffix(path, "/"+file) {
 			continue
 		}
-		if entry, listed := functions[function]; listed {
-			return file, entry, true
+		if _, listed := functions[function]; listed {
+			return file, function
 		}
 	}
-	var none E
-	return "", none, false
+	return "", ""
 }
 
 // unspelledTableWrites is every write of this file whose table a runtime value fills: a `+` chain

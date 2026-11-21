@@ -59,14 +59,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 		r.bands[band]++
 		r.startDocument()
 		markdown := r.plan.documentMarkdown(index, number, r.random, bytes)
-		// A version stores the tree its markdown was rendered from when that tree holds an insert
-		// suggestion's mark (docs.InsertTree), as every server write of a version does. Only the
-		// latest version is rendered from a tree here; an earlier one is the generated markdown as
-		// it stands, which holds no `<span data-proof="suggestion">` for a parse to read as a mark,
-		// so no tree of it holds one and it stores null.
-		var insertTree []byte
 		if number == document.Versions {
-			rendered, offsets, tableRow, tree, err := renderVersion(markdown)
+			rendered, offsets, tableRow, err := renderVersion(markdown)
 			if err != nil {
 				return err
 			}
@@ -77,18 +71,15 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 			r.tableRow = tableRow
 			latest, blocks = rendered, offsets
 			markdown = rendered
-			if insertTree, err = docs.InsertTree(tree); err != nil {
-				return fmt.Errorf("the latest version's insert tree: %w", err)
-			}
 		}
 		rows = append(rows, []any{
 			uuidFor("artifact_version", index*versionsPerManyVersionDocument+number),
 			document.ID, number, markdown, "[]", number%7 == 0,
-			created.Add(time.Duration(number-1) * versionStep), insertTree,
+			created.Add(time.Duration(number-1) * versionStep),
 		})
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"artifact_versions"},
-		[]string{"id", "artifact_id", "number", "markdown", "authors", "named", "created_at", "insert_tree"},
+		[]string{"id", "artifact_id", "number", "markdown", "authors", "named", "created_at"},
 		pgx.CopyFromRows(rows)); err != nil {
 		return fmt.Errorf("version rows: %w", err)
 	}
@@ -159,8 +150,7 @@ const versionStep = 36 * time.Hour
 
 // renderVersion parses the generated markdown and renders it back with its blocks' offsets, the
 // pair a version write stores and indexes together (docs' indexDocument). It also answers the
-// block id of the first table's first body row, which is what an anchor on a table row names, and
-// the tree it rendered, which the version's insert tree is read from (docs.InsertTree).
+// block id of the first table's first body row, which is what an anchor on a table row names.
 //
 // Only a block the renderer writes through its block path carries an offset, so a table is one
 // block and its rows and its cells are none, although pmdoc stamps an id on each of them
@@ -169,17 +159,17 @@ const versionStep = 36 * time.Hour
 //
 // It refuses a render whose shape is not the one the seed lays out, so a change in pmdoc that
 // moved a block shows up here rather than as a wrong anchor in the data set.
-func renderVersion(markdown string) (string, []model.ArtifactBlock, string, *pmdoc.Node, error) {
+func renderVersion(markdown string) (string, []model.ArtifactBlock, string, error) {
 	tree, err := pmdoc.Parse(markdown)
 	if err != nil {
-		return "", nil, "", nil, fmt.Errorf("parse the generated markdown: %w", err)
+		return "", nil, "", fmt.Errorf("parse the generated markdown: %w", err)
 	}
 	rendered, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
 	if err != nil {
-		return "", nil, "", nil, fmt.Errorf("render the generated markdown: %w", err)
+		return "", nil, "", fmt.Errorf("render the generated markdown: %w", err)
 	}
 	if len(offsets) != blocksPerLatestVersion {
-		return "", nil, "", nil, fmt.Errorf("the latest version rendered %d blocks, not the %d the seed lays out",
+		return "", nil, "", fmt.Errorf("the latest version rendered %d blocks, not the %d the seed lays out",
 			len(offsets), blocksPerLatestVersion)
 	}
 	blocks := make([]model.ArtifactBlock, len(offsets))
@@ -195,17 +185,17 @@ func renderVersion(markdown string) (string, []model.ArtifactBlock, string, *pmd
 		}
 	}
 	if blocks[1].ID != firstParagraphBlock || blocks[1].Type != "paragraph" || tables != tablesPerVersion {
-		return "", nil, "", nil, fmt.Errorf("the latest version's blocks are not laid out as the seed's mentions expect: block 2 is %s of type %s, and it holds %d tables",
+		return "", nil, "", fmt.Errorf("the latest version's blocks are not laid out as the seed's mentions expect: block 2 is %s of type %s, and it holds %d tables",
 			blocks[1].ID, blocks[1].Type, tables)
 	}
 	rows, err := pmdoc.TableRows(tree)
 	if err != nil {
-		return "", nil, "", nil, fmt.Errorf("read the table rows of the generated markdown: %w", err)
+		return "", nil, "", fmt.Errorf("read the table rows of the generated markdown: %w", err)
 	}
 	if len(rows[firstTable]) < 2 {
-		return "", nil, "", nil, fmt.Errorf("the first table of the latest version has no body row")
+		return "", nil, "", fmt.Errorf("the first table of the latest version has no body row")
 	}
-	return rendered, blocks, rows[firstTable][1].ID, tree, nil
+	return rendered, blocks, rows[firstTable][1].ID, nil
 }
 
 // versionBytes is how much markdown version number of document holds, and the band the report

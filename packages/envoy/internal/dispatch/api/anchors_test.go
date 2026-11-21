@@ -203,7 +203,7 @@ func browserDocumentService(t *testing.T) (*docs.Service, http.Handler, *store.S
 }
 
 // browserDocumentServer is browserDocumentService, answering also the server it registered, for a
-// test or a benchmark that sets one of the fields only test code sets (server.deleteLeavesSettlement).
+// benchmark that sets one of the fields only test code sets (server.deleteLeavesSettlement).
 func browserDocumentServer(t testing.TB) (*docs.Service, http.Handler, *store.Store, *server) {
 	t.Helper()
 	var documentService *docs.Service

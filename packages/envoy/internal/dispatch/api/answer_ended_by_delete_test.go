@@ -261,8 +261,7 @@ func TestAKeyedRepeatOfAnAnswerADeleteEndedGivesNoPartOfTheDeletedText(t *testin
 // A delete's deleted_at is when its transaction began (clearDeletedPostBody), before it waited
 // for the owner's lock, so a keyed write that claims its key after that, takes the lock first and
 // reads the post before the delete commits keeps the body under a key newer than the delete. Each
-// row stands for that race, one row for each of answerEndedQuery's first three arms (the fourth's
-// is TestAKeptRelatedCheckClaimedAfterTheInsertsDeleteBeganIsNotReplayed): the write is sent under a
+// row stands for that race, one row for each arm of answerEndedQuery: the write is sent under a
 // key and answers the deleted text, the post is deleted through its route, its deleted_at is moved
 // an hour back, before the key was claimed, and the same key is sent again. The repeat is a
 // replay, under the first answer's status, answered ANSWER_NOT_KEPT, with no part of the deleted

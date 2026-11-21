@@ -5,13 +5,12 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/going"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // goingItemTextQuery reads one page of hits' texts in one statement, whatever kinds the page
 // holds: the hits arrive as two parallel text[] parameters through unnest, so the statement costs
-// four parameters and one round trip however many kinds and ids a page names, where a statement
+// three parameters and one round trip however many kinds and ids a page names, where a statement
 // per hit would cost one round trip each. A kind no arm names, or an id no row holds, answers
 // null and is dropped by the final where, so the read refuses nothing.
 //
@@ -36,24 +35,11 @@ import (
 // for a hit that shows a paragraph of it: left counts characters in a UTF-8 database, which is the
 // cut a page of hits needs, and is how this repository cuts text it is about to show (search.go,
 // migrations 0087 and 0100).
-//
-// Beside a document's text, and an issue's, which holds its primary document's, the statement reads
-// the comments whose words that text holds as a pending insert suggestion's: each comment whose
-// anchor names a mark that the insert tree of the version read holds as an insert
-// (artifact_versions.insert_tree, found by docs.InsertMarkIDsPath, the rule the version's mask
-// finds an insert by). The ids of those marks are read once a hit, by a sub-select that reads the
-// version alone, so Postgres runs it once for all the document's comments and not once for each.
-// The version is the one the text arm read - the latest, by the same order, of the document or of
-// the issue's primary document as issue_embedding_spec reads it - in the same statement, which
-// reads one snapshot, so no version written between two reads can part the comments from the
-// text. The comments of a version whose tree holds no insert are not read at all. A pending
-// insert's words are its comment's own (R3 of dispatch://INFRA-1523, docs.MaskedVersionText), so
-// a run given that text was given the comment's (recordGoingPosts).
 var goingItemTextQuery = `with wanted as (
   select w.kind, w.id, ` + store.CastableUUID("w.id") + ` as uuid
     from unnest($1::text[], $2::text[]) as w(kind, id)
 )
-select w.kind, w.id, left(txt.text, $3::int), pending.inserts
+select w.kind, w.id, left(txt.text, $3::int)
   from wanted w
   left join lateral (
     select case w.kind
@@ -64,53 +50,34 @@ select w.kind, w.id, left(txt.text, $3::int), pending.inserts
       when 'message' then (select m.body from messages m where m.id = w.uuid)
     end as text
   ) txt on true
-  left join lateral (
-    select v.artifact_id, v.insert_tree
-      from artifacts a join artifact_versions v on v.artifact_id = a.id
-     where (w.kind = 'document' and a.id = w.uuid) or (w.kind = 'issue' and a.issue_key = w.id and a.is_primary)
-     order by v.number desc
-     limit 1
-  ) latest on true
-  left join lateral (
-    select array_agg(c.id::text) as inserts
-      from comments c
-     where latest.insert_tree is not null
-       and (c.anchor->>'artifact_id')::uuid = latest.artifact_id
-       and to_jsonb(c.anchor->>'mark_id') = any(array(select jsonb_path_query(latest.insert_tree, $4::jsonpath)))
-  ) pending on true
  where txt.text is not null`
 
 // goingItemText answers each hit's own stored text, cut to runes characters, keyed as
-// going.Hit.Key keys it, and the comments whose words those texts hold as a pending insert
-// suggestion's (goingItemTextQuery), a comment two hits hold being listed twice. The statement
-// makes the cut, so a hit's whole stored text never crosses the wire; left counts characters in a
-// UTF-8 database, which is the cut text.HeadRunes makes of a whole value in Go. A hit the database
-// holds nothing for is absent from the answer, and so is one whose text is only white space, with
-// the comments its text holds. The guard reads the cut text, so one hit more is dropped than
-// cutting after the read dropped: a text whose first runes characters are white space and whose
-// content comes later was kept, with a body of white space, and is now absent, which is a body
-// that showed a reader nothing either way. A comment whose words stand past the cut is answered
-// all the same: which words a text holds is read of its whole version, not of the cut.
-func goingItemText(ctx context.Context, pool *store.Pool, hits []going.Hit, runes int) (map[string]string, []string, error) {
+// going.Hit.Key keys it. The statement makes that cut (goingItemTextQuery), so a hit's whole
+// stored text never crosses the wire; left counts characters in a UTF-8 database, which is the
+// cut text.HeadRunes makes of a whole value in Go. A hit the database holds nothing for is absent
+// from the answer, and so is one whose text is only white space. The guard reads the cut text, so
+// one hit more is dropped than cutting after the read dropped: a text whose first runes characters
+// are white space and whose content comes later was kept, with a body of white space, and is now
+// absent, which is a body that showed a reader nothing either way.
+func goingItemText(ctx context.Context, pool *store.Pool, hits []going.Hit, runes int) (map[string]string, error) {
 	texts := map[string]string{}
 	if len(hits) == 0 {
-		return texts, nil, nil
+		return texts, nil
 	}
 	kinds, ids := make([]string, len(hits)), make([]string, len(hits))
 	for position, hit := range hits {
 		kinds[position], ids[position] = hit.Kind, hit.ID
 	}
-	rows, err := pool.Query(ctx, goingItemTextQuery, kinds, ids, runes, docs.InsertMarkIDsPath)
+	rows, err := pool.Query(ctx, goingItemTextQuery, kinds, ids, runes)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer rows.Close()
-	var inserts []string
 	for rows.Next() {
 		var kind, id, value string
-		var held []string
-		if err := rows.Scan(&kind, &id, &value, &held); err != nil {
-			return nil, nil, err
+		if err := rows.Scan(&kind, &id, &value); err != nil {
+			return nil, err
 		}
 		// White space matches nothing by meaning, which is why the coverage pass leaves such an
 		// item out of search at all (embedqueue's nothingToEmbed); an answer has nothing to show
@@ -119,10 +86,9 @@ func goingItemText(ctx context.Context, pool *store.Pool, hits []going.Hit, rune
 			continue
 		}
 		texts[going.Hit{Kind: kind, ID: id}.Key()] = value
-		inserts = append(inserts, held...)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return texts, inserts, nil
+	return texts, nil
 }

@@ -19,19 +19,13 @@ import (
 // insert itself (RenderStampHead, RenderStampValues), so it is the head that insert's own appends
 // left.
 //
-// Token and Renderer are nil together: for a write holding no tree of the markdown it stores, for
-// an upload whose replacement changed nothing (unchangedStampOf), and for a tree holding a value
-// no token encodes. The row then carries no token and no renderer version, and every read of it
-// renders the document, as a read of a version written before the stamp existed does.
-//
-// InsertTree is that same tree as pmdoc's JSON when it holds an insert suggestion's mark, and nil
-// otherwise (InsertTree): artifact_versions.insert_tree, which every read of the version's text
-// masks it by (MaskedVersionText). It is written in the insert that stores the markdown, so no
-// version holding a pending insert's words is ever stored without the marks that name them.
+// Both are nil together: for a write holding no tree of the markdown it stores - an upload whose
+// replacement changed nothing writes no tree - and for a tree holding a value no token encodes.
+// The row then carries no token and no renderer version, and every read of it renders the
+// document, as a read of a version written before the stamp existed does.
 type RenderStamp struct {
-	Token      *string
-	Renderer   *int
-	InsertTree []byte
+	Token    *string
+	Renderer *int
 }
 
 // RenderStampHead is the `with` clause a version write opens its insert with: the head of the
@@ -55,54 +49,21 @@ const RenderStampValues = `(select version from head),
 		(select u.xmin::text from doc_updates u
 			where u.artifact_id = $1 and u.version = (select version from head))`
 
-// renderStampOf is the stamp a version write of tree stores: the tree's document token, this
-// build's renderer version, and the tree itself where it holds an insert suggestion's mark
-// (InsertTree). A nil tree is the empty stamp; one holding a value no token encodes (nodeToken)
-// stores no token and no renderer version, and reads as an unstamped version does.
+// renderStampOf is the stamp a version write of tree stores: the tree's document token and this
+// build's renderer version. A nil tree, or one holding a value no token encodes (nodeToken), is
+// the empty stamp, which stores neither and reads as an unstamped version does.
 func renderStampOf(artifactID string, tree *pmdoc.Node) RenderStamp {
 	if tree == nil {
 		return RenderStamp{}
 	}
-	var stamp RenderStamp
-	if token, err := nodeToken(tree); err != nil {
+	token, err := nodeToken(tree)
+	if err != nil {
 		slog.Warn("dispatch: a document version stored no render stamp: its tree has no document token",
 			"artifact", artifactID, "error", err)
-	} else {
-		renderer := pmdoc.RendererVersion
-		stamp.Token, stamp.Renderer = &token, &renderer
+		return RenderStamp{}
 	}
-	stamp.InsertTree = insertTreeOf(artifactID, tree)
-	return stamp
-}
-
-// insertTreeOf is tree's insert tree (InsertTree), the value a version write of tree stores in
-// artifact_versions.insert_tree.
-func insertTreeOf(artifactID string, tree *pmdoc.Node) []byte {
-	insertTree, err := InsertTree(tree)
-	if err != nil {
-		// The tree rendered, so its JSON fails only on a value encoding/json refuses, as the
-		// token's does. The version is stored all the same, since refusing it would refuse
-		// every write of the document; no read can mask its pending inserts' words.
-		slog.Warn("dispatch: a document version holding an insert suggestion stored no insert tree",
-			"artifact", artifactID, "error", err)
-	}
-	return insertTree
-}
-
-// unchangedStampOf is the render stamp of a version storing the markdown tree renders as, where
-// tree is the live tree a write that changed nothing read: an upload of the text the document
-// already holds (ReplaceText). That write records no operation, so this transaction holds no tree
-// it wrote (writtenRendering), and its version's markdown is tree's rendering all the same, words
-// of a pending insert included, so the version stores tree's insert tree (InsertTree), by which
-// every read of it masks them (MaskedVersionText).
-//
-// It stores no token and no renderer version. The write appended nothing, so it stored none of the
-// room's updates its read holds ahead of the store (Ledger.flushThrough), and the head the insert
-// reads (RenderStampValues) need not be the state tree is of: a token beside that head would vouch
-// to a text read (storedText) for a state the store may never hold, should the room fail before it
-// stores them. The insert tree is the version's own markdown's, whatever the head.
-func unchangedStampOf(artifactID string, tree *pmdoc.Node) RenderStamp {
-	return RenderStamp{InsertTree: insertTreeOf(artifactID, tree)}
+	renderer := pmdoc.RendererVersion
+	return RenderStamp{Token: &token, Renderer: &renderer}
 }
 
 // RenderStampOf is the render stamp of a version row storing markdown, for a caller that writes
@@ -110,15 +71,10 @@ func unchangedStampOf(artifactID string, tree *pmdoc.Node) RenderStamp {
 // spec (api/artifacts.go, api/issue_create.go). It stamps the tree this transaction's write of
 // artifactID left, and only where that tree is what markdown was rendered from, as
 // IndexDocumentReferences shares the write's rendering only where it is the version's markdown.
-// An upload that changed nothing left no tree, and takes the stamp its write kept of the live tree
-// it found rendering as markdown (unchangedStampOf, Ledger.wroteUnchanged). Any other markdown
-// takes the empty stamp.
+// Any other markdown takes the empty stamp.
 func (l *Ledger) RenderStampOf(artifactID, markdown string) RenderStamp {
 	rendered := l.writtenRendering(artifactID)
 	if rendered.tree == nil || rendered.markdown != markdown {
-		if kept, held := l.unchanged[artifactID]; held && kept.markdown == markdown {
-			return kept.stamp
-		}
 		return RenderStamp{}
 	}
 	return renderStampOf(artifactID, rendered.tree)

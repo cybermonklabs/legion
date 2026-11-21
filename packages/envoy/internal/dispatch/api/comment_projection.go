@@ -236,14 +236,13 @@ func (s *server) registerCommentAnchor(ledger *docs.Ledger, comment model.Commen
 	ledger.RegisterPendingAnchor(row)
 }
 
-// commentAnchorRefreshEvent builds comment's comment.anchor_refreshed event for a write that moves
-// its anchor (docs.PendingAnchor.Event) - a refresh, or the rewrite a delete makes of the anchors
-// on a deleted insert's words (docs.RewriteTakenAnchors): the row as the route's write leaves it,
-// with the quote and orphaned flag that write gives it, as the refresh reads a stored row back.
-// What it reads - the anchor document's name and key, and a stored row's mention and delivery
-// rows - it reads here, in the read phase, once the write has found the anchor moved; a new
-// comment's mention rows are inserted after its projection, so the refresh read none. The builder
-// only assembles the event.
+// commentAnchorRefreshEvent builds comment's comment.anchor_refreshed event for a refresh that
+// moves its anchor (docs.PendingAnchor.Event): the row as the route's write leaves it, with the
+// quote and orphaned flag the refresh writes, as the refresh reads a stored row back. What it
+// reads - the anchor document's name and key, and a stored row's mention and delivery rows - it
+// reads here, in the read phase, once the refresh has found the anchor moved; a new comment's
+// mention rows are inserted after its projection, so the refresh read none. The builder only
+// assembles the event.
 func (s *server) commentAnchorRefreshEvent(ctx context.Context, tx pgx.Tx, comment model.Comment, actor model.Actor, stored bool) (func(model.Anchor) (model.Event, error), error) {
 	row := comment
 	row.Mentions, row.Deliveries = []model.Mention{}, []model.CommentDelivery{}

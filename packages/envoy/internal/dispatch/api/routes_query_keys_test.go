@@ -290,13 +290,29 @@ func queryValueNames(file *ast.File) map[string]bool {
 func stringSlices(file *ast.File) (byName map[string][]string, rangedOver map[string][]string) {
 	byName = map[string][]string{}
 	rangedOver = map[string][]string{}
+	elementsOf := func(literal *ast.CompositeLit) []string {
+		var elements []string
+		for _, element := range literal.Elts {
+			basic, ok := element.(*ast.BasicLit)
+			if !ok || basic.Kind != token.STRING {
+				return nil
+			}
+			text, err := strconv.Unquote(basic.Value)
+			if err != nil {
+				return nil
+			}
+			elements = append(elements, text)
+		}
+		return elements
+	}
 	ast.Inspect(file, func(node ast.Node) bool {
 		if spec, ok := node.(*ast.ValueSpec); ok {
 			for index, value := range spec.Values {
-				if index >= len(spec.Names) {
+				literal, ok := value.(*ast.CompositeLit)
+				if !ok || index >= len(spec.Names) {
 					continue
 				}
-				if elements := stringLiterals(value); len(elements) > 0 {
+				if elements := elementsOf(literal); len(elements) > 0 {
 					byName[spec.Names[index].Name] = elements
 				}
 			}
@@ -316,7 +332,7 @@ func stringSlices(file *ast.File) (byName map[string][]string, rangedOver map[st
 		case *ast.Ident:
 			rangedOver[variable.Name] = append(rangedOver[variable.Name], over.Name)
 		case *ast.CompositeLit:
-			if elements := stringLiterals(over); len(elements) > 0 {
+			if elements := elementsOf(over); len(elements) > 0 {
 				inline := "\x00inline " + variable.Name
 				byName[inline] = elements
 				rangedOver[variable.Name] = append(rangedOver[variable.Name], inline)

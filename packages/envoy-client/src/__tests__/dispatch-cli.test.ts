@@ -2280,7 +2280,7 @@ describe("the dispatch CLI's subscription note", () => {
     expect(created.code).toBe(0);
     expect(created.stdout.trim().split("\n")).toEqual([
       expect.stringMatching(
-        /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/issues was made, but Dispatch gives no copy of its answer, which was too large to keep or holds a comment or a message that was deleted, or a document version name a delete replaced, or a related-item hit for a document in which a comment's insert suggestion, deleted since, was made at any time \(ANSWER_NOT_KEPT\), so this command cannot print what it made: read it back with `dispatch read`, or with the matching list for something it created\.$/
+        /^POST http:\/\/127\.0\.0\.1:\d+\/api\/v1\/issues was made, but Dispatch gives no copy of its answer, which was too large to keep or holds a comment or a message that was deleted, or a document version name a delete replaced \(ANSWER_NOT_KEPT\), so this command cannot print what it made: read it back with `dispatch read`, or with the matching list for something it created\.$/
       ),
     ]);
 

@@ -69,10 +69,7 @@ func TestEveryDocumentWriteRefusesAnUnjoinedContext(t *testing.T) {
 			return service.ProjectMark(unjoined, artifactID, "c1", MarkRecord{Kind: "comment", By: "user:alice", Text: "note"}, alice)
 		}},
 		{"AcceptSuggestion", func() error { return service.AcceptSuggestion(unjoined, artifactID, "s1", "red", alice) }},
-		{"RejectSuggestion", func() error {
-			_, err := service.RejectSuggestion(unjoined, artifactID, "s1", alice)
-			return err
-		}},
+		{"RejectSuggestion", func() error { return service.RejectSuggestion(unjoined, artifactID, "s1", alice) }},
 		{"SetBlockAttributes", func() error {
 			return service.SetBlockAttributes(unjoined, artifactID, "ask-1", map[string]any{"state": "answered", "answer": "Yes."}, alice)
 		}},

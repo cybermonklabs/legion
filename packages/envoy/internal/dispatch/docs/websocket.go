@@ -77,13 +77,12 @@ type commentMarksContextKey struct{}
 // comment's own mark where an edit projects it.
 //
 // For the delete of a comment it is also the reject of the comment's pending suggestion
-// (RejectDeletedCommentSuggestion), the read of the document by which the anchors that reject took
-// text from are written again (RewriteTakenAnchors), and the version that settles the document
-// without an insert's words (SettleVersion). A closed issue still takes that delete, so its
-// document takes that reject, which carries the suggestion's text out of it with the comment's
-// body, and that version, which holds the document without it. Every other way a suggestion's mark
-// is placed or settled, and a content edit, a named version or a rebuild made under this context,
-// is still refused on a closed issue.
+// (RejectDeletedCommentSuggestion) and the version that settles the document without an insert's
+// words (SettleVersion). A closed issue still takes that delete, so its document takes that
+// reject, which carries the suggestion's text out of it with the comment's body, and that version,
+// which holds the document without it. Every other way a suggestion's mark is placed or settled,
+// and a content edit, a named version or a rebuild made under this context, is still refused on a
+// closed issue.
 func WithCommentMarks(ctx context.Context) context.Context {
 	return context.WithValue(ctx, commentMarksContextKey{}, true)
 }
