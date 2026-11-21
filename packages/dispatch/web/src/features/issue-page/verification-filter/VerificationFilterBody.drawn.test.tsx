@@ -1,5 +1,5 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
   type RenderResult,
@@ -1857,6 +1857,62 @@ test("a refused read asked again reads as failed, with its Retry running, while 
       ).toEqual({ state: "answered" })
     );
   } finally {
+    hook.unmount();
+    coverageRead.mockRestore();
+    resultsRead.mockRestore();
+    client.clear();
+  }
+});
+
+// TanStack Query pauses a run while the browser is offline, the read pending and not fetching, so
+// a read refused before it first answered and asked again offline would read as neither in error
+// nor running, and a rule that read `isFetching` or `isError` would take its line and its Retry
+// off the page until the browser was back. It still reads as failed while its run waits, asks
+// nothing while the browser is offline, and reads as answered once the browser is back and the
+// read answers.
+test("a refused read asked again while the browser is offline still reads as failed, and as answered once the browser is back and the read answers", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const coverage: IssueCoverage = {
+    gaps: [],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: [],
+    spec_artifact_id: "",
+  };
+  const results: IssueCheckResults = { checks: [], issue: ISSUE_KEY, verification_artifact_id: "" };
+  const coverageRead = spyOn(api, "getIssueCoverage").mockResolvedValue(coverage);
+  coverageRead.mockRejectedValueOnce(new Error("Refused."));
+  const resultsRead = spyOn(api, "getIssueResults").mockResolvedValue(results);
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const hook = renderHook(() => useVerificationReads(ISSUE_KEY), { wrapper });
+  try {
+    await waitFor(() => expect(hook.result.current.reads.state).toBe("failed"));
+    const refused = hook.result.current.reads;
+    act(() => onlineManager.setOnline(false));
+    act(() => (refused.state === "failed" ? refused.failed.coverage?.retry() : undefined));
+    await act(() => Bun.sleep(20));
+    expect(
+      hook.result.current.reads,
+      "the coverage read asked again while the browser is offline does not still read as failed"
+    ).toEqual({
+      failed: { coverage: { retry: expect.any(Function), retrying: false } },
+      state: "failed",
+    });
+    expect(
+      coverageRead,
+      "the coverage read was asked again while the browser is offline"
+    ).toHaveBeenCalledTimes(1);
+    act(() => onlineManager.setOnline(true));
+    await waitFor(() =>
+      expect(
+        hook.result.current.reads,
+        "the coverage read that answered once the browser was back does not read as answered"
+      ).toEqual({ state: "answered" })
+    );
+  } finally {
+    onlineManager.setOnline(true);
     hook.unmount();
     coverageRead.mockRestore();
     resultsRead.mockRestore();

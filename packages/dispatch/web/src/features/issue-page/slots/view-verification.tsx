@@ -11,7 +11,7 @@ import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useIssueTree } from "../useIssueTree";
+import { standsFailed, useIssueTree } from "../useIssueTree";
 import {
   type FailedRead,
   queryTyped,
@@ -114,12 +114,13 @@ export function useVerificationReads(issueKey: string): {
   // the query cache keeps that data when the stage mounts this slot again as the reader comes
   // back to the view. A view drawn by `isSuccess` would empty itself on one failed refetch, and
   // draw nothing on its return for as long as the refetch kept failing, and take its tab stop
-  // and the reader's presses with it. A read has failed where it holds no data and was refused,
-  // while it is in error and while it runs again after that (`failedWithNothing`): it was
-  // refused before it first answered. The view draws its rows only once all three have answered,
-  // so it never says that an issue has no checks before they are in; where a read failed it says
-  // which, each with a Retry that asks that read alone again, rather than draw an empty view that
-  // gives the reader nothing to act on.
+  // and the reader's presses with it. A read has failed where it holds no data and a fetch of it
+  // was refused, whether it is in error, runs again, or waits to run again while the browser is
+  // offline (`standsFailed`, the page's one rule, which the outline uses for the same reads): it
+  // was refused before it first answered. The view draws its rows only once all three have
+  // answered, so it never says that an issue has no checks before they are in; where a read
+  // failed it says which, each with a Retry that asks that read alone again, rather than draw an
+  // empty view that gives the reader nothing to act on.
   const answered =
     coverage.data !== undefined &&
     results.data !== undefined &&
@@ -127,9 +128,9 @@ export function useVerificationReads(issueKey: string): {
   // Each read that failed with no answer held, by its name, with the press that asks that read
   // alone again and whether it runs again; the body says them in an order of its own.
   const failed: Partial<Record<VerificationRead, FailedRead>> = {};
-  if (failedWithNothing(coverage)) failed.coverage = failedRead(coverage);
-  if (failedWithNothing(results)) failed.results = failedRead(results);
-  if (documentId !== undefined && failedWithNothing(blocks)) failed.blocks = failedRead(blocks);
+  if (standsFailed(coverage)) failed.coverage = failedRead(coverage);
+  if (standsFailed(results)) failed.results = failedRead(results);
+  if (documentId !== undefined && standsFailed(blocks)) failed.blocks = failedRead(blocks);
   const reads: VerificationReads =
     Object.keys(failed).length > 0
       ? { failed, state: "failed" }
@@ -137,30 +138,6 @@ export function useVerificationReads(issueKey: string): {
         ? { state: "answered" }
         : { state: "waiting" };
   return { checks, reads };
-}
-
-/**
- * Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
- * had, which the view still draws from, so only a read that left nothing to draw says it failed,
- * as the Spec view reads its own.
- *
- * It says so while it runs again too, on a Retry or with no press (the window's focus, or an
- * event that names its key), until it answers. TanStack Query puts a read that holds no answer
- * back to `pending` as it runs again, so read by its error alone the line, and the Retry the
- * reader's focus is on, would leave the page for as long as the read runs and come back if it is
- * refused again; the line stays instead, and leaves only when the read answers. The read keeps
- * its count of refusals (`errorUpdateCount`) as it runs again, which tells it from a read on its
- * first load, out with nothing refused yet, which the view draws as waiting.
- */
-function failedWithNothing(read: {
-  readonly data: unknown;
-  readonly errorUpdateCount: number;
-  readonly isError: boolean;
-  readonly isFetching: boolean;
-}): boolean {
-  return (
-    read.data === undefined && (read.isError || (read.isFetching && read.errorUpdateCount > 0))
-  );
 }
 
 /** What the line of a read that failed is given: the press that asks that read alone again, and
