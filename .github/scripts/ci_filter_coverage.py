@@ -1714,10 +1714,29 @@ REPORT_STATUS = "${{ job.status }}"
 # check run is in its run's own check suite, where one POSTed with POST /repos/.../check-runs
 # joins the Actions App's first suite at that commit. ci-ok is the verdict over every other job,
 # pr-title runs check-pr-text.sh on a pull request and a merge group. No other job of ci.yaml may
-# carry one of these names, and neither of the two may be renamed by a `name:`, since a job posts
-# the check its display name gives and a skipped job posts a passing one.
+# carry one of these names, since a job posts the check its display name gives and a skipped job
+# posts a passing one.
+#
+# Each of the two carries the one `name:` dispatch_name gives it, and no other: its own name on
+# a pull request, a merge group and a dispatch on main, and `<name> (dispatch)` on a dispatch of
+# any other branch. Such a run tests the branch's own tree, not its merge with the base, and its
+# check runs land on the branch's head, which is a pull request's head: under the plain name
+# that commit carried a second ci-ok with another tree's verdict, and a skipped pr-title. Pull
+# request #3513 at a368687e carried both on 2026-11-21 from workflow_dispatch run 44860519340,
+# a ci-ok success beside its pull_request run's failure. GitHub's rollup of the pull request
+# read the pull_request run's alone, but a reader by name (the commit's check-runs list, or a
+# record keeping the higher check run id per name) takes the dispatched run's.
 REQUIRED_CHECKS = ("ci-ok", "pr-title")
 VERDICT_JOB = "ci-ok"
+DISPATCH_TERM = "github.event_name == 'workflow_dispatch' && github.ref_name != 'main'"
+
+
+def dispatch_name(job_id: str) -> str:
+    """The one `name:` a REQUIRED_CHECKS job carries: `<job id> (dispatch)` on a dispatch off
+    main, and the job id on every other run."""
+    return f"${{{{ {DISPATCH_TERM} && '{job_id} (dispatch)' || '{job_id}' }}}}"
+
+
 # ci.yaml's env entry naming the jobs outside ci-ok's accounting: the job that exists to stop a
 # doomed merge-group run, which runs only on merge_group, holds `actions: write`, runs no
 # dependency code, reports no result to ci-ok and is no job a verdict waits for, VERDICT_JOB,
@@ -1737,8 +1756,8 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
     with the report step, or a merge-group run that job's failure decides posts no ci-ok until
     the verdict job has waited for every other job, and a job that calls
     a workflow must hand that workflow `ci-ok-changes` for its job's report step. Each
-    REQUIRED_CHECKS name is a job of this file and no other job carries it, and VERDICT_JOB must
-    need every job of the file but itself and
+    REQUIRED_CHECKS name is a job of this file that carries the name dispatch_name gives it, no
+    other job carries it, and VERDICT_JOB must need every job of the file but itself and
     the exempt ones: a job outside its needs: ends after the verdict that says nothing about it.
     A job EXEMPT_LIST names is outside all of that: it is no job of
     CI_OK_SELECTED_BY, it needs no report step, and it must carry none, since ci-ok.sh fails a
@@ -1812,10 +1831,15 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
     for job_id, job in jobs.items():
         named = str((job or {}).get("name", job_id))
         if job_id in REQUIRED_CHECKS:
-            if named != job_id:
-                problems.append(error(WORKFLOW, f"job {job_id} carries `name: {named}`, so its check run "
-                                                f"is called {named} and {job_id}, a check main's ruleset requires, is reported by "
-                                                f"nothing; drop the name:"))
+            want_name = dispatch_name(job_id)
+            if named != want_name:
+                carried = "carries no `name:`" if named == job_id else f"carries `name: {named}`"
+                problems.append(error(WORKFLOW, f"job {job_id} {carried}, and {job_id} is a check main's "
+                                                f"ruleset requires: give it `name: {want_name}`, so that a "
+                                                f"workflow_dispatch run of a branch, which tests the branch's tree "
+                                                f"rather than its merge with the base, reports under a name of its "
+                                                f"own and never sits beside the pull request's {job_id} on the "
+                                                f"branch's head, while every other run reports {job_id}"))
             continue
         if named in REQUIRED_CHECKS:
             problems.append(error(WORKFLOW, f"job {job_id} is named {named}, a check main's ruleset "

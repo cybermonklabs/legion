@@ -1162,7 +1162,9 @@ ci-ok reports there, so the required checks pass on the merged tree before anyth
 that tree again, and .github/workflows/ci-caches.yaml fills the Go caches on that push instead.
 workflow_dispatch is the bypass check's (.github/workflows/main-bypass-check.yaml): it starts a
 run at main's tip when a commit reached main without a passing merge-group ci-ok, and `changes`
-selects every job there.
+selects every job there. A dispatch of any other branch is a full run started by hand (`gh
+workflow run ci.yaml --ref <branch>`), and it reports under names of its own
+(.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
 
 ## The commit main pointed at before the push the bypass check read
 
@@ -2072,7 +2074,10 @@ pr-title from this job, and a fork's head gets one too: a job's check run costs 
 scope, where a POST needs `checks: write`, which a fork's run's read-only GITHUB_TOKEN does
 not carry. A dispatched run carries
 neither a pull request nor a group and has no text to check, which is why the `if:` names the
-two events this job runs on rather than excluding the draft alone.
+two events this job runs on rather than excluding the draft alone. Skipped there, the job still
+posts a check run, and a skipped one is a pass, so on a dispatch of a branch it is named
+`pr-title (dispatch)`
+(.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
 
 ## What the pr-title job's scopes are for
 
@@ -2264,4 +2269,43 @@ run that failed and was re-run green would stay blocked by it. This step sets ev
 check run on the head but this job's own to what this job concluded, so one verdict stands
 at the end of every attempt (ci-ok-reconcile.sh says what it passes over and why a refusal
 only warns). `job.status` is this job's conclusion, and `always()` is what runs the step
-after the verdict, the "Judge every job of this run" step, failed.
+after the verdict, the "Judge every job of this run" step, failed. On a dispatch of a branch
+the step is skipped: that run's verdict is not the head's ci-ok, so it sets no ci-ok of the head
+either (the next section says why).
+
+## Why a dispatched run off main reports under names of its own
+
+A workflow_dispatch run of a branch other than main tests the branch's own tree, while a pull
+request's run tests the merge of the branch with its base. Both put their check runs on the
+same commit, the branch's head, which is the pull request's head, so under the plain names that
+commit carried two ci-ok check runs with two verdicts over two trees, and a pr-title that the
+dispatched run skips. Pull request #3513 at a368687e is the case, read on 2026-11-21: its
+pull_request run 44860489650, over the merge with main, failed in dispatch-browser / binaries,
+dispatch-ui and docs / build, and its ci-ok check run 136722779787 concluded failure at
+03:58:53Z; workflow_dispatch run 44860519340 of the branch passed, and its ci-ok check run
+136723497213 concluded success at 04:02:35Z; the same run posted pr-title check run
+136712596880, skipped. GitHub's own reading of the pull request did not take the dispatched
+run's: the commit's statusCheckRollup held the pull_request run's check runs alone, ci-ok
+failure among them, which is GitHub's documented rule (docs.github.com, "Troubleshooting
+required status checks", "Checks from some workflow jobs are not evaluated": the checks of a
+workflow_dispatch run's jobs do not appear in a pull request's checks and satisfy no required
+check). A reader that takes the commit's check runs by name did:
+`commits/<sha>/check-runs?check_name=ci-ok` lists both, the dispatched run's first, and a
+record that keeps one check run per name and lets the higher id replace the lower, as
+packages/envoy/internal/cistore's does (cistore.go's check-run update), would hold the
+dispatched run's success as the head's ci-ok, and its skipped pr-title as the head's pr-title.
+
+So on such a run the two jobs named for a required check are named `ci-ok (dispatch)` and
+`pr-title (dispatch)`, and the reconcile step, "Set every other ci-ok on this head to this job's
+conclusion", is skipped, since every ci-ok that step could set is the pull request's or the
+queue's. The dispatched run still reaches its verdict and shows it on the head under its own
+name, so a reader by name finds one ci-ok and one pr-title on a pull request's head, and they
+are the pull request's own. Only a pull_request run, a merge-group run and the bypass check's
+dispatch on main report ci-ok and pr-title: the first two are the runs the ruleset and the
+queue read, and the third posts its verdict on main's tip, which is no pull request's head and
+where a person reading that commit looks for it. The name is chosen by the event and the ref of
+the run alone, so no run has to read whether another run exists, and nothing races.
+check-ci-filters.sh holds both jobs to that one `name:` (ci_filter_coverage.py's
+dispatch_name). The term reads `github.ref_name`, because the rule in ci_workflow_rules.py that
+refuses a comparison of `github.ref` with a branch ref holds such a comparison to be dead in
+this file.

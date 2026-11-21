@@ -86,11 +86,15 @@
 #      other job of the run; a job CI_OK_EXEMPT names that does report to ci-ok, or that
 #      CI_OK_SELECTED_BY also maps, or
 #      that is no job of the file at all; a job named for a check main's ruleset requires (ci-ok
-#      and pr-title) that is not the job of that name, and either of those two jobs renamed by a
-#      `name:`, since a job posts its own check under its display name and a skipped one posts a
-#      pass; a pr-title job that is missing, since nothing else reports that check on a pull
-#      request or a merge group; a ci-ok job — the verdict, whose own check run is the other
-#      check that ruleset requires — that is missing, that CI_OK_EXEMPT does not name, or whose
+#      and pr-title) that is not the job of that name, and either of those two jobs carrying any
+#      `name:` but `${{ github.event_name == 'workflow_dispatch' && github.ref_name != 'main' &&
+#      '<job> (dispatch)' || '<job>' }}`, since a job posts its own check under its display name,
+#      a skipped one posts a pass, and a dispatch of a branch tests the branch's tree and lands
+#      its check runs on the branch's head, a pull request's head, beside the pull request's own,
+#      where a reader by name takes the newer; a pr-title job that is missing, since nothing else
+#      reports that check on a pull request or a merge group; a ci-ok job — the verdict, whose own
+#      check run is the other check that ruleset requires — that is missing, that CI_OK_EXEMPT
+#      does not name, or whose
 #      needs: is not every job of the file but itself and the exempt ones, since a job outside
 #      that list ends after a verdict that says nothing about it; and a job of the file that is
 #      in none of ci-ok's three classes, or in two of them: CI_OK_SELECTED_BY maps it to the
