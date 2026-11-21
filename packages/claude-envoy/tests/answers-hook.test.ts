@@ -76,10 +76,13 @@ interface Row {
 }
 
 /** The row whose body the code running now belongs to: a body that goes on after its row ended
- *  still finds its own row, not the one running then. */
-const rowContext = new AsyncLocalStorage<Row>()
+ *  still finds its own row, not the one running then. The afterEach's cleanup runs with none. */
+const rowContext = new AsyncLocalStorage<Row | undefined>()
 /** The row that started last, for its afterEach. */
 let lastRow: Row | undefined
+/** Until when (a `performance.now()` reading) a read that holds the file's event loop may run:
+ *  the end of the running row's timeout, or of its afterEach's. */
+let blockingReadsUntil = 0
 
 function currentRow(): Row {
   const current = rowContext.getStore()
@@ -110,6 +113,7 @@ function test(name: string, body: () => Promise<void>, timeout: number): void {
         steps: [],
       }
       lastRow = current
+      blockingReadsUntil = performance.now() + timeout
       const run = rowContext.run(current, body).catch((error: unknown) => {
         if (!current.ended) throw error
       })
@@ -127,6 +131,7 @@ function rowGoesOn(): void {
 }
 
 afterEach(async () => {
+  blockingReadsUntil = performance.now() + 60_000
   const current = lastRow
   lastRow = undefined
   if (current === undefined) return
@@ -136,7 +141,20 @@ afterEach(async () => {
   for (const hook of current.hooks) hook.process.kill("SIGKILL")
   await Promise.all(current.hooks.map((hook) => hook.settled))
   await current.settled
-  for (const step of current.steps.splice(0).reverse()) await step()
+  // Outside any row, so a cleanup step's waits go on whichever row's context reached here.
+  // Every step runs, a stand-in Dispatch's stop included, even when one before it failed (a `ps`
+  // that does not answer, say); the first failure is the afterEach's.
+  let failure: { readonly error: unknown } | undefined
+  await rowContext.run(undefined, async () => {
+    for (const step of current.steps.splice(0).reverse()) {
+      try {
+        await step()
+      } catch (error) {
+        failure ??= { error }
+      }
+    }
+  })
+  if (failure !== undefined) throw failure.error
 }, 60_000)
 
 type Route =
@@ -296,13 +314,18 @@ interface StartedProcess {
 /** Whether this host has /proc, which every read of a process here prefers. */
 const PROC = existsSync("/proc/self/stat")
 
-/** Process `pid`'s state and when it started, as the hook's `processStarted` reads the start:
+/** How long before the row's own timeout a `ps` that has not answered is given up on, so it fails
+ *  by name rather than by that timeout, which cannot fire while `spawnSync` holds the event loop. */
+const PS_NAMED_FAILURE_MS = 1_000
+
+/** Process `pid`'s state and when it started, read as `processStarted` reads the start:
  *  the 3rd and 22nd fields of `/proc/<pid>/stat` (each counted after the command in parentheses,
  *  which may itself hold spaces), or where there is no /proc, `ps -o stat=,lstart= -p <pid>` in
  *  the hook's fixed environment, the start prefixed `ps:`. Undefined once no process has that
- *  pid; a `ps` that does not answer fails the row rather than read as a process gone. One
- *  process's file, or `ps` for one pid, never a scan (docs/testing.md, "A test that looks for a
- *  process it started"). */
+ *  pid. One process's file, or `ps` for one pid, never a scan (docs/testing.md, "A test that looks
+ *  for a process it started"). procps `ps -p` reads every process (0.76 to 0.98 s unloaded on the
+ *  dev box, up to 8.2 s under load), so `ps` gets what is left of the row's time
+ *  (`blockingReadsUntil`), and one that does not answer in it fails the row by name. */
 function processState(pid: number): { state: string; started: string } | undefined {
   if (PROC) {
     let stat: string
@@ -317,13 +340,17 @@ function processState(pid: number): { state: string; started: string } | undefin
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
     return { state: fields[0] as string, started: fields[19] as string }
   }
+  const ms = Math.floor(blockingReadsUntil - performance.now()) - PS_NAMED_FAILURE_MS
+  if (ms <= 0) throw new Error(`no time was left in the row for ps to read process ${pid}`)
   const ps = spawnSync("ps", ["-o", "stat=,lstart=", "-p", String(pid)], {
     encoding: "utf8",
     env: { LC_ALL: "C", PATH: process.env["PATH"] ?? "/usr/bin:/bin", TZ: "UTC" },
-    timeout: 10_000,
+    timeout: ms,
   })
   if (ps.error !== undefined || ps.signal !== null) {
-    throw new Error(`ps did not answer for process ${pid}: ${ps.error?.message ?? ps.signal}`)
+    throw new Error(
+      `ps did not answer for process ${pid} within ${ms} ms, what was left of the row's time: ${ps.error?.message ?? ps.signal}`,
+    )
   }
   // `ps` prints nothing, and exits 1, for a pid no process has.
   const line = /^(\S+)\s+(.+)$/.exec(ps.stdout.trim())
@@ -357,16 +384,29 @@ async function processEnded(known: StartedProcess): Promise<void> {
   }
 }
 
+/** The start the test read for a refresher whose hook named it with none (no /proc in the hook),
+ *  by the hook's timing file: read once, as soon as the case first looks, and null when the
+ *  refresher had already ended by then. */
+const startsRead = new Map<string, string | null>()
+
 /** The refreshers the hooks of `owner` named in their timing files. A hook names its refresher as
  *  soon as it started it, so one ended before it exited still told; one with no file was ended
- *  before it started any. */
+ *  before it started any. One named with no start gets the start the test reads for it, and one
+ *  that had ended before that read is left out. */
 async function namedRefreshers(owner: Row = currentRow()): Promise<StartedProcess[]> {
   const named: StartedProcess[] = []
   for (const file of owner.timings) {
     const text = await textOf(file)
     if (text === undefined) continue
     const { refresher }: Pick<HookTiming, "refresher"> = JSON.parse(text)
-    if (refresher !== null) named.push(refresher)
+    if (refresher === null) continue
+    if (refresher.started !== null) {
+      named.push(refresher)
+      continue
+    }
+    if (!startsRead.has(file)) startsRead.set(file, processState(refresher.pid)?.started ?? null)
+    const started = startsRead.get(file) ?? null
+    if (started !== null) named.push({ pid: refresher.pid, started })
   }
   return named
 }
