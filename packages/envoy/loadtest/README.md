@@ -2898,10 +2898,13 @@ cluster's own token issuer is out of their reach. The copy has an issuer of its 
   (the listener's `ENVOY_DISPATCH_PRINCIPAL` and `ENVOY_OIDC_ACCOUNTS`), `aud`
   `envoy-listener-loadtest` (`ENVOY_OIDC_AUDIENCE`), living 168 h, longer than any run (the runner
   pod ends 12 h after `up` creates it). `state.json` keeps the issuer (`oidc_issuer`), the key's
-  public half (`oidc_key`) and the token (`secrets.account_token`).
+  public half (`oidc_key`) and the token (`secrets.account_token`). The mint runs once the lock is
+  taken, so `up` builds loadgen before it takes the lock and refuses, with nothing created, one
+  whose `oidc-mint -h` lists no `-sub <subject>=<file>` (a loadgen from before `oidc-mint`).
 - `manifests/oidc-issuer.yaml` serves the discovery document and the key set inside the
   namespace: a ConfigMap of the two documents, served by socat (the pprof sidecar's image) through
-  a short script, behind the Service `oidc-issuer`. `up` starts it before the listener.
+  a short script, behind the Service `oidc-issuer`. `up` starts it before the listener. A render
+  takes this namespace's exact issuer URL alone, so no other namespace's issuer is ever rendered.
 - `manifests/dispatch.yaml` mounts the token from the run's Secret as Dispatch's
   `ENVOY_ACCOUNT_TOKEN_FILE`, where production's Dispatch has the kubelet's projected token.
 - Once Dispatch is up, `up` checks the whole chain from Dispatch's container. On the token's file it

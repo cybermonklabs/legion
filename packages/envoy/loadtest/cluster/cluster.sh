@@ -18,17 +18,20 @@
 #       anchor; a build failure, naming the commits and the compiler's first error), and a
 #       --browsertype-commit that the git store does not hold, whose tree has no
 #       packages/envoy/loadtest/browsertype or whose built browsertype has no -protect or no
-#       -person flag (below), and a --pg-volume that is not a whole number of Gi
+#       -person flag (below), a loadgen that does not build or whose oidc-mint -h lists no
+#       -sub <subject>=<file> (Dispatch's identity at the copy's listener, below), and a
+#       --pg-volume that is not a whole number of Gi
 #       or is above the 240Gi the namespace's quota leaves beside NATS's three 20Gi claims.
 #       Refuses with exit 2 while the lock ConfigMap
 #       dispatch-loadtest-lock exists. Then takes the lock, mints the copy's own token issuer
 #       (Dispatch's identity at the copy's listener, below), installs the copy (Postgres 16 CPU /
 #       60Gi on a --pg-volume data volume, default 100Gi, Dispatch 16 / 32Gi, listener 500m /
 #       512Mi, the token issuer 50m / 64Mi, NATS 3 × 2 / 4Gi, runner 8 / 16Gi), checks that the
-#       listener admits Dispatch's token and takes a send's role mark from it, builds
-#       loadgen and (with --browsertype-commit) a static browsertype of that commit for browser
-#       typing (below), starts the heartbeat and the sampler, and prints each copy container's
-#       requests and limits and the size of the Postgres data volume.
+#       listener admits Dispatch's token and takes a send's role mark from it, copies the
+#       loadgen and (with --browsertype-commit) the static browsertype of that commit for browser
+#       typing (below) that it built before the lock into the runner, starts the heartbeat and
+#       the sampler, and prints each copy container's requests and limits and the size of the
+#       Postgres data volume.
 #   cluster.sh seed --namespace NS            loadgen seed, seed-refs and seed-finish, then the template
 #                                             database dispatch_seed.
 #   cluster.sh step --namespace NS NAME FACTOR [--duration 10m] [--reads-only] [--typing
@@ -173,6 +176,8 @@
 # ENVOY_ACCOUNT_TOKEN_FILE. Once the copy is up, up checks that the listener admits that token and,
 # where its build reads role marks, takes a send's role mark from it (check_dispatch_identity), and
 # stops naming the listener's answer when it does not: the replay's role-routed issues need it.
+# The mint runs once the lock is taken, so up checks before the lock that the loadgen it will run
+# answers oidc-mint -sub (loadgen_mints), and the issuer it renders is this namespace's exact one.
 #
 # The Postgres data volume (up --pg-volume, default 100Gi; db-size keeps the same claim): a
 # replay with browser typing on the reference seed filled a 20Gi volume, and Postgres crash-looped
@@ -458,7 +463,9 @@ kube_read() {
 }
 
 # valid KIND VALUE: VALUE has KIND's shape. Every value cluster.sh puts into a manifest, a URL or a
-# command passes one of these first.
+# command passes one of these first. An issuer is the copy's own alone, the one exact URL of the
+# namespace NS names (manifests/oidc-issuer.yaml): another namespace's would leave the copy's
+# listener verifying against keys outside its namespace.
 valid() {
   local re
   case $1 in
@@ -469,7 +476,7 @@ valid() {
     repo) re='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' ;;
     image) re='^[a-z0-9.-]+\.[a-z]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$' ;;
     hex) re='^[0-9a-f]{32,128}$' ;;
-    issuer) re='^http://oidc-issuer\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.svc:8080$' ;;
+    issuer) [[ ${NS:-} =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ && $2 == "http://oidc-issuer.$NS.svc:8080" ]]; return ;;
     b64url256) re='^[A-Za-z0-9_-]{43}$' ;;
     jwt) re='^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$' ;;
     cpu) re='^[1-9][0-9]?$' ;;
@@ -1660,6 +1667,17 @@ start_copy() {
 stop_copy() {
   scale_to dispatch 0
   scale_to listener 0
+}
+
+# loadgen_mints BIN: die, naming BIN, when its oidc-mint -h lists no -sub <subject>=<file>. up runs
+# it before the lock on the loadgen it will run: once the lock is taken up mints the copy's token
+# issuer with that loadgen (mint_identity), and one from before oidc-mint would stop up there, with
+# the lock taken and the namespace's objects to remove.
+loadgen_mints() {
+  local help
+  help=$("$1" oidc-mint -h 2>&1 || true)
+  [[ $help == *"-sub <subject>=<file>"* ]] ||
+    die "up: the loadgen up would run ($1) answers no 'oidc-mint -sub <subject>=<file>', which mints the copy's token issuer once the lock is taken; give a loadgen built from a tree that has loadgen oidc-mint"
 }
 
 # mint_identity: the copy's own token issuer and Dispatch's token of it (Dispatch's identity at the
@@ -3633,6 +3651,12 @@ up_run() {
     [[ $bt_help == *-person* ]] ||
       die "up: browsertype of commit $bt_commit has no -person flag: Dispatch admits only the identity service's person into a document room (sjawhar/legion#2541), so a driver that connects with the copy's agent token types nothing; give a commit of INFRA-707's driver at or after 67ac05a4, which takes -person and -identity-header"
   fi
+  # loadgen too, before the lock: once the lock is taken up mints the copy's token issuer with its
+  # oidc-mint (mint_identity), so a loadgen that does not build, or answers no oidc-mint -sub, is
+  # refused with nothing taken (loadgen_mints).
+  note "building loadgen (static), the run's"
+  (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$CHECKER_TMP/loadgen" ./loadtest) || die "up: go build of loadgen failed"
+  loadgen_mints "$CHECKER_TMP/loadgen"
 
   set_run "lt-$(date -u +%Y%m%dt%H%M%S)-$(random_hex 2)"
   kube_lock_take
@@ -3642,6 +3666,7 @@ up_run() {
   register_command
   mv -- "$CHECKER_TMP/envoy-dispatch" "$STORED_ORDER_BIN" || die "moving the stored-order checker into $STORED_ORDER_BIN failed"
   [ -z "$bt_commit" ] || mv -- "$CHECKER_TMP/browsertype" "$BROWSERTYPE_BIN" || die "moving browsertype into $BROWSERTYPE_BIN failed"
+  mv -- "$CHECKER_TMP/loadgen" "$LOADGEN" || die "moving loadgen into $LOADGEN failed"
   checker_tmp_remove
   # The copy's own token issuer, inside the namespace, since the namespace's pods reach nothing
   # outside it, the cluster's own issuer among the rest (mint_identity, manifests/oidc-issuer.yaml).
@@ -3667,8 +3692,6 @@ up_run() {
   chmod 600 "$STATE"
   start_daemon heartbeat
 
-  note "building loadgen (static) into $LOADGEN"
-  (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$LOADGEN" ./loadtest) || die "go build of loadgen failed"
   mint_identity
   if [ -n "$bt_commit" ]; then
     # shellcheck disable=SC2016 # $c and $s are jq's variables

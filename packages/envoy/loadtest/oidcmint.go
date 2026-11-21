@@ -174,13 +174,19 @@ func writeTokenFile(file, token string) error {
 	return nil
 }
 
-// mintOIDC generates the key and signs one token for each subject, in opts.subjects' order, each
-// issued at now.
+// mintOIDC generates the key and signs one token for each subject with it (mintOIDCWith).
 func mintOIDC(opts oidcMintOptions, now time.Time) (oidcMintKey, []string, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return oidcMintKey{}, nil, fmt.Errorf("generating the P-256 key: %w", err)
 	}
+	return mintOIDCWith(key, opts, now)
+}
+
+// mintOIDCWith signs one token with key for each subject, in opts.subjects' order, each issued at
+// now, and answers key's public half. The command runs it once, on a key nothing else holds; a
+// test holds the key, so it can sign one more token under the key an issuer it starts serves.
+func mintOIDCWith(key *ecdsa.PrivateKey, opts oidcMintOptions, now time.Time) (oidcMintKey, []string, error) {
 	public := jose.JSONWebKey{Key: &key.PublicKey, Algorithm: string(jose.ES256), Use: "sig"}
 	thumbprint, err := public.Thumbprint(crypto.SHA256)
 	if err != nil {

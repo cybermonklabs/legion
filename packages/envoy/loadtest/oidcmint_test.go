@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -109,10 +112,30 @@ func readIssuerManifest(t *testing.T) issuerManifest {
 	return m
 }
 
-// minted is one oidc-mint run: the key's public half and each subject's token.
+// minted is one oidc-mint run: the key's public half and each subject's token, and, for a run
+// startCopyIssuer made, the private key, so a test can sign one more token under the served key.
 type minted struct {
-	key    oidcMintKey
-	tokens map[string]string
+	key     oidcMintKey
+	tokens  map[string]string
+	private *ecdsa.PrivateKey
+}
+
+// mintWithKey is one run of oidc-mint's signing (mintOIDCWith) at issuer for subjects, on private.
+func mintWithKey(t *testing.T, private *ecdsa.PrivateKey, issuer string, subjects ...string) minted {
+	t.Helper()
+	opts := oidcMintOptions{issuer: issuer, audience: testMintAudience, lifetime: time.Hour}
+	for _, subject := range subjects {
+		opts.subjects = append(opts.subjects, oidcMintSubject{subject: subject})
+	}
+	key, tokens, err := mintOIDCWith(private, opts, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := minted{key: key, tokens: map[string]string{}, private: private}
+	for i, subject := range subjects {
+		m.tokens[subject] = tokens[i]
+	}
+	return m
 }
 
 // mintSubjects is one oidc-mint run at issuer for subjects, through the command itself: one -sub
@@ -143,10 +166,11 @@ func mintSubjects(t *testing.T, issuer string, subjects ...string) minted {
 }
 
 // startCopyIssuer serves oidc-issuer.yaml's ConfigMap as the copy's issuer pod does, on a loopback
-// port: every placeholder filled from the issuer's URL and the key one oidc-mint run for subjects
-// made, the keys written into one directory, as the pod's volume holds them, and every connection
-// handed to `sh serve.sh` on its standard input and output, as socat's EXEC address does, closed a
-// second after the shell exits, as socat closes it. It answers the issuer's URL and that run.
+// port: every placeholder filled from the issuer's URL and the key one signing run for subjects
+// made (mintWithKey, on a key the test generates and keeps), the keys written into one directory,
+// as the pod's volume holds them, and every connection handed to `sh serve.sh` on its standard
+// input and output, as socat's EXEC address does, closed a second after the shell exits, as socat
+// closes it. It answers the issuer's URL and that run.
 func startCopyIssuer(t *testing.T, subjects ...string) (string, minted) {
 	t.Helper()
 	m := readIssuerManifest(t)
@@ -159,7 +183,11 @@ func startCopyIssuer(t *testing.T, subjects ...string) (string, minted) {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	issuer := "http://" + listener.Addr().String()
-	run := mintSubjects(t, issuer, subjects...)
+	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := mintWithKey(t, private, issuer, subjects...)
 	dir := t.TempDir()
 	fill := strings.NewReplacer("__OIDC_ISSUER__", issuer, "__OIDC_KEY_ID__", run.key.KeyID,
 		"__OIDC_KEY_X__", run.key.X, "__OIDC_KEY_Y__", run.key.Y)
@@ -265,8 +293,10 @@ func startCopysListener(t *testing.T, binary, issuer, accounts string) (*cmdtest
 // the three tokens one oidc-mint run wrote, all under the one served key, by its own list: the
 // role mark from Dispatch's token (400 naming the role, the answer check_dispatch_identity reads),
 // the runner's token as the runner, not as Dispatch (403 naming it), and the token whose subject
-// ENVOY_OIDC_ACCOUNTS does not list refused (401, logged not_listed). The control is the copy's
-// fault before the fix: the same listener given an issuer it cannot reach does not start.
+// ENVOY_OIDC_ACCOUNTS does not list refused (401, logged not_listed). A token signed by the served
+// key with the right key id, subject and audience but another issuer is refused 401, logged
+// reason issuer: the key alone admits no token. The control is the copy's fault before the fix:
+// the same listener given an issuer it cannot reach does not start.
 func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRest(t *testing.T) {
 	binary := cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-listener", Target: "../cmd/listener"})
 	issuer, run := startCopyIssuer(t, testDispatchSubject, testRunnerSubject, testStrangerSubject)
@@ -298,13 +328,13 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	send := func(subject string) (int, string) {
+	send := func(token string) (int, string) {
 		t.Helper()
 		request, err := http.NewRequest(http.MethodPost, base+"/v1/messages/send", strings.NewReader(identityProbeBody))
 		if err != nil {
 			t.Fatal(err)
 		}
-		request.Header.Set("Authorization", "Bearer "+run.tokens[subject])
+		request.Header.Set("Authorization", "Bearer "+token)
 		request.Header.Set("Content-Type", "application/json")
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
@@ -314,16 +344,24 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 		body, _ := io.ReadAll(response.Body)
 		return response.StatusCode, string(body)
 	}
-	if status, body := send(testDispatchSubject); status != http.StatusBadRequest || !strings.Contains(body, `\"-identity-probe\" is no role a claim can name`) {
+	if status, body := send(run.tokens[testDispatchSubject]); status != http.StatusBadRequest || !strings.Contains(body, `\"-identity-probe\" is no role a claim can name`) {
 		t.Errorf("Dispatch's minted token was answered %d %s, not the 400 naming the role that says the mark was taken from it", status, body)
 	}
-	if status, body := send(testRunnerSubject); status != http.StatusForbidden || !strings.Contains(body, "proves "+testRunnerSubject) {
+	if status, body := send(run.tokens[testRunnerSubject]); status != http.StatusForbidden || !strings.Contains(body, "proves "+testRunnerSubject) {
 		t.Errorf("the runner's minted token was answered %d %s, not the 403 that says it was verified as the runner", status, body)
 	}
-	if status, body := send(testStrangerSubject); status != http.StatusUnauthorized {
+	if status, body := send(run.tokens[testStrangerSubject]); status != http.StatusUnauthorized {
 		t.Errorf("a minted token whose subject the listener does not list was answered %d %s, not 401", status, body)
 	}
 	listener.WaitForOutput(t, "not_listed", testStrangerSubject)
+	elsewhere := mintWithKey(t, run.private, issuer+"/elsewhere", testDispatchSubject)
+	if elsewhere.key.KeyID != run.key.KeyID {
+		t.Fatalf("the token of another issuer names key %s, not the served %s", elsewhere.key.KeyID, run.key.KeyID)
+	}
+	if status, body := send(elsewhere.tokens[testDispatchSubject]); status != http.StatusUnauthorized {
+		t.Errorf("Dispatch's token signed by the served key with iss %s/elsewhere was answered %d %s, not 401", issuer, status, body)
+	}
+	listener.WaitForOutput(t, `"reason":"issuer"`)
 
 	// The control: an issuer the listener cannot reach, as the cluster's own is from the fenced
 	// namespace (there a connection that never answers, here one refused), and the listener does

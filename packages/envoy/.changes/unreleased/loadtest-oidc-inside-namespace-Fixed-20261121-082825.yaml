@@ -12,7 +12,9 @@ body: |-
   `http://oidc-issuer.<namespace>.svc:8080`), and Dispatch reads the token from the run's Secret as
   its `ENVOY_ACCOUNT_TOKEN_FILE`. Once the copy is up, `up` checks from Dispatch's pod that the
   listener admits that token and, where its build reads role marks, takes a send's role mark from
-  it, and stops naming the listener's answer when it does not.
+  it, and stops naming the listener's answer when it does not. Before it takes the lock, `up`
+  refuses a loadgen whose `oidc-mint -h` lists no `-sub`, so a loadgen from before `oidc-mint`
+  stops nothing half made.
 time: 2026-11-21T08:28:25Z
 custom:
     Issue: loadtest-oidc-inside-namespace

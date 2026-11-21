@@ -71,11 +71,12 @@
 # applies its discovery document and key set inside the namespace before the listener and waits
 # for it before the listener starts, gives Dispatch the minted token from the run's Secret, and
 # checks from Dispatch's container that the listener takes a send's role mark from it; (d2) up
-# stops, naming the answer, when the listener answers that check 403 or 401, checks nothing at a
-# listener that names no Dispatch principal, and stops before any manifest when the mint fails or
-# answers a token of another shape; (e) every manifest renders with no placeholder left and every
-# image by digest, and a value of the wrong shape is refused (an issuer outside the namespace
-# among them, and a token, redacted); (f) a container restart between the
+# stops after one send, naming the answer, when the listener answers that check 403 or 401, checks
+# nothing at a listener that names no Dispatch principal, stops before any manifest when the mint
+# fails or answers a token of another shape, and refuses before the lock a loadgen that answers no
+# oidc-mint -sub; (e) every manifest renders with no placeholder left and every
+# image by digest, and a value of the wrong shape is refused (an issuer outside the namespace or
+# of another namespace among them, and a token, redacted); (f) a container restart between the
 # before and after reads writes step-failed.json with kind restart; (g) the sampler writes an
 # error line with no number when its exec fails, and a numeric line when it reads; (h)
 # render-nats.sh refuses its vendored chart archive with one byte changed, naming it and both
@@ -785,6 +786,18 @@ DISPATCH
 fi
 cat >"$out" <<'LOADGEN'
 #!/usr/bin/env bash
+# up's check that loadgen mints (loadgen_mints): oidc-mint -h prints the usage loadgen's own does,
+# or, with FAKE_LOADGEN_NO_MINT, the refusal of a loadgen from before oidc-mint. It goes into
+# mint-help.log alone, so loadgen.log keeps one line per run of a subcommand.
+if [ "$*" = "oidc-mint -h" ]; then
+  printf '%s\n' "$*" >>"$FAKE_DIR/mint-help.log"
+  if [ -n "${FAKE_LOADGEN_NO_MINT:-}" ]; then
+    printf 'loadgen: unknown command "oidc-mint"\n' >&2
+    exit 2
+  fi
+  echo 'usage: loadgen oidc-mint -issuer <url> -audience <aud> -lifetime <duration> -sub <subject>=<file> [-sub <subject>=<file>]...' >&2
+  exit 0
+fi
 printf '%s\n' "$*" >>"$FAKE_DIR/loadgen.log"
 if [ "${FAKE_LOADGEN_FAIL:-}" = "$1" ]; then
   echo "fake loadgen: $1 failed" >&2
@@ -969,7 +982,7 @@ unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FA
   FAKE_PG_DF_SEQ FAKE_PG_DF_DELAY FAKE_RC_UNTIL_STOP FAKE_RC_UNTIL_KILL FAKE_HEAP_COPY_FAIL FAKE_HEAP_EXISTS_FAIL FAKE_HEAP_KEEP_REMOVE_FAIL \
   FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_DELAY \
   FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_SLEEP_GATE \
-  FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN
+  FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN FAKE_LOADGEN_NO_MINT
 export DISPATCH_URL=http://dispatch.invalid DISPATCH_TOKEN_FILE=$fake/token
 # The manifest names no issue: the operator does, and replay-prepare refuses without it.
 export LOADTEST_REPLAY_ISSUE=INFRA-639
@@ -1081,7 +1094,7 @@ reset_fake() {
     "$fake/sleep.log" "$fake/apply-errors" "$fake/replay-template" "$fake/restores" "$fake/pod-dump" \
     "$fake/stored-order.log" "$fake/go-dispatch.log" "$fake/go-browsertype.log" "$fake/git.log" \
     "$fake/go-dispatch-tree.log" "$fake/go-subcommands.go" "$fake/runner-exec-fail" "$fake/pg-df-started" "$fake/pg-df-go" \
-    "$fake/identity-probes" "$fake/identity-answers"
+    "$fake/identity-probes" "$fake/identity-answers" "$fake/mint-help.log"
   rm -rf -- "$fake/runner" "$fake/bundle-fixture"
   write_pods
   echo '1600000 100000' >"$fake/cpu.max"
@@ -2223,10 +2236,12 @@ for answer in $'{"error":"role is taken from Dispatch\'s own principal alone, an
     grep -qF "was answered ${answer##*$'\n'} ${answer%$'\n'*}" "$tmp/out" ||
     fail "up's refusal does not name the listener's ${answer##*$'\n'} answer"
   ! grep -q 'the copy is up' "$tmp/out" || fail "up said the copy is up after the listener refused Dispatch's role mark"
+  [ "$(wc -l <"$fake/identity-probes")" = 1 ] ||
+    fail "up sent Dispatch's role-marked send $(wc -l <"$fake/identity-probes") times to a listener that answered ${answer##*$'\n'}, not once"
   run_cluster down --namespace "$ns"
   ((RC == 0)) || fail "down after the refused up exited $RC"
 done
-pass "up stops when the listener answers Dispatch's role-marked send 403 or 401, naming the answer"
+pass "up stops when the listener answers Dispatch's role-marked send 403 or 401, after one send, naming the answer"
 
 # A listener rendered without ENVOY_DISPATCH_PRINCIPAL takes no role mark at all: nothing to check.
 reset_fake
@@ -2287,6 +2302,19 @@ for case_ in fail shape; do
 done
 pass "up stops before any manifest when loadgen oidc-mint fails or answers a token of another shape, leaving no answer file"
 
+# A loadgen that answers no oidc-mint -sub (one from before oidc-mint, as a prebuilt one can be) is
+# refused before the lock: after it, up would stop at the mint with the lock taken.
+reset_fake
+FAKE_LOADGEN_NO_MINT=1 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+((RC == 1)) || fail "up with a loadgen that answers no oidc-mint exited $RC, not 1"
+grep -qF "answers no 'oidc-mint -sub <subject>=<file>', which mints the copy's token issuer once the lock is taken" "$tmp/out" ||
+  fail "up's refusal of a loadgen that answers no oidc-mint does not say so"
+[ "$(cat "$fake/mint-help.log" 2>/dev/null)" = "oidc-mint -h" ] || fail "up did not ask the loadgen for oidc-mint -h once: $(cat "$fake/mint-help.log" 2>/dev/null)"
+[ ! -f "$fake/lock.json" ] && no_create || fail "up took the lock or created something before it refused a loadgen that answers no oidc-mint"
+[ -z "$(find "$LOADTEST_CLUSTER_ROOT" -maxdepth 2 \( -name '.checker.*' -o -name '.build-src.*' \))" ] ||
+  fail "up left its scratch directory after it refused a loadgen that answers no oidc-mint"
+pass "up refuses, before it takes the lock or creates anything, a loadgen that answers no oidc-mint -sub, leaving no scratch directory"
+
 # ---- (e) templates ---------------------------------------------------------------------------------
 
 (
@@ -2295,7 +2323,7 @@ pass "up stops before any manifest when loadgen oidc-mint fails or answers a tok
   NS=$ns
   digest=sha256:$(printf '%064d' 7)
   values=(NAMESPACE=loadtest RUN_ID=lt-20261028t120000-abcd STORAGE_CLASS=premium-rwo
-    OIDC_ISSUER=http://oidc-issuer.loadtest.svc:8080
+    "OIDC_ISSUER=http://oidc-issuer.$ns.svc:8080"
     "ENVOY_IMAGE=ghcr.io/cybermonklabs/legion/envoy@$digest" "LISTENER_IMAGE=ghcr.io/cybermonklabs/legion/envoy@$digest"
     "PG_IMAGE=mirror.gcr.io/pgvector/pgvector@$digest" "SOCAT_IMAGE=mirror.gcr.io/alpine/socat@$digest"
     "RUNNER_IMAGE=mirror.gcr.io/library/debian@$digest")
@@ -2326,6 +2354,12 @@ pass "up stops before any manifest when loadgen oidc-mint fails or answers a tok
     OIDC_ISSUER=https://container.googleapis.com/v1/projects/example-project/locations/us-west1/clusters/example) 2>/dev/null; then
     fail "render accepted a listener issuer outside the namespace"
   fi
+  # Another namespace's issuer, of the same shape, is refused too: the listener would verify against
+  # keys outside the copy's namespace.
+  refusal=$( (render_manifest "$MANIFESTS/listener.yaml" "${values[@]}" OIDC_ISSUER=http://oidc-issuer.kube-system.svc:8080) 2>&1) &&
+    fail "render accepted another namespace's issuer, http://oidc-issuer.kube-system.svc:8080"
+  [[ $refusal == *"OIDC_ISSUER value 'http://oidc-issuer.kube-system.svc:8080' is not a valid issuer"* ]] ||
+    fail "render's refusal of another namespace's issuer does not name it: $refusal"
   if (render_manifest "$MANIFESTS/oidc-issuer.yaml" "${values[@]}" "OIDC_KEY_X=x'y") 2>/dev/null; then
     fail "render accepted a key coordinate that is not 43 base64url characters"
   fi
@@ -2334,7 +2368,7 @@ pass "up stops before any manifest when loadgen oidc-mint fails or answers a tok
   [[ $refusal == *"ACCOUNT_JWT value '<redacted>' is not a valid jwt"* && $refusal != *'a.b.c|x'* ]] ||
     fail "render's refusal of an account token does not name it redacted: $refusal"
 )
-pass "every manifest renders with no placeholder left and every image by digest; a tag, a missing value, an issuer outside the namespace and a key or token of another shape are refused, the token redacted"
+pass "every manifest renders with no placeholder left and every image by digest; a tag, a missing value, an issuer outside the namespace or of another namespace, and a key or token of another shape are refused, the token redacted"
 
 # ---- (f) a restart between the two reads ------------------------------------------------------------
 
