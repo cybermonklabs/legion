@@ -1323,7 +1323,10 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // what its apply costs out of the pod's load concurrency before the hook decodes any of it
 // (loadSlots, copyWeight, declaredStructs), so a reconnect storm's whole-state handoffs are read
 // and decode as many at a time as the pool holds rather than all at once, and a frame small in
-// bytes and heavy in structs decodes inside the pool too; typing never waits on it.
+// bytes and heavy in structs decodes inside the pool too; typing never waits on it. The grant is
+// given back as soon as the apply has integrated and its check has passed, before its commit's
+// observers run (crdt.ApplyBudget.Integrated), and as the apply returns where it was refused or
+// rolled back.
 //
 // A room with no measurement at all is a document that left the Proof schema while it was live,
 // which the socket path refuses to open in the first place (refuseOutsideSchema), or one no load
@@ -1355,27 +1358,27 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() error) error {
 	weighing := s.roomWeighingOf(info.Doc)
 	applies := weighing.applies()
-	// A heavy update takes its bytes before anything decodes it and gives them back once the apply
-	// has returned, so every read of the frame that builds anything - the retired clients' scan of
-	// its header and its delete set (refusedBeforeApply), the client ids' judgement (judgeClients)
-	// and the apply's decode - runs inside one grant; a keystroke takes none. An update is heavy
-	// past unslottedApplyBytes or past unslottedApplyStructs declared structs, since a frame of a
-	// million GC structs is 2 MB and allocated 102.5 times that to apply. What it takes is what its
-	// own apply builds, its bytes and the structs it declares at copyWeight (declaredStructs, which
-	// reads each group's header and passes the structs of every group but the last, building
-	// nothing), rather than a whole slot, so a reconnect storm's handoffs decode as many at a time
-	// as the pool holds. A frame of at most twice unslottedApplyStructs bytes cannot declare more
-	// structs than that, so a keystroke is not read for them. The wait has no deadline, since the
-	// peer's read loop carries none and every holder gives its bytes back (loadSlots), so it cannot
-	// fail.
+	// A heavy update takes its bytes before anything decodes it, so every read of the frame that
+	// builds anything - the retired clients' scan of its header and its delete set
+	// (refusedBeforeApply), the client ids' judgement (judgeClients) and the apply's decode - runs
+	// inside one grant; a keystroke takes none. An update is heavy past unslottedApplyBytes or past
+	// unslottedApplyStructs declared structs, since a frame of a million GC structs is 2 MB and
+	// allocated 102.5 times that to apply. What it takes is what its own apply builds, its bytes and
+	// the structs it declares at copyWeight (declaredStructs, which reads each group's header and
+	// passes the structs of every group but the last, building nothing), rather than a whole slot,
+	// so a reconnect storm's handoffs decode as many at a time as the pool holds. A frame of at most
+	// twice unslottedApplyStructs bytes cannot declare more structs than that, so a keystroke is not
+	// read for them. The wait has no deadline, since the peer's read loop carries none and every
+	// holder gives its bytes back (loadSlots), so it cannot fail.
 	var declared uint64
 	if len(info.Update) > 2*unslottedApplyStructs {
 		declared = declaredStructs(info.Update)
 	}
+	var grant *loadSlot
 	if len(info.Update) > unslottedApplyBytes || declared > unslottedApplyStructs {
-		slot := newLoadSlot()
-		_ = slot.take(context.Background(), copyWeight(int64(len(info.Update)), int64(declared)))
-		defer slot.release()
+		grant = newLoadSlot()
+		_ = grant.take(context.Background(), copyWeight(int64(len(info.Update)), int64(declared)))
+		defer grant.release()
 	}
 	if refusal := s.refusedBeforeApply(info, weighing); refusal != nil {
 		return refusal
@@ -1434,6 +1437,20 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	// as soon as the apply returns, with what its scans passed.
 	scans := weighing.roomScans()
 	scanning := scans.reserve(info.Origin, scanCeiling(len(info.Update)))
+	// A heavy apply's grant goes back once the apply has integrated and its check has passed,
+	// before the commit's observers run (crdt.ApplyBudget.Integrated, theorem-labs/ygo
+	// v1.55.1-theorem.15): the update's decode and the check's rendering are garbage by then, and
+	// the structs it integrated are the room's, which the room budget charges. One of those
+	// observers hands the commit to the room's persistence worker, and waits while the room's queue
+	// of updates to store is full, or for the worker's exit once it has begun to exit (ygo's
+	// persistStranded), and the worker waits for the pool to decode what it stores, checks and
+	// compacts: held through that wait, the grant would hold that apply and the worker against each
+	// other. An apply that is refused or rolled back never reaches the callback, and gives the grant
+	// back as the hook returns; the release is the grant's own, so it gives it back once either
+	// way. The callback runs on this goroutine, the one apply runs on.
+	if grant != nil {
+		allowance.budget.Integrated = grant.release
+	}
 	err := applies.applying(info.Origin, allowance.budget, apply)
 	scans.settle(scanning, err)
 	// A drain the room took back leaves the update that released it standing and committed

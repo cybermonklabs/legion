@@ -127,48 +127,32 @@ func TestARoomCloseCompactionLeavesABusyDocumentForALaterCompaction(t *testing.T
 	requireCompactedFrom(t, service.store, artifactID, before, foldPoint, cursor)
 }
 
-// A room's persistence worker compacts the room as it exits (servicePersistenceAdapter.Compact),
-// and a commit made once the worker has begun to exit waits for it to finish (ygo's
-// persistStranded): at ygo's shutdown a socket can still commit a heavy apply, which holds its
-// grant of the pod's load concurrency through its commit. So that compaction takes only bytes free
-// at once (withFreeLoadOnly): with every byte of the pool held, the room's close finishes, its
-// rows older than the tail folded beside the pool's holders. Before, the compaction's fold waited
-// for the pool, and the close with it, while the pool stayed full.
-func TestARoomsCloseCompactsBesideAFullPool(t *testing.T) {
+// Cycle (iii). A room's persistence worker compacts the room as it exits
+// (servicePersistenceAdapter.Compact), its fold waiting for its bytes of the pod's load
+// concurrency, and a commit made once the worker has retired waits for it to finish (ygo's
+// persistStranded): at ygo's shutdown a browser's read loop can still commit a heavy apply. With
+// the pool full but for that apply's grant, the room's close at the shutdown finishes, its rows
+// older than the tail folded, and the apply returns, because the apply gave its grant back before
+// its commit's observers ran (weighPeerUpdate, crdt.ApplyBudget.Integrated): the compaction's fold
+// gets what the apply gave back. Held through the commit, the grant is what the fold waited for
+// while the apply waited for the fold's worker to exit. The compaction took only free bytes before,
+// under a mark on its context this change deleted.
+func TestARoomsClosingCompactionWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	foldPoint := writeRoomRows(t, service, artifactID)
 	ageUpdatesThrough(t, service.store, artifactID, foldPoint, time.Hour)
-	before, cursor := storedRows(t, service.store, artifactID), settlementCursor(t, service.store, artifactID)
+	live := roomDocument(t, service, artifactID)
+	update, grant := heavyRoomUpdate(t, live)
+	pool, waited := poolOfOneSlot(t, nil)
+	fillPoolBut(t, pool, grant)
 
-	// Every byte of the pool is held from before the room closes until the test ends, which gives
-	// it back before the service shuts down.
-	slots := newLoadSlots(1)
-	var waited atomic.Bool
-	slots.waiting = func() { waited.Store(true) }
-	pool := useLoadSlots(t, slots)
-	filler := newLoadSlot()
-	if !filler.tryTake(pool.poolBytes()) {
-		t.Fatalf("the empty pool refused its %d bytes", pool.poolBytes())
-	}
-	t.Cleanup(filler.release)
-
-	closed := make(chan error, 1)
-	go func() { closed <- service.Evict(context.Background(), artifactID) }()
+	closed, heavy := closeBehindAHeavyApply(t, service, artifactID, live, update, nil)
 	wait := min(roomWait(t), besideAFullPoolWait)
-	select {
-	case err := <-closed:
-		if err != nil {
-			t.Fatalf("close the document's room: %v", err)
-		}
-	case <-time.After(wait):
-		t.Fatalf("the room's close did not finish within %s while every byte of the pool was held (a taker began to wait for the pool: %t): its persistence worker's compaction as it exits waits for the pool",
-			wait, waited.Load())
-	}
-	requireCompactedFrom(t, service.store, artifactID, before, foldPoint, cursor)
-	if inUse := pool.held.Load(); inUse != pool.poolBytes() {
-		t.Fatalf("%d of the pool's %d bytes are held once the room has closed, want the test's whole hold and nothing else", inUse, pool.poolBytes())
-	}
+	deadline := time.After(wait)
+	requireAnswered(t, closed, deadline, "the room's close at ygo's shutdown", wait, waited)
+	requireAnswered(t, heavy, deadline, "the heavy apply", wait, waited)
+	requireFoldedThrough(t, service, artifactID, foldPoint)
 }
 
 // A failed room's eviction waits for the document's lock and compacts under the tail rule before

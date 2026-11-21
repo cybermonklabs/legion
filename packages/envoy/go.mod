@@ -302,4 +302,18 @@ require (
 // server write subscribes (applyRemoteBatch, applyCaptured) kept the write's update reachable from
 // the room until a later subscription took the slot. The tag is on 4b19472d, the head of
 // release/v1.55.1/2026-11-20.3.
-replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.13
+// v1.55.1-theorem.14, which this branch never pinned alone, keeps the record of who parked each
+// struct to what the pending queue holds, dropping a struct as a merge drops it, a drain lands it
+// or a refused drain discards it (closeDiscardedSenders); gives a parked string a merge cuts at its
+// front bytes of its own, so it keeps only the part PendingStats.ContentBytes counts (noteQueued);
+// and drops a SyncReply that carries a SyncStep1, which was answered outside
+// Server.OnStateAnswer's bound and relayed to every other peer (weighStateAnswer). The tag is on
+// d18319dc.
+// v1.55.1-theorem.15 adds ApplyBudget.Integrated, a callback the apply-budget callback can return
+// with an apply's budget, which the document calls once that apply has integrated and passed its
+// apply check, right after the commit releases the document's lock and before the commit's first
+// observer, and never for an apply that is refused or rolled back. A heavy browser apply gives its
+// grant of the pod's load concurrency back there (weighPeerUpdate), so no grant is held while
+// the commit's persistence observer waits on the room's queue of updates to store or on its
+// worker's exit. The tag is on 7768e28e, the head of release/v1.55.1/2026-11-21.2.
+replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.15

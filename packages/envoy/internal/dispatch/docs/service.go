@@ -352,6 +352,13 @@ type Service struct {
 	// lose a commit the room has integrated and relayed. It is set before the service stores
 	// anything, since the persistence reads it unlocked.
 	beforeRoomAppend func(room string) error
+	// beforeClosingCompaction runs at the start of the compaction a room's persistence worker runs
+	// as it exits (servicePersistenceAdapter.Compact), which ygo runs only once the worker has
+	// retired from the room's queue of updates to store: a commit made from then on is stranded
+	// behind that compaction (ygo's persistStranded). Nil outside tests; tests use it to know the
+	// worker has retired. It is set before the room's worker exits, since the worker reads it
+	// unlocked.
+	beforeClosingCompaction func(room string)
 	// betweenCloseSnapshotReads runs in a close for a closed issue between the two readings its
 	// snapshot is made of: the document's pending-settlement row, read first, and the room's
 	// record, read after it (setRoomIssueOpen, closeRefusedAppendRoom, closeSnapshot). Nil

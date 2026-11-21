@@ -96,8 +96,8 @@ func TestAStoredBrowserUpdateHeavyInStructsIsCountedInThePoolWhileItIsReadBack(t
 			taken.record(held)
 		}
 	}
-	// The worker can reach the store before the hook has returned and given the apply's grant
-	// back, so the store's grants are read from once the pool holds nothing.
+	// The apply gives its grant back before its commit reaches the worker's queue
+	// (weighPeerUpdate), so the store's grants are read from once the pool holds nothing.
 	service.beforeRoomAppend = func(room string) error {
 		if room != artifactID {
 			return nil

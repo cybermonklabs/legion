@@ -317,14 +317,12 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 // not.
 //
 // It runs on the room's persistence worker, the one reader of the room's queue of updates to
-// store, on which a heavy apply holding its grant of the pod's load concurrency through its commit
-// waits while the queue is full (weighPeerUpdate). So nothing it decodes waits for that pool: ctx
-// is marked once, here, to take only bytes free at once (withFreeLoadOnly), and the decodes its
-// gate makes of a history replaced under the room take their grants under it
-// (storedHistoryHolds); its decodes of the update itself take only free bytes as well
-// (holdFreeLoad).
+// store. Its decodes wait for their bytes of the pod's load concurrency as every other decode
+// does - the decode of the update itself (holdServerLoad, AppendUpdatesWithCredit) and the ones
+// its gate makes of a history replaced under the room (storedHistoryHolds) - since no holder of
+// that pool waits on this worker: a heavy apply gives its grant back before its commit hands the
+// update to the worker's queue (weighPeerUpdate, crdt.ApplyBudget.Integrated).
 func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room string, update []byte) (stored bool, err error) {
-	ctx = withFreeLoadOnly(ctx)
 	if a.service.roomFailed(room) {
 		// The failed room's update is dropped and its browser resends it to the room that
 		// replaces this one, but its class is taken all the same, so the work the record counts
@@ -386,13 +384,11 @@ func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room 
 	// of the room stores them (AppendRoomUpdatesTx); a later call of an update the batch stored
 	// finds its class stored and decodes nothing.
 	//
-	// The read-back is a whole decode of the update, as heavy as the apply that made it, and that
-	// apply's grant was given back when the hook returned (weighPeerUpdate). So it takes what its
-	// copy costs where the pool has that much free at once, and runs beside the pool's holders
-	// where it has not (holdFreeLoad): it may not wait, since this worker is the one reader of the
-	// room's queue of updates to store, and a heavy apply holding its grant through its commit
-	// waits on that queue to hand the commit over while the queue is full.
-	release := holdFreeLoad(storedCopyWeight(update))
+	// The read-back is a whole decode of the update, as heavy as the apply that made it, so it
+	// takes what its copy costs out of the pod's load concurrency, waiting for it without a
+	// deadline (holdServerLoad): the apply that made the update gave its own grant back before
+	// its commit reached this worker's queue (weighPeerUpdate).
+	release := holdServerLoad(ctx, storedCopyWeight(update))
 	err = crdt.ApplyUpdateV1(newDocumentCopy(), update, nil)
 	release()
 	if err != nil {
@@ -433,15 +429,15 @@ func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room 
 // It runs on the room's persistence worker after the worker has retired from the room's queue of
 // updates to store, and a commit made once the worker has retired waits for the worker to exit,
 // this compaction included: ygo's persistence observer hands it to persistStranded, which waits
-// for the worker's persistDone. At ygo's shutdown a browser's socket can still commit while its
-// room's worker retires, and a heavy apply holds its grant of the pod's load concurrency through
-// its commit (weighPeerUpdate), so a wait for that pool here would hold that apply and this
-// worker against each other. So ctx is marked to take only bytes free at once
-// (withFreeLoadOnly): the compaction's fold and read-back (foldRead, fold) and a parked fold's
-// check of the stored versions (disagreeingVersion) take what is free at once and otherwise
-// decode beside the pool's holders.
+// for the worker's persistDone. The compaction's fold and read-back (foldRead, fold) and a parked
+// fold's check of the stored versions (disagreeingVersion) wait for their bytes of the pod's load
+// concurrency all the same, since a heavy apply gives its grant back before its commit's
+// observers run (weighPeerUpdate, crdt.ApplyBudget.Integrated), so a commit stranded behind
+// this compaction holds none of the pool.
 func (a *servicePersistenceAdapter) Compact(ctx context.Context, room string) error {
-	ctx = withFreeLoadOnly(ctx)
+	if hook := a.service.beforeClosingCompaction; hook != nil {
+		hook(room)
+	}
 	// A failed room's eviction waits for the document's lock, so a repair written into it commits
 	// before the room reloads; the hook counts those waiting compactions.
 	failed := a.service.roomFailed(room)
@@ -490,7 +486,7 @@ func (s *Service) failRoomLoad(room string, load *roomLoad, cause error) {
 //
 // It takes nothing of the pod's load concurrency itself: each caller covers the decode, the
 // rebuild on the grant it took for its seed (RebuildTx) and an append of the updates it is handed
-// on one that never waits (AppendUpdatesWithCredit, holdFreeLoad).
+// on one of its own, which it waits for (AppendUpdatesWithCredit, holdServerLoad).
 func validateUpdate(update []byte, maxPending int) error {
 	if len(update) == 0 {
 		return nil
@@ -1063,7 +1059,7 @@ func leaveParkedOut(doc *crdt.Doc) {
 // answer to a browser holding nothing held 24,071,008 to 25,428,848 bytes above the document,
 // having allocated about 25.7 MB in under 900 objects
 // (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot). Before the fork's v1.55.1-sami.14,
-// which the pinned theorem-labs/ygo v1.55.1-theorem.13 carries, a room that parked anything was
+// which the pinned theorem-labs/ygo v1.55.1-theorem.15 carries, a room that parked anything was
 // cut from its encoded state instead, decoding the whole document twice - 371,149,976 to
 // 429,891,496 bytes held and about 840 MB
 // allocated for the same room - and is no longer. Nothing in ygo bounds how many answers run

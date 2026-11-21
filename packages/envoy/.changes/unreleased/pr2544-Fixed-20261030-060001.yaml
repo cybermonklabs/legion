@@ -158,10 +158,11 @@ body: |-
     being packed, up to the 16,000 structs a frame can hold, and 40 bytes more for each client the
     browser's own sync step 1 names. No taker takes more than one slot, so the heaviest waits for
     its turn rather than being refused: a stored document always loads and no honest handoff is
-    turned away. The decodes that must not wait take their bytes only where the pool has them free
-    at once, and otherwise run beside its holders: the second copy a room builds from a stored
-    state, and what a room's persistence worker decodes as it stores a browser's update, its check
-    of a history replaced under the room included, and as it compacts the room on its close.
+    turned away. A browser's apply gives its bytes back once its update has integrated and the
+    room's checks have passed it, before the room hands the commit to its store, so what a room's
+    persistence worker decodes as it stores, checks and compacts waits for its turn too. The second
+    copy a room builds from a stored state takes its bytes only where the pool has them free at
+    once, and otherwise runs beside its holders.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone, 512 of them whatever their
@@ -205,15 +206,16 @@ body: |-
     leave still decodes, and leave one they would carry past the cap as it was.
 
     These bounds are built on the ygo fork Dispatch pins,
-    `github.com/theorem-labs/ygo v1.55.1-theorem.13`. It applies a browser's update whole or not at
+    `github.com/theorem-labs/ygo v1.55.1-theorem.15`. It applies a browser's update whole or not at
     all under the allowance, roots and content kinds the room gives it, and reports what a refused
     apply's counters reached. It runs the room's render check after the apply and before its commit,
     keeps what parks out of the document until it lands, lets a delete range park only under a
     client id the room allows, and answers a frame only once its commit is stored. At this pin a
     keystroke into a document of 40,000 clients no longer walks every client for that check, the
     check is told which of its runs judges a drain, the room keeps no record of a server write
-    as the sender of what that write parked, and an unsubscribed callback keeps nothing it captured
-    reachable.
+    as the sender of what that write parked, an unsubscribed callback keeps nothing it captured
+    reachable, and an apply's owner can give back what it holds for the apply before the commit's
+    observers run.
 time: 2026-10-30T06:00:01.000000000Z
 custom:
     Issue: pr2544

@@ -261,14 +261,13 @@ func updateAge(observed time.Time) time.Duration {
 // document's lock each.
 //
 // The decodes that check makes share one grant of the pod's load concurrency, taken under ctx
-// (storedHistoryHolds). The room's persistence worker marks its append's context to take only
-// free bytes (StoreUpdateStored, withFreeLoadOnly): it holds the document's lock and a connection
-// of the room-appends pool here, and a heavy apply holding its grant through its commit waits on
-// the room's queue of updates to store, which this worker alone reads, so a wait for the pool
-// here would hold that apply and this worker against each other. Its decodes take what is free
-// at once and otherwise run beside the pool's holders. A transaction's flush of a room
-// (AppendRoomUpdatesTx) passes an unmarked context and waits for its bytes, as every other decode
-// does.
+// (storedHistoryHolds), which waits for its bytes on the room's persistence worker
+// (StoreUpdateStored) as in a transaction's flush of a room (AppendRoomUpdatesTx). The worker holds
+// the document's lock and a connection of the room-appends pool while it waits, which no holder
+// of the pool waits for: a heavy apply gives its grant back before its commit reaches the room's
+// queue of updates to store, which this worker alone reads (weighPeerUpdate). The fold takes no
+// slot of the buffered folds (foldSlots), so the pool is what bounds how many such folds a process
+// holds at once.
 func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind appendKind, updates []BrowserUpdate, read appendGateRead, maxPending int) (latest int64, admitted int, replaced bool, err error) {
 	if len(updates) == 0 {
 		return 0, 0, false, fmt.Errorf("append document updates: no update to append")
@@ -329,9 +328,8 @@ func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind
 // each of its updates, and the grant is raised by what the run's copy costs - its bytes and the
 // structs their headers declare, as storedCopyWeight weighs one update, read before anything of
 // the run is decoded - so it covers the document and the run together until the run is judged.
-// Under the context the room's persistence worker marks (withFreeLoadOnly, gateAppend) each take
-// takes only bytes free at once and otherwise leaves its decode beside the pool's holders; under
-// any other it waits for them, as foldRead's does, and a wait ctx ends is the error.
+// Each take waits for its bytes, as foldRead's does, on the room's persistence worker as in a
+// transaction's flush of the room, and a wait ctx ends is the error.
 func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64, updates []BrowserUpdate, maxPending int) (bool, error) {
 	ctx, slot, done := withLoadSlot(ctx)
 	defer done()
