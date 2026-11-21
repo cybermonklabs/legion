@@ -98,14 +98,18 @@ func TestTheApprovalPageShowsAPrivateSecretsProject(t *testing.T) {
 }
 
 // TestTheApprovalPageOfAnUntaggedRequestIsUnchanged: a request for a secret of no project, from a
-// session naming none, prints no project row, and its page asks Dispatch nothing, though the
-// broker holds a client of it. The enrollment itself asks Dispatch the person's member kind
+// session naming none, prints no project row, and its page asks Dispatch one thing, though the
+// broker holds a client of it: what kind of member the signed-in person is. The page lists the
+// other secret requests waiting on that person through the approver's list, and a person Dispatch
+// calls a restricted member is no approver of a secret whatever the request's tags, so the list
+// asks that once (requests.Machine.PendingForApprover). It asks nothing of a project, a tag or a
+// session. The enrollment itself asks Dispatch the person's member kind
 // (enroll.Service.checkProjects), so the count is read once the request exists.
 func TestTheApprovalPageOfAnUntaggedRequestIsUnchanged(t *testing.T) {
 	r, dispatch := projectRig(t)
 	enrollmentID, key := r.benSession(t, "ben-plain-box")
 	p := r.request(t, enrollmentID, key, "deploy the billing service", nil, "", "TEST_SECRET")
-	before := dispatch.Calls()
+	before, projectsBefore := dispatch.Calls(), dispatch.ProjectCalls()
 
 	b := r.browser(t)
 	b.SignIn(t, p.recordID, person(ada))
@@ -113,8 +117,11 @@ func TestTheApprovalPageOfAnUntaggedRequestIsUnchanged(t *testing.T) {
 	if strings.Contains(got, "Project") {
 		t.Errorf("the page of an untagged request prints a project row:\n%s", got)
 	}
-	if calls := dispatch.Calls() - before; calls != 0 {
-		t.Errorf("the page of an untagged request asked Dispatch %d times; want none", calls)
+	if calls := dispatch.Calls() - before; calls != 1 {
+		t.Errorf("the page of an untagged request asked Dispatch %d times; want once, the signed-in person's member kind", calls)
+	}
+	if calls := dispatch.ProjectCalls() - projectsBefore; calls != 0 {
+		t.Errorf("the page of an untagged request asked Dispatch's project route %d times; want none", calls)
 	}
 }
 

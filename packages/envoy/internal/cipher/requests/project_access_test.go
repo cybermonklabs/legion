@@ -489,15 +489,16 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 // Dispatch nothing of a tag, a session or a channel. Their reasons name an issue key, as nearly
 // every agent's does (the judge's issue check needs one), and "SHA-256", which has an issue key's
 // form. A broker with no project-access client then asks Dispatch nothing at all. A broker holding
-// one asks two things and nothing else: whether the person reading a row may see the project of
+// one asks three things and nothing else: whether the person reading a row may see the project of
 // each key its reason names (HideUnseen), every key and not the first alone, since a reason
-// naming a private project's issue is that project's text; and what kind of member the session's
+// naming a private project's issue is that project's text; what kind of member the session's
 // person is, which every request, approval, release and airlock connection of a person's session
-// asks (restrictedOperator). "Asks Dispatch nothing" is true of the first broker; of the second
-// it is true of everything but those reads.
+// asks (restrictedOperator); and what kind of member the deciding person is, which every person's
+// decision asks, since a restricted member decides nothing (ApplyDecision). "Asks Dispatch nothing"
+// is true of the first broker; of the second it is true of everything but those reads.
 func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 	const reason = "INFRA-12: check the SHA-256 of the deploy bundle"
-	reasonReads := []string{"access INFRA", "access SHA", "member kind of " + fixtureOperator}
+	reasonReads := []string{"access INFRA", "access SHA", "member kind of " + fixtureOperator, "member kind of " + insider}
 	for _, c := range []struct {
 		name   string
 		client bool
@@ -544,7 +545,7 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 			}
 			for _, q := range questions {
 				if !slices.Contains(reasonReads, q) {
-					t.Errorf("an untagged deployment asked Dispatch %q; want only the reason keys' project reads and the person's member kind %v", q, reasonReads)
+					t.Errorf("an untagged deployment asked Dispatch %q; want only the reason keys' project reads and the session's and the decider's member kinds %v", q, reasonReads)
 				}
 			}
 			for _, want := range reasonReads {
