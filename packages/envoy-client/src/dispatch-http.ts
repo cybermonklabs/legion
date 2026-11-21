@@ -744,7 +744,7 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
   };
 }
 
-/** Whether `storedStatus` (request_keys.go:1016-1019) keeps this answer under the key. */
+/** Whether `storedStatus` (request_keys.go:1335-1341) keeps this answer under the key. */
 function isStoredKeyStatus(status: number): boolean {
   return status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
 }
@@ -762,7 +762,7 @@ function isStoredKeyStatus(status: number): boolean {
  * - it is `409 KEY_COMMITTED`, a write that landed (`#payloadOf` throws it as landed);
  * - it is `422 KEY_REUSED` echoing exactly this request's key: every attempt of a call carries the
  *   call's one key (`#writeCall`) and the bytes encoded once for the call, so a key held under
- *   another digest (`writeRequestFields`, request_keys.go:517-531) proves no attempt of this
+ *   another digest (`writeRequestFields`, request_keys.go:581-603) proves no attempt of this
  *   write claimed it;
  * - it is a fresh answer echoing exactly this request's key, with a 4xx `storedStatus` keeps and
  *   none of the keyed layer's own codes: a handler ran under the claim and its answer is the key's.

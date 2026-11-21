@@ -877,7 +877,7 @@ for (const [name, failure, tail] of [
       2,
       "reply-key",
     ),
-    "RATE_LIMITED: slow down (the last of 2 attempts), and an earlier attempt of the write may have reached Dispatch, so it may or may not have taken effect: check whether it did before retrying it.",
+    "RATE_LIMITED: slow down (the last of 2 attempts), and an earlier attempt of the write may have reached Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt it received whatever this command does, so read the write back before you send it again: a new command sends it under a new key.",
   ],
   [
     "a 5xx",

@@ -538,7 +538,6 @@ describe("sending pictures", () => {
     ] as const) {
       let uploads = 0;
       const server = dispatch((pathname, init) => {
-        if (pathname === "/healthz") return json({ idempotency_keys: true });
         if (pathname !== "/api/v1/issues/DSP-41/artifacts" || init.method !== "POST") return;
         uploads += 1;
         return uploads === 1
@@ -563,7 +562,6 @@ describe("sending pictures", () => {
           writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [0], pause: async () => undefined },
         })
       );
-      forgetKeyedLayerMemory();
 
       expect(uploads).toBe(2);
       expect(failure.message).toBe(
