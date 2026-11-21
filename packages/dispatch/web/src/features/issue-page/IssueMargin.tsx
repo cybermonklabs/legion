@@ -361,8 +361,8 @@ export function IssueMarginPanel({
   const blocks = waiting.map((key) => ({ key, title: issueTitleIn(waitingTitles.data, key) }));
   // The line of a read that stands failed (`standsFailed`) goes once the read answers; a refresh
   // that fails over an answer the read holds draws no line, and the row keeps what that answer
-  // drew. Each titles' line notes the press of its own Retry and the read it was pressed for
-  // (`useTitlesRetry`), and hands the focus Retry held on in the row only once the read the row
+  // drew. Each titles' Retry notes its own press and the read it was pressed for
+  // (`useTitlesRetry`), and hands the focus it held on in the row only once the read the row
   // draws now is that read and has answered after it failed: the read the press sent, or a read
   // of the same issues an event sent while it was out, which reached what the press asked for, so
   // the row takes it for the press's answer. The answer of another set is not: one changed in

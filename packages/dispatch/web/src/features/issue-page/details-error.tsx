@@ -123,49 +123,63 @@ export function useRetryHandOff(to: Parameters<typeof useFocusHandOff>[0]): Retr
 
 /** The Retry of a row's names read of titles (`IssueMargin.tsx`), whose key changes with the set
  *  of issues the row lists, spread on its line (`DetailsErrorLine`): it sends the read under
- *  `queryKey` again, joining one that is out (`cancelRefetch: false`, as `retryRead` does), and
- *  notes that key as the read it was pressed for; as Retry leaves the page with the focus after
- *  that press (`useRetryHandOff`), it hands the focus on to what `to` returns only where the read
- *  now drawn is under that key. A line that goes under another key went with the set of issues the
- *  row lists. The press is forgotten once the read it sent, or joined, ends while the row draws
- *  another key, even where the line stays over another set's read that stands failed too: a
- *  query leaves the cache once nothing has observed it, and no fetch of it is out, for its
- *  `gcTime`, so the row taken back to the key pressed for can draw a read built afresh, which has
- *  not failed, and its line goes with no answer to the press. The cache can drop that read only
- *  once its fetch has ended with the row on another key, so the press is forgotten by then. A
- *  press whose read is still out as the row draws that key again is kept: drawing another key
- *  stops no read (TanStack only stops the retries of a read nothing observes, and a names read
- *  reads no abort signal), so the line stands until that read ends, and its going then is the
- *  press's answer. While the row draws that key, the key alone tells that the read answered the
- *  press: the line stands while the read stands failed (`standsFailed`), and a read that has
- *  failed stops standing failed only by holding its own answer - a names read draws no
- *  placeholder once it failed (`keptUntilFailed`) - or by being reset or taken out of the cache,
- *  which the app does to a read the row observes only as the reader signs out and the page goes.
- *  A refresh that fails over that answer before the page draws it draws no line, and the focus
- *  goes on all the same. */
+ *  `queryKey` again, joining one that is out (`retryRead`), and notes its press and that key as
+ *  the read it was pressed for; as Retry leaves the page with the focus after that press
+ *  (`useFocusHandOff`, with the press as its `pressed`), it hands the focus on to what `to`
+ *  returns only where the read now drawn is under that key. A line that goes under another key
+ *  went with the set of issues the row lists. The press is the hook's own, not the line's
+ *  (`retried`): the row keeps one line across a change of the set, and that line says the
+ *  failures of the read it draws now, so its failure changes as the set does, while the press's
+ *  read is still out. The press is forgotten once the read it sent, or joined, fails, or ends
+ *  while the row draws another key, even where the line stays over another set's read that
+ *  stands failed too: a query leaves the cache once nothing has observed it, and no fetch of it
+ *  is out, for its `gcTime`, so the row taken back to the key pressed for can draw a read built
+ *  afresh, which has not failed, and its line goes with no answer to the press. The cache can
+ *  drop that read only once its fetch has ended and the row draws another key: where it ended
+ *  under another key the press is forgotten then; where it ended under the key pressed for, it
+ *  failed, which forgot the press, or answered, and the line went with that answer, which ended
+ *  the press there. A press whose read is still out as the row draws that key again is kept:
+ *  drawing another key stops no read but its retries, or, offline, a read paused before it held
+ *  anything, which TanStack cancels (a names read reads no abort signal), so the line stands
+ *  until that read ends, and its going then is the press's answer. While the row draws that key,
+ *  the key alone tells that the read answered the press: the line stands while the read stands
+ *  failed (`standsFailed`), and a read that has failed stops standing failed only by holding its
+ *  own answer - a names read draws no placeholder once it failed (`keptUntilFailed`) - or by
+ *  being reset or taken out of the cache, which the app does to a read the row observes only as
+ *  the reader signs out and the page goes. A refresh that fails over that answer before the page
+ *  draws it draws no line, and the focus goes on all the same. */
 export function useTitlesRetry(
-  read: Parameters<typeof retryRead>[0],
+  read: Parameters<typeof retryRead<{ readonly isError: boolean }>>[0],
   queryKey: QueryKey,
-  to: Parameters<typeof useRetryHandOff>[0]
-): RetryHandOff & { readonly onRetry: () => void } {
+  to: Parameters<typeof useFocusHandOff>[0]
+): { readonly onRetry: () => void; readonly retryRef: RefCallback<HTMLElement> } {
   const key = hashKey(queryKey);
   // The key the row draws now, for a press's read that ends renders after the press.
   const drawn = useRef(key);
   drawn.current = key;
+  const pressed = useRef(false);
   const pressedFor = useRef<string | null>(null);
-  const handOff = useRetryHandOff((left) => (pressedFor.current === key ? to(left) : null));
-  const { retried } = handOff;
+  const retryRef = useFocusHandOff(
+    (left) => (pressedFor.current === key ? to(left) : null),
+    pressed
+  );
   const onRetry = () => {
-    pressedFor.current = key;
-    void read.refetch({ cancelRefetch: false }).then(() => {
-      // The read the press was for ended while the row drew another key: no later going of the
-      // line is its answer, even back under the key it was made for.
-      if (pressedFor.current === drawn.current) return;
+    const pressedKey = key;
+    pressedFor.current = pressedKey;
+    pressed.current = true;
+    void retryRead(read)().then((answer) => {
+      // A press made since under another key is answered by its own read.
+      if (pressedFor.current !== pressedKey) return;
+      // `answer` is the state of the read the row draws now, which is the read pressed for while
+      // the row draws its key: answered, the line goes with it, and its going answers the press.
+      if (drawn.current === pressedKey && !answer.isError) return;
+      // The read failed, so the press took nothing away, or it ended while the row drew another
+      // key, so no later going of the line is its answer, even back under the key it was made for.
       pressedFor.current = null;
-      retried.current = false;
+      pressed.current = false;
     });
   };
-  return { ...handOff, onRetry };
+  return { onRetry, retryRef };
 }
 
 /** The Retry of a read of Details that failed: it sends the read again, and a press while that
@@ -177,11 +191,12 @@ export function useTitlesRetry(
  *  query's `isFetching`) but stays enabled, because Chromium moves the focus of a control that
  *  turns disabled to the page's body, which would lose a reader who pressed Retry by keyboard. A
  *  read that fails again is drawn afresh (`errorUpdateCount`), so a screen reader says it again
- *  even in the same words. */
-export function retryRead(read: {
-  readonly refetch: (options: { cancelRefetch: boolean }) => Promise<unknown>;
-}): () => void {
-  return () => void read.refetch({ cancelRefetch: false });
+ *  even in the same words. It returns the read's promise, which holds the read's state once that
+ *  read ends, for a caller that reads how it ended. */
+export function retryRead<Answer>(read: {
+  readonly refetch: (options: { cancelRefetch: boolean }) => Promise<Answer>;
+}): () => Promise<Answer> {
+  return () => read.refetch({ cancelRefetch: false });
 }
 
 /** What a row reads of a write whose failure it says: `useMutation`'s state of its last press. */
