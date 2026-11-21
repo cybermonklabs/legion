@@ -3,6 +3,7 @@ package writerhold
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -229,4 +230,32 @@ func TestHoldReleaseAfterAStreamsCensus(t *testing.T) {
 	code, _, _ = h.run(actionRelease, "--hold", id, "--reason", "the census is done")
 	require.Zero(t, code, "release after the census")
 	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
+}
+
+// StreamsCommandOn runs the held words on a stack its caller names: `streams update` through it,
+// with the stack's broker client and Operator, prepares and sets a streams-update hold, runs the
+// update and writes its done entry, as StreamsCommand does through the flags. The control is the
+// same run with no Operator to reach, which stops before any hold.
+func TestStreamsCommandOnRunsAHeldWordOnTheCallersStack(t *testing.T) {
+	h := newHeldStack(t)
+	h.seedProtectedStreams()
+	args := append([]string{"update", "--reason", "the seam", "--replicas", "3", "--minters-report", h.report,
+		"--nats", h.s.Cluster.URL(), "--probe-token-file", "/dev/null"}, commonArgs...)
+	deps := StreamsDeps{
+		Records:  func(context.Context, bool) (*holdrecord.Client, error) { return h.s.Broker.Client(t), nil },
+		Operator: func(context.Context) (*Operator, error) { return h.op, nil },
+	}
+	var stdout, stderr bytes.Buffer
+	require.Zero(t, StreamsCommandOn(context.Background(), args, &stdout, &stderr, deps), "%s%s", stdout.String(), stderr.String())
+	id := h.row().HoldID
+	require.Contains(t, h.journalCommands(id), CommandStreamsUpdate+" done")
+	code, _, _ := h.run(actionRelease, "--hold", id, "--reason", "the seam's update is done")
+	require.Zero(t, code)
+
+	deps.Operator = func(context.Context) (*Operator, error) { return nil, errors.New("no hub here") }
+	stdout.Reset()
+	stderr.Reset()
+	require.Equal(t, 1, StreamsCommandOn(context.Background(), args, &stdout, &stderr, deps), "control")
+	require.Contains(t, stderr.String(), "no hub here")
+	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase, "control: a hold was set with no hub")
 }

@@ -188,3 +188,39 @@ func TestHoldAnOlderJournalPutBackIsUnknown(t *testing.T) {
 	code, _, _ := h.run(actionRelease, "--hold", id, "--reason", "over the newest journal")
 	require.Zero(t, code, "control: release over the newest journal")
 }
+
+// A `hold release` killed between its PUT and its done entry leaves the row released and its
+// intent pending, so the journal holds no end and the end rule cannot apply. Its rerun sends no
+// PUT, writes the done entry, and from then the end rule refuses a command even with the held row
+// put back. It fails at a release that never writes its done entry, or whose rerun on a released
+// row writes nothing.
+func TestHoldAReleaseKilledBeforeItsDoneEntry(t *testing.T) {
+	h := newHeldStack(t)
+	h.seedProtectedStreams()
+	ctx := context.Background()
+	id := h.s.Prepare(t, holdrecord.WorkflowStreamsUpdate)
+	h.s.HoldWithoutTheSteps(t, id)
+	held := h.rowText()
+
+	// The release, killed after its PUT.
+	_, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandRelease}, nil)
+	require.NoError(t, err)
+	_, err = h.s.Records.MoveRow(ctx, h.row().Gen, natsgrant.OperatorPhaseReleased, id, "the release, killed after its PUT")
+	require.NoError(t, err)
+	last := h.lastEntry(id)
+	require.Equal(t, holdrecord.CommandRelease+" intent", last.Command+" "+last.State)
+	released := h.rowText()
+
+	code, stdout, _ := h.run(actionRelease, "--hold", id, "--reason", "the rerun of the killed release")
+	require.Zero(t, code, "the rerun of a release killed before its done entry")
+	require.Contains(t, stdout, "its release's done entry is now written")
+	last = h.lastEntry(id)
+	require.Equal(t, holdrecord.CommandRelease+" done", last.Command+" "+last.State, "the rerun wrote no done entry")
+	require.Equal(t, released, h.rowText(), "the rerun moved the row")
+
+	h.putRowBack(held)
+	code, _, stderr := h.streamsRun(nil, "update", "--hold", id)
+	require.Equal(t, 1, code, "an update after the rerun's done entry, the held row put back")
+	require.Contains(t, stderr, "the hold has ended: hold release is done")
+	h.putRowBack(released)
+}

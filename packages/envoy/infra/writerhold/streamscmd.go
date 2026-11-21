@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -95,6 +96,39 @@ type streamsEnv struct {
 // cutover, hub-restore, streams-update's own and streams-census), so its reconcile covers each.
 func StreamsCommand(ctx context.Context, args []string, stdout, stderr io.Writer, recorded RecordedSessionConsumers, stores StreamIDWriter) int {
 	return runStreams(ctx, args, stdout, stderr, streamsEnv{env: realEnv(), recorded: recorded, stores: stores})
+}
+
+// StreamsDeps are what StreamsCommandOn reaches outside the process, in place of the broker,
+// Secret Manager and the hub its flags name: a test of another package runs the held words on its
+// own stack with them (writerhold/holdtest). The hold's flags are still required and checked, and
+// their values are not read.
+type StreamsDeps struct {
+	// Records opens the operator's client of the broker's hold routes, signing when signing.
+	Records func(ctx context.Context, signing bool) (*holdrecord.Client, error)
+	// Operator is the operator's reach of the hub.
+	Operator func(ctx context.Context) (*Operator, error)
+	// Now is the clock the minter report is checked by; time.Now when nil.
+	Now func() time.Time
+	// Recorded and Stores are the census's reader and writer, as StreamsCommand takes them.
+	Recorded RecordedSessionConsumers
+	Stores   StreamIDWriter
+}
+
+// StreamsCommandOn is StreamsCommand with deps in place of the broker, Secret Manager and hub its
+// flags name.
+func StreamsCommandOn(ctx context.Context, args []string, stdout, stderr io.Writer, deps StreamsDeps) int {
+	now := deps.Now
+	if now == nil {
+		now = time.Now
+	}
+	e := env{
+		records: func(ctx context.Context, _ options, signing bool) (*holdrecord.Client, error) {
+			return deps.Records(ctx, signing)
+		},
+		hub: func(ctx context.Context, _ options) (*Operator, error) { return deps.Operator(ctx) },
+		now: now,
+	}
+	return runStreams(ctx, args, stdout, stderr, streamsEnv{env: e, recorded: deps.Recorded, stores: deps.Stores})
 }
 
 func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e streamsEnv) int {
