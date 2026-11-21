@@ -8662,10 +8662,10 @@ func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T)
 //
 // The row lets the first process's batches through one at a time on an exclusive lock of the
 // cursor's table (keywordFillStepper) and kills the process, the lock held, once the cursor has
-// reached the 2,000th event: no batch of it is in flight then, and none commits after, so the
-// cursor read under the lock is the one it left, however fast the database writes the backlog and
-// however long the test waits between its reads. Every wait of the row is bounded by the test
-// binary's deadline alone.
+// reached the 2,000th event: no batch of it can commit after the cursor read under the lock, so
+// that cursor is the one it left, however fast the database writes the backlog and however long
+// the test waits between its reads. Every wait of the row is bounded by the test binary's deadline
+// alone.
 func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
@@ -8673,13 +8673,13 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	ids := writeKeywordFillComments(t, database, 20000)
 	last := ids[len(ids)-1]
 	url := databaseURLOf(t, database)
-	// What the waits for a process to take the hold get: the binary's deadline less 30 s for the
-	// row's cleanups, a day where the binary has none.
-	patience := testwait.Bounded(t, 24*time.Hour, 30*time.Second)
+	// What a wait for a process to take the hold gets, read as it starts: the binary's deadline
+	// less 30 s for the row's cleanups, a day where the binary has none.
+	patience := func() time.Duration { return testwait.Bounded(t, 24*time.Hour, 30*time.Second) }
 
 	step := keywordFillStepper(t, database)
 	first := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
-	firstHolder := keywordFillHolder(t, first, patience)
+	firstHolder := keywordFillHolder(t, first, patience())
 	// Four batches of 500 events, out of forty.
 	left := step.through(t, ids[1999])
 	first.kill(t)
@@ -8690,7 +8690,7 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	kept := keywordRowsThrough(t, database, left)
 
 	second := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
-	secondHolder := keywordFillHolder(t, second, patience)
+	secondHolder := keywordFillHolder(t, second, patience())
 	testwait.UntilPolling(t, 200*time.Millisecond, "the new process to write every event's rows", func() (int64, bool) {
 		cursor := textversionstest.Cursor(t, database)
 		return cursor, cursor == last
@@ -8895,8 +8895,10 @@ func keywordFillLockCursorTable(t *testing.T, database *store.Store) pgx.Tx {
 // (QueuedBehind, through the holder's own connection), and ends the first: the batch runs, and the
 // second lock is granted once it has committed or rolled back, before any batch begun after it.
 // So the cursor read under the second lock is the one that batch left, and no batch runs while
-// this test reads it or waits, however long. A batch that gives its 5 s wait on the lock up only
-// lets a step pass none.
+// this test reads it or waits, however long. A batch that gives its 5 s wait on the lock up before
+// the first lock ends, as when this test stalls that long inside a step, lets that step pass none,
+// and the next step tries again: only a stall at every step keeps the row from going on, and the
+// binary's deadline ends that.
 func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -8917,12 +8919,21 @@ func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 		if err != nil {
 			t.Fatalf("begin the next lock of the keyword fill's cursor: %v", err)
 		}
-		t.Cleanup(func() { _ = next.Rollback(context.Background()) })
+		// A failure while the next lock's request waits ends the lock it waits behind first and
+		// then waits for the request, so no two statements ever run on its connection at once.
+		prev, locked, asked := s.held, make(chan error, 1), false
+		t.Cleanup(func() {
+			if asked {
+				_ = prev.Rollback(context.Background())
+				<-locked
+			}
+			_ = next.Rollback(context.Background())
+		})
 		var pid uint32
 		if err := next.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
 			t.Fatalf("read the next lock's backend: %v", err)
 		}
-		locked := make(chan error, 1)
+		asked = true
 		go func() {
 			_, err := next.Exec(ctx, `lock table search_text_versions_fill in exclusive mode`)
 			locked <- err
@@ -8937,7 +8948,9 @@ func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 		if err := s.held.Rollback(ctx); err != nil {
 			t.Fatalf("let a batch of the keyword fill through: %v", err)
 		}
-		if err := testwait.Receive(t, "the next lock of the keyword fill's cursor once the batch ended", locked); err != nil {
+		err = testwait.Receive(t, "the next lock of the keyword fill's cursor once the batch ended", locked)
+		asked = false
+		if err != nil {
 			t.Fatalf("lock the keyword fill's cursor after the batch: %v", err)
 		}
 		s.held = next
