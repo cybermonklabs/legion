@@ -3011,9 +3011,9 @@ package api
 // packages/pi-legion, packages/pi-shared, packages/contracts or packages/claude-envoy reads a
 // GIT_CONFIG variable, so they move no plugin's reader and nothing is served down for them. The new
 // names are the runtime's own (runtimeOwned), so CheckPod refuses one in
-// `runtime.kubernetes.pod.env` and ValidateSpawnSpec refuses one in a spawn spec's `Env`: an
-// operator's pair that would replace one of the four settings is refused when the configuration
-// loads, rather than replacing that setting with no word.
+// `runtime.kubernetes.pod.env` when the configuration loads, and ValidateSpawnSpec refuses one in a
+// spawn spec's `Env` at that spawn's launch: a pair that would replace one of the four settings is
+// refused, naming it, rather than replacing that setting with no word.
 // The bump relaunches every registered claim onto the new plugin, as every bump does (the
 // stale-plugin lane, internal/daemon's refreshStalePlugins), and that relaunch reaches each claim
 // at its own time, so for the length of the wave some pods still run a plugin below 209: a

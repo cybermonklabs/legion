@@ -19,8 +19,9 @@ body: |-
   and `-c` on the feed's fetch and the cache's git, whose repack keeps its own. Every shared clone
   takes them in its own configuration, a host clone of the tmux runtime too, where they only bound
   git's pack windows. The runtime owns the four new pairs' names, `GIT_CONFIG_KEY_5` to `_8` and
-  `GIT_CONFIG_VALUE_5` to `_8`, so a `runtime.kubernetes.pod.env` or a spawn spec's `Env` that sets
-  one is refused at load, naming it, rather than replacing one of the four settings.
+  `GIT_CONFIG_VALUE_5` to `_8`, so a `runtime.kubernetes.pod.env` that sets one is refused at load,
+  and a spawn spec's `Env` that sets one is refused at its launch, each naming it, rather than
+  replacing one of the four settings.
 time: 2026-11-20T10:48:15Z
 custom:
     Issue: pr4553

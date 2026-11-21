@@ -28,8 +28,10 @@ wrapper=/opt/legion/bin/git
 # `--config`, which that read takes as well. Any other pair runs the real jj as soon as its second
 # word is read. A push's scan goes on past the pair, since a `-R` written after the subcommand
 # names the repository as one written before it does, and the last `-R` written is the one jj
-# opens. A `-R` clustered after another short option needs no reading: the only short options of
-# the two commands that take no value are `-h` and the upload's `-n`, neither of which pushes.
+# opens. It stops at the first `--` past the pair, after which jj refuses a `-R` as an unexpected
+# argument, so a `-R` is read only before that `--`. A `-R` clustered after another short option
+# needs no reading: the only short options of the two commands that take no value are `-h` and the
+# upload's `-n`, neither of which pushes.
 repository=
 takes=
 first=
@@ -47,6 +49,7 @@ for arg; do
     --at-operation | --at-op | --color | --config | --config-file) takes=other ;;
     -R?*) repository=${arg#-R} ;;
     --repository=*) repository=${arg#--repository=} ;;
+    --) [ -z "$second" ] || break ;;
     -*) ;;
     *)
       if [ -z "$first" ]; then

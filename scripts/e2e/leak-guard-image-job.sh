@@ -86,8 +86,8 @@
 #   1  the Job ran and a check did not hold. Its log, printed above the verdict, says which.
 #   2  the harness could not run: a usage error, a missing input, no Kubernetes credential or a
 #      namespace that refuses a Job, a Job that started no pod, a log that could not be read, or a
-#      log with no `JOB-RESULT` line in it. Nothing is proved either way. A run whose checks all
-#      held and whose Job's delete failed exits 2 as well: it left a Job behind, and the verdict
+#      log with no `JOB-RESULT` line in it. Nothing is proved either way. A run whose Job's delete
+#      failed exits 2 as well, whatever its checks found: it left a Job behind, and the verdict
 #      printed above the exit line says what its checks found.
 #   3  the Job did not reach a verdict inside its deadline. Nothing is proved either way.
 #

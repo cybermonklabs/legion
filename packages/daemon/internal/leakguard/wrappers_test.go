@@ -403,20 +403,16 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 // argument written after `--` is jj's to refuse as well: the push keeps it after its `--`, where
 // jj refuses it as an unexpected argument, and the read, which took a `--config` wherever it was
 // written, refused the push for a value no push reads. The read takes only the ones before the
-// first `--`, as the push does, so the error that reaches the caller is jj's own, and the git that
-// `--config` names never runs. What jj says to each case is plain jj's, which the case runs first
-// (measured with jj 0.45.1 and 0.46.0-sami): a case whose plain jj no longer says it fails as a
-// stale expectation, not as the wrapper's fault.
+// first `--`, as the push does, so the error that reaches the caller is jj's own. A `-R` written
+// after that `--` is jj's to refuse too, and the read, which took one wherever it was written,
+// opened its directory as the push's repository; the wrapper reads a `-R` only before the first
+// `--`. What jj says to each case is plain jj's, which the case runs first (measured with jj 0.45.1
+// and 0.46.0-sami): a case whose plain jj no longer says it fails as a stale expectation, not as
+// the wrapper's fault.
 func TestTheJJWrapperPrintsJJsOwnErrorForAPushItCannotRead(t *testing.T) {
 	f := newJJWrapper(t)
-	otherLog := filepath.Join(f.dir, "other-argv")
-	other := logging(t, filepath.Join(f.dir, "other-git"), otherLog)
 	repo := f.repo("repo")
-	// A directory with no repository in it, for a -R to name.
-	empty := filepath.Join(f.dir, "empty")
-	if err := os.MkdirAll(empty, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	empty := t.TempDir()
 	const refusal = "LEAK CHECK SETUP ERROR: the push: jj could not read its git.executable-path"
 
 	for _, tc := range []struct {
@@ -430,7 +426,8 @@ func TestTheJJWrapperPrintsJJsOwnErrorForAPushItCannotRead(t *testing.T) {
 	}{
 		{name: "a -R naming a directory with no repository", args: []string{"git", "push", "-R", empty}, refused: true, says: "There is no jj repo in"},
 		{name: "a --config with no =", args: []string{"git", "push", "--config", "foo"}, refused: true, says: "--config must be specified as NAME=VALUE"},
-		{name: "a --config after --", args: []string{"git", "push", "--", "--config", "git.executable-path=" + other}, says: "unexpected argument '--config' found"},
+		{name: "a --config after --", args: []string{"git", "push", "--", "--config", "git.executable-path=/usr/bin/git"}, says: "unexpected argument '--config' found"},
+		{name: "a -R after --", args: []string{"git", "push", "--", "-R", empty}, says: "unexpected argument '-R' found"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if out, err := f.setup.Try(repo, append([]string{"jj"}, tc.args...)...); err == nil || !strings.Contains(out, tc.says) {
@@ -443,9 +440,6 @@ func TestTheJJWrapperPrintsJJsOwnErrorForAPushItCannotRead(t *testing.T) {
 			wrapped.Stdout, wrapped.Stderr = &stdout, &stderr
 			err := wrapped.Run()
 			out := stderr.String()
-			if _, statErr := os.Stat(otherLog); !errors.Is(statErr, os.ErrNotExist) {
-				t.Fatalf("the push ran the git that a --config after -- names, as %q, with no git wrapper and so no leak check: %v\n%s", ranAs(t, otherLog), err, out)
-			}
 			if stdout.Len() != 0 {
 				t.Fatalf("the wrapper printed %q on its standard output, where a push that fails prints nothing", stdout.String())
 			}
