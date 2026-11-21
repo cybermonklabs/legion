@@ -2206,3 +2206,70 @@ func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []
 	}
 	return ids
 }
+
+// keywordFillDeferredWatch is how long a process booted with DISPATCH_SEARCH_FILL=off is watched,
+// from its admission to the registry of live server processes, for a keyword fill that started
+// anyway: longer than the 10 s a standby waits between its tries for the hold, where a fill that
+// started takes the hold the moment its process serves and writes the waiting events' rows.
+const keywordFillDeferredWatch = 15 * time.Second
+
+// DISPATCH_SEARCH_FILL decides whether a serving process starts the keyword fill. Booted with it
+// off, a process that the registry of live server processes admitted, and so serves, logs once
+// that the fill is deferred, and for keywordFillDeferredWatch takes no hold of the fill's and
+// writes no row and no cursor, though 50 events wait for their rows and 50 more are written while
+// it serves. Booted with it on, on a database of its own holding the same events, a process takes
+// the hold, writes every event's row, and logs no deferral.
+func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
+	t.Run("off", func(t *testing.T) {
+		database := storetest.Open(t)
+		textversionstest.SeedIssue(t, database)
+		writeKeywordFillComments(t, database, 50)
+		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+		process.waitHealthy(t)
+		awaitRegistryAdmission(t, database, process)
+		writeKeywordFillComments(t, database, 50)
+		admitted := time.Now()
+		for time.Since(admitted) < keywordFillDeferredWatch {
+			requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v after the process was admitted", time.Since(admitted).Round(time.Millisecond)))
+			time.Sleep(250 * time.Millisecond)
+		}
+		requireNoKeywordFillWrite(t, database, "at the end of the watch")
+		if lines := process.logLines(`msg="`+searchFillDeferredLine+`"`, "setting=DISPATCH_SEARCH_FILL value=off"); len(lines) != 1 {
+			t.Fatalf("the process logged the deferral %d times; want once:\n%s", len(lines), process.Output.String())
+		}
+		for _, line := range []string{keywordFillTookLine, keywordFillStandbyLine} {
+			if process.logged(line) {
+				t.Fatalf("the process logged %s; want a keyword fill that never started:\n%s", line, process.Output.String())
+			}
+		}
+	})
+	t.Run("on", func(t *testing.T) {
+		database := storetest.Open(t)
+		textversionstest.SeedIssue(t, database)
+		before := writeKeywordFillComments(t, database, 50)
+		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "on"}})
+		process.waitHealthy(t)
+		process.waitForLog(t, 30*time.Second, keywordFillTookLine)
+		after := writeKeywordFillComments(t, database, 50)
+		textversionstest.AwaitRows(t, database, append(before, after...), time.Minute, nil)
+		if process.logged(searchFillDeferredLine) {
+			t.Fatalf("the process logged the deferral with DISPATCH_SEARCH_FILL=on:\n%s", process.Output.String())
+		}
+	})
+}
+
+// awaitRegistryAdmission waits up to 30 s for the registry of live server processes to hold a row,
+// which on a database no other process serves is the process's own: once it is admitted, the
+// process serves, and a keyword fill it started takes its hold.
+func awaitRegistryAdmission(t *testing.T, database *store.Store, process *dispatchProcess) {
+	t.Helper()
+	if !testwait.Holds(30*time.Second, 50*time.Millisecond, func() bool {
+		var rows int
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from server_processes`).Scan(&rows); err != nil {
+			t.Fatalf("read the registry of live server processes: %v", err)
+		}
+		return rows > 0
+	}) {
+		t.Fatalf("the registry of live server processes admitted no process within 30 s:\n%s", process.Output.String())
+	}
+}

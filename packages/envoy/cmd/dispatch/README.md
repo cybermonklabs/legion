@@ -1605,6 +1605,9 @@ A lease taken per pass would move the fill from one process to another at each p
 The fill starts only after the server listens and the registry of live server processes admits this process (Running more than one process, above).
 So the fill never runs inside a migration, and it never runs in a process that the registry refuses or has not admitted yet.
 A process that the registry has not admitted serves no answers read, so the pause below would read nothing.
+`DISPATCH_SEARCH_FILL=off`, read once at boot, defers the fill: the process starts no fill, takes no hold, writes no row of the table or its cursor, and logs `dispatch: the keyword fill is deferred; this process fills no keyword table` once (`setting=DISPATCH_SEARCH_FILL value=off`).
+No route reads the table yet (Search, below), so search answers alike with the fill off, and a later boot with it `on` or unset starts the fill from the cursor where it stands.
+`on` and unset start the fill; any other value refuses the boot, naming the variable.
 
 - The hold has the values of the delivery intakes' holds.
   It lasts 15 s on the database's clock after each renewal, the holder renews it every 5 s, and the holder stops writing 2 s before it lapses.
