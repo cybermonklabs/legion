@@ -1,9 +1,5 @@
 import { type IssueStatus, statusText } from "../features/project/board-model";
-import {
-  pageStatusDoneText,
-  pageStatusIdleText,
-  pageStatusProgressText,
-} from "../theme/classes";
+import { pageStatusDoneText, pageStatusIdleText, pageStatusProgressText } from "../theme/classes";
 
 /**
  * An issue's status mark: one shape and one colour for each of three groups of status, the
@@ -54,7 +50,14 @@ export interface GlyphShape {
 /** The ring the two circles are drawn on. */
 const RING: GlyphShape = {
   tag: "circle",
-  attributes: { cx: "8", cy: "8", fill: "none", r: "5.25", stroke: "currentColor", "stroke-width": "1.5" },
+  attributes: {
+    cx: "8",
+    cy: "8",
+    fill: "none",
+    r: "5.25",
+    stroke: "currentColor",
+    "stroke-width": "1.5",
+  },
 };
 
 /** Each mark's shapes, in the 16 by 16 box `GLYPH_VIEW_BOX` names, drawn in the mark's colour. */
@@ -72,7 +75,10 @@ export const GLYPH_SHAPES: Readonly<Record<StatusGlyphText, readonly GlyphShape[
       },
     },
   ],
-  "◐": [RING, { tag: "path", attributes: { d: "M8 2.75a5.25 5.25 0 0 0 0 10.5z", fill: "currentColor" } }],
+  "◐": [
+    RING,
+    { tag: "path", attributes: { d: "M8 2.75a5.25 5.25 0 0 0 0 10.5z", fill: "currentColor" } },
+  ],
   "○": [RING],
 };
 
@@ -92,9 +98,7 @@ export function statusGlyphLabelling(
   status: string,
   decorative: boolean
 ): Readonly<Record<string, string>> {
-  return decorative
-    ? { "aria-hidden": "true" }
-    : { "aria-label": statusText(status), role: "img" };
+  return decorative ? { "aria-hidden": "true" } : { "aria-label": statusText(status), role: "img" };
 }
 
 const SVG = "http://www.w3.org/2000/svg";

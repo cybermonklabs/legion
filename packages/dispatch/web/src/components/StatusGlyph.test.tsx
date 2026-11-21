@@ -2,11 +2,7 @@ import { expect, test } from "bun:test";
 import { render } from "@testing-library/react";
 
 import { issueStatuses, statusText } from "../features/project/board-model";
-import {
-  pageStatusDoneText,
-  pageStatusIdleText,
-  pageStatusProgressText,
-} from "../theme/classes";
+import { pageStatusDoneText, pageStatusIdleText, pageStatusProgressText } from "../theme/classes";
 import { StatusGlyph } from "./StatusGlyph";
 import { statusGlyph, statusGlyphElement, statusTone } from "./status-glyph";
 
@@ -20,18 +16,22 @@ const HALF = [
 const RING = [["circle", "none", "currentColor"]];
 
 /** Every status Dispatch knows, with the shape and the colour of its group. */
-const GROUPS: readonly [status: string, glyph: string, shapes: (string | null)[][], tone: string][] =
-  [
-    ["done", "✓", TICK, pageStatusDoneText],
-    ["in_progress", "◐", HALF, pageStatusProgressText],
-    ["testing", "◐", HALF, pageStatusProgressText],
-    ["needs_review", "◐", HALF, pageStatusProgressText],
-    ["triage", "○", RING, pageStatusIdleText],
-    ["backlog", "○", RING, pageStatusIdleText],
-    ["icebox", "○", RING, pageStatusIdleText],
-    ["todo", "○", RING, pageStatusIdleText],
-    ["retro", "○", RING, pageStatusIdleText],
-  ];
+const GROUPS: readonly [
+  status: string,
+  glyph: string,
+  shapes: (string | null)[][],
+  tone: string,
+][] = [
+  ["done", "✓", TICK, pageStatusDoneText],
+  ["in_progress", "◐", HALF, pageStatusProgressText],
+  ["testing", "◐", HALF, pageStatusProgressText],
+  ["needs_review", "◐", HALF, pageStatusProgressText],
+  ["triage", "○", RING, pageStatusIdleText],
+  ["backlog", "○", RING, pageStatusIdleText],
+  ["icebox", "○", RING, pageStatusIdleText],
+  ["todo", "○", RING, pageStatusIdleText],
+  ["retro", "○", RING, pageStatusIdleText],
+];
 
 /** What a drawn mark shows a reader and assistive technology. */
 function markOf(svg: Element | null | undefined) {
