@@ -46,8 +46,8 @@ func TestMayDecideAdmitsAMemberOfAGroupApprover(t *testing.T) {
 		{"a member of a stale group", KindAgentSecret, testGroupForm, testMember, stale, false},
 		{"the group's own form as a login", KindAgentSecret, testGroupForm, testGroupForm, fresh, false},
 		{"the group's address as a login", KindAgentSecret, testGroupForm, testGroup, fresh, false},
-		{"a person approver, that person", KindAgentSecret, "sami@example.com", "sami@example.com", fresh, true},
-		{"a person approver, a member", KindAgentSecret, "sami@example.com", testMember, fresh, false},
+		{"a person approver, that person", KindAgentSecret, "ada@example.com", "ada@example.com", fresh, true},
+		{"a person approver, a member", KindAgentSecret, "ada@example.com", testMember, fresh, false},
 		{"a machine login naming the group, a member", KindLauncherCredential, testGroupForm, testMember, fresh, false},
 	} {
 		if got := MayDecide(c.kind, c.approver, "", c.login, c.groups); got != c.want {
