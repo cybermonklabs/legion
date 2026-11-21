@@ -33,9 +33,8 @@ import { bash, closedPort, curl, verdict } from "./outside-path-reach-fixtures";
 
 const { check, directoryOf, listFile, planLists } = edgeFixtures(import.meta.url);
 
-// The rows run one after another, not concurrently, for the reason `outside-edge-refusals.test.ts`
-// gives: the end of each bounded child reads the whole process table and holds this process's
-// event loop meanwhile.
+// The rows run one after another, not concurrently, as `outside-edge-refusals.test.ts` says of its
+// own rows and why.
 describe(`${scriptName}: a signal`, () => {
   // A signal can come while the script reads its lists, before any probe, and a signal sent to the
   // script's own bash alone must end the run at once. Here a bash wrapper sends SIGTERM to that

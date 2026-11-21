@@ -23,9 +23,8 @@ import { bash, closedPort, curl, verdict } from "./outside-path-reach-fixtures";
 
 const { check, directoryOf, listFile, planLists } = edgeFixtures(import.meta.url);
 
-// The rows run one after another, not concurrently, for the reason `outside-edge-refusals.test.ts`
-// gives: the end of each bounded child reads the whole process table and holds this process's
-// event loop meanwhile.
+// The rows run one after another, not concurrently, as `outside-edge-refusals.test.ts` says of its
+// own rows and why.
 describe(`${scriptName}: the inputs it refuses`, () => {
   /** One input the script refuses before it probes anything: the variables a row sets on top of
    *  the plan's lists and a stand-in address (`null` unsets one, and `list:<text>` is a file

@@ -55,13 +55,13 @@ const { check, directoryOf, httpsCurl, listFile, planLists, scratch } = edgeFixt
 /** The refusal lines of five fields: each has its unrouted control sent before it. */
 const fiveFields = refusals.filter((line) => line.expect === undefined);
 
-// The rows run one after another, not concurrently. Each waits for a bounded child, and the end of
-// each child reads the whole process table synchronously to kill what it left (`stopTree` in
-// `bounded-subprocess.ts`), which holds this process's event loop meanwhile. On a dev box of
-// 19,066 processes one bounded `true` took 6.1 to 8.5 s, and with these rows concurrent 13 of
-// their 63 runs were read past the 60 s bound at about 161 s though each had exited, a dash run
-// that stops at its first line among them. One at a time, no sibling's read holds the loop while a
-// run's bound is counting.
+// The rows run one after another, not concurrently. They were put so while the end of each
+// bounded child read the whole process table synchronously to kill what it left, which held this
+// process's event loop meanwhile: on a dev box of 19,066 processes one bounded `true` took 6.1 to
+// 8.5 s, and with these rows concurrent 13 of their 63 runs were read past the 60 s bound at about
+// 161 s though each had exited, a dash run that stops at its first line among them. That kill
+// (`stopTree` in `bounded-subprocess.ts`) now runs beside the event loop and holds it for one part
+// of a read at a time, and these rows have not been measured concurrent since.
 describe(scriptName, () => {
   test.skipIf(withoutTools)(
     "(a) passes when every refusal line is refused, the edge's own 404 with no marker or the answer its line names, after each routed control showed its marker",
