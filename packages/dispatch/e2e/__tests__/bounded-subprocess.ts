@@ -23,8 +23,9 @@
  * host `outside-path-reach-fixtures.ts` starts for the rows of the four `outside-path-reach*`
  * test files, and the processes `local-instance-support.test.ts` starts through its
  * `Supervisor`. Two subprocesses a row can wait for run outside it, as stated edges. One is the
- * psql of `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts`, and the scratch databases
- * of `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
+ * psql of `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts` and
+ * `node-projects-horizon-hold.test.ts`, and the scratch databases of
+ * `replace-blocks-guard.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and
  * `e2e/local-instance.ts` call too, so bounding that psql would reach past `e2e/__tests__/`. The
  * other is the `ps` that reads the process table on a machine with no `/proc`, here
  * (`processTable`) and in `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its

@@ -158,6 +158,66 @@ query() {
     fail "$section" "$what" "psql: $(<"$work/psql")"
 }
 
+# observe_horizon SECTION: the observer's half of an observation of the event horizon as
+# events.Horizon takes one (horizonObserveSQL): a statement in a transaction of its own, which
+# draws a transaction id, the observer's X, as it runs. Every transaction id drawn before X must
+# end before the observation is proven, so X decides which transactions hold it back. It sets
+# $answer to X and the database's clock as X was drawn, in seconds since the epoch, separated by a
+# space: one argument of own_horizon_hold.
+observe_horizon() {
+  query "$1" "observe the event horizon" \
+    "select pg_current_xact_id()::text || ' ' || extract(epoch from clock_timestamp())"
+}
+
+# own_horizon_hold SECTION OBSERVATION...: judges a hold against the newest of the OBSERVATIONs,
+# each one observe_horizon answered, that has waited 5 s (horizontest.OwnHoldBound). It sets
+# $answer to the oldest transaction of this run's database that has held that observation back,
+# named with its pid, its client, its start and its query, or to '' where none has; and
+# $observation_age to how long that observation has waited, in seconds, or to '' where none of them
+# has waited 5 s. One statement reads both, so the age is the one the judgement read.
+#
+# The horizon proves an observation only once no transaction id below the observer's is running
+# (events/horizon.go, "Safe horizon"). So a transaction holds an observation back only while it
+# holds an id drawn before the observer's, and one that drew its first id after the observation
+# does not hold that one back, however long ago it began. A transaction that holds it back has held
+# it for the shorter of the observation's age and the transaction's own, as horizontest's heldFor
+# reads a stall warning, both read on the database's clock. The newest observation that has waited
+# 5 s is the one to judge by: a transaction holding back an older one holds back that one too,
+# since its id is below both observers'. Two ids are compared by their age(), which one statement
+# reads against one counter. The holders are read as events.StallHolderSQL reads them, a prepared
+# transaction's as well as a backend's, the oldest id first. pg_stat_activity shows a session's
+# xact_start only to a superuser, a member of pg_read_all_stats or a member of the session's own
+# role, and a holder this role cannot date is not named.
+# shellcheck disable=SC2034 # $observation_age is this function's answer too, read by its caller
+own_horizon_hold() {
+  local section="$1" observation observer observed_at given=""
+  shift
+  for observation; do
+    read -r observer observed_at <<<"$observation"
+    given+="${given:+, }('$observer'::xid8, $observed_at)"
+  done
+  query "$section" "read the oldest transaction of this run's database that holds the event horizon back" "
+    with judged as (
+      select observer, now() - to_timestamp(observed_at) as waited
+      from (values $given) as observation (observer, observed_at)
+      where now() - to_timestamp(observed_at) >= interval '5 seconds'
+      order by waited limit 1
+    )
+    select coalesce((select extract(epoch from waited)::text from judged), '') || '|' || coalesce((select name from (
+      select format('backend %s (application %s), open since %s: %s', pid, coalesce(application_name, ''), xact_start,
+          left(coalesce(query, ''), 80)) as name, xact_start as started, age(backend_xid) as age
+      from pg_stat_activity
+      where backend_xid is not null and pid <> pg_backend_pid() and datname = current_database()
+      union all
+      select format('prepared transaction %s, prepared at %s', gid, prepared), prepared, age(transaction)
+      from pg_prepared_xacts where database = current_database()
+    ) holder, judged
+    where holder.age > age(judged.observer::xid) and now() - holder.started >= interval '5 seconds'
+    order by holder.age desc limit 1), '')"
+  observation_age="${answer%%|*}"
+  answer="${answer#*|}"
+}
+
 # The real `dispatch` CLI as an agent session runs it, in an environment holding only what this
 # driver names: nothing a calling shell exported (its Dispatch URL, token file or Envoy config)
 # reaches it. It reads the caller's $base, $token, $session, $work, $cli_entry and what cli_env

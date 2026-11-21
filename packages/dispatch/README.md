@@ -784,7 +784,10 @@ All nine drivers source `e2e/acceptance/lib.sh`, the preamble and the check voca
 share: it refuses an unset input or a missing command with exit 2, reads the bearer from
 `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
 script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
-`query` every driver checks with. `with-harness.sh` is no driver and sources none of it.
+`query` every driver checks with. It also holds `observe_horizon` and `own_horizon_hold`, with
+which `node-projects.sh` names a transaction of its own database that has held the event horizon
+back for 5 s (`e2e/__tests__/node-projects-horizon-hold.test.ts` drives both against a
+database). `with-harness.sh` is no driver and sources none of it.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
 (dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they

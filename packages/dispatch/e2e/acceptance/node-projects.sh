@@ -332,16 +332,23 @@ census_complete "$section" "after the backfill"
 # stands behind it - and with the debt clear there and the message's node written, that tick's
 # pass has finished.
 #
-# The tick reads an event only once the event horizon has passed it (events.Horizon). A
-# transaction of this run's own database that has been open for more than 5 s holding a
-# transaction id (events' horizonStallAfter, and horizontest.OwnHoldBound) holds the server's event
-# readers back, which is the defect the horizon's own test waits fail on (docs/testing.md, "A test
-# that waits for the event feed's first frame"), so it fails the section at once, named; the
-# holders are read as events.StallHolderSQL reads them, the oldest transaction id first, a prepared
-# transaction's as well as a backend's. pg_stat_activity shows a session's xact_start only to a
-# superuser, a member of pg_read_all_stats, or a member of the session's own role; a hold that
-# this role cannot date is named at the tick bound below without its start time. In harness mode
-# the server and this driver share one role, so the server's own holds are dated.
+# The tick reads an event only once the event horizon has passed it (events.Horizon), and it
+# observes the horizon on its own schedule, which the driver cannot see. So the driver observes
+# the horizon as the server does (observe_horizon) on each poll of the wait, about once a second.
+# A transaction of this run's own database that has held one of those observations back for 5 s
+# (horizontest.OwnHoldBound, and events' horizonStallAfter) holds back any observation the tick
+# took in that time, and with it the server's event readers, which is the defect the horizon's own
+# test waits fail on (docs/testing.md, "A test that waits for the event feed's first frame"), so it
+# fails the section at once, named. own_horizon_hold reads that hold as horizontest's heldFor
+# does, against the newest observation that has waited 5 s: a transaction holds it back only while
+# it holds a transaction id drawn before the observer's, and for the shorter of the observation's
+# age and its own. A transaction that read for longer than that and drew its first id a moment ago
+# fails nothing yet, however long ago it began; it is named once it has held its id while a later
+# poll's observation waited 5 s on it. The polls keep every observation, which the wait's own
+# bounds below bound. A hold that this role cannot date is named at the tick bound below:
+# pg_stat_activity shows a session's xact_start only to a superuser, a member of
+# pg_read_all_stats, or a member of the session's own role. In harness mode the server and this
+# driver share one role, so the server's own holds are dated.
 #
 # The wait is counted in the server's own work, not in time: the block-index tick's passes at its
 # 30 s period. duty records each pass in duty_passes, in the row keyed by the lease and the
@@ -377,6 +384,7 @@ query "$section" "an earlier build sends a direct message with its event and no 
   )
   select message.id::text || ' ' || event.id from message, event"
 read -r before written <<<"$answer"
+observations=()
 boundary="" ticks=0 last_pass=$SECONDS
 while :; do
   query "$section" "read the period the block-index tick last served" \
@@ -389,19 +397,12 @@ while :; do
     select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
        and exists (select 1 from graph_nodes where kind = 'message' and id = '$before')"
   [[ "$answer" == t ]] && break
-  query "$section" "read the oldest transaction of this run's database that holds the event horizon back" "
-    select coalesce((select name from (
-      select format('backend %s (application %s), open since %s: %s', pid, coalesce(application_name, ''), xact_start,
-          left(coalesce(query, ''), 80)) as name, xact_start as started, age(backend_xid) as age
-      from pg_stat_activity
-      where backend_xid is not null and pid <> pg_backend_pid() and datname = current_database()
-      union all
-      select format('prepared transaction %s, prepared at %s', gid, prepared), prepared, age(transaction)
-      from pg_prepared_xacts where database = current_database()
-    ) holder where started < now() - interval '5 seconds' order by age desc limit 1), '')"
+  observe_horizon "$section"
+  observations+=("$answer")
+  own_horizon_hold "$section" "${observations[@]}"
   [[ -z "$answer" ]] ||
     fail "$section" "no transaction of this run's database holds the event horizon back" \
-      "$answer has been open for more than 5 s holding a transaction id in this run's database, which holds the server's event readers back"
+      "$answer has held back an observation of the horizon that has waited $observation_age s on it, 5 s or more, holding a transaction id drawn before that observer's in this run's database, which holds the server's event readers back"
   ((ticks < quiet_ticks)) || {
     query "$section" "read the oldest transaction on the instance that holds the event horizon back" "
       select coalesce((select name from (
