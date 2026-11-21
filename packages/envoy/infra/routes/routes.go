@@ -3,7 +3,11 @@
 // once the env stage's roll has finished on every pod, saves each pod's identity and its nats
 // container's start. Check, which `routes check` runs once authorization is on every pod, then
 // asks whether authorization is in force, and whether any process other than the hub's own
-// servers could have read the route password since it was.
+// servers could have read the route password since it was. Both read the hub through a Source;
+// OpenKubectl's, the one the command uses (kubectl.go), reads the API server's view of the
+// StatefulSet's pods, each pod's monitoring port and route port through a port-forward of its
+// own, and its nats container's log with the container runtime's times (kubectl logs
+// --timestamps).
 //
 // The password reaches a peer the configuration does not name only once authorization applies:
 // an implicit route, which a server dials at an address another route's INFO names, carries the
