@@ -4,7 +4,6 @@ import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
-import { ruleVerdictOf } from "../s10-analysis";
 import {
   INPUTS_VERSION,
   type InventoryLine,
@@ -23,6 +22,7 @@ import {
   RULE_VERSIONS,
   recordedAnswersOf,
   reportedOutcomesOf,
+  ruleVerdictOf,
   STARTED_FILE,
   STARTED_REASON,
   UNJUDGED,
@@ -289,7 +289,7 @@ describe("s10_judge.py and the modules beside it", () => {
     }
     const outcomes = new Set<string>();
     const deviations = new Set<string>();
-    let recomputed = 0;
+    const recomputed = new Set<string>();
     for (const [name, stage] of stages) {
       expect(stage.record.state).toBe("written");
       expect(stage.record.counts?.requests).toBe(stage.outcomes.size);
@@ -314,10 +314,11 @@ describe("s10_judge.py and the modules beside it", () => {
         for (const version of given) {
           expect(rule).toMatchObject({ verdict: outcome.byRule[version].verdict });
         }
-        recomputed += 1;
+        if ("verdict" in rule) recomputed.add(rule.verdict);
       }
     }
-    expect(recomputed).toBeGreaterThan(0);
+    // Every verdict the driver's suite judges a request to, recomputed: a shrink fails here.
+    expect([...recomputed].sort()).toEqual(["approve", "request_changes"]);
     expect([...outcomes].sort()).toEqual(["deviation", "hold", "verdict"]);
     expect([...deviations].sort()).toEqual([...DEVIATION_KINDS].sort());
     const kept = (test: string): JudgedStage => {

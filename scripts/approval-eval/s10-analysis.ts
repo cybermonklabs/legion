@@ -2,34 +2,31 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { CaseRow, CaseVerdict } from "./build-corpus";
+import { claimStartOf } from "./claim-start";
 import {
   CannotRunError,
+  type Corpus,
   CorpusError,
-  count,
-  num,
+  numberOf,
   outDirectory,
-  parsed,
-  readCorpus,
-  recordOf,
   stringOf,
-  table,
 } from "./corpus-io";
+import { pageEventLog } from "./dispatch-read";
 import {
   BUILD_CHAIN_NAMES,
   type BuildChain,
   type ClaimDraw,
   chainRefusal,
-  claimDrawOf,
+  DRAW_CHAIN_NAMES,
   type FinalTestTree,
 } from "./draw-io";
+import { REPOSITORY_ROOT, type Registration, runDigestOf } from "./reserve";
+import { renderS10Analysis, statusWords } from "./s10-analysis-text";
 import {
-  CLAIM_RUN_VARIABLE,
-  REPOSITORY_ROOT,
-  RESERVE_VARIABLE,
-  type Registration,
-  runDigestOf,
-} from "./reserve";
-import {
+  AnswerLog,
+  type CandidateCounts,
+  DROP_SEEN,
+  type DropSeen,
   INVENTORY_FILE,
   type InventoryLine,
   type InventoryRequest,
@@ -40,41 +37,47 @@ import {
 } from "./s10-inputs-io";
 import {
   COUNTING_RULE,
+  DEVIATION_KINDS,
   HOLD_VERDICT,
   JUDGED_FILE,
+  JUDGES,
   type JudgedOutcome,
   type JudgedStage,
   judgedStageOf,
+  RESULTS_FILE,
   RULE_VERSIONS,
   type RuleVersion,
   recordedAnswersOf,
   reportedOutcomesOf,
+  ruleVerdictOf,
+  SANDBOX_DIRECTORY,
   type ToolCallDeviation,
+  UNJUDGED,
 } from "./s10-judged-io";
-import { type SendBackFigures, sendBackFiguresOf, sendBackTables } from "./send-back";
+import { type SendBackFigures, sendBackFiguresOf } from "./send-back";
 import { clopperPearsonUpper, DEFAULT_CONFIDENCE } from "./stats";
-import { TREES_FILE } from "./trees";
 
 /**
  * The claim's analysis of its one bundle, S10: the fifth command of point 13 of the registered
- * claim text, `analyze.ts --claim-s10`, by its points 6, 7, 10 and 12 (point 14 (d)). It reads the
- * claim run's build, draw, inputs and judged stages, calls nothing, and writes one file, its own
- * stage record (`s10-analysis.json`), which holds every figure it prints.
+ * claim text, `analyze.ts --claim-s10`, by its points 4, 6, 7, 10 and 12 (point 14 (d)). It reads
+ * the claim run's build, draw, inputs and judged stages, and Dispatch's event log through the
+ * build's pin, and writes one file, its own stage record (`s10-analysis.json`), which holds every
+ * figure it prints (`s10-analysis-text.ts` prints them).
  *
- * **The admission and the chain (point 14 (e)).** It runs only under the claim run's registered
- * read, as every stage of the run does: `readCorpus` admits the read for this run's digest
- * (`reserveAccessOf`, `runDigestOf`, where `--corpus`, `--draw`, `--claim-s10` and `--out` are path
- * options) and takes only the build of the claim run `APPROVAL_EVAL_CLAIM_RUN` names. Each stage is
- * then held to the one before it, by its own parser and the sha256 its successor recorded, so no
- * directory can be swapped between stages: the draw is the claim run's draw of the build's bytes
- * now (`claimDrawOf`); the judged stage (`judgedStageOf`, each file held to its record) was written
- * by this claim run under this read; the inputs stage it names has the bytes of `s10-inputs.json`
- * whose sha256 the judged stage recorded, is written, and names the same claim run, build and
- * read and the draw's two files by their bytes now; and its inventory has the sha256 both records
- * name. The analysis's own record names the claim run, the read, its digest and the sha256 of each
- * stage's record. A run into an `--out` holding another run's record is refused, and so is any
- * other file there; a run into its own run's `--out` must give its record byte for byte, and
- * writes nothing.
+ * **The admission and the chain (point 14 (e)).** It starts as every stage of the claim run after
+ * the draw starts (`claimStartOf`): admitted under the claim run's registered read before any file
+ * is opened, so a run under no read never meets a held case or prints one's id; then the build of
+ * that claim run, and the draw of the build's bytes now. Each later stage is held to the one
+ * before it, by its own parser and the sha256 its successor recorded, so no directory can be
+ * swapped between stages: the judged stage (`judgedStageOf`, every file it names held to its
+ * sha256) was written by this claim run under this read; the inputs stage it names has the bytes
+ * of `s10-inputs.json` whose sha256 the judged stage recorded, is written, and names the same
+ * claim run, build and read and the draw's two files by their bytes now; and its inventory has the
+ * sha256 both records name. The log is walked through the build's pin and must read as many events
+ * as the build read. The run's digest is taken once at the admission and again once every stage
+ * is read, and the two must agree. The record names the claim run, the read, the digest and the
+ * sha256 of each stage's record. `--claim-s10` and `--out` are paths only: no placement of either
+ * is checked, since every byte the analysis reads is held to the chain.
  *
  * **The inventory (point 6).** Every answered approval request among the draw's report cases is
  * one request, keyed by ask id, the rule the inputs stage wrote its inventory by (`inventoryOf`);
@@ -83,49 +86,65 @@ import { TREES_FILE } from "./trees";
  * named twice, an ask in two trees, a report case of no tree, an inventory line repeated by ask id
  * and two outcomes of one ask are each refused. Each request has one outcome: the judged stage's
  * own, or, where the stage has none, a `started` deviation for a request a run started and never
- * finished and an `unjudged` one for a request no run reached (`reportedOutcomesOf`). The question
+ * finished and an `unjudged` one for a request no run reached (`reportedOutcomesOf`). A request
+ * the inputs stage made a deviation must have the stage's `inputs` deviation, or none yet
+ * (`unjudged`); any other outcome of it is an `inputs` deviation the analysis finds. The question
  * cases of the eligible trees are no approval request: they are in no figure, and are counted.
  *
- * **His answer (point 7).** A request is compared with his answer as the build's corpus records
- * it: the ask's first case by event id, which is his own `ask.answered` (the build keeps only his
- * own answers, and collapses an answer a document settlement wrote again to its earliest event),
- * its verdict read from the option he chose, and the (document, version) pairs it answered, from
- * that event's approval. An outcome whose judged documents (`judgement.documents`) are not those
- * pairs is a deviation (`documents`).
+ * **His answer (point 7).** A request is compared with his answer as "His answer" of the live
+ * agreement's registration places it: the first event after the ask's first opening that is his
+ * `ask.answered` of the ask or, for an ask that names one document, his `artifact.approved` or
+ * `artifact.changes_requested` on that document at the version the ask names. The rule is the
+ * inputs stage's own (`AnswerLog`), run here over the same log through the same pin, so the two
+ * stages place one answer. A settlement's verdict is its kind and its pair the one document at
+ * that version; an `ask.answered`'s verdict is read from the option he chose and its pairs from
+ * that event's approval, both as the build's corpus records that event. An answer that is not his
+ * own, or that no event or case gives, is a deviation (`answer`); an outcome whose judged
+ * documents (`judgement.documents`) are not his answered pairs is a deviation (`documents`).
+ *
+ * **The kept evidence (point 6).** Before an outcome counts, every file the judged record names
+ * must be there with the sha256 it names (`judgedStageOf`), and a verdict's record must name each
+ * judge's transcript and bundle and the answers: a request whose transcript is lost is a
+ * `transcript` deviation, whose answers are lost an `answers` one, and whose other kept files (its
+ * bundles, its calls, the sandbox's record) are lost a `sandbox` one.
  *
  * **The verdict, recomputed (points 2 and 6).** Each verdict outcome is recomputed by point 2's
- * rule from the five answers its sandbox result kept (`recordedAnswersOf`), as
- * `s10_transcripts.py`'s `rule_verdict` states it: `never_decide:<kind>` where three or more of
- * the five name a kind (the most named, tied kinds in alphabetical order joined by `+`), else the
- * majority of the five verdicts. A kind is a `never_decide` other than `none`: the frozen schema's
- * enum is `none` and the kinds, and an answer outside it is the stage's `answers` deviation before
- * any verdict. A fact-check hold is `never_decide:waiting-legion-root` with no judge. A recorded
- * verdict unlike the recomputation, or five answers the rule cannot read, is a deviation
+ * rule from the five answers its sandbox result kept (`recordedAnswersOf`, `ruleVerdictOf`). A
+ * fact-check hold is `never_decide:waiting-legion-root` with no judge. A recorded verdict unlike
+ * the recomputation, a hold that records judges, or answers the rule cannot read, is a deviation
  * (`verdict`, found by the analysis), under each version of point 5's rule that gave a verdict.
  *
  * **What counts (points 8, 10 and 12).** A request is decided when its outcome is a valid
  * `approve` or `request_changes`, at the claim's threshold, 0.6: five answers give a majority of
  * at least three, so every such verdict carries at least 0.6. A fact-check hold and a valid
  * `never_decide:<kind>` are never-decides, not deviations. Every deviation, of the stage's 13
- * kinds, `unjudged`, or the analysis's two, counts against the claim whatever the confidence: for
- * item 8's bound it is a decided request that disagrees with his answer, so its tree disagrees,
- * and that bound is the penalized bound. n is the eligible trees with a decided request or a
- * deviation, a tree disagrees when any of them does, the bound is the one-sided 90 percent
+ * kinds, `unjudged`, or one the analysis finds, counts against the claim whatever the confidence:
+ * for item 8's bound it is a decided request that disagrees with his answer, so its tree
+ * disagrees, and that bound is the penalized bound. n is the eligible trees with a decided request
+ * or a deviation, a tree disagrees when any of them does, the bound is the one-sided 90 percent
  * Clopper-Pearson upper bound over n, and the trees with neither are never-decide, their share
  * of the eligible trees apart. Beside it: the outcomes by kind; S10's decided share, the valid
  * `approve` and `request_changes` outcomes over every request of the inventory, against the
  * planning figure d = 0.85; and the send-back figures with the always-approve baseline over the
  * inventory, a never-decide or a deviation a request S10 did not decide, which each figure counts
- * as wrong and none gives a verdict. Version 6's tool rule counts (point 5); under versions 3, 4
- * and 5 the same outcomes give their own penalized bound, and the requests whose deviation status
- * changes from one version to the next are listed with the calls the two versions refuse apart.
+ * as wrong and none gives a verdict. Version 6's tool rule counts (point 5); each version's tally
+ * and penalized bound are recorded (`byRule`), and the requests whose deviation status changes
+ * from one version to the next are listed with the calls the two versions refuse apart. Point 4's
+ * disclosure is beside them: the inventory's candidates dropped for an event after the judged
+ * moment, by where the event was seen, and that the ranks come from the run's start.
+ *
+ * **Its own `--out`.** A directory holding nothing takes the record, written beside its place and
+ * moved there; one holding this run's record must hold it byte for byte, and keeps it. A file
+ * written beside the place by this process (`s10-analysis.json.<pid>.partial`) whose bytes are
+ * the start of this run's record is removed; every other file, another process's partial among
+ * them, is refused.
  */
 
 /** The file the analysis writes under its `--out`: its stage record, which holds every figure. */
 export const ANALYSIS_FILE = "s10-analysis.json";
 
 /** The version of that record's shape. */
-export const ANALYSIS_VERSION = 1;
+const ANALYSIS_VERSION = 1;
 
 /**
  * The claim's threshold (point 8): a verdict of five answers has at least three behind it, so
@@ -133,23 +152,29 @@ export const ANALYSIS_VERSION = 1;
  */
 export const CLAIM_THRESHOLD = 0.6;
 
-/** The judges of one request (point 2). */
-const JUDGES = 5;
-
-/** How many of the five name a kind before the verdict is that never-decide (point 2's rule). */
-const NAMED_TO_HOLD_BACK = 3;
-
-/** The `never_decide` of an answer that names no kind. */
-const NO_KIND = "none";
-
 /** The rate item 8 holds the bound to: one disagreeing tree in twenty. */
 const RATE = 0.05;
 
 /** The planning figure d that point 10 reads the decided share against (the daily count's point 5). */
 const PLANNING_D = 0.85;
 
+/** The two settlement events "His answer" counts for an ask of one document, and their verdicts. */
+const SETTLEMENTS: Readonly<Record<string, CaseVerdict>> = {
+  "artifact.approved": "approve",
+  "artifact.changes_requested": "request_changes",
+};
+
+/**
+ * Point 4's statement, which the record and the text carry beside the count of candidates dropped
+ * for an event after the judged moment.
+ */
+export const RANKS_STATEMENT =
+  "The ranks of the neighbours' search hits come from an index of the run's start, which can " +
+  "order candidates by text or records written after the judged moment; the count of candidates " +
+  "dropped for an event after that moment is a partial check of that, not a bound on it.";
+
 /** The claim's analysis may not run as the registered text fixes it. */
-export class S10AnalysisError extends CannotRunError {
+class S10AnalysisError extends CannotRunError {
   override readonly name = "S10AnalysisError";
 }
 
@@ -169,18 +194,40 @@ export interface ClaimS10Options {
   root?: string;
 }
 
-/** A request's outcome under one version of point 5's rule, once the analysis has read it. */
-export interface RuleReading {
-  status: "decided" | "never-decide" | "deviation";
-  /** The valid verdict of a decided request or a never-decide; null for a deviation. */
-  verdict: string | null;
-  /** A deviation's kind and who found it; null for a valid outcome. */
-  deviation: { kind: string; foundBy: "stage" | "analysis" } | null;
-  /** Whether it counts as disagreeing with his answer: a deviation always; null for a never-decide. */
-  disagrees: boolean | null;
-  /** The tool calls this version refuses, as the stage recorded them. */
-  refusedCalls: ToolCallDeviation[];
+/** A deviation's kind, and whether the stage or the analysis found it. */
+export interface FoundDeviation {
+  kind: string;
+  foundBy: "stage" | "analysis";
 }
+
+/**
+ * A request's outcome under one version of point 5's rule, once the analysis has read it: decided,
+ * with S10's verdict and whether it disagrees with his answer; a never-decide, which is compared
+ * with nothing; or a deviation, which always disagrees. Each carries the calls that version
+ * refuses, as the stage recorded them.
+ */
+export type RuleReading =
+  | {
+      status: "decided";
+      verdict: "approve" | "request_changes";
+      deviation: null;
+      disagrees: boolean;
+      refusedCalls: ToolCallDeviation[];
+    }
+  | {
+      status: "never-decide";
+      verdict: string;
+      deviation: null;
+      disagrees: null;
+      refusedCalls: ToolCallDeviation[];
+    }
+  | {
+      status: "deviation";
+      verdict: null;
+      deviation: FoundDeviation;
+      disagrees: true;
+      refusedCalls: ToolCallDeviation[];
+    };
 
 /** One (document, version) pair, as his answer or S10's judgement names it. */
 export interface DocumentPair {
@@ -188,15 +235,47 @@ export interface DocumentPair {
   version: number | null;
 }
 
+/**
+ * His answer to a request (point 7): the first qualifying event, its kind, the case of it where it
+ * is an `ask.answered` the build holds, its verdict and the pairs it answered; or, where it cannot
+ * be compared, why (`problem`), with the verdict of the ask's first case in the corpus as the label
+ * the send-back figures read, since every figure needs one and the request is a deviation anyway.
+ */
+export interface HisAnswer {
+  eventId: number | null;
+  type: string | null;
+  caseId: string | null;
+  verdict: CaseVerdict;
+  documents: DocumentPair[];
+  problem: string | null;
+}
+
+/** Point 4's disclosure: the inventory's candidate counts summed, and the statement beside them. */
+export interface NeighbourDisclosure {
+  /** The requests whose candidates were counted (a fact hold and an inputs deviation have none). */
+  requests: number;
+  askHits: number;
+  candidates: number;
+  held: number;
+  reserveErrors: number;
+  kept: number;
+  /** Dropped for an event after the judged moment, by where the event was seen, and in all. */
+  droppedLaterEvent: Record<DropSeen, number> & { total: number };
+  /** Each end of a drop scan the requests' candidates were dropped by, lowest first. */
+  dropScanEnds: number[];
+  statement: string;
+}
+
 /** One request of the inventory as the analysis reads it. */
 export interface RequestReading {
   askId: string;
   issueKey: string | null;
   group: string;
-  /** The corpus's cases of the ask: his answer's first, the rest its provenance. */
+  /** The corpus's cases of the ask: his answer's case first where it is one, the rest provenance. */
   cases: string[];
-  /** His answer (point 7): the ask's first case, its event, its verdict and the pairs it answered. */
-  answer: { caseId: string; eventId: number; verdict: CaseVerdict; documents: DocumentPair[] };
+  /** His answer (point 7), and the inputs stage's counts of the request's candidates (point 4). */
+  answer: HisAnswer;
+  candidates: CandidateCounts | null;
   /** The stage's outcome: its kind, its verdict and its deviation's kind. */
   stage: { outcome: JudgedOutcome["outcome"]; verdict: string | null; deviation: string | null };
   /** The documents S10 judged, and null where it made no judgement. */
@@ -210,6 +289,8 @@ export interface RequestReading {
   verdictProblem: string | null;
   /** Why the judged documents are not his answered pairs; else null. */
   documentsProblem: string | null;
+  /** Each file of the request's kept evidence that is lost, and why; empty where none is. */
+  lostEvidence: Array<{ file: string; problem: string; kind: string }>;
   /** The outcome under each version of point 5's rule; `COUNTING_RULE`'s counts. */
   byRule: Record<RuleVersion, RuleReading>;
 }
@@ -289,6 +370,8 @@ export interface S10Analysis {
       state: "started" | "written";
       stops: Array<{ at: string; reason: string }>;
     };
+    /** The event log as the analysis walked it to place his answers: through the build's pin. */
+    log: { throughEventId: number; eventsRead: number };
   };
   threshold: number;
   /** The least share of the five behind a decided verdict, null where none is decided. */
@@ -301,14 +384,17 @@ export interface S10Analysis {
     questionCases: number;
     questionAsks: number;
   };
+  /** The counting rule's tally and penalized measure, which are `byRule`'s under it. */
   tally: OutcomeTally;
   measure: PenalizedMeasure;
   decidedShare: { decided: number; requests: number; share: number | null; planningD: number };
-  /** The versions of point 5's rule other than the counting one, over the same outcomes. */
-  otherRules: Partial<Record<RuleVersion, { tally: OutcomeTally; measure: PenalizedMeasure }>>;
+  /** Each version of point 5's rule, over the same outcomes: its tally and penalized measure. */
+  byRule: Record<RuleVersion, { tally: OutcomeTally; measure: PenalizedMeasure }>;
   /** For each version from 4, the requests whose deviation status it changes from the one before. */
   ruleChanges: Array<{ from: RuleVersion; to: RuleVersion; requests: RuleChange[] }>;
   sendBack: SendBackFigures;
+  /** Point 4's disclosure, from the inventory's candidate counts. */
+  neighbours: NeighbourDisclosure;
   requests: RequestReading[];
 }
 
@@ -316,64 +402,132 @@ function sha256Of(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/**
- * Point 2's verdict over five answers, as `s10_transcripts.py`'s `rule_verdict` states it, with
- * the share of the five behind it; or why the answers are not five the rule reads.
- */
-export function ruleVerdictOf(
-  answers: readonly unknown[]
-): { verdict: string; share: number } | { problem: string } {
-  if (answers.length !== JUDGES) return { problem: `${answers.length} answers, not ${JUDGES}` };
-  const named = new Map<string, number>();
-  const votes = new Map<string, number>();
-  for (const [at, answer] of answers.entries()) {
-    const record = recordOf(answer);
-    const kind = stringOf(record?.never_decide);
-    const verdict = record?.verdict;
-    if (kind === null || (verdict !== "approve" && verdict !== "request_changes")) {
-      return { problem: `answer ${at + 1} names no never_decide or no verdict the rule reads` };
-    }
-    if (kind !== NO_KIND) named.set(kind, (named.get(kind) ?? 0) + 1);
-    votes.set(verdict, (votes.get(verdict) ?? 0) + 1);
-  }
-  let namedTotal = 0;
-  for (const times of named.values()) namedTotal += times;
-  if (namedTotal >= NAMED_TO_HOLD_BACK) {
-    const top = Math.max(...named.values());
-    const kinds = [...named].filter(([, times]) => times === top).map(([kind]) => kind);
-    return { verdict: `never_decide:${kinds.sort().join("+")}`, share: top / JUDGES };
-  }
-  let chosen = "";
-  let most = 0;
-  for (const [verdict, times] of votes) {
-    if (times > most) [chosen, most] = [verdict, times];
-  }
-  return { verdict: chosen, share: most / JUDGES };
-}
-
 /** A pair as a key two lists of pairs are compared by. */
 function pairKey(pair: DocumentPair): string {
   return JSON.stringify([pair.artifactId, pair.version]);
 }
 
-/** His answer to one request: the ask's first case by event id, which the build holds as his own. */
-function answerOf(request: InventoryRequest): RequestReading["answer"] {
-  const [first] = [...request.rows].sort((one, other) => one.eventId - other.eventId);
-  if (first === undefined || first.verdict === null) {
+/** One settlement of the person's in the log: its kind and the (document, version) it settled. */
+interface Settlement {
+  type: string;
+  artifactId: string;
+  version: number;
+}
+
+/**
+ * His answer to one request (point 7), from the first answer `AnswerLog` placed (`placed`, its
+ * event and whether it is his own) and his settlements by event id: a settlement's verdict is its
+ * kind and its pair the one it settled; his own `ask.answered`'s are its case's in the corpus. An
+ * answer the log does not give, one that is not his own, and one the build holds no case of are
+ * each a problem, which makes the request a deviation (`answer`).
+ */
+function answerOf(
+  request: InventoryRequest,
+  placed: { eventId: number; own: boolean } | null,
+  settlements: ReadonlyMap<number, Settlement>
+): HisAnswer {
+  const ordered = [...request.rows].sort((one, other) => one.eventId - other.eventId);
+  const label = ordered[0]?.verdict ?? null;
+  if (label === null) {
     throw new CorpusError(
-      `the request ${request.askId} has no approval case with a verdict: his answer is read from ` +
-        "the option he chose"
+      `the request ${request.askId} has no approval case with a verdict: the send-back figures ` +
+        "read every request's answer"
+    );
+  }
+  const unplaced = (eventId: number | null, problem: string): HisAnswer => ({
+    eventId,
+    type: eventId === null ? null : "ask.answered",
+    caseId: null,
+    verdict: label,
+    documents: [],
+    problem,
+  });
+  if (placed === null) {
+    return unplaced(
+      null,
+      "the log through the build's pin holds no answer of his to the ask after its first opening"
+    );
+  }
+  const settled = settlements.get(placed.eventId);
+  const verdict = settled === undefined ? undefined : SETTLEMENTS[settled.type];
+  if (settled !== undefined && verdict !== undefined) {
+    return {
+      eventId: placed.eventId,
+      type: settled.type,
+      caseId: null,
+      verdict,
+      documents: [{ artifactId: settled.artifactId, version: settled.version }],
+      problem: null,
+    };
+  }
+  if (!placed.own) {
+    return unplaced(
+      placed.eventId,
+      `his first answer to the ask, event ${placed.eventId}, is not his own, so it holds no verdict`
+    );
+  }
+  const row = ordered.find((one) => one.eventId === placed.eventId);
+  if (row === undefined || row.verdict === null) {
+    return unplaced(
+      placed.eventId,
+      `the build holds no case of his first answer to the ask, event ${placed.eventId}`
     );
   }
   return {
-    caseId: first.caseId,
-    eventId: first.eventId,
-    verdict: first.verdict,
-    documents: (first.approval?.documents ?? []).map((document) => ({
+    eventId: placed.eventId,
+    type: "ask.answered",
+    caseId: row.caseId,
+    verdict: row.verdict,
+    documents: (row.approval?.documents ?? []).map((document) => ({
       artifactId: document.artifactId,
       version: document.version,
     })),
+    problem: null,
   };
+}
+
+/** The deviation kind a lost file of a request's kept evidence makes (point 6). */
+function lostKindOf(file: string): string {
+  if (file.startsWith(`${SANDBOX_DIRECTORY}/sessions/`)) return "transcript";
+  if (file === `${SANDBOX_DIRECTORY}/${RESULTS_FILE}`) return "answers";
+  return "sandbox";
+}
+
+/**
+ * The request's kept evidence that is lost: each file under its directory that the record names
+ * and that is not there with its bytes (`JudgedStage.evidence`); and, for an outcome some version
+ * gave a verdict, each of the five judges' transcript and bundle and the answers that the record
+ * does not name at all.
+ */
+function lostEvidenceOf(
+  stage: JudgedStage,
+  outcome: JudgedOutcome
+): RequestReading["lostEvidence"] {
+  const lost = (stage.evidence.get(outcome.askId) ?? []).map((one) => ({
+    ...one,
+    kind: lostKindOf(one.file),
+  }));
+  if (!RULE_VERSIONS.some((version) => outcome.byRule[version].outcome === "verdict")) return lost;
+  const unnamed = (file: string, kind: string): void => {
+    if (Object.hasOwn(stage.record.files, `requests/${outcome.askId}/${file}`)) return;
+    lost.push({ file, problem: "is not named in the stage record", kind });
+  };
+  if (outcome.judges.length !== JUDGES) {
+    lost.push({
+      file: "outcome.json",
+      problem: `records ${outcome.judges.length} judges, not ${JUDGES}`,
+      kind: "transcript",
+    });
+  }
+  for (const judge of outcome.judges) {
+    unnamed(
+      `${SANDBOX_DIRECTORY}/${judge.transcript ?? `${judge.label}'s transcript`}`,
+      "transcript"
+    );
+    unnamed(judge.bundle?.split("/").pop() ?? `${judge.label}'s bundle`, "sandbox");
+  }
+  unnamed(`${SANDBOX_DIRECTORY}/${RESULTS_FILE}`, "answers");
+  return lost;
 }
 
 /**
@@ -388,7 +542,11 @@ async function recomputedOf(
   if (outcome.outcome === "hold") {
     const judges = outcome.judgement?.judges ?? null;
     if (judges !== 0 || outcome.judges.length > 0) {
-      return { problem: `a fact-check hold whose judgement records ${judges ?? "no"} judges` };
+      return {
+        problem:
+          `a fact-check hold whose judgement records ${judges ?? "no"} judges and whose outcome ` +
+          `records ${outcome.judges.length}, where a hold has none`,
+      };
     }
     return { verdict: HOLD_VERDICT, share: 1 };
   }
@@ -397,33 +555,53 @@ async function recomputedOf(
   return ruleVerdictOf(kept.answers);
 }
 
-/** One request read whole: his answer, its outcome, the analysis's two checks, each version's. */
+/** One request of the inventory, its line, his answer and its outcome, which are read together. */
+interface Placed {
+  request: InventoryRequest;
+  line: InventoryLine;
+  answer: HisAnswer;
+}
+
+/**
+ * One request read whole: his answer, its outcome, the inputs stage's counts of its candidates,
+ * the analysis's checks (the inputs stage's deviation, its kept evidence, his answer, the verdict
+ * recomputed, the documents) and each version's outcome.
+ */
 async function requestReadingOf(
   directory: string,
   stage: JudgedStage,
-  request: InventoryRequest,
+  { request, line, answer }: Placed,
   outcome: JudgedOutcome
 ): Promise<RequestReading> {
-  const answer = answerOf(request);
   const judgedDocuments =
     outcome.judgement?.documents.map((document) => ({
       artifactId: document.artifact_id,
       version: document.version,
     })) ?? null;
+  // A request the inputs stage made a deviation has the stage's own `inputs` deviation, or none
+  // yet; any other outcome of it is not the stage over these inputs.
+  const unlikeItsInputs =
+    line.state !== "ready" &&
+    outcome.deviation?.kind !== "inputs" &&
+    outcome.deviation?.kind !== UNJUDGED;
   // A version's outcome other than a deviation is a verdict or a hold, which the checks read.
   const anyJudged = RULE_VERSIONS.some(
     (version) => outcome.byRule[version].outcome !== "deviation"
   );
-  const recomputation = anyJudged ? await recomputedOf(directory, stage, outcome) : null;
+  const lostEvidence = anyJudged ? lostEvidenceOf(stage, outcome) : [];
+  const lostKind = DEVIATION_KINDS.find((kind) => lostEvidence.some((one) => one.kind === kind));
+  // Lost evidence ends the checks: the answers the recomputation reads may be among it.
+  const recomputation =
+    anyJudged && lostKind === undefined ? await recomputedOf(directory, stage, outcome) : null;
   const recomputed = recomputation !== null && "verdict" in recomputation ? recomputation : null;
   let documentsProblem: string | null = null;
-  if (anyJudged) {
+  if (anyJudged && answer.problem === null) {
     const theirs = (judgedDocuments ?? []).map(pairKey).sort();
     const his = answer.documents.map(pairKey).sort();
     if (JSON.stringify(theirs) !== JSON.stringify(his)) {
       documentsProblem =
-        `S10 judged ${theirs.join(", ") || "no document"}, and his answer ` +
-        `${answer.caseId} answered ${his.join(", ") || "no document"}`;
+        `S10 judged ${theirs.join(", ") || "no document"}, and his answer, event ` +
+        `${answer.eventId} (${answer.type}), answered ${his.join(", ") || "no document"}`;
     }
   }
   const unlike = (verdict: string | null): string | null => {
@@ -432,55 +610,75 @@ async function requestReadingOf(
     if (recomputation.verdict === verdict) return null;
     return `S10 recorded ${verdict}, and point 2's rule gives ${recomputation.verdict}`;
   };
-  const byRule = {} as Record<RuleVersion, RuleReading>;
   let verdictProblem: string | null = null;
-  for (const version of RULE_VERSIONS) {
+  const readingUnder = (version: RuleVersion): RuleReading => {
     const one = outcome.byRule[version];
     const refusedCalls = one.toolCallDeviations;
+    const deviation = (kind: string, foundBy: FoundDeviation["foundBy"]): RuleReading => ({
+      status: "deviation",
+      verdict: null,
+      deviation: { kind, foundBy },
+      disagrees: true,
+      refusedCalls,
+    });
+    if (unlikeItsInputs) return deviation("inputs", "analysis");
     if (one.outcome === "deviation") {
       if (one.deviation === null) {
         throw new CorpusError(`the outcome of ${outcome.askId} is a deviation of no kind`);
       }
-      byRule[version] = {
-        status: "deviation",
-        verdict: null,
-        deviation: { kind: one.deviation, foundBy: "stage" },
-        disagrees: true,
-        refusedCalls,
-      };
-      continue;
+      return deviation(one.deviation, "stage");
     }
     const problem = unlike(one.verdict);
     verdictProblem ??= problem;
-    const found = problem !== null ? "verdict" : documentsProblem !== null ? "documents" : null;
-    if (found !== null) {
-      byRule[version] = {
-        status: "deviation",
-        verdict: null,
-        deviation: { kind: found, foundBy: "analysis" },
-        disagrees: true,
+    const found =
+      lostKind ??
+      (answer.problem !== null
+        ? "answer"
+        : problem !== null
+          ? "verdict"
+          : documentsProblem !== null
+            ? "documents"
+            : null);
+    if (found !== null) return deviation(found, "analysis");
+    if (one.verdict === "approve" || one.verdict === "request_changes") {
+      return {
+        status: "decided",
+        verdict: one.verdict,
+        deviation: null,
+        disagrees: one.verdict !== answer.verdict,
         refusedCalls,
       };
-      continue;
     }
-    const decided = one.verdict === "approve" || one.verdict === "request_changes";
-    byRule[version] = {
-      status: decided ? "decided" : "never-decide",
+    if (one.verdict === null) {
+      throw new CorpusError(`the outcome of ${outcome.askId} is a ${one.outcome} with no verdict`);
+    }
+    return {
+      status: "never-decide",
       verdict: one.verdict,
       deviation: null,
-      disagrees: decided ? one.verdict !== answer.verdict : null,
+      disagrees: null,
       refusedCalls,
     };
-  }
+  };
+  const byRule = {
+    v3: readingUnder("v3"),
+    v4: readingUnder("v4"),
+    v5: readingUnder("v5"),
+    v6: readingUnder("v6"),
+  };
   return {
     askId: request.askId,
     issueKey: request.issueKey,
     group: request.group,
     cases: [
-      answer.caseId,
-      ...request.rows.map((row) => row.caseId).filter((id) => id !== answer.caseId),
+      ...(answer.caseId === null ? [] : [answer.caseId]),
+      ...[...request.rows]
+        .sort((one, other) => one.eventId - other.eventId)
+        .map((row) => row.caseId)
+        .filter((id) => id !== answer.caseId),
     ],
     answer,
+    candidates: line.counts,
     stage: {
       outcome: outcome.outcome,
       verdict: outcome.verdict,
@@ -489,7 +687,8 @@ async function requestReadingOf(
     judgedDocuments,
     recomputed,
     verdictProblem,
-    documentsProblem: anyJudged ? documentsProblem : null,
+    documentsProblem,
+    lostEvidence,
     byRule,
   };
 }
@@ -507,7 +706,7 @@ function sortedCounts(counts: Record<string, number>): Record<string, number> {
 }
 
 /** The outcomes of the inventory under one version of the rule, by kind. */
-export function tallyOf(readings: readonly RequestReading[], version: RuleVersion): OutcomeTally {
+function tallyOf(readings: readonly RequestReading[], version: RuleVersion): OutcomeTally {
   const tally: OutcomeTally = {
     requests: readings.length,
     decided: { total: 0, approve: 0, requestChanges: 0 },
@@ -522,8 +721,8 @@ export function tallyOf(readings: readonly RequestReading[], version: RuleVersio
       else tally.decided.requestChanges += 1;
     } else if (one.status === "never-decide") {
       tally.neverDecides.total += 1;
-      tallied(tally.neverDecides.byVerdict, one.verdict ?? "");
-    } else if (one.deviation !== null) {
+      tallied(tally.neverDecides.byVerdict, one.verdict);
+    } else {
       tally.deviations.total += 1;
       tallied(tally.deviations.byKind, one.deviation.kind);
       if (one.deviation.foundBy === "analysis") {
@@ -539,40 +738,34 @@ export function tallyOf(readings: readonly RequestReading[], version: RuleVersio
 
 /**
  * Item 8's measure over the draw's eligible trees under one version of the rule, penalized by
- * point 10: a deviation is a decided request that disagrees with his answer.
+ * point 10: a deviation is a decided request that disagrees with his answer. Every request is in
+ * one of the trees, since the inventory is `inventoryOf` over those same trees.
  */
-export function penalizedMeasureOf(
+function penalizedMeasureOf(
   trees: readonly FinalTestTree[],
   readings: readonly RequestReading[],
   version: RuleVersion
 ): PenalizedMeasure {
-  const byGroup = new Map<string, TreeReading>();
-  for (const tree of trees) {
-    byGroup.set(tree.group, {
+  const rows = trees.map((tree): TreeReading => {
+    const row: TreeReading = {
       group: tree.group,
       requests: 0,
       decided: 0,
       deviations: 0,
       neverDecides: 0,
       disagreeing: 0,
-    });
-  }
-  for (const reading of readings) {
-    const tree = byGroup.get(reading.group);
-    if (tree === undefined) {
-      throw new CorpusError(
-        `the request ${reading.askId} is in the tree ${reading.group}, which the draw does not ` +
-          "record as eligible"
-      );
+    };
+    for (const reading of readings) {
+      if (reading.group !== tree.group) continue;
+      const one = reading.byRule[version];
+      row.requests += 1;
+      if (one.status === "decided") row.decided += 1;
+      else if (one.status === "deviation") row.deviations += 1;
+      else row.neverDecides += 1;
+      if (one.disagrees === true) row.disagreeing += 1;
     }
-    const one = reading.byRule[version];
-    tree.requests += 1;
-    if (one.status === "decided") tree.decided += 1;
-    else if (one.status === "deviation") tree.deviations += 1;
-    else tree.neverDecides += 1;
-    if (one.disagrees === true) tree.disagreeing += 1;
-  }
-  const rows = [...byGroup.values()];
+    return row;
+  });
   const counted = rows.filter((tree) => tree.decided + tree.deviations > 0);
   const disagreeing = counted.filter((tree) => tree.disagreeing > 0).length;
   const withRequest = rows.filter((tree) => tree.requests > 0).length;
@@ -598,14 +791,6 @@ export function penalizedMeasureOf(
   };
 }
 
-/** A version's outcome of one request, in words a list of changes prints. */
-function statusWords(reading: RuleReading): string {
-  if (reading.status === "deviation") {
-    return `deviation ${reading.deviation?.kind ?? ""}`.trim();
-  }
-  return `${reading.status} ${reading.verdict ?? ""}`.trim();
-}
-
 /** The calls `one` refuses that `other` does not, by judge and call id. */
 function refusedApart(
   one: readonly ToolCallDeviation[],
@@ -620,9 +805,9 @@ function refusedApart(
  * from the version before it (point 5: what each version's rule alone changes), with the calls the
  * two versions refuse apart.
  */
-export function ruleChangesOf(readings: readonly RequestReading[]): S10Analysis["ruleChanges"] {
+function ruleChangesOf(readings: readonly RequestReading[]): S10Analysis["ruleChanges"] {
   return RULE_VERSIONS.slice(1).map((to, at) => {
-    const from = RULE_VERSIONS[at] as RuleVersion;
+    const from = RULE_VERSIONS[at];
     const requests: RuleChange[] = [];
     for (const reading of readings) {
       const before = reading.byRule[from];
@@ -640,8 +825,42 @@ export function ruleChangesOf(readings: readonly RequestReading[]): S10Analysis[
   });
 }
 
+/** Point 4's disclosure: the candidate counts of every inventory line that has them, summed. */
+function neighbourDisclosureOf(inventory: readonly InventoryLine[]): NeighbourDisclosure {
+  const dropped = { log: 0, "no-event-through-pin": 0, "after-pin": 0, total: 0 };
+  const disclosure: NeighbourDisclosure = {
+    requests: 0,
+    askHits: 0,
+    candidates: 0,
+    held: 0,
+    reserveErrors: 0,
+    kept: 0,
+    droppedLaterEvent: dropped,
+    dropScanEnds: [],
+    statement: RANKS_STATEMENT,
+  };
+  const ends = new Set<number>();
+  for (const line of inventory) {
+    const counts = line.counts;
+    if (counts === null) continue;
+    disclosure.requests += 1;
+    disclosure.askHits += counts.askHits;
+    disclosure.candidates += counts.candidates;
+    disclosure.held += counts.held;
+    disclosure.reserveErrors += counts.reserveErrors;
+    disclosure.kept += counts.kept;
+    for (const seen of DROP_SEEN) {
+      dropped[seen] += counts.droppedLaterEvent[seen];
+      dropped.total += counts.droppedLaterEvent[seen];
+    }
+    if (line.dropScanThrough !== null) ends.add(line.dropScanThrough);
+  }
+  disclosure.dropScanEnds = [...ends].sort((one, other) => one - other);
+  return disclosure;
+}
+
 /** What the analysis is computed from: every stage read and held to the chain, nothing more. */
-export interface AnalysisInput {
+interface AnalysisInput {
   claimRun: BuildChain;
   reference: string;
   runDigest: string;
@@ -650,22 +869,22 @@ export interface AnalysisInput {
   inputs: { directory: string; stageSha256: string; inventorySha256: string };
   judged: { directory: string; stage: JudgedStage };
   byCaseId: ReadonlyMap<string, CaseRow>;
-  requests: readonly InventoryRequest[];
-  inventory: readonly InventoryLine[];
+  /** Each request with its inventory line and his answer, in the inventory's order. */
+  placed: readonly Placed[];
+  /** The log his answers were placed in. */
+  log: { throughEventId: number; eventsRead: number };
 }
 
 /** The whole analysis, from the stages read: every figure the record holds and the text prints. */
-export async function s10AnalysisOf(input: AnalysisInput): Promise<S10Analysis> {
-  const byAsk = new Map(input.requests.map((request) => [request.askId, request]));
-  const outcomes = reportedOutcomesOf(input.inventory, input.judged.stage);
+async function s10AnalysisOf(input: AnalysisInput): Promise<S10Analysis> {
+  const outcomes = reportedOutcomesOf(
+    input.placed.map((one) => one.line),
+    input.judged.stage
+  );
   const readings: RequestReading[] = [];
-  for (const outcome of outcomes) {
-    const request = byAsk.get(outcome.askId);
-    if (request === undefined) {
-      throw new CorpusError(`the inventory's request ${outcome.askId} is no request of the draw`);
-    }
+  for (const [at, one] of input.placed.entries()) {
     readings.push(
-      await requestReadingOf(input.judged.directory, input.judged.stage, request, outcome)
+      await requestReadingOf(input.judged.directory, input.judged.stage, one, outcomes[at])
     );
   }
   let questionCases = 0;
@@ -678,18 +897,22 @@ export async function s10AnalysisOf(input: AnalysisInput): Promise<S10Analysis> 
       questionAsks.add(row.askId);
     }
   }
-  const otherRules: S10Analysis["otherRules"] = {};
-  for (const version of RULE_VERSIONS) {
-    if (version === COUNTING_RULE) continue;
-    otherRules[version] = {
-      tally: tallyOf(readings, version),
-      measure: penalizedMeasureOf(input.draw.trees, readings, version),
-    };
-  }
-  const tally = tallyOf(readings, COUNTING_RULE);
-  const shares = readings
-    .filter((reading) => reading.byRule[COUNTING_RULE].status === "decided")
-    .map((reading) => reading.recomputed?.share ?? 0);
+  const figuresUnder = (version: RuleVersion) => ({
+    tally: tallyOf(readings, version),
+    measure: penalizedMeasureOf(input.draw.trees, readings, version),
+  });
+  const byRule = {
+    v3: figuresUnder("v3"),
+    v4: figuresUnder("v4"),
+    v5: figuresUnder("v5"),
+    v6: figuresUnder("v6"),
+  };
+  const { tally, measure } = byRule[COUNTING_RULE];
+  const shares = readings.flatMap((reading) =>
+    reading.byRule[COUNTING_RULE].status === "decided" && reading.recomputed !== null
+      ? [reading.recomputed.share]
+      : []
+  );
   const record = input.judged.stage.record;
   return {
     stage: "s10-analysis",
@@ -711,26 +934,27 @@ export async function s10AnalysisOf(input: AnalysisInput): Promise<S10Analysis> 
         state: record.state,
         stops: record.stops,
       },
+      log: input.log,
     },
     threshold: CLAIM_THRESHOLD,
     leastDecidedShare: shares.length === 0 ? null : Math.min(...shares),
     countingRule: COUNTING_RULE,
     inventory: {
       requests: readings.length,
-      cases: input.requests.reduce((sum, request) => sum + request.rows.length, 0),
+      cases: input.placed.reduce((sum, one) => sum + one.request.rows.length, 0),
       trees: input.draw.trees.length,
       questionCases,
       questionAsks: questionAsks.size,
     },
     tally,
-    measure: penalizedMeasureOf(input.draw.trees, readings, COUNTING_RULE),
+    measure,
     decidedShare: {
       decided: tally.decided.total,
       requests: readings.length,
       share: readings.length === 0 ? null : tally.decided.total / readings.length,
       planningD: PLANNING_D,
     },
-    otherRules,
+    byRule,
     ruleChanges: ruleChangesOf(readings),
     sendBack: sendBackFiguresOf(
       readings.map((reading) => {
@@ -738,10 +962,11 @@ export async function s10AnalysisOf(input: AnalysisInput): Promise<S10Analysis> 
         return {
           tree: reading.group,
           person: reading.answer.verdict,
-          arm: one.status === "decided" ? (one.verdict as CaseVerdict) : null,
+          arm: one.status === "decided" ? one.verdict : null,
         };
       })
     ),
+    neighbours: neighbourDisclosureOf(input.placed.map((one) => one.line)),
     requests: readings,
   };
 }
@@ -756,38 +981,120 @@ async function stageBytesOf(path: string, what: string): Promise<Buffer> {
 }
 
 /**
+ * His answer to each request (point 7), placed by the inputs stage's own rule (`AnswerLog`) over
+ * Dispatch's event log walked through the build's pin, with the person's settlements kept by event
+ * id: refused unless the walk reads as many events as the build read there, so it is the log the
+ * build read.
+ */
+async function answersOf(
+  corpus: Corpus,
+  lines: ReadonlyArray<{ request: InventoryRequest; line: InventoryLine }>
+): Promise<{ placed: Placed[]; log: AnalysisInput["log"] }> {
+  const { person, throughEventId, eventsRead } = corpus.snapshot;
+  if (eventsRead <= 0) {
+    throw new S10AnalysisError(
+      `${join(corpus.directory, "snapshot.json")} records no events read, so no walk of the log ` +
+        "here can show it is the log the build read"
+    );
+  }
+  const log = new AnswerLog(
+    person,
+    lines.map((one) => one.request.askId)
+  );
+  const settlements = new Map<number, Settlement>();
+  const walk = await pageEventLog({
+    through: throughEventId,
+    onPage: (events) => {
+      for (const event of events) {
+        log.note(event);
+        if (SETTLEMENTS[event.type] === undefined || event.actor?.id !== person) continue;
+        const artifactId = stringOf(event.payload.artifact_id);
+        const version = numberOf(event.payload.version);
+        if (artifactId !== null && version !== null) {
+          settlements.set(event.id, { type: event.type, artifactId, version });
+        }
+      }
+    },
+  });
+  if (walk.eventsRead !== eventsRead) {
+    throw new S10AnalysisError(
+      `the log through event ${throughEventId} reads ${walk.eventsRead} events, and the build ` +
+        `read ${eventsRead} there: it is not the log the build read`
+    );
+  }
+  const placed = lines.map(({ request, line }) => ({
+    request,
+    line,
+    answer: answerOf(request, log.judgingOf(request.askId)?.answer ?? null, settlements),
+  }));
+  return { placed, log: { throughEventId, eventsRead: walk.eventsRead } };
+}
+
+/**
+ * The inventory the inputs stage wrote, held to the one the draw gives (`inventoryOf`): each line
+ * once by ask id, and request for request the same asks, issues, trees and counts of cases; each
+ * request with its line, in the inventory's order.
+ */
+function heldToDraw(
+  inventory: readonly InventoryLine[],
+  requests: readonly InventoryRequest[],
+  path: string
+): Array<{ request: InventoryRequest; line: InventoryLine }> {
+  const byAsk = new Map(requests.map((request) => [request.askId, request]));
+  const seen = new Set<string>();
+  const held = inventory.map((line) => {
+    if (seen.has(line.askId)) {
+      throw new S10AnalysisError(`${path} names the request ${line.askId} twice`);
+    }
+    seen.add(line.askId);
+    const request = byAsk.get(line.askId);
+    if (request === undefined) {
+      throw new S10AnalysisError(
+        `${path} names the request ${line.askId}, which no approval case of the draw's report ` +
+          "trees is"
+      );
+    }
+    if (
+      line.issueKey !== request.issueKey ||
+      line.group !== request.group ||
+      line.cases !== request.rows.length
+    ) {
+      throw new S10AnalysisError(
+        `${path} holds the request ${line.askId} in ${line.group} with ${line.cases} cases, ` +
+          `and the draw's report trees give it ${request.group} with ${request.rows.length}`
+      );
+    }
+    return { request, line };
+  });
+  const missing = requests.find((request) => !seen.has(request.askId));
+  if (missing !== undefined) {
+    throw new S10AnalysisError(
+      `${path} holds no line of the request ${missing.askId}, which the draw's report trees hold`
+    );
+  }
+  return held;
+}
+
+/**
  * Every stage of the claim run this analysis reads, admitted and held to the chain (the module's
- * comment says how), as `s10AnalysisOf` takes them.
+ * comment says how), with his answers placed over the log, as `s10AnalysisOf` takes them.
  */
 async function chainedInput(
   flags: ClaimS10Flags,
   options: ClaimS10Options
 ): Promise<AnalysisInput> {
-  const root = options.root ?? REPOSITORY_ROOT;
-  const corpus = await readCorpus(flags.corpus, { registration: options.registration, root });
-  const reference = corpus.reserve.readUnder;
-  const claimRun = corpus.snapshot.reserve?.claimRun;
-  if (reference === null || claimRun === undefined) {
-    throw new S10AnalysisError(
-      "the claim's analysis runs only under its registered read, over the build of the claim " +
-        `run that read: set ${RESERVE_VARIABLE} and ${CLAIM_RUN_VARIABLE} as that build had them`
-    );
-  }
-  const trees = await stageBytesOf(join(corpus.directory, TREES_FILE), "--corpus takes the build");
-  const build: BuildChain = {
-    id: claimRun,
-    snapshotSha256: corpus.snapshotSha256,
-    corpusSha256: corpus.corpusSha256,
-    treesSha256: sha256Of(trees),
-  };
-  const draw = await claimDrawOf(resolve(flags.draw), build, reference);
+  const { corpus, reference, build, draw, runDigest } = await claimStartOf(
+    flags.corpus,
+    flags.draw,
+    options
+  );
   const judgedDirectory = resolve(flags.judged);
   const stage = await judgedStageOf(judgedDirectory);
   const judgedPath = join(judgedDirectory, JUDGED_FILE);
-  if (stage.record.claimRun !== claimRun) {
+  if (stage.record.claimRun !== build.id) {
     throw new S10AnalysisError(
       `${judgedPath} was written by the claim run ${stage.record.claimRun}, and this run's is ` +
-        `${claimRun}: the analysis takes only its own claim run's judged stage`
+        `${build.id}: the analysis takes only its own claim run's judged stage`
     );
   }
   if (stage.record.reference !== reference) {
@@ -807,11 +1114,7 @@ async function chainedInput(
   const refusal =
     chainRefusal(inputs.claimRun, build, BUILD_CHAIN_NAMES) ??
     chainRefusal(inputs, { reference }, { reference: "read" }) ??
-    chainRefusal(
-      inputs.draw,
-      { drawSha256: draw.drawSha256, slicesSha256: draw.slicesSha256 },
-      { drawSha256: "draw.json", slicesSha256: "slices.json" }
-    );
+    chainRefusal(inputs.draw, draw, DRAW_CHAIN_NAMES);
   if (refusal !== null) {
     throw new S10AnalysisError(
       `${inputsPath} is not this claim run's inputs stage over the build and the draw it reads: ` +
@@ -832,13 +1135,28 @@ async function chainedInput(
         `${judgedRead ?? "none"}`
     );
   }
-  const inventory = inventoryLinesOf(inventoryBytes.toString("utf8"), inventoryPath);
-  const requests = inventoryOf(corpus.byCaseId, draw.trees, draw.report);
-  heldToDraw(inventory, requests, inventoryPath);
+  const lines = heldToDraw(
+    inventoryLinesOf(inventoryBytes.toString("utf8"), inventoryPath),
+    inventoryOf(corpus.byCaseId, draw.trees, draw.report),
+    inventoryPath
+  );
+  const { placed, log } = await answersOf(corpus, lines);
+  // The digest taken at the admission is the one recorded: a file of the bundle, a file an
+  // argument names or a server changed since then would make it another run's.
+  const now = await runDigestOf(
+    { argv: process.argv, env: process.env },
+    options.root ?? REPOSITORY_ROOT
+  );
+  if (now !== runDigest) {
+    throw new S10AnalysisError(
+      `this run's digest was ${runDigest} at its admission and is ${now} now: something it covers ` +
+        "changed while the analysis ran, so no registration names this run"
+    );
+  }
   return {
     claimRun: build,
     reference,
-    runDigest: await runDigestOf({ argv: process.argv, env: process.env }, root),
+    runDigest,
     build: corpus.directory,
     draw,
     inputs: {
@@ -848,115 +1166,42 @@ async function chainedInput(
     },
     judged: { directory: judgedDirectory, stage },
     byCaseId: corpus.byCaseId,
-    requests,
-    inventory,
+    placed,
+    log,
   };
 }
 
 /**
- * Holds the inventory the inputs stage wrote to the one the draw gives (`inventoryOf`): each line
- * once by ask id, and request for request the same asks, issues, trees and counts of cases.
- */
-function heldToDraw(
-  inventory: readonly InventoryLine[],
-  requests: readonly InventoryRequest[],
-  path: string
-): void {
-  const lines = new Map<string, InventoryLine>();
-  for (const line of inventory) {
-    if (lines.has(line.askId)) {
-      throw new CorpusError(`${path} names the request ${line.askId} twice`);
-    }
-    lines.set(line.askId, line);
-  }
-  for (const request of requests) {
-    const line = lines.get(request.askId);
-    if (line === undefined) {
-      throw new S10AnalysisError(
-        `${path} holds no line of the request ${request.askId}, which the draw's report trees hold`
-      );
-    }
-    if (
-      line.issueKey !== request.issueKey ||
-      line.group !== request.group ||
-      line.cases !== request.rows.length
-    ) {
-      throw new S10AnalysisError(
-        `${path} holds the request ${request.askId} in ${line.group} with ${line.cases} cases, ` +
-          `and the draw's report trees give it ${request.group} with ${request.rows.length}`
-      );
-    }
-    lines.delete(request.askId);
-  }
-  const [extra] = lines.keys();
-  if (extra !== undefined) {
-    throw new S10AnalysisError(
-      `${path} names the request ${extra}, which no approval case of the draw's report trees is`
-    );
-  }
-}
-
-/**
- * Where an analysis record found in `--out` is not this run's, worded as the tail of a refusal,
- * and null where it is: the same claim run and build, read, digest, and stages, by their sha256.
- */
-function recordRefusal(found: unknown, wanted: S10Analysis): string | null {
-  const record = recordOf(found);
-  if (record?.stage !== "s10-analysis" || record.version !== ANALYSIS_VERSION) {
-    return `it is no record of version ${ANALYSIS_VERSION} of the claim's analysis`;
-  }
-  const chain = recordOf(record.chain);
-  return (
-    chainRefusal(record.claimRun, wanted.claimRun, BUILD_CHAIN_NAMES) ??
-    chainRefusal(record, wanted, { reference: "read", runDigest: "run digest" }) ??
-    chainRefusal(chain?.draw, wanted.chain.draw, {
-      drawSha256: "draw.json",
-      slicesSha256: "slices.json",
-    }) ??
-    chainRefusal(chain?.inputs, wanted.chain.inputs, {
-      stageSha256: "s10-inputs.json",
-      inventorySha256: "inventory.jsonl",
-    }) ??
-    chainRefusal(chain?.judged, wanted.chain.judged, { stageSha256: JUDGED_FILE })
-  );
-}
-
-/**
- * Writes the record into `out`, or keeps the one there: a directory holding nothing else takes it,
- * written beside its place and moved there; one holding this run's record must hold it byte for
- * byte, and keeps it. Another run's record, or any other file, is refused.
+ * Writes the record into `out`, or keeps the one there (the module's comment, "Its own `--out`"):
+ * this process's own partial write of this run's record is removed, and every other file refused.
  */
 async function writtenTo(out: string, record: S10Analysis): Promise<"written" | "kept"> {
   await mkdir(out, { recursive: true });
   const path = join(out, ANALYSIS_FILE);
+  const partial = `${path}.${process.pid}.partial`;
+  const text = `${JSON.stringify(record, null, 2)}\n`;
   for (const name of await readdir(out)) {
-    if (name.startsWith(`${ANALYSIS_FILE}.`) && name.endsWith(".partial")) {
-      await rm(join(out, name), { force: true });
-    } else if (name !== ANALYSIS_FILE) {
+    const at = join(out, name);
+    if (name === ANALYSIS_FILE) continue;
+    const own = at === partial && text.startsWith(await readFile(at, "utf8"));
+    if (!own) {
       throw new S10AnalysisError(
-        `${join(out, name)} is no file this analysis writes, so no run here can show it is its own`
+        `${at} is no file this run writes, so no run here can show it is its own: remove it ` +
+          "once no run writes it"
       );
     }
+    await rm(at, { force: true });
   }
-  const text = `${JSON.stringify(record, null, 2)}\n`;
   const found = await readFile(path, "utf8").catch(() => null);
   if (found !== null) {
-    const refusal = recordRefusal(parsed(found, path), record);
-    if (refusal !== null) {
-      throw new S10AnalysisError(
-        `${path} is another run's analysis: ${refusal}. A run takes only its own claim run's ` +
-          "--out, over the same stages"
-      );
-    }
     if (found !== text) {
       throw new S10AnalysisError(
-        `${path} holds this run's analysis with other figures than this run gives, so it is not ` +
-          "this run's own"
+        `${path} is not the record this run gives over the same stages: a run takes only an ` +
+          "--out that is empty or holds its own record, byte for byte"
       );
     }
     return "kept";
   }
-  const partial = `${path}.${process.pid}.partial`;
   await writeFile(partial, text, "utf8");
   await rename(partial, path);
   return "written";
@@ -968,8 +1213,7 @@ export async function claimS10(
   options: ClaimS10Options = {}
 ): Promise<number> {
   const out = await outDirectory(flags.out);
-  const input = await chainedInput(flags, options);
-  const analysis = await s10AnalysisOf(input);
+  const analysis = await s10AnalysisOf(await chainedInput(flags, options));
   const done = await writtenTo(out, analysis);
   console.log(
     flags.format === "json"
@@ -978,212 +1222,4 @@ export async function claimS10(
   );
   console.error(`${done} ${join(out, ANALYSIS_FILE)}`);
   return 0;
-}
-
-/** A share and its count over a total, or the words that say nothing was counted. */
-function shareText(part: number, whole: number): string {
-  return whole === 0
-    ? `${count(part)} of 0`
-    : `${count(part)} of ${count(whole)} (${num(part / whole)})`;
-}
-
-/** The counts of a record, one `name count` a cell, or `none`. */
-function countsText(counts: Record<string, number>): string {
-  const entries = Object.entries(counts);
-  return entries.length === 0
-    ? "none"
-    : entries.map(([name, times]) => `${name} ${count(times)}`).join(", ");
-}
-
-/** One version's measure as a row of the rule table. */
-function ruleRow(version: RuleVersion, tally: OutcomeTally, measure: PenalizedMeasure): string[] {
-  return [
-    version === COUNTING_RULE ? `${version} (counts)` : version,
-    count(tally.decided.total),
-    count(tally.neverDecides.total),
-    count(tally.deviations.total),
-    count(measure.n),
-    count(measure.disagreeing),
-    `at most ${num(measure.bound)}`,
-  ];
-}
-
-/** The analysis as it prints: every figure of the record, in the order the registered text reads them. */
-export function renderS10Analysis(analysis: S10Analysis): string[] {
-  const { chain, inventory, tally, measure, decidedShare } = analysis;
-  const lines = ["# The claim's analysis of S10, over its judged stage", ""];
-  lines.push(
-    "Points 6, 7, 10 and 12 of the registered claim text, for its one bundle, S10, at " +
-      `--claim-threshold ${num(analysis.threshold, 1)} (point 8): a verdict of five answers has ` +
-      "at least three behind it, so every approve or request_changes is decided" +
-      (analysis.leastDecidedShare === null
-        ? "."
-        : ` (the least share behind one here is ${num(analysis.leastDecidedShare, 1)}).`) +
-      ` Version ${analysis.countingRule.slice(1)} of point 5's tool rule counts.`,
-    "",
-    "## The chain",
-    "",
-    `- claim run ${analysis.claimRun.id}, read under ${analysis.reference}, this run's digest ` +
-      analysis.runDigest,
-    `- build ${chain.build}: snapshot.json ${analysis.claimRun.snapshotSha256}, corpus.jsonl ` +
-      `${analysis.claimRun.corpusSha256}, trees.json ${analysis.claimRun.treesSha256}`,
-    `- draw ${chain.draw.directory}: draw.json ${chain.draw.drawSha256}, slices.json ` +
-      chain.draw.slicesSha256,
-    `- inputs ${chain.inputs.directory}: s10-inputs.json ${chain.inputs.stageSha256}, ` +
-      `inventory.jsonl ${chain.inputs.inventorySha256}`,
-    `- judged ${chain.judged.directory}: ${JUDGED_FILE} ${chain.judged.stageSha256}, ` +
-      `${chain.judged.state}` +
-      (chain.judged.stops.length === 0
-        ? ""
-        : `, after ${count(chain.judged.stops.length)} stops (the last: ` +
-          `${chain.judged.stops[chain.judged.stops.length - 1]?.reason})`),
-    "",
-    "## The inventory (point 6)",
-    "",
-    `${count(inventory.requests)} answered approval requests of the draw's report trees, one an ` +
-      `ask, from ${count(inventory.cases)} corpus cases: a case past an ask's first is its ` +
-      `provenance, never a row. ${count(inventory.questionCases)} question cases on ` +
-      `${count(inventory.questionAsks)} asks in the same trees are no approval request, and in ` +
-      `no figure below. ${count(inventory.trees)} eligible trees, ` +
-      `${count(measure.withoutRequest)} of them with no request.`,
-    "",
-    "## Each request's one outcome (points 6 and 7)",
-    "",
-    ...table(
-      ["outcome", "requests", "by kind"],
-      [
-        [
-          "decided",
-          count(tally.decided.total),
-          `approve ${count(tally.decided.approve)}, request_changes ` +
-            count(tally.decided.requestChanges),
-        ],
-        ["never-decide", count(tally.neverDecides.total), countsText(tally.neverDecides.byVerdict)],
-        ["deviation", count(tally.deviations.total), countsText(tally.deviations.byKind)],
-      ]
-    ),
-    "",
-    "A fact-check hold and a valid never_decide verdict are never-decides, not deviations. Of the " +
-      `deviations, the analysis found ${countsText(tally.deviations.foundByAnalysis)}: ` +
-      "verdict, a recorded verdict unlike point 2's rule recomputed from the five answers the " +
-      "stage kept; documents, his answer's (document, version) pairs unlike the judged ones. " +
-      "started is a request a run started and never finished; unjudged one no run reached.",
-    "",
-    "## Item 8's measure, penalized (points 10 and 12)",
-    "",
-    "Over the draw's eligible trees: every deviation is a decided request that disagrees with his " +
-      "answer, whatever the confidence, so its tree disagrees. n is the trees with a decided " +
-      "request or a deviation; a tree disagrees when any of them does; the trees with neither " +
-      "are never-decide, apart and not in n, their share of every eligible tree and of those " +
-      "holding a request. The penalized bound is the one-sided 90 percent Clopper-Pearson upper " +
-      "bound on the disagreeing trees over n, and 1 where n is 0.",
-    "",
-    ...table(
-      [
-        "eligible trees",
-        "no request",
-        "n",
-        "disagreeing",
-        "never-decide",
-        "of those with a request",
-        "penalized bound",
-        `at or under ${num(RATE, 2)}`,
-      ],
-      [
-        [
-          count(measure.trees),
-          count(measure.withoutRequest),
-          count(measure.n),
-          count(measure.disagreeing),
-          measure.neverDecide.share === null
-            ? count(measure.neverDecide.count)
-            : `${count(measure.neverDecide.count)} (${num(measure.neverDecide.share)})`,
-          measure.neverDecide.withRequest.share === null
-            ? count(measure.neverDecide.withRequest.count)
-            : `${count(measure.neverDecide.withRequest.count)} ` +
-              `(${num(measure.neverDecide.withRequest.share)})`,
-          `at most ${num(measure.bound)}`,
-          measure.withinRate ? "yes" : "no",
-        ],
-      ]
-    ),
-    "",
-    "## S10's decided share (point 10)",
-    "",
-    `${shareText(decidedShare.decided, decidedShare.requests)}: the requests with a valid ` +
-      "approve or request_changes over every request of the inventory, deviations in the " +
-      `denominator and never in the numerator; against d = ${num(decidedShare.planningD, 2)}, a ` +
-      "planning figure taken before S10 began (the daily count's point 5), not S10's measured " +
-      "share.",
-    "",
-    "## Point 5's tool rules",
-    "",
-    `The same outcomes under each version of point 5's rule, version ` +
-      `${analysis.countingRule.slice(1)}'s the one that counts, each with its penalized bound.`,
-    ""
-  );
-  lines.push(
-    ...table(
-      ["rule", "decided", "never-decide", "deviations", "n", "disagreeing", "penalized bound"],
-      RULE_VERSIONS.map((version) => {
-        const other = analysis.otherRules[version];
-        return other === undefined
-          ? ruleRow(version, tally, measure)
-          : ruleRow(version, other.tally, other.measure);
-      })
-    )
-  );
-  for (const change of analysis.ruleChanges) {
-    lines.push(
-      "",
-      `Version ${change.to.slice(1)}'s rule changes the deviation status of ` +
-        `${count(change.requests.length)} requests from version ${change.from.slice(1)}'s` +
-        (change.requests.length === 0 ? "." : ":")
-    );
-    for (const one of change.requests) {
-      const calls = (list: readonly ToolCallDeviation[]): string =>
-        list.length === 0
-          ? "none"
-          : list.map((call) => `${call.judge} ${call.tools.join("+")} (${call.reason})`).join("; ");
-      lines.push(
-        `- ${one.askId}: ${one.before} to ${one.after}; refused only by version ` +
-          `${change.from.slice(1)}: ${calls(one.refusedOnlyBefore)}; refused only by version ` +
-          `${change.to.slice(1)}: ${calls(one.refusedOnlyAfter)}`
-      );
-    }
-  }
-  lines.push(
-    "",
-    "### The send-back figures beside item 8",
-    "",
-    "For the catalog (version 14), over every request of the inventory, each once. A send-back " +
-      "is his chosen option, request changes; any other option he chose is no send-back, and " +
-      "the answers of an option that is neither approve nor request changes are counted in a " +
-      "column of their own. S10 sends a request back where its decided verdict is request " +
-      "changes. A never-decide or a deviation is a request S10 did not decide: no verdict is " +
-      "made up for it, and each figure counts it as wrong, a missed send-back where he sent it " +
-      "back and a false one where he did not; the not-decided counts in brackets say how many. " +
-      "Each interval is two-sided at 95 percent and exact over the requests; balanced accuracy's " +
-      "is the mean of recall's and specificity's intervals at 97.5 percent each.",
-    "",
-    ...sendBackTables("bundle", [{ name: "S10", figures: analysis.sendBack }]),
-    "",
-    "## Each request",
-    "",
-    ...table(
-      ["ask", "tree", "his answer", "outcome", "decided", "disagrees"],
-      analysis.requests.map((reading) => {
-        const one = reading.byRule[analysis.countingRule];
-        return [
-          reading.askId,
-          reading.group,
-          reading.answer.verdict,
-          statusWords(one),
-          one.status === "decided" ? "yes" : "no",
-          one.disagrees === null ? "-" : one.disagrees ? "yes" : "no",
-        ];
-      })
-    )
-  );
-  return lines;
 }

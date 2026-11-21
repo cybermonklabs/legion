@@ -152,6 +152,15 @@ export const BUILD_CHAIN_NAMES: Readonly<Record<keyof BuildChain, string>> = {
 };
 
 /**
+ * What each of a claim draw's two files is called where a refusal names the sha256 a later stage
+ * recorded of it (`ClaimDraw`), in the order compared.
+ */
+export const DRAW_CHAIN_NAMES: Readonly<Record<"drawSha256" | "slicesSha256", string>> = {
+  drawSha256: "draw.json",
+  slicesSha256: "slices.json",
+};
+
+/**
  * The one comparison every stage of the claim run holds a record to the chain it runs in with:
  * the first field `names` lists in which `found` (a record read back, whatever its shape) is not
  * `wanted`, worded as the tail of a refusal, and null where every such field is the same. A field

@@ -1607,7 +1607,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
         decisions(() => target).decide
       );
       expect(refused.status).toBe(2);
-      expect(refused.errors).toContain("written only under its registered read");
+      expect(refused.errors).toContain("the claim run's stages run only under its registered read");
     } finally {
       process.env[RESERVE_VARIABLE] = `read:${CLAIM}`;
     }

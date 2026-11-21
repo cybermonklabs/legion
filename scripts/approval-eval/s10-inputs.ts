@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { claimStartOf } from "./claim-start";
 import {
   CannotRunError,
   type Corpus,
@@ -9,7 +10,6 @@ import {
   listOf,
   outDirectory,
   pool,
-  readCorpus,
   recordOf,
   stringOf,
   UsageError,
@@ -20,17 +20,9 @@ import {
   dispatchConfig,
   pageEventLog,
 } from "./dispatch-read";
-import { type BuildChain, claimDrawOf } from "./draw-io";
 import { LeakError } from "./render";
 import { readVersion } from "./replay";
-import {
-  CLAIM_RUN_VARIABLE,
-  microsecondsOf,
-  REPOSITORY_ROOT,
-  RESERVE_VARIABLE,
-  type Registration,
-  runDigestOf,
-} from "./reserve";
+import { microsecondsOf, type Registration } from "./reserve";
 import { type Decision, type ReserveVerdict, reserveAskDecision } from "./s10-decision";
 import {
   AnswerLog,
@@ -77,7 +69,6 @@ import {
   Stage,
   writeWhole,
 } from "./s10-stage";
-import { TREES_FILE } from "./trees";
 
 /**
  * Writes the inputs the claim's S10 reviewer judges each request of the final test on: the third
@@ -572,15 +563,6 @@ function walkValues(
   for (const [name, entry] of Object.entries(record)) walkValues(entry, name, visit);
 }
 
-/** The bytes of a file a stage before this one wrote, refused where it is not there. */
-async function stageBytesOf(path: string, flag: string): Promise<Buffer> {
-  try {
-    return await readFile(path);
-  } catch {
-    throw new S10InputsError(`${path} could not be read: ${flag} takes the directory it wrote`);
-  }
-}
-
 /** A request's ask hits, the title's before the question's, in the order the pages give them. */
 function hitsOf(search: RequestSearch): QueryHit[] {
   return [...search.title.hits, ...search.question.hits];
@@ -856,9 +838,10 @@ interface Run {
 
 /**
  * The run's start: the decision checked first, so a checkout whose `reserve-ask.ts` closure is not
- * the registered one reads nothing; then the build, read under the registered read and the claim
- * run its snapshot records, which must record the events it read; the draw, held to that build;
- * the chain; the inventory; and the stage directory, started or resumed.
+ * the registered one reads nothing; then the claim run's start every later stage shares
+ * (`claimStartOf`: the admission before any file is read, the build under that read, the draw held
+ * to the build), whose snapshot must record the events it read; the chain; the inventory; and the
+ * stage directory, started or resumed.
  */
 async function openRun(flags: Flags, options: InputsOptions): Promise<Run> {
   const decision = options.decision ?? (await reserveAskDecision());
@@ -866,16 +849,11 @@ async function openRun(flags: Flags, options: InputsOptions): Promise<Run> {
     throw new S10InputsError("the decision handed in names itself by no sha256");
   }
   const directory = await outDirectory(flags.out);
-  const root = options.root ?? REPOSITORY_ROOT;
-  const corpus = await readCorpus(flags.corpus, { registration: options.registration, root });
-  const reference = corpus.reserve.readUnder;
-  const claimRun = corpus.snapshot.reserve?.claimRun;
-  if (reference === null || claimRun === undefined) {
-    throw new S10InputsError(
-      "the claim's inputs are written only under its registered read, by the claim run its " +
-        `build recorded: set ${RESERVE_VARIABLE} and ${CLAIM_RUN_VARIABLE} as that build had them`
-    );
-  }
+  const { corpus, reference, build, draw, runDigest } = await claimStartOf(
+    flags.corpus,
+    flags.draw,
+    { registration: options.registration, root: options.root }
+  );
   if (corpus.snapshot.eventsRead <= 0) {
     // `readCorpus` reads a snapshot that records none as having read none; a build of the claim
     // run always records it, so no walk here can show it reads the build's log without it.
@@ -884,18 +862,10 @@ async function openRun(flags: Flags, options: InputsOptions): Promise<Run> {
         "here can show it is the log the build read"
     );
   }
-  const treesBytes = await stageBytesOf(join(corpus.directory, TREES_FILE), "--corpus");
-  const build: BuildChain = {
-    id: claimRun,
-    snapshotSha256: corpus.snapshotSha256,
-    corpusSha256: corpus.corpusSha256,
-    treesSha256: sha256Of(treesBytes),
-  };
-  const draw = await claimDrawOf(resolve(flags.draw), build, reference);
   const chain: StageChain = {
     claimRun: build,
     reference,
-    runDigest: await runDigestOf({ argv: process.argv, env: process.env }, root),
+    runDigest,
     person: corpus.snapshot.person,
     throughEventId: corpus.snapshot.throughEventId,
     draw: { drawSha256: draw.drawSha256, slicesSha256: draw.slicesSha256 },

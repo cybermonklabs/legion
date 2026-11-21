@@ -9,6 +9,7 @@ import {
   parsed,
   recordOf,
   sha256At,
+  stringOf,
   textAt,
 } from "./corpus-io";
 import type { InventoryLine } from "./s10-inputs-io";
@@ -72,6 +73,15 @@ export const UNJUDGED = "unjudged";
 
 /** The verdict a fact hold gives, with no judge. */
 export const HOLD_VERDICT = "never_decide:waiting-legion-root";
+
+/** The judges of one request (point 2). */
+export const JUDGES = 5;
+
+/** How many of the five name a kind before the verdict is that never-decide (point 2's rule). */
+const NAMED_TO_HOLD_BACK = 3;
+
+/** The `never_decide` of an answer that names no kind. */
+const NO_KIND = "none";
 
 /** One request's deviation: its kind, the reason, and every problem found. */
 export interface Deviation {
@@ -273,6 +283,11 @@ export interface JudgedStage {
   outcomes: Map<string, JudgedOutcome>;
   /** `outcomes.jsonl`'s lines, null while the stage is started. */
   lines: OutcomeLine[] | null;
+  /**
+   * By ask id, each file the record names under the request's directory, but its outcome, that is
+   * not there with the bytes the record names (`judgedStageOf`).
+   */
+  evidence: Map<string, LostEvidence[]>;
 }
 
 function sha256Of(bytes: Uint8Array | string): string {
@@ -739,6 +754,13 @@ export function judgedRecordOf(text: string, path: string): JudgedRecord {
   };
 }
 
+/** One file the record names under a request's directory that is not there with its bytes. */
+export interface LostEvidence {
+  /** Its path under `requests/<ask id>/`. */
+  file: string;
+  problem: string;
+}
+
 /** One file the record names, read and held to the sha256 it names. */
 async function heldBytes(directory: string, record: JudgedRecord, name: string): Promise<Buffer> {
   const path = join(directory, name);
@@ -754,7 +776,11 @@ async function heldBytes(directory: string, record: JudgedRecord, name: string):
  * A judged stage read whole: its record, with the sha256 of the bytes it was read from, every
  * `outcome.json` it names, and `outcomes.jsonl` where the stage is written, each held to the
  * sha256 the record names; refused where `outcomes.jsonl` and the outcomes disagree, or one ask
- * has two outcomes.
+ * has two outcomes. Every other file the record names is read and held to its sha256 too: one
+ * under `requests/<ask id>/` that is not there with those bytes (a transcript, a bundle, the
+ * answers, the sandbox's record) is that request's lost evidence (`JudgedStage.evidence`), which
+ * the analysis makes the request's deviation; one outside every request's directory (the kept
+ * frozen code, a preflight's result) refuses the stage, which is then not what its record says.
  */
 export async function judgedStageOf(directory: string): Promise<JudgedStage> {
   const recordPath = join(directory, JUDGED_FILE);
@@ -763,8 +789,25 @@ export async function judgedStageOf(directory: string): Promise<JudgedStage> {
     throw new CorpusError(`${recordPath} could not be read: it takes the judged stage`);
   const record = judgedRecordOf(recordBytes.toString("utf8"), recordPath);
   const outcomes = new Map<string, JudgedOutcome>();
+  const evidence = new Map<string, LostEvidence[]>();
   for (const name of Object.keys(record.files).sort()) {
-    if (!/^requests\/[^/]+\/outcome\.json$/.test(name)) continue;
+    if (name === OUTCOMES_FILE) continue;
+    if (!/^requests\/[^/]+\/outcome\.json$/.test(name)) {
+      const bytes = await readFile(join(directory, name)).catch(() => null);
+      if (bytes !== null && sha256Of(bytes) === record.files[name]) continue;
+      const problem = bytes === null ? "is not there" : "is not the file the stage record names";
+      const askId = /^requests\/([^/]+)\/./.exec(name)?.[1];
+      if (askId === undefined) {
+        throw new CorpusError(
+          `${join(directory, name)}, which the stage record names, ${problem}: the stage is not ` +
+            "what its record says"
+        );
+      }
+      const lost = evidence.get(askId) ?? [];
+      lost.push({ file: name.slice(`requests/${askId}/`.length), problem });
+      evidence.set(askId, lost);
+      continue;
+    }
     const outcome = judgedOutcomeOf(
       (await heldBytes(directory, record, name)).toString("utf8"),
       join(directory, name)
@@ -804,7 +847,7 @@ export async function judgedStageOf(directory: string): Promise<JudgedStage> {
       }
     }
   }
-  return { record, recordSha256: sha256Of(recordBytes), outcomes, lines };
+  return { record, recordSha256: sha256Of(recordBytes), outcomes, lines, evidence };
 }
 
 /**
@@ -827,9 +870,14 @@ export function reportedOutcomesOf(
   return inventory.map((line) => {
     const found = stage.outcomes.get(line.askId);
     if (found !== undefined) return found;
+    // The record names the request's `started.json`, read and held to its sha256 with every file
+    // it names (`judgedStageOf`): a lost one is said beside the reason.
     const started = Object.hasOwn(stage.record.files, `requests/${line.askId}/${STARTED_FILE}`);
+    const lost = stage.evidence.get(line.askId)?.find((one) => one.file === STARTED_FILE);
     const kind = started ? "started" : UNJUDGED;
     const reason = started ? STARTED_REASON : "no run of the judging stage reached the request";
+    const problems =
+      lost === undefined ? [reason] : [reason, `its ${STARTED_FILE} ${lost.problem}`];
     return {
       askId: line.askId,
       issueKey: line.issueKey,
@@ -837,7 +885,7 @@ export function reportedOutcomesOf(
       cases: line.cases,
       outcome: "deviation",
       verdict: null,
-      deviation: { kind, reason, problems: [reason] },
+      deviation: { kind, reason, problems },
       judgement: null,
       judges: [],
       sandbox: null,
@@ -850,6 +898,41 @@ export function reportedOutcomesOf(
       })),
     };
   });
+}
+
+/**
+ * Point 2's verdict over five answers, as `s10_transcripts.py`'s `rule_verdict` states it, with
+ * the share of the five behind it; or why the answers are not five the rule reads.
+ */
+export function ruleVerdictOf(
+  answers: readonly unknown[]
+): { verdict: string; share: number } | { problem: string } {
+  if (answers.length !== JUDGES) return { problem: `${answers.length} answers, not ${JUDGES}` };
+  const named = new Map<string, number>();
+  const votes = new Map<string, number>();
+  for (const [at, answer] of answers.entries()) {
+    const record = recordOf(answer);
+    const kind = stringOf(record?.never_decide);
+    const verdict = record?.verdict;
+    if (kind === null || (verdict !== "approve" && verdict !== "request_changes")) {
+      return { problem: `answer ${at + 1} names no never_decide or no verdict the rule reads` };
+    }
+    if (kind !== NO_KIND) named.set(kind, (named.get(kind) ?? 0) + 1);
+    votes.set(verdict, (votes.get(verdict) ?? 0) + 1);
+  }
+  let namedTotal = 0;
+  for (const times of named.values()) namedTotal += times;
+  if (namedTotal >= NAMED_TO_HOLD_BACK) {
+    const top = Math.max(...named.values());
+    const kinds = [...named].filter(([, times]) => times === top).map(([kind]) => kind);
+    return { verdict: `never_decide:${kinds.sort().join("+")}`, share: top / JUDGES };
+  }
+  let chosen = "";
+  let most = 0;
+  for (const [verdict, times] of votes) {
+    if (times > most) [chosen, most] = [verdict, times];
+  }
+  return { verdict: chosen, share: most / JUDGES };
 }
 
 /**

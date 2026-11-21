@@ -3353,20 +3353,29 @@ function readFlags(argv: readonly string[]): Flags | ClaimS10Flags {
   };
 }
 
+/** The flags the claim's analysis takes, and no other, as `parseArgs` names them. */
+const CLAIM_S10_FLAGS: Readonly<Record<string, true>> = {
+  corpus: true,
+  "claim-s10": true,
+  draw: true,
+  "claim-threshold": true,
+  format: true,
+  out: true,
+};
+
 /**
  * The flags of the claim's analysis (`--claim-s10`): the claim run's build, draw and judged stage
  * and the directory its record is written to, each required, and `--claim-threshold 0.6`, which
  * point 8 of the registered claim text fixes: a verdict of five answers has at least three behind
  * it, so 0.6 decides every `approve` and `request_changes`, and neither `fitted` nor another number
- * is the claim's. A round's flags are refused beside them, since the claim reads no round.
+ * is the claim's. Any other flag is refused beside them: the claim reads no round.
  */
 function claimS10FlagsOf(values: FlagValues, format: "text" | "json"): ClaimS10Flags {
-  const roundOnly = (
-    ["round", "confidence-table", "confidence-arm", "cases", "confidence-seed"] as const
-  ).filter((name) => values[name] !== undefined);
-  if (roundOnly.length > 0) {
+  const others = Object.keys(values).filter((name) => CLAIM_S10_FLAGS[name] !== true);
+  if (others.length > 0) {
     throw new UsageError(
-      `--claim-s10 reads no round, so it takes no --${roundOnly.join(", --")}\n\n${USAGE}`
+      `--claim-s10 takes only --${Object.keys(CLAIM_S10_FLAGS).join(", --")}, and no ` +
+        `--${others.join(", --")}: the claim reads no round\n\n${USAGE}`
     );
   }
   const corpus = values.corpus?.trim();
