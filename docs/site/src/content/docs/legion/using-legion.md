@@ -64,7 +64,10 @@ the project's controller answers in that thread:
 
 - A question about what Legion is doing ("what are you working on?", "where is ACME-12?") is
   answered from the daemon's state and Dispatch.
-- A request for work is filed as a Dispatch issue in the project, and the reply names it with its
+- A request for work that an open issue already tracks goes to that issue: when Legion runs it, to
+  its architect, which writes the request into that issue's spec for you to approve, and otherwise
+  the reply names the issue.
+  Any other request is filed as a Dispatch issue in the project, and the reply names it with its
   link. The issue carries the `legion` label, so Legion takes it, only when you ask Legion to do the
   work; otherwise it waits for a person to hand it over.
 - A question an issue's architect owns is passed to that architect, and the reply says so; its

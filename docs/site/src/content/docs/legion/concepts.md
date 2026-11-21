@@ -459,7 +459,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
   and a new generation tells again from its own first crossing.
   At the round cap the architect decides, in the turn the notice wakes, whether to narrow the next
   rounds, split work
-  off (into a sibling child, or, on a root, an ask whether the rest needs an issue of its own), or
+  off (into a sibling child, or, on a root, an ask about the rest, which stays this issue's
+  requirement until you approve a new version of the spec that takes it out), or
   let converging rounds run, and posts that decision on the issue. Every move back to an earlier
   phase counts a round: a tester's fail, a review's request for changes and a worker's move back.
   A move made while the record holds the head conflicting with its base is a conflict round, which

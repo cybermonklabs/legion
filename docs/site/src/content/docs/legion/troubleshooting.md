@@ -1431,7 +1431,7 @@ These arrive as messages on the Dispatch issue:
   round, which the cap leaves out and the message's second number names. The daemon posts it and
   tells the architect once for each value the cap holds, so the rounds after it say nothing again
   until you change `review_round_cap` or the issue runs again as a new generation. The work goes
-  on, and the architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask whether the rest needs an issue), or
+  on, and the architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask about the rest, which stays this issue's requirement until you approve a new version of the spec that takes it out), or
   let rounds that are converging run, and posts that decision on the issue; it asks you only for a
   decision that needs your authority.
 - **`Legion hook work-back fired at 5 moves back: testing to implementing. Prompted: implementer, tester, reviewer.`**
