@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  Dispatch now removes a document's ask blocks before it breaks the document's underscore runs for
+  search, in the document's search vector, in the spec part of its issue's vector, in the
+  related-item check and in the duplicate check. Removing them after joined the runs on each side
+  of an ask block written inside a run into one run that Postgres's text-search parser reads in
+  time quadratic in its length: an issue whose spec held 41,000 bytes of `a_` runs around ask
+  blocks took 18 s to create, its duplicate check gave up after 2 s and let an exact copy through,
+  and its related-item check gave up after 5 s. Each now takes under 0.2 s. Migration
+  20261121060636 adds `search_document_text`, which all four use, and rewrites no stored vector:
+  a vector differs only for `:::ask{…}:::` written inside a run whose joined form the parser reads
+  as one host name, path or URL, and such a row is indexed the new way at its document's next
+  version.
+time: 2026-11-21T07:45:06Z
+custom:
+    Issue: pr4761
