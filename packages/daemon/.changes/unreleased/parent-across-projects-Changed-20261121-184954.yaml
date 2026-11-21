@@ -1,0 +1,5 @@
+kind: Changed
+body: 'An issue''s Dispatch parent chain ends before its first ancestor of another project, because that ancestor''s own project''s daemon runs its tree. A labelled todo issue under a parent of another project is prepared with no ancestry, so it is a root of its own project and waits in its own line or takes a slot, also where a live tree of its own project stands above that parent. `release_children` reads the chain the same way: a tree''s architect cannot release an issue that it reaches only through an issue of another project, and the answer is `ISSUE_OUTSIDE_TREE`.'
+time: 2026-11-21T18:49:54.952724273Z
+custom:
+    Issue: parent-across-projects

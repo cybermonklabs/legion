@@ -2675,13 +2675,26 @@ func queuesUnderParent(issue intake.DispatchIssue, recorded *record.Issue) bool 
 // Dispatch parent ("" for none) of every issue read from Dispatch or shown to the walk.
 type ancestry map[string]string
 
-// chainOf is the keys of key's Dispatch parent chain, read up walk from parent upward to the top,
-// stopping only at a repeated key or back at key; nil when parent is "". It reads no record: it is
-// the chain release_children's own walk reads (api's releasableChild), so an ancestry hold lasts
-// exactly while a live root on it could release the issue into its tree (record.Waiting).
+// chainOf is the keys of key's Dispatch parent chain, read up walk from parent upward, stopping at
+// a repeated key, back at key, or before the first ancestor of another project than key's; nil
+// when parent is "" or is of another project. It reads no record: it is the chain
+// release_children's own walk reads (api's releasableChild), which ends at the same edge, so an
+// ancestry hold lasts exactly while a live root on it could release the issue into its tree
+// (record.Waiting).
+//
+// The chain ends before an ancestor of another project because that ancestor's own project's
+// daemon runs its tree, and this daemon runs none of it: a key's project is the text before its
+// first '-' (`<PROJECT>-<number>`, as ownDispatchKey reads it). So an issue under a parent of
+// another project is a root of its own project, held under no tree, also where a live tree of its
+// own project stands above that parent; the other project's ancestor counts it as an open child
+// (record.ChildOpen), and no read of that ancestor is made here.
 func (w *workflowRuntime) chainOf(ctx context.Context, walk ancestry, key, parent string) ([]string, error) {
+	project, _, _ := strings.Cut(key, "-")
 	var chain []string
 	for ancestor := parent; ancestor != "" && ancestor != key && !slices.Contains(chain, ancestor); {
+		if of, _, _ := strings.Cut(ancestor, "-"); of != project {
+			break
+		}
 		chain = append(chain, ancestor)
 		next, ok := walk[ancestor]
 		if !ok {
