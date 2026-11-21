@@ -270,69 +270,104 @@ test.skipIf(process.platform !== "linux")(
   }
 );
 
-test.skipIf(process.platform !== "linux" || Bun.which("openssl") === null)(
-  "run-server.sh hands its server DATABASE_URL, the App key and the sign-in key in its environment and in no process's arguments",
-  () => {
-    const e2e = join(import.meta.dir, "..");
-    const work = join(standIn, "server-work");
-    mkdirSync(join(work, "bin"), { recursive: true });
-    // A python3 and an env first on PATH that record their arguments before they run, as
-    // held-port.py and env would carry a setting named to them, and a stand-in server that
-    // writes its own arguments and the settings it was given.
-    for (const tool of ["python3", "env"]) {
+/** Each sign-in run-server.sh starts its server for: the settings a run gives it, and the sign-in
+ *  secrets the server gets from them, each a canary of its own (e2e/run-server.sh's
+ *  `signin_secret_env`). */
+const serverSignIns = [
+  {
+    name: "dev",
+    given: { DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY: "not-a-secret-shared-key" },
+    secrets: { DISPATCH_DEV_SIGNIN_SHARED_KEY: "not-a-secret-shared-key" },
+  },
+  {
+    name: "oidc",
+    given: {
+      DISPATCH_E2E_SIGNIN: "oidc",
+      DISPATCH_E2E_SIGNIN_ISSUER_PORT: "9025",
+      DISPATCH_E2E_SIGNIN_CLIENT_ID: "dispatch-e2e",
+      DISPATCH_E2E_SIGNIN_CLIENT_SECRET: "not-a-secret-client-secret",
+      DISPATCH_E2E_SIGNIN_GROUP: "dispatch-e2e-group",
+      DISPATCH_E2E_SIGNING_KEY: "not-a-secret-signing-key",
+    },
+    secrets: {
+      DISPATCH_SIGNIN_CLIENT_SECRET: "not-a-secret-client-secret",
+      DISPATCH_SIGNING_KEY: "not-a-secret-signing-key",
+    },
+  },
+] as const;
+
+for (const signIn of serverSignIns) {
+  test.skipIf(process.platform !== "linux" || Bun.which("openssl") === null)(
+    `run-server.sh hands its server DATABASE_URL, the App key and the ${signIn.name} sign-in's secrets in its environment and in no process's arguments`,
+    () => {
+      const e2e = join(import.meta.dir, "..");
+      const work = join(standIn, `server-work-${signIn.name}`);
+      mkdirSync(join(work, "bin"), { recursive: true });
+      const secretNames = Object.keys(signIn.secrets);
+      // A python3 and an env first on PATH that record their arguments before they run, as
+      // held-port.py and env would carry a setting named to them, and a stand-in server that
+      // writes its own arguments and the settings it was given.
+      for (const tool of ["python3", "env"]) {
+        writeFileSync(
+          join(work, "bin", tool),
+          `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>'${work}/argv'\nexec ${Bun.which(tool)} "$@"\n`,
+          { mode: 0o755 }
+        );
+      }
       writeFileSync(
-        join(work, "bin", tool),
-        `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>'${work}/argv'\nexec ${Bun.which(tool)} "$@"\n`,
+        join(work, "server"),
+        [
+          "#!/bin/sh",
+          `tr '\\0' ' ' </proc/$$/cmdline >'${work}/server-cmdline'`,
+          `printf '%s\\n' "$DATABASE_URL" "\${#DISPATCH_APP_PEM_B64}" ${secretNames
+            .map((name) => `"$${name}"`)
+            .join(" ")} >'${work}/server-env'`,
+          "",
+        ].join("\n"),
         { mode: 0o755 }
       );
+      const url = "postgres://tester:not-a-secret%40server@127.0.0.1:5999/dispatch_e2e";
+      const run = Bun.spawnSync(["bash", join(e2e, "run-server.sh")], {
+        env: {
+          PATH: `${join(work, "bin")}${delimiter}${process.env.PATH ?? ""}`,
+          DATABASE_URL: url,
+          ...signIn.given,
+          DISPATCH_E2E_SERVER_BIN: join(work, "server"),
+          FAKE_BROKER_PORT: "9024",
+          FAKE_ENVOY_PORT: "9021",
+          FAKE_GITHUB_PORT: "9022",
+        },
+      });
+      expect(run.exitCode, run.stderr.toString()).toBe(0);
+      const argv = readFileSync(join(work, "argv"), "utf8");
+      const [databaseUrl, pemLength, ...secretValues] = readFileSync(
+        join(work, "server-env"),
+        "utf8"
+      ).split("\n");
+      expect({
+        recorded: argv.includes("python3 ") && argv.includes("env "),
+        argvPassword: argv.includes("not-a-secret%40server"),
+        argvKey: argv.includes("PRIVATE KEY"),
+        argvSecrets: Object.entries(signIn.secrets)
+          .filter(([, value]) => argv.includes(value))
+          .map(([name]) => name),
+        cmdline: readFileSync(join(work, "server-cmdline"), "utf8").includes("not-a-secret"),
+        databaseUrl,
+        secrets: Object.fromEntries(secretNames.map((name, index) => [name, secretValues[index]])),
+        pemGiven: Number(pemLength) > 0,
+      }).toEqual({
+        recorded: true,
+        argvPassword: false,
+        argvKey: false,
+        argvSecrets: [],
+        cmdline: false,
+        databaseUrl: url,
+        secrets: signIn.secrets,
+        pemGiven: true,
+      });
     }
-    writeFileSync(
-      join(work, "server"),
-      [
-        "#!/bin/sh",
-        `tr '\\0' ' ' </proc/$$/cmdline >'${work}/server-cmdline'`,
-        `printf '%s\\n%s\\n%s\\n' "$DATABASE_URL" "$DISPATCH_DEV_SIGNIN_SHARED_KEY" "\${#DISPATCH_APP_PEM_B64}" >'${work}/server-env'`,
-        "",
-      ].join("\n"),
-      { mode: 0o755 }
-    );
-    const url = "postgres://tester:not-a-secret%40server@127.0.0.1:5999/dispatch_e2e";
-    const sharedKey = "not-a-secret-shared-key";
-    const run = Bun.spawnSync(["bash", join(e2e, "run-server.sh")], {
-      env: {
-        PATH: `${join(work, "bin")}${delimiter}${process.env.PATH ?? ""}`,
-        DATABASE_URL: url,
-        DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY: sharedKey,
-        DISPATCH_E2E_SERVER_BIN: join(work, "server"),
-        FAKE_BROKER_PORT: "9024",
-        FAKE_ENVOY_PORT: "9021",
-        FAKE_GITHUB_PORT: "9022",
-      },
-    });
-    expect(run.exitCode, run.stderr.toString()).toBe(0);
-    const argv = readFileSync(join(work, "argv"), "utf8");
-    const [databaseUrl, shared, pemLength] = readFileSync(join(work, "server-env"), "utf8").split(
-      "\n"
-    );
-    expect({
-      recorded: argv.includes("python3 ") && argv.includes("env "),
-      argvPassword: argv.includes("not-a-secret"),
-      argvKey: argv.includes("PRIVATE KEY"),
-      cmdline: readFileSync(join(work, "server-cmdline"), "utf8").includes("not-a-secret"),
-      databaseUrl,
-      shared,
-      pemGiven: Number(pemLength) > 0,
-    }).toEqual({
-      recorded: true,
-      argvPassword: false,
-      argvKey: false,
-      cmdline: false,
-      databaseUrl: url,
-      shared: sharedKey,
-      pemGiven: true,
-    });
-  }
-);
+  );
+}
 
 /** What `dispatch:local` prints once its instance is up, for the database `databaseUrl`. */
 function handOver(databaseUrl: string, supplied: boolean): string {

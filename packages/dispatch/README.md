@@ -174,11 +174,16 @@ command line held, so it needs all three engines downloaded
 node while the same command line without `--ui` runs green.
 
 To point a session at a stack that is already up instead, start one, apply the
-variables it prints, and start the UI in that environment:
+variables it prints, and start the UI in that environment. The file holds the
+stack's `DATABASE_URL` with any password it carries, so it is made for you
+alone: the subshell creates it under `umask 077` and then runs the harness in
+its place, so `$!` is the harness, and a file an earlier run left is removed
+first, since an existing file keeps its mode:
 
 ```bash
 cd packages/dispatch
-bun e2e/harness-up.ts > exports.sh &
+rm -f exports.sh
+(umask 077 && exec bun e2e/harness-up.ts > exports.sh) &
 # wait for its last line, `export DISPATCH_E2E_REUSE_SERVERS=1`, then
 . ./exports.sh
 bunx playwright test --config e2e/playwright.config.ts --ui

@@ -3046,7 +3046,7 @@ GATES = [
                                            "packages/dispatch/e2e/acceptance/replace-blocks.sh:113 does, which e2e/__tests__/replace-blocks-guard.test.ts runs; "
                                            f"{at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
         (f"{ENVOY}/scripts/fixtures/pg-url.json", "packages/dispatch/e2e/__tests__/psql-password.test.ts:198-200, the new URL at :199"),
-        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/__tests__/psql-password.test.ts:301 runs packages/dispatch/e2e/run-server.sh, "
+        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/__tests__/psql-password.test.ts:330 runs packages/dispatch/e2e/run-server.sh, "
                                          f"which holds its server's port through it (run-server.sh:83,92); {at('dispatch-ui', 'Test dispatch dashboard')} runs that file"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:4-7 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
