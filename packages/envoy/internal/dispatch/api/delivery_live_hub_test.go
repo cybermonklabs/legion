@@ -2110,8 +2110,11 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 	requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, held, delta, "")
 }
 
+// The clock reads noon UTC (newNoonHubClock) and runs on from there, so the row's run itself
+// crossing a real UTC midnight, which would move the days before the row's own Advance, decides
+// nothing.
 func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing.T) {
-	clock := &fakeHubClock{}
+	clock := newNoonHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()
@@ -2146,27 +2149,33 @@ func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing
 // inside the worker's arm of its timer, after the worker has read the clock and before the timer is
 // placed, where a test's Advance can land when the race detector slows the worker. It moves it at
 // the first arm once the view holds its answer with no wake left pending (the subscribe's mark
-// leaves one the worker's first pass never takes) and the intake owes nothing, so only the timer can
-// wake the worker: the expiry the clock already passed is due, so the timer fires and the expiry's
-// delta follows.
+// leaves one the worker's first pass never takes) and the relay's feed has been applied, so only
+// the timer can wake the worker: the expiry the clock already passed is due, so the timer fires and
+// the expiry's delta follows. The clock reads noon UTC (newNoonHubClock) until then, so the run
+// itself crossing a real UTC midnight decides nothing.
 //
-// The intake is waited out because until then the relay's feed, which a generation takes on a
-// goroutine of its own (seedEvents), can reach it at any moment, and its apply marks every view
-// dirty (applyFeed). Landing after the clock moved, that mark makes the view due as a change rather
-// than as the expiry: a change recompute then sends the moved days and no expiry recompute runs, as
-// in CI run 44852321217, where the hub answered the moved clock right and the row proved nothing
-// about the timer.
+// The feed is waited for because a generation takes it on a goroutine of its own (seedEvents), so
+// it can reach the intake at any moment until then, and its apply marks every view dirty
+// (applyFeed). Landing after the clock moved, that mark makes the view due as a change rather than
+// as the expiry: a change recompute then sends the moved days and no expiry recompute runs. That
+// recompute reads at the moved clock, so the page is still answered right, but the row then proves
+// nothing about the timer. The feed's apply is the one thing the intake can still owe that marks
+// the view, and its mark wakes the worker, so an arm at which the hook waits for it is followed by
+// another. Any other thing the intake owes here, a catch-up of the change log after a notification
+// or a connection, marks nothing, since the row writes nothing after the generation starts: the
+// hook does not wait for it, as nothing would wake the worker to ask the hook again.
 func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testing.T) {
-	clock := &fakeHubClock{}
+	clock := newNoonHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
+	seeded := func(note deliveryHubNote) bool { return note.what == "events seeded" }
 	clock.onArm(func() bool {
-		// The intake first and the views last, as waitNothingOwed reads them: catchUpNow returns
-		// once the intake has run everything intakeOwes saw it hold, so a mark the feed's apply or
-		// a catch-up made is on the view by the time the view is read.
-		if rig.intakeOwes() != "" {
+		if rig.count(0, seeded) == 0 {
 			return false
 		}
+		// The feed's apply marks the views before its note is made. catchUpNow returns once the
+		// intake has finished whatever it had already taken off its channels, such as a catch-up
+		// under way, so a mark that work made is on the view by the time the view is read.
 		rig.hub.catchUpNow()
 		rig.hub.mu.Lock()
 		g := rig.hub.generation
@@ -2189,10 +2198,11 @@ func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testi
 
 	// The clock moves only once the feed is applied, and the feed stands behind the server's event
 	// horizon, so the wait for it is the horizon's.
-	rig.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
+	rig.waitForEvent(t, 0, "the hub's event feed", seeded)
 	// The expiry's recompute is what the row waits for, with the test binary's deadline as its only
-	// bound. It sends its delta before it makes its note (expire, finishRecompute), so the delta is
-	// waiting on the conn by then and the bound of the read below never decides.
+	// bound. It sends its delta, when it has one, before it makes its note (expire, finishRecompute),
+	// so the bound of the read below decides only how soon the row reports an expiry that sent
+	// nothing.
 	rig.waitFor(t, 0, testwait.Bounded(t, 24*time.Hour, time.Second), "the expiry's recompute", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && note.cause == deliveryCauseExpiry
 	})
