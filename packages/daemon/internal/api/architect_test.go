@@ -194,10 +194,17 @@ func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dis
 	return written, nil
 }
 
-// SetStatusAt is the fenced write, which no architect route makes: the daemon's own queued writes
-// take it, and they run in the outbox.
-func (r *statusRecorder) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
-	return dispatch.Issue{}, errors.New("the architect routes write no status at a sequence")
+// SetStatusAt is SetStatus fenced on the sequence issue carries (expected_sequence), as Dispatch
+// fences it: refused 409 ISSUE_CHANGED when the issue the fake keeps stands at another sequence,
+// and otherwise taken and kept as SetStatus keeps a write. An acceptance's write back makes it.
+func (r *statusRecorder) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	if r.err != nil {
+		return dispatch.Issue{}, r.err
+	}
+	if r.issues[issue.Key].LastSeq != issue.LastSeq {
+		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CHANGED", Message: "issue changed"}
+	}
+	return r.SetStatus(ctx, issue.Key, status)
 }
 
 // SetAcceptanceStatus is SetStatus sent with refuse_open_foreign_children: refused with Dispatch's
