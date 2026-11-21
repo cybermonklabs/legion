@@ -31,13 +31,16 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -216,30 +219,56 @@ func Main(m *testing.M) int { return Run(m.Run) }
 // itself: run runs the package's tests through that Main, and Run then does what Main does after
 // them. internal/dispatch/delivery shares one NATS server across its tests (testnats.Main):
 // func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }.
+//
+// The teardown is bounded (teardownDeadline), because a drop can wait for a reason outside this
+// process. DROP DATABASE waits until every backend of the server, in any database, has accepted
+// the barrier it raises (wait event IPC/ProcSignalBarrier), and neither statement_timeout nor a
+// cancel request ends that wait: measured on PostgreSQL 18.6, a drop with a 25 s
+// statement_timeout went on waiting for the whole nine minutes that one backend of another
+// database stayed stopped. So a backend that cannot run holds every drop on the server for as
+// long as it cannot. A drop still waiting at the bound is left to the server: Run stops waiting,
+// names the database and what its drop waits on, so a database the server keeps can be dropped by
+// hand, and keeps the tests' exit code, since every test has reported by then and the wait is
+// another backend's. A drop that fails is still reported, and fails the run, as before.
 func Run(run func() int) int {
 	shared.main = true
+	started := time.Now()
 	code := run()
 	if shared.admin == nil {
 		return code
 	}
+	ctx, cancel := context.WithDeadline(context.Background(), teardownDeadline(started))
+	defer cancel()
+	dropped := make(chan struct{})
+	go func() {
+		shared.drops.Wait()
+		close(dropped)
+	}()
+	select {
+	case <-dropped:
+	case <-ctx.Done():
+		// The templates' drops would wait on the same server, so none is started. The admin pool
+		// is not closed: Close waits for every connection it lent, and the drops still in flight
+		// hold theirs. The process ends with them.
+		fmt.Fprintf(os.Stderr, "storetest: the tests' own databases were still being dropped at the teardown's bound, %s after the tests began; those drops are left to the server, and the templates %s are not dropped: %s\n",
+			time.Since(started).Round(time.Second), strings.Join(templateNames(), ", "), waitingOn("drop database dispatch_test_"))
+		return code
+	}
 	defer shared.admin.Close()
-	shared.drops.Wait()
 	for _, failure := range shared.dropFails {
 		fmt.Fprintf(os.Stderr, "storetest: %s\n", failure)
 		if code == 0 {
 			code = 1
 		}
 	}
-	templates.Lock()
-	names := make([]string, 0, len(templates.byKey))
-	for _, entry := range templates.byKey {
-		if entry.name != "" {
-			names = append(names, entry.name)
-		}
-	}
-	templates.Unlock()
+	names := templateNames()
 	for _, name := range names {
-		if _, err := shared.admin.Exec(context.Background(), "drop database "+name); err != nil {
+		if _, err := shared.admin.Exec(ctx, "drop database "+name); err != nil {
+			if ctx.Err() != nil {
+				fmt.Fprintf(os.Stderr, "storetest: drop template database %s: still waiting at the teardown's bound, %s after the tests began, so the drop is left to the server: %s\n",
+					name, time.Since(started).Round(time.Second), waitingOn("drop database "+name))
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "storetest: drop template database %s: %v\n", name, err)
 			if code == 0 {
 				code = 1
@@ -247,6 +276,91 @@ func Run(run func() int) int {
 		}
 	}
 	return code
+}
+
+// templateNames are the databases of the templates this test binary made.
+func templateNames() []string {
+	templates.Lock()
+	defer templates.Unlock()
+	names := make([]string, 0, len(templates.byKey))
+	for _, entry := range templates.byKey {
+		if entry.name != "" {
+			names = append(names, entry.name)
+		}
+	}
+	return names
+}
+
+// teardownGrace and teardownUnbounded set Run's bound. cmd/go kills a test binary one minute past
+// its -timeout ("ran too long"), and the binary's own alarm stops when m.Run returns, so nothing
+// else ends a teardown that waits: the teardown ends teardownGrace past the -timeout, inside that
+// minute. A binary run with -timeout 0 has no kill to stay inside, and gets teardownUnbounded
+// from the end of its tests.
+const (
+	teardownGrace     = 30 * time.Second
+	teardownUnbounded = 5 * time.Minute
+)
+
+// teardownDeadline is when Run's teardown gives up, for a test binary whose tests began at
+// started.
+func teardownDeadline(started time.Time) time.Time {
+	if timeoutFlag := flag.Lookup("test.timeout"); timeoutFlag != nil {
+		if timeout, ok := timeoutFlag.Value.(flag.Getter).Get().(time.Duration); ok && timeout > 0 {
+			return started.Add(timeout + teardownGrace)
+		}
+	}
+	return time.Now().Add(teardownUnbounded)
+}
+
+// waitingOn says what the server's backend running the statement that begins with prefix waits on,
+// and lists the server's other client backends, by pid, database, state and wait, from a
+// pg_stat_activity read on a connection of its own (the admin pool's may all be held by drops),
+// bounded by waitingOnBound. A backend that holds a drop is among them, though nothing the server
+// shows says which.
+func waitingOn(prefix string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), waitingOnBound)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, databaseURL(shared.server, "postgres"))
+	if err != nil {
+		return fmt.Sprintf("pg_stat_activity could not be read: %v", err)
+	}
+	defer conn.Close(context.Background())
+	rows, err := conn.Query(ctx, `select pid, coalesce(datname, ''), coalesce(state, ''), coalesce(wait_event_type, ''),
+		coalesce(wait_event, ''), left(coalesce(query, ''), 60), starts_with(coalesce(query, ''), $1)
+		from pg_stat_activity where backend_type = 'client backend' and pid <> pg_backend_pid() order by pid`, prefix)
+	if err != nil {
+		return fmt.Sprintf("pg_stat_activity could not be read: %v", err)
+	}
+	defer rows.Close()
+	var drops, others []string
+	for rows.Next() {
+		var pid int
+		var database, state, waitType, wait, query string
+		var isDrop bool
+		if err := rows.Scan(&pid, &database, &state, &waitType, &wait, &query, &isDrop); err != nil {
+			return fmt.Sprintf("pg_stat_activity could not be read: %v", err)
+		}
+		line := fmt.Sprintf("pid %d in %q, %s, waiting on %s/%s, %q", pid, database, state, waitType, wait, query)
+		if isDrop {
+			drops = append(drops, line)
+		} else {
+			others = append(others, line)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Sprintf("pg_stat_activity could not be read: %v", err)
+	}
+	return fmt.Sprintf("the drop: %s; the server's other client backends: %s", listOrNone(drops), listOrNone(others))
+}
+
+// waitingOnBound bounds waitingOn's read of pg_stat_activity.
+const waitingOnBound = 10 * time.Second
+
+func listOrNone(lines []string) string {
+	if len(lines) == 0 {
+		return "none"
+	}
+	return strings.Join(lines, "; ")
 }
 
 // dropWindow and dropPause bound the plain drop's retry: how long a drop is tried again while
