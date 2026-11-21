@@ -77,6 +77,10 @@
         "test": "print-helper.Broker.do.envelope"
       },
       {
+        "holder": "github.com/sjawhar/envoy/internal/cipher/helper.leaseReply",
+        "test": "print-helper.leaseReply"
+      },
+      {
         "holder": "github.com/sjawhar/envoy/cmd/cipher.apiError",
         "test": "print-agent-secrets.apiError"
       },
@@ -4481,6 +4485,13 @@
       "production": "(*github.com/sjawhar/envoy/internal/cipher/helper.Broker).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
     },
     {
+      "id": "print-helper.leaseReply",
+      "requirement": "r2-held",
+      "package": "./internal/cipher/helper",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/helper.leaseReply",
+      "production": "github.com/sjawhar/envoy/internal/cipher/helper.leaseReply: every printer at every placement"
+    },
+    {
       "id": "print-agent-secrets.apiError",
       "requirement": "r2-held",
       "package": "./cmd/cipher",
@@ -4801,6 +4812,13 @@
       "package": "./cmd/cipher",
       "test": "TestTheUserinfoEmailPrintsNoTokenItsReadCarried/an_email_that_echoes_the_bearer",
       "production": "agent-secrets gcpUserinfo and personEmail: the email held as redact.RemoteText (googleUserinfo) with the read's record and taken only as RemoteText.SendBack answers it"
+    },
+    {
+      "id": "helper-answer-words-enrollment-id",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/helper",
+      "test": "TestAnEnrollmentIDThatEchoesItsProofIsKeptAndLoggedNowhere",
+      "production": "helper Broker.enrollUnder: the enrollment id held as redact.RemoteText (leaseReply) with the enrolment's record and taken only as RemoteText.SendBack answers it, so Server.enrollLoop's and revoke's lines log no id that echoes the launcher proof"
     },
     {
       "id": "print-devrelay.apiError",
@@ -7972,6 +7990,11 @@
       "site": "agent-secrets --owner me's Google userinfo email, decoded into a plain string and printed without the read's record",
       "source": "the class search of round 5's deep review",
       "guard": "agentsecrets-answer-words-userinfo-email"
+    },
+    {
+      "site": "the helper's session enrollment id, decoded into a plain string, then kept, renewed and revoked with, handed to the socket's callers and logged (enrollLoop, revokeOnce, revoke) without the enrolment's record",
+      "source": "the class search of round 5's deep review",
+      "guard": "helper-answer-words-enrollment-id"
     },
     {
       "site": "an answer's status line printed as the answering party wrote it (net/http Response.Status), at 33 sites of both modules",

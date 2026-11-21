@@ -5,6 +5,7 @@ package helper
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
@@ -31,8 +32,14 @@ type brokerErrorExported struct {
 	Withheld bool
 }
 
+type leaseReplyTwin struct {
+	EnrollmentID   string    `json:"enrollment_id"`
+	LeaseExpiresAt time.Time `json:"lease_expires_at"`
+}
+
 func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	code, words := redact.NewRemoteText(redacttest.Code), redact.NewRemoteText(redacttest.Words)
+	lease := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	type doTwin = struct {
 		Code  string `json:"code"`
 		Error string `json:"error"`
@@ -54,6 +61,13 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			}{code, words},
 			Same:     doTwin{redacttest.Code, redacttest.Words},
 			Exported: doTwin{redacttest.Code, redacttest.Words},
+		},
+		{
+			Name:     "helper.leaseReply",
+			Kind:     "fields",
+			Boxed:    leaseReply{EnrollmentID: words, LeaseExpiresAt: lease},
+			Same:     leaseReplyTwin{redacttest.Words, lease},
+			Exported: leaseReplyTwin{redacttest.Words, lease},
 		},
 	} {
 		t.Run(h.Name, func(t *testing.T) { redacttest.PrintTest(t, h) })

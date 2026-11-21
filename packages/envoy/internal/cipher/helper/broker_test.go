@@ -176,6 +176,11 @@ type fakeBroker struct {
 	// authorization, answering 200 with no device_code or user_code.
 	enrollEmpty2xx     bool
 	deviceAuthEmpty2xx bool
+	// enrollEchoProof answers the next N enrolls 201 with an enrollment_id that echoes the Proof
+	// header the enrol carried, as whatever answers in the broker's place can, and echoed is each
+	// proof such an answer echoed.
+	enrollEchoProof int
+	echoed          []string
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -216,6 +221,12 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		}
 		if f.enrollEmpty2xx {
 			writeJSON(w, 200, map[string]string{})
+			return
+		}
+		if f.enrollEchoProof > 0 {
+			f.enrollEchoProof--
+			f.echoed = append(f.echoed, f.lastProof)
+			writeJSON(w, 201, map[string]string{"enrollment_id": "Proof " + f.lastProof, "lease_expires_at": time.Now().Add(f.lease).UTC().Format(time.RFC3339Nano)})
 			return
 		}
 		var body map[string]any

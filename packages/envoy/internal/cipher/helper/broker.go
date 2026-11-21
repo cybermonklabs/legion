@@ -1317,9 +1317,15 @@ type enrollBody struct {
 	PodToken   *string `json:"pod_token"`
 }
 
+// leaseReply is the answer of an enrolment and of a renew: the enrollment, and its lease. The
+// enrollment id is the broker's text, or the text of whatever answers in its place, which can echo
+// the launcher proof the enrolment carried. It is held as redact.RemoteText with that request's
+// record (redact.Answer.Decode) and taken only as RemoteText.SendBack answers it (enrollUnder),
+// since the helper keeps it, signs, renews and revokes with it, hands it to the socket's callers
+// and logs it.
 type leaseReply struct {
-	EnrollmentID   string    `json:"enrollment_id"`
-	LeaseExpiresAt time.Time `json:"lease_expires_at"`
+	EnrollmentID   redact.RemoteText `json:"enrollment_id"`
+	LeaseExpiresAt time.Time         `json:"lease_expires_at"`
 }
 
 // launcherProof signs a launcher proof with the current machine credential, or fails with
@@ -1556,8 +1562,10 @@ func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint strin
 //
 // Its failure is settled as known or unknown (requestReach.settle) before anything else reads
 // it, and an answer with no enrollment_id is a 2xx the helper could not read, so it is unknown
-// too. A refusal the caller retries (a 401 LAUNCHER_INVALID, a 400 INVALID_KIND) is a 4xx and so
-// always known: an unknown outcome ends the op.
+// too; so is one whose enrollment_id the rule does not print as it came (RemoteText.SendBack),
+// which may echo the proof this request carried and is kept, sent and printed nowhere. A refusal
+// the caller retries (a 401 LAUNCHER_INVALID, a 400 INVALID_KIND) is a 4xx and so always known:
+// an unknown outcome ends the op.
 func (b *Broker) enrollUnder(ctx context.Context, authority *cipherclient.Authority, cred *machineCredential,
 	kind, runtimeID, thumbprint string, sessionID *string,
 ) (string, time.Time, error) {
@@ -1595,10 +1603,14 @@ func (b *Broker) enrollUnder(ctx context.Context, authority *cipherclient.Author
 		}
 		return "", time.Time{}, err
 	}
-	if out.EnrollmentID == "" {
+	if out.EnrollmentID.IsEmpty() {
 		return "", time.Time{}, reach.settle(fmt.Errorf("broker returned no enrollment_id"))
 	}
-	return out.EnrollmentID, out.LeaseExpiresAt, nil
+	id, sent := out.EnrollmentID.SendBack()
+	if !sent {
+		return "", time.Time{}, reach.settle(errors.New("broker returned an enrollment_id the rule does not print as it came (not printed), which the helper keeps nowhere"))
+	}
+	return id, out.LeaseExpiresAt, nil
 }
 
 // Renew extends the lease with a proof signed by the session key. Unchanged: it always
