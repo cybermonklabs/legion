@@ -170,9 +170,12 @@ handoff and report no phase completion, since the daemon accepts a completion on
 that works the issue's current phase.
 Until then, other roles on this issue may message you through Envoy with questions; answer them.
 You may message any role on this issue, and the architect above you, with `envoy_publish` to
-`notifications.role.` followed by its encoded role token — never hand-format one: your own role
-topic and the topic of the architect above you are in the `Legion addressing` line of your system
-prompt, and a sibling role's topic is yours with the trailing
-`-<role>` replaced; or compute one with the `roleToken` helper from `@legion/contracts` exactly the
-way the daemon does (`legion-<project>-<key>-<role>` with the issue key lower-cased; for example,
-project `acme`, issue `LEGION-41`, role `architect` encodes to `legion-acme-legion-41-architect`).
+its role topic — never hand-format one: your own role topic and the topic of the architect above
+you are in the `Legion addressing` line of your system prompt, and a sibling role's topic is yours
+with the trailing `-<role>` replaced; or compute one with the `roleToken`, `roleProject` and
+`roleSubject` helpers from `@legion/contracts` exactly the way the daemon does: the token is
+`legion-<project>-<key>-<role>` with the issue key lower-cased, and its topic is
+`roleSubject(roleProject(token), token)`, which puts the project the token names before it (for
+example, project `acme`, issue `LEGION-41`, role `architect` encodes to
+`legion-acme-legion-41-architect`, whose topic is
+`notifications.role.ACME.legion-acme-legion-41-architect`).

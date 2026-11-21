@@ -615,7 +615,7 @@ func (r *subArchitectLive) startsWithItsArchitect(key string) api.Issue {
 func (r *subArchitectLive) told(key string) []record.Notice {
 	r.t.Helper()
 	var notices []record.Notice
-	for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(r.token(key, claim.RoleArchitect))) {
+	for _, published := range r.notices.acceptedOn(notify.RoleTopic(string(r.token(key, claim.RoleArchitect)))) {
 		var notice record.Notice
 		if err := json.Unmarshal([]byte(published.Payload), &notice); err != nil {
 			r.t.Fatalf("decode the notice payload %q: %v", published.Payload, err)
@@ -674,7 +674,7 @@ func (r *subArchitectLive) catchUpNames(key string, told record.Notice, want ...
 // TestASubArchitectsCatchUpGoesToItAlone holds the rule for a catch-up whose architect has stopped.
 func (r *subArchitectLive) catchUpOnItsOwnTopicAlone(key string) {
 	r.t.Helper()
-	own := notify.RoleTopicPrefix + string(r.token(key, claim.RoleArchitect))
+	own := notify.RoleTopic(string(r.token(key, claim.RoleArchitect)))
 	r.notices.mu.Lock()
 	accepted := slices.Clone(r.notices.accepted)
 	r.notices.mu.Unlock()

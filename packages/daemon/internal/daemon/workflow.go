@@ -1986,7 +1986,7 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		// A notice the listener accepted but could not forward is queued again (outbox.rehold).
 		// Each re-hold runs on the subscription's own goroutine, beside every lane of the outbox,
 		// so it takes a mark of its own rather than the one this goroutine waits on.
-		sub, err := subscribeNoticeExceptions(w.conn.Load(), w.dispatchProject, func(data []byte) {
+		sub, err := subscribeNoticeExceptions(w.conn.Load(), roleLaneProject(w.projectID), func(data []byte) {
 			if err := w.outbox.rehold(store.ForConcurrentWorker(running), data); err != nil {
 				w.log.Error("role-lane exception not re-held", "error", err)
 			}

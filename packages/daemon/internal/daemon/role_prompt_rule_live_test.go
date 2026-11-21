@@ -435,7 +435,7 @@ func (r *rolePromptRuleLive) subArchitectCarriesItsPrompt() {
 	t := r.t
 	t.Helper()
 	sub, root := r.token(r.child, claim.RoleArchitect), r.token(r.issue, claim.RoleArchitect)
-	above := architectAboveYou + notify.RoleTopicPrefix + string(root) + "`"
+	above := architectAboveYou + notify.RoleTopic(string(root)) + "`"
 	r.carriesTheRule("sub-architect", "sub-architect prompt", sub, []string{subArchitectHeading, above})
 	for _, wrong := range []struct {
 		token   claim.Token

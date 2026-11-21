@@ -734,7 +734,7 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 	texts = append(texts, text{"the message posted on the issue", posted[0]})
 	architect := mustClaimToken(t, olderLauncherIssue, claim.RoleArchitect)
 	for _, to := range []struct{ who, topic string }{
-		{"its architect", notify.RoleTopicPrefix + string(architect)},
+		{"its architect", notify.RoleTopic(string(architect))},
 		{"the controller", notify.ControllerTopic(olderLauncherProject)},
 	} {
 		published := r.publishedOn(to.topic)

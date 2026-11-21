@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/steprecord"
+	"github.com/sjawhar/envoy/subjectforms"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -328,13 +329,16 @@ func (r *outbox) heldBack(ctx context.Context, topic, dedupeKey string) error {
 }
 
 // heldTopic is the claim whose session a publish to topic is held to (publish): the claim a role
-// topic names, or, under `controller: daemon` alone, the project's controller claim for its
-// controller topic. Under `controller: operator` the controller topic is the operator's own
-// controller's, so no claim the daemon launched holds it back, a launched controller an earlier
-// boot retired included (stopLaunchedController); under `controller: daemon` the launched
-// controller claim is the deployment's controller, since one runs per project.
+// topic names, in either form of the lane's name (subjectforms.CanonicalRole: the project and then
+// the role, which notify.RoleTopic writes, or the role alone), or, under `controller: daemon`
+// alone, the project's controller claim for its controller topic. Under `controller: operator` the
+// controller topic is the operator's own controller's, so no claim the daemon launched holds it
+// back, a launched controller an earlier boot retired included (stopLaunchedController); under
+// `controller: daemon` the launched controller claim is the deployment's controller, since one
+// runs per project.
 func (r *outbox) heldTopic(topic string) (claim.Token, bool) {
-	if role, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix); isRole {
+	if lane, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix); isRole {
+		_, role, _ := subjectforms.CanonicalRole(lane)
 		return claim.Token(role), true
 	}
 	if r.controllerLaunched && r.project != "" && topic == notify.ControllerTopic(r.project) {
@@ -1914,7 +1918,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		}
 		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
 	}
-	published := r.publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
+	published := r.publish(ctx, notify.RoleTopic(string(architect)), noticeSummary(payload.Kind, row.Issue), notice, key)
 	return r.noticeAnswered(ctx, row, payload, tree, architect, published)
 }
 
@@ -1983,7 +1987,7 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 			return nil
 		}
 	}
-	err := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
+	err := r.publish(ctx, notify.RoleTopic(payload.Role), payload.Body, payload.Body, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {
 		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO, then DEBUG, and at WARN
 		// from attempt waitWarnAttempts on, rather than ERROR on every attempt, as the notice
@@ -2121,7 +2125,7 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	} else if waits {
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
 	}
-	if err := r.publishKeptToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+	if err := r.publishKeptToRole(ctx, row, notify.RoleTopic(string(token)), payload.Message(row.Issue),
 		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
 		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
 	}
@@ -2184,7 +2188,7 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.updateAskLeftRound(row, payload, token, current)
 		return nil
 	}
-	topic := notify.RoleTopicPrefix + string(token)
+	topic := notify.RoleTopic(string(token))
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
 	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
 		return r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
@@ -2219,7 +2223,7 @@ func (r *outbox) updateAskLeftRound(row record.OutboxRow, payload record.UpdateA
 }
 
 // roleToken is the claim of role on the row's issue in project, whose Envoy topic a role message
-// of the row is published to (publishToRole and publishKeptToRole, under notify.RoleTopicPrefix).
+// of the row is published to (publishToRole and publishKeptToRole, on notify.RoleTopic).
 func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Token, error) {
 	token, err := claim.NewToken(project, row.Issue, role)
 	if err != nil {
@@ -2229,7 +2233,7 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 }
 
 // publishToRole publishes message to topic, the Envoy topic of one role's claim
-// (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is
+// (notify.RoleTopic of the claim's token), under the row's own key, so a retried row is
 // one delivery. It is updateAsk's publish, with keep: false; hookPrompt publishes with keep
 // through publishKeptToRole, which also says how each executor that publishes to a role's topic
 // answers the publisher.
@@ -2248,7 +2252,7 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 }
 
 // publishKeptToRole publishes message to topic, the Envoy topic of one role's claim
-// (notify.RoleTopicPrefix and the claim's token), under the row's own key, and asks the listener
+// (notify.RoleTopic of the claim's token), under the row's own key, and asks the listener
 // to keep it for the role's next live holder, through the gate every publish of the outbox goes
 // through (publishKept). A retry of the row while its copy is still on the role's kept lane
 // stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's answers and what a
