@@ -706,11 +706,15 @@ reason of 80 projects costs a list five rounds of questions: half a second while
 4,096 answers at once and keeps no new one past that, so many people reading many such requests
 can leave their answers unkept, and each of their lists then asks again. While Dispatch cannot
 answer, a request it must ask about is left out of the pending list, and a grant it must ask
-about out of the grant list of everyone but that grant's
-approver and its session's operator, who still list it and may end it whatever project it
-touches, each with a line in the broker's log naming its record; its page answers
-503 and shows only its record id, and an approval of it decides nothing. Every other request is
-listed and decided as before. A decision reads the projects of both credentials a request has had:
+about out of the grant list of everyone but that grant's approver and its session's operator,
+who still list it and may end it whatever project it touches, each with a line in the broker's
+log naming its record; its page answers 503 and shows only its record id, and an approval of it
+decides nothing. A list gives the requests it must ask Dispatch about at most 3 seconds from the
+moment it reads them, inside the 5 seconds Dispatch waits for it, and asks for each request
+waiting on its reader, and each grant, at once: a request whose answers have not come by then is
+left out of that list and logged the same way, so a project Dispatch is slow to answer, or never
+answers, costs a list only the requests that name it. Every other request is listed and decided
+as before. A decision reads the projects of both credentials a request has had:
 the one that asked, which the lists and the page read, and the one it hangs off now, which a
 session that moved to another box makes it; a person either would hide it from does not decide
 it. The model judge grants no private project's request

@@ -78,7 +78,7 @@ func (f *fanOutLog) States(ctx context.Context, projects []string) (map[string]p
 // the cap, from two pods that name no person, so every reader's list holds them (everyonesPod),
 // each with a reason naming the same 80 projects, none of which Dispatch holds; beside them a
 // third request whose reason names no issue. Dispatch holds each answer 100 ms, and the client
-// holds none yet. An outsider's list asks the 80 questions maySeeAtOnce at a time, and each once
+// holds none yet. An outsider's list asks the 80 questions MaySeeAtOnce at a time, and each once
 // for the list, though two rows name all 80, so it answers in well under half of Dispatch's 5 s:
 // one at a time they took 8 s. Where Dispatch cannot answer for one of the 80, the two rows naming
 // it are left off, asked about it once, and the third is listed: a project Dispatch could not be
@@ -139,8 +139,8 @@ func TestAListReadsAStoredReasonOfEightyProjectsWellInsideDispatchsWindow(t *tes
 					t.Errorf("the list asked %q %d times; want once for the list, though two rows name it", question, n)
 				}
 			}
-			if log.most < 2 || log.most > maySeeAtOnce {
-				t.Errorf("the list held %d questions at once; want from 2 to maySeeAtOnce (%d)", log.most, maySeeAtOnce)
+			if log.most < 2 || log.most > MaySeeAtOnce {
+				t.Errorf("the list held %d questions at once; want from 2 to MaySeeAtOnce (%d)", log.most, MaySeeAtOnce)
 			}
 		})
 	}
