@@ -74,13 +74,16 @@ group once an hour after that. At start, the pod waits up to 15 seconds for its 
 it serves. A reread of one secret names no group to read, so a `retag` that names a new group
 admits nobody until the next five-minute load reads it. A read that fails keeps the last good
 members. A group whose last good read is more than 2 hours old, or that was never read, admits
-nobody: no member decides, no session gets its agent-tier secret at once, and every grant that
-rests on it releases nothing from its next release, an automatic grant included. A `requesters`
-entry naming such a group cannot say who is on the list, so a request it decides is denied
-`requester-group-unread`, a live grant it decides is paused, not revoked, and releases again once a
-read lists the person, and an approval of a pending request waits rather than being recorded. A
-member the group's last good read listed may still revoke the group's grants while it is stale,
-since a revoke only takes power away. Each read writes one log line, `group members read`, with
+nobody: no member decides, no session gets its agent-tier secret at once, and a grant a member
+approved, or an automatic grant of a member's session, releases nothing from its next release. A
+grant the model judge approved for a group's secret rests on no member, so it keeps releasing, and
+the judge keeps deciding new requests for that secret, while the airlock rules in force give the
+judge that secret. A `requesters` entry naming such a group cannot say who is on the list, so a
+request it decides is denied `requester-group-unread`, a live grant it decides is paused, not
+revoked, and releases again once a read lists the person, and an approval of a pending request
+waits rather than being recorded. A member the group's last good read listed may still revoke the
+group's grants while it is stale, since a revoke only takes power away. Each read writes one log
+line, `group members read`, with
 `group`, `members` (how many members the broker holds for the group after the read) and `result`:
 `ok` at INFO, or the cause at WARN, with Google's reason where Google gave one, and a failed call
 named by its class alone. The Directory and IAM calls follow no redirect.

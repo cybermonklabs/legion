@@ -515,6 +515,9 @@ func TestAGroupNoLoadNamesIsNoLongerRead(t *testing.T) {
 	if r.reader.HasMember(reviewers, member) || slices.Contains(r.reader.GroupsOf(member), reviewers) {
 		t.Fatalf("%s admits %s after no load names it, want nobody", reviewers, member)
 	}
+	if got := r.reader.GroupsListing(member); !slices.Equal(got, []string{approvers}) {
+		t.Fatalf("GroupsListing(%s) = %v, want only %s, as no load names %s", member, got, approvers, reviewers)
+	}
 }
 
 // TestOneFailedReadKeepsTheLastMembers: a read that fails an hour after a good one keeps the
@@ -591,6 +594,14 @@ func TestAGroupNotReadForTwoHoursAdmitsNobody(t *testing.T) {
 	if got := r.reader.GroupsOf(member); !slices.Equal(got, []string{reviewers}) {
 		t.Fatalf("GroupsOf(%s) = %v, want only %s, the group read since", member, got, reviewers)
 	}
+	// A member's grants list reads every group whose last good read lists them, however old: the
+	// stale group stays on it, as its member may still revoke the group's grants.
+	if got := r.reader.GroupsListing(member); !slices.Equal(got, []string{approvers, reviewers}) {
+		t.Fatalf("GroupsListing(%s) = %v, want [%s %s], the stale group included", member, got, approvers, reviewers)
+	}
+	if got := r.reader.GroupsListing(""); len(got) != 0 {
+		t.Fatalf("GroupsListing(\"\") = %v, want no group", got)
+	}
 	if !r.reader.HasMember(reviewers, member) {
 		t.Fatalf("%s, read an instant ago, admits nobody", reviewers)
 	}
@@ -653,6 +664,9 @@ func TestANeverReadGroupAdmitsNobody(t *testing.T) {
 	}
 	if got := r.reader.GroupsOf(member); len(got) != 0 {
 		t.Fatalf("GroupsOf(%s) = %v, want no group, since none was read", member, got)
+	}
+	if got := r.reader.GroupsListing(member); len(got) != 0 {
+		t.Fatalf("GroupsListing(%s) = %v, want no group, since none was read", member, got)
 	}
 	if got := r.directory.calls(reviewers); got != 0 {
 		t.Fatalf("%s, which no load names, was read %d times, want never", reviewers, got)

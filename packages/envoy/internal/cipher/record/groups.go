@@ -65,11 +65,11 @@ func GroupStanding(groups Groups, approver, login string) (group string, listed,
 }
 
 // GroupAdmits reports whether groups admits login to the group approver names (group:<address>)
-// now: the group's last good read lists login and is fresh (GroupStanding). An approver that is no
-// group, an empty login and a nil groups admit nobody.
+// now: the group's last good read lists login and is fresh (GroupStanding, which lists no empty
+// login). An approver that is no group and a nil groups admit nobody.
 func GroupAdmits(groups Groups, approver, login string) bool {
 	_, listed, fresh, ok := GroupStanding(groups, approver, login)
-	return ok && CanonicalLogin(login) != "" && listed && fresh
+	return ok && listed && fresh
 }
 
 // CheckDecider answers why login may not decide a record of kind whose approver is approver and

@@ -85,28 +85,20 @@ func (d *Directory) Membership(group, login string) (listed, fresh bool) {
 }
 
 // GroupsOf answers every fresh group that lists login, sorted.
-func (d *Directory) GroupsOf(login string) []string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	login = canonical(login)
-	var names []string
-	for name, members := range d.groups {
-		if _, ok := members[login]; ok && d.fresh(name) {
-			names = append(names, name)
-		}
-	}
-	slices.Sort(names)
-	return names
-}
+func (d *Directory) GroupsOf(login string) []string { return d.groupsListing(login, true) }
 
 // GroupsListing answers every group a test set that lists login, stale or not, sorted.
-func (d *Directory) GroupsListing(login string) []string {
+func (d *Directory) GroupsListing(login string) []string { return d.groupsListing(login, false) }
+
+// groupsListing is GroupsOf when freshOnly is true, and GroupsListing otherwise; an empty login is
+// listed in no group, as the reader answers it.
+func (d *Directory) groupsListing(login string, freshOnly bool) []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	login = canonical(login)
 	var names []string
 	for name, members := range d.groups {
-		if _, ok := members[login]; ok {
+		if _, ok := members[login]; ok && login != "" && (!freshOnly || d.fresh(name)) {
 			names = append(names, name)
 		}
 	}

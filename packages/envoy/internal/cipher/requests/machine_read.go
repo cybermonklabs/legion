@@ -1587,7 +1587,7 @@ const pendingOrExpiredForApproverQuery = pendingListFrom + `(
 // one line is the one it always wrote.
 func (m *Machine) PendingForApprover(ctx context.Context, approver string, states PendingStates) ([]PendingSummary, error) {
 	login := record.CanonicalLogin(approver)
-	query, args := pendingForApproverQuery, []any{login, record.AnyoneApprover, m.groupApprovers(login, false)}
+	query, args := pendingForApproverQuery, []any{login, record.AnyoneApprover, m.groupApprovers(login, true)}
 	byState := states != (PendingStates{})
 	if byState {
 		query, args = pendingOrExpiredForApproverQuery, append(args, states.Pending, states.Expired)
@@ -2060,7 +2060,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 				or (e.kind='pod' and not exists (select 1 from unnest($3::text[], $4::text[]) as mapped(account, person)
 					where mapped.account=e.subject
 					and mapped.person=translate(e.operator, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'))))))
-		order by g.created_at desc`, login, record.AnyoneApprover, mappedAccounts, mappedPersons, m.groupApprovers(login, true))
+		order by g.created_at desc`, login, record.AnyoneApprover, mappedAccounts, mappedPersons, m.groupApprovers(login, false))
 	if err != nil {
 		return nil, err
 	}
@@ -2135,20 +2135,21 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 }
 
 // groupApprovers is the groups the group reader lists login in, each in the group form a record's
-// and a grant's approver holds it in (record.GroupPrefix), and an empty list with no reader: for
-// PendingForApprover, the groups that admit login now (GroupsOf), since a member decides only
-// while the group reads fresh; for GrantsForApprover (anyAge), every group whose last good read
-// lists login however old (GroupsListing), since such a member may revoke the group's grant
-// (mayRevoke), and a grant the model judge approved for a stale group's secret still releases.
-func (m *Machine) groupApprovers(login string, anyAge bool) []string {
+// and a grant's approver holds it in (record.GroupPrefix), and an empty list with no reader: with
+// freshOnly, for PendingForApprover, the groups that admit login now (GroupsOf), since a member
+// decides only while the group reads fresh; without it, for GrantsForApprover, every group whose
+// last good read lists login however old (GroupsListing), since such a member may revoke the
+// group's grant (mayRevoke), and a grant the model judge approved for a stale group's secret still
+// releases.
+func (m *Machine) groupApprovers(login string, freshOnly bool) []string {
 	if m.Groups == nil {
 		return []string{}
 	}
 	var groups []string
-	if anyAge {
-		groups = m.Groups.GroupsListing(login)
-	} else {
+	if freshOnly {
 		groups = m.Groups.GroupsOf(login)
+	} else {
+		groups = m.Groups.GroupsListing(login)
 	}
 	approvers := make([]string, 0, len(groups))
 	for _, group := range groups {

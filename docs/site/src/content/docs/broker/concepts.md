@@ -1680,8 +1680,11 @@ whole chain: the record still reproduces its id, the session's signature inside 
 and exactly one approval stands behind it. That approval is the record's approver's, or, where
 that approver is a group, the login of a member the group lists now, or the judge's on a record the
 rules in force still let the judge decide. A grant or credential with no approved record behind it
-releases nothing. A grant whose group was not read for 2 hours releases nothing either, as a lapsed
-grant rather than a broken chain ([A group's secret](#a-groups-secret)).
+releases nothing. A grant a member of a group approved releases nothing while the group has not
+been read for 2 hours, as a lapsed grant rather than a broken chain ([A group's
+secret](#a-groups-secret)). A grant the model judge approved for a group's secret rests on no
+member, so it keeps releasing while the group is stale, and the judge keeps deciding new requests
+for that secret, while the airlock rules in force give the judge that secret.
 
 Beside the records, the broker keeps an append-only `audit` table with one row per event:
 `enrollment.created`, `enrollment.revoked`, `enrollment.expired`, `request.created`,
