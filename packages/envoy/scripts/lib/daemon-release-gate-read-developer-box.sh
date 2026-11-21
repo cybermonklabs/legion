@@ -160,9 +160,16 @@ else:
 PY
 }
 
+# utf8 <text>: true when <text> is UTF-8. The text goes on stdin, which a launcher that reads its
+# arguments as text does not change.
+utf8() {
+  printf '%s' "$1" | python3 -c 'import sys; sys.stdin.buffer.read().decode("utf-8")' 2>/dev/null
+}
+
 # plugin_trees <out>: the Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's, one
 # per NUL-terminated entry, into <out>; a profiles directory it cannot list, a link there whose
-# target is gone among them, fails, naming why.
+# target is gone among them, fails, naming why, and so does a profile whose name is no UTF-8, which
+# entry_state may not get unchanged (dotfiles_clients says why).
 plugin_trees() {
   python3 - "$HOME" >"$1" <<'PY'
 import os
@@ -184,6 +191,14 @@ except FileNotFoundError:
     entries = []
 except OSError as error:
     sys.exit(f"{profiles} cannot be listed: {error.strerror}")
+# The name's own bytes decide, whatever encoding this locale reads names with.
+for entry in entries:
+    path = os.fsencode(os.path.join(profiles, entry))
+    try:
+        os.fsencode(entry).decode("utf-8")
+    except UnicodeDecodeError:
+        shown = path.decode("utf-8", "backslashreplace")
+        sys.exit(shown.replace("\n", "\\x0a") + ": the profile's name is no UTF-8")
 for entry in entries:
     print(os.path.join(profiles, entry, "plugins"), end="\0")
 PY
@@ -198,7 +213,23 @@ dotfiles_clients() {
     unknown=$((unknown + 1))
     return
   fi
-  local root=$dotfiles tree state own home outside="" unread="" pin installed label problem
+  local root=$dotfiles tree state own home outside="" unread="" pin installed label problem name path
+  # python3 and jq get each path read here as an argument, and a launcher that reads its arguments
+  # as text (a mise shim) hands on each byte that is no UTF-8 as U+FFFD: the changed path is one
+  # where nothing is, which reads as absent. So a directory these paths start from whose name is no
+  # UTF-8 is UNKNOWN by name, and plugin_trees refuses such a profile.
+  for name in HOME "the dotfiles directory" CLAUDE_CONFIG_DIR; do
+    case "$name" in
+      HOME) path=$HOME ;;
+      CLAUDE_CONFIG_DIR) path=${CLAUDE_CONFIG_DIR:-} ;;
+      *) path=$root ;;
+    esac
+    if [ -n "$path" ] && ! utf8 "$path"; then
+      printf 'UNKNOWN: dotfiles: %s is no UTF-8, so a python3 or jq that reads its arguments as text may read another path: %s\n' "$name" "$(printable "$path")"
+      unknown=$((unknown + 1))
+      return
+    fi
+  done
   local package="$root/omp/plugins/node_modules/@sjawhar/pi-envoy"
   label="dotfiles omp/plugins/package.json"
   # Each copy an Oh My Pi plugin tree holds must be the dotfiles' own, a directory inside the

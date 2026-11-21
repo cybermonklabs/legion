@@ -320,6 +320,87 @@ for shape in configuration record; do
   check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
 done
 
+# A path the gate hands python3 as an argument reaches it changed when its name is no UTF-8 and a
+# launcher that reads its arguments as text runs python3: mise's shims hand on each such byte as
+# U+FFFD, and the changed path, which is not there, reads as absent. The gate refuses such a name,
+# a profile's or a directory it reads under, by its bytes, whatever python3 and locale run it: here a
+# python3 that changes its arguments as the shim does, under C.UTF-8, and for a profile also
+# Python's strict writing of en_US.UTF-8. Each fixture holds an install that shuts or refuses the
+# gate when read. A profile whose name is UTF-8 is read as any other, though a Python whose locale
+# is ASCII reads its name as one that is no UTF-8.
+mangling_bin="${temporary_dir}/mangling-python"
+mkdir -p "$mangling_bin"
+quoted_python=$(printf %q "$(python3 -c 'import sys; print(sys.executable)')")
+cat >"$mangling_bin/python3" <<EOF
+#!/usr/bin/env bash
+exec ${quoted_python} -c 'import os, sys; os.execv(sys.argv[1], sys.argv[1:2] + [os.fsencode(a).decode("utf-8", "replace") for a in sys.argv[2:]])' ${quoted_python} "\$@"
+EOF
+chmod +x "$mangling_bin/python3"
+echo "case: --clients, a python3 that changes an argument that is no UTF-8"
+check "hands a byte that is no UTF-8 on as U+FFFD, as mise's shim does" \
+  "$(is "$(PATH="${mangling_bin}:${PATH}" python3 -c 'import sys; print(ascii(sys.argv[1]))' "$(printf 'x\377')")" "'x\\ufffd'")"
+for row in profile:mangling profile:strict home:mangling dotfiles:mangling claude-config:mangling; do
+  shape=${row%%:*} python=${row#*:}
+  echo "case: --clients, a name that is no UTF-8 (${shape}, ${python} python3)"
+  box_case "box-not-utf8-${shape}-${python}"
+  home="${case_root}/home"
+  args=(--clients "$commit")
+  if [ "$python" = mangling ]; then
+    assign=(--unset PYTHONIOENCODING LC_ALL=C.UTF-8 "PATH=${mangling_bin}:${temporary_dir}/bin:${PATH}")
+  else
+    assign=(PYTHONIOENCODING=utf-8:strict)
+  fi
+  case "$shape" in
+    profile)
+      at="$home/.omp/profiles/$(printf 'work\377')/plugins/node_modules/@sjawhar/pi-envoy"
+      mkdir -p "$at" && printf '{"name": "@sjawhar/pi-envoy", "version": "17.39.0"}\n' >"$at/package.json"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: $home/.omp/profiles/work\\xff: the profile's name is no UTF-8"
+      ;;
+    home)
+      # The dotfiles are elsewhere, so only the paths under HOME change: ~/.claude records claude-envoy.
+      mv "$home/.dotfiles" "${case_root}/box-dotfiles"
+      ln -sfn "${case_root}/box-dotfiles/omp/plugins" "$home/.omp/plugins"
+      mkdir -p "$home/.claude/plugins"
+      printf '{"version": 2, "plugins": {"claude-envoy@legion-plugins": [{"version": "1.0.0"}]}}\n' >"$home/.claude/plugins/installed_plugins.json"
+      mv "$home" "${case_root}/$(printf 'home\377')"
+      assign+=("HOME=${case_root}/$(printf 'home\377')")
+      args=(--clients --dotfiles "${case_root}/box-dotfiles" "$commit")
+      want="UNKNOWN: dotfiles: HOME is no UTF-8, so "
+      ;;
+    dotfiles)
+      # The dotfiles' Claude Code configuration holds a copy behind the commit.
+      claude_install 3.3.0 3.3.0
+      mv "$home/.dotfiles" "${case_root}/$(printf 'dot\377files')"
+      sed -i "s|$home/.dotfiles|${case_root}/$(printf 'dot\377files')|" "${case_root}/$(printf 'dot\377files')/.claude/plugins/installed_plugins.json"
+      ln -sfn "${case_root}/$(printf 'dot\377files')/omp/plugins" "$home/.omp/plugins"
+      args=(--clients --dotfiles "${case_root}/$(printf 'dot\377files')" "$commit")
+      want="UNKNOWN: dotfiles: the dotfiles directory is no UTF-8, so "
+      ;;
+    claude-config)
+      mkdir -p "${case_root}/$(printf 'claude\377')/plugins"
+      printf '{"version": 2, "plugins": {"claude-envoy@legion-plugins": [{"version": "4.0.0"}]}}\n' \
+        >"${case_root}/$(printf 'claude\377')/plugins/installed_plugins.json"
+      assign+=("CLAUDE_CONFIG_DIR=${case_root}/$(printf 'claude\377')")
+      want="UNKNOWN: dotfiles: CLAUDE_CONFIG_DIR is no UTF-8, so "
+      ;;
+  esac
+  run_gate "${assign[@]}" -- "${args[@]}"
+  check "exits 3" "$(is "$status" 3)"
+  check "refuses UNKNOWN naming the name that is no UTF-8" "$(grep -qF "$want" "$out" && echo true || echo false)"
+  check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+done
+
+echo "case: --clients, a profile whose name is UTF-8, read by a Python whose locale is ASCII"
+box_case box-utf8-profile-ascii-python
+mkdir -p "${case_root}/home/.omp/profiles/$(printf 'caf\303\251')/plugins/node_modules/@sjawhar"
+ln -s "${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy" \
+  "${case_root}/home/.omp/profiles/$(printf 'caf\303\251')/plugins/node_modules/@sjawhar/pi-envoy"
+check "this Python reads names as ASCII, as the case needs" \
+  "$(is "$(LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 python3 -c 'import sys; print(sys.getfilesystemencoding())')" ascii)"
+run_gate LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 -- --clients "$commit"
+check "exits 0, the copy being the dotfiles' own" "$(is "$status" 0)"
+check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
+
 # Something the gate cannot tell is there or not is never read as not there: a directory it may
 # not search or list, and a link along the way whose target is gone, each hide an install that would
 # shut the gate. Each fixture holds one, and each readable control beside it shuts or refuses.
