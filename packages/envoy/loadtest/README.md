@@ -1382,11 +1382,16 @@ state at 22:55:00Z and its writes up to 23:34:00Z:
 | File | What it holds |
 | --- | --- |
 | `state.json` | Every issue number up to the largest created before 22:55 (a placeholder for a number with no issue then), with each issue's fields, claim, artifacts (each document's listed version sizes, `version_sizes`), open and resolved comments with their anchors (`block_id`, quote), the asks open or answered at 22:55, the resolved typed ask blocks still in their document's text (with the resolution), and the version each typed ask block's answer or resolve landed at; `block_maps`, the current blocks of every document an anchor in the state or the window names. |
-| `docs/<id>.md` | Each document's markdown at 22:55 (the nearest readable lower version when that one is not). |
+| `docs/<name>.md` | Each document's markdown at 22:55 (the nearest readable lower version when that one is not). |
 | `window.jsonl` | The window's events as served. |
-| `created-docs/<id>.md` | Version 1 of each document the window creates, the created issues' specs among them (`created_specs` maps each created issue to its spec). |
+| `created-docs/<name>.md` | Version 1 of each document the window creates, the created issues' specs among them (`created_specs` maps each created issue to its spec). |
 | `roster.json` | The session ids the state and the window name. |
 | `bundle.meta.json` | The project, the instant, the window's end, `fetched_at`, `counts` and every other file's sha256. |
+
+A file named after a document id or an issue key, in the bundle or in `raw/`, has that id or key
+as its `<name>` where it is in Dispatch's shape (a lowercase UUID, or an issue key such as
+`LINUX-12`), and the hex SHA-256 of it otherwise: what answers in Dispatch's place can name an id
+that climbs out of the bundle with `../`, or one longer than a file name may be.
 
 The 2026-10-26 bundle (`replay-2026-10-26.json`'s `bundle.counts`) holds 1,047 issues, 1,760
 documents (81 MB of markdown), 28 files, 18,899 open comments (10,350 of them anchored), 68 open or

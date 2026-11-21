@@ -411,7 +411,7 @@ func (f *replayFetcher) createdSpecs(ctx context.Context, window []replayEvent) 
 		}
 		g.Go(func() error {
 			k := specs[i].Key
-			body, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("artifacts", k+".json"), "/api/v1/issues/{key}/artifacts",
+			body, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("artifacts", bundleFileName(k)+".json"), "/api/v1/issues/{key}/artifacts",
 				"/api/v1/issues/"+url.PathEscape(k)+"/artifacts")
 			if err != nil || !ok {
 				return err
@@ -781,14 +781,14 @@ func (f *replayFetcher) fetchBlockMaps(ctx context.Context, st *replayState, win
 	g.SetLimit(f.conc)
 	for _, id := range ids {
 		g.Go(func() error {
-			body, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("blocks", id+".json"), "/api/v1/artifacts/{id}/blocks",
+			body, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("blocks", bundleFileName(id)+".json"), "/api/v1/artifacts/{id}/blocks",
 				"/api/v1/artifacts/"+url.PathEscape(id)+"/blocks")
 			if err != nil || !ok {
 				return refused(err)
 			}
 			la, listed := byID[id]
 			if !listed {
-				meta, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("artifact", id+".json"), "/api/v1/artifacts/{id}",
+				meta, ok, err := f.cachedOrUnavailable(gctx, filepath.Join("artifact", bundleFileName(id)+".json"), "/api/v1/artifacts/{id}",
 					"/api/v1/artifacts/"+url.PathEscape(id))
 				if err != nil || !ok {
 					return refused(err)

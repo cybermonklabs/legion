@@ -1030,7 +1030,7 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 		var spec string
 		var size int
 		if id, ok := pl.b.Meta.CreatedSpecs[key]; ok {
-			raw, err := pl.b.readFile(bundleCreatedDir + "/" + id + ".md")
+			raw, err := pl.b.readFile(bundleCreatedRel(id))
 			if err != nil {
 				return nil, "", fmt.Errorf("bundle created spec %s: %w", key, err)
 			}
@@ -1094,7 +1094,7 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 		}
 		act.Kind = rkDocCreate
 		text := ""
-		if raw, err := pl.b.readFile(bundleCreatedDir + "/" + a.ID + ".md"); err == nil {
+		if raw, err := pl.b.readFile(bundleCreatedRel(a.ID)); err == nil {
 			text = string(raw)
 		} else if errors.Is(err, os.ErrNotExist) {
 			text = replaySynthDoc(size, replayHash(pl.o.rngSeed, "created", a.ID))

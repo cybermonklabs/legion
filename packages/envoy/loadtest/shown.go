@@ -59,6 +59,18 @@ func shownID(id string) string {
 	return notADispatchID
 }
 
+// bundleFileName is s, a document id or an issue key a Dispatch answer names, as replay-fetch names
+// a file of its cache or of the bundle after it: s where it is in Dispatch's shape (isDispatchID,
+// isIssueKey), which holds no path separator, no ".." and no more than a few dozen bytes, and
+// otherwise the hex SHA-256 of s, which is neither shape, so no two names meet.
+func bundleFileName(s string) string {
+	if isDispatchID(s) || isIssueKey(s) {
+		return s
+	}
+	digest := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(digest[:])
+}
+
 // replayEventTypes are the event types this package names (the ev constants of replay_bundle.go).
 var replayEventTypes = []string{
 	evIssueCreated, evIssueUpdated, evIssueClosed, evIssueClaimed, evIssueReleased,

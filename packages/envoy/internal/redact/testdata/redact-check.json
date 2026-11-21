@@ -5838,6 +5838,20 @@
       "production": "loadtest dispatchCoverage.readCoverage: the embedder's identity, place and model held as redact.RemoteText with the read's record, so the gate's record (coverageRecord) names them as the rule reads them"
     },
     {
+      "id": "loadtest-answer-members-file-names-dotdot",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnIDThatClimbsOutOfTheBundleNamesNoFileOutsideIt",
+      "production": "loadtest replay-fetch: a cache or bundle file is named after a document id or issue key only in Dispatch's shape, after its SHA-256 otherwise (bundleFileName), so an id with ../ writes no file outside raw/ or the bundle"
+    },
+    {
+      "id": "loadtest-answer-members-file-names-long",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAnIDLongerThanAFileNameNamesNoneOfIt",
+      "production": "loadtest replay-fetch: an id longer than a file name names its files after its SHA-256 (bundleFileName), so no *os.PathError prints it"
+    },
+    {
       "id": "print-loadtest.dispatchCoverage.readCoverage.embedder",
       "requirement": "r2-held",
       "package": "./loadtest",
@@ -8566,6 +8580,16 @@
       "site": "loadtest seed-finish: the coverage report's embedder identity, place and model, decoded into plain strings and written raw to the -embed-progress record",
       "source": "the class search of round 5's deep review",
       "guard": "loadtest-answer-members-embed-record"
+    },
+    {
+      "site": "loadtest replay-fetch: a document id or issue key Dispatch's answer named made a cache or bundle file's path, so an id with ../ wrote outside raw/ and the bundle under a name holding it",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-file-names-dotdot"
+    },
+    {
+      "site": "loadtest replay-fetch: a document id longer than a file name failed the cache read with an *os.PathError, which printed the path and the id in it",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-file-names-long"
     },
     {
       "site": "GitHub's GraphQL errors entries, decoded into plain strings and printed raw by the reconciler",

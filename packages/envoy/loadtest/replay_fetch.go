@@ -169,7 +169,7 @@ func (f *replayFetcher) fetchLog(ctx context.Context, key string, number int, un
 	lg := issueLog{Key: key, Number: number}
 	after := 0
 	for {
-		rel := filepath.Join("events", key, strconv.Itoa(after)+".json")
+		rel := filepath.Join("events", bundleFileName(key), strconv.Itoa(after)+".json")
 		path := fmt.Sprintf("/api/v1/issues/%s/events?after=%d&limit=%d", url.PathEscape(key), after, replayPageLimit)
 		body, err := f.cached(ctx, rel, "/api/v1/issues/{key}/events", path)
 		if err != nil {
@@ -235,7 +235,7 @@ func versionAt(versions []listedVersion, at time.Time) (listedVersion, bool) {
 // Dispatch's word (a listing's or an event's), which an error names only in Dispatch's shape
 // (shownID).
 func (f *replayFetcher) docText(ctx context.Context, id string, n int) ([]byte, bool, error) {
-	dir := filepath.Join(f.raw, "versions", id)
+	dir := filepath.Join(f.raw, "versions", bundleFileName(id))
 	okPath := filepath.Join(dir, strconv.Itoa(n)+".json")
 	badPath := filepath.Join(dir, strconv.Itoa(n)+".unreadable")
 	body, err := os.ReadFile(okPath)
@@ -339,7 +339,7 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 	g.SetLimit(f.conc)
 	for i, k := range existing {
 		g.Go(func() error {
-			body, err := f.cached(gctx, filepath.Join("artifacts", k+".json"), "/api/v1/issues/{key}/artifacts",
+			body, err := f.cached(gctx, filepath.Join("artifacts", bundleFileName(k)+".json"), "/api/v1/issues/{key}/artifacts",
 				"/api/v1/issues/"+url.PathEscape(k)+"/artifacts")
 			if err != nil {
 				return err
@@ -395,7 +395,7 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 				if !ok {
 					continue
 				}
-				rel := bundleDocsDir + "/" + a.ID + ".md"
+				rel := bundleDocRel(a.ID)
 				if err := os.WriteFile(filepath.Join(out, filepath.FromSlash(rel)), text, 0o644); err != nil {
 					return err
 				}
@@ -436,7 +436,7 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 				return err
 			}
 			fetchedOK[i] = true
-			return os.WriteFile(filepath.Join(out, bundleCreatedDir, id+".md"), text, 0o644)
+			return os.WriteFile(filepath.Join(out, filepath.FromSlash(bundleCreatedRel(id))), text, 0o644)
 		})
 	}
 	if err := g.Wait(); err != nil {
