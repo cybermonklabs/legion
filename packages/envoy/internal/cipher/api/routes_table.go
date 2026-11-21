@@ -19,6 +19,7 @@ const (
 	authRenewProof
 	authAccount
 	authService
+	authEdgeListener
 	authSignIn
 )
 
@@ -40,6 +41,9 @@ type caller struct {
 	// signIn is the broker sign-in session a request to the approval page carries, the zero
 	// approval.Session when it carries none that is live.
 	signIn approval.Session
+	// edge is the edge-listener entry of BROKER_NATS_SERVICES whose account the identity token
+	// that authenticated the request names: the projects it may ask about.
+	edge EdgeListener
 }
 
 // power is one authority over the broker a caller of an accountAuth route may hold: one bit, so
@@ -208,6 +212,19 @@ func accountAuth(needs power, h func(*server, http.ResponseWriter, *http.Request
 func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.ServiceAccount)) routeHandler {
 	return routeHandler{auth: authService, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.service)
+	}}
+}
+
+// edgeListenerAuth is a route for an edge listener: an Envoy listener that serves the sessions of
+// the projects its entry names to agents outside the deployment's network. It calls with its own
+// identity token, the one a listed caller presents (a projected ServiceAccount token for the
+// broker's audience, or a Google identity token), verified the same way, and is known by the
+// edge-listener entry of BROKER_NATS_SERVICES that names that token's account, not by
+// BROKER_API_ACCOUNTS. The handler is given that entry, whose projects are the only ones it may
+// ask about.
+func edgeListenerAuth(h func(*server, http.ResponseWriter, *http.Request, EdgeListener)) routeHandler {
+	return routeHandler{auth: authEdgeListener, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+		h(s, w, r, who.edge)
 	}}
 }
 
@@ -440,6 +457,20 @@ func routes() []apiRoute {
 		// period has committed before the review reads it. It is the one route readsGrantLog
 		// reaches: the review reads the broker's record and changes nothing in it.
 		{http.MethodGet, "/v1/grant-log", accountAuth(readsGrantLog, (*server).listGrantLog)},
+		// Answer an edge listener the repositories the issues of one project resolve to,
+		// ?project=<KEY>, as Dispatch answers them (GET /api/v1/access/projects/{key}/repositories
+		// at BROKER_PROJECT_ACCESS_URL), read from Dispatch on every call and never kept:
+		// {"project", "repositories": ["owner/name", …]}, [] when none. Only an edge listener
+		// whose BROKER_NATS_SERVICES entry lists the project is answered; a project the entry does
+		// not list is 403 PROJECT_NOT_LISTED and Dispatch is not asked. Whenever the broker cannot
+		// get Dispatch's whole answer within 2 seconds (Dispatch's 503 or any other refusal, a
+		// stall, a body it cannot read, or no BROKER_PROJECT_ACCESS_URL at all) it is 503
+		// REPOSITORIES_UNKNOWN, never a list; and past 16 calls of one edge listener waiting on
+		// Dispatch at once on one broker process, 503 REPOSITORIES_BUSY. That bound is each
+		// process's, so N replicas let one edge listener hold 16 × N calls on Dispatch: a guard on
+		// Dispatch's load, not a security bound. The edge-listener entries are read whether or not
+		// the broker runs the NATS auth service.
+		{http.MethodGet, "/v1/project-repositories", edgeListenerAuth((*server).projectRepositories)},
 		// List the calling credential's operator's own logins, their machines' logins and the token
 		// logins of the accounts BROKER_POD_OPERATORS maps to them, as Dispatch's machine-logins
 		// page lists them, without the service logins that page also lists. This route, the machine
