@@ -376,7 +376,17 @@ func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room 
 	// them, decoded by the room when it took them and not again, as a joined transaction's flush
 	// of the room stores them (AppendRoomUpdatesTx); a later call of an update the batch stored
 	// finds its class stored and decodes nothing.
-	if err := crdt.ApplyUpdateV1(newDocumentCopy(), update, nil); err != nil {
+	//
+	// The read-back is a whole decode of the update, as heavy as the apply that made it, and that
+	// apply's grant was given back when the hook returned (weighPeerUpdate). So it takes what its
+	// copy costs where the pool has that much free at once, and runs beside the pool's holders
+	// where it has not (holdFreeLoad): it may not wait, since this worker is the one reader of the
+	// room's queue of updates to store, and a heavy apply holding its grant through its commit
+	// waits on that queue to hand the commit over while the queue is full.
+	release := holdFreeLoad(storedCopyWeight(update))
+	err = crdt.ApplyUpdateV1(newDocumentCopy(), update, nil)
+	release()
+	if err != nil {
 		a.service.failRoom(room, err)
 		return false, err
 	}
@@ -456,6 +466,10 @@ func (s *Service) failRoomLoad(room string, load *roomLoad, cause error) {
 // document it built from its text (rebuiltSeed), which parks nothing. A rebuild runs it on its
 // seed alone (RebuildTx); the history it replaces is judged by the decode the rebuild's source
 // already made of it (rebuildSource), and a room's load by its own.
+//
+// It takes nothing of the pod's load concurrency itself: each caller covers the decode, the
+// rebuild on the grant it took for its seed (RebuildTx) and an append of the updates it is handed
+// on one that never waits (AppendUpdatesWithCredit, holdFreeLoad).
 func validateUpdate(update []byte, maxPending int) error {
 	if len(update) == 0 {
 		return nil

@@ -3459,6 +3459,369 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	}
 }
 
+const (
+	// storeDecodeClient is the client the store-decode drive's step 2 writes under: one a browser
+	// could draw for itself (crdt.NewClientID), at or past 1<<28 so it takes the five bytes of
+	// varuint most such ids take, and below 1<<32, so a socket that presents no id claims it with
+	// its first write (dialDocument, docs' client_ids.go). Every copy of the drive's document
+	// holds the same history and none of it is this client's, so one frame applies to each alike.
+	storeDecodeClient = 0x5eedc11e
+	// storeDecodeKey is the margin key the step 2 nests its chain's text under.
+	storeDecodeKey = "store-decode"
+	// unslottedApplyStructsForTest mirrors docs' unslottedApplyStructs: the most structs an
+	// update may declare and still apply with no slot, unslottedApplyBytesForTest at
+	// bytesOfHeapAStructForTest.
+	unslottedApplyStructsForTest = unslottedApplyBytesForTest / bytesOfHeapAStructForTest
+	// poolQueuedWithin bounds the store-decode drive's wait, once its heavy writers and folds have
+	// started, for the server to give back a grant one of them waited for: two of the heaviest
+	// holds there are, in turn, of which the heaviest-apply drive measured the longest at
+	// 59.946 s on 2026-11-06.
+	poolQueuedWithin = 5 * time.Minute
+)
+
+// copyWeightForTest is what one copy built from stateBytes bytes of state holding structs
+// structs takes of the pod's load concurrency, as the server weighs it (docs' copyWeight): the
+// larger of its state at one price and its structs at the other, in the one copy, at least a byte
+// and at most a slot. A step 2's apply is granted it on the frame's bytes and the structs its
+// headers declare (docs' weighPeerUpdate), and a room's persistence worker weighs its read-back of
+// the commit the same way (docs' storedCopyWeight), so the server's grant lines name it
+// (loadSlotLine), which is where the store-decode drive holds the mirror to it.
+func copyWeightForTest(stateBytes, structs int64) int64 {
+	return min(max(max(stateBytes*bytesOfHeapAStateByteForTest, structs*bytesOfHeapAStructForTest), 1), loadSlotBytesForTest)
+}
+
+// A room's persistence worker reads back each commit it stores (docs' StoreUpdateStored): a whole
+// decode of the commit's update, made after the apply that took the update has given its grant
+// back. That decode may not wait for the pod's load concurrency - the worker is the one reader
+// of the queue a heavy apply's commit hands its update over by, and the apply holds its grant
+// until the commit is handed over - so it takes what its copy costs where the pool has that much
+// free at once, and otherwise decodes beside the pool's holders with nothing counting it (docs'
+// holdFreeLoad). This drive weighs that second case at its heaviest against the pod. Under the Go
+// limit a 4 GiB pod gives the server, with the pool held full by the heavy writers and the folds
+// of TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory, as many rooms of A3's
+// mebibyte of prose (TestTheRoomBudgetRefusesWhereItsOwnArithmeticSays) as the budget holds each
+// send, all at once, the heaviest step 2 the hook applies with a slot, so every room's worker reads
+// back the heaviest commit a step 2 under 2 MiB makes while the pool has no room for it.
+//
+// The step 2 (heaviestStepTwo) is a chain of items under one client, each typed at the head of a
+// text nested under the margin, ahead of the one before it, and then deleted: as many as fit
+// under unslottedApplyBytesForTest, at about ten bytes an item, which is past the 3,328 structs
+// an apply takes a slot for (unslottedApplyStructsForTest) by more than sixty times. No two
+// items merge, so the room's commit holds every one, and the read-back decodes every one. The
+// chain is deleted because the rooms hold a mebibyte of prose: the byte bound lets an update into
+// a room at the bound carry 8 KiB of content (maxPeerInsertAtTheBoundForTest), and no deleted
+// item's content is counted. Nothing renders it and it scans nothing, and the drive fails before
+// the server starts unless the room's state cap, its share of the decode cap and the scans its
+// size allows each admit it.
+//
+// How many rooms is the budget's own arithmetic, computed here rather than taken from a run of
+// A3. A room is charged its stored state and its structs over both copies from its load, and the
+// step 2's bytes and structs from the moment its commit drains (roomWeightForTest, docs'
+// renderedReplica.chargeAdded); the room at the state cap the heavy writers hand back is charged
+// beside the rooms, with the few words each handoff types. So the rooms are the most whose charge
+// with their step 2 fits what that room leaves of the budget. That is fewer than A3's count, the
+// budget over a room that only loads: once the charges pass the budget every update that would
+// add a struct is refused (docs' rulePressure), so a room past this count would be refused its
+// step 2 and its worker would read nothing back. The drive logs both counts.
+//
+// The heavy writers are the heaviest-apply drive's: three browsers of a room at the state cap hand
+// its whole state back with a few words typed, each apply granted its 16 MiB state's weight, and
+// four cold reads of documents at the decode cap each fold under a whole slot. They go first, and
+// the step 2s go, all at once, as soon as the server has given back a grant one of them waited for
+// (loadSlotLine), so the step 2s queue behind those still waiting. The pool serves its waiters in
+// the order they came and a taker that does not wait finds no room while any waits (docs'
+// loadSlots), so for as long as any of them queues, no read-back takes anything and each decodes
+// beside what the pool holds. The drive fails unless the server logged the step 2s' own waits,
+// at the weight this package mirrors (copyWeightForTest): the step 2s did queue for a full pool,
+// and the worst case did happen.
+//
+// The window runs from the first of those requests to the last step 2's answer, and a room
+// answers a step 2 applied only once its commit is stored (docs' Server.AnswerOnceStored), so
+// every read-back is inside it. The drive reads its peak both ways A3 reads one
+// (requireUnderThePod) - what a pod's kernel would charge, under the pod's 4,096 MiB, and what the
+// runtime held of what its Go limit bounds, within podGoMemoryLimitMargin of that limit - and
+// fails where either passes its bound. It logs the peak, both counts of rooms, the frame, the
+// bytes each read-back weighed (read off the row each room's worker stored), and how far each
+// reading stood under its bound.
+//
+// No run is recorded here yet: the pod it was written in cannot run it. Its Job runs
+//
+//	go test -tags memory -count=1 -timeout 90m -run '^TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory$' ./cmd/dispatch
+func TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory(t *testing.T) {
+	const folds, handoffs = 4, 3
+	building := time.Now()
+	memory := newMemoryHarness(t)
+	memory.env = append(memory.env, podServerEnv()...)
+	// The heavy writers' room and the folds' documents, as the heaviest-apply drive builds them.
+	stored := memory.storedStates(t, longEditedTypedTo(t, maxUpdateItemsForTest),
+		paddedToTheRoomsStateCap(t, longEditedTypedTo(t, nearTheStateCapStructs)))
+	longEdited := memory.storedShape(t, "the long-edited document at the decode cap", stored[0])
+	heaviest := memory.storedShape(t, "a document of few structs padded to the room's state cap", stored[1])
+	requireAtTheDecodeCap(t, longEdited)
+	if heaviest.stateBytes > maxRoomStateBytesForTest || heaviest.stateBytes+64<<10 < maxRoomStateBytesForTest {
+		t.Fatalf("the padded document stores %d bytes of state, want within 64 KiB under the room's state cap (%d)", heaviest.stateBytes, maxRoomStateBytesForTest)
+	}
+	// A3's document, copied as many times as A3's arithmetic holds rooms of it, which is more than
+	// this drive opens.
+	fleet := memory.mebibyteFleet(t, func(weight int64) int { return int(roomBudgetBytesForTest / weight) })
+	a3Rooms := int(roomBudgetBytesForTest / fleet.weight)
+	fleetStructs, err := docs.StateStructsForTest(fleet.state)
+	if err != nil {
+		t.Fatalf("walk the stored state of a mebibyte of prose: %v", err)
+	}
+	frame, chained := heaviestStepTwo(t, fleet.state)
+	if declared, err := docs.StateStructsForTest(frame); err != nil || declared != chained {
+		t.Fatalf("the step 2 decodes to %d structs (%v), want the %d it chains", declared, err, chained)
+	}
+	stateShare := (maxRoomStateBytesForTest - int64(len(fleet.state))) / bytesOfStateAStructForTest
+	capShare := int64(docs.PeerStructsAllowedForTest(fleetStructs))
+	scans, scanAllowance := frameScans(t, fleet.state, frame), scanCeilingForTest(len(frame))
+	switch {
+	case len(frame) > unslottedApplyBytesForTest || chained <= unslottedApplyStructsForTest:
+		t.Fatalf("the step 2 is %d bytes declaring %d structs, want it at or under %d bytes and past the %d structs an apply takes a slot for",
+			len(frame), chained, unslottedApplyBytesForTest, unslottedApplyStructsForTest)
+	case chained > stateShare:
+		t.Fatalf("the step 2 declares %d structs, past the %d the state cap leaves a room of %d bytes of state", chained, stateShare, len(fleet.state))
+	case chained > capShare:
+		t.Fatalf("the step 2 declares %d structs, past the %d the decode cap leaves a room of %d", chained, capShare, fleetStructs)
+	case scans > scanAllowance:
+		t.Fatalf("the step 2 scans %d items, past the %d its %d bytes allow", scans, scanAllowance, len(frame))
+	}
+	decodeWeight := copyWeightForTest(int64(len(frame)), chained)
+
+	// The budget's arithmetic: the rooms whose charge with their step 2 fits beside the room at
+	// the state cap and what its handoffs type.
+	withStepTwo := roomWeightForTest(int64(len(fleet.state)+len(frame)), fleetStructs+chained)
+	handedGrowth := int64(handoffs) * keystrokeChargeForTest
+	rooms := int((roomBudgetBytesForTest - heaviest.weight - handedGrowth) / withStepTwo)
+	if rooms < 1 || rooms > len(fleet.copies) {
+		t.Fatalf("the budget holds %d rooms of a mebibyte of prose with their step 2 beside the room at the state cap, want at least one and no more than the %d copies made", rooms, len(fleet.copies))
+	}
+	folded := memory.cloneDocuments(t, longEdited.id, folds)
+	heavyRoom := memory.cloneDocuments(t, heaviest.id, 1)[0]
+	t.Logf("the step 2: %d bytes chaining %d structs under client %d, granted %d bytes to apply and weighed %d to read back (copyWeightForTest); it scans %d of the %d its size allows, and the state cap leaves %d structs and the decode cap %d",
+		len(frame), chained, storeDecodeClient, decodeWeight, decodeWeight, scans, scanAllowance, stateShare, capShare)
+	t.Logf("the budget: a room of a mebibyte of prose (%d bytes of state, %d structs) is charged %d bytes, and %d with its step 2; beside the room at the state cap (%d) and its handoffs' words (%d), the %d-byte budget holds %d such rooms with their step 2, where A3's arithmetic holds %d without one; the documents took %s to build",
+		len(fleet.state), fleetStructs, fleet.weight, withStepTwo, heaviest.weight, handedGrowth, roomBudgetBytesForTest, rooms, a3Rooms, time.Since(building).Round(time.Second))
+	t.Logf("the drive's %d documents owe the server no block index, so the only reads of them are the drive's own", memory.oweNoBlockIndex(t))
+
+	server := memory.start(t)
+	requirePodGoMemoryLimit(t, server)
+	var held []*browser
+	t.Cleanup(func() {
+		for _, opened := range held {
+			opened.leave()
+		}
+	})
+	open := func(t *testing.T, room string) *browser {
+		t.Helper()
+		opened := server.openBrowser(t, room)
+		held = append(held, opened)
+		return opened
+	}
+	step := time.Now()
+	var handing, stepping []*browser
+	filledPeak := server.peakResident(t, func() {
+		for range handoffs {
+			handing = append(handing, open(t, heavyRoom))
+		}
+		for _, room := range fleet.copies[:rooms] {
+			stepping = append(stepping, open(t, room))
+		}
+	})
+	t.Logf("the rooms are open: the room at the state cap held by %d browsers and %d rooms of a mebibyte of prose, in %s; %d MiB resident now",
+		len(handing), len(stepping), time.Since(step).Round(time.Second), server.resident(t, "VmRSS")>>20)
+	handed := make([][]byte, len(handing))
+	for index, handingBack := range handing {
+		handed[index] = typedHandoff(t, handingBack.state(t))
+		if len(handed[index]) > maxRoomStateBytesForTest || len(handed[index])+64<<10 < maxRoomStateBytesForTest {
+			t.Fatalf("handoff %d is %d bytes, want within 64 KiB under the room's state cap (%d)", index, len(handed[index]), maxRoomStateBytesForTest)
+		}
+	}
+	// The head each room loaded at, past which its worker stores the step 2's commit.
+	loadedHeads := make([]int64, rooms)
+	for index, room := range fleet.copies[:rooms] {
+		if err := memory.database.Pool.QueryRow(context.Background(),
+			`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, room,
+		).Scan(&loadedHeads[index]); err != nil {
+			t.Fatalf("read the head room %d loaded at: %v", index, err)
+		}
+	}
+
+	type outcome struct {
+		took    time.Duration
+		applied bool
+		closed  *gws.CloseError
+		err     error
+	}
+	handedBack := make([]outcome, len(handing))
+	read := make([]outcome, len(folded))
+	stepped := make([]outcome, len(stepping))
+	mark := len(server.output.String())
+	step = time.Now()
+	peak := server.peakResident(t, func() {
+		var group sync.WaitGroup
+		for index, handingBack := range handing {
+			group.Go(func() {
+				result := &handedBack[index]
+				result.applied, result.closed, result.err = handingBack.send(handingBack.stateFrame(handed[index]))
+				result.took = time.Since(step)
+			})
+		}
+		for index, room := range folded {
+			group.Go(func() {
+				result := &read[index]
+				var answer response
+				answer, result.err = server.trySend(http.MethodGet, "/api/v1/artifacts/"+room+"/text", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
+				var text struct{ Markdown string }
+				if result.err == nil && (answer.status != http.StatusOK || json.Unmarshal(answer.body, &text) != nil || text.Markdown == "") {
+					result.err = fmt.Errorf("status %d body %.300s, want 200 and the document's text", answer.status, answer.body)
+				}
+				result.took = time.Since(step)
+			})
+		}
+		// The step 2s go once the pool is full: once the server has given back a grant a holder
+		// waited for, the heavy writers and the folds are queuing for it, and the step 2s queue
+		// behind those still waiting.
+		for deadline := time.Now().Add(poolQueuedWithin); len(loadSlotHolds(t, server.output.String()[mark:])) == 0; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				group.Wait()
+				t.Fatalf("no holder of the pool waited for it within %s of the heavy writers and the folds starting: the pool was never full", poolQueuedWithin)
+			}
+		}
+		sent := time.Now()
+		t.Logf("a holder of the pool had waited for it %s after the heavy writers and the folds started; the step 2s go now", sent.Sub(step).Round(time.Millisecond))
+		for index, sending := range stepping {
+			group.Go(func() {
+				result := &stepped[index]
+				result.applied, result.closed, result.err = sending.send(sending.stateFrame(frame))
+				result.took = time.Since(sent)
+			})
+		}
+		group.Wait()
+	})
+	took := time.Since(step)
+	window := server.output.String()[mark:]
+
+	for index, result := range stepped {
+		t.Logf("the step 2 into room %d: applied %v, closed %v, answered in %s", index, result.applied, result.closed, result.took.Round(time.Millisecond))
+		if result.err != nil || !result.applied || result.closed != nil {
+			t.Errorf("the step 2 into room %d: applied %v, closed %v, %v; want it applied and stored, and the socket open", index, result.applied, result.closed, result.err)
+		}
+	}
+	for index, result := range handedBack {
+		t.Logf("handoff %d of %d bytes: applied %v, closed %v, answered in %s", index, len(handed[index]), result.applied, result.closed, result.took.Round(time.Millisecond))
+		if result.err != nil || !result.applied || result.closed != nil {
+			t.Errorf("handoff %d of %d bytes at the state cap: applied %v, closed %v, %v; want it applied and the socket open", index, len(handed[index]), result.applied, result.closed, result.err)
+		}
+	}
+	// A cold read behind the heavy work waits for the pod's one slot and is answered 503
+	// DOC_SERVICE_UNAVAILABLE at its own deadline where the wait outlasts it, as in the
+	// heaviest-apply drive: the load concurrency working, not a failure.
+	coldRead, coldBusy := 0, 0
+	for index, result := range read {
+		t.Logf("cold read %d answered in %s (%v)", index, result.took.Round(time.Millisecond), result.err)
+		switch {
+		case result.err == nil:
+			coldRead++
+		case strings.Contains(result.err.Error(), "DOC_SERVICE_UNAVAILABLE"):
+			coldBusy++
+		default:
+			t.Errorf("cold read %d of a document at the decode cap: %v", index, result.err)
+		}
+	}
+	t.Logf("%d of the %d cold reads folded their document and %d waited for one of the pod's %d load slots until their own deadline and were answered 503",
+		coldRead, len(read), coldBusy, loadSlotsForTest)
+
+	holds := loadSlotHolds(t, window)
+	logLoadSlots(t, "the store decodes beside the full pool", holds)
+	queuedStepTwos := 0
+	for _, hold := range holds {
+		if hold.bytes == decodeWeight {
+			queuedStepTwos++
+		}
+	}
+	t.Logf("in %s, %d of the %d step 2s waited a tenth of a second or more for the pool before their apply", took.Round(time.Second), queuedStepTwos, len(stepping))
+	if queuedStepTwos == 0 {
+		t.Errorf("the server logged no grant of the %d bytes a step 2's apply is weighed at that waited a tenth of a second or more (%d grants logged): the step 2s did not queue for a full pool, or the mirror of their weight is wrong, so their read-backs were not weighed beside a full pool",
+			decodeWeight, len(holds))
+	}
+	// What each room's worker read back is the row it stored for the step 2: the first version
+	// past the head the room loaded, since the step 2 is the room's first commit, weighed as the
+	// server weighs it (copyWeightForTest).
+	var lightest, heaviestRead int64
+	for index, room := range fleet.copies[:rooms] {
+		var row []byte
+		if err := memory.database.Pool.QueryRow(context.Background(), `
+			select update from doc_updates where artifact_id = $1 and version = $2
+		`, room, loadedHeads[index]+1).Scan(&row); err != nil {
+			t.Fatalf("read the row room %d's worker stored at version %d: %v", index, loadedHeads[index]+1, err)
+		}
+		structs, err := docs.StateStructsForTest(row)
+		if err != nil || structs != chained {
+			t.Errorf("room %d's worker stored a %d-byte row decoding to %d structs (%v), want the step 2's %d", index, len(row), structs, err, chained)
+			continue
+		}
+		weight := copyWeightForTest(int64(len(row)), structs)
+		if lightest == 0 || weight < lightest {
+			lightest = weight
+		}
+		heaviestRead = max(heaviestRead, weight)
+	}
+	t.Logf("each of the %d rooms' workers read back a commit of %d structs weighed at %d to %d bytes, %d in all where every one decoded beside a full pool of %d",
+		rooms, chained, lightest, heaviestRead, int64(rooms)*heaviestRead, int64(worstCaseLoadSlotBytesForTest))
+
+	requireUnderThePod(t, filledPeak, "the rooms opened")
+	requireUnderThePod(t, peak, "the store decodes beside the full pool")
+	if peak.samples > 0 {
+		t.Logf("the store decodes beside the full pool: a pod's kernel would charge %d MiB, %d MiB under the pod's %d; the runtime held %d bytes, %d under the %d-byte limit and its %d-byte margin",
+			peak.charged>>20, (podMemory-peak.charged)>>20, podMemory>>20, peak.held, peak.limit+podGoMemoryLimitMargin-peak.held, peak.limit, podGoMemoryLimitMargin)
+	}
+}
+
+// heaviestStepTwo is the heaviest step 2 a browser of a room holding state sends that the hook
+// applies with a slot and the room's worker stores whole, and the structs it declares: a chain of
+// items under storeDecodeClient, each typed at the head of a text nested under the margin, ahead
+// of the one before it, and then deleted, as many as fit at or under unslottedApplyBytesForTest.
+//
+// Each item names the one typed before it as its right origin and nothing as its left, so it
+// lands at the head of the text, scanning nothing, and no two merge - ygo merges an item into the
+// one before it only where it names that one's last character as its left origin - so the room's
+// commit holds every one, as the frame does. Each is deleted in the browser before the frame is
+// encoded, so it carries no content the byte bound counts. The chain's length is read from two
+// shorter frames, which give the bytes each item takes, and shortened until the frame fits.
+func heaviestStepTwo(t *testing.T, state []byte) (frame []byte, structs int64) {
+	t.Helper()
+	build := func(chain int) []byte {
+		document := newBrowserDocument(t, state, crdt.WithClientID(storeDecodeClient))
+		doc := document.doc
+		held := doc.StateVector()
+		margin := doc.GetMap("marks")
+		doc.Transact(func(txn *crdt.Transaction) { margin.Set(txn, storeDecodeKey, crdt.NewTextPrelim()) })
+		value, _ := margin.Get(storeDecodeKey)
+		text, isText := value.(*crdt.YText)
+		if !isText {
+			t.Fatalf("the margin holds %T under %q, want the nested text", value, storeDecodeKey)
+		}
+		doc.Transact(func(txn *crdt.Transaction) {
+			for range chain {
+				text.Insert(txn, 0, "x", nil)
+			}
+		})
+		doc.Transact(func(txn *crdt.Transaction) { text.Delete(txn, 0, chain) })
+		return crdt.EncodeStateAsUpdateV1(doc, held)
+	}
+	const shorter, longer = 20_000, 120_000
+	short, long := build(shorter), build(longer)
+	perItem := float64(len(long)-len(short)) / float64(longer-shorter)
+	chain := longer + int(float64(unslottedApplyBytesForTest-len(long))/perItem)
+	for frame = build(chain); len(frame) > unslottedApplyBytesForTest; frame = build(chain) {
+		chain -= int(float64(len(frame)-unslottedApplyBytesForTest)/perItem) + 1
+	}
+	// The chain's items and the text's entry in the margin.
+	return frame, int64(chain) + 1
+}
+
 // liveWriteDeadline is the deadline each write of the drive below runs under, which is the one a
 // real caller's write has. The server's own http.Server names ReadHeaderTimeout and IdleTimeout
 // and leaves WriteTimeout zero, deliberately, because the event stream is long-lived
@@ -3760,8 +4123,9 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	}
 	// Every keystroke is answered as promptly as an unloaded room answers them, the worst of
 	// them included, because the keystroke's path meets none of the pod's bounds and nothing
-	// the burst holds: no part of the copy bound (the one holder in it, the replica's build
-	// from a base, takes only what is free at once and never waits, docs' holdFreeLoad), no
+	// the burst holds: no part of the copy bound (the two holders on it, the replica's build
+	// from a base and the room's persistence worker's read-back of the keystroke it stores,
+	// take only what is free at once and never wait, docs' holdFreeLoad), no
 	// slot of the pod's load concurrency (an insert of one character is far under docs'
 	// unslottedApplyBytes, so it is never held, docs' weighPeerUpdate), no wait on the room
 	// budget's sweep (the pressure refuses at once and the editor retries, docs'

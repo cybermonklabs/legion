@@ -28,9 +28,13 @@ import (
 // history of several updates, the copy LoadDoc decodes, the load hook's decode into the room,
 // bootstrapLoadedState), the fold of a cold read, a version read or a compaction (foldRead), the
 // replica's build from a base (renderedReplica.start), the copy a server write's decode-cap count
-// takes (structsAfter) and a rebuild's decodes (its check of a resident room and of the stored
-// history, nearACap, rebuildSource, RebuildTx). What each leaves behind is its owner's: a room's
-// two copies are charged by the room budget, a fold's state goes back to its caller.
+// takes (structsAfter), a rebuild's decodes (its check of a resident room and of the stored
+// history, nearACap, rebuildSource, RebuildTx) and the read-back of each update a room's
+// persistence worker stores (StoreUpdateStored, AppendUpdatesWithCredit). The replica's build and
+// the read-back may not wait, so each takes its bytes only where they are free at once and
+// otherwise decodes beside the pool's holders (holdFreeLoad). What each leaves behind is its
+// owner's: a room's two copies are charged by the room budget, a fold's state goes back to its
+// caller, and a read-back's copy is dropped once it has decoded.
 //
 // The second is a live write's fork, held for the fork's whole life rather than for a decode
 // alone: from the moment before the fork is built - cloned from the room's replica (warmFork,
@@ -113,6 +117,13 @@ const loadSlotsName = "load"
 //   - the publish of its own committed updates, which may load a room and so take a grant of
 //     that load's own. The transaction drops every fork, and with them its grant, before it
 //     publishes any of them (Ledger.publish).
+//
+// An apply's grant is held across the commit the apply makes (Service.weighPeerUpdate), whose
+// update observer hands the commit to the room's persistence worker through a queue of 256
+// updates and waits while that queue is full (ygo's persistence observer). The worker is the
+// queue's one reader, so its decode of each update it stores takes nothing that waits: it takes
+// its bytes where they are free at once and otherwise decodes beside the holders
+// (StoreUpdateStored, AppendUpdatesWithCredit, holdFreeLoad).
 //
 // No holder takes a second grant: a decode under a context carrying one covers itself on that one
 // (withLoadSlot), so a room load's fold, its copy's decode and the load hook's decode into the
@@ -393,16 +404,26 @@ func holdServerLoad(ctx context.Context, bytes int64) func() {
 }
 
 // holdFreeLoad covers a whole-document decode on bytes of the pool that are free at once, and
-// runs beside the pool's holders where they are not. It is what the one decode that may not wait
-// takes: the replica's build from a base (renderedReplica.start), which runs under the replica's
-// lock. A live write holds its grant for its fork's whole life and waits for that lock to clone
-// the replica (warmFork), so a wait here would hold that write and that replica against each
-// other, each waiting for what the other holds.
+// runs beside the pool's holders where they are not. It is what a decode that may not wait
+// takes, and two do:
 //
-// What such a decode holds outside the pool is one room's own second copy and the decoder above
-// it (roomCopies), which the room budget charges where the replica keeps it; and a room builds
-// its replica from a base only after a recover or a load that handed it no copy, never while it
-// is typed into.
+//   - the replica's build from a base (renderedReplica.start), which runs under the replica's
+//     lock. A live write holds its grant for its fork's whole life and waits for that lock to
+//     clone the replica (warmFork), so a wait here would hold that write and that replica against
+//     each other, each waiting for what the other holds. What such a decode holds outside the
+//     pool is one room's own second copy and the decoder above it (roomCopies), which the room
+//     budget charges where the replica keeps it; and a room builds its replica from a base only
+//     after a recover or a load that handed it no copy, never while it is typed into.
+//   - the room's persistence worker's read-back of each update it stores (StoreUpdateStored,
+//     AppendUpdatesWithCredit), made once the apply that took the update has given its own grant
+//     back (weighPeerUpdate). A heavy apply holds its grant through its commit, whose update
+//     observer waits on the room's queue of updates to store while it is full, and the worker is
+//     that queue's one reader, so a wait here would hold that apply and that worker against each
+//     other. What such a decode holds outside the pool is a copy of one commit's update, which
+//     nothing charges: the heaviest of them beside a full pool, a step 2 under
+//     unslottedApplyBytes chaining as many structs as fit in each of as many rooms as the budget
+//     holds, is what cmd/dispatch's TestStoreDecodesBesideAFullPoolStayUnderThePodsMemory weighs
+//     against the pod.
 func holdFreeLoad(bytes int64) func() {
 	slot := newLoadSlot()
 	if !slot.tryTake(bytes) {

@@ -146,12 +146,25 @@ func (p *PgVersioned) AppendRoomFlush(ctx context.Context, room string, flush *R
 // update no class holds, and of an update a caller hands the store itself (AppendUpdate). It runs
 // the same transaction a room's batch does, with the updates given rather than read off the room's
 // queue, and is gated on the room cursor ctx is marked with, if any.
+//
+// Each update's check is a whole decode of it, which takes what its copy costs out of the pod's
+// load concurrency where the pool has that much free at once and runs beside the pool's holders
+// where it has not (holdFreeLoad), and gives it back before the next update's and before the
+// transaction takes a connection. It may not wait: the room's persistence worker, the one reader
+// of the room's queue of updates to store, makes this call for a room's update no class holds
+// (StoreUpdateStored), and a heavy apply holding its grant through its commit waits on that
+// queue to hand the commit over while the queue is full. The grant is taken here and not in the
+// decode (validateUpdate), since a rebuild's check of its seed makes that decode under the grant
+// the rebuild already took for it (RebuildTx).
 func (p *PgVersioned) AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (persistence.Version, error) {
 	if len(updates) == 0 {
 		return 0, fmt.Errorf("append document updates: no update to append")
 	}
 	for _, update := range updates {
-		if err := validateUpdate(update.Update, p.maxPendingItems); err != nil {
+		release := holdFreeLoad(storedCopyWeight(update.Update))
+		err := validateUpdate(update.Update, p.maxPendingItems)
+		release()
+		if err != nil {
 			return 0, err
 		}
 	}
