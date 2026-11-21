@@ -149,16 +149,18 @@ Unset or empty, the listener serves as every other listener does, and nothing in
 
 The edge holds each session to the projects of the broker token that admitted it, also in a deployment where each project is public.
 It follows, stores and shows a session no topic of no project, except the GitHub topics of its projects' repositories, and it releases at each registration every claim the session holds of another project's role.
-A role message the role lane forwarded to the session's own agent subject before that registration, or after a later claim another writer made for the session, travels on that subject: the relay's check of each frame's topic, which the edge needs before it opens, is what holds those frames to the token's projects.
-The header of `cmd/listener/project_scope.go` lists the rules and the function that holds each; `cmd/listener/edge_mode_test.go` and `cmd/listener/edge_repositories_test.go` test each:
+A role message the role lane forwarded to the session's own agent subject before that registration does not reach the session after it: the claim no longer names the session, so the relay copies the message to the role's kept lane instead of sending it (`takeOverFrame`).
+Two cases need a writer other than the edge, and this build does not hold them: a role message forwarded under a claim another writer granted the session after its edge registration, and a topic another writer stored in the session's interest record, taken in at a later refollow. The relay's check of each frame's topic holds both; #4730 adds it, and the edge needs it before it opens.
+The header of `cmd/listener/project_scope.go` lists the rules and the function that holds each; `cmd/listener/edge_mode_test.go`, `cmd/listener/edge_roles_test.go` and `cmd/listener/edge_repositories_test.go` test each:
 
 - **Start**: the edge refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting, `ENVOY_DISPATCH_PRINCIPAL`, `ENVOY_WEBHOOKS` or a webhook secret, and without the broker-token settings (`ENVOY_AGENT_SECRETS_URL`, `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` or `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`, and `ENVOY_PUBLIC_URL`).
   Each refusal names the variable (`validateEdgeMode`).
   Dispatch sends its role-marked messages through a shared listener, and no session of the edge sends as Dispatch, so the edge names no principal whose send may carry a role mark.
 
 - **Admission**: `/v1` admits a broker token alone, of project scope `named` or `person`, that lists at least one project and only projects the edge serves (`EdgeAdmits`).
-  Any other session's broker token gets `403` with the reason `token_not_admitted`, logged as `listener: edge listener refused a broker token`.
+  Any other session's broker token gets `403` with the reason `token_not_admitted`, whose text names what the token carries (its scope, or a project it lists that the edge does not serve) and no project the edge serves; the projects served go to the log line `listener: edge listener refused a broker token` alone.
   A read-only token, and a request with no broker token, get `401` before any handler runs: the listener's verifier refuses a read-only token as no session's.
+  `/metrics` and `/healthz` answer on the same port with no credential, so the edge's public route forwards `/v1/` alone.
 
 - **Topics**: a registration follows only the session's own agent subject, the topics of the token's projects, and the GitHub topics of one repository each that the repository answer of those projects names.
   The `403` of a refused registration lists each refused topic, with the reason `repository_not_in_project` when each is a GitHub topic and `topic_not_in_project` otherwise, and nothing of the registration is stored (`edgeTopicHold`).
@@ -174,6 +176,7 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   under `reason="not_in_project"`, or under `reason="answer_unknown"` while a project of the session has no fresh answer.
   In that second case the session's next frame carries `Envoy-Gap: true` with `Envoy-Gap-Reason: repository_withheld`, and every frame that is not GitHub's is delivered as before.
   The mark is kept for the session until a frame carrying it is published: across the session's relay runs on this listener, and on the session's entry in `envoy_sessions` (`session.SessionEntry.RepositoryGap`), which the next listener to relay the session reads after a move or a restart.
+  The relay writes the mark on the entry before it acknowledges such an event, and gives the event back for redelivery when the write fails; every other write of the entry, a registration's among them, keeps the mark the stored entry holds (`session.SessionRegistry.PutWithin`).
   A gap mark with no reason is the stream's own retention gap, and a frame that marks both carries no reason.
   A refresh removes a session's interest in a repository that left its projects.
 
@@ -184,14 +187,15 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   Any other gets `403 sender_not_session` (`edgeSenderRefusal`), so no edge session sends a message under another source, such as a Dispatch event or a person's message, or under no session.
 
 - **Roles**: `POST /v1/roles/set` and `GET /v1/roles/{role}` take only a role that works for one of the token's projects, else `403 role_not_in_project` (`edgeRoleRefusal`).
-  `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title, client instance and capabilities (`edgeRoleHolder`).
-  Each registration first releases every claim the session holds of another project's role, which another listener granted it or a token that listed more did, and the answer's `warnings` name it (`store.Registry.ReleaseRefusedRoleClaims`); a release that fails refuses the registration with the retryable `503`, and nothing of it is stored. It renews only the session's claims of roles of its token's projects.
+  `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title, client instance and capabilities (`edgeScope.holder`).
+  Each registration first releases every claim the session holds of another project's role, which another listener granted it or a token that listed more did, and the answer's `warnings` name it (`store.Registry.ReleaseRefusedRoleClaims`); while the role claim copy cannot be served it reads the role bucket for those claims.
+  A release that fails refuses the registration with the retryable `503`, and nothing of it is stored; the `503` names the claim record the bus answered and the release could not read or free, or says the bus did not answer. It renews only the session's claims of roles of its token's projects.
   A claimant made live again is handed the kept messages of its token's projects' roles alone.
 
 - **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects.
-  Any other target gets the `404` of a session no listener has heard of, and no wake is reported (`sessionOfProjects`).
+  Any other target gets the `404` of a session no listener has heard of, and no wake is reported (`edgeScope.hides`).
 
-- **Reads**: `GET /v1/sessions`, `GET /v1/registry/{session_id}` and the three `/v1/legion/agents` reads answer only the sessions and Legion agents of the token's projects, each session with only those projects' roles and topics (`edgeShownTopics`);
+- **Reads**: `GET /v1/sessions`, `GET /v1/registry/{session_id}` and the three `/v1/legion/agents` reads answer only the sessions and Legion agents of the token's projects, each session with only those projects' roles and topics (`edgeScope`);
   any other session gets the `404` of an unknown one.
   A session's own `GET /v1/interests/{session_id}` shows the topics of its token's projects alone.
   `GET /v1/interests/` and another session's `GET /v1/interests/{session_id}` get `403 session_not_in_project`, and a write of the Legion agent registry gets `403 legion_registry_not_written`.
@@ -201,10 +205,10 @@ Every edge refusal's body is `listenerwire.EdgeRefusal`, whose comment in `liste
 Every listener that checks broker tokens records the registering token's projects on the session's entry in `envoy_sessions` (`session.SessionEntry.Projects`).
 The edge's send and read rules read that record, and no answer of the API carries it.
 
-On every listener, a role claim's key is `store.RoleClaimKeyOf` of the name it was claimed under, and that function's comment says which key each name gets.
+On every listener, a role's name is read as the claim it names by `contracts.RoleClaimOf`, whose comment says which project each name works for and which key it gets (`store.RoleClaimKeyOf` is that key).
 A free-form role under a project (`PRIV.lead-reviewer`) is that project's own claim, keyed `<project>.<role>`, beside the claim of the same name under no project;
 every other name keeps its bare role name as its key.
-`POST /v1/roles/set` refuses with `400`, naming both projects, a Legion role under any project but the one its own name gives (`contracts.ClaimProject`), and the edge's role and publish rules read a role's project by that function too.
+`POST /v1/roles/set` refuses with `400`, naming both projects, a Legion role under any project but the one its own name gives, and the edge's role and publish rules read a role's project by that function too.
 A role message on a lane in the form that names a project, for a Legion role of another project (`notifications.role.PRIV.legion-infra-reviewer`), reaches no holder: the role lane drops it, and `POST /v1/messages/publish` refuses it with `400` naming the role's own project (`roleLaneProjectError`).
 
 ## Local end-to-end

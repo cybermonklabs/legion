@@ -4,7 +4,8 @@ body: |-
   serves (project keys, separated by commas or white space); empty is no edge, and a set value
   that names no project, such as a lone comma, refuses the start. An edge listener admits a broker
   token alone, and only one whose projects it all serves, of project scope `named` or `person`
-  (`EdgeAdmits`); it refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting,
+  (`EdgeAdmits`); a refusal names what the token carries and no project the edge serves. It
+  refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting,
   `ENVOY_DISPATCH_PRINCIPAL`, the webhooks or a webhook secret, or without the broker-token
   settings. It holds every request to the token's projects: a registration follows the session's
   own agent subject, the topics of those projects, and the GitHub topics of one repository each
@@ -23,17 +24,24 @@ body: |-
   with `Envoy-Gap-Reason: repository_withheld`, which a client tells from the stream's retention
   gap, whose mark carries no reason; the mark is kept for the session, across its relay runs and
   on its `envoy_sessions` entry for the next listener to relay it, until a frame carrying it is
-  published. A session at the edge publishes only a
+  published, and the relay writes it on the entry before it acknowledges the withheld event,
+  giving the event back for redelivery when that write fails. A session at the edge publishes only a
   role subject of its project, sends and publishes only as itself (`source` `agent` and
   `source_session` the token's session, else `403 sender_not_session`), claims and reads only
   that project's roles, sends only to sessions whose token listed it, and reads only its
   sessions, roles, topics and Legion agents; a role read names a holder of no project of its
   token without the holder's directory, machine, host, title, client instance and capabilities.
   A registration at the edge first releases each claim the session holds of a role of another
-  project, named in the answer's `warnings`, and is refused with a retryable 503 when a release
-  fails; it renews only its projects' roles, and a claimant there is handed the kept messages of
-  its projects' roles alone. A heartbeat refused 503 for want of a repository answer still renews
-  the session's entry, also when the broker never answers. Every other listener serves as before.
+  project, named in the answer's `warnings`, reading the role bucket while the role claim copy
+  cannot be served, and is refused with a retryable 503 when a release fails, whose text names
+  the claim record the bus answered and the release could not read or free; it renews only its
+  projects' roles, and a claimant there is handed the kept messages of its projects' roles alone.
+  A heartbeat refused 503 for want of a repository answer still renews the session's entry, also
+  when the broker never answers. Every other listener serves as before.
+
+  On every listener a write of a session's `envoy_sessions` entry is conditional on the revision
+  it replaces and keeps the `repository_gap` mark that entry holds, so a registration made over a
+  stale copy of the entry no longer clears a mark another listener set.
 
   Every listener that verifies broker tokens records the registering token's projects on the
   session's `envoy_sessions` entry (`projects`, `[]` for none). No API answer carries it.

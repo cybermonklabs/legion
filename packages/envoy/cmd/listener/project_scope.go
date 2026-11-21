@@ -6,13 +6,15 @@ package main
 // where each project is public, and gives a session no message of no project but the GitHub
 // events of its projects' repositories.
 //
-// The rules, each held by a row of edge_mode_test.go or edge_repositories_test.go:
+// The rules, each held by a row of edge_mode_test.go, edge_roles_test.go or
+// edge_repositories_test.go:
 //
 //   - Admission: a broker token alone, whose projects are all among the ones the edge serves, of
-//     project scope named or person (EdgeAdmits), decided in apiAuth before any handler. The
-//     admitted request is marked held to its token's projects (withEdgeHold), and every rule below
-//     reads them there (heldProjects), so a request that is not held is one this listener serves
-//     as every listener does.
+//     project scope named or person (EdgeAdmits), decided in apiAuth before any handler; a refusal
+//     names what the token carries and no project the edge serves. The admitted request is marked
+//     held to its token's projects (withEdgeHold), and every rule below reads them there
+//     (heldProjects, edgeScopeOf), so a request that is not held is one this listener serves as
+//     every listener does.
 //   - The topics a session follows: its own agent subject, a topic of one of its projects, or a
 //     GitHub topic of one repository that the broker's answer for its projects names, read fresh
 //     for the registration (edgeTopicHold, edge_repositories.go). The hold judges the topics the
@@ -21,31 +23,32 @@ package main
 //     session is dropped from its row and its consumer's filter. At relay a GitHub frame reaches
 //     the session only while a fresh answer names the repository its event names
 //     (sessionRelays.edgeWithholds), with the gap mark on the next frame while no answer stands,
-//     kept across the session's relay runs and on its entry (sessionRelays.repositoryGaps,
-//     session.SessionEntry.RepositoryGap), and the refresh removes
-//     an interest in a repository that left (pruneEdgeInterests). What a session publishes is
-//     narrower: a role subject of its project in the form that names it (edgePublishRefusal). A
-//     refused registration names every topic it refused (listenerwire.EdgeRefusal).
+//     written on the session's entry before the withheld event is acknowledged and kept across the
+//     session's relay runs (sessionRelays.noteRepositoryGap, session.SessionEntry.RepositoryGap),
+//     and the refresh removes an interest in a repository that left (pruneEdgeInterests). What a
+//     session publishes is narrower: a role subject of its project in the form that names it
+//     (edgePublishRefusal). A refused registration names every topic it refused
+//     (listenerwire.EdgeRefusal).
 //   - Senders: a send or a publish is the session's own, source agent and the token's session
 //     (edgeSenderRefusal).
 //   - Roles: a claim or a read names a role that works for one of the token's projects
 //     (edgeRoleRefusal), and a read names the place and process of a holder of none of them (its
 //     directory, machine, host, title, client instance and capabilities) to nobody
-//     (edgeRoleHolder). A registration first releases the session's claims of other projects'
+//     (edgeScope.holder). A registration first releases the session's claims of other projects'
 //     roles, refused 503 when a release fails (edgeTopicHold.releaseRefusedRoles), renews its
-//     token's projects' roles alone, and a claimant is handed the kept messages of those alone.
+//     token's projects' roles alone (edgeTopicHold.holdsRole), and a claimant is handed the kept
+//     messages of those alone (edgeScope.roles).
 //   - Sends: the target session's token lists one of the token's projects, else the send is
-//     answered as to a missing session (sessionOfProjects).
+//     answered as to a missing session (edgeScope.hides).
 //   - Reads: the session list, the registry, the session rows' roles and topics and the Legion
-//     agent routes answer only sessions, roles and topics of the token's projects
-//     (edgeShownTopics); the interest list and another session's interests are 403, and the
-//     Legion agent registry is not written here.
+//     agent routes answer only sessions, roles, topics and agents of the token's projects
+//     (edgeScope); the interest list and another session's interests are 403, and the Legion
+//     agent registry is not written here.
 //   - The start: refused beside every other credential, beside Dispatch's principal, beside
 //     webhooks, and without the broker-token settings (validateEdgeMode).
 //
-// A project is one of the token's by the bus's rule for a broker token
-// (projectscope.BrokerTokenAdmits, projectHeld), read as for a private project so that a token
-// listing none, which the admission never admits here, holds no project at all.
+// A project is one of the token's when the token's list names it (projectHeld): the admission
+// admits no token listing none, so a list here is never empty.
 
 import (
 	"context"
@@ -57,13 +60,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/projectscope"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -75,9 +78,10 @@ var ErrEdgeNotAdmitted = errors.New("this edge listener does not admit the acces
 // EdgeAdmits is the admission: whether an edge listener serving edgeProjects admits caller, the
 // session a broker token names. It admits a token of project scope named or person whose projects
 // are all among edgeProjects, and at least one, and refuses a read-only token. nil is admitted;
-// every refusal wraps ErrEdgeNotAdmitted and names the rule. It reads nothing but its arguments,
-// so apiAuth asks it of each request's caller, and any other reader of a live answer about a
-// token can ask it again. apiAuth never hands it a read-only token: the listener's verifier
+// every refusal wraps ErrEdgeNotAdmitted and names the rule and what the token carries, and never
+// a project the edge serves: the refusal reaches the token's holder (apiAuth), who may not know
+// another customer's project, so the projects served go to apiAuth's log line alone. It reads
+// nothing but its arguments. apiAuth never hands it a read-only token: the listener's verifier
 // refuses one as no session (ciphertoken.ErrNotASession), the 401 of a request with no session.
 func EdgeAdmits(edgeProjects []string, caller ciphertoken.Caller) error {
 	switch {
@@ -87,12 +91,11 @@ func EdgeAdmits(edgeProjects []string, caller ciphertoken.Caller) error {
 		return fmt.Errorf("%w: its project scope is %q, and the edge admits only %s and %s",
 			ErrEdgeNotAdmitted, caller.ProjectScope, ciphertoken.ProjectScopeNamed, ciphertoken.ProjectScopePerson)
 	case len(caller.Projects) == 0:
-		return fmt.Errorf("%w: it lists no project, and the edge serves only %s", ErrEdgeNotAdmitted, strings.Join(edgeProjects, ", "))
+		return fmt.Errorf("%w: it lists no project", ErrEdgeNotAdmitted)
 	}
 	for _, project := range caller.Projects {
 		if !slices.Contains(edgeProjects, project) {
-			return fmt.Errorf("%w: it lists project %s, which this edge does not serve (it serves %s)",
-				ErrEdgeNotAdmitted, project, strings.Join(edgeProjects, ", "))
+			return fmt.Errorf("%w: it lists project %s, which this edge does not serve", ErrEdgeNotAdmitted, project)
 		}
 	}
 	return nil
@@ -111,13 +114,10 @@ const (
 	edgeSenderNotSession         = "sender_not_session"
 )
 
-// edgeRefusal is one answer an edge rule gives a request it refuses. cause is the failure behind
-// a refusal no rule decided, the repository read of a 503 (repositoriesUnknown), which the route
-// records as it records every registration that renewed nothing; nil for every other refusal.
+// edgeRefusal is one answer an edge rule gives a request it refuses.
 type edgeRefusal struct {
 	status int
 	body   listenerwire.EdgeRefusal
-	cause  error
 }
 
 // refuseEdge is the refusal of reason under status, its sentence message, about the request
@@ -148,30 +148,97 @@ func heldProjects(r *http.Request) ([]string, bool) {
 	return caller.Projects, true
 }
 
-// projectHeld reports whether project is one of projects, by the bus's rule for a broker token
-// (projectscope.BrokerTokenAdmits), read as for a private project: a list holds what it names and
-// nothing else, NoProject and a wildcard among the rest.
+// projectHeld reports whether project is one of projects, the token's list: a list holds what it
+// names and nothing else, NoProject and a wildcard among the rest.
 func projectHeld(projects []string, project string) bool {
-	return projectscope.BrokerTokenAdmits(projects, project, true)
+	return slices.Contains(projects, project)
 }
 
-// sessionOfProjects reports whether a session whose entry is entry is one of projects': the token
-// that registered it (session.SessionEntry.Projects) lists one of them. An entry no token's
-// list was recorded on, one an earlier build wrote among them, is no project's.
-func sessionOfProjects(entry session.SessionEntry, projects []string) bool {
-	return slices.ContainsFunc(entry.Projects, func(project string) bool { return projectHeld(projects, project) })
+// edgeScope is what a request an edge listener admitted may read: the projects of its token
+// (heldProjects), and the repository reader that says which of their GitHub topics stand. It is
+// nil for a request no edge listener admitted, and each method answers a nil scope as every
+// listener answers, so a read route asks it unconditionally and writes no edge branch of its own;
+// only the answers a session with no entry gets test the scope itself (hides).
+type edgeScope struct {
+	projects     []string
+	repositories *edgeRepositories
 }
 
-// rolesOfProjects is the roles among roles, each named by its claim's key, that work for one of
-// projects (roleOfProjects), in their order.
-func rolesOfProjects(roles, projects []string) []string {
-	kept := make([]string, 0, len(roles))
-	for _, role := range roles {
-		if roleOfProjects(role, projects) {
-			kept = append(kept, role)
-		}
+// edgeScopeOf is r's scope, nil for a request no edge listener admitted. repositories may be nil
+// for a route that reads no topic.
+func edgeScopeOf(r *http.Request, repositories *edgeRepositories) *edgeScope {
+	projects, held := heldProjects(r)
+	if !held {
+		return nil
 	}
-	return kept
+	return &edgeScope{projects: projects, repositories: repositories}
+}
+
+// shows reports whether the scope shows the session whose entry is entry: the token that
+// registered it (session.SessionEntry.Projects) lists one of the scope's projects. An entry no
+// token's list was recorded on, one an earlier build wrote among them, is no project's. A nil
+// scope shows every session.
+func (s *edgeScope) shows(entry session.SessionEntry) bool {
+	return s == nil || slices.ContainsFunc(entry.Projects, func(project string) bool { return projectHeld(s.projects, project) })
+}
+
+// hides reports whether the scope answers a session read as entry with err as one no listener has
+// heard of (unknownSession): a session it does not show, and one the bucket holds no record of
+// (nats.ErrKeyNotFound), which names no project. A read that did not answer is not hidden: its
+// route answers it as every listener does. A nil scope hides nothing.
+func (s *edgeScope) hides(entry session.SessionEntry, err error) bool {
+	return s != nil && (errors.Is(err, nats.ErrKeyNotFound) || (err == nil && !s.shows(entry)))
+}
+
+// roles is the roles among roles, each named by its claim's key, that work for one of the scope's
+// projects (roleOfProjects), in their order: roles itself for a nil scope.
+func (s *edgeScope) roles(roles []string) []string {
+	if s == nil {
+		return roles
+	}
+	return slices.DeleteFunc(slices.Clone(roles), func(role string) bool { return !roleOfProjects(role, s.projects) })
+}
+
+// topics is the topics among topics, those of sessionID's interest record, that the scope shows
+// (edgeShownTopics): topics itself for a nil scope.
+func (s *edgeScope) topics(sessionID string, topics []string) []string {
+	if s == nil {
+		return topics
+	}
+	return edgeShownTopics(s.repositories, s.projects, sessionID, topics)
+}
+
+// showsAgent reports whether the scope shows a Legion agent registry entry: the issue it works is
+// of one of the scope's projects. A nil scope shows every entry.
+func (s *edgeScope) showsAgent(agent legionagents.Agent) bool {
+	if s == nil {
+		return true
+	}
+	project, ok := contracts.IssueProject(agent.Issue)
+	return ok && projectHeld(s.projects, project)
+}
+
+// agents is agents with only the entries the scope shows (showsAgent), in their order.
+func (s *edgeScope) agents(agents []legionagents.Agent) []legionagents.Agent {
+	if s == nil {
+		return agents
+	}
+	return slices.DeleteFunc(agents, func(agent legionagents.Agent) bool { return !s.showsAgent(agent) })
+}
+
+// holder is holder, the answer of GET /v1/roles/<role> about a live holder whose session entry is
+// entry, as the scope shows it: whole for a holder it shows (shows), and with the holder's place
+// and process left out (its directory, machine, host, title and client instance, and its
+// capabilities the empty list) for any other. The role, the holder's id and state and the claim's
+// revision stay, so a caller still sees who holds a role of its project, and can claim it with
+// if_claim_revision. A nil scope answers holder as it is.
+func (s *edgeScope) holder(entry session.SessionEntry, holder listenerwire.RoleHolder) listenerwire.RoleHolder {
+	if s.shows(entry) {
+		return holder
+	}
+	holder.Capabilities = []string{}
+	holder.ClientInstanceID, holder.Dir, holder.Host, holder.MachineID, holder.Title = "", "", "", "", ""
+	return holder
 }
 
 // roleOfProjects reports whether role, named by its claim's key, works for one of projects: the
@@ -189,34 +256,52 @@ func edgeReleasedRoleWarning(role string, projects []string) string {
 	return fmt.Sprintf("role %s was released and not renewed: a session at the edge holds only roles of %s", role, strings.Join(projects, ", "))
 }
 
-// releaseRefusedRoles releases every claim the hold's session holds of a role of none of the
-// token's projects (store.Registry.ReleaseRefusedRoleClaims), weighing the role lanes of the
-// session's stored row as this listener's copy of it holds them and the roles the role claim copy
-// names, and answers the roles it released. Its error is every release that failed. A nil hold
-// releases nothing.
+// edgeReleaseFailedPrefix opens the 503 of a registration the edge refused because the bus
+// answered the release of the session's claim of another project's role with a record no read can
+// decode, or refused that release (writeEdgeReleaseRefusal), so one string matches in a test and
+// in a deployed log filter. It is deliberately not busUnansweredPrefix: the bus answered, and an
+// operator reading "the message bus did not answer" would go looking for an outage instead of at
+// the claim record the rest of the text names.
+const edgeReleaseFailedPrefix = "envoy: a role claim of a project the session's token does not list could not be released and stands, so the session is not registered here"
+
+// writeEdgeReleaseRefusal answers a registration whose release of the session's claims of other
+// projects' roles failed (edgeTopicHold.releaseRefusedRoles, err) with the retryable 503 either
+// way, since the claim stands and the session may not be served while it does. A bus that did not
+// answer is the bus-unavailable 503 (writeBusUnavailable); a release the bus answered - a claim
+// record no read can decode, a refused key - names that record after edgeReleaseFailedPrefix,
+// with Retry-After: 1 as well, since another listener may rewrite or free the claim meanwhile.
+func writeEdgeReleaseRefusal(ctx context.Context, w http.ResponseWriter, err error) {
+	if !storeAnswered(ctx, err) {
+		writeBusUnavailable(w, err)
+		return
+	}
+	w.Header().Set("Retry-After", "1")
+	writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", edgeReleaseFailedPrefix, err))
+}
+
+// holdsRole reports whether the hold's session may hold role, named by its claim's key: a role of
+// one of the token's projects (roleOfProjects), and every role for a nil hold, the registration
+// of a request no edge listener admitted. It is the one rule the release
+// (releaseRefusedRoles) and the renewal (store.Registry.RenewRoleClaims) of a registration read.
+func (h *edgeTopicHold) holdsRole(role string) bool {
+	return h == nil || roleOfProjects(role, h.projects)
+}
+
+// releaseRefusedRoles releases every claim the hold's session holds of a role holdsRole refuses
+// (store.Registry.ReleaseRefusedRoleClaims, which weighs the role lanes of the session's stored row
+// as this listener's copy of it holds them and the roles the role claim copy names, and reads the
+// role bucket while that copy cannot be served), and answers the roles it released. Its error is
+// every release that failed. A nil hold releases nothing.
 func (h *edgeTopicHold) releaseRefusedRoles(ctx context.Context, registry *store.Registry) ([]string, error) {
 	if h == nil {
 		return nil, nil
 	}
-	stored, _ := registry.Cached(h.sessionID)
-	released, err := registry.ReleaseRefusedRoleClaims(ctx, h.sessionID, stored, func(role string) bool { return !roleOfProjects(role, h.projects) })
+	released, err := registry.ReleaseRefusedRoleClaims(ctx, h.sessionID, h.holdsRole)
 	for _, role := range released {
 		h.logger.Warn("edge listener released a role claim of a project the session's token does not list",
 			slog.String("session_id", h.sessionID), slog.String("role", role), slog.Any("projects", h.projects))
 	}
 	return released, err
-}
-
-// legionAgentOfProjects reports whether a Legion agent registry entry is one of projects': the
-// issue it works is.
-func legionAgentOfProjects(agent legionagents.Agent, projects []string) bool {
-	project, ok := contracts.IssueProject(agent.Issue)
-	return ok && projectHeld(projects, project)
-}
-
-// legionAgentsOfProjects is agents with only projects' entries, in their order.
-func legionAgentsOfProjects(agents []legionagents.Agent, projects []string) []legionagents.Agent {
-	return slices.DeleteFunc(agents, func(agent legionagents.Agent) bool { return !legionAgentOfProjects(agent, projects) })
 }
 
 // unknownSession is the 404 a session the edge does not show gets: the answer of a session no
@@ -360,23 +445,21 @@ const edgeRegistrationReserve = time.Second
 
 // refusal is the hold of the topics the registration names, or nil: a 403 naming every refused
 // topic (listenerwire.EdgeRefusal.Refused), so the client drops exactly those and registers the
-// rest again, or the 503 of a read that gave no whole answer (repositoriesUnknown). Nothing is
-// stored for a refused registration.
-func (h *edgeTopicHold) refusal(ctx context.Context, topics []string) *edgeRefusal {
+// rest again. A read that gave no whole answer is the error (errRepositoriesUnknown), as holdPlan
+// returns it, and the route answers it with answerRepositoryOutage. Nothing is stored for a
+// refused registration.
+func (h *edgeTopicHold) refusal(ctx context.Context, topics []string) (*edgeRefusal, error) {
 	if h == nil {
-		return nil
+		return nil, nil
 	}
 	refused, reason, err := h.refused(ctx, topics)
-	if err != nil {
-		return h.repositoriesUnknown(err)
-	}
-	if len(refused) == 0 {
-		return nil
+	if err != nil || len(refused) == 0 {
+		return nil, err
 	}
 	refusal := refuseEdge(http.StatusForbidden, reason, fmt.Sprintf("%s not followed here: %s",
 		strings.Join(refused, ", "), edgeFollowedTopics(h.projects)), "topics")
 	refusal.body.Refused = refused
-	return refusal
+	return refusal, nil
 }
 
 // holdPlan is plan without the topics the hold refuses, and those topics: out of the session
@@ -385,7 +468,7 @@ func (h *edgeTopicHold) refusal(ctx context.Context, topics []string) *edgeRefus
 // named passed refusal already, so what it drops is a topic of the stored row, which the answer's
 // warnings name (registeredSession.dropped). It is asked of every plan of the registration, the
 // one made again after a conflict among them, whose row another writer stored since. A read that
-// gave no whole answer is the error, which the route answers with repositoriesUnknown.
+// gave no whole answer is the error, which the route answers with answerRepositoryOutage.
 func (h *edgeTopicHold) holdPlan(ctx context.Context, plan store.InterestPlan) (store.InterestPlan, []string, error) {
 	if h == nil {
 		return plan, nil, nil
@@ -401,29 +484,34 @@ func (h *edgeTopicHold) holdPlan(ctx context.Context, plan store.InterestPlan) (
 	return plan, refused, nil
 }
 
-// repositoriesUnknown is the 503 repositories_unknown of a registration whose repository read,
-// err, gave no whole answer. It names no topic, since the edge cannot say which of the GitHub
-// topics to refuse, and its text is the listener's own: the broker's answer, which err may quote,
+// answerRepositoryOutage answers a registration the edge refused because its repository read,
+// err, gave no whole answer (refusal or holdPlan, errRepositoriesUnknown). Such a registration
+// renews no role claim, which is recorded as every registration that renewed nothing is
+// (store.Registry.RecordRenewalFailures), and renews the session's entry alone
+// (renewThroughOutage), so the session outlives the outage. The answer is the 503
+// repositories_unknown: it names no topic, since the edge cannot say which of the GitHub topics
+// to refuse, and its text is the listener's own, since the broker's answer, which err may quote,
 // goes to the log alone.
-func (h *edgeTopicHold) repositoriesUnknown(err error) *edgeRefusal {
+func (h *edgeTopicHold) answerRepositoryOutage(ctx context.Context, w http.ResponseWriter, registry *store.Registry, sessions *session.SessionRegistry, machineID string, err error) {
 	h.logger.Warn("edge listener could not read the repositories of the session's projects; the registration is refused 503",
 		slog.String("session_id", h.sessionID), slog.Any("projects", h.projects), slog.String("error", err.Error()))
-	refusal := refuseEdge(http.StatusServiceUnavailable, edgeRepositoriesUnknown,
-		fmt.Sprintf("the repositories of %s's issues could not be read, so no GitHub topic is followed now; register again shortly", strings.Join(h.projects, ", ")))
-	refusal.cause = err
-	return refusal
+	registry.RecordRenewalFailures(h.sessionID, err)
+	h.renewThroughOutage(ctx, sessions, machineID)
+	refuseEdge(http.StatusServiceUnavailable, edgeRepositoriesUnknown,
+		fmt.Sprintf("the repositories of %s's issues could not be read, so no GitHub topic is followed now; register again shortly", strings.Join(h.projects, ", "))).write(w)
 }
 
 // renewThroughOutage renews the session entry of a registration the edge refused for want of a
-// repository answer (repositoriesUnknown), so a session whose row follows a GitHub topic stays
+// repository answer (answerRepositoryOutage), so a session whose row follows a GitHub topic stays
 // registered, and keeps receiving its other messages, for as long as the broker cannot answer:
 // every heartbeat it sends meanwhile names that topic and is refused, and an entry no heartbeat
 // renews is gone at the session bucket's maximum age. Its GitHub frames are withheld meanwhile
 // (sessionRelays.edgeWithholds), and nothing else of the registration is stored. The entry is
-// written back as the session bucket holds it, stamped now (session.SessionRegistry.PutWithin),
-// and only when it is this listener's own registration of the session under the same projects:
-// an entry another listener wrote, or one no registration wrote, is left as it is. A read or a
-// write that fails is logged, and the refusal stands either way.
+// written back as the session bucket holds it, stamped now, at the revision read, with the gap
+// mark of the entry it replaces (session.SessionRegistry.PutWithin), and only when it is this
+// listener's own registration of the session under the same projects: an entry another listener
+// wrote, or one no registration wrote, is left as it is. A read or a write that fails is logged,
+// and the refusal stands either way.
 func (h *edgeTopicHold) renewThroughOutage(ctx context.Context, sessions *session.SessionRegistry, machineID string) {
 	entry, err := bucketSessionEntry(ctx, sessions, h.sessionID, roleHolderReadTimeout)
 	if err != nil {
@@ -494,20 +582,19 @@ func ownAgentSubject(sessionID string, projects []string, topic string) bool {
 
 // edgePublishRefusal is the edge's publish rule, or nil: a session at the edge publishes only a
 // role subject in the form that names the project (notifications.role.<KEY>.<role>), of one of
-// its token's projects, for a role that works for that project (contracts.ClaimProject): a Legion
-// role of the project, or a free-form role under it, whose claim is keyed on the project
-// (store.RoleClaimKeyOf). A Legion role of another project named under this one is refused, since
-// its claim is its own project's. A message to a session goes through the send route, and nothing
-// else is published here: a Dispatch event of the project, a GitHub, Slack or team subject, and a
-// lane of the listener's own are 403 topic_not_published.
+// its token's projects, for a role that works for that project (contracts.RoleClaimOf): a Legion
+// role of the project, or a free-form role under it, whose claim is keyed on the project. A Legion
+// role of another project named under this one is refused, since its claim is its own project's.
+// A message to a session goes through the send route, and nothing else is published here: a
+// Dispatch event of the project, a GitHub, Slack or team subject, and a lane of the listener's own
+// are 403 topic_not_published.
 func edgePublishRefusal(r *http.Request, topic string) *edgeRefusal {
 	projects, held := heldProjects(r)
 	if !held {
 		return nil
 	}
 	if lane, isRole := strings.CutPrefix(topic, contracts.RoleTopicPrefix); isRole {
-		project, role, legacy := contracts.CanonicalRole(lane)
-		if claimed, err := contracts.ClaimProject(role, project); !legacy && err == nil && claimed == project && projectHeld(projects, project) {
+		if claim, err := contracts.RoleClaimOf(lane); !claim.Legacy && err == nil && projectHeld(projects, claim.Project) {
 			return nil
 		}
 	}
@@ -536,42 +623,19 @@ func edgeSenderRefusal(r *http.Request, source, sourceSession string) *edgeRefus
 }
 
 // edgeRoleRefusal is the edge's role rule for a claim or a read of role, in either form, or nil:
-// the project the claim works for (contracts.ClaimProject, given the project the new form names)
-// is one of the token's. What passes is claimed and read under the key of that project
-// (store.RoleClaimKeyOf): the bare name for a Legion role, and <project>.<role> for a free-form
-// role under the project.
+// the project the claim works for (contracts.RoleClaimOf) is one of the token's. What passes is
+// claimed and read under the key of that project: the bare name for a Legion role, and
+// <project>.<role> for a free-form role under the project.
 func edgeRoleRefusal(r *http.Request, role string) *edgeRefusal {
 	projects, held := heldProjects(r)
 	if !held {
 		return nil
 	}
-	requested, name, legacy := contracts.CanonicalRole(role)
-	if legacy {
-		requested = ""
-	}
-	project, err := contracts.ClaimProject(name, requested)
-	if err == nil && projectHeld(projects, project) {
+	if claim, err := contracts.RoleClaimOf(role); err == nil && projectHeld(projects, claim.Project) {
 		return nil
 	}
 	return refuseEdge(http.StatusForbidden, edgeRoleNotInProject,
 		fmt.Sprintf("role %s is not claimed or read here: it works for no project of %s", role, strings.Join(projects, ", ")), "role")
-}
-
-// edgeRoleHolder is holder, the answer of GET /v1/roles/<role> about a live holder whose session
-// entry is entry, as a read held to the token's projects shows it: whole for a holder whose
-// registering token listed one of them (sessionOfProjects), and with the holder's place and
-// process left out (its directory, machine, host, title and client instance, and its
-// capabilities the empty list) for any other, a session the edge's reads do not show. The role,
-// the holder's id and state and the claim's revision stay, so a caller still sees who holds a
-// role of its project, and can claim it with if_claim_revision. Every other listener's answer is
-// holder as it is.
-func edgeRoleHolder(r *http.Request, entry session.SessionEntry, holder listenerwire.RoleHolder) listenerwire.RoleHolder {
-	if projects, held := heldProjects(r); !held || sessionOfProjects(entry, projects) {
-		return holder
-	}
-	holder.Capabilities = []string{}
-	holder.ClientInstanceID, holder.Dir, holder.Host, holder.MachineID, holder.Title = "", "", "", "", ""
-	return holder
 }
 
 // edgeInterestReadRefusal is the edge's rule for GET /v1/interests/ and GET

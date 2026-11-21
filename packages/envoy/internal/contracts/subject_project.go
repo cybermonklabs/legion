@@ -398,6 +398,42 @@ func ClaimProject(role, requested string) (string, error) {
 	return requested, nil
 }
 
+// RoleClaimName is a claimed role's name read as the claim it names (RoleClaimOf).
+type RoleClaimName struct {
+	// Project is the project the claim works for (ClaimProject): the project the new form
+	// names for a free-form role, and the role's own (RoleProject) for a Legion role and for the
+	// old form.
+	Project string
+	// Role is the role's own name, without a project.
+	Role string
+	// Key is the key of the claim's record in the envoy_roles bucket (RoleClaimKey of Project):
+	// <project>.<role> for a free-form role under a project, and the bare name for every other.
+	Key string
+	// Legacy is true for the old form, the role alone (CanonicalRole).
+	Legacy bool
+}
+
+// RoleClaimOf reads a claimed role named in either form (CanonicalRole) as the claim it names: the
+// project the claim works for, given the project the new form names (ClaimProject; the old form
+// names none), and the key of its record (RoleClaimKey). It is the one reading of a role's name
+// every reader of one goes through: the claim route, which refuses the error, the role lane and
+// the publish route, which refuse a lane of the error (cmd/listener's roleLaneProjectError), the
+// edge's role and publish rules, and every key a holder is resolved by (store.RoleClaimKeyOf).
+// The error is ClaimProject's refusal of a Legion role named under another project; the name read
+// beside it is that role's own project and bare key, the claim such a name would reach.
+func RoleClaimOf(role string) (RoleClaimName, error) {
+	requested, name, legacy := CanonicalRole(role)
+	if legacy {
+		requested = ""
+	}
+	project, err := ClaimProject(name, requested)
+	if err != nil {
+		own := RoleProject(name)
+		return RoleClaimName{Project: own, Role: name, Key: RoleClaimKey(own, name), Legacy: legacy}, err
+	}
+	return RoleClaimName{Project: project, Role: name, Key: RoleClaimKey(project, name), Legacy: legacy}, nil
+}
+
 // ParseRoleClaimKey reads a role claim's key back to the project and role it was written from
 // (RoleClaimKey): a key naming a project and a role is that pair, and a bare key is the role,
 // working for the project its name says (RoleProject). Unlike CanonicalRole, which goes with the

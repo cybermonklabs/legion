@@ -12,16 +12,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -68,7 +70,9 @@ func TestAnEdgeRefusesAnotherRepositorysEvents(t *testing.T) {
 		t.Fatalf("the session's first frame is %s, want acme/pub's: the event of acme/priv reached it", frames[0].item.Topic)
 	}
 	requireFrames(t, frames, pub)
-	standIn.none(t, time.Second)
+	// Nothing of acme/priv follows either: an agent message stored after both is the next frame.
+	agent, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), agent)
 }
 
 // A repository that leaves the project's answer stops reaching the session at the first
@@ -202,8 +206,9 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	rig.repositories.failWith(http.StatusServiceUnavailable)
 	rig.clock.advance(edgeRepositoryAnswerLife + time.Second)
 	rig.storeGithubEvent(t, "acme/pub", "pr.1")
-	// The withheld count moves before the relay writes the mark on the entry, so the row waits
-	// for the entry: the move below copies it, as another listener's registration does.
+	// The relay marks the entry before it acknowledges and counts the withheld event, so the row
+	// waits for both: the move below writes the entry over the marked one, as another listener's
+	// registration does.
 	testwait.Eventually(t, "the edge to withhold the acme/pub event and mark the session's entry", func() bool {
 		return rig.withheld(t, "answer_unknown") >= 1 && storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap
 	})
@@ -235,6 +240,122 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	testwait.Eventually(t, "the sent mark to be cleared from the session's entry", func() bool {
 		return !storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap
 	})
+}
+
+// A registration keeps the gap mark another listener set on the session's entry after this
+// listener last read it: the other listener's relay withheld a GitHub event and marked the entry
+// (session.SessionRegistry.SetRepositoryGap) while this listener's copy of the session bucket
+// still held the entry without the mark, and this listener's next registration of the session,
+// built over that copy, leaves the mark on the stored entry for the next listener's frame to
+// carry. Here this listener's copy is held behind the bucket by stopping its watch, so the
+// registration is made over an entry the bucket no longer holds. The write is every listener's,
+// so the row passes with edge mode off by design. Control: with the entry written
+// unconditionally (session.SessionRegistry.PutWithin as it was before this row), the mark is lost
+// and the row fails.
+func TestARegistrationKeepsAGapMarkAnotherListenerSetSinceItsRead(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_gap_raced"
+	token := rig.personToken(sessionID, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, sessionID), http.StatusOK, "the registration")
+	registered := storedEdgeSessionEntry(t, rig, sessionID)
+
+	rig.deps.sessions.StopWatch()
+	other, err := session.OpenSessionRegistry(t.Context(), rig.harness.client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the other listener's session registry: %v", err)
+	}
+	t.Cleanup(other.StopWatch)
+	if err := other.SetRepositoryGap(t.Context(), sessionID, true); err != nil {
+		t.Fatalf("mark %s's entry from the other listener: %v", sessionID, err)
+	}
+	if !storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap {
+		t.Fatalf("UNKNOWN: the other listener's mark of %s is not on the stored entry", sessionID)
+	}
+	if cached, err := rig.deps.sessions.Get(sessionID); err != nil || cached.RepositoryGap {
+		t.Fatalf("UNKNOWN: this listener's copy of %s's entry reads %+v (%v), not the entry without the mark, so the registration below is not made over a stale read", sessionID, cached, err)
+	}
+
+	requireStatus(t, rig.subscribe(t, token, sessionID), http.StatusOK, "the registration after the other listener's mark")
+	stored := storedEdgeSessionEntry(t, rig, sessionID)
+	if stored.UpdatedAt <= registered.UpdatedAt {
+		t.Fatalf("UNKNOWN: %s's stored entry %+v was not written by the second registration (UpdatedAt %d, first registration's %d)", sessionID, stored, stored.UpdatedAt, registered.UpdatedAt)
+	}
+	if !stored.RepositoryGap {
+		t.Fatalf("after this listener's registration %s's stored entry is %+v: the gap mark the other listener set since this listener's read is lost", sessionID, stored)
+	}
+}
+
+// A GitHub event the edge withholds while no fresh repository answer stands is acknowledged only
+// once the session's entry carries the gap mark it owes (session.SessionRegistry.SetRepositoryGap):
+// a mark write that fails gives the event back to the server, as the takeover gives back a frame
+// whose copy did not store, so a redelivery writes the mark once the entry can be written, and a
+// move or a restart before the session's next frame finds it. Here the mark write fails because
+// the bucket holds a value no read can decode under the session's key, behind this listener's
+// copy, which still holds the session's projects (its watch is stopped), and the entry is then
+// written whole again. The withheld event is counted once, when it is acknowledged. Control: with
+// the event acknowledged before the mark is written (sessionRelays.edgeWithholds before this row),
+// the consumer's ack floor passes the event while the entry carries no mark, and the row fails.
+func TestAWithheldEventIsAcknowledgedOnlyOnceItsGapMarkIsStored(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_gap_durable"
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "the registration")
+	first, firstSeq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1, 10*time.Second), first)
+	consumers := observeConsumers(t, rig.url)
+	consumer := func() *jetstream.ConsumerInfo {
+		t.Helper()
+		info, err := consumers.Info(t.Context(), sessionID)
+		if err != nil {
+			t.Fatalf("read %s's consumer: %v", sessionID, err)
+		}
+		return info
+	}
+	testwait.Eventually(t, "the first frame to be acknowledged", func() bool { return consumer().AckFloor.Stream >= firstSeq })
+
+	bucket, err := rig.harness.client.JS().KeyValue(bus.SessionBucket)
+	if err != nil {
+		t.Fatalf("open the session bucket: %v", err)
+	}
+	whole, err := bucket.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read %s's entry: %v", sessionID, err)
+	}
+	rig.deps.sessions.StopWatch()
+	if _, err := bucket.Put(sessionID, []byte(`{"machine_id":7}`)); err != nil {
+		t.Fatalf("store a value no read decodes as %s's entry: %v", sessionID, err)
+	}
+
+	rig.repositories.failWith(http.StatusServiceUnavailable)
+	rig.clock.advance(edgeRepositoryAnswerLife + time.Second)
+	rig.storeGithubEvent(t, "acme/pub", "pr.1")
+	var seq uint64
+	testwait.Eventually(t, "the relay to take the acme/pub event and acknowledge it or give it back", func() bool {
+		info := consumer()
+		if info.Delivered.Stream <= firstSeq {
+			return false
+		}
+		seq = info.Delivered.Stream
+		return info.AckFloor.Stream >= seq || info.NumRedelivered >= 1
+	})
+	if info := consumer(); info.AckFloor.Stream >= seq {
+		t.Fatalf("%s's consumer acknowledged the withheld acme/pub event (seq %d, ack floor %d) while its entry could not carry the gap mark: a move before the next frame loses the mark",
+			sessionID, seq, info.AckFloor.Stream)
+	}
+	if got := rig.withheld(t, "answer_unknown"); got > 0 {
+		t.Fatalf(`envoy_edge_github_withheld_total{reason="answer_unknown"} = %d while the event is given back, want it counted only when it is acknowledged`, got)
+	}
+
+	if _, err := bucket.Put(sessionID, whole.Value()); err != nil {
+		t.Fatalf("write %s's entry whole again: %v", sessionID, err)
+	}
+	testwait.Eventually(t, "the redelivered event to mark the entry and be acknowledged", func() bool {
+		return storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap && consumer().AckFloor.Stream >= seq
+	})
+	if got := rig.withheld(t, "answer_unknown"); got != 1 {
+		t.Fatalf(`envoy_edge_github_withheld_total{reason="answer_unknown"} = %d, want 1: the event is withheld once, however often it was given back`, got)
+	}
 }
 
 // Dispatch answers a repository in lower case and the intake keeps GitHub's case, so the
@@ -395,29 +516,34 @@ func TestAnEdgeRefreshReadsEachProjectOnItsOwn(t *testing.T) {
 
 // A broker whose repository read never answers costs the session no more than one that answers
 // 503 at once: the heartbeat of a session following a GitHub topic is refused 503
-// repositories_unknown within the registration's budget, and its session entry is still renewed,
-// since the read ends edgeRegistrationReserve before the budget does. Control: with the read given
-// the whole budget, the renewal runs on a context that has ended and the entry is not renewed.
+// repositories_unknown, and its session entry is still renewed, since the read ends
+// edgeRegistrationReserve before the registration's budget does. The broker stand-in answers only
+// when the read's own context ends, so the read takes all the time it is given, and the renewal is
+// told from no write by the entry's revision, with no clock read. Control: with the read given the
+// whole budget, the renewal runs on a context that has ended and the entry is not renewed.
 func TestAHungRepositoryReadStillRenewsTheEdgeSession(t *testing.T) {
 	rig := newEdgeRig(t)
 	const sessionID, pub = "ses_edge_hung_broker", "notifications.github.acme.pub.>"
 	token := rig.personToken(sessionID, "PRIV")
 	requireStatus(t, rig.subscribe(t, token, sessionID, pub), http.StatusOK, "the registration following acme/pub")
-	registered := storedEdgeSessionEntry(t, rig, sessionID).UpdatedAt
+	_, registered := storedEdgeSessionRecord(t, rig, sessionID)
 
-	hung := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
-	t.Cleanup(hung.Close)
-	rig.deps.repositories = newEdgeRepositories(hung.URL, listenerBrokerAccount(edgeAccountToken), rig.projects,
+	var bounded atomic.Bool
+	reader := newEdgeRepositories("http://broker.example", listenerBrokerAccount(edgeAccountToken), rig.projects,
 		newEdgeWithheldCounter(metrics.New()), logging.New("test"))
-	testwait.Eventually(t, "the clock to pass the registration's millisecond", func() bool { return time.Now().UnixMilli() > registered })
-	beat := time.Now().UnixMilli()
-	started := time.Now()
+	reader.client = &http.Client{Transport: edgeBrokerTransport(func(request *http.Request) (*http.Response, error) {
+		_, hasDeadline := request.Context().Deadline()
+		bounded.Store(hasDeadline)
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+	rig.deps.repositories = reader
 	heartbeat := rig.subscribe(t, token, sessionID, pub)
 	requireEdgeRefusal(t, heartbeat, http.StatusServiceUnavailable, "repositories_unknown", "the heartbeat while the broker never answers")
-	if took := time.Since(started); took > sendRequestBudget+time.Second {
-		t.Errorf("the heartbeat was answered after %s, past the registration's budget of %s", took, sendRequestBudget)
+	if !bounded.Load() {
+		t.Errorf("the repository read of the heartbeat had no deadline: a broker that never answers holds the registration for as long as its caller waits")
 	}
-	if got := storedEdgeSessionEntry(t, rig, sessionID).UpdatedAt; got < beat {
-		t.Fatalf("the heartbeat while the broker never answers left the session entry at UpdatedAt %d, %d ms before the heartbeat: the entry ages out", got, beat-got)
+	if _, got := storedEdgeSessionRecord(t, rig, sessionID); got <= registered {
+		t.Fatalf("the heartbeat while the broker never answers left the session entry at revision %d, the registration's %d: the entry ages out", got, registered)
 	}
 }

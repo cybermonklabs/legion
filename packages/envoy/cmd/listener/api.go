@@ -800,16 +800,16 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// holds its record, which it answers from memory: only a session neither store knows is
 		// the 404 a sender routes around the pane on.
 		target, recipientState, err := liveSessionEntry(ctx, d.sessions, targetSession, sendSessionReadTimeout, notGone)
-		hasEntry := err == nil
 		// At the edge a target is one only while the token that registered it lists one of the
-		// sender's projects (sessionOfProjects). Any other target, and one no entry stands for,
+		// sender's projects (edgeScope.shows). Any other target, and one no entry stands for,
 		// whose record names no project, is answered as a session no listener has heard of,
 		// before a wake is reported or anything is stored: the sender learns nothing of another
 		// project's session.
-		if projects, held := heldProjects(r); held && (errors.Is(err, nats.ErrKeyNotFound) || (hasEntry && !sessionOfProjects(target, projects))) {
+		if edgeScopeOf(r, nil).hides(target, err) {
 			record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, unknownSession(targetSession))
 			return
 		}
+		hasEntry := err == nil
 		var known session.KnownSession
 		if errors.Is(err, nats.ErrKeyNotFound) {
 			// A session of a released Legion issue pod is gone from the bucket with its pod, and
@@ -1494,21 +1494,15 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 		titleFilter := r.URL.Query().Get("title")
 		result := make([]listenerwire.SessionInfo, 0, len(entries))
 		// At the edge the list holds the sessions of the token's projects alone, each with the
-		// roles and the topics of those projects alone.
-		projects, edge := heldProjects(r)
+		// roles and the topics of those projects alone (edgeScope).
+		scope := edgeScopeOf(r, repositories)
 		for _, entry := range entries {
-			if !strings.Contains(entry.Dir, dirFilter) || !strings.Contains(entry.Title, titleFilter) {
+			if !strings.Contains(entry.Dir, dirFilter) || !strings.Contains(entry.Title, titleFilter) || !scope.shows(entry.SessionEntry) {
 				continue
 			}
-			if !edge {
-				result = append(result, listedSessionInfo(registry, entry, held[entry.SessionID]))
-				continue
-			}
-			if sessionOfProjects(entry.SessionEntry, projects) {
-				info := listedSessionInfo(registry, entry, rolesOfProjects(held[entry.SessionID], projects))
-				info.Topics = edgeShownTopics(repositories, projects, entry.SessionID, info.Topics)
-				result = append(result, info)
-			}
+			info := listedSessionInfo(registry, entry, scope.roles(held[entry.SessionID]))
+			info.Topics = scope.topics(entry.SessionID, info.Topics)
+			result = append(result, info)
 		}
 		writeJSON(w, http.StatusOK, result)
 	}
@@ -1549,11 +1543,10 @@ const sessionRegistrationView = "registration"
 // not answer, the bus-unavailable 503 with Retry-After: 1.
 func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, r *http.Request, d *listenerDeps, sessionID string) {
 	entry, err := bucketSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout)
-	projects, edge := heldProjects(r)
 	switch {
 	case errors.Is(err, bus.ErrRefused):
 		writeBusUnavailable(w, err)
-	case edge && (errors.Is(err, nats.ErrKeyNotFound) || (err == nil && !sessionOfProjects(entry, projects))):
+	case edgeScopeOf(r, nil).hides(entry, err):
 		// At the edge a session it does not show, and one with no record, which names no
 		// project, is answered as one no listener has heard of.
 		writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
@@ -1639,6 +1632,9 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		entry, state, err := liveSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout, accept)
+		// At the edge a session of none of the token's projects is answered as one no listener
+		// has heard of, and a shown session's roles and topics are those projects' alone.
+		scope := edgeScopeOf(r, d.repositories)
 		switch {
 		case errors.Is(err, bus.ErrRefused):
 			// Refresh reports a refused key as a missing one too, so this test comes first:
@@ -1649,7 +1645,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 			writeBusUnavailable(w, err)
 		case errors.Is(err, nats.ErrKeyNotFound):
 			// A stopped session's record names no project, so the edge answers none.
-			if _, edge := heldProjects(r); !edge && includes(r, sessionStateStopped) {
+			if scope == nil && includes(r, sessionStateStopped) {
 				if known, recorded := d.known.Get(sessionID); recorded {
 					writeJSON(w, http.StatusOK, listenerwire.StoppedSessionInfo{
 						SessionID:    sessionID,
@@ -1662,7 +1658,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 					return
 				}
 			}
-			if projects, edge := heldProjects(r); edge && !sessionOfProjects(entry, projects) {
+			if !scope.shows(entry) {
 				writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
 				return
 			}
@@ -1674,18 +1670,13 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 			// literal was that copy's twin until the two changes met here.
 			writeBusUnavailable(w, err)
 		default:
-			// At the edge a session of none of the token's projects is answered as one no listener
-			// has heard of, and a shown session's roles and topics are those projects' alone.
-			projects, edge := heldProjects(r)
-			if edge && !sessionOfProjects(entry, projects) {
+			if !scope.shows(entry) {
 				writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
 				return
 			}
 			info, err := sessionInfoFor(ctx, d.registry, session.ListEntry{SessionID: sessionID, SessionEntry: entry, State: state})
-			if edge {
-				info.Roles = rolesOfProjects(info.Roles, projects)
-				info.Topics = edgeShownTopics(d.repositories, projects, sessionID, info.Topics)
-			}
+			info.Roles = scope.roles(info.Roles)
+			info.Topics = scope.topics(sessionID, info.Topics)
 			switch {
 			case errors.Is(err, store.ErrMalformedInterest):
 				writeInterestRecordUnreadable(w, sessionID, err)
@@ -1783,9 +1774,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 				writeBusUnavailable(w, err)
 				return
 			}
-			if projects, edge := heldProjects(r); edge {
-				item.Topics = edgeShownTopics(repositories, projects, sessionID, item.Topics)
-			}
+			item.Topics = edgeScopeOf(r, repositories).topics(sessionID, item.Topics)
 			writeJSON(w, http.StatusOK, interestRowFor(sessions, item))
 		case http.MethodDelete:
 			// The administrator's removal: it frees every role claim the session holds,
@@ -1992,16 +1981,16 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		}
 		// The role is read in either form, its project first (INFRA.legion-infra-infra-12-architect,
 		// PRIV.lead-reviewer, _.lead-reviewer) or its name alone, and everything below works on the
-		// key its claim record is keyed by (store.Registry.ClaimedRole, store.RoleClaimKeyOf): the
+		// key its claim record is keyed by (store.Registry.ClaimedRole, contracts.RoleClaimOf): the
 		// bare name for the old form, for a free-form role under no project and for a Legion role,
 		// and <project>.<role> for a free-form role under a project, which is that project's own
 		// claim beside the claim of the same name under no project. The old form is counted and
 		// named back in the answer's warnings with its new form; nothing is refused for it. A new
-		// form under a project its role cannot work for is refused (contracts.ClaimProject): a
+		// form under a project its role cannot work for is refused (RoleClaimOf's error): a
 		// Legion role works for the project its own name gives, and a claim of it under another
 		// project's key would believe it holds a claim it does not.
-		project, name, legacy := contracts.CanonicalRole(body.Role)
-		if !roles.Valid(name) {
+		claim, claimErr := contracts.RoleClaimOf(body.Role)
+		if !roles.Valid(claim.Role) {
 			writeJSONError(w, http.StatusBadRequest, "role must match "+roles.PatternString+", after its project and a dot when it names one", "role")
 			return
 		}
@@ -2012,11 +2001,9 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			refusal.write(w)
 			return
 		}
-		if !legacy {
-			if _, err := contracts.ClaimProject(name, project); err != nil {
-				writeJSONError(w, http.StatusBadRequest, err.Error(), "role")
-				return
-			}
+		if claimErr != nil {
+			writeJSONError(w, http.StatusBadRequest, claimErr.Error(), "role")
+			return
 		}
 		var roleWarning string
 		body.Role, roleWarning = d.registry.ClaimedRole(body.Role)
@@ -2076,15 +2063,13 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// landed is set by a claim that landed, whose own handover hands the claimed role's lane
 		// over, so the handovers of a claimant this refresh made live again leave that role out.
 		// At the edge a claimant is handed the kept lanes of its token's projects' roles alone
-		// (rolesOfProjects): a claim of another project's role, which the session's next
+		// (edgeScope.roles): a claim of another project's role, which the session's next
 		// registration releases, hands it nothing.
 		landed := false
 		if before != session.Live {
 			defer func() {
 				held, _ := d.registry.RolesHeldBy(body.SessionID)
-				if projects, edge := heldProjects(r); edge {
-					held = rolesOfProjects(held, projects)
-				}
+				held = edgeScopeOf(r, nil).roles(held)
 				for _, role := range held {
 					if !landed || role != body.Role {
 						go runKeptRoleDrain(*d.delivery, role)
@@ -2395,8 +2380,8 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 		// is named exactly as the 404 of a lapsed holder names it (listenerwire.RoleRefusal) and
 		// as the holder's state is named on a publish answer: a caller reads one field on every
 		// role answer rather than inferring the state from the status code. At the edge a holder
-		// of none of the token's projects is named without its place (edgeRoleHolder).
-		writeJSON(w, http.StatusOK, edgeRoleHolder(r, result.Entry, listenerwire.RoleHolder{
+		// of none of the token's projects is named without its place (edgeScope.holder).
+		writeJSON(w, http.StatusOK, edgeScopeOf(r, nil).holder(result.Entry, listenerwire.RoleHolder{
 			Capabilities:     append([]string{}, result.Entry.Capabilities...),
 			ClaimRevision:    result.ClaimRevision,
 			ClientInstanceID: result.HolderClientInstanceID,
@@ -2913,12 +2898,11 @@ func (d *listenerDeps) registerPass(
 		previous, err := d.sessions.Get(body.SessionID)
 		registered.epochChanged = err != nil || previous.Delivery != session.DeliveryConsumer || previous.Epoch != outcome.epoch
 	}
-	// The gap mark the session is owed (session.SessionEntry.RepositoryGap) is carried over from
-	// the entry this one replaces, so a registration never clears a mark no frame has carried.
+	// The gap mark the session is owed (session.SessionEntry.RepositoryGap) is the write's own to
+	// carry over from the entry it replaces, read at the revision it writes over
+	// (session.SessionRegistry.PutWithin), so a registration never clears a mark no frame has
+	// carried, also one another listener set after this listener's copy last read the entry.
 	entry := sessionEntryFromSubscribe(body, machineID, outcome, projects)
-	if previous, err := d.sessions.Get(body.SessionID); err == nil {
-		entry.RepositoryGap = previous.RepositoryGap
-	}
 	if err := d.sessions.PutWithin(ctx, body.SessionID, entry); err != nil {
 		// The row is stored and nothing tells another reader the session is here, so the
 		// registration travels as this error alone and no caller is handed it. The pass
@@ -3027,30 +3011,29 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// route's budget, before anything is planned or stored; each plan's topics, the stored
 		// row's among them, are held the same way below (edgeTopicHold).
 		hold := newEdgeTopicHold(r, d.repositories, body.SessionID, logger)
-		if refusal := hold.refusal(ctx, body.Topics); refusal != nil {
+		topicRefusal, err := hold.refusal(ctx, body.Topics)
+		if err != nil {
+			hold.answerRepositoryOutage(ctx, w, d.registry, d.sessions, machineID, err)
+			return
+		}
+		if topicRefusal != nil {
 			logger.Warn("edge listener refused a registration", slog.String("session_id", body.SessionID),
-				slog.String("reason", refusal.body.Reason), slog.Any("refused", refusal.body.Refused))
-			// A registration refused for want of a repository answer renews no role claim, as
-			// the plan's own 503 records below, and renews the session's entry alone
-			// (edgeTopicHold.renewThroughOutage), so the session outlives the outage.
-			if refusal.cause != nil {
-				d.registry.RecordRenewalFailures(body.SessionID, refusal.cause)
-				hold.renewThroughOutage(ctx, d.sessions, machineID)
-			}
-			refusal.write(w)
+				slog.String("reason", topicRefusal.body.Reason), slog.Any("refused", topicRefusal.body.Refused))
+			topicRefusal.write(w)
 			return
 		}
 		// At the edge every claim the session holds of a role of none of the token's projects,
 		// which another listener granted it or a token that listed more did, is released before
 		// anything of the registration is stored, and the answer's warnings name it
 		// (store.Registry.ReleaseRefusedRoleClaims). A release that fails refuses the registration
-		// with the retryable 503: the claim stands, and nothing else frees it while the session
-		// lives. The roles weighed are the stored row's role lanes and the claim copy's.
+		// with the retryable 503 (writeEdgeReleaseRefusal): the claim stands, and nothing else
+		// frees it while the session lives. The roles weighed are the stored row's role lanes and
+		// the claim copy's, and the role bucket's own claims while that copy cannot be served.
 		released, err := hold.releaseRefusedRoles(ctx, d.registry)
 		if err != nil {
 			logger.Warn("edge listener could not release a role claim of a project the session's token does not list; the registration is refused 503",
 				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
-			writeBusUnavailable(w, err)
+			writeEdgeReleaseRefusal(ctx, w, err)
 			return
 		}
 		// One read and one merge decide this registration's topics, which are both the row it
@@ -3100,15 +3083,14 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// whose renewal this listener could not make (store.Registry.RecordRenewalFailures,
 		// roleOwnSessionVerdict).
 		if err != nil {
-			d.registry.RecordRenewalFailures(body.SessionID, err)
 			// Only the edge's hold of a plan's topics reads repositories (edgeTopicHold.holdPlan):
-			// a stored GitHub topic whose answer could not be read is the edge's own 503, which
-			// renews the session's entry as the body's does.
-			if errors.Is(err, errRepositoriesUnknown) && hold != nil {
-				hold.renewThroughOutage(ctx, d.sessions, machineID)
-				hold.repositoriesUnknown(err).write(w)
+			// a stored GitHub topic whose answer could not be read is the edge's own 503, answered
+			// as the body's is.
+			if errors.Is(err, errRepositoriesUnknown) {
+				hold.answerRepositoryOutage(ctx, w, d.registry, d.sessions, machineID, err)
 				return
 			}
+			d.registry.RecordRenewalFailures(body.SessionID, err)
 			var entryErr *sessionEntryWriteError
 			if errors.As(err, &entryErr) {
 				logger.Error("listener session registry put failed", slog.String("session_id", body.SessionID), slog.String("error", entryErr.cause.Error()))
@@ -3224,13 +3206,9 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// stands.
 		//
 		// At the edge the renewal is held to the token's projects as a new claim is
-		// (roleOfProjects): a claim of a role of none of them was released above, and one granted
-		// since is not renewed.
-		var holdsRole func(role string) bool
-		if hold != nil {
-			holdsRole = func(role string) bool { return roleOfProjects(role, hold.projects) }
-		}
-		renewal, err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID), registered.row, holdsRole)
+		// (edgeTopicHold.holdsRole, which holds every role off the edge): a claim of a role of
+		// none of them was released above, and one granted since is not renewed.
+		renewal, err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID), registered.row, hold.holdsRole)
 		logger.LogEvent(slog.LevelDebug, "listener subscribe weighed the session's role claims",
 			slog.String("session_id", body.SessionID),
 			slog.Any("roles", renewal.Set),

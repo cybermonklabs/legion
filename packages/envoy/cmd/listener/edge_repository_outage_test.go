@@ -11,35 +11,14 @@ package main
 // keeps) the session is gone, a send to it is answered 404, and no agent message reaches it.
 
 import (
-	"encoding/json"
 	"net/http"
 	"slices"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 )
-
-// storedEdgeSessionEntry is sessionID's entry as the session bucket holds it, read through a handle
-// of the rig client's own, so the read caches nothing in any registry.
-func storedEdgeSessionEntry(t *testing.T, rig *edgeRig, sessionID string) session.SessionEntry {
-	t.Helper()
-	sessions, err := rig.harness.client.JS().KeyValue(bus.SessionBucket)
-	if err != nil {
-		t.Fatalf("open the session bucket: %v", err)
-	}
-	stored, err := sessions.Get(sessionID)
-	if err != nil {
-		t.Fatalf("read %s's session entry: %v", sessionID, err)
-	}
-	var entry session.SessionEntry
-	if err := json.Unmarshal(stored.Value(), &entry); err != nil {
-		t.Fatalf("decode %s's session entry %s: %v", sessionID, stored.Value(), err)
-	}
-	return entry
-}
 
 // While the broker answers 503 for the repositories of the session's projects, the heartbeat of
 // a session at the edge whose row follows a GitHub topic renews its session entry, so the
@@ -58,26 +37,23 @@ func TestAnEdgeSessionStaysRegisteredThroughARepositoryOutage(t *testing.T) {
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	requireStatus(t, rig.subscribe(t, token, sessionID, pub), http.StatusOK, "the registration following acme/pub")
 	requireStatus(t, rig.subscribe(t, controlToken, control, privIssues), http.StatusOK, "the control's registration")
-	registered := storedEdgeSessionEntry(t, rig, sessionID).UpdatedAt
-	controlRegistered := storedEdgeSessionEntry(t, rig, control).UpdatedAt
+	// A write of the entry moves its bucket revision, so the heartbeat's renewal is told from no
+	// write by the revision, whatever millisecond the clock reads.
+	_, registered := storedEdgeSessionRecord(t, rig, sessionID)
+	_, controlRegistered := storedEdgeSessionRecord(t, rig, control)
 
 	rig.repositories.failWith(http.StatusServiceUnavailable)
-	// A heartbeat a millisecond after the registration can be told from it by its UpdatedAt.
-	for time.Now().UnixMilli() <= max(registered, controlRegistered) {
-		time.Sleep(time.Millisecond)
-	}
-	beat := time.Now().UnixMilli()
 	heartbeat := rig.subscribe(t, token, sessionID, pub)
 	controlBeat := rig.subscribe(t, controlToken, control, privIssues)
 	requireStatus(t, controlBeat, http.StatusOK, "the control's heartbeat during the outage")
-	if got := storedEdgeSessionEntry(t, rig, control).UpdatedAt; got < beat {
-		t.Fatalf("the control's heartbeat during the outage left its entry at UpdatedAt %d, before the heartbeat at %d", got, beat)
+	if _, got := storedEdgeSessionRecord(t, rig, control); got <= controlRegistered {
+		t.Fatalf("the control's heartbeat during the outage left its entry at revision %d, the registration's %d", got, controlRegistered)
 	}
-	if got := storedEdgeSessionEntry(t, rig, sessionID).UpdatedAt; got < beat {
-		t.Errorf("the heartbeat of %s during the repository outage (answered %d %s) left its session entry at UpdatedAt %d, %d ms before the heartbeat at %d: "+
+	if entry, got := storedEdgeSessionRecord(t, rig, sessionID); got <= registered {
+		t.Errorf("the heartbeat of %s during the repository outage (answered %d %s) left its session entry at revision %d (UpdatedAt %d), the registration's %d: "+
 			"the entry ages out at the session bucket's maximum age (%s by default) however long the session keeps beating, and the session is then gone, "+
 			"so a send to it is 404 and no agent message reaches it, while a session that follows no GitHub topic is renewed",
-			sessionID, heartbeat.Code, heartbeat.Body.String(), got, beat-got, beat, session.BucketMaxAge)
+			sessionID, heartbeat.Code, heartbeat.Body.String(), got, entry.UpdatedAt, registered, session.BucketMaxAge)
 	}
 
 	// The outage still costs the session its GitHub frames, and nothing of another project's.

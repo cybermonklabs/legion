@@ -2,7 +2,8 @@ package main
 
 // edge_rig_test.go is the edge listener's test rig: the listener as an edge deployment runs it on
 // a real bus, with a stand-in for the broker's repository answer, and the helpers the edge rows
-// share (edge_mode_test.go, edge_repositories_test.go).
+// share (edge_mode_test.go, edge_roles_test.go, edge_repositories_test.go,
+// edge_repository_outage_test.go).
 
 import (
 	"context"
@@ -18,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
@@ -28,11 +30,15 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // edgeTestProjects is the projects the rows' edge listener serves: PRIV, unless the test's own
 // environment sets ENVOY_EDGE_PROJECTS, read then as the listener reads it. Set empty, it is the
-// edge-off control: a listener that serves no project is in no edge mode.
+// edge-off control, the verification check's control run of every edge row: a listener that
+// serves no project is in no edge mode. A set value that names no project, such as a lone comma,
+// is refused, as the listener's start refuses it (internal/config's parseEdgeProjects), so it is
+// never taken for the control.
 func edgeTestProjects(t *testing.T) []string {
 	t.Helper()
 	raw, set := os.LookupEnv("ENVOY_EDGE_PROJECTS")
@@ -42,6 +48,9 @@ func edgeTestProjects(t *testing.T) []string {
 	projects, err := oauthwire.ParseProjects(strings.ReplaceAll(raw, ",", " "))
 	if err != nil {
 		t.Fatalf("ENVOY_EDGE_PROJECTS=%q: %v", raw, err)
+	}
+	if raw != "" && len(projects) == 0 {
+		t.Fatalf("ENVOY_EDGE_PROJECTS=%q names no project, and the listener refuses to start on it; set it empty for the edge-off control", raw)
 	}
 	t.Logf("ENVOY_EDGE_PROJECTS=%q: the listener serves %v (edge mode %t)", raw, projects, len(projects) > 0)
 	return projects
@@ -344,5 +353,139 @@ func requireStatus(t *testing.T, recorder *httptest.ResponseRecorder, status int
 	t.Helper()
 	if recorder.Code != status {
 		t.Fatalf("%s: status %d (%s), want %d", asked, recorder.Code, strings.TrimSpace(recorder.Body.String()), status)
+	}
+}
+
+// requireRoleKeys fails the test unless each claim key of want is held by its session.
+func requireRoleKeys(t *testing.T, rig *edgeRig, want map[string]string) {
+	t.Helper()
+	for key, holder := range want {
+		claim, err := rig.deps.registry.RoleClaim(t.Context(), key)
+		if err != nil || claim.HolderSessionID != holder {
+			t.Errorf("the claim keyed %s names %q (%v), want %s", key, claim.HolderSessionID, err, holder)
+		}
+	}
+}
+
+// requireRoleHolder fails the test unless GET /v1/roles/<role> answers holder.
+func requireRoleHolder(t *testing.T, rig *edgeRig, token, role, holder string) {
+	t.Helper()
+	recorder := rig.call(t, http.MethodGet, token, "/v1/roles/"+role, "")
+	requireStatus(t, recorder, http.StatusOK, "GET /v1/roles/"+role)
+	var answer listenerwire.RoleHolder
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || answer.Holder != holder {
+		t.Fatalf("GET /v1/roles/%s answers %s (%v), want holder %s", role, recorder.Body.String(), err, holder)
+	}
+}
+
+// publishToHeldRole publishes one message to topic, a role's lane, as sender and requires the
+// route to answer that the holder took it; it returns the envelope the answer names.
+func publishToHeldRole(t *testing.T, rig *edgeRig, token, sender, topic string) contracts.Envelope {
+	t.Helper()
+	body := fmt.Sprintf(`{"topic":%q,"message":"for the role's holder","source":"agent","source_session":%q}`, topic, sender)
+	recorder := rig.call(t, http.MethodPost, token, "/v1/messages/publish", body)
+	requireStatus(t, recorder, http.StatusOK, "a publish to "+topic)
+	var answer listenerwire.PublishResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the publish answer %s: %v", recorder.Body.String(), err)
+	}
+	return answer.Envelope
+}
+
+// requireTopicsHidden fails the test unless GET /v1/sessions and GET /v1/registry/<sessionID>,
+// each asked with token, show sessionID and none of hidden among its topics; it returns the
+// topics the registry read shows.
+func requireTopicsHidden(t *testing.T, rig *edgeRig, token, sessionID string, hidden ...string) []string {
+	t.Helper()
+	listed := rig.call(t, http.MethodGet, token, "/v1/sessions", "")
+	requireStatus(t, listed, http.StatusOK, "GET /v1/sessions")
+	var rows []listenerwire.SessionInfo
+	if err := json.Unmarshal(listed.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode %s: %v", listed.Body.String(), err)
+	}
+	found := false
+	for _, row := range rows {
+		if row.SessionID != sessionID {
+			continue
+		}
+		found = true
+		for _, topic := range row.Topics {
+			if slices.Contains(hidden, topic) {
+				t.Errorf("GET /v1/sessions shows %s following %s, a topic of no project of the reader's", sessionID, topic)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("GET /v1/sessions lists no %s: %s", sessionID, listed.Body.String())
+	}
+	one := rig.call(t, http.MethodGet, token, "/v1/registry/"+sessionID, "")
+	requireStatus(t, one, http.StatusOK, "GET /v1/registry/"+sessionID)
+	var info listenerwire.SessionInfo
+	if err := json.Unmarshal(one.Body.Bytes(), &info); err != nil {
+		t.Fatalf("decode %s: %v", one.Body.String(), err)
+	}
+	for _, topic := range info.Topics {
+		if slices.Contains(hidden, topic) {
+			t.Errorf("GET /v1/registry/%s shows the topic %s, of no project of the reader's", sessionID, topic)
+		}
+	}
+	return info.Topics
+}
+
+// storedEdgeSessionEntry is sessionID's entry as the session bucket holds it, read through a handle
+// of the rig client's own, so the read caches nothing in any registry.
+func storedEdgeSessionEntry(t *testing.T, rig *edgeRig, sessionID string) session.SessionEntry {
+	t.Helper()
+	entry, _ := storedEdgeSessionRecord(t, rig, sessionID)
+	return entry
+}
+
+// storedEdgeSessionRecord is storedEdgeSessionEntry with the bucket revision the entry was read at,
+// which every write of the entry moves on, so a row tells a write from none by the revision and
+// not by a clock.
+func storedEdgeSessionRecord(t *testing.T, rig *edgeRig, sessionID string) (session.SessionEntry, uint64) {
+	t.Helper()
+	sessions, err := rig.harness.client.JS().KeyValue(bus.SessionBucket)
+	if err != nil {
+		t.Fatalf("open the session bucket: %v", err)
+	}
+	stored, err := sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read %s's session entry: %v", sessionID, err)
+	}
+	var entry session.SessionEntry
+	if err := json.Unmarshal(stored.Value(), &entry); err != nil {
+		t.Fatalf("decode %s's session entry %s: %v", sessionID, stored.Value(), err)
+	}
+	return entry, stored.Revision()
+}
+
+// registrationWarnings is the warnings of answer, a registration's 200
+// (listenerwire.SubscribeResponse).
+func registrationWarnings(t *testing.T, answer *httptest.ResponseRecorder) []string {
+	t.Helper()
+	var registered listenerwire.SubscribeResponse
+	if err := json.Unmarshal(answer.Body.Bytes(), &registered); err != nil {
+		t.Fatalf("decode the registration's answer %s: %v", answer.Body.String(), err)
+	}
+	return registered.Warnings
+}
+
+// requireWarning fails the test unless one of warnings, a registration's, begins with prefix.
+func requireWarning(t *testing.T, warnings []string, prefix string) {
+	t.Helper()
+	if !slices.ContainsFunc(warnings, func(warning string) bool { return strings.HasPrefix(warning, prefix) }) {
+		t.Errorf("the registration's warnings %q name nothing beginning %q", warnings, prefix)
+	}
+}
+
+// requireUnknownSession fails the test unless recorder is the 404 of a session no listener has
+// heard of (unknownSession): no last registration and no state of the session's own.
+func requireUnknownSession(t *testing.T, recorder *httptest.ResponseRecorder, asked string) {
+	t.Helper()
+	var refusal listenerwire.NoLiveSessionRefusal
+	_ = json.Unmarshal(recorder.Body.Bytes(), &refusal)
+	if recorder.Code != http.StatusNotFound || refusal.LastSeen != 0 || refusal.State != session.Gone || !strings.Contains(refusal.Error, "does not know when it last registered") {
+		t.Errorf("%s: status %d (%s), want the 404 of a session no listener has heard of", asked, recorder.Code, strings.TrimSpace(recorder.Body.String()))
 	}
 }

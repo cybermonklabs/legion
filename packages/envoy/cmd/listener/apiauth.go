@@ -363,6 +363,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 					auth.logger.Warn("listener: edge listener refused a broker token",
 						slog.String("session", caller.Session),
 						slog.String("reason", err.Error()),
+						slog.Any("served", auth.edgeProjects),
 						slog.String("path", r.URL.Path))
 					writeJSON(w, http.StatusForbidden, listenerwire.EdgeRefusal{Reason: edgeTokenNotAdmitted, Error: err.Error()})
 					return

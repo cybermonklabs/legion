@@ -1109,15 +1109,23 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// does not is acknowledged undelivered and counted, and while no such answer can be read
 		// the session's next frame carries the gap mark, since the events withheld then are ones
 		// the session may have been owed, with the reason repository_withheld; a retention gap
-		// the same frame already marks keeps no reason, since it lost more.
+		// the same frame already marks keeps no reason, since it lost more. Such an event is
+		// acknowledged only once the session's entry carries the mark (noteRepositoryGap): an
+		// entry that could not be marked has the event given back to the server, as takeOverFrame
+		// gives back a frame whose copy did not store, so a redelivery marks the entry and a move
+		// or a restart before the session's next frame still sends the mark.
 		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
 			if reason == withheldAnswerUnknown {
-				m.noteRepositoryGap(ctx, sessionID)
+				if err := m.noteRepositoryGap(ctx, sessionID); err != nil {
+					m.giveBackWithheld(sessionID, msg, err)
+					continue
+				}
 				if !gap {
 					gapReason = relayGapRepositoryWithheld
 				}
 				gap = true
 			}
+			m.acknowledgeWithheld(sessionID, msg, reason)
 			continue
 		}
 		// A role message whose role another session holds, or none does, is copied to the role's
@@ -1141,24 +1149,25 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 }
 
 // noteRepositoryGap records that sessionID is owed the gap mark of a GitHub event the edge
-// withheld while no fresh repository answer stood, until a frame carrying a gap mark is published
-// (repositoryGapSent): in this process, and on the session's entry, which the next listener to
-// relay the session reads after a move or a restart (session.SessionEntry.RepositoryGap). A write
-// of the entry that fails is logged, and this process still sends the mark.
-func (m *sessionRelays) noteRepositoryGap(ctx context.Context, sessionID string) {
+// withholds while no fresh repository answer stands, until a frame carrying a gap mark is
+// published (repositoryGapSent): on the session's entry first, which the next listener to relay
+// the session reads after a move or a restart (session.SessionEntry.RepositoryGap), then in this
+// process. The entry is read from the bucket for the write (session.SessionRegistry
+// .SetRepositoryGap), not judged from this listener's copy, which can trail a clear another
+// listener made. A write that failed is the error, and nothing is noted: the caller gives the
+// event back (giveBackWithheld). An entry the bucket does not hold is no error, and the mark is
+// then this process's alone.
+func (m *sessionRelays) noteRepositoryGap(ctx context.Context, sessionID string) error {
+	if err := m.sessions.SetRepositoryGap(ctx, sessionID, true); err != nil {
+		return err
+	}
 	m.repositoryGapsMu.Lock()
+	defer m.repositoryGapsMu.Unlock()
 	if m.repositoryGaps == nil {
 		m.repositoryGaps = map[string]struct{}{}
 	}
 	m.repositoryGaps[sessionID] = struct{}{}
-	m.repositoryGapsMu.Unlock()
-	if entry, _ := m.sessions.Lookup(sessionID); entry.RepositoryGap {
-		return
-	}
-	if err := m.sessions.SetRepositoryGap(ctx, sessionID, true); err != nil {
-		m.logger.Warn("edge listener could not record the session's repository gap on its entry; a relay of the session by another listener does not send the mark",
-			slog.String("session_id", sessionID), slog.String("error", err.Error()))
-	}
+	return nil
 }
 
 // owesRepositoryGap reports whether sessionID is owed that mark: this process noted it, or the
@@ -1197,27 +1206,43 @@ func (m *sessionRelays) forgetRepositoryGap(sessionID string) {
 	delete(m.repositoryGaps, sessionID)
 }
 
-// edgeWithholds reports whether an edge listener withholds msg from sessionID, and why, and when
-// it does, acknowledges the message undelivered, counts it and logs it: the consumer holds it no
-// longer, and nothing else is ever sent for it. Every other listener withholds nothing.
+// edgeWithholds reports whether an edge listener withholds msg from sessionID, and why. Every
+// other listener withholds nothing. A withheld message is acknowledged (acknowledgeWithheld) or
+// given back (giveBackWithheld) by the relay loop, which decides which.
 func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) (bool, string) {
 	if m.repositories == nil {
 		return false, ""
 	}
 	entry, _ := m.sessions.Lookup(sessionID)
-	withhold, reason := m.repositories.relayVerdict(entry.Projects, msg.Subject, msg.Data)
-	if !withhold {
-		return false, ""
-	}
+	return m.repositories.relayVerdict(entry.Projects, msg.Subject, msg.Data)
+}
+
+// acknowledgeWithheld acknowledges msg, a GitHub event the edge withholds from sessionID for
+// reason, undelivered, counts it and logs it: the consumer holds it no longer, and nothing else is
+// ever sent for it.
+func (m *sessionRelays) acknowledgeWithheld(sessionID string, msg bus.SessionMessage, reason string) {
 	m.repositories.withheld.Inc([2]string{"reason", reason})
 	if err := msg.Ack(); err != nil {
 		m.logger.Warn("edge listener could not acknowledge a GitHub event it withholds; the consumer delivers it again",
 			slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("error", err.Error()))
-		return true, reason
+		return
 	}
 	m.logger.Info("edge listener withheld a GitHub event from a session",
 		slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("reason", reason))
-	return true, reason
+}
+
+// giveBackWithheld hands msg, a GitHub event the edge withholds from sessionID while no fresh
+// repository answer stands, back to the server with the delay its deliveries earn
+// (relayNakDelayFor), neither acknowledged nor counted: the session's entry could not be given
+// the gap mark the event owes (err, noteRepositoryGap), so the event stays the consumer's until a
+// redelivery marks the entry.
+func (m *sessionRelays) giveBackWithheld(sessionID string, msg bus.SessionMessage, err error) {
+	nakErr := msg.NakWithDelay(relayNakDelayFor(msg.Delivered))
+	m.logger.Warn("edge listener gave a withheld GitHub event back to the server: the session's entry could not record its gap mark",
+		slog.String("session_id", sessionID),
+		slog.String("subject", msg.Subject),
+		slog.Uint64("stream_seq", msg.StreamSeq),
+		slog.String("error", errors.Join(err, nakErr).Error()))
 }
 
 // publishFrame publishes msg as a frame on the session's relay subject, its reply subject one of

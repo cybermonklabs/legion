@@ -667,17 +667,13 @@ func resolveRoleForward(cfg listenerDeliveryHandlerConfig, item contracts.Envelo
 
 // roleLaneProjectError is why a role lane named in the form that names a project
 // (notifications.role.<KEY>.<role>) reaches no holder, or nil: a Legion role works for the
-// project its own name gives (contracts.ClaimProject), and its claim is keyed on the bare name, so
+// project its own name gives (contracts.RoleClaimOf), and its claim is keyed on the bare name, so
 // a lane of another project naming it, or of no project, would reach the holder of the role's own
 // project. The role lane drops such a message and the publish route refuses it, as POST
 // /v1/roles/set refuses the claim. A lane in the old form (the role alone) and a free-form role
 // under any project key have none.
 func roleLaneProjectError(lane string) error {
-	project, name, legacy := contracts.CanonicalRole(lane)
-	if legacy {
-		return nil
-	}
-	_, err := contracts.ClaimProject(name, project)
+	_, err := contracts.RoleClaimOf(lane)
 	return err
 }
 
