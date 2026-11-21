@@ -10,8 +10,9 @@ Legion is a team of coding agents that works the issues you hand it. You write a
 [Dispatch](/legion/dispatch/), label it `legion` and set it to `todo`. When a slot is free, the Legion
 daemon admits it and starts an **architect**, an agent that owns the issue from start to finish. The
 architect turns your issue into a spec and asks you the questions only you can answer. Once you
-approve the spec, the daemon runs **phase workers** one after another: a planner, an implementer
-that writes the change and opens a pull request, a tester, a reviewer and a merger. Each agent is an
+approve the spec, the daemon runs **phase workers** one after another, the steps the architect's
+plan for the issue picks. The default steps are a planner, an implementer that writes the change
+and opens a pull request, a tester and a reviewer, and a merger follows every plan. Each agent is an
 [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session in a Kubernetes pod of its own.
 
 When the change is tested, reviewed and approved, the merger merges the pull request itself, at

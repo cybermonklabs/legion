@@ -38,6 +38,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -971,18 +973,47 @@ func (w *workflowRuntime) agentText(token claim.Token, field, text string) strin
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
 // login from its boot lease: its own project's production_check is the role that works the checks
-// a merge opens (empty, it opens none), and its own project's declared experiments are what each
-// issue the engine records is drawn for. hookPrompts are the words boot read for the hooks that
-// name a file (readBoot), which engineHooks puts in the place of each such hook's path.
+// a merge opens (empty, it opens none), its own project's default steps are what an issue whose
+// owner gives no plan runs, and its own project's declared experiments are what each issue the
+// engine records is drawn for. hookPrompts are the words boot read for the hooks that name a file
+// (readBoot), which engineHooks puts in the place of each such hook's path.
 func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[string]string) workflow.Config {
 	project := cfg.Projects[cfg.Project]
 	return workflow.Config{
 		Project: cfg.Project, Steps: cfg.Gates.Steps(), ReviewRoundCap: cfg.ReviewRoundCap,
 		Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
 		ProductionCheckRole: project.ProductionCheck,
+		DefaultSteps:        project.RunsByDefault(),
 		ReviewAppLogin:      reviewAppLogin,
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
-		Experiments: cfg.ExperimentsDeclared(),
+		Experiments:  cfg.ExperimentsDeclared(),
+		WorkspaceDir: engineWorkspaceDir(cfg),
+	}
+}
+
+// engineWorkspaceDir is the directory the runtime cfg names starts an issue's role processes in,
+// which every task the engine composes names (workflow.Config.WorkspaceDir): each runtime's own
+// function that places the workspace, sandbox.WorkspaceDir under Kubernetes and tmux.WorkspaceDir
+// under the state directory under tmux, read for the repository the issue's record names, as the
+// launch reads it (issueRepository). An issue whose recorded repository does not parse, which no
+// launch can work either, names none, and its task names the branch alone.
+func engineWorkspaceDir(cfg config.Config) func(record.Issue) string {
+	place := func(repo ghrepo.Repository, issue string) (string, error) {
+		return tmux.WorkspaceDir(cfg.StateDir, repo, issue)
+	}
+	if cfg.Runtime.Name == "kubernetes" {
+		place = sandbox.WorkspaceDir
+	}
+	return func(issue record.Issue) string {
+		repo, err := issue.Repository()
+		if err != nil {
+			return ""
+		}
+		dir, err := place(repo, issue.Key)
+		if err != nil {
+			return ""
+		}
+		return dir
 	}
 }
 

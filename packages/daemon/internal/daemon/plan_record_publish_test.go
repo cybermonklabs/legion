@@ -9,7 +9,6 @@ import (
 	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // planRecordID is the id of the plan every plan record here writes, and retroRecordID the id of
@@ -34,7 +33,7 @@ type planPut struct {
 // planRecordOf is the default plan of the run 2 of the issue.
 func planRecordOf() record.PlanRecord {
 	return record.PlanRecord{ID: planRecordID, Generation: 2, Source: "default",
-		Tasks: []record.PlanRecordTask{{ID: "default", Steps: workflow.DefaultSteps()}}}
+		Tasks: []record.PlanRecordTask{{ID: "default", Steps: ownerStepsDefault}}}
 }
 
 // ratingRecordOf is the write that rates the plan on the record of the issue's retro.
@@ -58,7 +57,7 @@ func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 		want dispatch.PlanWrite
 	}{
 		{name: "the default plan", plan: planRecordOf(), want: dispatch.PlanWrite{Generation: 2, Source: "default",
-			Tasks: []dispatch.PlanTask{{ID: "default", Steps: workflow.DefaultSteps()}}}},
+			Tasks: []dispatch.PlanTask{{ID: "default", Steps: ownerStepsDefault}}}},
 		{
 			name: "an owner's plan of two tasks",
 			plan: record.PlanRecord{ID: planRecordID, Generation: 3, Source: "owner", PlanDocument: &record.PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},

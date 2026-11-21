@@ -734,7 +734,8 @@ func stepsHold(read stepRecordsRead, want []stepWant) error {
 
 // stepClaimant is one role's claim as its pane reaches the daemon: the shim connected with the
 // launch's boot token, the session registered and ready, and a reader that answers what the daemon
-// asks of the shim and hands each prompt to the walk, starting its turn as Oh My Pi does.
+// asks of the shim and hands each prompt to the walk, starting its turn as Oh My Pi does — but the
+// architect's, whose pane works each of its tasks in a turn of its own (workAlone).
 type stepClaimant struct {
 	r     *stepRecordsRig
 	token claim.Token
@@ -755,6 +756,9 @@ type stepClaimant struct {
 	sh *shim
 	// open is the id of each prompt whose turn has started and not ended.
 	open []string
+	// inTurn is whether the session is in a turn the walk began on it (send's agent_start, until
+	// its agent_end): a task the daemon sends meanwhile joins that turn (workAlone).
+	inTurn bool
 }
 
 // worker is role's claimant on the walk's issue (workerOf).
@@ -849,6 +853,9 @@ func (c *stepClaimant) serve(sh *shim, d *daemon) {
 			reply(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
 		case shimwire.Prompt:
 			reply(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true})
+			if c.workAlone(reply, f) {
+				continue
+			}
 			c.mu.Lock()
 			c.open = append(c.open, f.ID)
 			c.mu.Unlock()
@@ -861,13 +868,54 @@ func (c *stepClaimant) serve(sh *shim, d *daemon) {
 	}
 }
 
-// send writes one frame to the daemon that runs now.
-func (c *stepClaimant) send(frame shimwire.Frame) {
+// workAlone is the architect's pane working prompt in a turn of its own that ends, as Oh My Pi
+// runs a task the daemon sends a session in no turn: the turn's agent_start naming its delivery,
+// its agent_end and the prompt's result, each through reply. It answers false and writes nothing
+// for every other role, whose task the walk takes (take) and whose turn the walk ends (finish),
+// and for a prompt that arrives while a turn the walk began on the architect's session is open
+// (inTurn), which joins that turn as the pane would run it.
+//
+// The walk takes no task of the architect's: its steps are turns the walk begins itself (ownTurn).
+// A turn a task of the architect's began and nothing ended, or the architect's send in flight, is
+// what the daemon reads as the issue's shared working copy in use (supervise's IssueInTurn), so the
+// issue's next phase task waited on it, and only a turn's end wakes that task (IssueTurnEnded):
+// the first step of a root whose gate opened as its architect's start task went out waited for
+// ever. The model answers nothing in this turn, so a record of the architect's step names the
+// model of the walk's own turn. The check of inTurn and the three frames are one hold of c.mu,
+// which send takes around the walk's agent_start and agent_end, so the walk's turn never begins
+// or ends inside this one.
+func (c *stepClaimant) workAlone(reply func(shimwire.Frame), prompt shimwire.Prompt) bool {
+	if c.role != claim.RoleArchitect {
+		return false
+	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.inTurn {
+		return false
+	}
+	reply(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
+	reply(shimwire.AgentEnd{})
+	reply(shimwire.PromptResult{ID: prompt.ID, AgentInvoked: true})
+	return true
+}
+
+// send writes one frame to the daemon that runs now. An agent_start begins the walk's turn on the
+// session before it is written and an agent_end ends it once it is (inTurn), so no turn of the
+// architect's pane (workAlone) lands between the two.
+func (c *stepClaimant) send(frame shimwire.Frame) {
+	_, starts := frame.(shimwire.AgentStart)
+	_, ends := frame.(shimwire.AgentEnd)
+	c.mu.Lock()
+	c.inTurn = c.inTurn || starts
 	sh := c.sh
 	c.mu.Unlock()
 	if err := sh.writer.WriteFrame(frame); err != nil {
 		c.r.t.Errorf("send %s for %s: %v", frame.FrameType(), c.token, err)
+	}
+	if ends {
+		c.mu.Lock()
+		c.inTurn = false
+		c.mu.Unlock()
 	}
 }
 
@@ -900,7 +948,7 @@ func (c *stepClaimant) receive() shimwire.Prompt {
 // shim next connects, so the daemon's state probe finds it idle.
 func (c *stepClaimant) endTurnUnseen() {
 	c.mu.Lock()
-	c.open = nil
+	c.open, c.inTurn = nil, false
 	c.mu.Unlock()
 }
 
@@ -1035,6 +1083,13 @@ func (g *stepRecordsGitHub) open(branch string, number int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pulls = append(g.pulls, stepRecordsPull{number: number, branch: branch})
+}
+
+// opened says whether the walk opened pull request number (find).
+func (g *stepRecordsGitHub) opened(number int) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.find(number) != nil
 }
 
 // merged is GitHub's merge of pull request number: every read from now on answers it merged. A

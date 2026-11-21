@@ -357,7 +357,7 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
+	if want := "Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
 		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
 	}
@@ -366,17 +366,23 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}
 }
 
-// reviewerPrompt is the reviewer's composed prompt as its pane reads it: every part Compose names,
-// read back and joined in order.
+// reviewerPrompt is the reviewer's composed prompt as its pane reads it (rolePrompt).
 func reviewerPrompt(t *testing.T) string {
+	t.Helper()
+	return rolePrompt(t, claim.RoleReviewer)
+}
+
+// rolePrompt is role's composed prompt as its pane reads it: every part Compose names, read back
+// and joined in order.
+func rolePrompt(t *testing.T, role claim.Role) string {
 	t.Helper()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	parts, err := composer.Compose(claim.RoleReviewer, false)
+	parts, err := composer.Compose(role, false)
 	if err != nil {
-		t.Fatalf("compose the reviewer's prompt: %v", err)
+		t.Fatalf("compose the %s's prompt: %v", role, err)
 	}
 	var prompt strings.Builder
 	for _, path := range parts.RolePromptPaths {
@@ -603,6 +609,9 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 // until its issue closes. (The merge's row is the close itself, which suspends the tree:
 // TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
+	// The root's architect, whose sign-off the route names it by; the seeded issue has no run of a
+	// step the record counts, so its route reads none.
+	architect := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
 	cases := []struct {
 		name       string
 		current    phase.Phase
@@ -658,7 +667,7 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 		{
 			name: "sign-off", current: phase.Accepting,
 			fact: func() intake.Fact {
-				return intake.SignOff{Issue: "LEGION-208"}
+				return intake.SignOff{Issue: "LEGION-208", By: architect, Generation: 1}
 			},
 			wantPhase: phase.Retro, wantStatus: "retro", wantOutbox: []string{"dispatch_status", "supervise"},
 		},
@@ -724,13 +733,18 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 // already live.
 func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 	for _, from := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging} {
-		for _, to := range requiredBackwardTargets(from) {
+		for _, to := range requiredBackwardTargets(phase.Order, from) {
 			t.Run(string(from)+"-to-"+string(to), func(t *testing.T) {
 				pool := migratedPool(t)
 				role := phase.RoleFor(from)
 				seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: from, Generation: 1, Status: "in_progress", Rank: "U"})
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: "claim"})
-				if _, err := intake.ApplyFact(context.Background(), pool, "api", string(from)+"-"+string(to), intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: to, Reason: "correct"}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				engine := testEngine(config.DesignGateRootIssues, nil)
+				move := intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: to, Reason: "correct"}
+				if role == claim.RoleArchitect {
+					move = rootsMoveBack(t, pool, engine, "LEGION-208", to, "correct")
+				}
+				if _, err := intake.ApplyFact(context.Background(), pool, "api", string(from)+"-"+string(to), move, engine, admissionStub{}); err != nil {
 					t.Fatalf("ApplyFact backward: %v", err)
 				}
 				if got, pass, rounds := issuePhase(t, pool), implementerPass(t, pool), implementerRounds(t, pool); got != to || pass != 1 || rounds != 0 {

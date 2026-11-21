@@ -352,13 +352,13 @@ Check, in order:
 
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
-   branch, as the implement App, and again before each tree member's planner starts, so no agent's
-   push is the one that creates it (GitHub can refuse that push on a large repository). A branch
-   GitHub already has is kept as it is. While GitHub refuses the read of the base branch's ref or
-   the create, the architect or planner waiting for it does not start. The daemon retries, backing
-   off to about a minute, and logs each refusal as an error whose `msg` is `outbox row failed`, with
-   `kind` `issue_branch` and an `error` naming the repository, the ref, GitHub's status and its
-   body:
+   branch, as the implement App, and again before the worker of each tree member's first step
+   starts, so no agent's push is the one that creates it (GitHub can refuse that push on a large
+   repository). A branch GitHub already has is kept as it is. While GitHub refuses the read of the
+   base branch's ref or the create, the architect or the worker waiting for it does not start. The
+   daemon retries, backing off to about a minute, and logs each refusal as an error whose `msg` is
+   `outbox row failed`, with `kind` `issue_branch` and an `error` naming the repository, the ref,
+   GitHub's status and its body:
 
    ```text
    {"level":"ERROR","msg":"outbox row failed","row":81,"kind":"issue_branch","error":"create the branch of WIDGETS-12, which its roles' starts wait for: create refs/heads/legion/WIDGETS-12 on acme/widgets at <default branch's commit>: GitHub answered POST /git/refs with 403: {\"message\":\"Resource not accessible by integration\",…}"}
@@ -664,8 +664,12 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdRe
 ```
 
 `phase` is `held`, `heldFrom` names the phase the hold took the issue out of, and the failed
-claim's `state` is `failed` with its `failure` beside it. A held phase worker is its architect's
-to retry or escalate, and `holdReason: "escalated"` means it went to the controller. A root's
+claim's `state` is `failed` with its `failure` beside it. A phase worker held for its failure is
+its architect's to retry or escalate, and `holdReason: "escalated"` means it went to the
+controller. A hold whose `holdReason` is `task-stopped` (its owner stopped its task, or a step
+failed with no earlier step of the type implementation to take its work back, which stops the
+task) or `children` (a parent waits, before its retro, for the issues beneath it) is no failure,
+and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root's
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
 restarts the tree when it finds no cause or the cause is gone, and asks a person whether to park
@@ -1606,8 +1610,8 @@ names both heads. A completion of the phase the issue stands in that names a hea
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Past review the reviewer is asked to read the merge and approve the new head. A red check
-sends nothing back from anywhere.
+before. Past review, where the task has a reviewer step, the reviewer is asked to read the merge
+and approve the new head. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 

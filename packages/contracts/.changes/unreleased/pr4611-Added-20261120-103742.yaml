@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The daemon API schemas describe contract 211: `register_plan` and its answer, the plan it took
+  with each task's steps; `stop_task`; `returnTo` on a completion; and the hold reasons
+  `task-stopped` and `children`, with their words `task_stopped` and `children_before_retro` in
+  the admission list. The Dispatch schemas describe a version read with its blocks.
+time: 2026-11-20T10:37:42Z
+custom:
+    Issue: pr4611

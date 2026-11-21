@@ -16,7 +16,7 @@ import (
 // whichever hold it noticed first.
 type HeldReason string
 
-// The eleven words of C1. The order they are read in is the order of the ladder's own body and
+// The words of C1. The order they are read in is the order of the ladder's own body and
 // is written there alone; this block is the vocabulary, one constant per word.
 const (
 	// HeldTreeClosed is an issue of a tree whose root has finished or lingers after its close:
@@ -47,25 +47,45 @@ const (
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
 	// nothing of it starts before that ancestor closes (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
+	// HeldChildrenBeforeRetro is a parent whose plan has no acceptance step, held before its retro
+	// while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy
+	// names each of them (OpenBeneath). Once none of them is open beneath it in a tree that runs,
+	// the hold ends and the daemon starts the retro itself (workflow's releaseHeldParents). It stands below every
+	// word that speaks of the issue's tree, a Dispatch link or an ancestor, because each of those
+	// holds the issue whatever its own hold is, and above at_work and unclassified, which it read
+	// before it had a word of its own: at_work's sentence, that the issue's workers run, is false
+	// of an issue its hold stopped, and unclassified says that no rule names what the issue waits
+	// for, where this word names it.
+	HeldChildrenBeforeRetro HeldReason = "children_before_retro"
+	// HeldTaskStopped is an issue whose task was stopped, by its owner or by a failed step with no
+	// step to return to (HoldTaskStopped), and that keeps no slot where it stands: one held from
+	// accepting, retro or merging (KeepsSlot). No issue holds it, so heldBy is empty. A later
+	// version of the plan from its owner that changes the stopped task, or a person's todo on the
+	// root, ends the hold (workflow's restartTask and waitForFirstStep). A task stopped at a step keeps
+	// that step's slot and stands in the active set, so one that keeps its slot and holds none is
+	// a gap and reads unclassified. It stands beside children_before_retro, for the same reasons;
+	// the two are never true of one issue, since an issue holds one hold reason.
+	HeldTaskStopped HeldReason = "task_stopped"
 	// HeldAtWork is the ladder's `!KeepsSlot(issue)` for an issue not standing in held: an issue
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
 	// no other issue holds. KeepsSlot is InWorkflow and a phase up to the review
 	// (PhaseKeepsSlot, over StandsAt), and HeldList keeps only InWorkflow candidates, so the
 	// issues that read this word are the ones past their review — in accepting, retro or merging
 	// — whose sign-off, retro and merge run on no slot at all. An issue held from one of those
-	// phases keeps no slot either, but its hold stopped its work, so it does not read this word
-	// and falls to unclassified (HeldReasonOf states why at the clause). Of the issues that read
-	// it, one whose tree runs is served no `why` (projection's atWorkPastReview), so `why`
-	// serves this word's sentence only to a member past its review of a tree that runs nothing.
-	// This is the one statement of that; every other reader points here.
+	// phases keeps no slot either, but its hold stopped its work, so it does not read this word:
+	// a parent held there for its children reads children_before_retro, a stopped task reads
+	// task_stopped, and any other hold falls to unclassified (HeldReasonOf states why at the
+	// clause). Of the issues that read it, one whose tree runs is served no `why` (projection's
+	// atWorkPastReview), so `why` serves this word's sentence only to a member past its review of
+	// a tree that runs nothing. This is the one statement of that; every other reader points here.
 	HeldAtWork HeldReason = "at_work"
-	// HeldUnclassified is an issue none of the ten words above is true of (C2). The record holds
+	// HeldUnclassified is an issue none of the words above is true of (C2). The record holds
 	// it in the workflow and no rule here says what it waits for, which is a gap in the words
 	// and not in the list: the issue has a place, and a reader can see that it needs one.
 	HeldUnclassified HeldReason = "unclassified"
 )
 
-// HeldReasons is the eleven words in the order HeldReasonOf reads them, named once for a reader
+// HeldReasons is every word in the order HeldReasonOf reads them, named once for a reader
 // that must print or walk them in that order rather than keep an order of its own. Two read it:
 // the operator's `admission.held` line (`legion state`), which counts each word and prints the
 // counts in this order, so two readings of one state print one line; and HeldBefore, which the
@@ -84,12 +104,14 @@ var HeldReasons = []HeldReason{
 	HeldDispatchBlocker,
 	HeldChildrenFirst,
 	HeldAcceptedAncestor,
+	HeldChildrenBeforeRetro,
+	HeldTaskStopped,
 	HeldAtWork,
 	HeldUnclassified,
 }
 
 // HeldBefore reports whether the ladder reads word before other (HeldReasons, HeldReasonOf). It
-// is false where either is not one of the eleven words, so the zero row's empty word stands
+// is false where either is not a word of HeldReasons, so the zero row's empty word stands
 // before nothing. The test of `why`'s sentence table (the projection's heldSentences) requires
 // the table to serve under `blocked` exactly the words HeldBefore reads before dispatch_blocker;
 // the table states the rule that serves them.
@@ -104,11 +126,11 @@ func HeldBefore(word, other HeldReason) bool {
 // the state's admission.held and the controller's tick notice carry one shape rather than two
 // that could drift.
 //
-// heldBy is absent where no issue holds the one that waits — a root whose label is off, or an
-// issue none of the other words is true of — so the field carries omitempty and this row gets no
-// MarshalJSON writing an empty array for it. That is the one way the row differs from
-// BlockedIssue, whose MarshalJSON writes [] for blockedBy because every row of that list names at
-// least one blocker and a reader of it would have to answer for a null.
+// heldBy is absent where no issue holds the one that waits — a root whose label is off, an issue
+// whose task was stopped, or an issue none of the other words is true of — so the field carries
+// omitempty and this row gets no MarshalJSON writing an empty array for it. That is the one way
+// the row differs from BlockedIssue, whose MarshalJSON writes [] for blockedBy because every row
+// of that list names at least one blocker and a reader of it would have to answer for a null.
 type HeldIssue struct {
 	Issue  string     `json:"issue"`
 	Reason HeldReason `json:"reason"`
@@ -175,7 +197,26 @@ func openChildren(wait ChildWait) []string {
 	return children
 }
 
-// HeldReasonOf is the ladder of C1: the eleven words read in one order, the first that is true of
+// openBeneathIn is the issues beneath a parent held before its retro that are still in the
+// workflow (OpenBeneath), the issues the release of its hold waits for, and nothing where none
+// is. They are read over the members of its tree among the records the pass walks its chains
+// over (HeldFacts.Chain): the pass's own records and the done ones above them, so a grandchild
+// under a child already done is beneath the parent here as it is in the workflow's read of the
+// whole tree, and the word names what the hold waits for.
+func openBeneathIn(issue Issue, chain map[string]Issue) []string {
+	members := make([]Issue, 0, len(chain))
+	for _, member := range chain {
+		if member.Tree == issue.Tree {
+			members = append(members, member)
+		}
+	}
+	if open := OpenBeneath(issue, members); len(open) > 0 {
+		return open
+	}
+	return nil
+}
+
+// HeldReasonOf is the ladder of C1: the words read in one order, the first that is true of
 // the issue being its word, with the issues that clause names beside it and nothing where the
 // clause names none. The order is the whole of the rule — a member of a closed tree is
 // tree_closed and not design_gate, though its gate is shut too — and this body is the one
@@ -240,11 +281,22 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	if accepted := acceptedAncestorHolding(issue, facts.Chain); accepted != "" {
 		return HeldAcceptedAncestor, []string{accepted}
 	}
+	// The two holds an owner's plan makes stand here, below every word above, each of which holds
+	// the issue whatever its own hold is, and above at_work and unclassified (each word's doc says
+	// why). A stopped task that keeps its slot is not one of them: it stands in the active set, and
+	// one that holds no slot row there is the gap unclassified reports.
+	switch {
+	case HeldForChildren(issue):
+		return HeldChildrenBeforeRetro, openBeneathIn(issue, facts.Chain)
+	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
+		return HeldTaskStopped, nil
+	}
 	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from a phase past the
 	// review keeps no slot (KeepsSlot reads StandsAt), which makes this word reachable for a held
 	// issue, and its sentence — that the issue's workers run as they did — is false for an issue
-	// whose hold stopped its work. Such an issue falls to unclassified instead. The stalled-tree
-	// measure is unmoved: neither word silences a tree (admit's silencedTree).
+	// whose hold stopped its work. Such an issue reads the word of its hold above where it has one,
+	// and falls to unclassified where it has none. The stalled-tree measure is unmoved: none of
+	// these four words silences a tree (admit's silencedTree says why).
 	if !KeepsSlot(issue) && issue.Phase != phase.Held {
 		return HeldAtWork, nil
 	}

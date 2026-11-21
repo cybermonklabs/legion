@@ -100,6 +100,20 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
+	// The task of each issue that has plan rows at its generation, in one statement for the whole
+	// state (record.Store.PlanTasksOf), joined to the issue records of project as the answers
+	// above are. Such an issue counts its returns on its task (record.ReturnCounts), so its
+	// implementer's view shows the task's counts; an issue with no plan rows shows its
+	// implementer's phases row, where the counts lived before plans. A plan this release takes
+	// holds one task (plan.Supported).
+	planTasks, err := in.Store.PlanTasksOf(ctx, in.Tx, in.Project)
+	if err != nil {
+		return api.State{}, err
+	}
+	taskCounts := make(map[string]record.ReturnCounts, len(planTasks))
+	for _, task := range planTasks {
+		taskCounts[task.Issue] = task.Counts
+	}
 	place := declaredPlaces(in.Experiments)
 	slots, err := in.Store.Slots(ctx, in.Tx)
 	if err != nil {
@@ -247,13 +261,18 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			}
 			// The worker's view exists only while its claim is live, so its counts of the moves
 			// back ride with the claim exactly as `rounds` does: a role whose process has gone
-			// shows neither, and the record keeps both for the role's next claim.
+			// shows neither, and the record keeps both for the role's next claim. The counts are
+			// the implementer's row's, or its issue's task's where the issue has plan rows.
+			counts := record.ReturnCounts{Pass: item.Pass, Rounds: item.Rounds, BackwardMoves: item.BackwardMoves}
+			if planned, ok := taskCounts[issue.Key]; ok && item.Role == claim.RoleImplementer {
+				counts = planned
+			}
 			worker := api.PhaseView{
 				Claim:         claimView,
 				HandoffCommit: item.HandoffCommit,
-				Pass:          item.Pass,
-				Rounds:        item.Rounds,
-				BackwardMoves: item.BackwardMoves,
+				Pass:          counts.Pass,
+				Rounds:        counts.Rounds,
+				BackwardMoves: counts.BackwardMoves,
 			}
 			if item.HandoffRecord != "" {
 				worker.HandoffRecord = &api.HandoffRecordView{ID: item.HandoffRecord, Version: item.HandoffVersion}

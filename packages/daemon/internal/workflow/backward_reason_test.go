@@ -39,8 +39,13 @@ func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
 			role := phase.RoleFor(tc.from)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: tc.from, Generation: 1, Status: PhaseStatus(tc.from), Rank: "U"})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: "claim"})
-			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
-				intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the plan names the wrong table"})
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			move := intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the plan names the wrong table"}
+			if role == claim.RoleArchitect {
+				// An architect's move names its owner and the run it read (api's phaseBackward).
+				move = rootsMoveBack(t, pool, engine, "LEGION-208", tc.to, "the plan names the wrong table")
+			}
+			applyRefusingNothing(t, pool, engine, move)
 			assertPhase(t, pool, tc.to)
 			var statuses int
 			if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = $1", string(record.OutboxKindDispatchStatus)).Scan(&statuses); err != nil || statuses != 0 {

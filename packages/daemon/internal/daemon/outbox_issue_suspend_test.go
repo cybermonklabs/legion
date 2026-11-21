@@ -1038,14 +1038,14 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		}
 		// The rows admit.startMidPhaseMembers wrote for the member, which is the only pass that
 		// wrote a start of it here: the phase's own role, the implementer, through
-		// workflow.StartOrOwe, which writes one row carrying the phase's resume task
-		// (workflow.ResumeTask), marked ResumeTask and held unclaimable until the member holds a
+		// workflow.StartOrOwe, which writes one row carrying the phase's resume task (workflow's
+		// Engine.ResumeTask), marked ResumeTask and held unclaimable until the member holds a
 		// slot — and, beside it, one start with no task at all for each other role of the member
 		// that has run, since a role with nothing to do comes back and is told nothing. The
 		// planner is the one such role here: the claim row it kept through the close is the
 		// durable record that it ran, and the tester, the reviewer, the merger and the member's
 		// own sub-architect hold none, so the re-admission starts no session for them at all.
-		resume := workflow.ResumePhaseTask(*carried)
+		resume := resumeTaskOf(t, pool, engine, member.Key)
 		taskless := map[claim.Role]bool{}
 		var owed *record.SuperviseRequest
 		for _, row := range startRequestsOf(t, pool, member.Key) {

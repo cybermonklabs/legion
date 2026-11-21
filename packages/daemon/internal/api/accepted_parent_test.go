@@ -23,9 +23,9 @@ func acceptPhase(t *testing.T, h *harness, key string, at phase.Phase) {
 	}
 }
 
-// holdFrom stands key at phase.Held, held from at: where a root whose worker died stands. Its
-// reviewed head is wherever the hold left it, so a root held from retro or merging is accepted
-// still (record.Accepted).
+// holdFrom stands key at phase.Held, held from at: where a root whose worker died stands. The
+// head its task's last step passed is wherever the hold left it, so a root held from retro or
+// merging is accepted still (record.Accepted).
 func holdFrom(t *testing.T, h *harness, key string, at phase.Phase) {
 	t.Helper()
 	if _, err := h.store.Pool().Exec(context.Background(), "update issues set phase = $2, held_from = $3 where key = $1",
@@ -36,7 +36,7 @@ func holdFrom(t *testing.T, h *harness, key string, at phase.Phase) {
 
 // A6. Both doors refuse a child under a root held from an accepted phase, as they refuse one
 // under a root standing in that phase itself: a worker that dies leaves its issue at held with
-// the phase it left recorded, and the reviewed head the architect signed off is accepted still.
+// the phase it left recorded, and the head the last step of its task passed is accepted still.
 // Read by the phase alone the hold let work in beneath such a head — rerun_child and
 // release_children both took it — and the waiting line offered that work a slot of its own.
 func TestTheDoorsRefuseAChildUnderARootHeldFromAnAcceptedPhase(t *testing.T) {
@@ -97,6 +97,27 @@ func TestRerunChildIsRefusedUnderAnAcceptedAncestor(t *testing.T) {
 				t.Fatalf("rerun once the ancestor closed = %d %s, want 200", recorder.Code, recorder.Body)
 			}
 		})
+	}
+}
+
+// The refusal under an accepted ancestor names the ancestor's head as the head the last step of
+// its task passed, which is true of every plan: an issue stands in retro or merging
+// (record.Accepted) only once its task's last step has passed, whatever that step is, while a
+// plan with no reviewer step (`implementer tester`) has no reviewed head at all.
+func TestTheRefusalUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
+	h, _, _ := statusHarness(t)
+	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+	if recorder := h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("park = %d %s", recorder.Code, recorder.Body)
+	}
+	acceptPhase(t, h, statusRoot, phase.Retro)
+
+	message := refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil),
+		http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
+	want := statusChild + " is beneath " + statusRoot + ", whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath " +
+		statusRoot + " now would let it merge a head that does not carry that work; run it again once " + statusRoot + " has closed, or take " + statusRoot + " back with a backward move first"
+	if message != want {
+		t.Fatalf("the refusal = %q, want %q", message, want)
 	}
 }
 

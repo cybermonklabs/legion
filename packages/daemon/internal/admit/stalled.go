@@ -492,22 +492,33 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // the stall itself (at_work). None of them is the daemon holding work it means to start, which
 // is what a wait by design is.
 //
+// The two holds an owner's plan makes do not silence either: a parent held before its retro for
+// the issues beneath it (children_before_retro) and a task that was stopped (task_stopped). Each
+// stands on an issue that has had its start and stands in held, which lineHolds.waitsByDesign
+// reads as stopped before it reads any word, so their rows here are never what decides, and
+// false says the same as that rule. A held parent is then judged as a parent past its review
+// that waits in accepting for its children is judged, and each issue beneath it by its own word;
+// a stopped task waits for its owner's next version of the plan or for a person, the tree's own
+// work or a person's (TestAHoldOfAPlanIsNoWaitByDesign).
+//
 // A word with no row here fails admit's TestTheMeasureAnswersEveryHeldReason, which reads the
 // words from the record package's own source: a word added to the vocabulary and left out of
 // this table would otherwise be ignored quietly, which is the fault rather than a new place to
 // hide it.
 var silencedTree = map[record.HeldReason]bool{
-	record.HeldTreeClosed:         false,
-	record.HeldTreeParked:         false,
-	record.HeldLabelOff:           false,
-	record.HeldAncestry:           false,
-	record.HeldRootAwaitingPerson: true,
-	record.HeldDesignGate:         true,
-	record.HeldDispatchBlocker:    true,
-	record.HeldChildrenFirst:      true,
-	record.HeldAcceptedAncestor:   false,
-	record.HeldAtWork:             false,
-	record.HeldUnclassified:       false,
+	record.HeldTreeClosed:          false,
+	record.HeldTreeParked:          false,
+	record.HeldLabelOff:            false,
+	record.HeldAncestry:            false,
+	record.HeldRootAwaitingPerson:  true,
+	record.HeldDesignGate:          true,
+	record.HeldDispatchBlocker:     true,
+	record.HeldChildrenFirst:       true,
+	record.HeldAcceptedAncestor:    false,
+	record.HeldChildrenBeforeRetro: false,
+	record.HeldTaskStopped:         false,
+	record.HeldAtWork:              false,
+	record.HeldUnclassified:        false,
 }
 
 // silences says whether an issue the line left behind for word is waiting by design, from the

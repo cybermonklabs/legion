@@ -21,6 +21,8 @@ import {
   LegionIssueStatusRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionPlanRegisterRequest,
+  LegionPlanRegisterResponse,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -35,6 +37,7 @@ import {
   LegionSignOffRequest,
   type LegionState,
   LegionStateResponse,
+  LegionTaskStopRequest,
   LegionTurnOutcomeRequest,
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
@@ -209,6 +212,18 @@ export interface LegionDaemonClient {
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The owner's `register_plan` (contract 211): the plan in one version of a document of the
+   * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
+   * a plan it does not take is refused `PLAN_REFUSED`, every reason in the sentence. */
+  readonly planRegister: (
+    input: z.input<typeof LegionPlanRegisterRequest>
+  ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;
+  /** The owner's `stop_task` (contract 211): one task of the plan Legion runs for the issue stops,
+   * and the issue is held `task-stopped` until a later version of the plan changes that task or,
+   * on a root, a person sets the root `todo`. */
+  readonly taskStop: (
+    input: z.input<typeof LegionTaskStopRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
 }
 
 /** The daemon answered with a status that is not success. `detail` is the sentence it put
@@ -380,8 +395,10 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
  * nothing), `register_gate` (its fact is keyed by the gate's issue, generation, document,
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again) and
- * `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
+ * takes as a re-registration of the same document and tells no one again), `register_plan` (its
+ * fact is keyed by the issue, the generation, the document and the version, so a repeat is the
+ * same fact, answered the same), `stop_task` (a repeat finds the task stopped and changes nothing)
+ * and `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
  * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive
  * its restart. `onRetrying` is told once. A daemon refusal after a dropped attempt is told that
@@ -713,5 +730,14 @@ export function createLegionDaemonClient(
       post("/legion/v1/children/park", LegionChildRequest, LegionEmptyResponse, input),
     childRerun: (input) =>
       post("/legion/v1/children/rerun", LegionChildRequest, LegionEmptyResponse, input),
+    planRegister: (input) =>
+      post(
+        "/legion/v1/plans/register",
+        LegionPlanRegisterRequest,
+        LegionPlanRegisterResponse,
+        input
+      ),
+    taskStop: (input) =>
+      post("/legion/v1/tasks/stop", LegionTaskStopRequest, LegionEmptyResponse, input),
   };
 }

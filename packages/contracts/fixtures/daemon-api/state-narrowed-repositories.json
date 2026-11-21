@@ -7,7 +7,7 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 202,
+    "daemon": 211,
     "caller": 199
   },
   "admission": {
@@ -1062,6 +1062,13 @@
         },
         "experiments": [],
         "production_check": "tester",
+        "default_steps": [
+          "planner",
+          "implementer",
+          "tester",
+          "reviewer",
+          "acceptance:owner"
+        ],
         "deploys": []
       },
       "WIDGETS": {
@@ -1071,6 +1078,10 @@
         },
         "experiments": [],
         "production_check": "off",
+        "default_steps": [
+          "implementer",
+          "reviewer"
+        ],
         "deploys": []
       }
     },

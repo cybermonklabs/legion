@@ -1295,6 +1295,30 @@ func documentBlocks(tree *pmdoc.Node) (string, []model.ArtifactBlock, error) {
 	return rendered.markdown, rendered.blocks, nil
 }
 
+// VersionBlocks is the typed blocks of a stored document version, read from that version's own
+// markdown rather than the live tree: the version parsed as a rendering (pmdoc.ParseRendering),
+// then rendered once into its markdown and its blocks (documentBlocks). The markdown it answers
+// is that rendering, which the blocks' byte ranges index; it is stored unless a renderer before
+// this build's wrote the version otherwise. Only typed blocks are listed, because only a typed
+// block's opening line writes its id into the stored text, so only a typed block has the same id
+// in every read of the version and in every later version that keeps it: the parse mints a new id
+// for each other block each time. A version holding an element this build does not know is a
+// NewerContentError, any other refusal an OutsideSchemaError (documentSchemaError).
+func VersionBlocks(stored string) (string, []model.ArtifactBlock, error) {
+	tree, err := pmdoc.ParseRendering(stored)
+	if err != nil {
+		return "", nil, documentSchemaError(err)
+	}
+	markdown, blocks, err := documentBlocks(tree)
+	if err != nil {
+		return "", nil, err
+	}
+	typed := slices.DeleteFunc(blocks, func(block model.ArtifactBlock) bool {
+		return !pmdoc.IsTypedBlock(block.Type)
+	})
+	return markdown, typed, nil
+}
+
 // renderDocumentTree validates tree once, refusing it as pmdoc.TableRows does, and reads it
 // thereafter without validating it again: its markdown, its blocks and its document token come
 // from that one reading.

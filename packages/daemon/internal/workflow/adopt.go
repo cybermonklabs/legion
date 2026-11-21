@@ -183,7 +183,7 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 		return err
 	}
 	issue.ToldParent = fact.Parent
-	if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+	if err := e.WriteIssue(ctx, tx, *issue); err != nil {
 		return err
 	}
 	told := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and no architect of that tree can release it. It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.",
@@ -278,9 +278,13 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	if member.Status == "todo" {
 		return e.enterChild(ctx, tx, root, fact, next, recordedResolution(member))
 	}
+	// The member is parked at done at its next run, and no task moves (moveTask): the write takes it
+	// out of the workflow without ending a task. The run it leaves keeps its task where it stood,
+	// with that run's step ended above, and the run it enters has started none. A todo runs it
+	// again at a run of its own (ReenterChild).
 	member.Tree, member.Project, member.Generation, member.Phase = root.Tree, root.Project, next, phase.Done
 	member.LingerUntil, member.Hold, member.Ancestry = nil, nil, nil
-	return e.store.PutIssue(ctx, tx, member)
+	return e.WriteIssue(ctx, tx, member)
 }
 
 // StopLeftTree queues the old tree's suspend of every role left can hold. Every request names

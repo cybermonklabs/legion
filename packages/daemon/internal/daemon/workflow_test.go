@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -40,6 +41,22 @@ func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
 	}
 	if engine.ProductionCheckBound != 6*time.Minute {
 		t.Errorf("the engine's production check bound = %s, want 6m0s", engine.ProductionCheckBound)
+	}
+}
+
+// The engine runs the default steps of its own project (`projects.<KEY>.default_steps`, read
+// through config.Project.RunsByDefault): the steps an issue whose owner gives no plan stores at its
+// first step. A project that names none runs today's line up to the owner's acceptance.
+func TestTheProjectsDefaultStepsReachTheEngine(t *testing.T) {
+	todays := (config.Project{}).RunsByDefault()
+	steps := append(todays[1:2:2], todays[3]) // implementer reviewer
+	cfg := config.Config{Project: "DEMO", Projects: map[string]config.Project{"DEMO": {DefaultSteps: steps}, "ACME": {}}}
+	if got := engineConfig(cfg, "legion-reviewer[bot]", nil).DefaultSteps; !reflect.DeepEqual(got, steps) {
+		t.Fatalf("the engine's default steps = %+v, want DEMO's %+v", got, steps)
+	}
+	cfg.Project = "ACME"
+	if got, want := engineConfig(cfg, "legion-reviewer[bot]", nil).DefaultSteps, (config.Project{}).RunsByDefault(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the engine's default steps for ACME, which names none = %+v, want today's line %+v", got, want)
 	}
 }
 

@@ -1384,9 +1384,11 @@ package api
 // three lists together are every issue of the workflow and what each is doing, which `active` and
 // `waiting` alone never were: an issue in neither was simply missing, and a reader could not tell
 // one the daemon was about to start from one nothing will start again.
-// `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of the eleven, which
-// refuses a value it does not name rather than stripping it like an unknown key, so a word added
-// to the ladder later bumps this number again. The key itself is written on every body, empty
+// `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of `LEGION_HELD_REASONS`,
+// which refuses a value it does not name rather than stripping it like an unknown key, so a word
+// added to the ladder later bumps this number again, and is served down by the value strip that
+// reads the table's arrivals (shaping.go's withoutUnadmittedHeldWords), as 211 did with
+// `children_before_retro` and `task_stopped`. The key itself is written on every body, empty
 // rather than null, and a caller from a pod whose claims record a contract below 98 is served the
 // admission block without it (shaping.go's stateFor, withoutHeld), as a caller below 94 is served every
 // issue without `phaseEntry` and `givenEntry`, one below 87 every claim view without
@@ -1524,7 +1526,8 @@ package api
 // slot on this contract, so one not standing in `held` stands in that list under `at_work` where
 // no earlier word of the ladder is true of it, and one held from such a phase under
 // `unclassified` (`record.HeldAtWork`) — words the eleven of 98 already carry, so no strict
-// reader of 98 or above refuses them.
+// reader of 98 or above refuses them. From 211 a parent held there for the issues beneath it
+// reads `children_before_retro` and a task that was stopped there `task_stopped` (211 below).
 // (This branch took 62 against the base 5a585b02, which carried 59; INFRA-2551's counts of the
 // moves back landed on main as 62 (cybermonklabs/legion#3522) and INFRA-312's spend attributes
 // as 64 (#3521), so this change takes a number above both. Read again on
@@ -2978,4 +2981,95 @@ package api
 // merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 202
+//
+// 211: the owner of an issue gives Legion a plan with one task, and the plan picks which of
+// today's steps run. Two architect routes are new. `POST /legion/v1/plans/register`
+// (`api.PlanRegisterRequest`: `grantId`, `issue`, `artifactId`, `version` from 1) reads that
+// version of a document of the issue from Dispatch, with its blocks, and answers 200 with the
+// plan it took (`api.PlanRegisterResponse`: `plan.version` and each task's `id` and `steps`, never
+// null), or `409 PLAN_REFUSED` with `reasons`, one `{task, reason}` for each cause (`task` is ""
+// for a cause of the whole plan; `api.PlanRefusal`), `409 VERSION_NOT_IN_DISPATCH`,
+// `409 PLAN_VERSION_OLD`, `409 PLAN_DOCUMENT_CHANGED`, `409 ISSUE_ALREADY_RELEASED`,
+// `409 TASK_DONE` (a version that changes a task that is done or left the workflow),
+// `409 PLAN_STALE_GENERATION` (a plan given at a generation the issue left before the workflow
+// applied it), `409 TREE_LINGERING`, `403 ARCHITECT_REQUIRED`, `403 ISSUE_OUTSIDE_TREE`,
+// `404 ISSUE_NOT_FOUND`, `404 ARTIFACT_NOT_ON_ISSUE`, `502 PLAN_UNREADABLE` or
+// `502 DISPATCH_FAILED`. `POST /legion/v1/tasks/stop` (`grantId`, `issue`, `task`) stops one task
+// of the issue and answers 200 `{}`, `404 TASK_NOT_FOUND`, `409 TASK_DONE`, `409 TREE_LINGERING`,
+// `409 TASK_STALE_GENERATION`, `409 TASK_AWAITING_PERSON`, `403 ARCHITECT_REQUIRED`,
+// `403 ISSUE_OUTSIDE_TREE` or `404 ISSUE_NOT_FOUND`; on an issue whose first step has not run, the
+// stop first settles the plan that step would walk (the newest plan its owner gave, or the
+// project's default steps) and stops that plan's task, and a task the plan does not hold is refused
+// before anything is written. A root that waits on a person before its first step is refused
+// `409 TASK_AWAITING_PERSON` with nothing written: its owner changes the task with a later version
+// of the plan, or stops it once the person has answered. A
+// stopped task starts again at its first step on a later version of the plan that changes it
+// (register_plan), or on a root on a person's `todo`; one that never started waits for its gate
+// and its line first, as any task does before its first step. `POST
+// /legion/v1/handoff/complete` takes one optional field, `returnTo`, the place of the step of the
+// issue's running task, 1 for its first, that a tester's completion with the verdict `fail` sends
+// the task back to: below 1 it is refused `400 INVALID_RETURN_TO`, and on any completion that
+// fails no step, a production check's report included, `400 RETURN_TO_NEEDS_FAIL`
+// (`api.returnToRefusal`); the workflow refuses a step it may not name, one that is not earlier in
+// the task, `409 RETURN_REFUSED`. For
+// an issue whose task was stopped the completion route may also answer `409 TASK_STOPPED` to a
+// late completion of the step the stop ended, and `retry_or_escalate` and
+// `legion claims retry` answer `409 TASK_STOPPED` or `409 HELD_FOR_CHILDREN` on a hold of one of
+// the two new reasons; only this release writes plan rows and those reasons, so no issue a release
+// before ran gets the new answers. `readBody` refuses an unknown field, so a plugin sending
+// `returnTo` to a daemon below 211 would have the completion refused, and a daemon below 211 has
+// neither route; the bump is why the two never meet (`api.OwnerPlanContract`).
+// Every architect request of one issue — register_plan, stop_task, sign_off,
+// request_backward_move, retry_or_escalate, close_root and register_gate — names on its fact the
+// claim of the architect and the issue's generation its route read, and sign_off and
+// request_backward_move the run of accepting it read too (`record.Store.OpenStep`). The workflow
+// judges each again under the fact lock (`intake.ArchitectRequest`, workflow's `requestRefusal`),
+// since an adoption, a new run, a re-parent or a new run of accepting can commit between the
+// route's read and the fact, and answers, with nothing changed and the fact unspent:
+// `403 ISSUE_OUTSIDE_TREE` for an architect of another tree now, `403 ISSUE_NOT_OWNED` for one no
+// longer the issue's own architect or one above it (every route but register_plan and stop_task,
+// `record.ArchitectAbove`), `409 PLAN_STALE_GENERATION`, `409 TASK_STALE_GENERATION`,
+// `409 SIGNOFF_STALE_GENERATION`, `409 BACKWARD_STALE_GENERATION`, `409 RETRY_STALE_GENERATION`,
+// `409 CLOSE_STALE_GENERATION` or `409 GATE_STALE_GENERATION` for a run that is over, and
+// `409 SIGNOFF_STALE_ENTRY` or `409 BACKWARD_STALE_ENTRY` for a run of accepting that is over.
+// The answers and the requests of the two new routes are recorded at 211 and at no contract below
+// it. register_plan's answer arrives whole with its route (answers.go's AnswerPlanRegister), and
+// stop_task answers the empty object every fact route answers (AnswerEmptyObject), an answer
+// older than its route. A refused plan's `409 PLAN_REFUSED` carries `reasons` beside its code and
+// its sentence (`api.PlanRefusal`), a key of the refusal answer: a caller below 211 is served
+// that refusal as its Failure alone, as a PauseFailure is below 178 (shaping.go's refusal row,
+// placed by the caller's pod where it states no contract: placedByPod), although no plugin below
+// 211 calls the route. The completion's request gains `returnTo`, and the request records of 211
+// hold it and the two new routes' requests; no recorded request field leaves.
+// One value set of `GET /legion/v1/state` and of `GET /legion/v1/issues/{key}/record` gets
+// wider: an issue's `holdReason` takes `task-stopped` (its owner stopped its task) and `children`
+// (a parent whose plan has no acceptance step waits, before its retro, for the issues beneath it)
+// beside `escalated`. Every reader below 211 reads the field with `z.literal("escalated")`, which
+// admits that one value as an enumeration of one would, and the reader of 211 reads it with a
+// `z.enum` of the three, so the field is a row of answers.go's EnumeratedFields: `escalated` is
+// recorded at the floor, and the two new words at 211. A caller whose contract (the one it states,
+// else its pod's lowest) is below 211 is served an issue held for either new reason with no
+// `holdReason`, as a hold of no reason is served (shaping.go's valueStrips,
+// `withoutUnadmittedHoldReason`).
+// A second value set gets wider with it: `admission.held`'s `reason` takes
+// `children_before_retro` (a parent whose plan has no acceptance step, held before its retro,
+// with `heldBy` naming each issue beneath it still in the workflow) and `task_stopped` (a task
+// that was stopped, held where it keeps no slot, with no `heldBy`), in that order between
+// `accepted_ancestor` and `at_work` (`record.HeldReasons`); both read `unclassified` before. The
+// plugin reads the word as a `z.enum`, so a caller whose contract is below 211 is served each row
+// of either word as `unclassified` with no `heldBy`, the row it read for that issue before
+// (valueStrips, `withoutUnadmittedHeldWords`; answers.go's heldReasons records the two at 211).
+// `settings.projects.<KEY>.default_steps`, the steps a task that names none runs, came with it: a
+// key below `projects`, which no reader types, so no record holds it and nothing is served down
+// (answers.go's typedSettings). The three notice kinds this entry adds (`task-stopped`,
+// `plan-not-taken` and `retro-held`) ride inside a notice row's payload, as 189's does, and are no
+// key or value of an answer a plugin parses.
+// (This entry takes 211, the lowest number above main's 202 (#4493's entry above) that no other
+// open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// each of the 381 open pull requests, made between 2026-11-21T09:45:11Z and 09:45:33Z, read all
+// 381 and found 203 declared by #4175, 204 by #4173, 205 by #4539 and #4573, 206 by #3712, 207 by
+// twelve, 208 by #2230, 209 by #4049, #4540, #4553 and #4580, 210 by #4661, and nothing at 211.
+// From this entry the last number of answers.go's SupportedContracts is `api.OwnerPlanContract`,
+// and `shapedAnswersContract` and `repositoriesLiveContract` stay 193 and 202. Read the base's own
+// number and every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 211

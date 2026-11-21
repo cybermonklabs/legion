@@ -16,7 +16,8 @@ import (
 // nothing else: the ask that the implementer merge the base forward and push, the hold that tells
 // the worker of the phase the issue stays in to stop writing the workspace while it does, and, once
 // the merge lands, the landed to that worker and the review to the reviewer of an issue past its
-// review (payload.Message). It stops nothing it reaches.
+// review whose task has a reviewer step (payload.Message, composed from the pull request as this
+// attempt reads it). It stops nothing it reaches.
 //
 // The row is held as a merge-queue removal's is (mergeQueueRemoval), not ended as a plain role
 // message to a released claim is (roleMessage): the issue keeps its phase while the merge runs and
@@ -64,7 +65,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 		return nil
 	}
 	return r.deliverHeld(ctx, row, heldMessage{issue: *issue, token: token, role: payload.Role,
-		what: fmt.Sprintf("the merge-forward %s of %s", payload.Step, row.Issue), message: payload.Message(row.Issue, pr.Repo),
+		what: fmt.Sprintf("the merge-forward %s of %s", payload.Step, row.Issue), message: payload.Message(row.Issue, *pr),
 		attributes: attributes,
 		claimEnded: "outbox merge-forward message finished undelivered: the role's claim has failed or retired",
 		delivered:  "outbox merge-forward message delivered"})

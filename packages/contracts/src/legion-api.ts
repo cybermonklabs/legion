@@ -750,15 +750,20 @@ const legionIssue = z.object({
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
-   * the controller. `heldFrom` beside it is the phase the hold took the issue out of, and is
-   * absent for an issue that is not held. The linger suppression is `holdReason`'s alone: the
-   * reason is absent while the issue's tree lingers or is closed, until it is re-admitted, since
-   * it is a decision someone must act on and a lingering tree has none; the phase is a fact of
-   * the record that costs one word, so every issue at `phase: held` names the phase that
+   * the controller; and from contract 211 `task-stopped` once its owner stopped its task with
+   * stop_task, and `children` while a parent whose plan has no acceptance step waits, before its
+   * retro, for the issues beneath it. A caller whose contract (the one it states, else its pod's
+   * lowest) is below 211 is served an issue held for either of those two with no `holdReason`
+   * (the daemon's value strip `withoutUnadmittedHoldReason`). `heldFrom` beside it is the phase
+   * the hold took the issue out of, and is absent for an issue that is not held. The linger
+   * suppression is `holdReason`'s alone:
+   * the reason is absent while the issue's tree lingers or is closed, until it is re-admitted,
+   * since it is a decision someone must act on and a lingering tree has none; the phase is a fact
+   * of the record that costs one word, so every issue at `phase: held` names the phase that
    * stopped, whatever its tree is doing. A caller in a pod whose plugin declares a contract
    * below 75 is served every issue without `heldFrom` (the daemon's `withoutRecordFields`), so
    * every reader takes it as optional. */
-  holdReason: z.literal("escalated").optional(),
+  holdReason: z.enum(["escalated", "task-stopped", "children"]).optional(),
   heldFrom: z.enum(LEGION_WORKFLOW_PHASES).optional(),
   /** When this root's linger runs out, absent for every issue that is not a lingering root:
    * only a root carries a linger, and re-admission clears it. It is what keeps `holdReason`'s
@@ -948,7 +953,10 @@ const legionBlockedIssue = z.object({
 });
 
 /**
- * `record.HeldReason` — the eleven words of `admission.held`, in `record.HeldReasons`' order.
+ * `record.HeldReason` — the words of `admission.held`, in `record.HeldReasons`' order.
+ * `children_before_retro` and `task_stopped` came with contract 211; a caller below it is served
+ * each such row as `unclassified` with no `heldBy` (the daemon's value strip
+ * `withoutUnadmittedHeldWords`).
  * `at_work` names an issue past its review, which keeps no admission slot; `record.HeldAtWork`
  * says which issues read it.
  */
@@ -962,6 +970,8 @@ export const LEGION_HELD_REASONS = [
   "dispatch_blocker",
   "children_first",
   "accepted_ancestor",
+  "children_before_retro",
+  "task_stopped",
   "at_work",
   "unclassified",
 ] as const;
@@ -1844,6 +1854,26 @@ const legionAnsweredPause = z.object({
   endedBy: legionPauseActor.optional(),
 });
 
+/** `api.PlanRegisterResponse`, the plan register_plan took (contract 211): the version given and
+ * each of its tasks, its id and the steps its block names as the plan writes them (`role` or
+ * `role:key`). A task whose block names none runs the project's default steps, which the workflow
+ * reads when the task's work starts, so it is answered with no step: an empty list, never null. A
+ * plan the daemon does not take is answered `409 PLAN_REFUSED`, whose `error` holds every reason
+ * in order; the body's `reasons` lists them by task, which `LegionErrorResponse` strips. The
+ * reader takes every field as optional, since no plugin code reads one: the `legion` tool hands
+ * the answer to its agent whole. */
+export const LegionPlanRegisterResponse = z.object({
+  plan: z
+    .object({
+      version: z.number().int().positive().optional(),
+      tasks: z
+        .array(
+          z.object({ id: nonEmptyString.optional(), steps: z.array(nonEmptyString).optional() })
+        )
+        .optional(),
+    })
+    .optional(),
+});
 /** `api.ProjectPauseResponse`, the answer to a pause of the project, the controller's `POST
  * /legion/v1/project/pause` and the operator's `POST /legion/v1/operator/project/pause` alike:
  * the pause it began. The reader takes it as optional, since no plugin code reads it
@@ -1974,7 +2004,11 @@ export function legionPlanRatingLoneField(
  * ends the retro carries and no other completion does (`PLAN_RATING_UNEXPECTED`): a whole number
  * from 1 (the plan cost the work) to 5 (the plan fit the work), and why, the two together
  * (`PLAN_RATING_INPUT`). A plugin at contract 168 or later must send both on its retro
- * (`PLAN_RATING_REQUIRED`). */
+ * (`PLAN_RATING_REQUIRED`). `returnTo` (contract 211) is the step a step that failed names for its
+ * task to return to, by its place in the issue's running task, 1 for its first: a whole number of
+ * 1 or more (`INVALID_RETURN_TO`), carried only by a completion with the verdict `fail`
+ * (`RETURN_TO_NEEDS_FAIL`, which the daemon also answers a production check's report that names
+ * one, whatever its verdict). Which step the task then runs is the workflow's to decide. */
 export const LegionHandoffCompleteRequest = z
   .strictObject({
     grantId: nonEmptyString,
@@ -1986,11 +2020,15 @@ export const LegionHandoffCompleteRequest = z
     wakeAt: LegionInstant.optional(),
     planRating: legionPlanRatingScale(z.number()).optional(),
     planReason: legionPlanReason.optional(),
+    returnTo: z.number().int().positive().optional(),
   })
   .refine(
     (request) => legionPlanRatingLoneField(request.planRating, request.planReason) === undefined,
     { message: "planRating and planReason appear together" }
-  );
+  )
+  .refine((request) => request.returnTo === undefined || request.verdict === "fail", {
+    message: "returnTo is carried only by a completion with the verdict fail",
+  });
 
 /** `api.IssueStatusRequest`, the controller's explicit board-status write. */
 export const LegionIssueStatusRequest = z.strictObject({
@@ -2075,7 +2113,12 @@ export const LegionEscalateRequest = z.strictObject({
 });
 
 /** `api.SignOffRequest`, the owning architect's acceptance of an issue in `accepting`, which moves
- * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). Since
+ * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). From
+ * contract 211 the daemon judges it again when it applies it, and refuses it, changing nothing,
+ * where the architect no longer owns the issue (`ISSUE_NOT_OWNED`, or `ISSUE_OUTSIDE_TREE` once
+ * the issue left its tree), where the run of the issue it read has ended
+ * (`SIGNOFF_STALE_GENERATION`), and where the run of `accepting` it read has ended
+ * (`SIGNOFF_STALE_ENTRY`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
  * parent, whose own head proves their merged work (dispatch://INFRA-980). */
@@ -2100,6 +2143,34 @@ export const LegionChildRequest = z.strictObject({
   issue: nonEmptyString,
 });
 
+/** `api.PlanRegisterRequest`, register_plan (contract 211): the owner of an issue, an architect of
+ * the issue's tree, gives Legion the plan in version `version` of the document
+ * `artifactId` of the issue, which the daemon reads from Dispatch at that version. The issue may be
+ * one the daemon has not recorded yet while Dispatch shows it triage, backlog, icebox or todo
+ * (`ISSUE_ALREADY_RELEASED` otherwise). */
+export const LegionPlanRegisterRequest = z.strictObject({
+  grantId: nonEmptyString,
+  issue: nonEmptyString,
+  artifactId: z.uuid(),
+  version: z.number().int().positive(),
+});
+
+/** `api.TaskStopRequest`, stop_task (contract 211): the owner of a recorded issue stops one task of
+ * the plan Legion runs for it, so that a later version of the plan may change that task; the issue
+ * is then held with `holdReason` `task-stopped`. On an issue whose first step has not run, the
+ * stop first settles the plan that step would walk, the newest plan its owner gave or the
+ * project's default steps. A task the plan does not hold is refused (`TASK_NOT_FOUND`), and so is
+ * one that is done (`TASK_DONE`), a stop in a tree that lingers after it left the workflow
+ * (`TREE_LINGERING`), a stop of an issue outside the architect's tree or one that left it
+ * (`ISSUE_OUTSIDE_TREE`), a stop of a run of the issue that ended before the daemon applied it
+ * (`TASK_STALE_GENERATION`), and a stop of a root that waits on a person before its first step
+ * (`TASK_AWAITING_PERSON`), which a later version of the plan changes, or which stops once the
+ * person has answered. Each refusal writes nothing. */
+export const LegionTaskStopRequest = z.strictObject({
+  grantId: nonEmptyString,
+  issue: nonEmptyString,
+  task: nonEmptyString,
+});
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
  * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` and
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's

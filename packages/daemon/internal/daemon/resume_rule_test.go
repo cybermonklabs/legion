@@ -108,6 +108,28 @@ func adoptionsOf(rt *fake.Runtime, token claim.Token) []string {
 	return made
 }
 
+// resumeTaskOf is the resume task engine sends the worker of key's phase, as the record holds
+// the issue now: workflow's Engine.ResumeTask, the one place every resume is composed, read in a
+// transaction it rolls back.
+func resumeTaskOf(t testing.TB, pool *store.Pool, engine *workflow.Engine, key string) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read of the resume task of %s: %v", key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	issue, err := record.NewStore().Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		t.Fatalf("read the record of %s: %+v, %v", key, issue, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		t.Fatalf("compose the resume task of %s: %v", key, err)
+	}
+	return task
+}
+
 // The boot's start of a daemon-suspended phase owner resumes it by rule. If that owner can never
 // launch, the resume spends its launch budget and the claim fails; the start row then finishes
 // rather than retrying the failed claim with fresh budgets (RequestRetry), so the owner is launched
@@ -130,8 +152,10 @@ func TestABootRuleResumeThatSpendsTheLaunchBudgetFinishes(t *testing.T) {
 	clock := time.Now()
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion",
 		now: func() time.Time { return clock }}
+	// The row the boot's resume by rule writes, carrying the task the engine composes for it.
+	engine := workflow.New(records, workflow.Config{Project: issue.Project}, quietLogger())
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester,
-		Generation: 1, Phase: phase.Testing, Task: workflow.ResumePhaseTask(issue), ResumeTask: true, RuleResume: true}, clock))
+		Generation: 1, Phase: phase.Testing, Task: resumeTaskOf(t, pool, engine, issue.Key), ResumeTask: true, RuleResume: true}, clock))
 
 	for tick := range 6 {
 		if err := runner.RunOnce(context.Background()); err != nil {

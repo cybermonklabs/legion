@@ -307,6 +307,28 @@ func maybeIssue(t *testing.T, pool *pgxpool.Pool, key string) *record.Issue {
 	return got
 }
 
+// resumeTaskOf is the resume task engine sends the worker of key's phase, as the record holds
+// the issue now: workflow's Engine.ResumeTask, the one place every resume is composed, read in a
+// transaction it rolls back.
+func resumeTaskOf(t testing.TB, pool *pgxpool.Pool, engine *workflow.Engine, key string) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read of the resume task of %s: %v", key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	issue, err := record.NewStore().Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		t.Fatalf("read the record of %s: %+v, %v", key, issue, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		t.Fatalf("compose the resume task of %s: %v", key, err)
+	}
+	return task
+}
+
 func putIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {

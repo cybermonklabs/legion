@@ -43,9 +43,10 @@ The Inbox opens the request in its reading column: the spec as the version to ap
 
 ## 4. The phases run
 
-After approval the daemon starts the planner, then the implementer, which opens the pull request,
-then the tester and the reviewer. The issue's status follows: `in_progress`, `testing`,
-`needs_review`, then `retro` once the reviewer has approved and the architect has accepted.
+After approval the daemon starts the issue's steps. On the default steps it starts the planner,
+then the implementer, which opens the pull request, then the tester and the reviewer. The issue's
+status follows: `in_progress`, `testing`, `needs_review`, then `retro` once the reviewer has
+approved and the architect has accepted.
 
 ![The issue after the phases ran: Retro in its header beside the pull request link, #42, and its activity newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.](/legion/media/legion/status-events.png)
 

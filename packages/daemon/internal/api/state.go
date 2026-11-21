@@ -628,10 +628,10 @@ type Admission struct {
 	// issue key. It is the other half of the three lists above — a reader that has `active`,
 	// `waiting` and this one has every issue of the workflow and what each is doing — so the
 	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
-	// the one that waits: a root whose Legion label is off, an issue none of the other words
-	// is true of, or an issue past its review under `at_work`, which no other issue holds
-	// (record.HeldAtWork says which issues read it). Never null; empty when every issue of the
-	// workflow runs or waits in the line.
+	// the one that waits: a root whose Legion label is off, a task that was stopped
+	// (`task_stopped`), an issue none of the other words is true of, or an issue past its review
+	// under `at_work`, which no other issue holds (record.HeldAtWork says which issues read it).
+	// Never null; empty when every issue of the workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below shaping.go's treeContract): that
@@ -716,8 +716,14 @@ type Issue struct {
 	Repo          string `json:"repo,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
-	// sent it to the controller. Absent otherwise, and absent while the issue's tree lingers or is
-	// closed: the record keeps the reason, and the view shows it again once the tree is re-admitted.
+	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
+	// it ran (record.HoldTaskStopped), and `children` while a parent whose plan has no acceptance
+	// step waits, before its retro, for the issues beneath it (record.HoldForChildren). A hold of
+	// either of the last two is no architect's to retry or escalate: a later version of the plan
+	// starts a stopped task again, and the last issue beneath a parent to leave starts its retro. A
+	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
+	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
+	// reason, and the view shows it again once the tree is re-admitted.
 	HoldReason string `json:"holdReason,omitempty"`
 	// HeldFrom is the phase the hold took the issue out of (record.Hold.From), and absent for an
 	// issue that is not held. Unlike HoldReason it is shown whatever the issue's tree is doing:

@@ -139,6 +139,9 @@ type podUpdateRig struct {
 	logs *syncBuffer
 	// log is that logger, kept so a rig that builds a second engine writes into the same buffer.
 	log *slog.Logger
+	// engine is the workflow engine of the facts this supervision applies (podUpdateWorkflow),
+	// which composes the task the silence repair sends (resumeTaskOf).
+	engine *workflow.Engine
 	// listener is the Envoy listener the rig's role-message lane publishes to (runLane): every
 	// role topic has a live holder until a test names the ones that have none (setAbsent), as the
 	// real listener refuses a topic nobody holds (notify.ErrNoHolder).
@@ -290,7 +293,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// context the pool refuses nothing, so a sweep that asked it for a second connection under a
 	// held one would pass every test of this rig (INFRA-3169).
 	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
-		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log,
+		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log, engine: w.engine,
 		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}}
 	rig.lane = &outbox{project: podUpdateProject, notices: rig.listener, supervisor: sup, log: log}
 	for _, role := range roles {
@@ -326,7 +329,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 func podUpdateWorkflow(pool *store.Pool, records record.Store, clock *heldClock, log *slog.Logger) *workflowRuntime {
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Clock: clock.Now}, log)
-	return &workflowRuntime{pool: pool, records: records, dispatchProject: "LEGION", log: log, handlers: []intake.Handler{engine}}
+	return &workflowRuntime{pool: pool, records: records, dispatchProject: "LEGION", log: log, engine: engine, handlers: []intake.Handler{engine}}
 }
 
 // podUpdateLocator is one role process in an issue pod, as the Sandbox runtime records it. The

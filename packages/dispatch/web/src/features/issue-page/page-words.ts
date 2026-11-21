@@ -1183,6 +1183,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
   state: "state",
+  /** The steps of Legion a plan task runs, in their order. */
+  steps: "steps",
   surface: "surface",
   title: "title",
   urgency: "urgency",

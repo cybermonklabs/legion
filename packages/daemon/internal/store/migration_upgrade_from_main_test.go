@@ -26,11 +26,13 @@ import (
 // release mark (20261111001612), the issue's movement time (20261111010031), the declined ask
 // (20261111021610), the tree-stalled mark (20261111041503) and the claim's failure cause
 // (20261111212544), are
-// main's own and are applied as main's run applied them. Every version of this branch's but
-// twenty-five stands below main's newest: a migration's version is a timestamp rather than a place
-// in a line, and the twenty-five above it are the phase entry's own (20261111225552,
-// dispatch://INFRA-2800), which this branch wrote after main's claim-failure cause, and the
-// twenty-four the next paragraph names.
+// main's own and are applied as main's run applied them. A migration's version is a timestamp
+// rather than a place in a line, so a version of this branch's can stand below main's newest, as
+// the first of this list do. The versions of this list above main's newest are each one greater
+// than mainsNewestMigration: the phase entry's own (20261111225552, dispatch://INFRA-2800), which
+// this branch wrote after main's claim-failure cause, and each other version that
+// mainsNewestMigration's comment names. An upgrade of a database main migrated applies all of this
+// list in version order, and the test below holds the list against the embedded set.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
@@ -85,10 +87,13 @@ import (
 // The two kind lists above it are named here too: the step record's (20261117000528) restates
 // 20261116165926's kinds with step_record, and the plan record's (20261117023932) restates those
 // with plan_record. They stand above every other version of the list that rewrites
-// outbox_kind_check but this branch's 20261119003157, so an upgrade applies them after all the
-// others and before that one. The count of starts of each step (20261117004117) creates tables
-// and a function of its own, and its roll forward (20261117064152) changes nothing on a database
-// no rollback touched; neither touches outbox_kind_check.
+// outbox_kind_check but 20261119003157, so an upgrade applies them after all the others and
+// before that one. The count of starts of each step (20261117004117) creates tables and a
+// function of its own, and its roll forward (20261117064152) changes nothing on a database no
+// rollback touched; neither touches outbox_kind_check, and nor does the plan of an issue
+// (20261117034837), which creates the three tables of the plan and adds `phases.step_task` and
+// `phases.step_place`, each at a default that every row it finds reads as no plan
+// (migration_20261117034837_test.go).
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -115,8 +120,8 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
-	20261117004117, 20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261119003157,
-	20261120042902, 20261120055717,
+	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
+	20261119003157, 20261120042902, 20261120055717,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -130,11 +135,12 @@ var thisBranchsMigrations = []int{
 // 20261115194357, t-e-54's 20261116144907, the role-holders publication's 20261116165926, the
 // reviewer's reviewed commit, 20261116234034, the step records' three: the kind list with the
 // step record (20261117000528), the count of starts of each step (20261117004117) and its roll
-// forward (20261117064152), the kind list with the plan record (20261117023932),
-// dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
-// dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-4108's 20261120042902 and
-// dispatch://INFRA-4729's 20261120055717. That is why the loop below holds the list rather than
-// counting it, so that a version added above any of them is named here rather than read as main's.
+// forward (20261117064152), the kind list with the plan record (20261117023932), the plan of an
+// issue's 20261117034837, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
+// 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-4108's 20261120042902
+// and dispatch://INFRA-4729's 20261120055717. That is why the loop below holds the list rather
+// than counting it, so that a version added above any of them is named here rather than read as
+// main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

@@ -113,8 +113,9 @@ template, and the later phases fill in their own lines:
 - **Proven by** and **Checks**: one line per check of the issue's Verification document, each the
   line Dispatch printed when the result was recorded — the check, when it runs, the verdict, the
   commit it ran at and the role that ran it.
-- **Look at first** and **Not proven / risk**: written by Legion's reviewer, naming where a wrong
-  decision would hurt and every claim left unproven.
+- **Look at first** and **Not proven / risk**: written by Legion's reviewer, or by its implementer
+  on a task whose plan has no reviewer step, naming where a wrong decision would hurt and every
+  claim left unproven.
 - The `after_merge` check, recorded after the merge closes the issue by the role your project's
   `production_check` names — the tester, unless the setting is `off`, where no production check
   opens — once your deploy carries the change; its line reads `not yet run` until then, or a `fail`
@@ -192,9 +193,9 @@ you stop the work.
 | `triage` | whoever files the issue | New. A person's `legion` label is queued by the daemon: the issue moves to `todo` itself. A label a session set goes to the controller, which decides whether to admit it now or leave it to you, and parks it only when a person asked for that or its work is done, folded into another issue or no longer needed. |
 | `icebox` | a person or the controller | Parked for the long term. Legion does not run it. |
 | `backlog` | a person or the controller | Should not run now: a person asked for that, for example while it waits on a decision or a deploy, or its work is done, folded into another issue or no longer needed. Legion does not run it. |
-| `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into planning sets it to `in_progress`. |
+| `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into its first step sets it to `in_progress`. |
 | `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: the implementer merges the base forward while the issue stays in its phase. |
 | `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. |
-| `needs_review` | the daemon | The tester passed; Legion's reviewer is reviewing, and once it approves the architect reads the evidence and accepts the change or sends it back. Your GitHub review counts now. |
-| `retro` | the daemon | The architect accepted. The issue stays here through retro and the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
+| `needs_review` | the daemon | The change is under review, once the step before passed (on the default steps, the tester): Legion's reviewer reviews it where the task has a reviewer step, and then, where the task has the architect's acceptance step, the architect reads the evidence and accepts the change or sends it back. Your GitHub review counts now. |
+| `retro` | the daemon | The task's last step passed: on the default steps, the architect accepted. The issue stays here through retro and the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
 | `done` | the daemon at the merge, or a person | Finished: the pull request merged. A root whose tree is still running waits in `retro` until the last of it is done or parked, then closes. The production check your project's `production_check` opens — the tester's, unless the setting is `off` — follows on the pull request; the tree lingers, then closes. |

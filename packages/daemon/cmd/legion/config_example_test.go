@@ -424,8 +424,8 @@ current-context: legion-daemon
 
 // shippedExampleCheckOK is the whole stdout of `legion config check` on the shipped
 // example, the same under either session store the example shows.
-const shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec\n" +
-	"projects.WIDGETS.production_check: tester — a merge that closes one of its issues opens a production check the tester works\n" +
+var shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec\n" +
+	productionCheckTesterLine("WIDGETS") + defaultStepsTodayLine("WIDGETS") +
 	defaultCacheLine +
 	"plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 

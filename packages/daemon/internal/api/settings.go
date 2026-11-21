@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -362,6 +363,12 @@ type ProjectSettings struct {
 	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string
 	// the role takes for off.
 	ProductionCheck string `json:"production_check"`
+	// DefaultSteps is `default_steps` as the file writes it, each step one word (`planner`, or
+	// `acceptance:owner`): the steps a task runs when its plan block names neither steps nor a
+	// sub-owner, and the steps of the one task of an issue whose owner gives no plan. It is what
+	// the project runs by default (config.Project.RunsByDefault), so a project that names none
+	// shows today's line up to the owner's acceptance rather than no step.
+	DefaultSteps []string `json:"default_steps"`
 	// Deploys is `projects.<KEY>.deploys`, reported while the loader still accepts the key and
 	// reads nothing from it (config's readProject, which warns a project that sets it): no
 	// deploy run wakes a production check any more. It is the deprecated key's resolved value,
@@ -586,6 +593,7 @@ func SettingsOf(cfg config.Config) Settings {
 			},
 			Experiments:     experimentsOf(project.Experiments),
 			ProductionCheck: project.ProductionCheckWord(),
+			DefaultSteps:    plan.Words(project.RunsByDefault()),
 			Deploys:         []DeploySettings{},
 		}
 		settings.Projects[key] = entry

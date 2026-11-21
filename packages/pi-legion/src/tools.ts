@@ -5,6 +5,7 @@ import {
   type LegionGrant,
   type LegionIssue,
   type LegionPhase,
+  LegionPlanRegisterRequest,
   type LegionState,
 } from "@legion/contracts/legion-api";
 import {
@@ -60,6 +61,8 @@ export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSes
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",
+    "register_plan",
+    "stop_task",
     "release_children",
     "request_backward_move",
     "retry_or_escalate",
@@ -98,6 +101,8 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
  * it takes no field stands. */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_gate: ["issue", "artifactId", "version", "step"],
+  register_plan: ["issue", "artifactId", "version"],
+  stop_task: ["issue", "task"],
   release_children: ["issues"],
   retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
@@ -345,7 +350,7 @@ function toolSchema(pi: PiApi): unknown {
     artifactId: z
       .string()
       .describe(
-        "register_gate's document for the step it registers: its artifact id, slug, or filename, as a dispatch command's --artifact takes it"
+        "register_gate's document for the step it registers, and register_plan's plan: its artifact id, slug, or filename, as a dispatch command's --artifact takes it"
       )
       .optional(),
     version: z.number().optional(),
@@ -360,6 +365,12 @@ function toolSchema(pi: PiApi): unknown {
       )
       .optional(),
     issues: z.array(z.string()).optional(),
+    task: z
+      .string()
+      .describe(
+        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps"
+      )
+      .optional(),
     to: phaseOp.to,
     // The why of the operations that take one, a string as the phase op's own `reason` is.
     // Agents sent it to park_child too, whose daemon route keeps no why, so the field says where
@@ -376,6 +387,7 @@ function toolSchema(pi: PiApi): unknown {
     wake_at: phaseOp.wake_at,
     plan_rating: phaseOp.plan_rating,
     plan_reason: phaseOp.plan_reason,
+    return_to: phaseOp.return_to,
     round: phaseOp.round,
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
@@ -471,9 +483,9 @@ export function createLegionTool(deps: {
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's
-    // retry_or_escalate, its sign_off and the controller's operations: the exact text
-    // tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi agent
-    // unnoticed.
+    // retry_or_escalate, its register_plan and stop_task, its sign_off and the controller's
+    // operations: the text tools.test.ts pins, stop_task's and sign_off's by their terms and the
+    // rest exactly, so a change to the shared template cannot reach an Oh My Pi agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -484,10 +496,36 @@ export function createLegionTool(deps: {
         "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
-        "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
-        "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
-        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
-        "to done, and sign off again. " +
+        "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
+        "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
+        "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; a " +
+        "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
+        "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
+        "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
+        "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
+        "that started its work before Legion took plans), a version Dispatch does " +
+        "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
+        "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
+        "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
+        "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
+        "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
+        "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
+        "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
+        "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
+        "gate and its line, as any task does before its first step); retry_or_escalate does not start it again (TASK_STOPPED). On an " +
+        "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
+        "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
+        "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
+        "workflow (TREE_LINGERING) and a stop of a root that waits on a person before its first step (TASK_AWAITING_PERSON: change its " +
+        "task with a later version of the plan, or stop it once the person has answered). It also refuses, changing nothing, a stop of " +
+        "an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion " +
+        "applied it: read the issue again (TASK_STALE_GENERATION). " +
+        "sign_off is the architect's acceptance of an issue in accepting, moving it to retro. The daemon refuses, changing nothing, a " +
+        "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
+        "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
+        "its evidence again) and one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING); it also refuses it while an issue beneath it " +
+        "is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged " +
+        "work: run each one to done, and sign off again. " +
         "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
         "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
         "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
@@ -560,8 +598,9 @@ export function createLegionTool(deps: {
     defaultInactive: true,
     parameters: toolSchema(pi),
     execute: async (_id, parameters, signal, onUpdate, context) => {
-      // The three writes the daemon applies at most once however often they arrive
-      // (handoff_complete, sign_off, register_gate) wait out its restart until the agent's abort.
+      // The writes the daemon applies at most once however often they arrive (handoff_complete,
+      // sign_off, register_gate, register_plan, stop_task) wait out its restart until the
+      // agent's abort.
       // The retry notice goes out once as a partial result, which Oh My Pi shows in its TUI and
       // RPC event stream; the model sees only the final result.
       const restart: DaemonRestartRetry = {
@@ -691,6 +730,46 @@ export function createLegionTool(deps: {
                   version,
                   ...(step === undefined ? {} : { step }),
                 }),
+              restart
+            );
+            return jsonSuccess({});
+          }
+          case "register_plan": {
+            // The owner gives the plan of any issue of its tree, a child the daemon has not
+            // recorded yet included; which issues those are is the daemon's to hold
+            // (ISSUE_OUTSIDE_TREE), so the call is checked whole here and nothing more.
+            const issue = requiredString(parameters, operation, "issue");
+            const reference = requiredString(parameters, operation, "artifactId");
+            const version = parameters.version;
+            if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+              throw new Error("register_plan requires a positive integer version");
+            }
+            // The document is named as register_gate's is: its id, or a reference looked up.
+            const isId = LegionPlanRegisterRequest.shape.artifactId.safeParse(reference).success;
+            const artifactId = isId ? reference : await resolveDocument(issue, reference);
+            // The fact is keyed by the issue, its generation, the document and the version, so a
+            // repeat is the registration again, answered the same.
+            const taken = await retryWhileDaemonRestarts(
+              "register_plan",
+              async () =>
+                client.planRegister({
+                  grantId: await mintClaimGrant(client, active),
+                  issue,
+                  artifactId,
+                  version,
+                }),
+              restart
+            );
+            return jsonSuccess(taken);
+          }
+          case "stop_task": {
+            const issue = requiredString(parameters, operation, "issue");
+            const task = requiredString(parameters, operation, "task");
+            // A repeat after a stop that landed finds the task stopped and changes nothing.
+            await retryWhileDaemonRestarts(
+              "stop_task",
+              async () =>
+                client.taskStop({ grantId: await mintClaimGrant(client, active), issue, task }),
               restart
             );
             return jsonSuccess({});

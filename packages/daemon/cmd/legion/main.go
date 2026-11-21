@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
@@ -221,9 +222,11 @@ func pluginsLine(cfg config.Config) string {
 // top level — in the words boot logs it with: what the key would have been refused for, and what
 // to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
 // since such a key is ignored and never refused.
-// Then one line per project, in key order, naming its `production_check` and what the word
+// Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
-// check at a merge. After them, one line per configured repository rename
+// check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
+// back the steps an issue runs when its owner gives no plan. After them, one line per configured
+// repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
 // before a transfer moves the events onto the new name; a file that configures none prints no
 // such line. Then one line per deployment capability the file alone leaves open, in the words
@@ -278,6 +281,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
+		fmt.Fprintln(stdout, defaultStepsLine(key, cfg.Projects[key]))
 	}
 	for _, rename := range cfg.RepositoryRenames.Pairs() {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
@@ -330,6 +334,15 @@ func productionCheckLine(key string, project config.Project) string {
 	}
 	return fmt.Sprintf("projects.%s.production_check: %s — a merge that closes one of its issues opens %s",
 		key, project.ProductionCheckWord(), effect)
+}
+
+// defaultStepsLine is `legion config check`'s line for one project's `default_steps`: the steps
+// the project runs by default (config.Project.RunsByDefault, today's line up to the owner's
+// acceptance for a project that names none), as the file would write the list (plan.Words), and
+// what they decide.
+func defaultStepsLine(key string, project config.Project) string {
+	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge",
+		key, strings.Join(plan.Words(project.RunsByDefault()), ", "))
 }
 
 // reservedUnder is a cpu or memory reservation as `legion config check` names it: the one quantity when

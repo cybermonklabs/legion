@@ -473,6 +473,13 @@ type artifactVersionQuery struct {
 	// name, `Cache-Control: private, no-cache`, and a document as its Markdown rather than the
 	// JSON that wraps it. Any other value answers as without it.
 	Download bool `query:"download"`
+	// Blocks, `true`, carries a document version's typed blocks beside its markdown, each read
+	// from that version's own text under the id its opening line writes, with its attributes and
+	// its byte range in the markdown the answer carries: the version as this build renders it,
+	// which is the stored text unless an earlier renderer wrote it otherwise, with the sha256 and
+	// the size of that text. A block's references read zero and it carries no embedding state:
+	// both describe the live document, not a version. Any other value carries no blocks.
+	Blocks bool `query:"blocks"`
 }
 
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.

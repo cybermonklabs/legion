@@ -1082,6 +1082,10 @@
         "since": 98
       },
       {
+        "value": "children_before_retro",
+        "since": 211
+      },
+      {
         "value": "children_first",
         "since": 98
       },
@@ -1102,6 +1106,10 @@
         "since": 98
       },
       {
+        "value": "task_stopped",
+        "since": 211
+      },
+      {
         "value": "tree_closed",
         "since": 98
       },
@@ -1112,6 +1120,24 @@
       {
         "value": "unclassified",
         "since": 98
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "issues.*.holdReason",
+    "values": [
+      {
+        "value": "children",
+        "since": 211
+      },
+      {
+        "value": "escalated",
+        "since": 46
+      },
+      {
+        "value": "task-stopped",
+        "since": 211
       }
     ]
   },
@@ -1938,6 +1964,24 @@
       {
         "value": "took-nothing",
         "since": 146
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "holdReason",
+    "values": [
+      {
+        "value": "children",
+        "since": 211
+      },
+      {
+        "value": "escalated",
+        "since": 46
+      },
+      {
+        "value": "task-stopped",
+        "since": 211
       }
     ]
   },

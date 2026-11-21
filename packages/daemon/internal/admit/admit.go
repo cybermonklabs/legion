@@ -377,7 +377,7 @@ func (a *Admission) applyReread(ctx context.Context, tx pgx.Tx, reread map[strin
 			continue
 		}
 		stored.Ancestry = ancestry
-		if err := a.store.PutIssue(ctx, tx, *stored); err != nil {
+		if err := a.engine.WriteIssue(ctx, tx, *stored); err != nil {
 			return fmt.Errorf("record the Dispatch chain of %s: %w", key, err)
 		}
 	}
@@ -981,7 +981,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 	if issue.Ancestry, err = a.engine.Ancestry(ctx, tx, issue, observation.Ancestry); err != nil {
 		return fmt.Errorf("read whether %s ran as a tree of its own: %w", observation.Key, err)
 	}
-	if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 		return fmt.Errorf("record admitted root %s: %w", observation.Key, err)
 	}
 	a.engine.HearRepository(ctx, issue.GitHubRepo)
@@ -1288,7 +1288,7 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 	stored.HandedOver = o.HandedOver
 	stored.LastDispatchSeq = o.Seq
 	stored.Ancestry = ancestry
-	if err := a.store.PutIssue(ctx, tx, stored); err != nil {
+	if err := a.engine.WriteIssue(ctx, tx, stored); err != nil {
 		return fmt.Errorf("record observation of %s: %w", stored.Key, err)
 	}
 	return nil
@@ -1375,7 +1375,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	stored.Rank = o.Rank
 	stored.LingerUntil = nil
 	stored.LastDispatchSeq = o.Seq
-	if err := a.store.PutIssue(ctx, tx, stored); err != nil {
+	if err := a.engine.WriteIssue(ctx, tx, stored); err != nil {
 		return fmt.Errorf("record re-admission %s: %w", stored.Key, err)
 	}
 	// The re-admission is a new generation of the tree: this write changes the generation, the
@@ -1425,12 +1425,6 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		}
 	}
 	if orphan {
-		// The carried run keeps the phase it ran in, past admitted (record.Issue.CarriesRun), so it
-		// never leaves admitted, where a run's plan is written otherwise: its new generation's plan
-		// is written here (WritePlan).
-		if err := a.engine.WritePlan(ctx, tx, stored); err != nil {
-			return fmt.Errorf("write the plan of re-admitted orphan %s: %w", stored.Key, err)
-		}
 		if pr != nil {
 			// The carried pull request starts the generation's fence; its head run goes, as with a
 			// new generation (record.ClearGeneration), since its replay would put the old fence back.
@@ -1438,6 +1432,17 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 			if err := a.store.PutPullRequest(ctx, tx, *pr); err != nil {
 				return fmt.Errorf("carry pull request to re-admitted orphan %s: %w", stored.Key, err)
 			}
+		}
+		// The carried run goes on at the step it stood at, so its plan goes with it, each task
+		// where it stood; an orphan that ran before plans has none, and the carry writes nothing.
+		if err := a.store.CarryPlan(ctx, tx, stored.Key, oldGeneration, stored.Generation, true); err != nil {
+			return fmt.Errorf("carry the plan to re-admitted orphan %s: %w", stored.Key, err)
+		}
+		// The carried run keeps the phase it ran in, past admitted (record.Issue.CarriesRun), so it
+		// never leaves admitted, where a run's plan is written otherwise: its new generation's plan
+		// node is written here (WritePlan), after the carry, so it names the plan the run carries.
+		if err := a.engine.WritePlan(ctx, tx, stored); err != nil {
+			return fmt.Errorf("write the plan of re-admitted orphan %s: %w", stored.Key, err)
 		}
 		// Every root a hand-over created is recorded as one, so its architect's catch-up says it was
 		// handed over and decomposes nothing anew; it is marked as carrying a gate, which tells the
@@ -1964,7 +1969,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					issue.Status = "in_progress"
 				}
 				issue.Ancestry = nil
-				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+				if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
 				if writeInProgress {
@@ -2002,7 +2007,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// hand-over row of its generation, which the re-admission that carried it wrote
 				// (workflow.ArchitectStartOf says why the two agree here).
 				issue.HandedOverFrom = ""
-				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+				if err := a.engine.WriteIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
 				// The promotion opens the tree's lifecycle, writes the root in_progress and
@@ -2507,7 +2512,7 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // has just opened, and gives the one role whose phase the member stands in the task that carries
 // that phase on. A hand-over turns a child into that root while preserving its phase, so its phase
 // role needs the same resume start ordinary mid-phase children receive
-// (workflow.ResumePhaseTask, which says to carry the phase's work on and names no head, since a
+// (workflow's Engine.ResumeTask, which says to carry the phase's work on and names no head, since a
 // merger reads the head it merges on GitHub). A root promoted held, which only a hand-over leaves
 // (every other re-admission starts its root at admitted), starts no worker. The hold's first
 // notice was routed in the tree the root was handed over from, where it reached the root's own
@@ -2526,7 +2531,9 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // worker's, which carries that phase's task (workflow.StartOrOwe), and the live sessions of a
 // member's other roles are exactly what the design keeps so that a person can still talk to any of
 // them. Those rows carry no task and wait for no slot, so each is claimable at once and a role
-// with nothing to do comes back and is told nothing.
+// with nothing to do comes back and is told nothing. The role of a held member's stopped task's
+// step is queued with them, and its start finishes at the outbox, where every start of a role is
+// run (workflow.StoppedStepRole): that role starts again only when its task does.
 //
 // Such a role comes back only where it holds a claim row, which is the durable record that the
 // role has run: a re-admission clears the generation's facts — clearGeneration touches
@@ -2702,7 +2709,8 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		// workflow.StartFor finds already started begin it here. The store's run mark decides
 		// (workflow's StartStepRecord): a run still open goes on and gets no second start — the
 		// one a start above began, and the merge step of a member held from merging, which the
-		// linger left open and the hold's retry goes on with.
+		// linger left open and the hold's retry goes on with. A member its plan holds, a stopped
+		// task or a parent held for its children, starts no step there.
 		if err := a.engine.StartStepRecord(ctx, tx, member); err != nil {
 			return err
 		}

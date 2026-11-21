@@ -77,6 +77,8 @@ function liveDaemon(refuse?: { path: string; status: number; body: object }) {
         "/legion/v1/handoff/complete": "handoff-complete.json",
         "/legion/v1/signoff": "signoff.json",
         "/legion/v1/gates/register": "gate-register.json",
+        "/legion/v1/plans/register": "plan-register.json",
+        "/legion/v1/tasks/stop": "task-stop.json",
       }[route];
       if (fixture === undefined) return new Response("no route", { status: 404 });
       return new Response(daemonFixture(fixture), {
@@ -294,6 +296,37 @@ test("register_gate waits out a restarting daemon", async () => {
   expect(live.answered).toEqual(["/legion/v1/grants", "/legion/v1/gates/register"]);
   expect(clock.waits).toEqual([500, 1000]);
   expect(updates).toHaveLength(1);
+});
+
+// The owner's plan (contract 211): a registration is keyed by its issue, generation, document and
+// version, and a stop of a task already stopped changes nothing, so each waits out a restart.
+test("register_plan and stop_task wait out a restarting daemon", async () => {
+  const plan = "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11";
+  for (const [parameters, route, answer] of [
+    [
+      { op: "register_plan", issue: "LEGION-209", artifactId: plan, version: 4 },
+      "/legion/v1/plans/register",
+      daemonFixture("plan-register.json"),
+    ],
+    [
+      { op: "stop_task", issue: "LEGION-209", task: "a" },
+      "/legion/v1/tasks/stop",
+      daemonFixture("task-stop.json"),
+    ],
+  ] as const) {
+    const live = liveDaemon();
+    const clock = virtualClock();
+    const client = restartingClient(live.url, refusingOrigin(), 2);
+    const tool = toolFor("architect", client, clock, [], "LEGION-208");
+
+    const { result, updates } = await run(tool, parameters);
+
+    const details = JSON.parse(answer);
+    expect(result).toEqual({ content: [{ type: "text", text: JSON.stringify(details) }], details });
+    expect(live.answered).toEqual(["/legion/v1/grants", route]);
+    expect(clock.waits).toEqual([500, 1000]);
+    expect(updates).toHaveLength(1);
+  }
 });
 
 test("an aborted call stops waiting and sends nothing more, even with the daemon back up", async () => {

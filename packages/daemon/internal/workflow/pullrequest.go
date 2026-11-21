@@ -369,11 +369,13 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // merged records the pull request merged, with its merge commit, whatever the issue's phase, and
-// closes an issue that awaits its merge (awaitsMerge: in merging, or held from it, the hold a
-// merger's failed claim leaves) with closeMerged: the merger merges, and the merge is what
-// ends that phase. A merge before merging is the architect's to act on, as the shipped daemon
-// routes it: it is told, and the merge closes the issue once it reaches merging (transition). A
-// redelivered merge changes nothing.
+// closes an issue that awaits its merge (awaitsMerge; closeMerged): one in merging, where the
+// merger merges and the merge is what ends that phase, and one held from merging, by a failed
+// merger's claim, an escalation, its owner's stop of its task at its merge or the upgrade's data
+// move, since the merge is the one fact GitHub never sends again and it puts the work on main. A
+// merge before merging is the architect's to act on, as the shipped daemon routes it: it is told,
+// and the merge closes the issue once it reaches merging (transition). A redelivered merge
+// changes nothing.
 //
 // It records the head the merge names, as a close does (closed). A synchronize or a push of that
 // head can be lost or wait behind a backlog, and after the merge nothing else moves the record's
@@ -430,8 +432,8 @@ func waitingForTree(issue string, number int, waiting []string) string {
 
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close
 // waited for the issues beneath it instead, tells the architect that owns the issue once. It is
-// the two places a wait is newly entered — the merge arriving at an issue in merging (merged), and
-// an issue reaching merging on a pull request already merged (transition) — and nowhere else:
+// the two places a wait is newly entered — the merge arriving at an issue that awaits it (merged),
+// and an issue reaching merging on a pull request already merged (transition) — and nowhere else:
 // notices never de-duplicate (notice writes a row per call) and closeMerged is re-entered on the
 // departure of every issue beneath it (closeAwaitingMerge) and on every boot (sweepMerged), so
 // those two tell nobody.
@@ -445,7 +447,8 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 }
 
 // closeMerged closes issue, which awaits its merge in merging (or is held from merging, a hold the
-// upgrade's data move left, which the close clears), on its merged pull request pr, and reports
+// close clears: a failed merger's claim, an escalation, a stopped task's or the upgrade's data
+// move's), on its merged pull request pr, and reports
 // the issues it waited for instead, empty when it closed. In a running tree the close is the
 // table's row to done (transition), which leaves: a child's close retires five of its claims and
 // opens its production check in the live session of the role the project's `production_check`
@@ -477,6 +480,8 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if !awaitsMerge(issue) {
 		return nil, nil
 	}
+	// Only the copy in hand leaves the hold here: the task keeps its place, its merge, which a hold
+	// keeps too (moveTask), and the close below writes the move to done.
 	issue.Phase, issue.Hold = phase.Merging, nil
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
@@ -494,7 +499,11 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		}
 		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, "")
 	}
-	row, ok := e.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
 	if !ok {
 		return nil, nil
 	}
@@ -504,14 +513,17 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	// The merge ends the merge step the linger left open, passed: no transition runs in a lingering
 	// tree, so this move names that end itself, as a move of the table does (nameMoveEnd).
-	if err := e.nameMoveEnd(ctx, issue, TriggerPullRequestMerged, row.To, record.PhaseRow{}); err != nil {
+	if err := e.nameMoveEnd(ctx, w, issue, TriggerPullRequestMerged, row.To, record.PhaseRow{}); err != nil {
 		return nil, err
 	}
-	issue.Phase, issue.Hold = row.To, nil
+	if err := e.moveTask(ctx, tx, &issue, &w, row.To, record.TaskDone); err != nil {
+		return nil, err
+	}
+	issue.Hold = nil
 	if status != "" {
 		issue.Status = status
 	}
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := e.WriteIssue(ctx, tx, issue); err != nil {
 		return nil, err
 	}
 	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", issue.Status)

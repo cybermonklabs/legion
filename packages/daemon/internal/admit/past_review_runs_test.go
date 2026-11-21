@@ -124,7 +124,8 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	pastReviewRoot(t, pool, atWork, phase.Implementing, "in_progress", "D")
 	oweMemberStart(t, pool, atWork, atWork, phase.Implementing)
 
-	applyFact(t, pool, admission, "sign-off", intake.SignOff{Issue: accepted})
+	by, generation, entry := rootArchitectsRead(t, pool, accepted)
+	applyFact(t, pool, admission, "sign-off", intake.SignOff{Issue: accepted, By: by, Generation: generation, Entry: entry})
 
 	if got := issue(t, pool, accepted); got.Phase != phase.Retro {
 		t.Fatalf("the accepted issue = %#v, want it in retro: the sign-off moves it there", got)
@@ -163,8 +164,9 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	const sentBack = "LEGION-400"
 	pastReviewRoot(t, pool, sentBack, phase.Accepting, "needs_review", "E")
 
+	by, generation, entry = rootArchitectsRead(t, pool, sentBack)
 	applyFact(t, pool, admission, "sent-back", intake.BackwardMove{Issue: sentBack, Requester: claim.RoleArchitect,
-		To: phase.Implementing, Reason: "the change needs work the review found"})
+		To: phase.Implementing, Reason: "the change needs work the review found", By: by, Generation: generation, Entry: entry})
 
 	if got := issue(t, pool, sentBack); got.Phase != phase.Implementing {
 		t.Fatalf("the issue sent back = %#v, want it implementing", got)

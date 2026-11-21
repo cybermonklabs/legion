@@ -492,11 +492,13 @@ func (d *refusingDispatch) PutDesignGates(context.Context, string, []dispatch.De
 	return nil
 }
 
-// boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies.
+// boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies,
+// and keeps each message posted to it, in order.
 type boardDispatch struct {
 	noArtifacts
 	status   string
 	failures int
+	posted   []string
 }
 
 func (d *boardDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
@@ -522,7 +524,10 @@ func (d *boardDispatch) HandOver(context.Context, dispatch.Issue, string) error 
 func (d *boardDispatch) ReleaseClaim(context.Context, string) error {
 	return errors.New("boardDispatch releases no claim")
 }
-func (d *boardDispatch) PostMessage(context.Context, string, string) error { return nil }
+func (d *boardDispatch) PostMessage(_ context.Context, _ string, body string) error {
+	d.posted = append(d.posted, body)
+	return nil
+}
 func (d *boardDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }

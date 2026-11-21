@@ -307,7 +307,9 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 			seedIssueAt(t, h, "LEGION-208", phase.Retro)
 			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 			// A stale claim is served in its turn (staleClaim), and its grants are minted first, as
-			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one. A live claim declares
+			// the daemon's own contract, so a band below it, PlanRatingContract once a later contract
+			// came, declares its own.
 			grants := []string{implementer.grant(t), implementer.grant(t), implementer.grant(t)}
 			if band.contract != DaemonAPIVersion {
 				h.makeStale(t, implementer.token, implementer.session, implementer.secret, band.contract)
@@ -778,7 +780,9 @@ func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
 			seedIssueAt(t, h, key, row.at)
 			implementer := newLiveClaim(t, h, key, claim.RoleImplementer)
 			// A stale claim is served in its turn (staleClaim), and its grant is minted first, as
-			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one. A live claim declares
+			// the daemon's own contract, so a row below it, PlanRatingContract once a later contract
+			// came, declares its own.
 			req := row.request(implementer)
 			req.GrantID = implementer.grant(t)
 			if row.contract != DaemonAPIVersion {

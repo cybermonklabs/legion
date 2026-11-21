@@ -1360,13 +1360,16 @@ worker_sessions() {
 # worker_notices SESSIONS prints one line for each workflow notice delivered into a phase-worker
 # session under SESSIONS: the session file, the role it claims, and the delivery's summary. Every
 # notice kind is for an architect, the issue's own or the one above it that the daemon routes it
-# to, published on that architect's role topic, so a phase worker's session holds none.
+# to, published on that architect's role topic, whatever role it names: a review-stuck notice can
+# name the reviewer's topic for the architect to ask, and a task-stopped notice names the role of
+# the phase the task stopped in. So a phase worker's session holds none, and a line here is a
+# notice routed to the wrong session.
 worker_notices() {
   local f role
   while IFS=$'\t' read -r f role; do
     jq -R -r --arg file "${f##*/}" --arg role "$role" '
       fromjson? | select(.customType == "envoy-message") | (.content | tostring)
-      | capture("summary: (?<summary>(phase-finished|worker-died|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|session-lost|session-forgotten|session-store-fault) on [^\\n]*)")
+      | capture("summary: (?<summary>(phase-finished|worker-died|worker-stalled|worker-silent|worker-background-stalled|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|message-refused|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|children-first|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|session-lost|session-forgotten|session-store-fault|task-stopped|plan-not-taken|retro-held) on [^\\n]*)")
       | "\($file) \($role) \(.summary)"' "$f"
   done < <(worker_sessions "$1")
 }

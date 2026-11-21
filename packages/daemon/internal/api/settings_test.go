@@ -170,6 +170,7 @@ var settingsEmitted = map[string]string{
 	"Project.SlackChannels":                          "projects.<KEY>.slack_channels",
 	"Project.Memory":                                 "projects.<KEY>.memory",
 	"Project.ProductionCheck":                        "projects.<KEY>.production_check",
+	"Project.DefaultSteps":                           "projects.<KEY>.default_steps",
 	"Memory.Mode":                                    "projects.<KEY>.memory.mode",
 	"Memory.ConfigFiles":                             "projects.<KEY>.memory.config_files",
 	"Memory.InstructionsPath":                        "projects.<KEY>.memory.instructions",
@@ -387,7 +388,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	// under that key (contract 141); what a project that declares one carries is
 	// TestSettingsOfNamesAProjectsExperiments'.
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
-		"slack_channels", "memory", "experiments", "production_check", "deploys",
+		"slack_channels", "memory", "experiments", "production_check", "default_steps", "deploys",
 	})
 
 	// (c) Nothing planted reaches the wire, and no key of a credential's shape does either.
@@ -440,6 +441,15 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	}
 	if got := settings.Projects["WIDGETS"].ProductionCheck; got != "off" {
 		t.Errorf("projects.WIDGETS.production_check = %q, want the file's off as the word", got)
+	}
+	// The project that names no `default_steps` shows the steps it runs by default, today's line
+	// up to the owner's acceptance, and the one that names two shows those two, each as the word
+	// the file takes.
+	if got, want := settings.Projects["LEGION"].DefaultSteps, []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}; !slices.Equal(got, want) {
+		t.Errorf("projects.LEGION.default_steps = %q, want %q, which a project that names no key runs", got, want)
+	}
+	if got, want := settings.Projects["WIDGETS"].DefaultSteps, []string{"implementer", "reviewer"}; !slices.Equal(got, want) {
+		t.Errorf("projects.WIDGETS.default_steps = %q, want the file's %q", got, want)
 	}
 	if settings.ProductionCheckHours != 240 {
 		t.Errorf("production_check_hours = %v, want the file's 240", settings.ProductionCheckHours)
@@ -720,7 +730,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 	}
 	projects := keysOf(t, keysOf(t, encoded)["projects"])
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
-		"slack_channels", "memory", "experiments", "production_check", "deploys",
+		"slack_channels", "memory", "experiments", "production_check", "default_steps", "deploys",
 	})
 	if got := string(keysOf(t, projects["LEGION"])["experiments"]); got != "[]" {
 		t.Errorf("a project that declares no experiment under the key carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 141)", got)

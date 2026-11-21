@@ -210,8 +210,9 @@ func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.Desi
 }
 
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
-// artifacts answers none, and an upload answers the slug Dispatch files the name under, which for
-// a message's document is its name (record.MessageArtifact). It also takes every role-holder
+// artifacts answers none, an upload answers the slug Dispatch files the name under, which for a
+// message's document is its name (record.MessageArtifact), and a read of a plan document at a
+// version finds none, since no executor of the outbox reads one. It also takes every role-holder
 // publication and keeps none. Every fake of the client that no test drives through a message's
 // document or a role-holder publication embeds it.
 type noArtifacts struct{}
@@ -219,6 +220,9 @@ type noArtifacts struct{}
 func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
 func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
 	return name, nil
+}
+func (noArtifacts) PlanDocument(context.Context, string, int) (dispatch.DocumentVersion, error) {
+	return dispatch.DocumentVersion{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "artifact not found"}
 }
 func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
 
@@ -1561,6 +1565,70 @@ func TestOutboxSuperviseStartsResumesSuspendsStopsAndDeduplicatesDelivery(t *tes
 	}
 }
 
+// The stop of a task stops the process of the step it ran with the session kept (workflow's
+// stopTask holds the issue, then writes the op step_stop): the executor suspends the claim as a
+// suspend row does, with the daemon as the source, so the session stays, the runtime's process is
+// suspended once, and an idle release that reaches the claim afterwards cannot take the
+// suspension over, since a release ranks below the daemon (supervise's suspendedAgain). The
+// suspend row is the twin: one body serves both ops.
+func TestAStepStopSuspendsTheClaimAsTheDaemonAndKeepsItsSession(t *testing.T) {
+	for _, op := range []record.SuperviseOp{"step_stop", "suspend"} {
+		t.Run(string(op), func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
+			putOutboxIssue(t, pool, records, issue)
+			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			runner := &outbox{log: quietLogger(), dispatchProject: "LEGION",
+				pool: pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+				provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+					return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
+				},
+			}
+			start := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester, Task: "Test it.", Generation: issue.Generation}, time.Now())
+			start.ID = 57
+			if err := runner.execute(ctx, start); err != nil {
+				t.Fatalf("start the tester: %v", err)
+			}
+			token, err := claim.NewToken("legion", issue.Key, claim.RoleTester)
+			if err != nil {
+				t.Fatal(err)
+			}
+			machine, found := sup.Machine(token)
+			if !found {
+				t.Fatal("the supervisor has no tester claim")
+			}
+			if err := machine.Handle(ctx, supervise.RequestRegister{Claim: token, Generation: 1, Session: "ses-test", SessionFile: "/tmp/test.jsonl"}); err != nil {
+				t.Fatalf("register the tester: %v", err)
+			}
+			if err := machine.Handle(ctx, supervise.RequestReady{Claim: token, Generation: 1, Session: "ses-test"}); err != nil {
+				t.Fatalf("ready the tester: %v", err)
+			}
+			// The stop holds the issue before it stops the step, in the fact's transaction.
+			issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.Testing, Reason: record.HoldTaskStopped}
+			putOutboxIssue(t, pool, records, issue)
+			stop := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: op, Tree: issue.Tree, Role: claim.RoleTester, Generation: issue.Generation,
+				Reason: "task a of LEGION-208 was stopped by its owner"}, time.Now())
+			stop.ID = 58
+			if err := runner.execute(ctx, stop); err != nil {
+				t.Fatalf("run the %s row: %v", op, err)
+			}
+			if got := machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon ||
+				got.Session != "ses-test" || got.SessionFile != "/tmp/test.jsonl" || len(rt.CallsOf("Suspend")) != 1 {
+				t.Fatalf("after the %s row the tester is %s by %q on %q (%q) after %d suspensions, want suspended once by the daemon with its session kept",
+					op, got.State, got.SuspendedBy, got.Session, got.SessionFile, len(rt.CallsOf("Suspend")))
+			}
+			if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: "the pod is idle", By: supervise.SuspendedByReleased}); err != nil {
+				t.Fatalf("an idle release of the stopped tester: %v", err)
+			}
+			if got := machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon || got.Session != "ses-test" {
+				t.Fatalf("after an idle release the tester is %s by %q on %q, want the daemon's suspension kept with its session", got.State, got.SuspendedBy, got.Session)
+			}
+		})
+	}
+}
+
 // A start queued before its tree closed, backing off, reaches its claim after the close's suspend.
 // Linger holds the member where it stood, so the start finishes without resuming the worker, and
 // records no start, so the close's suspend still applies if it runs later. Once re-admission ends
@@ -2311,7 +2379,20 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			apply("handoff:reviewer:reviewing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
 				Claim: reviewerClaim, HandoffRecord: "review-round-2", HandoffVersion: 2})
 			if tc.accept {
-				apply("signoff", intake.SignOff{Issue: issue.Key})
+				// The sign-off names the root's architect, the generation and the run of accepting,
+				// as the route reads them (api's signOff).
+				architect, err := claim.NewToken("legion", issue.Key, claim.RoleArchitect)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var entry record.StepEntry
+				if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+					entry, err = records.OpenStep(ctx, tx, issue.Key)
+					return err
+				}); err != nil {
+					t.Fatalf("read the run of accepting: %v", err)
+				}
+				apply("signoff", intake.SignOff{Issue: issue.Key, By: architect, Generation: issue.Generation, Entry: entry})
 			}
 			implementerLaunches := func() int {
 				n := 0

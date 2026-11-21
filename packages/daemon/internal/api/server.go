@@ -566,6 +566,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/claims/fresh-session", s.claimFreshSession},
 		{"POST /legion/v1/claims/compact", s.claimCompact},
 		{"POST /legion/v1/gates/register", s.gateRegister},
+		{"POST /legion/v1/plans/register", s.registerPlan},
+		{"POST /legion/v1/tasks/stop", s.stopTask},
 		{"POST /legion/v1/waves/release", s.waveRelease},
 		{"POST /legion/v1/phase/backward", s.phaseBackward},
 		{"POST /legion/v1/phase/retry", s.phaseRetry},
