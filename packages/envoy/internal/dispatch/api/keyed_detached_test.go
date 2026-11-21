@@ -21,14 +21,25 @@ import (
 // keyedPost posts body to the rig's route on server as alice under key, giving up after timeout as
 // a client does. It answers the status and body, or the client's own failure.
 func keyedPost(server *httptest.Server, path, body, key string, timeout time.Duration) (int, string, http.Header, error) {
-	request, err := http.NewRequest(http.MethodPost, server.URL+path, strings.NewReader(body))
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return keyedPostContext(ctx, server, path, body, key)
+}
+
+// keyedPostContext is keyedPost carrying ctx in place of a timeout: the request, the answer's
+// head and its body all end when ctx does, so a call begun after ctx's deadline ends at once. A
+// test that waits at the shared bound passes testwait.Context(t): a duration taken from that
+// deadline is negative once the deadline has passed, and a client whose Timeout is not positive
+// has none.
+func keyedPostContext(ctx context.Context, server *httptest.Server, path, body, key string) (int, string, http.Header, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+path, strings.NewReader(body))
 	if err != nil {
 		return 0, "", nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Dispatch-User", "alice")
 	request.Header.Set(contracts.IdempotencyKeyHeader, key)
-	response, err := (&http.Client{Timeout: timeout}).Do(request)
+	response, err := (&http.Client{}).Do(request)
 	if err != nil {
 		return 0, "", nil, err
 	}
