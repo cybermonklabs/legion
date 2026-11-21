@@ -6,4 +6,4 @@ body: |-
   A socket of an intake's connection that carries a hand-back no flush on that connection has confirmed is now reset rather than closed, at shutdown and when the bus gives the connection up as stale and reconnects, so the hand-back's bytes still in the kernel's send queue are dropped rather than sent after the hold is released; a flush on the new connection no longer counts as confirming them. Every other socket closes as before. An intake's stop no longer releases its hold while an earlier delivery under the same hold still has a hand-back no flush has confirmed: it waits for every hand-back the connection carries, not only its latest delivery's. An intake that takes its durable again under one hold, as after a create the grant refuses, no longer leaves a goroutine waiting for that hold's end per attempt: a delivery's loss watcher ends once its stop has sealed it with nothing handed back, or once a flush has confirmed its hand-backs.
 time: 2026-11-21T10:09:50Z
 custom:
-  Issue: envoy-hand-back-counted-before-release
+  Issue: pr4804

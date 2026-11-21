@@ -370,3 +370,33 @@ func TestAFlushConfirmsNoMarkMadeOrUnwrittenAsItBegan(t *testing.T) {
 		})
 	}
 }
+
+// ConfirmMarked confirms only a mark whose write nats.go had taken as the flush began, even on a
+// healthy connection whose flush answers at once: it reports confirmed only when the flush cleared
+// every mark (severableDialer.confirmMarks), and a write still to be taken can go out behind the
+// flush's PING. The row marks a write on a client of the test's server and, before the write is
+// taken, requires ConfirmMarked false and the mark still set; once the write is taken (written), it
+// requires ConfirmMarked true and no mark left, which is the control that the flush answers. The
+// negative control is a ConfirmMarked that answers true whenever its flush answers, whatever the
+// marks: the first half fails and the second stays quiet.
+func TestConfirmMarkedConfirmsNoMarkedWriteNatsGoHasNotTaken(t *testing.T) {
+	client, err := ConnectOwningStream([]string{testnats.URL(t)})
+	if err != nil {
+		t.Fatalf("connect to the test's server: %v", err)
+	}
+	t.Cleanup(client.Close)
+	written := client.MarkUnconfirmed()
+	if client.ConfirmMarked(10 * time.Second) {
+		t.Error("ConfirmMarked reported every mark confirmed while the marked write had not been taken by nats.go")
+	}
+	if !client.CarriesUnconfirmed() {
+		t.Error("the mark of a write nats.go had not taken was cleared")
+	}
+	written()
+	if !client.ConfirmMarked(10 * time.Second) {
+		t.Error("control: ConfirmMarked did not confirm once the marked write was taken and the flush answered")
+	}
+	if client.CarriesUnconfirmed() {
+		t.Error("control: a mark is left after a flush that confirmed every marked write")
+	}
+}
