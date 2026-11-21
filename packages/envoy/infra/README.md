@@ -4004,9 +4004,9 @@ session's consumer); `notifications.envoy.resume.>` (where a deleted session con
 report, and an unheld role's refusal). So a direct publish of the edge's reaches no Dispatch,
 GitHub, Slack, team or Legion event, no other project's role lane and no role lane in the form
 that names no project, nothing on the kept role lane `notifications.envoy.kept.>` and no other
-exception lane. A message on a role lane of its own project that
-names a role of another project is the shared listeners' role lane to refuse, which it does once
-the edge mode of #4810 is in. It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
+exception lane. A message on a role lane of its own project that names a role of another project
+is the shared listeners' role lane to refuse, which it does with the edge mode of #4810
+(`roleLaneProjectError`). It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
 `ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), and no `$JS.API.DIRECT.GET` of any
 bucket, so it can change no stream's subjects, limits or republish:
 

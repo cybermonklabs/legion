@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const bearerPrefix = "Bearer "
@@ -74,6 +75,10 @@ type listenerAPIAuth struct {
 	google *googleIdentities
 	// brokers takes access tokens the secrets broker issued; nil on a listener that takes none.
 	brokers *brokerTokens
+	// edgeProjects is ENVOY_EDGE_PROJECTS (config.Service.EdgeProjects): the projects an edge
+	// listener serves, empty on every other listener. Non-empty, /v1 admits a broker token alone,
+	// and only one EdgeAdmits admits (project_scope.go).
+	edgeProjects []string
 	// allowedHosts is ENVOY_ALLOWED_HOSTS, the names an open /v1 serves beside loopback.
 	allowedHosts []string
 	// logger takes every refusal and every warned admission; apiAuth refuses an auth without one.
@@ -88,9 +93,9 @@ type listenerAPIAuth struct {
 }
 
 // requiresBearer reports whether /v1 takes a bearer, which is what closes it to a caller that
-// presents none.
+// presents none. An edge listener always does: it admits a broker token alone.
 func (a listenerAPIAuth) requiresBearer() bool {
-	return a.token != "" || a.verifier != nil || a.google != nil
+	return a.token != "" || a.verifier != nil || a.google != nil || len(a.edgeProjects) > 0
 }
 
 // googleIdentities admits a caller by its own Google identity token, the credential of a caller
@@ -367,7 +372,20 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 				refuseBrokerToken(w, auth.logger, r, auth.brokers, err)
 				return
 			}
-			admit(w, r.WithContext(withBrokerCaller(r.Context(), caller)), credentialBroker)
+			ctx := withBrokerCaller(r.Context(), caller)
+			if len(auth.edgeProjects) > 0 {
+				if err := EdgeAdmits(auth.edgeProjects, caller); err != nil {
+					auth.logger.Warn("listener: edge listener refused a broker token",
+						slog.String("session", caller.Session),
+						slog.String("reason", err.Error()),
+						slog.Any("served", auth.edgeProjects),
+						slog.String("path", r.URL.Path))
+					writeJSON(w, http.StatusForbidden, listenerwire.EdgeRefusal{Reason: edgeTokenNotAdmitted, Error: err.Error()})
+					return
+				}
+				ctx = withEdgeHold(ctx)
+			}
+			admit(w, r.WithContext(ctx), credentialBroker)
 			return
 		}
 		if open {
@@ -376,6 +394,12 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 				return
 			}
 			admit(w, r, credentialNone)
+			return
+		}
+		// An edge listener admits a broker token alone (EdgeAdmits): whatever else a request
+		// presents, it is refused here as an unknown credential is, before any bearer is compared.
+		if len(auth.edgeProjects) > 0 {
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 
@@ -662,6 +686,9 @@ func describeListenerAPIAuth(auth listenerAPIAuth, issuer string) string {
 		named = append(named, "google "+auth.google.audience+" for "+strings.Join(auth.google.accounts, ", "))
 	}
 	if described := auth.brokers.describe(); described != "" {
+		if len(auth.edgeProjects) > 0 {
+			described += " alone, as the edge listener of " + strings.Join(auth.edgeProjects, ", ")
+		}
 		named = append(named, described)
 	}
 	if len(named) == 0 {

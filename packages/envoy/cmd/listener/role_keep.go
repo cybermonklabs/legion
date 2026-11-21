@@ -649,10 +649,11 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // costs one resolution and one read of the lane past its cursor.
 //
 // One message is not kept at all, and leaves its caller's give-up exactly as it was before the
-// kept lane: one whose role token no claim can name (roles.Valid, the pattern POST /v1/roles/set
-// refuses), which both give-up paths must agree on, and Dispatch's outbox with them
-// (keptOrSkipped, internal/dispatch/outbox/role.go), since a copy kept under such a token waits
-// for a claim that cannot be made and expires unread.
+// kept lane: one whose role no claim can be keyed by (roles.ValidClaimKey: a role token of the
+// pattern POST /v1/roles/set accepts, under the project a free-form role's key names), which both
+// give-up paths must agree on, and Dispatch's outbox with them (keptOrSkipped,
+// internal/dispatch/outbox/role.go), since a copy kept under such a token waits for a claim that
+// cannot be made and expires unread.
 //
 // A sender that keeps a queue of its own and redelivers from it - the Legion daemon's notice
 // queue - opts out on the publish route's own request field instead (keep false, read by
@@ -663,7 +664,7 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // no kept role lane (natsgrant.Edge), so its give-up is the one a keep that kept nothing leaves,
 // the publish route's 404 with its refusal's exception.
 func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
-	if !roles.Valid(role) {
+	if !roles.ValidClaimKey(role) {
 		return keptRoleCopy{}, errRoleNotKeepable
 	}
 	if cfg.edge != nil {
@@ -677,9 +678,9 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 	return kept, nil
 }
 
-// errRoleNotKeepable is keepForNextHolder's answer for a role token no claim can name (roles.Valid),
-// which it keeps nothing for.
-var errRoleNotKeepable = errors.New("no claim can name this role token, so nothing is kept for it")
+// errRoleNotKeepable is keepForNextHolder's answer for a role no claim can be keyed by
+// (roles.ValidClaimKey), which it keeps nothing for.
+var errRoleNotKeepable = errors.New("no claim can be keyed by this role, so nothing is kept for it")
 
 // errEdgeKeepsNothing is keepForNextHolder's answer at an edge listener, which keeps nothing: its
 // grant publishes no kept role lane (natsgrant.Edge).

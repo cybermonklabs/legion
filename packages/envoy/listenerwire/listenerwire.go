@@ -73,6 +73,23 @@ type APIError struct {
 // stored nothing. Every other 503 of those routes leaves the code out.
 const CodeMaybeStored = "maybe_stored"
 
+// EdgeRefusal is the body of an edge listener's refusal of a request its token's projects do not
+// cover (ENVOY_EDGE_PROJECTS). Reason names the rule: token_not_admitted, topic_not_in_project,
+// repository_not_in_project, repositories_unknown, topic_not_published, role_not_in_project,
+// session_not_in_project, legion_registry_not_written or sender_not_session (a send or a publish
+// whose source is not agent or whose source_session is not the token's session). Refused is set
+// on a registration's 403 alone: every topic of the request the edge refused, each once, as the
+// request carried it and in its order, which a client drops before it registers the rest again;
+// nothing of such a registration is stored. Reason is repository_not_in_project when every
+// refused topic is a GitHub topic, and topic_not_in_project when any is not. Expected names the
+// request fields the refusal is about.
+type EdgeRefusal struct {
+	Error    string   `json:"error"`
+	Reason   string   `json:"reason"`
+	Refused  []string `json:"refused,omitempty"`
+	Expected []string `json:"expected,omitempty"`
+}
+
 // MessageBody is the message a send or a publish carries, which the listener builds the envelope
 // it puts on the bus from. A sender that leaves Source out speaks as an agent.
 type MessageBody struct {

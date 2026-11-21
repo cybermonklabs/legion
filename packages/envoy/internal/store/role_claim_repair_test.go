@@ -144,7 +144,7 @@ func (rig *repairRig) register(sessionID, instance string, topics ...string) Int
 	if err != nil {
 		rig.t.Fatalf("write %s's registration: %v", sessionID, err)
 	}
-	if _, err := rig.reg.RenewRoleClaims(ctx, sessionID, instance, row); err != nil {
+	if _, err := rig.reg.RenewRoleClaims(ctx, sessionID, instance, row, nil); err != nil {
 		rig.t.Fatalf("renew %s's role claims: %v", sessionID, err)
 	}
 	return row

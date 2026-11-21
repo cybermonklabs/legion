@@ -62,6 +62,11 @@ const (
 	// message. It is not the 429 apiauth.go answers a broker token's check with, whose reason is
 	// rate_limited: this one is about how fast a session sends, not about its credential.
 	outcomeSenderRateLimited requestOutcome = "sender_rate_limited"
+	// outcomeNotInProject belongs to the publish route of an edge listener alone: a topic that is
+	// no role subject of the token's projects, refused 403 topic_not_published (project_scope.go,
+	// edgePublishRefusal). A send to a session of another project is outcomeNoLiveSession, since
+	// it is answered as one.
+	outcomeNotInProject requestOutcome = "not_in_project"
 )
 
 // requestRecord is this listener's record of one inbound send or publish, and the only way either

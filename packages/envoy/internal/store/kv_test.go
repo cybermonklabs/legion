@@ -442,6 +442,30 @@ func TestMergeForUpsertKeepsTheStoredMachineIDForARequestThatCarriesNone(t *test
 	}
 }
 
+// A plan's Withheld topics leave the stored row, and every other stored topic is kept beside the
+// plan's own: the write merges into the row it read, less what the caller's rule withheld.
+func TestMergeForUpsertTakesAPlansWithheldTopicsOutOfTheStoredRow(t *testing.T) {
+	cur := Interest{
+		SessionID: "ses_withheld",
+		MachineID: "m1",
+		Topics:    []string{"notifications.agent.ses_withheld", "notifications.github.acme.other.issues", "notifications.team.kept"},
+	}
+	item := Interest{SessionID: "ses_withheld", MachineID: "m1"}
+	plan := InterestPlan{
+		Topics:   []string{"notifications.agent.ses_withheld", "notifications.team.added"},
+		Withheld: []string{"notifications.github.acme.other.issues"},
+	}
+
+	result, err := mergeForUpsert(cur, nil, item, 303, plan)
+	if err != nil {
+		t.Fatalf("mergeForUpsert returned unexpected error: %v", err)
+	}
+	want := []string{"notifications.agent.ses_withheld", "notifications.team.added", "notifications.team.kept"}
+	if !slices.Equal(result.Topics, want) {
+		t.Errorf("Topics = %v, want %v: the withheld topic out, the stored and the planned ones in", result.Topics, want)
+	}
+}
+
 // --- Integration Tests (a real NATS server) ---
 
 // connectNATS connects to the package's shared NATS server, in the JetStream account

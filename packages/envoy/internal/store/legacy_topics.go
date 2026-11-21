@@ -66,17 +66,31 @@ func (r *Registry) CountStoredLegacyTopics(sessionID string, topics []string) {
 }
 
 // ClaimedRole reads a role a claim names in either form (contracts.CanonicalRole) and answers the
-// role's name, which is what its claim record is keyed by, with a warning for the old form,
+// key its claim record is keyed by (RoleClaimKeyOf), with a warning for the old form,
 // "<old> is the old form of <project>.<name>; claim <project>.<name>", counted (kind="role"). A
-// role in the new form answers its name and no warning.
-func (r *Registry) ClaimedRole(role string) (name, warning string) {
-	project, name, legacy := contracts.CanonicalRole(role)
-	if !legacy {
-		return name, ""
+// role in the new form answers its key and no warning.
+func (r *Registry) ClaimedRole(role string) (key, warning string) {
+	claim, _ := contracts.RoleClaimOf(role)
+	if !claim.Legacy {
+		return claim.Key, ""
 	}
 	r.countLegacy("role")
-	current := project + "." + name
-	return name, role + " is the old form of " + current + "; claim " + current
+	current := claim.Project + "." + claim.Role
+	return claim.Key, role + " is the old form of " + current + "; claim " + current
+}
+
+// RoleClaimKeyOf is the key of the claim a role named in either form is claimed, read and reached
+// under (contracts.RoleClaimOf), and so the key every reader of a role's name - the claim route,
+// the role lookup, the publish route's role send, the role lane, a role lane topic of an interest
+// record - resolves a holder by. A free-form role under a project key (PRIV.lead-reviewer) is
+// that project's own claim, keyed <project>.<role>. Every other name keeps the bare key every
+// claim had before claims keyed on their project, byte for byte: the old form (the name alone), a
+// free-form role under no project (_.lead-reviewer), and a Legion role, which works for the
+// project its own name gives whatever project the new form names (contracts.ClaimProject, which
+// POST /v1/roles/set asks before it claims one under another project).
+func RoleClaimKeyOf(role string) string {
+	claim, _ := contracts.RoleClaimOf(role)
+	return claim.Key
 }
 
 // countLegacy counts one old-form name of kind, when the registry was opened with a counter.
