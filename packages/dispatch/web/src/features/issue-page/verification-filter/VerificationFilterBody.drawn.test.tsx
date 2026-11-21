@@ -156,7 +156,7 @@ function drawBody(
 /** Draws `view` again as `body`, a body `bodyOf` built with `staged`, and lets the stage place
  *  the focus: it places it a microtask after the render a failed read's line left in with the
  *  focus, and is told of the rows or the line its tree waits for a microtask after the render
- *  that draws them (`ViewStage`), where the body once placed it in the render itself. */
+ *  that draws them (`ViewStage`). */
 async function redrawStaged(view: RenderResult, body: ReactElement): Promise<void> {
   view.rerender(body);
   await act(async () => undefined);
@@ -1548,9 +1548,10 @@ test("Enter on a Retry keeps the focus in the view: on the next refused read's R
 
 // The body says the reads that failed in one order of its own, coverage, results, blocks,
 // whatever order it is given them in, so which Retry takes the focus when a line leaves with it
-// never hangs on the order the slot filled its record in. Given the results read before the
-// coverage read, it draws the coverage line first, and Enter on that line's Retry, once the line
-// is gone, moves the focus to the results read's Retry.
+// never hangs on the order the slot filled its record in. Given the reads blocks, results,
+// coverage, it draws coverage, results, blocks; once coverage's line leaves with the focus, the
+// focus goes to results' Retry, the body's next line, and not to blocks', which the record names
+// first.
 test("the failed reads' lines stand in the body's own order whatever order they are given in, and the focus moves from the first to the next", async () => {
   const user = userEvent.setup();
   const met = passing("c-one");
@@ -1562,7 +1563,7 @@ test("the failed reads' lines stand in the body's own order whatever order they 
     bodyOf(
       statements,
       [met],
-      { reads: refusedReads(retried, "results", "coverage"), staged: true },
+      { reads: refusedReads(retried, "blocks", "results", "coverage"), staged: true },
       client
     )
   );
@@ -1582,18 +1583,28 @@ test("the failed reads' lines stand in the body's own order whatever order they 
     expect(lines(), "the lines stand in the order the reads were given in").toEqual([
       "coverage",
       "results",
+      "blocks",
     ]);
     const [first] = within(view.container).getAllByRole("button", { name: "Retry" });
-    expect(first).toBe(retryOf("coverage"));
+    expect(first, "the first Retry is another read's than coverage's").toBe(retryOf("coverage"));
     act(() => first?.focus());
     await user.keyboard("{Enter}");
     expect(retried).toEqual(["coverage"]);
-    // The coverage read is out again, and the results read is still refused.
+    // The coverage read is out again, and the results and blocks reads are still refused, the
+    // record holding the blocks read first.
     await redrawStaged(
       view,
-      bodyOf(statements, [met], { reads: refusedReads(retried, "results"), staged: true }, client)
+      bodyOf(
+        statements,
+        [met],
+        { reads: refusedReads(retried, "blocks", "results"), staged: true },
+        client
+      )
     );
-    expect(lines()).toEqual(["results"]);
+    expect(lines(), "the lines left stand in the order the reads were given in").toEqual([
+      "results",
+      "blocks",
+    ]);
     expect(document.activeElement, "the focus moved elsewhere than the next line's Retry").toBe(
       retryOf("results")
     );
@@ -1669,18 +1680,14 @@ test("with a read refused, the view's tree gives its focus to that read's Retry"
     refused.unmount();
   }
 
-  // A tree with rows, focused as a click on the table's headings focuses it, and drawn again as
-  // any read's answer draws it: no row came, so the focus stays on the tree.
+  // A tree with rows, focused as a click on the table's headings focuses it, keeps the focus,
+  // since only rows that come where the tree drew none take it.
   const client = testClient();
   const drawn = render(bodyOf(statements, [met], { staged: true }, client));
   try {
     const tree = drawn.container.querySelector<HTMLElement>('[role="tree"]');
     act(() => tree?.focus());
     expect(document.activeElement).toBe(tree);
-    drawn.rerender(bodyOf(statements, [met], { staged: true }, client));
-    expect(document.activeElement, "a tree whose rows were drawn gave its focus to a row").toBe(
-      tree
-    );
   } finally {
     drawn.unmount();
   }

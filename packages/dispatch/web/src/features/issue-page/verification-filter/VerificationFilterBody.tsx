@@ -66,14 +66,19 @@ import {
   verificationReading,
 } from "./statement-state";
 
+/** The three reads in the one order the body says the failed ones in, whatever order it is given
+ *  them in: the coverage read, then the results read, then the Verification document's blocks
+ *  read. */
+const VERIFICATION_READS = ["coverage", "results", "blocks"] as const;
+
 /** The three reads the Verification view is drawn from: the coverage read, the results read and
  *  the blocks read of the Verification document its checks live in, which places each check
  *  under the statements it serves. */
-export type VerificationRead = "coverage" | "results" | "blocks";
+export type VerificationRead = (typeof VERIFICATION_READS)[number];
 
 /** How the reads the body is drawn from stand: one still out, all of them answered, or one or
  *  more failed before they first answered, each by its name (`FailedRead`). The body says the
- *  failed ones in an order of its own (`UNREADABLE_ORDER`), whatever order they are given in. */
+ *  failed ones in an order of its own (`VERIFICATION_READS`), whatever order they are given in. */
 export type VerificationReads =
   | { readonly state: "waiting" }
   | { readonly state: "answered" }
@@ -332,21 +337,15 @@ export function VerificationFilterBody({
     <div className={BODY} data-verification-body="">
       {/* Each read that failed before it first answered, the page's one line for a failed read
           (`FailedReadLine`): its words and a Retry that asks that read alone again. The lines
-          stand in the body's own order (`UNREADABLE_ORDER`) whatever order the reads are given
+          stand in the body's own order (`VERIFICATION_READS`) whatever order the reads are given
           in, since the stage the view is drawn in gives the first line's Retry the focus when a
           line leaves with it. They stand over the tree and never in it: an alert inside a tree
           would break the tree's own structure of rows. Each stands in an element that names its
-          read, so one read's line is found by that name, and that is marked while its read runs
-          again: a press on its Retry then asks nothing more and the line draws no change, so the
-          browser rows read the mark to press Retry once the run under way has ended. */}
-      {UNREADABLE_ORDER.map((read) => {
+          read, so one read's line is found by that name. */}
+      {VERIFICATION_READS.map((read) => {
         const line = failed?.[read];
         return line === undefined ? null : (
-          <div
-            data-verification-retrying={line.retrying ? "" : undefined}
-            data-verification-unreadable={read}
-            key={read}
-          >
+          <div data-verification-unreadable={read} key={read}>
             <FailedReadLine
               message={UNREADABLE_LINES[read]}
               onRetry={line.retry}
@@ -644,10 +643,6 @@ const UNREADABLE_LINES: Readonly<Record<VerificationRead, string>> = {
   coverage: STATE_LINES.coverage_unreadable,
   results: STATE_LINES.results_unreadable,
 };
-
-/** The one order the body says the reads that failed in, whatever order it is given them in:
- *  the coverage read, then the results read, then the Verification document's blocks read. */
-const UNREADABLE_ORDER: readonly VerificationRead[] = ["coverage", "results", "blocks"];
 
 /** The seven states a check can be in, in the order the page declares them. */
 const CHECK_STATES = Object.keys(NODE_STATE_WORDS.check) as CheckState[];

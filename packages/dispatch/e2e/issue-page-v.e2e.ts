@@ -1094,9 +1094,9 @@ test("the Verification view keeps its rows when its document's blocks read fails
 // do not say once they have all answered, and once it answers each statement draws its check. A
 // read refused from the first load holds nothing to draw, and the view once drew an empty tree
 // for it, which says nothing a reader can act on. So the view says, over its tree, that it could
-// not load the checks, in one line with a Retry, and draws no card, no row and nothing its reads
-// do not say; once the refusal is lifted, that Retry asks the read again and the view settles on
-// each statement's check.
+// not load the verification document, in one line with a Retry, and draws no card, no row and
+// nothing its reads do not say; once the refusal is lifted, that Retry asks the read again and the
+// view settles on each statement's check.
 // SLOW(>=2s): a whole seeded issue loaded three times, two of them read for 1.5 s each while the
 // blocks read is held or refused, then the refused read asked again by Retry.
 test("the Verification view says nothing of a check's statements before the Verification document's blocks are read", async ({
@@ -1343,12 +1343,11 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
     // Enter on Retry while the read is still refused: the read is asked again and refused again,
     // its line drawn throughout, and at no reading is the focus on the page's body. A press on
     // Retry while its read runs asks nothing more (`FailedReadLine`), so Enter waits for the run
-    // the view's return started to be refused; the line is marked while its read runs.
-    const line = verificationUnreadable(page, "blocks");
+    // the view's return started to be refused; its Retry is busy (`aria-busy`) while its read runs.
     await expect(
-      line,
+      retry,
       "the blocks read the view's return asked again is still out"
-    ).not.toHaveAttribute("data-verification-retrying");
+    ).not.toHaveAttribute("aria-busy");
     await retry.focus();
     const asked = blocksRead.refusals();
     await page.keyboard.press("Enter");
@@ -1376,8 +1375,8 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
     // The refusal lifted, Enter on Retry: the read answers and the view draws its rows, the
     // focus stays in the view, and the tree answers `j`. The refusal is lifted once the run the
     // last Retry started has ended refused, so this press asks the read again.
-    await expect(line, "the blocks read the Retry asked again is still out").not.toHaveAttribute(
-      "data-verification-retrying"
+    await expect(retry, "the blocks read the Retry asked again is still out").not.toHaveAttribute(
+      "aria-busy"
     );
     await blocksRead.lift();
     await retry.focus();

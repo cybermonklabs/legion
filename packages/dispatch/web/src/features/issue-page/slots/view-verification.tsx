@@ -5,13 +5,12 @@ import { useLocation } from "react-router-dom";
 import { primarySpec } from "../../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock } from "../../../api/types";
-import { refetchFailedOnFocus } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { standsFailed, useIssueTree } from "../useIssueTree";
+import { EVENT_FRESH, standsFailed, useIssueTree } from "../useIssueTree";
 import {
   type FailedRead,
   queryTyped,
@@ -74,22 +73,12 @@ export function useVerificationReads(issueKey: string): {
   // The coverage read, and the issue's checks with the results recorded against them, under the
   // keys `useIssueTree.ts` already reads them with, so the view sends no request of its own. The
   // results read holds a result's commit, its verdict and its withdrawal, which the tree does
-  // not carry (`verification-filter/statement-state.ts`). Staleness is per observer: with the
-  // app's 30 s (`main.tsx`), pressing the view more than 30 s after the page read them read both
-  // again. Each holds what it read until an event refreshes its key (`staleTime: Infinity`), and
-  // the window's focus asks again only a read in error (`refetchFailedOnFocus`), as the page's
-  // reference reads do. `useIssueTree`'s own observers of the same keys take the same two
-  // options, so no observer of them reads them again by age.
-  const coverage = useQuery({
-    ...issueCoverageQuery(issueKey),
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: refetchFailedOnFocus,
-  });
-  const results = useQuery({
-    ...issueResultsQuery(issueKey),
-    staleTime: Number.POSITIVE_INFINITY,
-    refetchOnWindowFocus: refetchFailedOnFocus,
-  });
+  // not carry (`verification-filter/statement-state.ts`). Both take the tree's `EVENT_FRESH`
+  // (held until an event refreshes their key; the window's focus asks again only a read in
+  // error), as `useIssueTree`'s own observers of the same keys do, so no observer reads them
+  // again by age and the view's reads cannot drift from the tree's.
+  const coverage = useQuery({ ...issueCoverageQuery(issueKey), ...EVENT_FRESH });
+  const results = useQuery({ ...issueResultsQuery(issueKey), ...EVENT_FRESH });
   const checks = useMemo(() => results.data?.checks ?? [], [results.data]);
   // The blocks read of the Verification document too: a check learns the statements it serves
   // from its block's `serves` pointer, which only that read carries (`tree-drafts.ts`). Drawn
