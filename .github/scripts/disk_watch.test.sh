@@ -78,6 +78,17 @@ print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
 # alive <pid>: true/false for check.
 alive() { kill -0 "$1" 2>/dev/null && echo true || echo false; }
 
+# state_of <pid>: the state the kernel gives the process (`T` for stopped), read straight from
+# /proc/<pid>/stat by the shell, or '' once the process is gone. Not `ps`: it opens the stat file
+# of every process on the machine, and on a dev box running 16,530 of them one `ps -o state= -p`
+# took 0.66 to 0.71 s, so the stop's second, read after it, came out a second past the stop.
+state_of() {
+  local stat=""
+  read -r stat <"/proc/$1/stat" 2>/dev/null || true
+  stat=${stat##*) }
+  echo "${stat%% *}"
+}
+
 # line_of <text> <regex>: the number of the first line that matches, or '' when none does. The
 # cases that read it are about the order the report prints its lines in, not their wording. It
 # is `check-release-credentials.test.sh`'s helper of the same name, over text rather than a file.
@@ -240,31 +251,44 @@ run_watch start --path "$watched" --state "$stall_state"
 check "start left a sampler to stop" "$(is "$status" 0)"
 pid=$(field "$stall_state" sampler_pid)
 sleep 3
+# The stop is sent just after the sampler has written the line of the second it is in, while it
+# sleeps towards the next second: the one it was waiting for. A sampler that stamps that pending
+# second instead of reading the clock carries it out of the stall and writes it on waking, and the
+# window of seconds no line may name, read below, then begins at exactly that second. The wait is
+# bounded, because a sampler too starved to write a line inside the second it names gives no such
+# moment: the stop is then sent anyway, and the case says what it could not see.
+for _ in $(seq 120); do
+  [ "$(tail -n 1 "$stall_state.series" | cut -d' ' -f2)" = "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ] && break
+  sleep 0.025
+done
 kill -STOP "$pid"
 # `kill -STOP` only sends the signal, and the series below may be read only once the process
 # can no longer write. Measured in this pod, a sleeping sampler shows `T` within about a
 # millisecond, so the wait is a guarantee rather than a delay.
 for _ in $(seq 50); do
-  [ "$(ps -o state= -p "$pid" | tr -d ' ')" = T ] && break
+  [ "$(state_of "$pid")" = T ] && break
   sleep 0.1
 done
-check "the kernel has the sampler off the CPU" \
-  "$(is "$(ps -o state= -p "$pid" | tr -d ' ')" T)"
-# While the sampler is off the CPU it cannot write, so its series file is stable here and its
-# last stamp is the last second it has a line for. The second after that one is the second it
-# was waiting for when the signal landed, and that is where the window of seconds no line may
-# name begins. It cannot begin at a clock read taken after the stop: a sampler that stamps a
-# line before taking its readings carries that pending second out of the stall and writes it
-# on waking, and when the stop lands early in a second - 20 ms in does it - the pending second
-# IS that clock read, so a window starting a second later lets the late line through. Measured
-# against the old sampler with the stop landed 20 ms in: 0 late lines found in 3 of 3 runs,
-# though every run wrote one.
-# One edge: if a stop lands between the stamp and the append in disk_watch.py's `sample`, the
-# current sampler holds that line back, and this window refuses it. That is a false failure of
-# this check, since the sampler read the clock in that second, and the docstring of
-# disk_watch.py accepts that one late line. It is accepted here because the stamp and the
-# append run a few hundred microseconds apart, so about one run in ten thousand meets it.
+# The stop's second is read from the clock once the kernel shows the sampler stopped, so the stop
+# landed in that second or an earlier one, and every second after it is one the sampler was off
+# the CPU for the whole of. The window of seconds no line may name begins there, not at the second
+# after the sampler's last line: a stop can land after the sampler read the clock and before its
+# line reached the file, and that line - naming a second the sampler did run in, the one it read
+# the clock in - reaches the file on waking. A window begun after the last line refused it.
+stopped_in=$(date -u +%s)
+check "the kernel has the sampler off the CPU" "$(is "$(state_of "$pid")" T)"
+# While the sampler is off the CPU it cannot write, so its series file is stable here and its last
+# stamp is the last second it has a line for.
 last_before_stall=$(stamps "$stall_state.series" | tail -1)
+# When that line names the stop's own second, the stop landed while the sampler slept, and the
+# window's first second is the one it was waiting for. When it does not, the stop landed before
+# the sampler had written that second, and a line naming a second up to the stop's own may follow
+# on waking whether its clock was read before the stop or the second was carried out pending: this
+# run cannot tell the two apart, and says so rather than passing them as seen.
+if [ "$last_before_stall" != "$stopped_in" ]; then
+  echo "  UNKNOWN: the stop was seen in second $stopped_in, which the sampler had not written (its" \
+    "last line names $last_before_stall), so this run cannot catch a pending second carried out of the stall"
+fi
 sleep 4
 # resumed_at is read before the sampler is let go, so the second it is let go in - which may
 # carry the line it writes on waking - is left out of the window. Reading it inside the stall
@@ -282,11 +306,10 @@ after=$(awk -v resumed="$resumed_at" '$1 >= resumed' <<<"$seconds" | grep -c '^[
 # The number of ticks whose second did not move on: a sampler that reads the clock at the
 # wrong moment could stamp two ticks with one second.
 out_of_order=$(awk 'NR > 1 && $1 <= last { n += 1 } { last = $1 } END { print n + 0 }' <<<"$seconds")
-# The lines naming a second from the one after the sampler's last stamp to the one before it
-# was let go: seconds it was off the CPU for the whole of, except in the rare edge above. A
-# sampler that stamps before it reads writes exactly one: the tick it was waiting for when the
-# signal landed.
-inside_stall=$(awk -v from="$((last_before_stall + 1))" -v to="$((resumed_at - 1))" \
+# The lines naming a second from the one after the stop to the one before the sampler was let go:
+# seconds it was off the CPU for the whole of. A sampler that stamps the second it was waiting for
+# instead of reading the clock writes exactly one when the stop landed while it slept: that second.
+inside_stall=$(awk -v from="$((stopped_in + 1))" -v to="$((resumed_at - 1))" \
   '$1 >= from && $1 <= to { n += 1 } END { print n + 0 }' <<<"$seconds")
 # What this proves is that the sampler was running before the stop and came back after it, so
 # the hole below is the stop rather than a sampler that died in it. It cannot ask for a tick in
@@ -299,9 +322,13 @@ check "the stamps follow the real clock: no second is written twice or out of or
 # The window has to hold seconds for the check below it to mean anything, and the four-second
 # stall is what puts them there.
 check "the stall left whole seconds that no line may name" \
-  "$([ "$((resumed_at - 1))" -ge "$((last_before_stall + 1))" ] && echo true || echo false)"
+  "$([ "$((resumed_at - 1))" -ge "$((stopped_in + 1))" ] && echo true || echo false)"
 check "no line names a second the sampler was off the CPU for the whole of" \
   "$(is "$inside_stall" 0)"
+if [ "$inside_stall" != 0 ]; then
+  echo "    the seconds from $((stopped_in + 1)) to $((resumed_at - 1)) are the window; the series:" >&2
+  sed 's/^/    /' "$stall_state.series" >&2
+fi
 
 echo "case: report prints the four numbers and exits 0 for a margin that is ok"
 ok_state="$work/ok.json"
