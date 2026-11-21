@@ -149,6 +149,12 @@ func TestClusteredNatsHubRouteAuthorizationRendersAndRuns(t *testing.T) {
 			}
 			return nil
 		})
+		// A client another test left dialing 127.0.0.1 does not reach a server here, at its client
+		// port or its route port: each listens at its host alone (requireNoStrayReaches).
+		for _, s := range servers {
+			requireNoStrayReaches(t, s.name, s.host, s.client)
+			requireNoStrayReaches(t, s.name, s.host, s.route)
+		}
 
 		for _, rogue := range []struct{ name, userinfo, peerLog string }{
 			{"no credential", "", "authentication error"},

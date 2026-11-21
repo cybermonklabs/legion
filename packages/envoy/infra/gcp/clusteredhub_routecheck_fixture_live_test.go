@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,12 +36,17 @@ import (
 // own, on the nats.conf of the stage it has reached, with the route variables a pod has from the
 // env stage on. Its client and monitoring ports listen at host, a loopback address of the test's
 // own, so a client another test left dialing 127.0.0.1 cannot reach them and write a line into the
-// log the check reads. Its route port listens on 127.0.0.1, its pod IP here (stagedHub.Pods): on
-// loopback every connection comes from 127.0.0.1 whatever address it dials, so a route a server
-// accepts reads as from 127.0.0.1, and the route address must be that pod IP for the check to see
-// the hub's own routes as its pods'. restarts and startedAt are what the API server would report
-// for its container: the number of times it was started again, and when the running one started.
-// stamps is when each line of its output was first seen, as the container runtime stamps each line.
+// log the check reads (requireNoStrayReaches). Its route port listens on 127.0.0.1, its pod IP here
+// (stagedHub.Pods): the check takes a route connection from a pod IP as the hub's own, and a route
+// from 127.0.0.1 reads as from 127.0.0.1 on any loopback (on the Linux kernel's loopback every
+// connection does, whatever 127/8 address it dials; under gVisor a connection comes from the
+// address it dials, here 127.0.0.1). A stray client can dial that route port, since reservePorts
+// stops a second bind and not a dial, but the check reads nothing of it: it skips a route
+// connection from a pod IP, and counts a pod IP's refused route login only when the mesh is split
+// (routes/log.go, routeConnections; the "the hub's servers alone" row probes it). restarts and
+// startedAt are what the API server would report for its container: the number of times it was
+// started again, and when the running one started. stamps is when each line of its output was
+// first seen, as the container runtime stamps each line.
 type stagedServer struct {
 	name                   string
 	dir                    string
@@ -402,9 +408,11 @@ func (r rotatedLog) Log(ctx context.Context, pod string) ([]byte, error) {
 
 // startPeer starts a nats-server named name whose route port is on routeHost, in the hub's cluster
 // by name, soliciting routes to the hub's servers on routeTo, and advertising its own route
-// address: on loopback every outbound connection comes from 127.0.0.1, so the address a hub server
-// would see on a pod network is the one the peer advertises, which the hub's other servers then
-// dial as an implicit route (nats-server 2.15.1 server/route.go:859-871). A reload onto
+// address: the peer dials the hub's route ports at 127.0.0.1, and such a connection comes from
+// 127.0.0.1 (on the Linux kernel's loopback whatever address is dialed, under gVisor because it is
+// the address dialed), not from the peer's route address, so the address a hub server would see on
+// a pod network is the one the peer advertises, which the hub's other servers then dial as an
+// implicit route (nats-server 2.15.1 server/route.go:859-871). A reload onto
 // authorization closes the routes a server accepted, so the peer's own routes close there; the
 // ones the hub's servers dialed stay. Its client and monitoring ports listen at a loopback address
 // of its own (testport.LoopbackIP), apart from the route address the rows name it by, so a client
@@ -600,6 +608,63 @@ func refusedRouteLogin(t *testing.T, local string, port int) string {
 	require.NoError(t, err)
 	answer, _ := reader.ReadString('\n')
 	return strings.TrimSpace(answer)
+}
+
+// requireNoStrayReaches fails t, naming the server, when a client dialing 127.0.0.1 at port
+// reaches the nats-server named name that listens at host:port: a client another test left
+// dialing 127.0.0.1, at a port the kernel has since given this server, must not reach it. A
+// listener that answers at 127.0.0.1:port is another program's unless the INFO it sends names
+// this server. The control is the same read at host:port, whose INFO must name it, so a read that
+// could not see a server's name fails here rather than pass. Off Linux every server listens on
+// 127.0.0.1, so there is no other address to dial.
+func requireNoStrayReaches(t *testing.T, name, host string, port int) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		return
+	}
+	named := fmt.Sprintf(`"server_name":%q`, name)
+	own := net.JoinHostPort(host, strconv.Itoa(port))
+	require.Contains(t, firstLine(t, own), named, "control: the INFO %s sends at %s names it", name, own)
+	stray := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	conn, err := net.DialTimeout("tcp", stray, 2*time.Second)
+	if err != nil {
+		t.Logf("a client at %s reaches nothing (%v); %s listens at %s", stray, err, name, own)
+		return
+	}
+	defer conn.Close()
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	info, _ := bufio.NewReader(conn).ReadString('\n')
+	require.NotContains(t, info, named, "a client at %s reached %s, which listens at %s", stray, name, own)
+	t.Logf("a client at %s reaches another listener, not %s, which listens at %s", stray, name, own)
+}
+
+// firstLine is the first line a listener at address sends, its INFO for a nats-server.
+func firstLine(t *testing.T, address string) string {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	require.NoError(t, err)
+	return line
+}
+
+// strayRouteLogin dials s's route port at 127.0.0.1, its pod IP, as a stray client can, and logs
+// in as the route user with a wrong password, which s refuses and logs as an authentication error
+// from 127.0.0.1.
+func strayRouteLogin(t *testing.T, s *stagedServer) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(s.route)), 5*time.Second)
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, conn.SetDeadline(time.Now().Add(5*time.Second)))
+	reader := bufio.NewReader(conn)
+	_, err = reader.ReadString('\n')
+	require.NoError(t, err)
+	_, err = conn.Write([]byte(`CONNECT {"user":"route","pass":"` + strings.Repeat("s", 32) + `","verbose":false,"pedantic":false,"name":"stray"}` + "\r\nPING\r\n"))
+	require.NoError(t, err)
+	_, _ = reader.ReadString('\n')
 }
 
 // clientLine connects to s's client port as a client with no credential, which the hub's

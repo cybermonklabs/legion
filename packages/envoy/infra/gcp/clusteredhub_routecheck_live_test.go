@@ -117,6 +117,28 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 			require.True(t, strings.HasSuffix(strings.SplitN(out, "\n", 2)[0], "[INF] Starting nats-server"),
 				"%s's log begins with the start line", s.name)
 		}
+		// A client another test left dialing 127.0.0.1 does not reach a server's client port,
+		// which listens at an address of the test's own (requireNoStrayReaches).
+		for _, s := range h.servers {
+			requireNoStrayReaches(t, s.name, s.host, s.client)
+		}
+		// A stray client can dial a route port, which listens on 127.0.0.1, the pods' IP here:
+		// reservePorts stops a second bind, not a dial. The check reads nothing of it, since it
+		// skips a route connection from a pod IP and counts a pod IP's refused route login only
+		// when the mesh is split (routes/log.go, routeConnections). Each server logs the stray's
+		// refused login, so the stray reached it, and the check stays clean.
+		for _, s := range h.servers {
+			before := strings.Count(s.proc.Output.String(), `authentication error - User "route"`)
+			strayRouteLogin(t, s)
+			within(t, 15*time.Second, s.name+" logging the stray's refused route login", func() error {
+				if strings.Count(s.proc.Output.String(), `authentication error - User "route"`) == before {
+					return fmt.Errorf("%s has logged no refused route login since a stray dialed its route port at 127.0.0.1:%d", s.name, s.route)
+				}
+				return nil
+			})
+		}
+		report = routes.Check(ctx, h, rec)
+		require.Equal(t, routes.Clean, report.Verdict(), "a stray's refused login at each server's route port on 127.0.0.1 changed the check; findings: %v", report.Findings)
 
 		report = routes.Check(ctx, refusedVarz{h, h.release + "-1"}, rec)
 		require.Equal(t, routes.Unknown, report.Verdict(), "control: a /varz refused; findings: %v", report.Findings)
