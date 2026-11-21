@@ -156,13 +156,12 @@ jobs:
       # packages starts no job with a database. The pattern is built in
       # .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built from, so
       # what this step leaves out and what the other jobs run cannot drift apart. The broker's
-      # packages, internal/cipher and everything under it, and its command, cmd/cipherd, are left
-      # out too: the database-skips step below runs them with -json and fails on a failed test as
-      # on a skipped one, so this step ran each of them a second time (DATABASE_SKIPS_PKGS in
-      # ci_job_reads.py); that step in turn leaves out the race lane's packages under the tree, the
-      # auth service's natscallout today (DATABASE_SKIPS_PATTERN). What is left is the rest of the
-      # module, the two longest packages of it (the API's and the documents service's) now among
-      # the ones the lane runs, so its 20
+      # packages, internal/cipher and everything under it, its command, cmd/cipherd, and the
+      # writer hold's client, internal/holdrecord, are left out too: the database-skips step below
+      # runs them with -json and fails on a failed test as on a skipped one, so this step ran each
+      # of them a second time (DATABASE_SKIPS_PKGS in ci_job_reads.py). What is left is the rest of
+      # the module, the two longest packages of it (the API's and the documents service's) now
+      # among the ones the lane runs, so its 20
       # minutes are ample. The two tests of the web app's display-tree fixture are skipped:
       # without `--check` TestWebDisplayFixture writes the committed fixture rather than checking
       # it, so a run here would ask nothing of it, and
@@ -172,7 +171,7 @@ jobs:
       # which the count step below runs in this same job and env (BACKEND_COUNT_TESTS).
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/holdrecord$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the
@@ -190,7 +189,8 @@ jobs:
       # The step below is the one skip counter of the module's database-backed packages, which
       # envoy-go-race-api runs the Dispatch API through too, so its own test runs first:
       # packages/envoy/scripts/database-skips.test.sh plants a skipped test in
-      # ./internal/cipher/api/, ./cmd/cipherd/ and ./internal/dispatch/api/ through a Go overlay and
+      # ./internal/cipher/api/, ./cmd/cipherd/, ./internal/holdrecord/ and ./internal/dispatch/api/
+      # through a Go overlay and
       # holds the counter to count it; holds it to database_skips=UNKNOWN with a variable unset
       # and on a report that shows no run (no test of its packages ran, or one package's did not);
       # holds it to failing on a failed test; holds its --timeout to ending a test binary; and
@@ -201,11 +201,12 @@ jobs:
         timeout-minutes: 15
         run: packages/envoy/scripts/database-skips.test.sh
       # c8 also asks that the database broker suites run with BROKER_TEST_DATABASE_URL set and that
-      # none skips. go test reports a skip as a pass, so this step is where the broker's packages
-      # and its command run: it runs ./internal/cipher/... and ./cmd/cipherd/ with -json (less the
-      # race lane's packages under the tree, the auth service's natscallout, which envoy-go-race
-      # runs: the script's DEFAULT_EXCEPT), which the unit step above leaves out, fails on a failed
-      # test, and fails on any skipped test there
+      # none skips. go test reports a skip as a pass, so this step is where the broker's packages,
+      # its command and the writer hold's client run: it runs ./internal/cipher/...,
+      # ./cmd/cipherd/ and ./internal/holdrecord/ with -json, which the unit step above leaves out.
+      # The auth service's natscallout runs here too, beside its race run in envoy-go-race, since
+      # its hold rows open the broker's Postgres and skip without it: this run counts their skips.
+      # It fails on a failed test, and fails on any skipped test there
       # but the airlock's model comparisons, which the script's EXPECTED_SKIPS names (each needs a
       # built Lean model of the airlock, and the airlock-lean job runs them). A report that shows
       # no run prints database_skips=UNKNOWN and fails too. Its --timeout 20m is

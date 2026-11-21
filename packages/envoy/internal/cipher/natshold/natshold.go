@@ -1,5 +1,5 @@
 // Package natshold is the broker's store of the NATS writer hold: the hold row, its log, the
-// hold's records and each family's cutover row (migration 0040_nats_hold). The auth service reads
+// hold's records and each family's cutover row (migration 0041_nats_hold). The auth service reads
 // the row at every authorization request (Read), and the operator writes every table through the
 // broker's /v1/nats-hold routes alone. Every row carries the operator's signature
 // (internal/bus/signedrecord), which each reader verifies: this package stores and reads rows and

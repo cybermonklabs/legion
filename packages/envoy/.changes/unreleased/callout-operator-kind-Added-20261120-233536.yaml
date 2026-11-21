@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  The NATS auth service admits the deployment's one operator identity: a `BROKER_NATS_SERVICES`
+  entry of the new kind `operator` (`operator/-/*=<account>`, listed once, with no machine id and
+  the whole grant), which connects as user `service` with its ServiceAccount token and the inbox
+  prefix `_INBOX_envoy_operator`, and is placed in `$G` like every other client. Its grant follows
+  the NATS writer hold's phase (`natsgrant.Operator`): outside a hold, the stream infos, the copied
+  buckets' backups and the create of an absent `ENVOY_MEASURE`; while a hold is prepared, also the
+  consumer threshold raise; while a hold is set, the whole list the hold's commands need. Its user
+  expires at most ten minutes after the decision. A second new kind, `probe`
+  (`probe/-/*=<account>`), is the hold's probe, granted publish and subscribe of
+  `_ENVOY_HOLD_PROBE.none` alone. The hold's row, its records and each family's cutover row live in
+  the broker's Postgres (migration `0041_nats_hold`), each signed by the operator's Ed25519 key,
+  whose public halves are `BROKER_NATS_HOLD_SIGNING_KEYS`, and written only through the operator's
+  `/v1/nats-hold` routes. With `BROKER_NATS_HOLD_READ=true` (default `false`) the auth service reads
+  the row at each decision on a pool of its own (`BROKER_NATS_HOLD_POOL_SIZE`, default 2) and, while
+  no verified row can be read, refuses every client but the operator with `hold_unknown`; the broker
+  then needs an `operator` entry and signing keys to start, and starts with no row.
+time: 2026-11-20T23:35:36Z
+custom:
+    Issue: callout-operator-kind

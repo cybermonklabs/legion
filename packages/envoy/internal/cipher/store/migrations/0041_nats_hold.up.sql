@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0040_nats_hold.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0041_nats_hold.up.sql
 -- The NATS writer hold and every record its workflow trusts, which the auth service
 -- (internal/cipher/natscallout) and the operator's commands read. They live here, not in NATS,
 -- because any NATS user with a JetStream API grant can have the server store an answer over a key
