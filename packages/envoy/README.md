@@ -170,10 +170,10 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   A registration for which it gets no whole answer gets `503` with the reason `repositories_unknown`, whose text is the listener's own: what the broker answered goes to the log alone.
   The relay delivers a GitHub event only while an answer no older than 60 seconds names the repository the event's own payload names.
   A subject writes a dot in a name as `_`, so `acme/a.b` and `acme/a_b` publish on one subject, and an answer that names one admits only that one's events.
-  It acknowledges any other GitHub event undelivered and counts it in `envoy_edge_github_withheld_total`:
-  under `reason="not_in_project"`, or under `reason="answer_unknown"` while a project of the session has no fresh answer.
-  In that second case the session's next frame carries `Envoy-Gap: true` with `Envoy-Gap-Reason: repository_withheld`, and every frame that is not GitHub's is delivered as before.
-  The mark is kept for the session until a frame carrying it is published: across the session's relay runs on this listener, and on the session's entry in `envoy_sessions` (`session.SessionEntry.RepositoryGap`), which the next listener to relay the session reads after a move or a restart.
+  It acknowledges a GitHub event whose repository a fresh answer does not name undelivered, and counts it in `envoy_edge_github_withheld_total{reason="not_in_project"}`.
+  While a project of the session has no fresh answer, it withholds every GitHub event and counts it under `reason="answer_unknown"`, but leaves it unacknowledged: the session's consumer delivers it again 30 seconds later, the interval at which the edge reads every answer again, and the answer then standing decides it, so an outage of the broker costs the session no event its stream still holds.
+  Meanwhile the session's next frame carries `Envoy-Gap: true` with `Envoy-Gap-Reason: repository_withheld`, every frame that is not GitHub's is delivered as before, and a withheld event reaches the session later, behind frames stored after it.
+  An outage that holds back as many of the session's messages as its consumer lets wait for an acknowledgement (1024) holds back its later frames too, until an answer stands.
   A gap mark with no reason is the stream's own retention gap, and a frame that marks both carries no reason.
   A refresh removes a session's interest in a repository that left its projects.
 
@@ -184,22 +184,39 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   Any other gets `403 sender_not_session` (`edgeSenderRefusal`), so no edge session sends a message under another source, such as a Dispatch event or a person's message, or under no session.
 
 - **Roles**: `POST /v1/roles/set` and `GET /v1/roles/{role}` take only a role that works for one of the token's projects, else `403 role_not_in_project` (`edgeRoleRefusal`).
-  `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title, client instance and capabilities (`edgeRoleHolder`).
+  A role whose holder's registering token listed none of the token's projects, live or lapsed, reads as one no claim holds (`edgeRoleResolution`): `GET /v1/roles/{role}` answers it the `404` `unclaimed`, with no holder, process, state, last registration or claim revision, the answers of a role send through `POST /v1/messages/publish` name no holder, state or last registration for it, and the `409` of a claim of it names no holder (`edgeNamesHolder`).
   Each registration first releases every claim the session holds of another project's role, which another listener granted it or a token that listed more did, and the answer's `warnings` name it (`store.Registry.ReleaseRefusedRoleClaims`); a release that fails refuses the registration with the retryable `503`, and nothing of it is stored. It renews only the session's claims of roles of its token's projects.
   A claimant made live again is handed the kept messages of its token's projects' roles alone.
 
 - **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects.
-  Any other target gets the `404` of a session no listener has heard of, and no wake is reported (`sessionOfProjects`).
+  Any other target, and one the session registry reads as gone, gets the `404` of a session no listener has heard of, and no wake is reported (`sessionOfProjects`, which every edge read of a session's projects asks).
+  A target the session cache would grant is confirmed by its newest record on the session bucket's stream, read from the stream's leader with its headers (`edgeSessionShown`): a record the server wrote, such as a RePublish of another stream at the session's key, reads as absent.
 
 - **Reads**: `GET /v1/sessions`, `GET /v1/registry/{session_id}` and the three `/v1/legion/agents` reads answer only the sessions and Legion agents of the token's projects, each session with only those projects' roles and topics (`edgeShownTopics`);
   any other session gets the `404` of an unknown one.
+  Each session shown is confirmed by its stored record as a send's target is.
+  A Legion agent is shown only when its session is a session of its issue's project, a record bound to its key, so a gone agent of the token's own project is not shown either; its replacement is shown only when that is such a session too (`edgeLegionAgent`).
   A session's own `GET /v1/interests/{session_id}` shows the topics of its token's projects alone.
   `GET /v1/interests/` and another session's `GET /v1/interests/{session_id}` get `403 session_not_in_project`, and a write of the Legion agent registry gets `403 legion_registry_not_written`.
+
+- **Frames**: the relay and the relay socket each hand a session a frame only of a project its token lists, as the session's own message, or as a GitHub event the rule above passes (`edgeFrameVerdict`, `cmd/listener/edge_frames.go`).
+  The relay holds a session to the token its replica admitted the session's registration or role claim on, which it keeps in memory, and the socket to the token it was opened with; neither reads a stored record, so no session entry, interest row, role claim or consumer filter widens what reaches the session.
+  A message on the session's own agent subject is judged by the topic its envelope names: a send or a dead letter to the session passes, and a forward, such as a role's message forwarded to the claim's holder, passes only for a project of the token.
+  Every frame withheld this way is acknowledged undelivered and counted in `envoy_edge_github_withheld_total` under `reason="project_not_held"`.
+  A relay replica that admitted no registration or role claim of the session since it started relays it nothing until the session registers through it again, at its next heartbeat, and its messages wait in its consumer.
+  A role claim through a replica renews the session's record there and so moves the session's relay to that replica, which admits the session on the claim's own token as a registration does, so its messages keep reaching it.
+  A replica forgets a session's admission once the session's record has left its cache and the admission is older than one prune pass (30 s), so it keeps no list for a session that deregistered or lapsed.
 
 Every edge refusal's body is `listenerwire.EdgeRefusal`, whose comment in `listenerwire/listenerwire.go` names each reason and says how a client reads a refused registration's `refused` list.
 
 Every listener that checks broker tokens records the registering token's projects on the session's entry in `envoy_sessions` (`session.SessionEntry.Projects`).
 The edge's send and read rules read that record, and no answer of the API carries it.
+
+A session record and an interest row each name the key they are stored under (`session_id`), which every writer sets.
+The server itself stores a record when a request names a key's subject as its reply subject, so a record that names another key, or names its key with no `machine_id`, no positive `updated_at` or (a session record) no `projects`, is no registration and reads as absent on every listener (`session.DecodeEntry`, the store's `boundInterest`).
+The next write of such a record replaces it at the stream sequence it is really stored at.
+A session record that names no key was written by an earlier build: every listener, the edge included, reads it as before for its sweeps, reapers and role routes, and the edge reads it as no project's (`sessionOfProjects`), so it lists such a session to no one and answers a send to it as to a missing session until the session's own listener writes the key.
+A role claim that renews such a record writes the projects of the claim's own token, as a registration does, and never the record's: written back under its key, the record's projects would read as the session's own registration of them.
 
 On every listener, a role claim's key is `store.RoleClaimKeyOf` of the name it was claimed under, and that function's comment says which key each name gets.
 A free-form role under a project (`PRIV.lead-reviewer`) is that project's own claim, keyed `<project>.<role>`, beside the claim of the same name under no project;

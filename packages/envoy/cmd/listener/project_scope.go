@@ -6,7 +6,7 @@ package main
 // where each project is public, and gives a session no message of no project but the GitHub
 // events of its projects' repositories.
 //
-// The rules, each held by a row of edge_mode_test.go or edge_repositories_test.go:
+// The rules, each held by a row of edge_mode_test.go or edge_repositories_test.go (the frames' by edge_frame_rule_test.go):
 //
 //   - Admission: a broker token alone, whose projects are all among the ones the edge serves, of
 //     project scope named or person (EdgeAdmits), decided in apiAuth before any handler. The
@@ -29,17 +29,20 @@ package main
 //   - Senders: a send or a publish is the session's own, source agent and the token's session
 //     (edgeSenderRefusal).
 //   - Roles: a claim or a read names a role that works for one of the token's projects
-//     (edgeRoleRefusal), and a read names the place and process of a holder of none of them (its
-//     directory, machine, host, title, client instance and capabilities) to nobody
-//     (edgeRoleHolder). A registration first releases the session's claims of other projects'
-//     roles, refused 503 when a release fails (edgeTopicHold.releaseRefusedRoles), renews its
-//     token's projects' roles alone, and a claimant is handed the kept messages of those alone.
+//     (edgeRoleRefusal), and a read, a role send or a claim's 409 names no holder of none of
+//     them: such a role reads as one no claim holds (edgeRoleResolution, edgeNamesHolder). A
+//     registration first releases the session's claims of other projects' roles, refused 503 when
+//     a release fails (edgeTopicHold.releaseRefusedRoles), renews its token's projects' roles
+//     alone, and a claimant is handed the kept messages of those alone.
 //   - Sends: the target session's token lists one of the token's projects, else the send is
 //     answered as to a missing session (sessionOfProjects).
 //   - Reads: the session list, the registry, the session rows' roles and topics and the Legion
 //     agent routes answer only sessions, roles and topics of the token's projects
 //     (edgeShownTopics); the interest list and another session's interests are 403, and the
 //     Legion agent registry is not written here.
+//   - Frames: the relay and the relay socket hand a session a frame only of a project of its
+//     token, as its own message, or as a GitHub event the repository rule passes, judged by the
+//     token and never by a stored record (edgeFrameVerdict, edge_frames.go).
 //   - The start: refused beside every other credential, beside Dispatch's principal, beside
 //     webhooks, and without the broker-token settings (validateEdgeMode).
 //
@@ -64,6 +67,7 @@ import (
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/projectscope"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -155,11 +159,43 @@ func projectHeld(projects []string, project string) bool {
 	return projectscope.BrokerTokenAdmits(projects, project, true)
 }
 
-// sessionOfProjects reports whether a session whose entry is entry is one of projects': the token
-// that registered it (session.SessionEntry.Projects) lists one of them. An entry no token's
-// list was recorded on, one an earlier build wrote among them, is no project's.
-func sessionOfProjects(entry session.SessionEntry, projects []string) bool {
-	return slices.ContainsFunc(entry.Projects, func(project string) bool { return projectHeld(projects, project) })
+// sessionOfProjects reports whether a session whose entry is entry, in state, is one of projects':
+// its record names its own key (session.SessionEntry.SessionID) and the token that registered it
+// (session.SessionEntry.Projects) lists one of them. It is the edge's one test of a session's
+// scope: the send route, the list, the registry and registration views and the role read ask it,
+// so each reads three entries as no project's:
+//
+//   - a gone session's, whatever entry the registry still answers for it (a record the registry
+//     reads as absent, session.DecodeEntry, is gone, and the zero entry beside it is no scope);
+//   - one an earlier build wrote, which names no key: the registry reads it as before for every
+//     other purpose, so its session keeps its consumer, claims and row here, but such a record
+//     cannot be told from another session's record copied under this key, so the edge grants
+//     nothing across a project on it, and refuses a send to it and lists it to no one until the
+//     session's own listener writes the key;
+//   - one whose token's list names none of projects, an entry of no list among them.
+func sessionOfProjects(entry session.SessionEntry, state session.State, projects []string) bool {
+	return state != session.Gone && entry.SessionID != "" &&
+		slices.ContainsFunc(entry.Projects, func(project string) bool { return projectHeld(projects, project) })
+}
+
+// edgeSessionShown is sessionOfProjects for the edge's decisions that grant a session to projects:
+// the list, the registry and registration reads, and the send route's target. The entry is the
+// session cache's, which the watcher fills from entries that carry no headers, and a record the
+// server wrote at the session's key - a RePublish of another stream naming the key's subject, whose
+// body that stream's writer chose - reads as a record naming its key, a machine, a time and any
+// projects it likes. So an entry that would grant the session is confirmed by the session's newest
+// message on the bucket's stream, read from the stream's leader with the headers stored with it
+// (session.SessionRegistry.StoredByWriter): a message the server wrote, or none, reads as absent,
+// and so does a key the leader refused or held no message for, which it answers (ErrKeyNotFound,
+// ErrRefused). A read that did not answer is returned as its error, not as an absence, so a caller
+// answers the bus-unavailable 503 it answers for any read that did not answer, never the 404 of a
+// session it does not show nor a silent drop from the list. An entry that grants nothing costs no
+// read. The relay grants nothing on a stored record (edgeAdmissions), so it asks no such read.
+func edgeSessionShown(ctx context.Context, sessions *session.SessionRegistry, entry session.SessionEntry, state session.State, projects []string) (bool, error) {
+	if !sessionOfProjects(entry, state, projects) {
+		return false, nil
+	}
+	return sessions.StoredByWriter(ctx, entry.SessionID)
 }
 
 // rolesOfProjects is the roles among roles, each named by its claim's key, that work for one of
@@ -207,16 +243,65 @@ func (h *edgeTopicHold) releaseRefusedRoles(ctx context.Context, registry *store
 	return released, err
 }
 
-// legionAgentOfProjects reports whether a Legion agent registry entry is one of projects': the
-// issue it works is.
-func legionAgentOfProjects(agent legionagents.Agent, projects []string) bool {
+// edgeLegionAgent is a Legion agent registry entry as the edge shows it to a session of projects,
+// and false when it shows it not: the issue the entry works is of one of projects, and the entry's
+// session is a session of that issue's project, confirmed by its stored record (sessionOfProject,
+// which asks edgeSessionShown's leader read, so a record the server wrote reads as no session). An
+// entry is a record any writer of the registry's bucket can store, naming any session under any
+// issue: the issue it names says nothing of whose session it names, and a chosen entry naming an
+// in-house session under an outside project's issue would otherwise show that session's id, a title
+// its writer chose and the session's live state to the outside session. Its replacement
+// (replaced_by, replaced_at) is read from the other entries of its role token, which are records of
+// the same kind, so it is shown only when it is a session of that project too, and answered as none
+// otherwise. A session of that project that is gone, or whose record an earlier build or the server
+// wrote, is not shown either. A confirmation read that did not answer is returned as its error, so
+// the route answers the bus-unavailable 503.
+func edgeLegionAgent(ctx context.Context, sessions *session.SessionRegistry, agent legionagents.Agent, projects []string) (legionagents.Agent, bool, error) {
 	project, ok := contracts.IssueProject(agent.Issue)
-	return ok && projectHeld(projects, project)
+	if !ok || !projectHeld(projects, project) {
+		return legionagents.Agent{}, false, nil
+	}
+	shown, err := sessionOfProject(ctx, sessions, agent.SessionID, project)
+	if err != nil {
+		return legionagents.Agent{}, false, err
+	}
+	if !shown {
+		return legionagents.Agent{}, false, nil
+	}
+	if agent.ReplacedBy != nil {
+		replaced, err := sessionOfProject(ctx, sessions, *agent.ReplacedBy, project)
+		if err != nil {
+			return legionagents.Agent{}, false, err
+		}
+		if !replaced {
+			agent.ReplacedBy, agent.ReplacedAt = nil, nil
+		}
+	}
+	return agent, true, nil
 }
 
-// legionAgentsOfProjects is agents with only projects' entries, in their order.
-func legionAgentsOfProjects(agents []legionagents.Agent, projects []string) []legionagents.Agent {
-	return slices.DeleteFunc(agents, func(agent legionagents.Agent) bool { return !legionAgentOfProjects(agent, projects) })
+// sessionOfProject reports whether sessionID's entry in sessions is a session of project, confirmed
+// by its stored record (edgeSessionShown). A read that did not answer is returned as its error.
+func sessionOfProject(ctx context.Context, sessions *session.SessionRegistry, sessionID, project string) (bool, error) {
+	entry, state := sessions.Lookup(sessionID)
+	return edgeSessionShown(ctx, sessions, entry, state, []string{project})
+}
+
+// legionAgentsOfProjects is agents as the edge shows them to a session of projects
+// (edgeLegionAgent), in their order, without those it shows not. A confirmation read that did not
+// answer ends the listing with its error, which the route answers as the bus-unavailable 503.
+func legionAgentsOfProjects(ctx context.Context, sessions *session.SessionRegistry, agents []legionagents.Agent, projects []string) ([]legionagents.Agent, error) {
+	shown := agents[:0]
+	for _, agent := range agents {
+		agent, ok, err := edgeLegionAgent(ctx, sessions, agent, projects)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			shown = append(shown, agent)
+		}
+	}
+	return shown, nil
 }
 
 // unknownSession is the 404 a session the edge does not show gets: the answer of a session no
@@ -557,21 +642,43 @@ func edgeRoleRefusal(r *http.Request, role string) *edgeRefusal {
 		fmt.Sprintf("role %s is not claimed or read here: it works for no project of %s", role, strings.Join(projects, ", ")), "role")
 }
 
-// edgeRoleHolder is holder, the answer of GET /v1/roles/<role> about a live holder whose session
-// entry is entry, as a read held to the token's projects shows it: whole for a holder whose
-// registering token listed one of them (sessionOfProjects), and with the holder's place and
-// process left out (its directory, machine, host, title and client instance, and its
-// capabilities the empty list) for any other, a session the edge's reads do not show. The role,
-// the holder's id and state and the claim's revision stay, so a caller still sees who holds a
-// role of its project, and can claim it with if_claim_revision. Every other listener's answer is
-// holder as it is.
-func edgeRoleHolder(r *http.Request, entry session.SessionEntry, holder listenerwire.RoleHolder) listenerwire.RoleHolder {
-	if projects, held := heldProjects(r); !held || sessionOfProjects(entry, projects) {
-		return holder
+// edgeRoleResolution is result, the resolution of a role's holder, as an answer to r names it: a
+// holder whose session is not one of the token's projects, confirmed by its stored record
+// (edgeSessionShown), live or lapsed, is no holder the edge names, so the role reads as one no claim
+// holds (roles.Unclaimed), naming no holder, process, state or last registration, nor the revision
+// of its claim. A role of the token's project can be claimed by any session, and its claim written
+// by any writer of the role bucket, so the claim says nothing of whose session it names, and a
+// record the server wrote at that session's key would name any projects it likes; the edge's reads
+// show no session of another project, and its role answers show none either. A holder of one of the
+// token's projects is answered whole, and so is every holder on every listener but the edge. A
+// confirmation read that did not answer is returned as its error, so the route answers the
+// bus-unavailable 503.
+func edgeRoleResolution(ctx context.Context, sessions *session.SessionRegistry, r *http.Request, result roles.Resolution) (roles.Resolution, error) {
+	projects, held := heldProjects(r)
+	if !held || result.State == roles.Unclaimed {
+		return result, nil
 	}
-	holder.Capabilities = []string{}
-	holder.ClientInstanceID, holder.Dir, holder.Host, holder.MachineID, holder.Title = "", "", "", "", ""
-	return holder
+	shown, err := edgeSessionShown(ctx, sessions, result.Entry, result.HolderState, projects)
+	if err != nil {
+		return roles.Resolution{}, err
+	}
+	if !shown {
+		return roles.Resolution{State: roles.Unclaimed}, nil
+	}
+	return result, nil
+}
+
+// edgeNamesHolder reports whether an answer to r may name holder, the holder of a role that an
+// answer names outside a resolution (a claim's 409): always on every listener but the edge, and at
+// the edge only a session of the token's projects confirmed by its stored record (edgeSessionShown),
+// the holder edgeRoleResolution names. A read that did not answer is returned as its error.
+func edgeNamesHolder(ctx context.Context, sessions *session.SessionRegistry, r *http.Request, holder string) (bool, error) {
+	projects, held := heldProjects(r)
+	if !held {
+		return true, nil
+	}
+	entry, state := sessions.Lookup(holder)
+	return edgeSessionShown(ctx, sessions, entry, state, projects)
 }
 
 // edgeInterestReadRefusal is the edge's rule for GET /v1/interests/ and GET
@@ -694,8 +801,10 @@ func runEdgeRepositories(ctx context.Context, d *listenerDeps, machineID string,
 // topic whose repository no fresh answer of its session's projects names, and refollows that
 // session's consumer, as an unsubscribe does. A session one of whose projects has no fresh
 // answer keeps every topic: an answer that is not there says nothing of a repository's leaving,
-// and the relay withholds the session's GitHub frames meanwhile. A record it cannot list, or a
-// removal that fails, is logged and left to the next pass.
+// and the relay withholds the session's GitHub frames meanwhile. The projects are those of the
+// token this listener admitted the session's registration on (edgeAdmissions), never the
+// session's stored record, and a session it admitted no registration of is left alone. A record
+// it cannot list, or a removal that fails, is logged and left to the next pass.
 func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) {
 	logger := d.repositories.logger
 	items, err := d.registry.List()
@@ -707,8 +816,11 @@ func pruneEdgeInterests(ctx context.Context, d *listenerDeps, machineID string) 
 		if item.MachineID != machineID {
 			continue
 		}
-		entry, _ := d.sessions.Lookup(item.SessionID)
-		repositories, complete := d.repositories.standing(entry.Projects)
+		projects, admitted := d.consumers.admissions.of(item.SessionID)
+		if !admitted {
+			continue
+		}
+		repositories, complete := d.repositories.standing(projects)
 		if !complete {
 			continue
 		}

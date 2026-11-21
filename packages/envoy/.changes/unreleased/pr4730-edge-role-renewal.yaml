@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A role claim's renewal of its claimant's session record no longer binds the projects of a record
+  that names no key. Such a record, which an earlier build wrote, may be another session's record
+  the server copied under this key; the renewal writes the key, so it now keeps the record's
+  projects only when the record names its key already, and otherwise writes the projects of the
+  claim's own token, as a registration does. The edge therefore keeps hiding a session whose key
+  holds a copied record after that session claims a role through any listener.
+time: 2026-11-21T09:05:04Z
+custom:
+    Issue: pr4730

@@ -120,9 +120,11 @@ func TestARepositoryThatLeavesTheProjectStopsReachingTheEdge(t *testing.T) {
 }
 
 // While no repository answer younger than 60 s stands, a registration naming a GitHub topic
-// is 503 repositories_unknown, every GitHub frame is acknowledged undelivered with the gap mark
-// on the next frame, named Envoy-Gap-Reason: repository_withheld so a client does not read it as
-// the stream's retention gap, and every frame that is not GitHub's flows as before.
+// is 503 repositories_unknown, every GitHub frame is left unacknowledged for the consumer to
+// deliver again and counted, with the gap mark on the next frame, named Envoy-Gap-Reason:
+// repository_withheld so a client does not read it as the stream's retention gap, and every frame
+// that is not GitHub's flows as before (TestAGitHubEventWaitsOutAnUnknownRepositoryAnswer holds its
+// later delivery once an answer stands).
 func TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames(t *testing.T) {
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_unknown"
@@ -147,8 +149,8 @@ func TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames(t *testing.T) {
 	if got := frames[0].msg.Header.Get("Envoy-Gap-Reason"); got != "repository_withheld" {
 		t.Fatalf("the frame after the withheld GitHub event carries Envoy-Gap-Reason %q, want repository_withheld: a gap with no reason reads as the stream's retention gap", got)
 	}
-	if got := rig.withheld(t, "answer_unknown"); got != 1 {
-		t.Fatalf(`envoy_edge_github_withheld_total{reason="answer_unknown"} = %d, want 1`, got)
+	if got := rig.withheld(t, "answer_unknown"); got < 1 {
+		t.Fatalf(`envoy_edge_github_withheld_total{reason="answer_unknown"} = %d, want at least 1: a redelivery after the nak delay counts again`, got)
 	}
 }
 

@@ -472,7 +472,7 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	if _, err := registry.SetRole(throughputHolder, "test-machine", "reviewer", false); err != nil {
 		t.Fatalf("claim role:reviewer: %v", err)
 	}
-	if err := sessions.Put(throughputHolder, session.SessionEntry{SelfSubscribed: true}); err != nil {
+	if err := sessions.Put(throughputHolder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register the role's holder: %v", err)
 	}
 	return rig

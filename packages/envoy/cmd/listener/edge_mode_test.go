@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -832,11 +833,11 @@ func requireTopicsHidden(t *testing.T, rig *edgeRig, token, sessionID string, hi
 	return info.Topics
 }
 
-// A role read at the edge names a holder whose registering token listed none of the reader's
-// projects without its place or process: a PRIV role held by a session another listener
-// registered with no broker token, under a claim naming its client instance, is answered with its
-// holder and claim, and with no directory, machine, host, title or client instance and no
-// capabilities. A holder of the reader's project is answered whole.
+// A role read at the edge names no holder whose registering token listed none of the reader's
+// projects: a PRIV role held by a session another listener registered with no broker token is
+// answered as a role no claim holds, the 404 unclaimed with no holder, place or claim revision. A
+// holder of the reader's project is answered whole. TestAnEdgeRoleAnswerNamesNoForeignHolder
+// holds the same of a lapsed holder and of a role send's answers.
 func TestAnEdgeRoleReadNamesNoPlaceOfAHolderOutsideItsProjects(t *testing.T) {
 	rig := newEdgeRig(t)
 	const reader, internal, peer = "ses_edge_role_reader", "ses_edge_role_internal", "ses_edge_role_peer"
@@ -856,6 +857,13 @@ func TestAnEdgeRoleReadNamesNoPlaceOfAHolderOutsideItsProjects(t *testing.T) {
 	if _, err := rig.deps.registry.SetRole(peer, "test-machine", peerRole, false); err != nil {
 		t.Fatalf("claim %s for %s: %v", peerRole, peer, err)
 	}
+	internalRead := rig.call(t, http.MethodGet, token, "/v1/roles/"+internalRole, "")
+	var unheld listenerwire.RoleRefusal
+	_ = json.Unmarshal(internalRead.Body.Bytes(), &unheld)
+	if internalRead.Code != http.StatusNotFound || unheld.Reason != roles.Unclaimed || unheld.Holder != "" || unheld.ClaimRevision != 0 ||
+		strings.Contains(internalRead.Body.String(), internal) {
+		t.Errorf("GET /v1/roles/%s: status %d %s, want the 404 of a role no claim holds, naming no holder", internalRole, internalRead.Code, strings.TrimSpace(internalRead.Body.String()))
+	}
 	read := func(role string) listenerwire.RoleHolder {
 		t.Helper()
 		recorder := rig.call(t, http.MethodGet, token, "/v1/roles/"+role, "")
@@ -865,10 +873,6 @@ func TestAnEdgeRoleReadNamesNoPlaceOfAHolderOutsideItsProjects(t *testing.T) {
 			t.Fatalf("decode %s: %v", recorder.Body.String(), err)
 		}
 		return answer
-	}
-	held := read(internalRole)
-	if held.Holder != internal || held.Dir != "" || held.Host != "" || held.MachineID != "" || held.Title != "" || held.ClientInstanceID != "" || len(held.Capabilities) != 0 {
-		t.Errorf("GET /v1/roles/%s answers %+v, want holder %s with no directory, host, machine, title, client instance or capabilities", internalRole, held, internal)
 	}
 	if whole := read(peerRole); whole.Holder != peer || whole.MachineID == "" || whole.Host == "" {
 		t.Errorf("GET /v1/roles/%s answers %+v, want holder %s with its machine and host: it is a session of PRIV", peerRole, whole, peer)

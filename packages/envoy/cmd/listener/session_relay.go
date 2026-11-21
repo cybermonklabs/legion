@@ -116,7 +116,8 @@ const (
 	relayRetryMax   = 30 * time.Second
 	// relayPruneInterval is how often the relay drops lapsed session entries from the cache
 	// (session.SessionRegistry.PruneLapsed), so a session that stopped registering stops being
-	// relayed: a lapse has no watch event.
+	// relayed: a lapse has no watch event. The edge's admissions of sessions whose entries are gone
+	// go at the same pass (pruneAdmissions).
 	relayPruneInterval = 30 * time.Second
 	// relayRestartLimit is how many relays of one listener may restart their consumer at once
 	// (sessionRelays.restart); the others wait their turn. A listener that starts relays every
@@ -231,8 +232,10 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
-	// repositories is the edge listener's repository reader (edge_repositories.go), which holds
-	// each GitHub frame to its session's projects (relayNATS); nil on every listener but an edge
+	// repositories is the edge listener's repository reader (edge_repositories.go), and its
+	// presence is what makes this relay an edge listener's: every frame is held to the projects
+	// of the token the session's registration was admitted on (edgeWithholds, edge_frames.go),
+	// GitHub frames to the repositories their answers name. nil on every listener but an edge
 	// one, which relays every frame as it always has. Set before the first relay starts and
 	// read-only after.
 	repositories *edgeRepositories
@@ -662,7 +665,7 @@ func (m *sessionRelays) stop(ctx context.Context) {
 }
 
 // loop applies the relay's events in order until the relay stops, and prunes the lapsed entries of
-// the session cache every relayPruneInterval.
+// the session cache, and then the admissions of sessions with no entry, every relayPruneInterval.
 func (m *sessionRelays) loop() {
 	defer close(m.loopDone)
 	prune := time.NewTicker(relayPruneInterval)
@@ -672,9 +675,10 @@ func (m *sessionRelays) loop() {
 		case <-m.ctx.Done():
 			m.stopAll(relayCancelListenerStopping)
 			return
-		case <-prune.C:
+		case now := <-prune.C:
 			// Each lapse it finds is a change, which onChange hears.
 			m.sessions.PruneLapsed()
+			m.pruneAdmissions(now)
 			continue
 		case <-m.wake:
 		}
@@ -777,6 +781,17 @@ func (m *sessionRelays) wanted(sessionID string) (bool, relayCancelReason) {
 		return false, relayCancelNotOurs
 	}
 	return true, relayCancelUnknown
+}
+
+// pruneAdmissions forgets, as of now, the admission of each session the cache holds no entry of
+// (session.SessionRegistry.Get) that this replica admitted more than edgeAdmissionGrace ago
+// (edgeAdmissions.prune): a session that deregistered, or whose entry lapsed, keeps no list here.
+// Every listener that is no edge records no admission, and this forgets nothing there.
+func (m *sessionRelays) pruneAdmissions(now time.Time) {
+	m.delivery.admissions.prune(now.Add(-edgeAdmissionGrace), func(sessionID string) bool {
+		_, err := m.sessions.Get(sessionID)
+		return err != nil
+	})
 }
 
 // listConsumers reads every session consumer at once (bus.SessionConsumers.ListSessionConsumers)
@@ -974,7 +989,12 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 	if m.delivery.afterStoredRowRead != nil {
 		m.delivery.afterStoredRowRead()
 	}
-	return m.delivery.storedRowFilter(m.registry, sessionID, topics), revision, true
+	filter, err := m.delivery.storedRowFilter(ctx, m.registry, sessionID, topics)
+	if err != nil {
+		m.logger.Warn("session relay could not judge the session's interests; retrying", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return nil, 0, false
+	}
+	return filter, revision, true
 }
 
 // settleFilter holds a restart's filter write to the interest row it was built from: wrote is the
@@ -1031,6 +1051,20 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 // was sending reach a session that was only slow without waiting for a registration.
 func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutcome {
 	sessionID := run.sessionID
+	// An edge listener relays a session only on the projects of the token it admitted the
+	// session's registration or role claim on, which it holds in memory (edgeAdmissions) and
+	// never reads back from the session's record. A session no registration or claim of reached
+	// this listener since it started - one this replica's restart forgot, one whose record names
+	// this machine and was written by neither here, or one whose admission was forgotten after
+	// its entry left the cache (pruneAdmissions) - is relayed nothing, and its messages wait in
+	// its consumer until it registers through this listener, which starts the relay again (apply).
+	if m.repositories != nil {
+		if _, admitted := m.delivery.admissions.of(sessionID); !admitted {
+			m.logger.Info("edge relay holds the session's messages in its consumer until the session registers through this listener",
+				slog.String("session_id", sessionID))
+			return relayEnded
+		}
+	}
 	start, pull, outcome := m.restart(ctx, run)
 	if pull == nil {
 		return outcome
@@ -1127,12 +1161,14 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			m.logger.Warn("session relay pull ended; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 			return relayRetry
 		}
-		// At the edge a GitHub event reaches the session only while a fresh answer of its
-		// token's projects names the repository the event itself names (relayVerdict). One that
-		// does not is acknowledged undelivered and counted, and while no such answer can be read
-		// the session's next frame carries the gap mark, since the events withheld then are ones
-		// the session may have been owed, with the reason repository_withheld; a retention gap
-		// the same frame already marks keeps no reason, since it lost more.
+		// At the edge a frame reaches the session only for a project of the token it was
+		// admitted on, as its own message, or as a GitHub event whose own repository a fresh
+		// answer of its token's projects names (edgeFrameVerdict). One that does not is withheld
+		// and counted (edgeWithholds), and while no repository answer can be read the session's
+		// next frame carries the gap mark, since the GitHub events withheld then are ones the
+		// session may be owed, which reach it later, out of their order, once an answer stands;
+		// the reason is repository_withheld, and a retention gap the same frame already marks
+		// keeps no reason, since it lost more.
 		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
 			if reason == withheldAnswerUnknown {
 				m.noteRepositoryGap(ctx, sessionID)
@@ -1221,24 +1257,46 @@ func (m *sessionRelays) forgetRepositoryGap(sessionID string) {
 }
 
 // edgeWithholds reports whether an edge listener withholds msg from sessionID, and why, and when
-// it does, acknowledges the message undelivered, counts it and logs it: the consumer holds it no
-// longer, and nothing else is ever sent for it. Every other listener withholds nothing.
+// it does, counts it, logs it and answers the consumer for it. A GitHub event withheld for want of
+// a fresh repository answer (withheldAnswerUnknown) is not withheld for good, since its repository
+// may still be one of the session's projects: it is left unacknowledged, and the consumer delivers
+// it again after edgeRepositoryRefresh, the interval at which the refresh reads every project's
+// answer again, so a redelivery meets the answer of a refresh pass after the one it was withheld
+// on, and a sooner one would mostly meet the same unknown answer. Every other frame withheld is
+// acknowledged undelivered: the consumer holds it no longer, and nothing else is ever sent for it.
+// The projects it holds the frame to are those of the token this listener admitted the session's
+// registration on (edgeAdmissions), never the session's stored record, so no record a writer of
+// the bus can forge widens them. Every other listener withholds nothing.
 func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) (bool, string) {
 	if m.repositories == nil {
 		return false, ""
 	}
-	entry, _ := m.sessions.Lookup(sessionID)
-	withhold, reason := m.repositories.relayVerdict(entry.Projects, msg.Subject, msg.Data)
+	projects, admitted := m.delivery.admissions.of(sessionID)
+	if !admitted {
+		// relayNATS relays no session this listener admitted no registration of, so this branch
+		// is reached only when the admission was forgotten under a running relay: the session's
+		// entry left the cache, which stops its relay too (pruneAdmissions, wanted). The frame is
+		// withheld and left unacknowledged, for the consumer to deliver again once the session
+		// registers here, never acknowledged away.
+		return true, withheldNotAdmitted
+	}
+	withhold, reason := edgeFrameVerdict(m.repositories, sessionID, projects, msg.Subject, msg.Data)
 	if !withhold {
 		return false, ""
 	}
 	m.repositories.withheld.Inc([2]string{"reason", reason})
-	if err := msg.Ack(); err != nil {
-		m.logger.Warn("edge listener could not acknowledge a GitHub event it withholds; the consumer delivers it again",
-			slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("error", err.Error()))
+	var err error
+	if reason == withheldAnswerUnknown {
+		err = msg.NakWithDelay(edgeRepositoryRefresh)
+	} else {
+		err = msg.Ack()
+	}
+	if err != nil {
+		m.logger.Warn("edge listener could not answer the consumer for a frame it withholds; the consumer delivers it again",
+			slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("reason", reason), slog.String("error", err.Error()))
 		return true, reason
 	}
-	m.logger.Info("edge listener withheld a GitHub event from a session",
+	m.logger.Info("edge listener withheld a frame from a session",
 		slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("reason", reason))
 	return true, reason
 }
