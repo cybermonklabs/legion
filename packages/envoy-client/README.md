@@ -947,7 +947,7 @@ With no bearer configured at all, the session's credential is traded at the secr
 instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). The
 credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
 bearer. Every bearer source above is resolved first and unchanged, so a session that has one
-behaves exactly as it did. The machine's identity is one of three (`machineIdentity` in
+behaves exactly as it did. The machine's identity is one of four (`machineIdentity` in
 `@legion/cipher-client/environment`). `kubernetes` reads a pod's projected token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
 machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
@@ -956,6 +956,45 @@ does (`pool-identity.ts`), for a machine with no Google service account of its o
 Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
 An identity with one of its variables missing is an error that names the variable.
+
+`device-login` is the identity of a machine that has none of its own, such as a person's laptop
+(`device-login.ts` in `@legion/cipher-client`). The machine logs in once with
+`dispatch login --device` (below), and the login is kept in the file
+`AGENT_SECRETS_DEVICE_LOGIN_FILE` names, else `~/.config/legion/device-login.json`, mode 0600:
+the login's P-256 key as base64 PKCS#8 DER, its launcher credential's `credential_id` and
+`expires_at`, its `refresh_token`, the `broker` it was made at, and the last `access_token` with
+its `access_expires_at`. The file is refused when its group or anyone else may read it, when its
+directory lets them write to it, or when another user owns either. A trade presents that access
+token as the subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with
+no actor, and every proof is signed with the login's key. A login made at another broker than
+`AGENT_SECRETS_URL` names is refused, and so is a broker on `http` off this machine's loopback:
+the login's tokens cross that connection. It names the projects `AGENT_SECRETS_PROJECTS` lists,
+and its session is the caller's own, else `AGENT_SECRETS_SESSION`, else
+`device-login-<thumbprint>`, the first 12 characters of the key's thumbprint. The login is the
+person's own credential, so no `agent-secrets login` sign-in on the machine is read beside it, and
+a process with `PERSON_SIGNIN_TRADE=off` (the controller `legion controller start` launches) is
+refused it, since the broker mints its trade as that person. Only this client trades a device
+login. The Go tools that read `AGENT_SECRETS_MACHINE_IDENTITY` (`agent-secrets`, the helper,
+`legion controller start`) refuse `device-login`, naming it as the TypeScript client's alone, so a
+machine that sets it for its sessions sets it for them, not for those tools.
+
+A refresh rotates the login's refresh token and revokes every access token the login answered
+before, and the broker revokes the whole login when a rotated refresh token is presented again
+after its five-minute grace. So each trade runs under the login's lock, the file beside it with
+`.lock` added, which its holder touches every 5 s; a lock untouched for 15 s is taken as one whose
+holder died (`device-login-lock.ts` holds the protocol). A holder stopped for longer, as a laptop
+that sleeps is, loses the lock the same way: once it goes on, it refreshes and keeps nothing, it
+looks at the lock again just before it replaces the file, and a trade of it the broker refuses is
+traded again. Under the lock a process reads the file again, refreshes when the access token kept
+there has less than a minute left, or when the broker refuses it as a token it no longer honours
+("Token is not valid or has expired", or the login ended: a revoke ends a login before its token
+lapses), keeps the rotated login, and trades. A refusal of the trade's session or projects is
+not refreshed: a refresh cures none of those. A refresh the broker did not answer is sent once
+more at once: the broker redeems the spent refresh token again within its five-minute grace, and
+past it the login ends. The broker's `invalid_grant` to a refresh is final (`DeviceLoginEndedError`
+in `token-errors.ts`): the login was revoked or ran out, and only a new `dispatch login --device`
+cures it. A trade whose time ran out while another process of the machine held the lock says so
+(`LockHeldError`), and not that the broker did not answer.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1126,6 +1165,65 @@ so it runs with Dispatch off too, and a call it passed can still stop on either.
 is a `dispatch result` record: its dry run needs Dispatch on, as the record does, and after the
 arguments prints the pull-request body line Dispatch answers on `POST …/results/dry-run`, recording
 nothing. A retraction's dry run sends nothing.
+
+`dispatch login --device [--person <address>]` logs the machine in at the secrets broker
+(`dispatch-commands/login.ts`). It is the one command that is no Dispatch call. A person runs
+it once per machine, in a terminal of their own: it waits for the approval until the code
+lapses, which a command timeout of an agent's shell can cut short. The command is each plugin's
+`bin/dispatch`, under the directory the host installed the plugin in (claude-envoy's or
+pi-envoy's), or `bun packages/envoy-client/bin/dispatch.ts` from a checkout of this repository.
+It reads no host, no session and no envoy.json. It reads `AGENT_SECRETS_URL`, and the person who
+approves the login from `--person`, else `AGENT_SECRETS_PERSON`. It prints the broker's page and
+the code to type there, waits while that person approves it in Dispatch, and keeps the login
+(above). Without `--device`, a person, a broker a device login may use (https, or http on this
+machine's loopback), or a login directory of this user's own that this user can enter and write to
+and others cannot write to, it exits 2 before any request, so no person approves a login the
+machine could not keep there. It exits 2 too, before any request, for a file setting that names
+something other than a regular file, a link to one included: a directory, which no save can
+replace, a named pipe, which a read waits on until a process writes to it, a socket, a device or a
+loop of links. It reads the login a new one replaces, and every login it trades, only from a
+regular file of at most 64 KiB, in a directory it checks before it opens the file; where the
+setting names a link, it checks the directory of each link on the way and of the file at its
+end as well. Every directory on the way to those but the ones above the home directory, which
+hold the home directory itself, must be one that this user or root owns, the directory each
+link on the way sits in included, and that others may not write to unless it has the sticky
+bit, as /tmp has. Its group may write to it only where that group is this user's private group:
+/etc/passwd and /etc/group name this user in it and no other member, as a Legion pod's /legion,
+of group `legion`, is; where either file cannot be read, or /etc/group does not name the group,
+the directory is refused. Each link on the way must be this user's or root's too. The login's own
+directory is held to more: neither its group nor anyone else may write to it. The home directory is
+`os.userInfo().homedir`, which Bun answers from `HOME`. In a user namespace other than the first
+one (a gVisor sandbox, a rootless container), the overflow uid counts as root: root's own files
+show it there, and so does every owner the namespace does not map, so each such owner passes. The
+walk stops at the home directory as OpenSSH's StrictModes check of the path to a key does (OpenSSH
+reads the home directory from the password database), and the owner rule is OpenSSH's too. The
+private-group exception is Debian's OpenSSH (its `user-group-modes` patch, which Debian and Ubuntu
+ship), not upstream OpenSSH, which refuses every directory its group may write to. The rest is
+this command's own choice: it takes a sticky directory, which OpenSSH refuses, and it checks each
+link on the way and the directory each is in, where OpenSSH resolves the path first. It exits 1
+when the broker refuses the login, the person denies it, its code expires, or the broker answers
+a poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
+naming its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the
+broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s),
+and 5 s where it names none. It then writes no file. It exits 1 too when a login that was approved
+cannot be kept: it names the login's credential, which the broker holds live, and says to revoke
+it in Machine logins on the page the code was typed into. Where it wrote a copy of the login whole,
+the copy is kept beside the file, under the file's name with `.kept-<uuid>` added, and the message
+names that suffix, whatever fails after it, letting go of the lock included: moved over the file,
+the copy is the login and its credential needs no revoke; unused, the person deletes it, since it
+holds the login's key and refresh token, and revokes the credential. A login kept whose lock the
+command then cannot let go of is kept all the same: it exits 0, says why the lock was left, and
+names no credential to revoke; another process takes that lock over once it is 15 s old. A code
+or an access token is taken to live an hour at most, whatever the broker says. What the broker
+answers for the person to read (the page, the code, the credential's id) is refused where it holds
+a control or format character (a right-to-left override), and an OAuth code is shown only where
+it is one the clients know. The host it names is this machine's name in the form the broker takes
+(`Adas-MacBook-Pro.local` is `adas-macbook-pro.local`). A second login of the machine replaces the
+file, and the earlier login's credential stays live at the broker until it lapses or is revoked, so
+the command names that credential and says to revoke it in Machine logins on the page the code was
+typed into. The earlier login is the one the file holds just before the save, read under the lock
+the save holds, so of two logins made at once the one kept second names the other. On a machine
+whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude

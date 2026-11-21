@@ -14,6 +14,11 @@
 import { afterEach } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
+import {
+  type DeviceLoginBrokerOptions,
+  stubDeviceLoginBroker,
+  writeDeviceLoginFile,
+} from "@legion/cipher-client/test/device-logins";
 import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -271,4 +276,49 @@ export function natsBrokerStandIns(prefix: string) {
   }
 
   return { servers, tempDir, stubBroker, podEnvironment };
+}
+
+/**
+ * The stand-ins of a file that drives a device login (`AGENT_SECRETS_MACHINE_IDENTITY=device-login`,
+ * `dispatch login --device`). Call it once, at the test file's module scope, with the prefix of the
+ * file's temporary directories: it registers that file's cleanup ({@link standInScope}).
+ */
+export function deviceLoginStandIns(prefix: string) {
+  const { servers, tempDir } = standInScope(prefix);
+
+  /** A secrets broker serving the device grant, the refresh and the exchange
+   *  (`stubDeviceLoginBroker`), stopped after the test. */
+  function broker(options: DeviceLoginBrokerOptions = {}) {
+    const stub = stubDeviceLoginBroker(options);
+    servers.push(stub);
+    return stub;
+  }
+
+  /** A device login's file, in a directory of this test's own, made at `brokerUrl`. */
+  function loginFile(brokerUrl: string, fields: Record<string, unknown> = {}) {
+    return writeDeviceLoginFile(
+      path.join(tempDir(), "legion", "device-login.json"),
+      brokerUrl,
+      fields
+    );
+  }
+
+  /** The environment of a laptop whose identity is the device login at `file`, at `brokerUrl`,
+   *  with no Dispatch bearer at all. */
+  function laptopEnvironment(
+    brokerUrl: string,
+    dispatchUrl: string,
+    file: string
+  ): DispatchEnvironment {
+    return {
+      HOME: tempDir(),
+      DISPATCH_URL: dispatchUrl,
+      ENVOY_URL: dispatchUrl,
+      AGENT_SECRETS_URL: brokerUrl,
+      AGENT_SECRETS_MACHINE_IDENTITY: "device-login",
+      AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
+    };
+  }
+
+  return { servers, tempDir, broker, loginFile, laptopEnvironment };
 }
