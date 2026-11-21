@@ -14894,8 +14894,16 @@ console.log(JSON.stringify(args));
       /** Each row's end, which its waits take (`until`'s `ended`). The teardown aborts it, whether
        *  the row returned or bun failed it at its timeout with a wait still parked. */
       const rowEnds: AbortController[] = [];
-      afterEach(() => {
+      /** The shutdown of each session these rows booted. A command runs in a process group of its
+       *  own, which the session's shutdown kills; `typed-shell`'s kill of every running group as
+       *  the process exits does not run under `bun test`, which fires no `exit` listener. So a row
+       *  that ended before its command did (it failed before it let the command finish) leaves
+       *  that command running after the file and after bun, unless its teardown shuts the
+       *  session down. */
+      const rowShutdowns: (() => Promise<unknown>)[] = [];
+      afterEach(async () => {
         for (const ended of rowEnds.splice(0)) ended.abort();
+        for (const shutdown of rowShutdowns.splice(0)) await shutdown();
         for (const directory of workDirectories.splice(0)) {
           rmSync(directory, { recursive: true, force: true });
         }
@@ -15000,6 +15008,9 @@ console.log(JSON.stringify(args));
             dispatchCredential: options.dispatchCredential,
           }),
         });
+        rowShutdowns.push(
+          async () => await session.fixture.handlers.get("session_shutdown")?.({}, session.context)
+        );
         natsState.controls
           .get("agentstream.ses_delivery.control")
           ?.push(JSON.stringify({ type: "watch", v: 1 }));
