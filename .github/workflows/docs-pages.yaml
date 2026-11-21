@@ -210,6 +210,7 @@ on:
       - 'packages/envoy/internal/legionagents/*'
       - 'packages/envoy/internal/logging/*'
       - 'packages/envoy/internal/metrics/*'
+      - 'packages/envoy/internal/oauthrefusal/*'
       - 'packages/envoy/internal/oidc/*'
       - 'packages/envoy/internal/pglisten/*'
       - 'packages/envoy/internal/pgmigrate/*'
