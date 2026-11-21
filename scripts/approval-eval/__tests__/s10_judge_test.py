@@ -855,11 +855,6 @@ class JudgingTest(Base):
         cases = {
             "a read of another bundle": own(lambda bundle, directory: [("read", {"path": other(bundle, directory)}, None)]),
             "a read of no file": own(lambda bundle, directory: [("read", {"path": bundle[:-4] + "x.md"}, None)]),
-            "a read reporting another bundle": own(lambda bundle, directory: [
-                ("read", {"path": bundle}, {"resolvedPath": bundle, "fileMatches": [{"path": other(bundle, directory)}]})]),
-            "a grep reporting another bundle": own(lambda bundle, directory: [
-                ("grep", {"pattern": "x", "path": bundle},
-                 {"searchPath": bundle, "fileMatches": [{"path": other(bundle, directory)}]})]),
             "a grep of the skill tree reporting a bundle": own(lambda bundle, directory: [
                 ("grep", {"pattern": "x", "path": HARNESS}, {"searchPath": HARNESS, "files": [other(bundle, directory)]})]),
             "a directory read no answer establishes": own(lambda bundle, directory: [
@@ -1169,6 +1164,11 @@ class JudgingTest(Base):
 
 # ---------- stops, and the stage on disk ----------
 
+def bun_cannot_run(text, path):
+    """A read-back that does not run, as `read_back_with_bun` stops where Bun cannot run."""
+    raise J.Stopped("bun could not run")
+
+
 class StageTest(Base):
     def test_a_written_stage_is_never_judged_again(self):
         admission = self.one_request()
@@ -1270,16 +1270,163 @@ class StageTest(Base):
         self.assertIn(f"requests/{ask_id('a1')}/{STORE.UNREAD_FILE}", self.record()["files"])
         self.assertEqual(self.outcome("a2")["verdict"], "approve")
 
-    def test_a_read_back_that_cannot_run_stops_the_run(self):
-        def read_back(text, path):
-            raise J.Stopped("bun could not run")
-
-        self.assertEqual(self.judge(self.one_request(), FakeSandbox(self), read_back_of=read_back), 2)
+    def test_a_read_back_that_cannot_run_stops_the_run_and_its_outcome_is_committed_on_resume(self):
+        admission = self.one_request()
+        first = FakeSandbox(self)
+        self.assertEqual(self.judge(admission, first, read_back_of=bun_cannot_run), 2)
+        self.assertEqual([run["ask"] for run in first.runs], [ask_id("a1")])
         self.assertFalse(self.has_outcome("a1"))
         self.assertIn("bun could not run", self.record()["stops"][0]["reason"])
+        # The outcome built whole is kept, held to its sha256 like every file of the stage.
+        pending = f"requests/{ask_id('a1')}/{STORE.PENDING_FILE}"
+        self.assertIn(pending, self.record()["files"])
+        kept = got(os.path.join(self.out, pending))
+        self.assertEqual(json.loads(kept)["verdict"], "approve")
+        # A second run whose read-back cannot run either stops again, the same outcome kept.
+        self.assertEqual(self.judge(admission, FakeSandbox(self), read_back_of=bun_cannot_run), 2)
+        self.assertEqual(len(self.record()["stops"]), 2)
+        self.assertEqual(got(os.path.join(self.out, pending)), kept)
+        # A run whose read-back runs commits that outcome, and judges nothing again (point 6).
+        resumed = FakeSandbox(self)
+        self.assertEqual(self.judge(admission, resumed), 0, self.stderr)
+        self.assertEqual(resumed.runs, [])
+        self.assertEqual(self.outcome("a1")["verdict"], "approve")
+        self.assertEqual(got(os.path.join(self.out, "requests", ask_id("a1"), STORE.OUTCOME_FILE)), kept)
         with mock.patch.object(J, "BUN", os.path.join(self.root, "no-bun")):
             with self.assertRaisesRegex(J.Stopped, "could not read back"):
                 J.read_back_with_bun("{}", "requests/a/outcome.json")
+        # A Bun whose check prints no JSON, or exits 2 with its usage, stops the run the same way.
+        for name, body in {"no JSON": "echo not json", "exit 2": "echo usage >&2; exit 2"}.items():
+            with self.subTest(bun=name):
+                stand_in = os.path.join(self.root, "bun-" + name.replace(" ", "-"))
+                put(stand_in, f"#!/bin/sh\n{body}\n")
+                os.chmod(stand_in, 0o755)
+                with mock.patch.object(J, "BUN", stand_in):
+                    with self.assertRaisesRegex(J.Stopped, "could not read back"):
+                        J.read_back_with_bun("{}", "requests/a/outcome.json")
+
+    def test_an_interrupt_or_a_sigterm_during_the_read_back_keeps_the_outcome_pending(self):
+        def interrupted(text, path):
+            raise KeyboardInterrupt
+
+        def terminated(text, path):
+            os.kill(os.getpid(), signal.SIGTERM)
+            self.fail("the SIGTERM did not stop the read-back")
+
+        for name, read_back in (("an interrupt", interrupted), ("a SIGTERM", terminated)):
+            with self.subTest(name=name):
+                admission = self.one_request()
+                first = FakeSandbox(self)
+                self.assertEqual(self.judge(admission, first, read_back_of=read_back), 2)
+                self.assertEqual([run["ask"] for run in first.runs], [ask_id("a1")])
+                self.assertFalse(self.has_outcome("a1"))
+                self.assertEqual(len(self.record()["stops"]), 1)
+                pending = f"requests/{ask_id('a1')}/{STORE.PENDING_FILE}"
+                self.assertIn(pending, self.record()["files"])
+                kept = got(os.path.join(self.out, pending))
+                self.assertEqual(json.loads(kept)["verdict"], "approve")
+                # The resume commits the outcome kept, and judges nothing again (point 6).
+                resumed = FakeSandbox(self)
+                self.assertEqual(self.judge(admission, resumed), 0, self.stderr)
+                self.assertEqual((resumed.runs, resumed.preflights), ([], []))
+                self.assertEqual(got(os.path.join(self.out, "requests", ask_id("a1"), STORE.OUTCOME_FILE)), kept)
+                shutil.rmtree(self.out)
+
+    def test_a_pending_outcome_the_parser_refuses_on_resume_is_a_shape_deviation_and_no_judge_starts(self):
+        def refusing(text, path):
+            return None if '"shape"' in text else "CorpusError: a judged document holds no sha256"
+
+        admission = self.one_request()
+        self.assertEqual(self.judge(admission, FakeSandbox(self), read_back_of=bun_cannot_run), 2)
+        directory = os.path.join(self.out, "requests", ask_id("a1"))
+        kept = got(os.path.join(directory, STORE.PENDING_FILE))
+        resumed = FakeSandbox(self)
+        self.assertEqual(self.judge(admission, resumed, read_back_of=refusing), 0, self.stderr)
+        self.assertEqual((resumed.runs, resumed.preflights), ([], []))
+        found = self.outcome("a1")
+        self.assertEqual((found["outcome"], found["deviation"]["kind"], found["judgement"]), ("deviation", "shape", None))
+        self.assertIn("a judged document holds no sha256", found["deviation"]["reason"])
+        self.assertEqual(found["judgedAt"], json.loads(kept)["judgedAt"])
+        # The outcome refused is the one kept pending, byte for byte, beside the deviation in its place.
+        self.assertEqual(got(os.path.join(directory, STORE.UNREAD_FILE)), kept)
+        self.assertIn(f"requests/{ask_id('a1')}/{STORE.UNREAD_FILE}", self.record()["files"])
+
+    def test_a_pending_inputs_or_fact_deviation_has_no_started_json_and_is_committed_on_resume(self):
+        held = {"holds": False, "legion": True, "primary": True, "root": True, "status": "backlog"}
+        cases = {"inputs": (deviation_line("b1", "the log gives no title of ACME-5 as of event 7"), "b1"),
+                 "fact": (request_of("a1", "ACME-1", hold=True, fact=held), "a1")}
+        for kind, (entry, tail) in cases.items():
+            with self.subTest(kind=kind):
+                admission = self.admitted(entry)
+                first = FakeSandbox(self)
+                self.assertEqual(self.judge(admission, first, read_back_of=bun_cannot_run), 2)
+                self.assertEqual((first.runs, first.preflights), ([], []))
+                # Its outcome was built before the request started, so the pending outcome is all it holds.
+                directory = os.path.join(self.out, "requests", ask_id(tail))
+                self.assertEqual(os.listdir(directory), [STORE.PENDING_FILE])
+                kept = got(os.path.join(directory, STORE.PENDING_FILE))
+                resumed = FakeSandbox(self)
+                self.assertEqual(self.judge(admission, resumed), 0, self.stderr)
+                self.assertEqual((resumed.runs, resumed.preflights), ([], []))
+                self.assertEqual(self.outcome(tail)["deviation"]["kind"], kind)
+                self.assertEqual(got(os.path.join(directory, STORE.OUTCOME_FILE)), kept)
+                self.assertEqual(sorted(os.listdir(directory)), [STORE.OUTCOME_FILE, STORE.PENDING_FILE])
+                shutil.rmtree(self.out)
+
+    def test_an_outcome_that_is_no_json_keeps_no_pending_file_and_the_stop_goes_on(self):
+        load = J.load_shadow
+
+        def no_json(*arguments):
+            shadow = load(*arguments)
+            finish = shadow.finish_judgement
+
+            def finish_judgement(*inner):
+                return dict(finish(*inner), seen={"a set, which JSON cannot hold"})
+
+            shadow.finish_judgement = finish_judgement
+            return shadow
+
+        admission = self.one_request()
+        first = FakeSandbox(self)
+        with mock.patch.object(J, "load_shadow", no_json):
+            self.assertEqual(self.judge(admission, first, read_back_of=bun_cannot_run), 2)
+        self.assertEqual([run["ask"] for run in first.runs], [ask_id("a1")])
+        self.assertIn("bun could not run", self.record()["stops"][0]["reason"])
+        self.assertFalse(self.has_outcome("a1"))
+        pending = f"requests/{ask_id('a1')}/{STORE.PENDING_FILE}"
+        self.assertNotIn(pending, self.record()["files"])
+        self.assertFalse(os.path.exists(os.path.join(self.out, pending)))
+        # With no outcome kept, the request is one a run started and did not complete (point 6).
+        resumed = FakeSandbox(self)
+        self.assertEqual(self.judge(admission, resumed), 0, self.stderr)
+        self.assertEqual(resumed.runs, [])
+        self.assertEqual(self.outcome("a1")["deviation"]["kind"], "started")
+
+    def test_a_pending_outcome_of_another_request_is_refused_and_nothing_is_committed(self):
+        admission = self.one_request()
+        self.assertEqual(self.judge(admission, FakeSandbox(self), read_back_of=bun_cannot_run), 2)
+        pending = f"requests/{ask_id('a1')}/{STORE.PENDING_FILE}"
+        kept = got(os.path.join(self.out, pending))
+        opened = self.record()
+        for key, other in (("askId", ask_id("a2")), ("issueKey", "ACME-2"), ("group", "another-tree"), ("cases", 2)):
+            with self.subTest(key=key):
+                # A pending file the record holds by its sha256, of a request other than the one it is kept for.
+                changed = STORE.json_bytes(dict(json.loads(kept), **{key: other}))
+                put(os.path.join(self.out, pending), changed)
+                record = dict(opened, files=dict(opened["files"], **{pending: sha(changed)}))
+                put(os.path.join(self.out, STORE.STAGE_FILE), STORE.json_bytes(record))
+                resumed = FakeSandbox(self)
+                self.assertEqual(self.judge(admission, resumed), 2)
+                self.assertIn(f"{pending} is no outcome of the request it is kept for: its {key} is", self.stderr)
+                self.assertEqual((resumed.runs, resumed.preflights), ([], []))
+                self.assertFalse(self.has_outcome("a1"))
+                # Nothing is committed and no stop is recorded: the record is the one this run opened.
+                self.assertEqual(self.record(), record)
+        # The pending outcome of that request, put back, is committed.
+        put(os.path.join(self.out, pending), kept)
+        put(os.path.join(self.out, STORE.STAGE_FILE), STORE.json_bytes(opened))
+        self.assertEqual(self.judge(admission, FakeSandbox(self)), 0, self.stderr)
+        self.assertEqual(got(os.path.join(self.out, "requests", ask_id("a1"), STORE.OUTCOME_FILE)), kept)
 
     def test_the_analysis_parser_reads_each_outcome_back_through_bun(self):
         bun = os.environ.get("S10_BUN")
@@ -1835,17 +1982,19 @@ class JobSpecTest(unittest.TestCase):
 class ScriptedRunner(JOB.KubeRunner):
     """`KubeRunner`, built by its own constructor, over a stand-in `kubectl`: each call answered from
     `script` by its verb, the driver's own pod (`get pod`) the one the constructor reads, running the
-    image the runner is given. `calls` holds the verbs called after the constructor's."""
+    image the runner is given unless `image` names another, under `account` where one is named.
+    `calls` holds the verbs called after the constructor's; a list handed in as `calls` holds every
+    verb, the constructor's too, which a constructor that refuses leaves for the caller to read."""
 
-    def __init__(self, script, namespace_file):
+    def __init__(self, script, namespace_file, image=None, account=JOB.SERVICE_ACCOUNT, calls=None):
         pod = own_pod()
         container = pod["spec"]["containers"][0]
         pod["status"] = {"containerStatuses": [{"name": container["name"], "imageID": container["image"]}]}
         self.script = {"get pod": [(0, json.dumps(pod))], **script}
-        self.calls = []
+        self.calls = [] if calls is None else calls
         with mock.patch.object(JOB, "NAMESPACE_FILE", namespace_file), \
                 mock.patch.object(SANDBOX, "gateway_key", return_value=None):
-            super().__init__(container["image"], JOB.SERVICE_ACCOUNT, {}, poll=0, pauses=(0, 0))
+            super().__init__(image or container["image"], account, {}, poll=0, pauses=(0, 0))
         self.constructed = list(self.calls)
         self.calls.clear()
 
@@ -1874,6 +2023,19 @@ class KubeRunnerTest(unittest.TestCase):
         self.assertEqual(runner.constructed, ["get pod"])
         self.assertEqual((runner.namespace, runner.own_pod()["metadata"]["name"]), ("sessions", "session-1"))
         self.assertEqual(runner.calls, [])
+
+    def test_the_constructor_refuses_another_image_and_the_drivers_own_account_before_any_call(self):
+        cases = {
+            "another image": ({"image": IMAGE}, "the sandbox runs only the image its driver runs"),
+            "the driver's own account": ({"account": "session"}, "the account this driver's own pod runs as"),
+        }
+        for name, (given, refusal) in cases.items():
+            with self.subTest(name=name):
+                calls = []
+                with self.assertRaisesRegex(STORE.CannotRun, refusal):
+                    ScriptedRunner({}, self.namespace_file, calls=calls, **given)
+                # The constructor read its own pod and called nothing past it.
+                self.assertEqual(calls, ["get pod"])
 
     def pods(self):
         return json.dumps({"items": [{"metadata": {"name": "pod-1"}, "status": {

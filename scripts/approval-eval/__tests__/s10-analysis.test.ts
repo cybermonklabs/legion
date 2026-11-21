@@ -460,8 +460,9 @@ function countsOf(rows: ReadonlyArray<Record<string, unknown>>): Record<string, 
  * A claim directory of `specs`, every stage chained to the one before it, with `questions` (each
  * a tree and a tail) as question cases of the eligible trees, and the log its build read: each
  * request's opening and any edit of it, then any settlement or first answer its spec names, then
- * each of his answers its cases record. Each ready line of the inventory records its judged
- * moment as the inputs stage would: the last opening or edit before his answer.
+ * each of his answers its cases record. Every line of the inventory records its judged moment as
+ * the inputs stage would, the last opening or edit before his answer, a deviation line too, but a
+ * line whose first answer is not his own, which records none.
  */
 async function writeClaim(
   specs: readonly RequestSpec[],
@@ -1541,6 +1542,60 @@ describe("his answer, by the first qualifying event (point 7)", () => {
         `${moment(edit)}: it is not the log the inputs stage read`
     );
     expect(existsSync(join(unplaced.directory, "analysis"))).toBe(false);
+  });
+
+  test("refuses a line whose judged moment differs only in its type or its time, and a ready line with no moment", async () => {
+    const settled = eventOf("artifact.changes_requested", "d1");
+    const edit = eventOf("ask.edited", "d1");
+    const moment = (event: DispatchEvent | undefined): string =>
+      `event ${event?.id} (${event?.type}, ${event?.created_at})`;
+    /** A claim of SPECS whose `tail` line is the line `change` gives. */
+    const changedLine = (
+      tail: string,
+      change: (line: Record<string, unknown>) => Record<string, unknown>
+    ) =>
+      writeClaim(SPECS, [], {
+        lines: (lines) => lines.map((line) => (line.askId === ask(tail) ? change(line) : line)),
+      });
+    // d1's moment with the edit's event id and time, and the opening's type; then the edit's event
+    // id and type at another time.
+    const earlier = "2026-11-20T08:00:00.000Z";
+    for (const [type, createdAt] of [
+      ["ask.opened", edit?.created_at],
+      ["ask.edited", earlier],
+    ] as const) {
+      const claim = await changedLine("d1", (line) => ({
+        ...line,
+        judged: { eventId: edit?.id, type, createdAt },
+      }));
+      const refused = await run(argsOf(claim));
+      expect(refused.status).toBe(2);
+      expect(refused.errors).toContain(
+        `records the judged moment of ${ask("d1")} as event ${edit?.id} (${type}, ${createdAt}), ` +
+          `and the log through the build's pin places his answer, event ${settled?.id} ` +
+          `(artifact.changes_requested), after ${moment(edit)}: it is not the log the inputs ` +
+          "stage read"
+      );
+      expect(existsSync(join(claim.directory, "analysis"))).toBe(false);
+    }
+    // d3's line made ready with no moment, where the log places an answer not his own: the inputs
+    // stage writes such a request as a deviation, and a ready line always with its moment.
+    const opened = eventOf("ask.opened", "d3");
+    const ready = await changedLine("d3", (line) => ({
+      ...line,
+      state: "ready",
+      reason: null,
+      requestSha256: sha256("request d3"),
+    }));
+    const readyNone = await run(argsOf(ready));
+    expect(readyNone.status).toBe(2);
+    expect(readyNone.errors).toContain(
+      `records the judged moment of ${ask("d3")} as no moment on a ready line, and the log ` +
+        `through the build's pin places his answer, event ${eventOf("ask.answered", "d3")?.id} ` +
+        `(ask.answered, not his own), after ${moment(opened)}: it is not the log the inputs ` +
+        "stage read"
+    );
+    expect(existsSync(join(ready.directory, "analysis"))).toBe(false);
   });
 
   test("refuses a log that is not the one the build read", async () => {

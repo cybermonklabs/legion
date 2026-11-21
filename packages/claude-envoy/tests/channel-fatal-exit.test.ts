@@ -3,7 +3,7 @@
 // link's socket and exits non-zero, and a server whose parent is gone (its stdin at end of file)
 // exits too, rather than living on with its socket bound for a session nobody runs.
 import { afterEach, expect, test } from "bun:test"
-import { existsSync } from "node:fs"
+import { existsSync, realpathSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
@@ -14,6 +14,10 @@ import { resolveModSocketPath } from "../hooks/mod-protocol"
 
 const require = createRequire(import.meta.url)
 const NATS_PROTOCOL = require.resolve("nats/lib/nats-base-client/protocol.js")
+/** The plugins' NATS dial (`connectNats`), by the path a stack frame names it with. */
+const NATS_CONNECTION = realpathSync(require.resolve("@legion/envoy-client/nats-connection"))
+/** The dial timeout of the server's NATS dial (`natsDialTimeoutMs`). */
+const DIAL_TIMEOUT_MS = await natsDialTimeoutMs()
 /** Each session's home, which is also its `XDG_RUNTIME_DIR`; `mkdtemp` adds six characters. */
 const HOME_PREFIX = "claude-envoy-fatal-"
 
@@ -127,7 +131,7 @@ function silentHub(): { url: string; pings(): number } {
 }
 
 /** A NATS server that takes the connection and never sends its INFO, so a client's dial waits on
- *  it until nats.js's own dial timeout. `connections()` counts the clients that reached it. */
+ *  it until the dial's timeout. `connections()` counts the clients that reached it. */
 function muteHub(): { url: string; connections(): number } {
   let connections = 0
   const server = Bun.listen({
@@ -144,14 +148,13 @@ function muteHub(): { url: string; connections(): number } {
   return { url: `nats://127.0.0.1:${server.port}`, connections: () => connections }
 }
 
-/** The timer nats.js's protocol arms for a dial this test's server starts. `natsConnectionOptions`
- * leaves `timeout` unset, so the installed protocol's `this.options.timeout || <number>` takes
- * it. Read that number from that very source, never from every timer that happens to have a large
- * delay. */
+/** The timeout of a dial this test's server starts: the `timeout` its own connection options set,
+ * or, where they set none, the installed nats protocol's `this.options.timeout || <number>`, read
+ * from that very source. It is the delay of the timers `dialHoldPreload` holds. */
 async function natsDialTimeoutMs(): Promise<number> {
   const options = natsConnectionOptions({
     servers: [],
-    name: "channel-fatal-exit-timer-record",
+    name: "channel-fatal-exit-dial-hold",
     credential: { kind: "none" },
   })
   if (options.timeout !== undefined) return options.timeout
@@ -162,13 +165,20 @@ async function natsDialTimeoutMs(): Promise<number> {
   return Number(defaultTimeout)
 }
 
-/** A preloaded child module records the nats dial timer this test's server arms: only a timer with
- * the exact timeout the server's connection options select, called by nats's protocol source. On
- * exit it writes `armed and not fired`, `fired`, or `none armed`. */
-async function dialTimerPreload(
+/**
+ * A preloaded child module that holds the dial's timeout: a timer whose delay is the dial timeout
+ * (`DIAL_TIMEOUT_MS`) and whose caller is nats's protocol source (nats.js's own dial timer) or the
+ * plugins' dial (`connectNats`'s bound around the whole dial, in `NATS_CONNECTION`) is never put on
+ * the clock: it is held, so the server's first dial waits on its hub for as long as the process
+ * runs, and a stop asked for at any moment after the dial began comes while that dial waits. A
+ * held timer the server clears is counted. Every other timer runs as it would. On exit it writes
+ * `held` (a held timer was still waiting and none was cleared: the dial never ended), `cleared` (a
+ * held timer was cleared: the dial ended), or `none held`.
+ */
+async function dialHoldPreload(
   home: string,
 ): Promise<{ readonly preload: string; readonly record: string }> {
-  const directory = join(home, "dial-timer")
+  const directory = join(home, "dial-hold")
   const preload = join(directory, "preload.js")
   const record = join(directory, "record")
   await mkdir(directory)
@@ -176,29 +186,31 @@ async function dialTimerPreload(
     preload,
     [
       'import { writeFileSync } from "node:fs"',
-      `const timeout = ${await natsDialTimeoutMs()}`,
-      `const protocol = ${JSON.stringify(NATS_PROTOCOL)}`,
+      `const timeout = ${DIAL_TIMEOUT_MS}`,
+      `const sources = ${JSON.stringify([NATS_PROTOCOL, NATS_CONNECTION])}`,
       `const record = ${JSON.stringify(record)}`,
       "const set = globalThis.setTimeout",
       "const clear = globalThis.clearTimeout",
-      "let timer",
-      "let fired = false",
+      "const held = new Set()",
+      "let cleared = 0",
       "globalThis.setTimeout = (callback, delay, ...args) => {",
-      '  const dial = Number(delay) === timeout && (new Error().stack ?? "").includes(protocol)',
-      "  let handle",
-      "  handle = set((...callbackArgs) => {",
-      "    if (dial && handle === timer) fired = true",
-      "    return callback(...callbackArgs)",
-      "  }, delay, ...args)",
-      "  if (dial) timer = handle",
+      '  const stack = new Error().stack ?? ""',
+      "  if (Number(delay) !== timeout || !sources.some((source) => stack.includes(source))) {",
+      "    return set(callback, delay, ...args)",
+      "  }",
+      "  const handle = { ref: () => handle, unref: () => handle, hasRef: () => false, refresh: () => handle }",
+      "  held.add(handle)",
       "  return handle",
       "}",
       "globalThis.clearTimeout = (handle) => {",
-      "  if (handle === timer && !fired) timer = undefined",
+      "  if (held.delete(handle)) {",
+      "    cleared += 1",
+      "    return",
+      "  }",
       "  return clear(handle)",
       "}",
       'process.on("exit", () => {',
-      '  writeFileSync(record, timer === undefined ? "none armed\\n" : fired ? "fired\\n" : "armed and not fired\\n")',
+      '  writeFileSync(record, cleared > 0 ? "cleared\\n" : held.size > 0 ? "held\\n" : "none held\\n")',
       "})",
       "",
     ].join("\n"),
@@ -207,8 +219,8 @@ async function dialTimerPreload(
 }
 
 interface Started {
-  /** Where the server's dial-timer record goes, when the row asked for one (`recordDialTimer`). */
-  readonly dialTimerRecord: string | undefined
+  /** Where the server's dial-hold record goes, when the row asked for the hold (`holdDial`). */
+  readonly dialHoldRecord: string | undefined
   readonly server: Subprocess<"pipe", "ignore", "pipe">
   readonly socketPath: string
   stderr(): string
@@ -216,11 +228,11 @@ interface Started {
 
 /** Starts the channel server from this checkout as Claude Code would, with `natsUrls` its Envoy's
  *  NATS servers (none: inbound off), its stdin held open as a live parent holds it, and sends the
- *  MCP initialize handshake. `recordDialTimer` preloads the server with `dialTimerPreload`, for the
- *  one row that reads which way its NATS dial ended. */
+ *  MCP initialize handshake. `holdDial` preloads the server with `dialHoldPreload`, for the rows
+ *  whose stop must come while the dial waits. */
 async function startServer(
   natsUrls: readonly string[],
-  options: { readonly recordDialTimer?: boolean } = {},
+  options: { readonly holdDial?: boolean } = {},
 ): Promise<Started> {
   const home = await mkdtemp(join(homeRoot(), HOME_PREFIX))
   cleanups.push(() => rm(home, { recursive: true, force: true }))
@@ -238,13 +250,13 @@ async function startServer(
     }),
   )
   const sessionID = `ses_fatal_${crypto.randomUUID().replaceAll("-", "")}`
-  const dialTimer = options.recordDialTimer === true ? await dialTimerPreload(home) : undefined
+  const dialHold = options.holdDial === true ? await dialHoldPreload(home) : undefined
   // This process's own Bun, by its path: a `bun` looked up on PATH can be a version manager's
   // shim, which under this session's HOME finds no configuration and exits before the server runs.
   const server = Bun.spawn(
     [
       process.execPath,
-      ...(dialTimer === undefined ? [] : ["--preload", dialTimer.preload]),
+      ...(dialHold === undefined ? [] : ["--preload", dialHold.preload]),
       channelEntry,
     ],
     {
@@ -294,7 +306,7 @@ async function startServer(
   if (socket.path === undefined)
     throw new Error(`the session names no mod socket: ${socket.refusal}`)
   const socketPath = socket.path
-  return { server, socketPath, dialTimerRecord: dialTimer?.record, stderr: () => stderr }
+  return { server, socketPath, dialHoldRecord: dialHold?.record, stderr: () => stderr }
 }
 
 /** The server's exit code once it exits, or undefined when it is still running after `ms`. */
@@ -374,27 +386,53 @@ test("a stop asked for while the start waits on a silent hub exits 0, its socket
   expect(existsSync(started.socketPath)).toBe(false)
 }, 30_000)
 
-test("a stop asked for while the dial waits on a mute hub exits 0, its socket removed", async () => {
+/**
+ * The mute-hub rows: a stop asked for while the server's first NATS dial waits on a hub that never
+ * answers. The dial's timeout is held (`dialHoldPreload`), so that dial is still waiting when the
+ * stop comes, by construction and not by the stop beating the timeout. `lateMs` is how long the
+ * parent waits, once the hub has the dial's connection and the server its mod socket, before it
+ * sends SIGTERM.
+ */
+async function stopWhileTheDialWaits(lateMs: number): Promise<void> {
   const hub = muteHub()
-  const started = await startServer([hub.url], { recordDialTimer: true })
+  const started = await startServer([hub.url], { holdDial: true })
   await startedTo(
     started,
     () => hub.connections() >= 1 && existsSync(started.socketPath),
     "the hub's connection and its mod socket",
   )
+  // A real wait, standing for a parent that is late: the server is another process, whose clock no
+  // fake timer of this one reaches.
+  if (lateMs > 0) await Bun.sleep(lateMs)
+  // The one dial: a dial that ended and was dialed again would have reached the hub twice.
+  expect(hub.connections(), started.stderr()).toBe(1)
   started.server.kill("SIGTERM")
   await started.server.exited
   // What decides the row is how the server ended, not when. A correct stop ends the start's wait
-  // on the dial, and the process exits 0 through its own SIGTERM handler while nats.js's dial
-  // timer is still armed. A server with no handler is killed by the signal. A stop that leaves the
-  // dial's wait alone also exits 0, but only after that timer fired. A server started without the
-  // preload records no timer at all. The row's own timeout is its only bound, against a process
+  // on the dial, and the process exits 0 through its own SIGTERM handler while the dial still
+  // waits. A server with no handler is killed by the signal. A stop that leaves the dial's wait
+  // alone waits on a dial that never ends, and the row's own timeout fails it. A server started
+  // without the preload holds nothing. The row's own timeout is its only bound, against a process
   // that never ends.
   expect(exitEvent(started), started.stderr()).toBe("exit 0")
-  const timer =
-    started.dialTimerRecord === undefined
-      ? "none armed"
-      : (await readFile(started.dialTimerRecord, "utf8").catch(() => "none armed")).trim()
-  expect(timer, started.stderr()).toBe("armed and not fired")
+  const dial =
+    started.dialHoldRecord === undefined
+      ? "none held"
+      : (await readFile(started.dialHoldRecord, "utf8").catch(() => "none held")).trim()
+  expect(dial, started.stderr()).toBe("held")
   expect(existsSync(started.socketPath)).toBe(false)
+}
+
+test("a stop asked for while the dial waits on a mute hub exits 0, its socket removed", async () => {
+  await stopWhileTheDialWaits(0)
 }, 30_000)
+
+// The same stop from a parent that waits a second longer than the dial's timeout before it sends
+// it. Without the hold, the dial ends at its timeout and is dialed again before the stop comes.
+test(
+  "a stop a late parent asks for while the dial waits on a mute hub exits 0, its socket removed",
+  async () => {
+    await stopWhileTheDialWaits(DIAL_TIMEOUT_MS + 1_000)
+  },
+  DIAL_TIMEOUT_MS + 1_000 + 30_000,
+)
