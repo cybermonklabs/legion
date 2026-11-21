@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1597,6 +1598,83 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 				t.Fatalf("the lock after the failed adoption: %v, want it left in place", err)
 			}
 		})
+	}
+}
+
+// The jj every role runs, and the one CI tests with, is the pin .github/ci-tools.yaml names
+// (.github/actions/install-jj installs it; the worker image's ARG JJ_TOOL names the same release):
+// a release of sjawhar/jj whose vendored gix-pack maps each pack as chunks kept resident up to a
+// budget, JJ_PACK_MAPPED_LIMIT, where upstream gix-pack maps it whole, and under gVisor the first
+// read of a pack mapped whole counts all of it as the process's memory (dispatch://INFRA-4036). A
+// pin of a release built without that patch, an older one or a later one whose gix raise leaves
+// its [patch.crates-io] entry unused, maps every pack whole again, and no other test sees it: on
+// the small repositories tests build, the two read alike. The variable tells them apart: the
+// patched mapping refuses a value that is not a budget at every pack open
+// (lib/chunked-mmap/src/chunked.rs, open), and an unpatched jj never reads it. So on a git
+// repository whose one commit sits in its one pack, the jj on PATH lists the commit's file under
+// JJ_PACK_MAPPED_LIMIT=512m and fails under JJ_PACK_MAPPED_LIMIT=not-a-number, where jj
+// 0.45.1-sami.20260910-043938 and v0.46.0-sami.20261008-234600 list the file both times. The
+// crate's own refusal names the variable, but it never reaches the user: gix-odb takes the pack it
+// could not open as absent, and jj reports the commit not found, so that is what the test asserts.
+// The chunked mapping is Linux's alone: on any other target the crate maps a pack whole and reads
+// no variable.
+func TestThePinnedJJCarriesTheChunkedPackPatch(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skipf("the chunked pack mapping is Linux's alone: on %s the patched jj reads no JJ_PACK_MAPPED_LIMIT", runtime.GOOS)
+	}
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		t.Fatalf("jj is required: %v", err)
+	}
+	const file = "README.md"
+	home := t.TempDir()
+	repository := t.TempDir()
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(repository, fixturegit.InitWorkTree(repository, "main")...)
+	if err := os.WriteFile(filepath.Join(repository, file), []byte("smoke\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture.Run(repository, "git", "add", file)
+	fixture.Run(repository, "git", "commit", "--quiet", "-m", "the one commit")
+	fixture.Run(repository, "git", "repack", "-ad")
+	head := fixture.Run(repository, "git", "rev-parse", "HEAD")
+	// jj must read the commit from the pack: the patched mapping reads the variable as it opens a
+	// pack, and a loose copy of the commit is read with no pack opened at all.
+	packs, err := filepath.Glob(filepath.Join(repository, ".git", "objects", "pack", "*.pack"))
+	if err != nil || len(packs) != 1 {
+		t.Fatalf("git repack -ad left the packs %v (%v), want exactly one", packs, err)
+	}
+	loose := filepath.Join(repository, ".git", "objects", head[:2], head[2:])
+	if _, err := os.Lstat(loose); err == nil {
+		t.Fatalf("the commit %s is still a loose object (%s) after git repack -ad, want it in the pack alone", head, loose)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	// The init takes no -R and opens no workspace, so with no Dir jj would walk up from the test
+	// process's directory to the closest .jj and write that repository.
+	fixture.Run(repository, append([]string{jj}, fixturegit.JJInit(repository, true)[1:]...)...)
+
+	// list lists the files of @-, HEAD's commit, under one JJ_PACK_MAPPED_LIMIT, which the command's
+	// own environment carries: fixtureenv.MustGuard took every JJ_ variable out of the test process.
+	list := func(limit string) (stdout, stderr string, err error) {
+		t.Helper()
+		var out, errOut strings.Builder
+		command := exec.Command(jj, "--ignore-working-copy", "file", "list", "-r", "@-")
+		command.Dir = repository
+		command.Env = append(fixtureenv.Isolated(home), "JJ_PACK_MAPPED_LIMIT="+limit)
+		command.Stdout, command.Stderr = &out, &errOut
+		err = command.Run()
+		return out.String(), errOut.String(), err
+	}
+	if stdout, stderr, err := list("512m"); err != nil || strings.TrimSpace(stdout) != file {
+		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=512m, jj --ignore-working-copy file list -r @- ended %v and printed %q, on stderr %q; want exit 0 and %s listed, as every jj lists it under a budget: an unpatched jj lists it under not-a-number too, and only that run tells the two apart", err, stdout, stderr, file)
+	}
+	stdout, stderr, err := list("not-a-number")
+	if err == nil {
+		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=not-a-number, jj --ignore-working-copy file list -r @- exited 0 and printed %q: this jj ignores the variable, as a jj without the chunked-pack patch does (jj 0.45.1-sami.20260910-043938 and v0.46.0-sami.20261008-234600 list %s here too), where the patched gix-pack refuses the value as it opens the pack and jj reports the commit %s not found", stdout, file, head)
+	}
+	if !strings.Contains(stderr, head) || !strings.Contains(stderr, "not found") {
+		t.Fatalf("under JJ_PACK_MAPPED_LIMIT=not-a-number, jj --ignore-working-copy file list -r @- ended %v and printed %q, on stderr %q; want the commit %s not found, which is how the patched gix-pack's refusal of the value reaches the user (gix-odb takes the pack as absent), where an unpatched jj lists %s", err, stdout, stderr, head, file)
 	}
 }
 
