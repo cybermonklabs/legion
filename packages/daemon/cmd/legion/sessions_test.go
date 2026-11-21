@@ -9,10 +9,10 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // agentSessions is the sessions directory an agent's Oh My Pi writes under in a pod, the prefix of
@@ -77,10 +77,13 @@ func (r *sessionsImportRig) refuses(want string, extra ...string) {
 	}
 }
 
-// refusesWithin is refuses under a deadline, for the two cases whose open would never answer if
-// the walk's flag set lost O_NONBLOCK. Every other refusal comes back at once, so refuses stays
-// as it is: a deadline on all of them would only turn a slow database into a flake.
-func (r *sessionsImportRig) refusesWithin(limit time.Duration, want string, extra ...string) {
+// refusesWithoutWaiting is refuses for the two cases whose open would never answer if the walk's
+// flag set lost O_NONBLOCK. The import runs in a goroutine, and its answer is waited for with no
+// span of its own (testwait.Answer): such an open fails the row by name at the test binary's
+// deadline less a second, before `go test`'s own timeout would kill the package with a stack dump
+// and no word of why, and an import that a slow database or a loaded host makes slow passes. A
+// clock on this wait, as on any other refusal, would turn such a slow import into a failure.
+func (r *sessionsImportRig) refusesWithoutWaiting(want string, extra ...string) {
 	r.t.Helper()
 	type outcome struct {
 		code int
@@ -91,15 +94,9 @@ func (r *sessionsImportRig) refusesWithin(limit time.Duration, want string, extr
 		code, out, _ := r.run(append([]string{"--tree", "LEGION-1"}, extra...)...)
 		done <- outcome{code: code, out: out}
 	}()
-	select {
-	case got := <-done:
-		if got.code != 1 || !strings.Contains(got.out, want) {
-			r.t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", got.code, got.out, want)
-		}
-	case <-time.After(limit):
-		// Failing here rather than waiting: without the deadline a blocked open holds the whole
-		// package until `go test`'s own timeout kills it, with a stack dump and no word of why.
-		r.t.Fatalf("the import did not answer within %s: the open of the named pipe is waiting for a writer, so the walk's flags have lost O_NONBLOCK; want the line %q", limit, want)
+	got := testwait.Answer(r.t, "the import (an open of the named pipe that waits for a writer: the walk's flags have lost O_NONBLOCK)", done)
+	if got.code != 1 || !strings.Contains(got.out, want) {
+		r.t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", got.code, got.out, want)
 	}
 }
 
@@ -481,8 +478,8 @@ func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
 
 // O_NONBLOCK in the walk's flag set has one job: to stop the open of a named pipe from waiting
 // for a writer. Nothing else in the package pins it, so these two cases are what fails when it
-// goes, and each runs under a deadline because the regression is a hang rather than a wrong
-// answer.
+// goes, and each waits for the import's answer with no span of its own (refusesWithoutWaiting),
+// because the regression is a hang rather than a wrong answer.
 func TestSessionsImportRefusesNamedPipes(t *testing.T) {
 	const (
 		token     = "legion-legion-legion-1-architect"
@@ -503,9 +500,6 @@ func TestSessionsImportRefusesNamedPipes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The refusal was measured at 0.47 s in this pod, so seconds of headroom keep a loaded
-	// machine from failing an import that does answer.
-	const limit = 10 * time.Second
 
 	t.Run("a named pipe where the session file belongs", func(t *testing.T) {
 		recorded := agentSessions + "/" + directory + "/" + name
@@ -513,15 +507,15 @@ func TestSessionsImportRefusesNamedPipes(t *testing.T) {
 		mkfifo(t, r.onVolume(recorded))
 		// The leaf opens at once and is refused by the kind read off the handle, a refusal that
 		// names no path because the line already carries the one the claim recorded.
-		r.refusesWithin(limit, token+" failed "+recorded+": read the session file: is not a regular file\n")
+		r.refusesWithoutWaiting(token + " failed " + recorded + ": read the session file: is not a regular file\n")
 	})
 
 	t.Run("a named pipe where an intermediate directory belongs", func(t *testing.T) {
 		recorded := agentSessions + "/a-pipe/" + name
 		r := newSessionsImportRig(t, claim(recorded))
 		mkfifo(t, filepath.Join(r.volume, "sessions", "a-pipe"))
-		r.refusesWithin(limit, token+" failed "+recorded+": read the session file: "+
-			filepath.Join(r.volume, "sessions", "a-pipe")+" is not a directory\n")
+		r.refusesWithoutWaiting(token + " failed " + recorded + ": read the session file: " +
+			filepath.Join(r.volume, "sessions", "a-pipe") + " is not a directory\n")
 	})
 }
 
