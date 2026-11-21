@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
@@ -7,7 +7,8 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 
 // held-port.py's real-process tests: the helper hands its socket to the real envoy-listener of
 // this branch, which serves on it through ENVOY_LISTEN_FD. They read /proc, so they run on Linux,
-// and they build the listener with go; a host that is neither skips them, naming what it lacks.
+// and they build the listener with go; a host that is neither skips them outside CI, naming what
+// it lacks, and fails them by name under GITHUB_ACTIONS (hostGate).
 
 const helper = join(import.meta.dir, "held-port.py");
 const envoy = join(import.meta.dir, "..", "..", "..", "packages", "envoy");
@@ -30,19 +31,18 @@ let nats: Server | undefined;
 const natsClients: Socket[] = [];
 let natsUrl = "";
 
-const onLinux = process.platform === "linux";
-if (!onLinux) {
-  console.warn(
-    `Skipped the tests in ${import.meta.path}. They read /proc, which this host's ` +
-      `${process.platform} does not have; they run on linux.`
-  );
-}
 // Both gates are read, so a host that has neither says so about both.
-const host = hostGate({ programs: ["go"] });
-const gated = onLinux ? host.describe : describe.skip;
+const host = hostGate({
+  programs: ["go"],
+  reason:
+    process.platform === "linux"
+      ? ""
+      : `They read /proc, which this host's ${process.platform} does not have; they run on linux.`,
+});
+const gated = host.describe;
 
 beforeAll(async () => {
-  if (!onLinux || host.missing) return;
+  if (host.missing) return;
   const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {
     cwd: envoy,
     stdout: "pipe",

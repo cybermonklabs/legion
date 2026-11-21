@@ -57,9 +57,12 @@ export interface HostGate {
  * outside CI each gated test is skipped, with one warning naming what is missing and the file, as
  * `skipWithout` does; under GITHUB_ACTIONS each gated test fails, by its own name, with an error
  * naming what is missing, since the job that runs it is set up to run it and a skip there would
- * be a green job with the proof gone. A missing program of `never` fails each gated test on any
- * host. Call it once, at module scope, and declare the gated tests with its `test` and
- * `describe`.
+ * be a green job with the proof gone. A run is CI only where GITHUB_ACTIONS is exactly `true`, as
+ * GitHub's runner sets it; any other value, or none, is a run outside CI. A missing program of
+ * `never` fails each gated test on any host. `reason` takes a host condition of the caller's own
+ * that no program names (a sudo that asks for a password, a kernel without the feature, another
+ * platform) under the same rule. Call it once, at module scope, and declare the gated tests with
+ * its `test` and `describe`.
  */
 export function hostGate(needs: HostGateNeeds): HostGate {
   const never = (needs.never ?? []).filter((name) => hostTool(name) === null);

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, beforeAll, expect } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostGate, requireHostTools } from "@legion/test-fixtures/host-tools";
@@ -233,8 +233,15 @@ host.test(
 );
 
 // The force cannot hold under gVisor (a Legion pod's kernel), which starts a program past ARG_MAX:
-// there these two rows are skipped, by this name (argMaxForceHolds), rather than failed or passed.
-(argMaxForceHolds() ? host.test : test.skip)(
+// there these two rows are skipped outside CI, naming why, and failed by name under GITHUB_ACTIONS,
+// whose runner holds it (hostGate).
+const argMax = hostGate({
+  programs: ["perl"],
+  reason: argMaxForceHolds()
+    ? ""
+    : "This kernel starts a program past ARG_MAX under a 512 KiB stack (gVisor does), so the force lib/arg-max-force.sh puts these rows under cannot be put in force.",
+});
+argMax.test(
   "names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry",
   () => {
     // The force (lib/arg-max-force.sh): an exec handed every <pid> entry of the row's proc root as an
@@ -256,7 +263,7 @@ run_processes`
   }
 );
 
-(argMaxForceHolds() ? host.test : test.skip)(
+argMax.test(
   "listening_holders names the holder of a listening socket where a program handed every /proc/<pid>/fd would not start",
   () => {
     // listening_holders (lib/rig.sh) walks every process for the one holding a socket, held_only_by's
