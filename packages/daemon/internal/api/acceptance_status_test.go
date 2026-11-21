@@ -1,11 +1,18 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -15,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // acceptanceJudge is a stand-in for the workflow's judgement of sign_off and close_root
@@ -154,5 +162,185 @@ func TestAnAcceptanceWhoseFactDoesNotTakeWritesTheStatusBack(t *testing.T) {
 		http.StatusConflict, "SIGNOFF_RESTING_ROOT_IN_WORKFLOW")
 	if want := []statusWrite{{"LEGION-208", "retro"}}; !reflect.DeepEqual(statuses.writes, want) {
 		t.Fatalf("Dispatch writes over an issue the record holds out of the workflow = %+v, want retro alone: %+v", statuses.writes, want)
+	}
+}
+
+// newWorkflowAcceptanceHarness is newAcceptanceHarness with the workflow itself as the judgement
+// and as the handler of each fact, and LEGION-208 recorded in accepting, so a sign-off is taken or
+// refused as the daemon takes it. written is the sign-off's seam, given the harness and the
+// engine. Dispatch shows LEGION-208 in needs_review at sequence 7.
+func newWorkflowAcceptanceHarness(t *testing.T, written func(ctx context.Context, h *harness, engine *workflow.Engine)) (*harness, *statusRecorder) {
+	t.Helper()
+	h := newHarness(t)
+	records := record.NewStore()
+	engine := workflow.New(records, workflow.Config{Project: testDispatchProject}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	statuses := &statusRecorder{issues: map[string]dispatch.Issue{"LEGION-208": {Key: "LEGION-208", Status: "needs_review", LastSeq: 7}}}
+	seedTree(t, h, "LEGION-208")
+	if _, err := h.store.Pool().Exec(t.Context(), "update issues set phase = $1, status = 'needs_review' where key = 'LEGION-208'", string(phase.Accepting)); err != nil {
+		t.Fatalf("put LEGION-208 in accepting: %v", err)
+	}
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
+		Grants: credential.New(nil), Pool: h.store.Pool(), Record: records, Handlers: []intake.Handler{engine}, Dispatch: statuses,
+		Acceptance: engine, AfterSignOffStatusWrite: func(ctx context.Context, _ string) { written(ctx, h, engine) },
+	}).Handler
+	return h, statuses
+}
+
+// recordedPhase is the phase the daemon records issue in.
+func recordedPhase(t *testing.T, h *harness, issue string) phase.Phase {
+	t.Helper()
+	var at string
+	if err := h.store.Pool().QueryRow(t.Context(), "select phase from issues where key = $1", issue).Scan(&at); err != nil {
+		t.Fatalf("read the phase of %s: %v", issue, err)
+	}
+	return phase.Phase(at)
+}
+
+// Two sign-offs of one issue can both pass the judgement before either records. Here the other
+// one's fact takes the issue to retro while this one waits between its Dispatch write and its own
+// fact, which the workflow then refuses, the issue being no longer in accepting. Dispatch keeps the
+// retro the daemon records, not the needs_review this sign-off read before its write.
+func TestASignOffThatLosesToAnotherLeavesTheAcceptanceInDispatch(t *testing.T) {
+	h, statuses := newWorkflowAcceptanceHarness(t, func(ctx context.Context, h *harness, engine *workflow.Engine) {
+		result, err := intake.ApplyFact(ctx, h.store.Pool(), "api", "the-other-sign-off", intake.SignOff{Issue: "LEGION-208"}, engine)
+		if err != nil || result.Refusal != nil {
+			t.Fatalf("the other sign-off = %+v, %v; want it taken", result.Refusal, err)
+		}
+	})
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
+		http.StatusConflict, "SIGNOFF_OUTSIDE_ACCEPTING")
+	if at := recordedPhase(t, h, "LEGION-208"); at != phase.Retro {
+		t.Fatalf("LEGION-208 is recorded in %s, want retro, the other sign-off's", at)
+	}
+	if got := statuses.issues["LEGION-208"].Status; got != "retro" {
+		t.Fatalf("Dispatch shows LEGION-208 %s while the daemon records it accepted, in retro: the losing sign-off wrote back the status it read before its write", got)
+	}
+}
+
+// The control of the race above, on the same workflow: the sign-off's fact is refused for an issue
+// beneath it that entered the workflow after the judgement, the record still holds the issue in
+// accepting, and Dispatch gets back the needs_review it showed before the write.
+func TestASignOffRefusedInPlaceWritesBackTheStatusItReplaced(t *testing.T) {
+	h, statuses := newWorkflowAcceptanceHarness(t, func(ctx context.Context, h *harness, _ *workflow.Engine) {
+		parent := "LEGION-208"
+		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+			return record.NewStore().PutIssue(ctx, tx, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Tree: "LEGION-208", Project: testProject, Title: "LEGION-209", Parent: &parent, Phase: phase.Planning, Status: "in_progress"})
+		}); err != nil {
+			t.Fatalf("record LEGION-209 beneath LEGION-208: %v", err)
+		}
+	})
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
+		http.StatusConflict, "SIGNOFF_CHILD_IN_WORKFLOW")
+	if at := recordedPhase(t, h, "LEGION-208"); at != phase.Accepting {
+		t.Fatalf("LEGION-208 is recorded in %s, want accepting still", at)
+	}
+	if want := []statusWrite{{"LEGION-208", "retro"}, {"LEGION-208", "needs_review"}}; !reflect.DeepEqual(statuses.writes, want) {
+		t.Fatalf("Dispatch writes = %+v, want retro and then needs_review written back: %+v", statuses.writes, want)
+	}
+}
+
+// A person closes the issue in Dispatch after the sign-off's retro write and before the event of
+// that close reaches the daemon, and the sign-off's fact is then refused. Dispatch no longer shows
+// the sign-off's own write, so nothing is written back over the person's done.
+func TestARefusedSignOffLeavesAPersonsLaterCloseInDispatch(t *testing.T) {
+	var statuses *statusRecorder
+	h, facts, shown := newAcceptanceHarness(t, nil, func(ctx context.Context, issue string) {
+		if _, err := statuses.SetStatus(ctx, issue, "done"); err != nil {
+			t.Fatalf("the person's close: %v", err)
+		}
+	})
+	statuses = shown
+	facts.refusal = &intake.Refusal{Status: http.StatusConflict, Code: "SIGNOFF_CHILD_IN_WORKFLOW", Message: "LEGION-209 is still in the workflow"}
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
+		http.StatusConflict, "SIGNOFF_CHILD_IN_WORKFLOW")
+	if got := statuses.issues["LEGION-208"].Status; got != "done" {
+		t.Fatalf("Dispatch shows LEGION-208 %s, want the person's done: the write back landed over it", got)
+	}
+}
+
+// An event that leaves the status as the sign-off wrote it, a message on the issue, moves the
+// sequence between the write and the write back. The write back is refused at the write's sequence
+// (ISSUE_CHANGED), reads the issue again, finds the sign-off's retro still there, and writes back
+// at the sequence it read.
+func TestARefusedSignOffWritesBackOverAnEventThatKeptItsStatus(t *testing.T) {
+	var statuses *statusRecorder
+	h, facts, shown := newAcceptanceHarness(t, nil, func(_ context.Context, issue string) {
+		moved := statuses.issues[issue]
+		moved.LastSeq++
+		statuses.issues[issue] = moved
+	})
+	statuses = shown
+	facts.refusal = &intake.Refusal{Status: http.StatusConflict, Code: "SIGNOFF_CHILD_IN_WORKFLOW", Message: "LEGION-209 is still in the workflow"}
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
+		http.StatusConflict, "SIGNOFF_CHILD_IN_WORKFLOW")
+	if got := statuses.issues["LEGION-208"]; got.Status != "needs_review" || got.LastSeq != 10 {
+		t.Fatalf("Dispatch shows LEGION-208 %s at sequence %d, want needs_review written back at 10, past the message at 9", got.Status, got.LastSeq)
+	}
+}
+
+// A sign-off whose caller goes away after its retro write still writes the status back once its
+// fact does not take: the write back repairs what the daemon itself wrote in Dispatch, and the
+// caller leaving does not make that write any less the daemon's.
+func TestARefusedSignOffWritesBackAfterItsCallerWentAway(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h, _, statuses := newAcceptanceHarness(t, nil, func(context.Context, string) { cancel() })
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	body, err := json.Marshal(map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := httptest.NewRecorder()
+	h.handler.ServeHTTP(answer, httptest.NewRequest(http.MethodPost, "/legion/v1/signoff", bytes.NewReader(body)).WithContext(ctx))
+	refused(t, answer, http.StatusInternalServerError, "FACT_APPLY_FAILED")
+	if got := statuses.issues["LEGION-208"].Status; got != "needs_review" {
+		t.Fatalf("Dispatch shows LEGION-208 %s once its caller went away, want needs_review written back", got)
+	}
+}
+
+// Two acceptances of one issue run one after the other: the second reads Dispatch, is judged and
+// writes only once the first has settled, so it never reads the first one's write as the status
+// to write back.
+func TestASecondAcceptanceOfAnIssueWaitsForTheFirstToSettle(t *testing.T) {
+	var calls atomic.Int32
+	overlapped := make(chan struct{}, 1)
+	second := make(chan *httptest.ResponseRecorder, 1)
+	var h *harness
+	var grants [2]string
+	h, _, statuses := newAcceptanceHarness(t, &acceptanceJudge{}, func(context.Context, string) {
+		if calls.Add(1) > 1 {
+			overlapped <- struct{}{}
+			return
+		}
+		go func() {
+			second <- h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": grants[1], "issue": "LEGION-208"}, nil)
+		}()
+		select {
+		case <-overlapped:
+			t.Error("the second sign-off wrote retro while the first stood between its own write and its fact")
+		case <-time.After(5 * time.Second):
+		}
+	})
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	grants = [2]string{architect.grant(t), architect.grant(t)}
+	if first := h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": grants[0], "issue": "LEGION-208"}, nil); first.Code != http.StatusOK {
+		t.Fatalf("the first sign-off = %d %s, want 200", first.Code, first.Body)
+	}
+	select {
+	case answer := <-second:
+		if answer.Code != http.StatusOK {
+			t.Fatalf("the second sign-off = %d %s, want 200", answer.Code, answer.Body)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the second sign-off did not end within 30 seconds of the first")
+	}
+	if want := []string{"LEGION-208=retro", "LEGION-208=retro"}; !reflect.DeepEqual(statuses.acceptances, want) {
+		t.Fatalf("acceptance writes = %q, want %q", statuses.acceptances, want)
 	}
 }
