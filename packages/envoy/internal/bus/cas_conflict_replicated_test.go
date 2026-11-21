@@ -86,6 +86,71 @@ func TestAConditionalWriteThatLosesToAReplicatingWriteIsACASConflict(t *testing.
 	}
 }
 
+// A Create of a key whose last record is a delete marker that loses to a write of the key still
+// being replicated, on a bucket of three copies, is a CAS conflict. nats.go v1.55.0's Create sends
+// its write at revision 0, reads the key back on that write's refusal, and, finding the delete
+// marker (nats.ErrKeyDeleted), sends the write again at the marker's revision and returns that
+// write's error as it is (kv.go:737-738): neither nats.ErrKeyExists nor nats.ErrKeyRevisionMismatch
+// wraps it, so the leader's 10164 is caught by IsCASConflict's code alone. The store's interest
+// write and the role claim take this path whenever they write at revision 0 over a deleted record.
+//
+// The read must be answered while the routes are frozen. A direct get, which every bucket of this
+// build reads by, goes to whichever copy's queue subscriber the server picks, a remote one as
+// readily as its own (client.go:5639-5697 in nats-server v2.15.1), and a remote one cannot answer
+// under the hold. So this bucket's stream is set to take no direct gets: the read is then the
+// stream leader's message get, answered by member 0, and the write path, which is all this row
+// is about, is the same.
+func TestACreateOverADeleteMarkerThatLosesToAReplicatingWriteIsACASConflict(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	conn, js := memberJetStream(t, cluster, 0)
+	const bucket = "envoy_replicated_marker_test"
+	opened, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3, History: 5})
+	if err != nil {
+		t.Fatalf("create the three-copy bucket: %v", err)
+	}
+	info, err := js.StreamInfo("KV_" + bucket)
+	if err != nil {
+		t.Fatalf("read the bucket's stream: %v", err)
+	}
+	undirected := info.Config
+	undirected.AllowDirect = false
+	if _, err := js.UpdateStream(&undirected); err != nil {
+		t.Fatalf("take direct gets off the bucket's stream: %v", err)
+	}
+	cluster.MoveStreamLeader(t, "KV_"+bucket, 0)
+	shortJS, err := conn.JetStream(nats.MaxWait(2 * time.Second))
+	if err != nil {
+		t.Fatalf("open JetStream with a short wait: %v", err)
+	}
+	legacy, err := shortJS.KeyValue(bucket)
+	if err != nil {
+		t.Fatalf("open the bucket with no direct gets: %v", err)
+	}
+	kv := NewKeyValue(legacy, opened.WatchHandle(), opened.Streams())
+	if _, err := kv.Put("marked", []byte("v")); err != nil {
+		t.Fatalf("put the key: %v", err)
+	}
+	if err := kv.Delete("marked"); err != nil {
+		t.Fatalf("delete the key: %v", err)
+	}
+	cluster.AwaitReplicated(t, "KV_"+bucket)
+
+	release := cluster.HoldReplicatingWrite(t, "KV_"+bucket, "$KV."+bucket+".marked")
+	_, err = kv.Create("marked", []byte("x"))
+	release()
+	if !errors.Is(err, replicatedConflict) {
+		t.Fatalf("the create = %v, want the replicated stream's wrong last sequence, 10164", err)
+	}
+	// The write again at the marker's revision is the one that answered: Create's own refusal
+	// wraps nats.ErrKeyExists, and this error carries neither class.
+	if errors.Is(err, nats.ErrKeyExists) || errors.Is(err, nats.ErrKeyRevisionMismatch) {
+		t.Fatalf("the create = %v, want the raw answer of the write over the delete marker, not one nats.go named", err)
+	}
+	if !IsCASConflict(err) {
+		t.Fatalf("IsCASConflict(%v) = false, want a conflict", err)
+	}
+}
+
 // IsCASConflict answers for nothing but a lost conditional write: no error, a key that is not
 // there, a stream that is not there, and a request nobody answered are no conflicts.
 func TestIsCASConflictAnswersNoOtherError(t *testing.T) {
