@@ -94,10 +94,10 @@ export interface StandIns {
     readonly viewExit?: number;
   };
   /** The read sweep beside the leg and on the runner: the writer's one line (default a write
-   *  delivered inside the runner's window, in the `write <UTC> <comment id> <message id>
-   *  delivered` form); fills mode refusing to write a file, as it refuses one that lacks a fill;
-   *  the fills' version (default 3, #4608's contract at cd8a041312); and the runner's last line
-   *  and exit (default PASS, 0). */
+   *  delivered inside the runner's window, in the `write <began> <ended> <comment id> <message
+   *  id> delivered` form); fills mode refusing to write a file, as it refuses one that lacks a
+   *  fill; the fills' version (default 4, #4608's contract); and the runner's last line and exit
+   *  (default PASS, 0). */
   readonly sweep?: {
     readonly writer?: string;
     readonly fillsRefused?: boolean;
@@ -412,8 +412,8 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   const state = scratch("state");
   writeFileSync(join(state, "canary-refusal"), `${standIns.canaryRefusal}\n`);
   if (standIns.approve === false) writeFileSync(join(state, "login-expires"), "");
-  // The fills the sweep's fills mode writes, version 3: the project, where they were made, the
-  // SHA-256 of the routes.txt and of the deployment they were made from and at, when, the
+  // The fills the sweep's fills mode writes, version 4: the project, the SHA-256 of the origin they
+  // were made at, of the routes.txt and of the deployment they were made from and at, when, the
   // repository, and a `can_fail` line for each proxy read, but only with the full member's
   // cookie, as restricted-sweep.sh does.
   const canFail = [
@@ -426,9 +426,9 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   writeFileSync(
     join(state, "fills"),
     [
-      `restricted-sweep-fills\t${standIns.sweep?.fillsVersion ?? 3}`,
+      `restricted-sweep-fills\t${standIns.sweep?.fillsVersion ?? 4}`,
       "project\tPRIV",
-      "origin\thttp://127.0.0.1",
+      `origin_sha256\t${"e".repeat(64)}`,
       `routes\t${"a".repeat(64)}`,
       `deployment\t${"b".repeat(64)}`,
       `made_at\t${Math.floor(Date.now() / 1000)}`,
@@ -473,7 +473,7 @@ export function prepareStandIn(scratch: Scratch, standIns: StandIns): PreparedSt
   // quote no shell string may.
   writeFileSync(
     join(state, "writer-line"),
-    `${standIns.sweep?.writer ?? "write 2026-01-01T00:00:05Z cmt-1 msg-1 delivered"}\n`
+    `${standIns.sweep?.writer ?? "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 delivered"}\n`
   );
   writeFileSync(
     join(state, "sweep-verdict"),

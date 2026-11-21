@@ -140,18 +140,21 @@ The tailnet leg does these steps, in this order:
    GitHub proxy; without `OUTSIDE_FULL_COOKIE_FILE` the sweep does not run and its row reads
    UNKNOWN), and starts its writer. Every 15 s until the public leg ends, when the leg stops it, the
    writer comments on the scratch issue `OUTSIDE_SWEEP_WRITE_ISSUE` and sends a direct message to
-   the fills' session of that project, and prints `write <UTC> <comment id> <message id>
-   delivered`, or `... not delivered` when the full member's own feed was not sent both; only a
-   delivered write counts. No full member's credential goes to the runner: the fills file holds
-   none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at `cd8a041312`,
-   fills version 3 (`restricted-sweep-fills<TAB>3`), which name the SHA-256 of the `routes.txt`
-   they were made from (`routes`) and of the member's own projects' keys and creation times
-   (`deployment`). Fills mode writes no file that lacks a fill, nor one where the member's project
-   list gives a project no creation time, and the leg sends no fills of another version (each, the
-   sweep row UNKNOWN on the box). A runner refuses, before its first request, fills of another
-   `routes.txt` than its own checkout's, of another deployment, or older than 55 minutes, and a
-   `SWEEP_LIVE_SECONDS` below 30; so the workflow's checkout must hold this checkout's `routes.txt`,
-   the workflow sets no shorter window, and the leg starts the public leg right after the fills.
+   the fills' session of that project, and prints `write <began> <ended> <comment id> <message id>
+   delivered` (`began` read before the comment's POST, `ended` after the message's POST answered),
+   `... not delivered` when the full member's own feed was not sent both, or `write <began> <ended>
+   - not written`. Only a delivered write that began after the runner's live window opened and
+   ended before it closed counts. No full member's credential goes to the runner: the fills file
+   holds none, and is at most 40 KiB so that it fits one input. Its contract is #4608's fills
+   version 4 (`restricted-sweep-fills<TAB>4`), which name the SHA-256 of the origin they were made
+   at (`origin_sha256`), of the `routes.txt` they were made from (`routes`) and of the member's own
+   projects' keys and creation times (`deployment`). Fills mode writes no file that lacks a fill,
+   nor one where the member's project list gives a project no creation time, and the leg sends no
+   fills of another version (each, the sweep row UNKNOWN on the box). A runner refuses, before its
+   first request, fills of another `routes.txt` than its own checkout's, of another deployment, or
+   older than 55 minutes, and a `SWEEP_LIVE_SECONDS` below 30; so the workflow's checkout must hold
+   this checkout's `routes.txt`, the workflow sets no shorter window, and the leg starts the public
+   leg right after the fills.
    Each refusal is the runner's UNKNOWN, and the sweep row's. The runner's own control of the
    member's feed is the member's direct message to `SWEEP_MEMBER_SESSION`, their own session in the
    scratch project. The runner is the workflow's sweep step, not a leg, so the workflow sets it, to the
@@ -277,7 +280,7 @@ shim finds its program through the caller's HOME.
 | T4 | The public leg's revoke step, before the T5 window, revokes the scratch login: its `revoke-<credential id>` row, the only row read for it, passes. `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`, a reading beside the row and no proof of the revoke alone, since an expired or skewed proof is refused so too. A revoke row whose verdict is none of PASS, FAIL and UNKNOWN reads UNKNOWN. |
 | T5 | The owner's removal, made during the public run's T5 window between the two clocks the leg read around it; before it, the test person is on the project's access list (the control, read with the full member's browser session at `OUTSIDE_TAILNET_DISPATCH_URL`), and after the run the list no longer names them (else UNKNOWN). From the public leg's rows, each part stopped at or after the first clock: the cookie got 401 within 30 s of it, and the passkey sign-in, a fresh trade of the person's device login, and the relay socket open then each stopped within 325 s of it. A part that stopped more than its bound after the second clock reads FAIL, and so does a trade answered more than 325 s after the second clock (`last_answered_at`), refused trade or not, once the list confirms the removal; a part between the two bounds reads UNKNOWN, as does one that stopped before the first clock. The socket part counts only for a socket opened before the first clock. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, no peer to open the window to, or a part not read, reads UNKNOWN. |
 | public | The public leg's own `verdict` row and `revocations` row pass, and it ended well: exit 0 for a local command, or the run's conclusion `success`. A run concludes `failure` for an exit 1 and an exit 2 alike, so its verdict row says which. A public leg that failed, or left no verdict, never lets the gate pass. |
-| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's comments was delivered to the full member's own feed strictly inside the sweep's `live window`, so its finding that nothing reached the test person's feed means something; and the proxy control held (a `can_fail` line in the fills for each of the five proxy reads, and the full member's browser answered 200 by the proxy), so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either, or without `OUTSIDE_FULL_COOKIE_FILE`, it reads UNKNOWN; a FAIL of the sweep stands. |
+| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's writes was delivered to the full member's own feed, and began after the sweep's `live window` opened and ended before it closed, so its finding that nothing reached the test person's feed means something; and the proxy control held (a `can_fail` line in the fills for each of the five proxy reads, and the full member's browser answered 200 by the proxy), so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either, or without `OUTSIDE_FULL_COOKIE_FILE`, it reads UNKNOWN; a FAIL of the sweep stands. |
 | pins-end | The pins read again at the end, from `OUTSIDE_PINS_REPO`'s main, are those read at the start, and Dispatch still serves the build it served at the start, on every process. A pin that moved between the legs, or a Dispatch build that changed, reads UNKNOWN: the rows ran against builds the start did not check. Without `OUTSIDE_PINS_REPO` it reads UNKNOWN. |
 | gate | Every row above passes. |
 

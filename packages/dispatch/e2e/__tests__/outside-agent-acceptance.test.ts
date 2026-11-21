@@ -449,9 +449,9 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         expect(pass.get("sweep")?.got).toContain(
           `the full member's browser read ${proxyRepository}'s workflow runs through the proxy: 200`
         );
-        // The writer's line in its `write <UTC> <comment id> <message id> delivered` form.
+        // The writer's line in its `write <began> <ended> <comment id> <message id> delivered` form.
         expect(pass.get("sweep")?.got).toContain(
-          "the writer's write at 2026-01-01T00:00:05Z (comment cmt-1, message msg-1) was delivered"
+          "the writer's write from 2026-01-01T00:00:04Z to 2026-01-01T00:00:05Z (comment cmt-1, message msg-1) was delivered"
         );
         // T3 enrolled through the full member's helper, whose broker is the one T2 asked.
         expect(readFileSync(join(answered.state, "t3-operator"), "utf8")).toBe(`${fullLogin}\n`);
@@ -606,14 +606,20 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the sweep counts no write the writer did not deliver, and reads UNKNOWN for a fills file fills mode refused and for a runner's UNKNOWN",
+      "the sweep counts no write the writer did not deliver nor a line of the old form, and reads UNKNOWN for a fills file fills mode refused and for a runner's UNKNOWN",
       async () => {
         const [undelivered, oldForm, refusedFills, unlisted] = await runStandIns(
           {
             ...passingControls,
-            sweep: { writer: "write 2026-01-01T00:00:05Z cmt-1 msg-1 not delivered" },
+            sweep: {
+              writer: "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 not delivered",
+            },
           },
-          { ...passingControls, sweep: { writer: "write 2026-01-01T00:00:05Z delivered" } },
+          // The form before #4608 timed the write's two ends: one time, inside the window.
+          {
+            ...passingControls,
+            sweep: { writer: "write 2026-01-01T00:00:05Z cmt-1 msg-1 delivered" },
+          },
           { ...passingControls, sweep: { fillsRefused: true } },
           {
             ...passingControls,
@@ -663,9 +669,37 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the sweep reads UNKNOWN for each refusal of a version 3 runner, and the leg sends no fills of another version",
+      "the sweep counts a delivered write only when it began after the live window opened and ended before it closed, and no write that was not written",
       async () => {
-        // The runner's own refusals before its first request, as #4608's cd8a041312 words them.
+        // The runner's window is 2026-01-01T00:00:00Z to 2026-01-01T00:00:09Z; the answered run of
+        // the first test of this suite, a write from :04 to :05, is the control.
+        const lines = [
+          "write 2025-12-31T23:59:59Z 2026-01-01T00:00:01Z cmt-1 msg-1 delivered",
+          "write 2026-01-01T00:00:08Z 2026-01-01T00:00:10Z cmt-1 msg-1 delivered",
+          "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z - not written",
+        ];
+        const runs = await runStandIns(
+          ...lines.map((writer) => ({ ...passingControls, sweep: { writer } }))
+        );
+        lines.forEach((writer, index) => {
+          const run = runs[index];
+          if (run === undefined) throw new Error(`run ${index} is missing`);
+          expect({ writer, verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+            verdicts: { sweep: "UNKNOWN" },
+          });
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(
+            "no write of the writer was delivered inside its live window"
+          );
+        });
+      },
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
+    );
+
+    test(
+      "the sweep reads UNKNOWN for each refusal a runner makes before its first request, and the leg sends no fills of another version than 4",
+      async () => {
+        // The runner's own refusals before its first request, as #4608 words them.
         const refusals = [
           `UNKNOWN: SWEEP_FILLS_FILE was made from another route index: its routes.txt's SHA-256 is ${"a".repeat(64)}, and this run's is ${"c".repeat(64)}`,
           "UNKNOWN: SWEEP_FILLS_FILE was made at another deployment: the member's own projects were created at other times there (fills bbbbbbbbbbbb, here dddddddddddd)",
@@ -673,7 +707,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         ];
         const runs = await runStandIns(
           ...refusals.map((verdict) => ({ ...passingControls, sweep: { verdict, exit: 2 } })),
-          { ...passingControls, sweep: { fillsVersion: 2 } }
+          { ...passingControls, sweep: { fillsVersion: 3 } }
         );
         refusals.forEach((verdict, index) => {
           const run = runs[index];
@@ -691,7 +725,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           stdout: otherVersion.stdout,
         }).toMatchObject({ verdicts: { sweep: "UNKNOWN" } });
         expect(rowsOf(otherVersion.stdout).get("sweep")?.got).toContain(
-          "the sweep beside this leg wrote fills of another version than 3"
+          "the sweep beside this leg wrote fills of another version than 4"
         );
       },
       // The four runs at once, each a bounded child under the short bound.

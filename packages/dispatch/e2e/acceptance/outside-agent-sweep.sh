@@ -11,17 +11,19 @@
 # runner. So this box runs the sweep's fills mode, which makes the full member's half of every
 # row, and passes the file to the workflow as `sweep_fills`; and it runs the sweep's writer, which
 # every 15 s comments on the write issue and sends a direct message to the fills' session, prints
-# `write <UTC> <comment id> <message id> delivered` for each the full member's own feed was sent,
+# `write <began> <ended> <comment id> <message id> delivered` for each the full member's own feed
+# was sent (`began` read before the comment's POST, `ended` after the message's POST answered),
 # and so is the live socket's control. Fills mode writes the full member's half of the GitHub proxy
 # rows (a `can_fail` line for each read that can fail) only with the full member's browser session,
 # since the proxy reads no token, so the sweep needs OUTSIDE_FULL_COOKIE_FILE.
 #
-# The contract this file reads is #4608's at cd8a041312, fills version 3: `routes`, the SHA-256 of
-# the routes.txt the fills were made from, and `deployment`, of the member's own projects' keys and
-# creation times. A runner refuses fills of another version, of another routes.txt than its own
-# checkout's, or of another deployment, and refuses a SWEEP_LIVE_SECONDS below 30; each such refusal
-# is its UNKNOWN, and the sweep row's. So the workflow's checkout must hold this checkout's
-# routes.txt, and this box sends the fills only when they are version 3.
+# The contract this file reads is #4608's fills version 4: `routes`, the SHA-256 of the routes.txt
+# the fills were made from, `deployment`, of the member's own projects' keys and creation times, and
+# `origin_sha256`, of the origin they were made at. A runner refuses fills of another version, of
+# another routes.txt than its own checkout's, or of another deployment, and refuses a
+# SWEEP_LIVE_SECONDS below 30; each such refusal is its UNKNOWN, and the sweep row's. So the
+# workflow's checkout must hold this checkout's routes.txt, and this box sends the fills only when
+# they are version 4.
 
 # sweep_setup: sets sweep_script and sweep_problem, from the inputs and the browser's reading.
 sweep_setup() {
@@ -54,7 +56,7 @@ sweep_exec() {
 # sweep_prepare: the fills, and then the writer, which comments every 15 s on a scratch issue
 # (OUTSIDE_SWEEP_WRITE_ISSUE), about four comments a minute, until sweep_writer_stop.
 sweep_prepare() {
-  local first='' version=3
+  local first='' version=4
   [ -z "$sweep_problem" ] || return 0
   say "the sweep's fills mode"
   if ! (sweep_exec fills "$work/sweep-fills.log") || [ ! -s "$work/sweep-fills" ]; then
@@ -137,8 +139,8 @@ EOF
 # installed on" mean something. A FAIL of the sweep stands without either.
 sweep_row() {
   local want="restricted-sweep.sh on the runner PASS, with a full member's comment delivered inside its live window, and the full member's browser answered 200 by the GitHub proxy for the repository its proxy rows read"
-  local log="$results/restricted-sweep.log" sweep_exit window='' w0 w1 inside='' line at verdict_line=''
-  local word comment message state rest
+  local log="$results/restricted-sweep.log" sweep_exit window='' w0 w1 inside='' line verdict_line=''
+  local word began ended comment message state rest
   if [ -n "$sweep_problem" ]; then
     row sweep "$want" "$sweep_problem" UNKNOWN
     return
@@ -153,13 +155,17 @@ sweep_row() {
   done <"$log"
   w0=${window%% *}
   w1=${window#* }
-  # The writer prints one line a write, `write <UTC> <comment id> <message id> delivered`, or
-  # `... not delivered` when the full member's feed was not sent both; only the first counts.
+  # The writer prints one line a write: `write <began> <ended> <comment id> <message id>
+  # delivered`, `... not delivered` when the full member's feed was not sent both, or `write
+  # <began> <ended> - not written`. Only a delivered write counts, and only one that began after the
+  # window opened and ended before it closed (UTC whole seconds, compared as strings), so the whole
+  # write fell inside the window the sweep read the member's feed over.
   while IFS= read -r line; do
-    read -r word at comment message state rest <<<"$line"
-    if [ "$word" = write ] && [ -n "$comment" ] && [ -n "$message" ] && [ "$state" = delivered ] &&
-      [ -z "$rest" ] && [[ -n "$w0" && "$at" > "$w0" && "$at" < "$w1" ]]; then
-      inside="$at (comment $comment, message $message)"
+    read -r word began ended comment message state rest <<<"$line"
+    if [ "$word" = write ] && [ -n "$ended" ] && [ -n "$comment" ] && [ -n "$message" ] &&
+      [ "$state" = delivered ] && [ -z "$rest" ] &&
+      [[ -n "$w0" && "$began" > "$w0" && "$ended" < "$w1" ]]; then
+      inside="from $began to $ended (comment $comment, message $message)"
     fi
   done <"$work/sweep-writer.log"
   # The verdict is the sweep's last line; the log's first is the workflow's own note.
@@ -177,7 +183,7 @@ sweep_row() {
       elif [ -z "$inside" ]; then
         row sweep "$want" "the sweep passed, and no write of the writer was delivered inside its live window $window, so its live check proved nothing" UNKNOWN
       else
-        row sweep "$want" "the sweep passed; the writer's write at $inside was delivered inside its live window $window; $proxy_control" PASS
+        row sweep "$want" "the sweep passed; the writer's write $inside was delivered inside its live window $window; $proxy_control" PASS
       fi
       ;;
     *) row sweep "$want" "the sweep exited ${sweep_exit:-with no code read}: $verdict_line" UNKNOWN ;;
