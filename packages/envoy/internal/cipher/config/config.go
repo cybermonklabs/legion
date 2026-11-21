@@ -805,12 +805,14 @@ type Config struct {
 	// its broker access token and needs neither. BROKER_NATS_ACCOUNT is the hub account every
 	// client the service admits is placed in, the audience of each user it answers: $G, the global
 	// account, when unset, where a hub whose configuration names no account keeps every user; a
-	// hub that keeps JetStream in an account of its own names the account its clients sit in, and
-	// must declare it before the broker names it, since a hub refuses every client placed in an
-	// account it does not have. Any value but $G or one subject token of letters, digits, '_' and
-	// '-' refuses the start, naming the setting (ParseNATSAccount). All unset, or
-	// BROKER_NATS_SERVICES alone holding only edge listeners' entries, the broker runs no auth
-	// service; any other set needs the URLs and the three seed files.
+	// hub that keeps JetStream in an account of its own names the account its clients sit in, never
+	// the account JetStream sits in (JETSTREAM, which is refused), and must declare it before the
+	// broker names it, since a hub refuses every client placed in an account it does not have. Any
+	// value but $G or one subject token of at most 64 letters, digits, '_' and '-' that is not
+	// shaped like an nkey seed refuses the start, naming the setting and never the value
+	// (ParseNATSAccount). All unset, or BROKER_NATS_SERVICES alone holding only edge listeners'
+	// entries, the broker runs no auth service; any other set needs the URLs and the three seed
+	// files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was

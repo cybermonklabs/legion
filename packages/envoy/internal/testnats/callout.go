@@ -86,11 +86,11 @@ func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
 }
 
 // CalloutAccounts is a hub's two accounts as a private render lays them out (plan C's t-c-29,
-// packages/envoy/infra/core's accounts block): JetStream holds JetStream and no client, and
-// Clients holds every user the configuration names, the auth service's among them, runs the auth
-// callout, and imports from JetStream each of Services as a service and each of Streams as a
-// stream. Streamed are the services of Services whose responses come as a stream rather than one
-// reply.
+// whose render is cybermonklabs/legion#4851's accounts block in packages/envoy/infra/core, a module
+// this one cannot import): JetStream holds JetStream and no client, and Clients holds every user
+// the configuration names, the auth service's among them, runs the auth callout, and imports from
+// JetStream each of Services as a service and each of Streams as a stream. Streamed are the
+// services of Services whose responses come as a stream rather than one reply.
 type CalloutAccounts struct {
 	JetStream, Clients          string
 	Services, Streamed, Streams []string

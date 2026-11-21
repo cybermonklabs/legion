@@ -19,28 +19,50 @@ const NATSAccountVariable = "BROKER_NATS_ACCOUNT"
 // NATSAccountVariable is unset.
 const GlobalNATSAccount = "$G"
 
+// JetStreamNATSAccount is the account a private render of the hub keeps JetStream in and no client
+// (plan C's t-c-29; cybermonklabs/legion#4851's core.JetStreamAccount in packages/envoy/infra/core,
+// a module this one cannot import). NATSAccountVariable never names it: a client placed there could
+// have JetStream store an answer on a subject a stream captures, which the account split exists to
+// stop.
+const JetStreamNATSAccount = "JETSTREAM"
+
+// maxNATSAccountLength is the longest account NATSAccountVariable may name.
+const maxNATSAccountLength = 64
+
 // natsAccountName is an account NATSAccountVariable may name besides GlobalNATSAccount: one subject
-// token of letters, digits, '_' and '-'.
-var natsAccountName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+// token of letters, digits, '_' and '-'. natsSeedShape is the shape of an nkey seed, an S, its
+// kind's letter and base32 of the rest, 58 characters, which that token admits.
+var (
+	natsAccountName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	natsSeedShape   = regexp.MustCompile(`^S[A-Z2-7]{57}$`)
+)
 
 // ParseNATSAccount is the account BROKER_NATS_ACCOUNT names, raw: the account every client the NATS
 // auth service admits is placed in, which the user JWT it answers names as its audience, and which
 // a hub in config mode places the client in (nats-server server/auth_callout.go,
 // assignAccountAndPermissions). Unset, it is GlobalNATSAccount, where a hub with no accounts block
 // keeps every user; a hub that keeps JetStream in an account of its own keeps its clients in
-// another, which this names. Any value but GlobalNATSAccount or one subject token of
-// [A-Za-z0-9_-] is refused, naming the setting: the server writes the account as one token of its
-// own subjects ($SYS.ACCOUNT.<account>.CONNECT), and a hub that declares no account of the name
-// refuses every client the service admits. It is the one reader of the setting: the broker's start
-// checks it (loadNATSCallout), and the service reads its account with it (natscallout.Start).
+// another, which this names, and never JetStreamNATSAccount, which is refused. Any other value but
+// GlobalNATSAccount or one subject token of [A-Za-z0-9_-], at most maxNATSAccountLength long and not
+// shaped like an nkey seed, is refused, naming the setting and the rule and never the value: the
+// server writes the account as one token of its own subjects ($SYS.ACCOUNT.<account>.CONNECT), a
+// hub that declares no account of the name refuses every client the service admits, and a
+// credential set here by mistake would otherwise reach the pod's log through the refusal, or
+// through the boot record and the hub's own refusals once accepted. It is the one reader of the
+// setting: the broker's start checks it (loadNATSCallout), and the service reads its account with
+// it (natscallout.Start).
 func ParseNATSAccount(raw string) (string, error) {
 	switch {
 	case raw == "":
 		return GlobalNATSAccount, nil
-	case raw == GlobalNATSAccount || natsAccountName.MatchString(raw):
+	case raw == GlobalNATSAccount:
+		return raw, nil
+	case raw == JetStreamNATSAccount:
+		return "", fmt.Errorf("%s names %s, the account a private render keeps JetStream in, where no client may sit: name the account its clients sit in", NATSAccountVariable, JetStreamNATSAccount)
+	case len(raw) <= maxNATSAccountLength && natsAccountName.MatchString(raw) && !natsSeedShape.MatchString(raw):
 		return raw, nil
 	}
-	return "", fmt.Errorf("%s %q must be %s or one subject token of letters, digits, '_' and '-'", NATSAccountVariable, raw, GlobalNATSAccount)
+	return "", fmt.Errorf("%s must be %s or one subject token of at most %d letters, digits, '_' and '-' that is not shaped like an nkey seed; the value it holds is not printed", NATSAccountVariable, GlobalNATSAccount, maxNATSAccountLength)
 }
 
 // loadNATSCallout reads the NATS auth service's settings (Config.NATS). BROKER_NATS_SERVICES is
@@ -50,8 +72,9 @@ func ParseNATSAccount(raw string) (string, error) {
 // listener's, which the broker reads for GET /v1/project-repositories whether or not it answers a
 // hub; any other set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its
 // own kind; BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying
-// user info, or one that is no URL, is refused by its place in the list (hubURLRefusal). No
-// refusal carries a seed or a URL.
+// user info, or one that is no URL, is refused by its place in the list (hubURLRefusal). A refusal
+// carries no seed, no hub URL and no value of BROKER_NATS_ACCOUNT; one of BROKER_NATS_SERVICES
+// quotes its entry (ParseNATSServices).
 func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout, error) {
 	services, err := ParseNATSServices(getenv(NATSServicesVariable))
 	if err != nil {

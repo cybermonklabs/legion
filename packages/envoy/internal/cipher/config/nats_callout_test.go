@@ -49,7 +49,8 @@ func entryTexts(services []NATSService) string {
 // alone holding only edge listeners' entries; any other set needs the hub's URLs and the three
 // seed files, each holding a seed of its own kind; an audience for a kind of platform token needs
 // that kind's issuer, and an edge listener's account the issuer its identity token comes from; the
-// hub account is $G unset, and refused naming its setting unless it is $G or one subject token;
+// hub account is $G unset, and refused naming its setting and never its value unless it is $G or
+// one subject token of at most 64 characters that is not shaped like an nkey seed, nor JETSTREAM;
 // and the shared Envoy bearer is gone, its variables refused naming the account token file that
 // replaces it.
 func TestNATSCalloutSettings(t *testing.T) {
@@ -94,9 +95,10 @@ func TestNATSCalloutSettings(t *testing.T) {
 		}
 	})
 	// BROKER_NATS_ACCOUNT is the account every client the service admits is placed in: $G unset,
-	// and as given when it is $G or one subject token, its surrounding space trimmed as every
-	// other setting's is.
-	for raw, want := range map[string]string{"$G": GlobalNATSAccount, "ENVOY": "ENVOY", " ENVOY ": "ENVOY", "envoy_clients-2": "envoy_clients-2"} {
+	// and as given when it is $G or one subject token of at most 64 characters, its surrounding
+	// space trimmed as every other setting's is.
+	longest := strings.Repeat("e", 64)
+	for raw, want := range map[string]string{"$G": GlobalNATSAccount, "ENVOY": "ENVOY", " ENVOY ": "ENVOY", "envoy_clients-2": "envoy_clients-2", longest: longest} {
 		t.Run("the account "+strconv.Quote(raw), func(t *testing.T) {
 			e := full()
 			e[NATSAccountVariable] = raw
@@ -222,10 +224,6 @@ func TestNATSCalloutSettings(t *testing.T) {
 		{"the shared Envoy bearer", func(e map[string]string) { e["BROKER_ENVOY_TOKEN"] = "shared" }, "BROKER_ENVOY_ACCOUNT_TOKEN_FILE"},
 		{"the shared Envoy bearer's file", func(e map[string]string) { e["BROKER_ENVOY_TOKEN_FILE"] = "/run/token" }, "BROKER_ENVOY_ACCOUNT_TOKEN_FILE"},
 		{"an Envoy URL with no account token", func(e map[string]string) { e["BROKER_ENVOY_URL"] = "https://listener.example" }, "BROKER_ENVOY_ACCOUNT_TOKEN_FILE"},
-		{"an account of two tokens", func(e map[string]string) { e[NATSAccountVariable] = "a.b" }, NATSAccountVariable},
-		{"an account with a space", func(e map[string]string) { e[NATSAccountVariable] = "ENVOY X" }, NATSAccountVariable},
-		{"an account that is a wildcard", func(e map[string]string) { e[NATSAccountVariable] = ">" }, NATSAccountVariable},
-		{"the system account", func(e map[string]string) { e[NATSAccountVariable] = "$SYS" }, NATSAccountVariable},
 		{"only the account", func(e map[string]string) {
 			for _, name := range []string{"BROKER_NATS_URLS", "BROKER_NATS_SEED_FILE", "BROKER_NATS_ISSUER_SEED_FILE", "BROKER_NATS_XKEY_SEED_FILE", "BROKER_NATS_SERVICES"} {
 				delete(e, name)
@@ -245,6 +243,36 @@ func TestNATSCalloutSettings(t *testing.T) {
 				if strings.Contains(err.Error(), seed) {
 					t.Fatalf("the refusal prints a seed: %v", err)
 				}
+			}
+		})
+	}
+	// A malformed BROKER_NATS_ACCOUNT refuses the start naming the setting and never the value,
+	// so a credential set there by mistake reaches neither the refusal nor, accepted, the boot
+	// record: a value of two tokens, a space, a wildcard, the system account, one past 64
+	// characters, an nkey seed (one subject token, which the rule's own shape check refuses), and a
+	// URL carrying a password. JETSTREAM, the account a private render keeps JetStream in, is
+	// refused by name: the rule names it.
+	password := rand.Text()
+	accountRefusals := map[string]string{
+		"an account of two tokens":        "a.b",
+		"an account with a space":         "ENVOY X",
+		"an account that is a wildcard":   ">",
+		"the system account":              "$SYS",
+		"an account past 64 characters":   longest + "e",
+		"an account that is an nkey seed": seeds[0],
+		"an account that is a URL":        (&url.URL{Scheme: "nats", User: url.UserPassword("svc", password), Host: "hub-b:4222"}).String(),
+		"the account JetStream sits in":   JetStreamNATSAccount,
+	}
+	for name, raw := range accountRefusals {
+		t.Run(name, func(t *testing.T) {
+			e := full()
+			e[NATSAccountVariable] = raw
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), NATSAccountVariable) {
+				t.Fatalf("want a refusal naming %s, got %v", NATSAccountVariable, err)
+			}
+			if raw != JetStreamNATSAccount && strings.Contains(err.Error(), raw) {
+				t.Fatalf("the refusal prints the value it refused: %v", err)
 			}
 		})
 	}
