@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/natsgrant"
@@ -54,7 +55,9 @@ func requireSet(t *testing.T, want set, got natsgrant.Permissions, name string) 
 }
 
 // Every set this package builds is, element for element and in order, the set infra/core built at
-// the merge base, so moving them here rewrites no hub's rendered authorization.
+// the merge base, so moving them here rewrites no hub's rendered authorization; with one decided
+// change since: Listener and ListenerHost end with the selection bucket's reads and writes
+// (withSelectionBucket), which the fresh consumer naming mode needs.
 func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	var base mergeBase
 	readJSON(t, "testdata/merge-base-grants.json", &base)
@@ -64,8 +67,8 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 			want set
 			got  natsgrant.Permissions
 		}{
-			"Listener":     {base.Listener[id], natsgrant.Listener(id)},
-			"ListenerHost": {base.ListenerHost[id], natsgrant.ListenerHost(id)},
+			"Listener":     {withSelectionBucket(base.Listener[id]), natsgrant.Listener(id)},
+			"ListenerHost": {withSelectionBucket(base.ListenerHost[id]), natsgrant.ListenerHost(id)},
 			"Dispatch":     {base.Dispatch[id], natsgrant.Dispatch(id)},
 			"Host":         {base.Host[id], natsgrant.Host(id)},
 		} {
@@ -76,6 +79,49 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	requireSet(t, base.Daemon, natsgrant.Daemon(), "Daemon()")
 	require.NotEmpty(t, base.DispatchDurables)
 	require.Equal(t, base.DispatchDurables, natsgrant.DispatchDurables())
+}
+
+// withSelectionBucket is s with the session consumers' selection bucket's reads and writes appended
+// to its publish list, as Listener appends them: the calls of a bucket the listener can neither
+// create nor update (KVWriteExisting).
+func withSelectionBucket(s set) set {
+	stream := "KV_" + consumernames.SessionBucket
+	s.Publish = append(slices.Clone(s.Publish),
+		"$JS.API.STREAM.INFO."+stream,
+		"$JS.API.DIRECT.GET."+stream+".>",
+		"$JS.API.STREAM.MSG.GET."+stream,
+		"$KV."+consumernames.SessionBucket+".>",
+		"$JS.API.CONSUMER.CREATE."+stream+".>",
+		"$JS.API.CONSUMER.DELETE."+stream+".>",
+		"$JS.FC."+stream+".>",
+	)
+	return s
+}
+
+// The selection bucket's grant writes its keys and reads them from the stream's leader, and can
+// neither create the bucket's stream nor update it, so a listener never makes a lost bucket again
+// empty. Only the users that manage session consumers hold it.
+func TestTheListenerWritesTheSelectionBucketAndCannotCreateIt(t *testing.T) {
+	stream := "KV_" + consumernames.SessionBucket
+	existing := natsgrant.KVWriteExisting(consumernames.SessionBucket)
+	require.Contains(t, existing, "$KV."+consumernames.SessionBucket+".>")
+	require.Contains(t, existing, "$JS.API.STREAM.MSG.GET."+stream)
+	// Control: KVWrite, which every other bucket's writer holds, does carry the create.
+	require.Contains(t, natsgrant.KVWrite(consumernames.SessionBucket), "$JS.API.STREAM.CREATE."+stream)
+	for _, refused := range []string{"$JS.API.STREAM.CREATE." + stream, "$JS.API.STREAM.UPDATE." + stream} {
+		require.NotContains(t, existing, refused)
+		for name, grant := range map[string]natsgrant.Permissions{
+			"Listener":     natsgrant.Listener("example-host-a"),
+			"ListenerHost": natsgrant.ListenerHost("example-host-a"),
+			"Dispatch":     natsgrant.Dispatch("example-host-a"),
+			"Host":         natsgrant.Host("example-host-a"),
+		} {
+			require.NotContains(t, grant.Publish, refused, "%s may create or update the selection bucket", name)
+		}
+	}
+	require.Contains(t, natsgrant.Listener("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
+	require.NotContains(t, natsgrant.Dispatch("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
+	require.NotContains(t, natsgrant.Host("example-host-a").Publish, "$KV."+consumernames.SessionBucket+".>")
 }
 
 // Measure is the measurement job's grant as the deployment repository deploys it today

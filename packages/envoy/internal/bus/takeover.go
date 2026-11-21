@@ -132,16 +132,13 @@ func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTake
 // (CONSUMER.INFO, read by ackFloor's rules, which every restart of a session consumer reads its
 // floor by) while the consumer exists, else the floor the listener recorded when it deleted the
 // consumer (the session resume lane), read with the stream identity check the resume lane's own
-// readers make. A consumer that does not exist and no record that counts is no floor known, which
-// is no error. Every other failure of a read is its error, ErrConsumerNotGranted for a consumer
-// read the connection's user may not make among them.
+// readers make. The consumer is s-<session id> in the fixed mode and the session's current in the
+// fresh mode (SessionConsumers.Info). A consumer that does not exist and no record that counts is
+// no floor known, which is no error. Every other failure of a read is its error,
+// ErrConsumerNotGranted for a consumer read the connection's user may not make among them.
 func (c *Client) SessionReadFloor(ctx context.Context, sessionID string) (uint64, bool, error) {
-	name, err := sessionConsumerNameOf(sessionID)
-	if err != nil {
-		return 0, false, err
-	}
 	consumers := sessionConsumersOn(c, 0, nil)
-	info, err := consumers.info(ctx, name)
+	info, err := consumers.Info(ctx, sessionID)
 	if err == nil {
 		return ackFloor(info), true, nil
 	}

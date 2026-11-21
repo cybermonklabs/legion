@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -50,6 +51,7 @@ type connectOpts struct {
 	background                  bool
 	silentCutDetection          bool
 	immediateReconnect          bool
+	consumerNames               consumernames.Mode
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
@@ -166,6 +168,15 @@ func WithEnvironment(lookup func(string) (string, bool)) ConnectOption {
 // takes its name as a parameter, and not this option.
 func WithName(name string) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.name = name })
+}
+
+// WithConsumerNames sets how the client's session consumers are named, the process's setting
+// read once at its start (consumernames.ModeFromEnv): consumernames.ModeFixed, the default, runs
+// SessionConsumers as it ran before the setting, with each session's fixed name s-<session id>;
+// consumernames.ModeFresh runs them on a selection record (session_fresh.go). A reconnect never
+// changes it.
+func WithConsumerNames(mode consumernames.Mode) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.consumerNames = mode })
 }
 
 // WithConnectInBackground has the constructor (Connect, ConnectOwningStream, Dial) return without
@@ -293,7 +304,10 @@ type Client struct {
 	// export_test.go) to hold the flush until the connection it would flush is gone, the
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
-	mu                 sync.Mutex
+	// consumerNames is how the client's session consumers are named (WithConsumerNames): the
+	// empty mode is consumernames.ModeFixed.
+	consumerNames consumernames.Mode
+	mu            sync.Mutex
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order
@@ -504,6 +518,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectErrClock:           opts.reconnectErrClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		consumerNames:               opts.consumerNames,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()

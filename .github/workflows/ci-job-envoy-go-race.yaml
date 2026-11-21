@@ -81,10 +81,10 @@ jobs:
       # environment variable: check-ci-filters.sh reduces no go command of a job one of whose
       # steps sets a GO* name.
       - name: Forced-order tests on the hooked nats-server the module links
-        run: scripts/forced-order.sh ./internal/testnats/hooktest/
+        run: scripts/forced-order.sh ./internal/testnats/hooktest/ ./internal/bus/
         working-directory: packages/envoy
       - name: Forced-order tests on the hooked nats-server v2.10.29
-        run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
+        run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/ ./internal/bus/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

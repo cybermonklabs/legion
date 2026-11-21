@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/listenfd"
@@ -40,6 +41,10 @@ type Service struct {
 	// AllowedHosts are the ENVOY_ALLOWED_HOSTS names, each as HostName writes it, that an
 	// unauthenticated listener serves /v1 to beside loopback.
 	AllowedHosts []string
+	// ConsumerNames is ENVOY_CONSUMER_NAMES (consumernames.ModeFromEnv): how the listener names
+	// the session consumers it creates, read once here and never again; fixed when unset. A value
+	// it does not know refuses the start.
+	ConsumerNames consumernames.Mode
 }
 
 func (s Service) ListenAddress() string {
@@ -110,6 +115,10 @@ func Load(defaultPort int) (Service, error) {
 	if err != nil {
 		return Service{}, err
 	}
+	consumerNames, err := consumernames.ModeFromEnv()
+	if err != nil {
+		return Service{}, err
+	}
 	return Service{
 		AllowedHosts:   allowedHosts,
 		MachineID:      machine,
@@ -120,6 +129,7 @@ func Load(defaultPort int) (Service, error) {
 		ListenHost:     listenHost,
 		Port:           port,
 		ListenSocket:   listenSocket,
+		ConsumerNames:  consumerNames,
 	}, nil
 }
 

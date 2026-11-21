@@ -278,6 +278,13 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // callback. One publishConfirmed cannot confirm for another reason still waits for its reply, and
 // returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders.
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
+	return c.requestConfirmedMsg(ctx, &nats.Msg{Subject: subject, Data: data})
+}
+
+// requestConfirmedMsg is requestConfirmed of msg, whose header it sends: the conditional write of
+// a selection record carries its expected last sequence there (consumernames.KVStore). msg's
+// reply subject is set to the request's own inbox.
+func (c *Client) requestConfirmedMsg(ctx context.Context, msg *nats.Msg) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
@@ -293,7 +300,7 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 		return nil, err
 	}
 	defer replies.Unsubscribe()
-	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Data: data}, conn.PublishMsg)
+	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: msg.Subject, Reply: inbox, Header: msg.Header, Data: msg.Data}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
 	}

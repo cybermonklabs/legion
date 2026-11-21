@@ -1,6 +1,9 @@
 // The two JetStream reads and the one write a stage proof makes of a stream it does not own: whether
 // the stream carries a subject, the durable consumers of a project, and the deletion of the run's
-// own durable consumers at teardown. It reads what the stream holds and never publishes.
+// own durable consumers at teardown. It reads what the stream holds and never publishes. Beside
+// them, the two steps a proof of Envoy's fresh consumer naming mode (ENVOY_CONSUMER_NAMES=fresh)
+// takes on its own throwaway server: the selection bucket made as the operator's create-bucket
+// makes it, and a session's current consumer read from its selection record.
 //
 //   bun scripts/e2e/lib/nats-stream.ts last <nats-url> <stream> <subject-filter> <seconds>
 //     prints {"subject","time","seq"} of the newest message on the filter (wildcards allowed), read
@@ -12,7 +15,22 @@
 //   bun scripts/e2e/lib/nats-stream.ts delete <nats-url> <stream> <name>
 //     deletes one durable consumer and prints "deleted"; one that does not exist is already gone:
 //     it prints "absent" and exits 0 too, so a caller says which it was
-import { type ConsumerMessages, connect, DeliverPolicy, type NatsConnection } from "nats";
+//   bun scripts/e2e/lib/nats-stream.ts session-bucket <nats-url> <stream> <seconds>
+//     waits up to <seconds> for <stream> to exist, then makes the session consumers' selection
+//     bucket and its sentinel (createSessionBucket) and prints the sentinel's JSON
+//   bun scripts/e2e/lib/nats-stream.ts current <nats-url> <session-id>
+//     prints the consumer the session's selection record names now (readCurrent), or an empty
+//     line when it names none
+import {
+  type ConsumerMessages,
+  connect,
+  DeliverPolicy,
+  type NatsConnection,
+  type NatsError,
+  StorageType,
+  type StoredMsg,
+  type StreamInfo,
+} from "nats";
 import type { NatsSeed } from "../../../packages/envoy-client/src/envoy-settings";
 import { messageFor } from "../../../packages/envoy-client/src/errors";
 import { natsAuthOptions } from "../../../packages/envoy-client/src/nats-auth";
@@ -25,6 +43,108 @@ import { operatorNatsSeed } from "./operator-nats-seed";
 function refuse(message: string): never {
   process.stderr.write(`nats-stream: ${message}\n`);
   process.exit(2);
+}
+
+// The fresh naming mode's selection bucket of the session consumers, and the key of its sentinel
+// (consumernames.SessionBucket and consumernames.SentinelKey, packages/envoy/consumernames/kv.go).
+export const sessionBucket = "envoy_session_consumers";
+export const sentinelKey = "envoy.bucket";
+
+// The JetStream API's error codes these steps read: a stream that does not exist, and a stream
+// message get that found no message.
+const streamNotFound = 10059;
+const noMessageFound = 10037;
+
+function apiErrorCode(error: unknown): number | undefined {
+  return (error as Partial<NatsError> | undefined)?.api_error?.err_code;
+}
+
+/** The sentinel the session bucket is made with (consumernames.StoreState). */
+export interface SessionBucketState {
+  cutover: "done";
+  boundary: number;
+}
+
+/**
+ * Makes the session consumers' selection bucket as the operator's create-bucket makes it
+ * (consumernames.CreateSessionBucket): it waits up to `seconds` for `stream`, the stream the
+ * session consumers read, to exist, reads its first sequence, then creates the bucket with one
+ * value a key, on file storage, at the stream's own replica count, and writes the sentinel
+ * {"cutover":"done","boundary":B} with B = max(1, that first sequence) as the key's first write.
+ * A bucket that exists already is refused, as create-bucket refuses it. Answers the sentinel.
+ */
+export async function createSessionBucket(
+  nc: NatsConnection,
+  stream: string,
+  seconds: number
+): Promise<SessionBucketState> {
+  const jsm = await nc.jetstreamManager();
+  const deadline = Date.now() + Math.ceil(seconds * 1000);
+  let info: StreamInfo | undefined;
+  while (info === undefined) {
+    try {
+      info = await jsm.streams.info(stream);
+    } catch (error) {
+      if (apiErrorCode(error) !== streamNotFound) throw error;
+      if (Date.now() >= deadline)
+        throw new Error(`the stream ${stream} did not exist within ${seconds} s`);
+      await Bun.sleep(250);
+    }
+  }
+  const state: SessionBucketState = {
+    cutover: "done",
+    boundary: Math.max(1, info.state.first_seq),
+  };
+  const exists = await jsm.streams.info(`KV_${sessionBucket}`).then(
+    () => true,
+    (error: unknown) => {
+      if (apiErrorCode(error) === streamNotFound) return false;
+      throw error;
+    }
+  );
+  if (exists) throw new Error(`the bucket ${sessionBucket} exists already`);
+  const kv = await nc.jetstream().views.kv(sessionBucket, {
+    description:
+      "Envoy session consumers' selection records: each session's current consumer name",
+    history: 1,
+    storage: StorageType.File,
+    replicas: info.config.num_replicas,
+  });
+  await kv.create(sentinelKey, JSON.stringify(state));
+  return state;
+}
+
+/**
+ * The "current command": the consumer the fresh naming mode's selection record of `sessionId`
+ * names now, the record's `current` (consumernames.Record) under the key `sessionId` in
+ * sessionBucket, read as the listener reads it (the key's last message, from the bucket stream's
+ * leader). "" when the record names none, as after the session's clean stop, which leaves the
+ * record with no current, and when the bucket holds no record of the session at all. A key whose
+ * last message is a delete or purge marker is thrown, as the listener refuses such a session, and
+ * so is a bucket that does not exist.
+ */
+export async function readCurrent(nc: NatsConnection, sessionId: string): Promise<string> {
+  const jsm = await nc.jetstreamManager();
+  let message: StoredMsg;
+  try {
+    message = await jsm.streams.getMessage(`KV_${sessionBucket}`, {
+      last_by_subj: `$KV.${sessionBucket}.${sessionId}`,
+    });
+  } catch (error) {
+    if (apiErrorCode(error) === noMessageFound) return "";
+    throw error;
+  }
+  const operation = message.header?.get("KV-Operation");
+  if (operation === "DEL" || operation === "PURGE")
+    throw new Error(
+      `the selection record of ${sessionId} in ${sessionBucket} is gone: its last message is a ${operation} marker`
+    );
+  const current = message.json<{ current?: unknown }>().current ?? "";
+  if (typeof current !== "string")
+    throw new Error(
+      `the selection record of ${sessionId} in ${sessionBucket} holds a current that is no name: ${JSON.stringify(current)}`
+    );
+  return current;
 }
 
 export interface LastMessage {
@@ -94,9 +214,10 @@ export async function readLast(
 
 async function main(): Promise<void> {
   const [command, url, stream, argument, extra] = process.argv.slice(2);
-  if (!command || !url || !stream || !argument) {
+  // current takes one operand, the session id, in the place where the other commands take a stream.
+  if (!command || !url || !stream || (command !== "current" && !argument)) {
     refuse(
-      "usage: last|consumers|delete <nats-url> <stream> <subject-filter|name-prefix|name> [seconds]"
+      "usage: last|consumers|delete|session-bucket <nats-url> <stream> <subject-filter|name-prefix|name|seconds> [seconds], or current <nats-url> <session-id>"
     );
   }
 
@@ -161,6 +282,14 @@ async function main(): Promise<void> {
         if (!String(error).includes("consumer not found")) throw error;
         process.stdout.write("absent\n");
       }
+    } else if (command === "session-bucket") {
+      const seconds = Number(argument);
+      if (!Number.isFinite(seconds) || seconds <= 0)
+        refuse(`seconds must be a positive number, not ${argument}`);
+      const state = await createSessionBucket(nc, stream, seconds);
+      process.stdout.write(`${JSON.stringify(state)}\n`);
+    } else if (command === "current") {
+      process.stdout.write(`${await readCurrent(nc, stream)}\n`);
     } else {
       refuse(`unknown command ${command}`);
     }

@@ -58,6 +58,16 @@ func healthzRoleViewRig(t *testing.T, consumer string) (func() (int, map[string]
 	return get, registry, client
 }
 
+// /healthz names the process's consumer naming mode (ENVOY_CONSUMER_NAMES): the rig's client was
+// connected with no mode, so it runs, and reports, the fixed default.
+func TestHealthzReportsTheConsumerNamingMode(t *testing.T) {
+	get, _, client := healthzRoleViewRig(t, "listener-healthz-naming-mode")
+	code, body := get()
+	if code != http.StatusOK || body["consumer_names"] != "fixed" || string(client.ConsumerNames()) != "fixed" {
+		t.Fatalf("/healthz = %d %v (client mode %s); want 200 with consumer_names fixed", code, body, client.ConsumerNames())
+	}
+}
+
 // breakRoleClaimView leaves registry's role claim view where a listener start leaves it before
 // its first complete read of the role bucket: the watcher runs, the buckets answer, and the view
 // refuses every read (refuseRoleClaimView).

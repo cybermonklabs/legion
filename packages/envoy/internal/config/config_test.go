@@ -9,8 +9,41 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/fixtureenv"
 )
+
+// ENVOY_CONSUMER_NAMES is read once at the listener's start: fixed when unset, fresh when set so,
+// and a value it does not know refuses the start, naming the variable and the value.
+func TestLoadReadsTheConsumerNamingMode(t *testing.T) {
+	for _, test := range []struct {
+		value   string
+		want    consumernames.Mode
+		refused bool
+	}{
+		{value: "", want: consumernames.ModeFixed},
+		{value: "fixed", want: consumernames.ModeFixed},
+		{value: "fresh", want: consumernames.ModeFresh},
+		{value: "FRESH", refused: true},
+		{value: "auto", refused: true},
+	} {
+		t.Run("value "+test.value, func(t *testing.T) {
+			t.Setenv("ENVOY_MACHINE_ID", "test-machine")
+			t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
+			t.Setenv(consumernames.ModeEnvVar, test.value)
+			service, err := Load(9020)
+			if test.refused {
+				if err == nil || !strings.Contains(err.Error(), consumernames.ModeEnvVar) || !strings.Contains(err.Error(), strconv.Quote(test.value)) {
+					t.Fatalf("Load with %s=%q = %v; want a refusal naming the variable and the value", consumernames.ModeEnvVar, test.value, err)
+				}
+				return
+			}
+			if err != nil || service.ConsumerNames != test.want {
+				t.Fatalf("Load with %s=%q = %q, %v; want %q", consumernames.ModeEnvVar, test.value, service.ConsumerNames, err, test.want)
+			}
+		})
+	}
+}
 
 // listeningDescriptor opens a listening loopback socket and returns its descriptor number and
 // address, for ENVOY_LISTEN_FD to name in this process.

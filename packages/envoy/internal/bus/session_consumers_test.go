@@ -157,15 +157,26 @@ func streamIDOf(t *testing.T, consumers *SessionConsumers) string {
 	return id
 }
 
-// pullSession starts a pull of sessionID's consumer, stopped when the test ends.
+// pullSession starts a pull of sessionID's consumer, s-<sessionID> in the fixed mode these tests
+// run in, stopped when the test ends.
 func pullSession(t *testing.T, consumers *SessionConsumers, sessionID string) *SessionPull {
 	t.Helper()
-	pull, err := consumers.Pull(context.Background(), sessionID)
+	pull, err := consumers.Pull(context.Background(), fixedName(t, sessionID))
 	if err != nil {
 		t.Fatalf("pull %s: %v", sessionID, err)
 	}
 	t.Cleanup(pull.Stop)
 	return pull
+}
+
+// fixedName is sessionID's consumer name in the fixed mode (SessionConsumerName).
+func fixedName(t *testing.T, sessionID string) string {
+	t.Helper()
+	name, ok := SessionConsumerName(sessionID)
+	if !ok {
+		t.Fatalf("%q names no session consumer", sessionID)
+	}
+	return name
 }
 
 // next returns the next message pull holds within 5 s.
@@ -1081,7 +1092,7 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 		t.Fatalf("connect a session consumers connection of this row's own: %v", err)
 	}
 	t.Cleanup(mine.Close)
-	pull, err := mine.Pull(ctx, session)
+	pull, err := mine.Pull(ctx, fixedName(t, session))
 	if err != nil {
 		t.Fatalf("pull %s: %v", session, err)
 	}

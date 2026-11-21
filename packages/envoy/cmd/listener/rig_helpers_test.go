@@ -90,11 +90,18 @@ func awaitDurableState(t *testing.T, client *bus.Client, durable string, pending
 // session sent: the wait sees only the state the server already holds.
 func awaitSessionConsumerStored(t *testing.T, conn *natsgo.Conn, sessionID string) {
 	t.Helper()
+	testnats.AwaitConsumerStored(t, conn, bus.Stream, fixedConsumerName(t, sessionID))
+}
+
+// fixedConsumerName is sessionID's consumer name in the fixed consumer naming mode, which these
+// rigs run in unless they say otherwise: s-<session id> (bus.SessionConsumerName).
+func fixedConsumerName(t *testing.T, sessionID string) string {
+	t.Helper()
 	name, ok := bus.SessionConsumerName(sessionID)
 	if !ok {
 		t.Fatalf("%s names no session consumer", sessionID)
 	}
-	testnats.AwaitConsumerStored(t, conn, bus.Stream, name)
+	return name
 }
 
 // awaitSessionMachine waits up to 10 s for listener's GET /v1/sessions to list sessionID as

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -257,16 +258,17 @@ type sessionDelivery struct {
 // here, at the connection, because the threshold must be in hand before the first consumer is
 // created, and this is the one place every one of them comes from. main derives it from the
 // deployment's own windows (inactiveThresholdFor). The connection is handed logger's own
-// slog.Logger (logging.Logger.Slog) for the same reason, so the lines its creates write of a
-// start they lowered to a resume record or clamped from past the stream's end to its first
-// sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
-// whose read of the deployed stream's subjects both a registration's stored topics and every
-// consumer filter are judged on (sessionDelivery.stream).
+// slog.Logger (logging.Logger.Slog) for the same reason, so the lines its creates write of a start
+// they lowered to a resume record or clamped from past the stream's end to its first sequence are
+// this listener's JSON, with its machine_id. stream is the listener's own client, whose read of
+// the deployed stream's subjects both a registration's stored topics and every consumer filter are
+// judged on (sessionDelivery.stream), and whose consumer naming mode (ENVOY_CONSUMER_NAMES,
+// bus.WithConsumerNames) the connection takes, so the two never name a session's consumer apart.
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane.
 func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
-	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog())
+	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(), bus.WithConsumerNames(stream.ConsumerNames()))
 	if err != nil {
 		return nil, err
 	}
@@ -801,8 +803,16 @@ func (m *sessionDelivery) refused(sessionID string, err error) *deliveryRefusal 
 			slog.String("session_id", sessionID), slog.String("stream", bus.Stream), slog.String("error", err.Error()))
 		return consumerLimitRefusal(sessionID)
 	}
-	m.logger.Warn("session consumer call failed; the registration is refused",
-		slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	if errors.Is(err, consumernames.ErrCutoverNotRun) || consumernames.IsSelectionStateLost(err) || errors.Is(err, consumernames.ErrNoSafeStart) {
+		// The fresh mode refuses a session whose selection state is lost or unproven rather than
+		// create its consumer from a guess: an ERROR, since an operator's recovery is what ends it
+		// (consumernames' README, "Recovery").
+		m.logger.Error("session consumer selection refused; the registration is refused",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	} else {
+		m.logger.Warn("session consumer call failed; the registration is refused",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	}
 	return &deliveryRefusal{
 		status: http.StatusServiceUnavailable,
 		Error:  "the session consumer of " + sessionID + " could not be read or created",
