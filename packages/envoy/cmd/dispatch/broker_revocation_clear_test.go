@@ -103,16 +103,7 @@ func TestTheMachineLoginRevocationMetricsCountTheOwedAndAgeTheOldest(t *testing.
 
 	const erin, frank = "erin@other.example", "frank@other.example"
 	for _, email := range []string{erin, frank} {
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := store.RecordMachineLoginRevocation(ctx, tx, email); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
+		storetest.RecordMachineLoginRevocation(t, database, email)
 	}
 	// erin's removal was ten minutes ago.
 	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set recorded_at = recorded_at - interval '10 minutes' where email = $1`, erin); err != nil {

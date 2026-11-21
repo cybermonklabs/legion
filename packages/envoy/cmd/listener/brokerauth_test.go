@@ -84,7 +84,7 @@ func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPo
 	verifier, err := brokertoken.New(brokertoken.Options{
 		BrokerURL: brokerURL,
 		Account:   listenerBrokerAccount("listener-account-token"),
-		Origin:    listenerBrokerOrigin,
+		Origins:   []string{listenerBrokerOrigin},
 		Replay:    replay,
 		Address:   listenerSourceAddress,
 	})

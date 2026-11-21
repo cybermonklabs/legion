@@ -33,7 +33,7 @@ Each item below names a variable, then its purpose.
   The first is the current value; the API accepts every value, comparing a bearer with each in constant time.
   The document websocket takes no bearer at all: it is a person's cookie connection only.
   Whitespace at either end is ignored; startup refuses an empty entry (two whitespace characters in a row, a CR LF among them) or a repeated one, naming its position, never its value.
-  A request that authenticates with a value after the first logs one WARN line, `dispatch: request authenticated with a previous shared agent token`, with `entry` (the value's position), `address` (the rightmost `X-Forwarded-For` entry, which is the load balancer's view of the caller, or the connection's own address without one), `user_agent` and `path`, at most once per address and User-Agent every 10 minutes, and never a token.
+  A request that authenticates with a value after the first logs one WARN line, `dispatch: request authenticated with a previous shared agent token`, with `entry` (the value's position), `address` (the caller's address, as the access log's `address` below reads it), `user_agent` and `path`, at most once per address and User-Agent every 10 minutes, and never a token.
   Each field keeps its first 256 bytes, and the server remembers up to 10,000 callers; one past that is logged on each request.
   Callers that share an address and User-Agent share a line, so the log says whether a value on its way out is still in use, not who uses it.
 
@@ -188,7 +188,7 @@ With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the v
 `DISPATCH_OUTSIDE_ORIGIN` is a second origin Dispatch answers at, the one people from outside reach it at, whatever path the deployment gives them.
 A request whose `Host` is its host, compared as a URL parser reads a host (the name without regard to case or trailing dots, the port as a number, the scheme's default being none: `outside.example.`, `outside.example:443`, `outside.example:0443`), is answered as that origin (`routes.sameHost`); another port is another origin.
 With `DISPATCH_SIGNIN_OUTSIDE=1` its Google sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the sign-in client must list too; under every other sign-in `/auth/start` and `/auth/callback` answer there the `404` a path no route serves answers, and the client lists no outside callback (`routes.googleSignInHere`).
-A browser write carrying a session cookie passes the origin check only with that origin's `Origin`, so a page on one origin cannot write as a person signed in on the other.
+A browser write carrying a session cookie passes the origin check only with that origin's `Origin`, so a page on one origin cannot write as a person signed in on the other, and an agent's broker token proof must name that origin (below), so an agent whose Dispatch URL is the outside origin signs for it.
 Every other request is answered as `DISPATCH_SERVER_URL`'s.
 Its spelling is judged by the rule `envoy-infra:gcp:Dispatch` judges its `outsideOrigin` input by (`internal/weborigin`), and it must be `https` (`http` only with `DISPATCH_TEST_HOOKS=1`) on a host other than `DISPATCH_SERVER_URL`'s, which must be set;
 under Google sign-in its host must also be one Google takes in an OAuth redirect URI, a DNS name whose top-level domain is on the public suffix list and no IP address, by the rule the component holds its `outsideOrigin` to with sign-in on (`weborigin.GoogleRedirectHost`);
@@ -224,14 +224,16 @@ It is presented under RFC 9449's DPoP scheme
 — `Authorization: DPoP <token>` with a `DPoP:` proof header signed by the key the token is bound to
 — because that RFC refuses a DPoP-bound token presented under any other scheme;
 the server decides a request by its scheme before it reads any token, so such a presentation is never retried as a bearer, and a bearer is never sent to this check.
-The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries, with `DISPATCH_SERVER_URL` as the origin the proof's `htu` must name.
+The server asks the broker what the token is (RFC 7662 introspection on `/v1/oauth/introspect`, presenting the same projected ServiceAccount token `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` names as the approval relays do, one affirmative answer reused for five seconds from the broker's answer) and checks the proof against the `jkt` that answer carries, with the origin the request came to as the origin the proof's `htu` must name:
+`DISPATCH_OUTSIDE_ORIGIN` for a request whose `Host` is its host, compared without regard to case, and `DISPATCH_SERVER_URL` for every other request, whatever a forwarded header says.
+A proof naming one origin is refused `401 BROKER_TOKEN_PROOF_INVALID` at the other, so an agent signs for the origin of the Dispatch URL it sends to.
 No setting of its own configures it.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
 A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
-A token scoped to one project lists that project, set from the token and never from the body, and is held to it as every credential that lists projects is (below);
-a token scoped to its person lists none.
+A token scoped to one project lists that project, set from the token and never from the body, and writes that project alone (below);
+a token scoped to its person lists the projects its trade asked for, or none.
 A read-only token names no project either.
 Every actor such a write records carries `proven: true`, as a browser's person does, while a session a body names under any other credential carries no `proven`:
 a reader that trusts only a session the server saw proved reads that mark, and a document version's author keeps it only when every write merged into that author carried it.
@@ -259,38 +261,39 @@ The other mounts outside the table read no broker token: `/ws/doc/{room}` answer
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `brokertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
-A credential carries a list of the projects it may use (`model.Credential.Projects`), and what its caller sees follows from its person and that list (`access.Resolve`, one read of `access.VisibleProjectsSQL`).
-A personal token's list is its row's `projects`, which Settings and `POST` and `PATCH /api/v1/me/agent-tokens` write:
-at most 16, each a project the caller sees (`400 TOKEN_PROJECTS_INPUT` otherwise), defaulting to the list of the caller's own credential, so a credential that lists projects gives a token only some of its own.
-A broker-issued token's list is the one project the broker scoped it to, and a broker token acting as its person carries its person's trade list too; every other credential lists none.
-While every project is public, a full member's broker token reads what its person reads, and a full member's person-scope token writes wherever its person may, as before projects could be private.
-A restricted member's broker token is held to its list for reads and writes whatever the deployment holds, and once a project is private every broker token is.
+A credential carries a list of the projects it may use (`model.Credential.Projects`), and what its caller sees follows from its person and that list (`access.Resolve`, one read of `access.VisibleProjectsSQL`; `access.CredentialCovers` is the same list rule in Go).
+A personal token's list is its row's `projects`, which Settings, `POST /api/v1/me/agent-tokens` and `PATCH /api/v1/me/agent-tokens/{id}` write:
+at most 16, each a project the caller sees (`400 TOKEN_PROJECTS_INPUT` otherwise), defaulting to the list that holds the writes of the caller's own credential (`writesHeldTo`), and a credential whose writes a list holds mints no token that lists none.
+A broker-issued token's list is the one project the broker scoped it to, and a broker token acting as its person carries its person's trade list; every other credential lists none.
+A full member's list decides only which private projects the credential reads and writes: it reads and writes every public project its person sees, whatever it lists, and a private project only when it lists it and its person sees it.
+A restricted member's list narrows what that person sees to the projects it lists, whatever the deployment holds.
+A broker token an operator's entry scoped to one project keeps the write scope such a token has always had, whatever the deployment holds: it writes that project alone (below).
 
 - A person at a browser sees every project they own, that lists them or a group they are a full member of, or that is public while they are a full member.
 
-- A credential that lists projects sees those of them its person sees, and nothing of any other project.
+- A full member's credential sees the public projects its person sees, and the private projects its list names that its person sees.
 
-- A credential that lists none sees the public projects its person sees, and no private one, even one its person sees.
+- A restricted member's credential that lists projects sees those of them its person sees, and nothing of any other project; one that lists none sees the public projects its person sees.
 
-- A credential that names no person — the shared token, a Kubernetes service-account token, a broker-issued token that names a service — sees the public projects, within its list when it holds one.
+- A credential that names no person — the shared token, a Kubernetes service-account token, a broker-issued token that names a service — sees the public projects and the private projects its list names.
 
-A caller is an open viewer when its person is not a restricted member and its credential lists nothing.
+A caller is an open viewer when its person is not a restricted member, whatever its credential lists.
 An open viewer reads every person and every row of the whole deployment, and every session and role but those below (`access.SessionClause`, `access.RoleClause`).
-No caller but the server reads a session that has acted in a private project it does not see (a `session_projects` pair), whatever else the session did, a role of such a project (a `legion-<project>-…` name, `contracts.RoleProject`), held or not, or a role that a session it may not read holds now.
+Apart from a session's own credential, which always reads its session, no caller but the server reads a session that has acted in a private project it does not see (a `session_projects` pair), whatever else the session did, a role of such a project (a `legion-<project>-…` name, `contracts.RoleProject`), held or not, or a role that a session it may not read holds now.
 A session that has acted in no project is judged, while a project is private, by the projects the listener names for it in Dispatch's stored copy of the listener's sessions (the `route_roster` row): a session the listener sends no projects for is read by no caller but itself, and an open viewer reads one whose list names only projects it sees, an empty list included.
 While a project is private and `session_projects_filled` holds no row, an open viewer reads no session but its own (Filling the sessions' projects, below).
 Any other caller reads, of what belongs to no project, only the people of the projects it sees, the sessions that have acted in one of them (or, while a project is private, have acted in none and are listed with a list that is not empty and names only projects it sees), its own, and the roles those sessions hold (`access.PersonClause`, `access.SessionClause`, `access.RoleClause`);
 every read of the whole deployment (`readclass.Deployment`: the priorities, the Pipeline page and a delivery run's jobs, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`), while the delivery timeline and measures answer it the pull requests whose issue it sees and the deploy runs that shipped one of them.
 The one exception is a restricted member's own machine logins: at a browser, `GET /api/v1/machine-logins` answers them their own and no service's; through their personal token or a person-scope broker token it is `403 RESTRICTED_MEMBER` (`api.restrictedOwnLoginRoutes`), and through their agent's `named` token, which holds no scope, `403 OAUTH_SCOPE_REQUIRED`, since the route's scope gate refuses that token first.
 While a project is private, a pull request that names no issue, and a run that shipped none, is shown to an open viewer only when no private project hidden from that viewer owns its repository (`refs.RepositoryClause`).
-A direct conversation is read by its parties and by an open viewer, each only when it may read every session in the conversation (`access.PartyClause`), so a restricted member or a credential that lists projects reads only its own, and only with sessions of its projects.
+A direct conversation is read by its parties and by an open viewer, each only when it may read every session in the conversation (`access.PartyClause`), so a restricted member or a credential acting for one reads only its own, and only with sessions of its projects.
 While a project is private, a direct conversation that names no party (no node, or a node with none) is read by no caller but the server, and the switch to private refuses while one exists.
 A project the caller does not see, and every object in it, answers exactly as one no row holds.
-With no private project in the deployment, a credential that lists nothing sees every project its person sees.
-A private project's Legion daemon therefore presents, in its `dispatch_token_file`, a `dsp_` token that lists the project and every other project the daemon runs, minted by a person who sees them:
-the shared token, and a token that lists no project, read a private project as missing.
+With no private project in the deployment, a full member's credential sees every project its person sees, whatever it lists.
+A private project's Legion daemon therefore presents, in its `dispatch_token_file`, a `dsp_` token that lists the project and every other private project the daemon runs, minted by a person who sees them:
+the shared token, and a token that does not list the project, read a private project as missing.
 
-A credential that lists projects may write those of them its person sees, and nothing else.
+A credential writes the projects it sees, and nothing else: a full member's credential every public project its person sees and the private projects its list names, and a restricted member's the projects its list and its person both name.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
 a `GET` row declares what it reads instead, `readClasses` in `internal/dispatch/api/read_classes.go`), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
@@ -302,23 +305,26 @@ and *the deployment's* — the project create, the repository-to-project map, th
 The first resolves the caller's viewer once for the write and hands it to the handler, and every read the write makes binds it.
 An object of a project the caller does not see is a row that read does not find, so the write answers it exactly as an object nobody holds
 — the same status and the same bytes, and nothing written — whether the path names it or a field of the body does (a parent, a `blocked_by` target, a rank neighbour, a reply's parent).
-A credential that lists projects sees no project outside its list, so this is what holds it to its list.
+A private project a credential's list does not name is one it does not see, so this is what holds a full member's credential to its list for private projects, and a restricted member's for every project.
 `TestNoWriteReachesAHiddenObject` calls every write row that names an object, and `TestNoBodyReachesAHiddenObject` every body field that does, on a private project's object and on one nobody holds.
 A person or a session a body names is read the same way for a viewer that is not open: an assignee, an `asked_of`, a default assignee or a new owner it may not see is refused as a login that has not signed in,
 a message's or a mention's `session:` target it may not see is recorded as `no live session <id>`, and a `role:` target whose holder it may not see as `no holder for role <role>`, the listener's words for a role nobody claims;
 an open viewer sees every person, and every session `access.SessionClause` passes it, so with no private project it is answered as before (`TestNoBodyNamesAHiddenPersonOrSession`).
+A credential's writes are held to a list when it lists a project, whatever its person: a list decides which private projects a full member's credential reads, and a write of the whole deployment stays a person's or an unlisted credential's.
+A full member's broker token acting as its person is held so only while a project is private, since its trade list held none of its writes before projects could be private.
 A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential whose writes are held to a list (`this request's credential may write <list> and nothing else; <METHOD> <PATTERN> belongs to the deployment rather than to a project`, the words a broker token scoped to one project has always been refused in) and `403 RESTRICTED_MEMBER` to a restricted member:
 what it writes belongs to no project such a viewer could be held to.
 The one exception is a restricted member at a browser deciding, listing or ending a machine login of their own, which is how an outside person approves and revokes the device login of their own agents: `POST /api/v1/credential-requests/machine-lookup`, `.../{id}/approve`, `.../{id}/deny`, `GET /api/v1/machine-logins` and `POST /api/v1/machine-logins/{id}/revoke` reach their handlers for that member's cookie alone (`api.restrictedOwnLoginRoutes`, `api.atBrowser`), never for their personal token or a broker token, so no agent of theirs decides, lists or ends any credential: a token of theirs that lacks the route's scopes, their agent's `named` token among them (it holds none), is `403 OAUTH_SCOPE_REQUIRED` from the route's scope gate, and one that holds them is `403 RESTRICTED_MEMBER`.
 The list answers them their own machine logins and no service's, and the revoke ends only one of those (`api.ownMachineLogins`); any other id is `403 RESTRICTED_MEMBER` and no revoke reaches the broker.
 Each looks the code the member typed up at the broker first and relays the lookup, approve or deny only for a machine login whose approver is that member, which names no service and, for a decision, is the record its path names (`api.ownMachineLogin`); any other record, another person's machine login, a service's, a shared secret's request or a secret request of the member's own, is `403 RESTRICTED_MEMBER`, naming none of its facts, and the broker is asked to decide nothing.
 The broker holds that member's machine to one project (`project_scope` `named`), so the token it mints acts for them in that project alone and holds no scope of a person's own.
-When the owner takes a restricted member off an access list that names them, the removal records in its own transaction that Dispatch owes the broker the revocation of the machine logins the member approved before the removal (`api.recordMachineLoginRevocation`, table `machine_login_revocations`), and the broker revocation loop pays it after the commit (`api.revokeOwedMachineLogins`), again until the broker confirms; the revoke ends the logins' refresh and every token traded from them, and a login the member approves after the owner puts them back survives it.
+When the owner takes a restricted member off an access list that names them, and no other project's list names them any more, the removal records in its own transaction that Dispatch owes the broker the revocation of the machine logins the member approved before the removal (`api.removePerson`, `api.recordMachineLoginRevocation`, table `machine_login_revocations`), and the broker revocation loop pays it after the commit (`api.revokeOwedMachineLogins`), again until the broker confirms; the revoke ends the logins' refresh and every token traded from them, and a login the member approves after an owner puts them back survives it.
+That is the moment Dispatch stops admitting the member's cookie and personal tokens too (`access.Listed`); two removals of one person read each other's commit under the person's lock (`access.LockPersonRemoval`), so the last of them owes it.
 The removal never waits on the broker: the member's browser and personal tokens lose the project from the commit on by Dispatch's own check of the lists, and the broker checks every trade against Dispatch, so a removal ends the member's tokens for the project within 325 seconds even while the broker is down.
-A removal from a list that does not name the person owes nothing.
-A machine login is no project's, so the member approves a new one for a project that still lists them.
-A restricted member still revokes their own credential grants and ends their own sign-ins (`POST /api/v1/credential-grants/{id}/revoke`, `POST /api/v1/signins/{id}/revoke`): the secrets broker decides whose each one is, as it does for a full member, and only a credential that lists projects is refused those two.
-`POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read.
+A removal from a list that does not name the person, or one that leaves them on another project's list, owes nothing: a machine login is no project's, since each trade of it names its own, so the member's logins keep serving the projects that still list them, and no project's owner ends them by naming the member on their own list and taking them off it.
+A restricted member still revokes their own credential grants and ends their own sign-ins (`POST /api/v1/credential-grants/{id}/revoke`, `POST /api/v1/signins/{id}/revoke`): the secrets broker decides whose each one is, as it does for a full member, and only a credential whose writes are held to a list is refused those two.
+`POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so before anything is read a credential that lists projects is refused a project its list does not cover (a private project it does not list, and, for a restricted member's credential, any project it does not list), and a broker token scoped to one project any other, `403 PROJECT_SCOPE`, naming its list and the project the body named.
+A private project the caller does not see is refused in the words a project nobody holds is.
 `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` refuse a restricted member's `repo`, a string or `null`, with `403 RESTRICTED_MEMBER`: an issue's own repository makes its project own that repository (`refs.ProjectRepositoriesSQL`), which the GitHub proxy, the App-installation route and the Delivery views then show the people of that project (`refs.RepositoryClause`), so only a full member names one.
 Any other caller's `repo`, and a mapping `PUT` that leaves the mapping its project's default, is `403 REPOSITORY_NOT_AVAILABLE` (`this repository is not available to the caller: an issue's repo or a project's default repository must be one the caller can read through Dispatch`) when the GitHub proxy would hide that repository from the caller (`refs.RepositoryHidden`, with the caller as the viewer): a repository an issue the caller sees already resolves to stays open to the write, and with no private project nothing is refused.
 
@@ -327,7 +333,7 @@ The session check holds the rows classed *the calling session's* whose path name
 addressing another session's conversation is `403 SESSION_SCOPE`, naming the session the credential acts for, the route and the session addressed.
 Only a broker-issued token proves a session;
 a cookie, a personal token, a Kubernetes service-account token and the shared token prove none and are untouched, so a person still uploads into the conversation they name.
-The session addressed is also read as the caller sees it (`access.SessionClause`): to a restricted member, or to a credential that lists projects, a session that is neither its own nor has acted in a project it sees is `404 SESSION_NOT_FOUND`, exactly as a session nobody holds;
+The session addressed is also read as the caller sees it (`access.SessionClause`): to a restricted member, or to a credential acting for one, a session that is neither its own nor has acted in a project it sees is `404 SESSION_NOT_FOUND`, exactly as a session nobody holds;
 to an open viewer, so is a session that has acted in a private project the viewer does not see, whether or not anything else it did is public, and, while a project is private, a session that has acted in no project and that the listener does not list, or lists with a project the viewer does not see.
 A deployment that holds no private project answers every open viewer as before, at the cost of no read.
 
@@ -339,8 +345,8 @@ Its reads are untouched: the machine reads everything its session may read, and 
 A broker token that does name a person, and every other credential, reaches the handler as before.
 A read-only token names a service and no person too, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
-An open viewer whose credential proves no session — a full member's browser cookie, a personal agent token that lists nothing, a Kubernetes service-account token and the shared token — is refused by the project and session checks only a write to an object of a project it does not see, which answers as missing.
-With no private project in the deployment, such a caller sees every project, and neither check refuses it anything.
+An open viewer whose credential proves no session — a full member's browser cookie or personal agent token, a Kubernetes service-account token and the shared token — is refused by the project and session checks only a write to an object of a project it does not see, which answers as missing, and, where its credential lists a project, a write of the whole deployment.
+With no private project in the deployment, such a caller sees every project, so the checks refuse it only that write of the whole deployment.
 A read-only token lists no project, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
 
 GitHub App credentials come either from the `DISPATCH_APP_*` variables or from `~/.local/share/dispatch/app.json`; the variables take precedence.
@@ -673,7 +679,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   `people.sub_issuer` moves only with `sub`, and a row with no `sub` holds none (migration `20261120165538`'s guard), and a passkey's row holds no refresh token (`people_sign_in_stands`): its sign-in stands while `confirmed_at` holds a time.
   The hourly confirmation of a passkey's sign-in asks the rule again (`AdmitsRestricted`) and whether the person holds a passkey;
   a person no list names directly any more, or whose address is now on a domain the Workspace owns, has their sign-in ended and their passkeys deleted in one transaction (`PgPasskeys.End`), and is told why as above.
-  So does the owner's removal of the person from the last list that names them, in the removal's own transaction, and the owner's Reset (`POST .../access/people/{email}/reset`), which keeps the person on the list and, in one transaction, owes the secrets broker the revocation of the machine logins they approved, as a removal does, ends their unused links of every project, and gives the address a new passkey account (`PgPasskeys.ResetTx`, through the account binding), which revokes their personal tokens and owes the broker the revocation of the old account, so a machine login approved with it while the Reset ran is refused or ended too.
+  So does the owner's removal of the person from the last list that names them, in the removal's own transaction, and the owner's Reset (`POST .../access/people/{email}/reset`), which keeps the person on the list and, in one transaction, owes the secrets broker the revocation of the machine logins they approved, as a removal from their last list does, ends their unused links of every project, and gives the address a new passkey account (`PgPasskeys.ResetTx`, through the account binding), which revokes their personal tokens and owes the broker the revocation of the old account, so a machine login approved with it while the Reset ran is refused or ended too.
   The owner's browser reads, on the project's access answer, each passkey of a listed person: when it was enrolled, who made the link that enrolled it (`made_by`) and, where the owner sees it, that link's project (`passkeys`), and whom it can make a link for now (`invitable`); no other caller reads either, and a deployment without the setting answers neither.
   With the setting turned off, a passkey's cookie is refused at its next use, `401 NO_IDENTITY` with `reason` `OUTSIDE_SIGNIN_OFF` (below), and the person's tokens are refused as below.
 
@@ -735,7 +741,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   A process with no broker configured records none (`store.WithBrokerRevocations`, which `peopleOptions` gives the people store only with `DISPATCH_AGENT_SECRETS_URL` and `DISPATCH_SIGNIN_ISSUER` set), since only a process with a broker pays one.
   Set `DISPATCH_AGENT_SECRETS_URL` on every process of a deployment with a broker: a replacement a process without it serves records nothing, and the replaced account's broker credentials are never revoked.
   The replaced account's member kind does not matter: the hourly confirmation restricts an account under the same `sub` once it leaves the Workspace (`ConfirmSubject`), so a restricted row can name an account that made broker credentials while it was full, and the broker may still refuse the account that takes the address for a revocation a pass already paid, which only a revoke naming that account as the holder lifts.
-  So a member who reclaims an address an outsider took keeps their own broker tokens working throughout, since they record the member's account; only the address's tokens recording no account are refused until 30 seconds after the broker confirms the outsider's revocation (below).
+  So a member who reclaims an address an outsider took keeps their own broker tokens working throughout, since they record the member's account; only the address's tokens recording no account made before the reclaim or within five minutes after are refused (below).
   The broker revocation loop (`api.RunBrokerRevocations`, Background loops, below) pays it after the commit with one call, `POST /v1/person-subjects/revoke` naming the address, the issuer, the replaced `sub`, the holder's `sub` and the row's `session_generation` (`agentsecrets.Client.RevokePersonSubject`).
   The broker records the Google account behind each sign-in on a machine and the approving account of each machine login, so it ends, in one transaction, every sign-in and every machine login of the address's own machines that the replaced account made, or that records no account (one made before the broker recorded any), whenever it issued them, with every token minted under them, the session tokens exchanged under them included, and every session they enrolled.
   It refuses the replaced account any new sign-in or approval under the address, a sign-in with a Google token it got before the address moved included, and leaves every credential of the new holder's and every service's login.
@@ -743,6 +749,8 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   Any other answer leaves it owed, logged at ERROR and tried again 30 seconds after its claim, by any process, until the broker confirms: a `404` too, which the route never answers, so it is a wrong `DISPATCH_AGENT_SECRETS_URL`, a proxy in the way or a broker without the route.
   An address's revocations are paid one at a time, in the order of the session generations their replacements left, which is the order the broker judges them by (`brokerRevocationPayOrder`: the generation first, then the recording's time, which alone would pay them out of order after the database clock stepped back), and never within 30 seconds of the last claim of one of them, since each also tells the broker to stop refusing the account that took the address, which may be one an earlier revocation named.
   A revocation a process with a broker recorded waits, on a process with none, for the first pass of one that has one.
+
+  - A passkey's account (its issuer the outside origin), which the owner's Reset replaces, is logged `msg="dispatch: the secrets broker revoked the credentials of a passkey account the project owner's Reset replaced"` instead (`api.revokedLog`).
 
 - A broker revocation's row also records `session_generation`, the address's `user_sessions.generation` as the recording's own statement reads it, after the sign-in's write of `people.sub` moved it: the generation the replacement left (`recordBrokerRevocationSQL`, at the insert and at the upsert alike).
   The database refuses, with SQLSTATE 23514, a recording naming any other generation, and any change of it outside a recording (migration `20261118152422`'s `guard_broker_revocation_columns()`).
@@ -874,7 +882,7 @@ envoy-dispatch clear-broker-revocation <email> <subject>:<generation>...
 
 settle, without the broker, a revocation Dispatch owes the secrets broker that the broker never confirms, which `envoy_dispatch_broker_revocation_oldest_owed_seconds` shows and which the loop keeps asking the broker for.
 Given the address alone (in any case and spacing), it lists every revocation of the address still owed, one line each, `clear-broker-revocation: <email> owes <subject>:<generation> (issuer <issuer>, taken by <subject>, session generation <generation or `none`>)`, and settles nothing.
-The session generation is the address's own when the revocation was recorded, and `none` for a row recorded before migration `20261118152422` added the column, which the broker refuses on every call (`400 SESSION_GENERATION_REQUIRED`): the runbook's recovery of a Dispatch database restored or made again alone settles the rows that carry one and leaves that row owed, and this line is where an operator tells them apart.
+The session generation is the address's own when the revocation was recorded, and `none` for a row recorded before migration `20261118152422` added the column, which the broker refuses on every call (`400 SESSION_GENERATION_REQUIRED`), so the loop never settles such a row: the runbook's record-again block records it again with the address's generation, and this line is where an operator finds it.
 Given the names that list printed, it settles exactly those, each only at the generation named and only while it is owed (`store.BrokerRevocations.Clear`), and prints `clear-broker-revocation: <email> <subject>:<generation> cleared` for each:
 a revocation recorded after the list, or an account replaced again since and owed under a later generation, stays owed, and is named `is not owed` until it is listed and named again.
 It changes nothing Dispatch admits, which holds every broker token to its own account or creation time from the replacing commit (Identity, above), and it revokes nothing at the broker:
@@ -4304,7 +4312,9 @@ Each item below names a field of the line, then what it holds.
 
 - `address`
 
-  The rightmost `X-Forwarded-For` entry, the address the load balancer in front of Dispatch saw, or the connection's own address when there is none.
+  The caller's address (`auth.ForwardedAddress`).
+  On a connection from Google's external load balancer (a peer in `35.191.0.0/16` or `130.211.0.0/22`), it is the second-to-last entry of the one `X-Forwarded-For` line, the client address the balancer appends before its own, as the secrets broker's edge reads it; a header that is not one such line is ignored there, and the line names the balancer's own address.
+  On any other connection it is the rightmost `X-Forwarded-For` entry, the address the load balancer in front of Dispatch saw, or the connection's own address when there is none.
 
 - `peer`
 
@@ -4767,7 +4777,7 @@ Each item below names a path with its method and identity, then its purpose.
   List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old;
   `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
   Neither is an empty list: a client reads neither as "no agents".
-  Only the sessions the caller may see are listed: one whose listed projects (the projects the listener names for it, which no row answers) include one the caller sees, and any other that `access.SessionClause` passes, for an open viewer every one but those that have acted in a private project it does not see and, while a project is private, those that have acted in none and are listed with a project it does not see.
+  Only the sessions the caller may see are listed: those `access.SessionClause` passes, for an open viewer every one but those that have acted in a private project it does not see and, while a project is private, those that have acted in none and are listed with a project it does not see.
 
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 
@@ -4886,7 +4896,7 @@ Each item below names a path with its method and identity, then its purpose.
   `scopes` defaults to the set the caller's own credential holds;
   a scope this deployment does not know, or `approve` without `person`, is `400 TOKEN_SCOPES_INPUT`, and a scope the caller does not hold itself is `403 OAUTH_SCOPE_REQUIRED`.
   `projects` is the list of projects the token may use, at most 16, each one the caller sees, stored sorted with each key once, else `400 TOKEN_PROJECTS_INPUT`;
-  it defaults to the list of the caller's own credential, and a credential that lists projects gives a token only some of its own, never an empty list.
+  it defaults to the list that holds the writes of the caller's own credential (`writesHeldTo`), and a credential whose writes a list holds mints no token that lists none.
   The mint takes the owner's `people` row for share, the row a sign-in under another Google account takes for update, and inserts only while its caller still holds the address (a cookie's session generation is still its login's, a personal token is not revoked and its account still holds the address, and a broker-issued token's account still holds it: `people.sub` records no other account, and a credential recording none was made after `people.sub_recorded_at`, `api.tokenAccountReplaced`, `api.brokerAccountReplaced`):
   a mint racing that sign-in writes nothing and is refused as the caller's next request is, `401 NO_IDENTITY` for a cookie, `401 TOKEN_REVOKED` for a personal token, and for a broker-issued token the code its admission names (`api.brokerReplacedRefusal`: `401 BROKER_TOKEN_NOT_ACTIVE`, `401 BROKER_ACCOUNT_NOT_SIGNED_IN` or `401 BROKER_TOKEN_RECORDS_NO_ACCOUNT`).
   A listed row's `projects` holds only the projects the caller's own credential sees, so a token whose every project is hidden from the caller reads as one that lists none;
@@ -4900,16 +4910,16 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/users` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
   Everyone who has signed in, as `{users: [{login}]}` sorted by email — the assignee picker's options.
-  A restricted member and a credential that lists projects read only their own person and the people of the projects they see (`access.PersonClause`).
+  A restricted member, and a credential acting for one, read only their own person and the people of the projects they see (`access.PersonClause`).
 
 - `/api/v1/whoami` (GET; cookie, trusted header, bearer, or a broker-issued DPoP token)
 
   Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, projects, private_projects, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
   `service` is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential;
   `session` is the session the credential itself proved, which only a broker-issued token does, null otherwise;
-  `projects` is the projects the credential lists, sorted, and absent when it lists none;
+  `projects` is the projects the credential lists, sorted, and absent when it lists none, and for a full member's broker-issued token while no project is private, as before lists existed (a full member's list decides only which private projects it reads, and it reads every public project whatever it lists; a restricted member's list decides every project it reads);
   `private_projects` is those of `projects` the caller must treat as private, sorted, and absent when there is none: a private project's key, a key the credential no longer sees whatever its project's visibility, and a key that names no project, so a key is public exactly when it is in `projects` and not here, and the field tells nothing of a project the caller cannot see;
-  `project` is deprecated, and its value comes from that list alone: the one key of a one-key list, and null for any other list, an empty one included).
+  `project` is deprecated: the one project the credential's writes are held to, where they are held to one (a credential whose list holds its writes and names one key, or a broker-issued token an operator's entry scoped to one project), and null for every other credential).
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, and every caller is answered it.
   Either shape carries `member_kind: "restricted"` when the person the caller is or acts for is a restricted member, and leaves it out for everyone else;
   a member kind that cannot be read is `503 IDENTITY_UNAVAILABLE`.

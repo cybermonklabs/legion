@@ -117,8 +117,8 @@ test("a pull request with no sessions shows a dash", () => {
   }
 });
 
-/** Run 500, a deploy that shipped #1, and run 501, a pipeline failure: each drill-down reads the
- *  run's every job (`GET /api/v1/delivery/runs/{id}`) under its Jobs or All jobs section. */
+/** Run 500, a deploy that shipped #1, and run 501, a pipeline failure: a full member's drill-down
+ *  reads the run's every job (`GET /api/v1/delivery/runs/{id}`) under its Jobs or All jobs section. */
 const deploy: DeliveryRun = {
   completed_at: "2024-06-01T01:40:00Z",
   conclusion: "success",

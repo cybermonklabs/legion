@@ -158,9 +158,11 @@ function TokenScopeChoices({
 }
 
 /** The projects a token may use, for a token's row and for the mint form. A token that names no
- *  project uses the public projects only, and one that names projects uses those alone, private
- *  ones included. It offers the projects the reader sees (`projects`), and any the token names
- *  that this list does not hold - a list read before the token's, or not read yet - ticked, so
+ *  project uses the public projects only. A private project needs a token that names it: a full
+ *  member's token uses every public project and the private projects it names, and a restricted
+ *  member's uses the projects it names alone. It offers the projects the reader sees
+ *  (`projects`), and any the token names that this list does not hold - a list read before the
+ *  token's, or not read yet - ticked, so
  *  they can be taken off. The choice is staged while the picker is open and handed to `onChoose`
  *  once it closes, and only when it changed.
  *  `subject` is the token it belongs to, as for the scope boxes.
@@ -252,10 +254,12 @@ function TokenProjectsChoice({
             disabled={disabled}
             onClick={() => {
               const after =
-                chosen.length === 0 ? "the public projects only" : `${chosen.join(", ")} alone`;
+                chosen.length === 0
+                  ? "uses the public projects only"
+                  : `names ${chosen.join(", ")} alone`;
               if (
                 window.confirm(
-                  `Drop the projects you cannot see from ${subject}? It then uses ${after}, and a project you cannot see cannot be added back.`
+                  `Drop the projects you cannot see from ${subject}? It then ${after}, and a project you cannot see cannot be added back.`
                 )
               ) {
                 onChoose([...chosen]);
@@ -434,7 +438,9 @@ export function AgentTokensSection(): ReactNode {
       </h2>
       <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
         Create a token for an agent you run. Its writes are attributed to you. A token that names no
-        project uses only the public projects you see; one that names projects uses those alone.
+        project uses only the public projects you see. A private project needs a token that names
+        it: your token uses every public project you see and the private projects it names, or, if
+        you are a restricted member, the projects it names alone.
       </p>
 
       {tokens.isPending ? (

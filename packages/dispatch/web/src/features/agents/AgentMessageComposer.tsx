@@ -319,7 +319,6 @@ export function AgentMessageComposer({
           void queryClient.invalidateQueries({
             queryKey: agentMessagesQuery(agent.session_id).queryKey,
           });
-          // A send made from Send gives the focus back to the box.
           refocusComposer();
         }}
         owner={composerOwner}

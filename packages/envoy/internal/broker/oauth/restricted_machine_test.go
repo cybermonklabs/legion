@@ -265,25 +265,21 @@ func TestAMachineTradeOfAPersonNotRestrictedKeepsThePersonScope(t *testing.T) {
 	}
 }
 
-// TestARestrictedMembersTradeIsRefusedWhileDispatchCannotBeAsked: the trade of a machine login
-// asks Dispatch what kind of member its approver is before it decides the token's scope, and while
-// Dispatch cannot be asked it is refused temporarily_unavailable, a list naming no project
-// included: the broker cannot tell a restricted member's machine from anyone else's, so it mints
-// no token acting as its person on a guess. A refusal of the broker's own account token, and a
-// member kind the broker does not know, are refused server_error.
-func TestARestrictedMembersTradeIsRefusedWhileDispatchCannotBeAsked(t *testing.T) {
+// TestARestrictedMembersTradeIsRefusedWhenDispatchRefusesOrNamesAnUnknownKind: the trade of a
+// machine login asks Dispatch what kind of member its approver is before it decides the token's
+// scope. A refusal of the broker's own account token, and a member kind the broker does not know,
+// are refused server_error, and none of those trades stores a token. The outage itself, a trade
+// refused temporarily_unavailable while Dispatch cannot be asked whoever approved the login, is the
+// K3 table's cannot-be-reached cells (TestK3TradesByDispatchState) and
+// TestAK3OutageRefusesAMachineTradeWhoeverApprovedIt.
+func TestARestrictedMembersTradeIsRefusedWhenDispatchRefusesOrNamesAnUnknownKind(t *testing.T) {
 	access := newFakeAccess()
 	access.kinds[person] = projectaccess.MemberRestricted
 	f := newExchangeFixture(t, func(cfg *oauth.Config) { cfg.Exchange.Projects = access })
 	key := newKey(t)
 	machine := f.devBoxToken(t, key, person)
 
-	access.set(func(a *fakeAccess) { a.down = true })
-	for _, asked := range []string{"", project} {
-		status, body := f.machineTrade(t, machine, asked, key)
-		refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch could not be asked")
-	}
-	access.set(func(a *fakeAccess) { a.down, a.refused = false, true })
+	access.set(func(a *fakeAccess) { a.refused = true })
 	status, body := f.machineTrade(t, machine, project, key)
 	refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", "BROKER_PROJECT_ACCESS_TOKEN_FILE")
 	access.set(func(a *fakeAccess) { a.refused, a.kinds[person] = false, "guest" })

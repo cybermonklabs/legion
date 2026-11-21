@@ -9,8 +9,10 @@
 #   main  verification v16's seed: PUB, public, and PRIV, made private through the visibility
 #         route; alice, a full member no list names; bob, a restricted member PRIV's list names;
 #         carol, a full member PRIV's list names, who owns both; carol's token that lists PRIV,
-#         alice's token that lists PRIV, carol's token that lists no project, and the shared
-#         token. Each project holds an issue whose spec is a document with blocks, a comment, an
+#         alice's token that lists PRIV, bob's token that lists PRIV, carol's token that lists no
+#         project, and the shared token. A full member's token sees every public project whatever
+#         it lists, and the private ones it lists; a restricted member's sees only what it lists.
+#         Each project holds an issue whose spec is a document with blocks, a comment, an
 #         ask, a message, an issue document, a project document, an agent session of its own
 #         that the fake Envoy lists, and a repository its issue names as its own `repo`. PUB's
 #         issue holds a comment of carol's that names PRIV's issue and its spec, the seed's
@@ -41,9 +43,10 @@
 #               With --all-public, PRIV is left public and listed and confined alone run: every
 #               other section prints `not run: <section> (slice A3b, #t-a-36)`, the slice that
 #               makes a project private, and the run passes when those two do.
-#   listed      bob, carol and carol's PRIV token find each object of PRIV.
-#   confined    bob and carol's PRIV token find nothing of PUB, no person (once PRIV is private)
-#               and no agent outside PRIV, and no direct message that is not their own.
+#   listed      bob, bob's PRIV token, carol and carol's PRIV token find each object of PRIV.
+#   confined    bob and bob's PRIV token find nothing of PUB, no person (once PRIV is private)
+#               and no agent outside PRIV, and no direct message that is not their own; carol's
+#               PRIV token, a full member's, lists PUB beside PRIV.
 #   walk        for alice, alice's PRIV token, carol's token that lists no project and the shared
 #               token ("the unseeing callers"): every GET row of GET /api/v1 whose path names an
 #               object, filled once with PRIV's objects and once with ids that do not exist, each
@@ -312,9 +315,11 @@ note "$found of $((${#listed_callers[@]} * ${#object_reads[@]})) reads of PRIV's
 pass
 
 begin confined
-# bob and carol's PRIV token: PUB's objects answer as missing, and the lists hold PRIV alone.
+# bob and bob's PRIV token: PUB's objects answer as missing, and the lists hold PRIV alone. A
+# restricted member's list narrows what that person sees; a full member's list decides only which
+# private projects it sees, so carol's PRIV token sees PUB too (below).
 : >"$work/fill-empty"
-for caller in bob carol-priv-token; do
+for caller in bob bob-priv-token; do
   for path in "${object_reads[@]}"; do
     pub=$(resolve main "${path//\{P\}/PUB}")
     none=${path//\{P\}/ZZNONE}
@@ -334,8 +339,8 @@ for caller in bob carol-priv-token; do
   [ "$keys" = '["PRIV"]' ] || problem="$caller GET /api/v1/projects: lists $keys, want [\"PRIV\"]"
   judge "$status" "$problem"
   # A person of PUB is one of PRIV's people only while PRIV is public (R2: every full member reads a
-  # public project, and so is one of its people), so the people a restricted member and a token that
-  # lists PRIV read is held to PRIV's own only once PRIV is private. Each list must be answered 200
+  # public project, and so is one of its people), so the people a restricted member and his token
+  # read is held to PRIV's own only once PRIV is private. Each list must be answered 200
   # and name what the caller sees, carol and the session with history in PRIV (ses-priv-worker), or
   # the name it must not hold could be missing from an error or an empty list.
   if [ "$priv_private" = 1 ]; then
@@ -381,7 +386,13 @@ for caller in bob carol-priv-token; do
   esac
   judge "$status" "$problem"
 done
-note "bob and carol's PRIV token read PUB's objects, the projects, the people, the agents and a direct message"
+note "bob and bob's PRIV token read PUB's objects, the projects, the people, the agents and a direct message"
+# carol's PRIV token, a full member's, sees PUB, which it does not list, beside PRIV.
+send main carol-priv-token GET /api/v1/projects
+keys=$(jq -c '[.[].key]' "$work/body" 2>/dev/null || echo "not a list: $(head -c 200 "$work/body")")
+problem=''
+[ "$keys" = '["PRIV","PUB"]' ] || problem="carol-priv-token GET /api/v1/projects: lists $keys, want [\"PRIV\",\"PUB\"]"
+judge "$status" "$problem"
 pass
 
 if [ "$priv_private" = 1 ]; then
@@ -456,9 +467,9 @@ if [ "$priv_private" = 1 ]; then
     # PRIV) and then on PUB's, on each server. Each server's answer is the frames the caller was
     # sent by that server; each comment's id is remembered under one label on both servers, so the
     # mask names it alike. A PRIV event on main differs from the twin's answer. Every unseeing
-    # caller but alice's PRIV token sees PUB, so the twin sends it the PUB comment, and an answer
-    # holding no event fails the pair: the compare must see the socket send something. alice's PRIV
-    # token sees no project, so both servers send it nothing, which the compare holds them to.
+    # caller sees PUB, alice's PRIV token included (a full member's list decides only which private
+    # projects it sees), so the twin sends it the PUB comment, and an answer holding no event fails
+    # the pair: the compare must see the socket send something.
     for server in main twin; do
       rm -f "$work/live-ready-$server" "$work/live-written-$server"
       bun "$(dirname "$0")/socket-access.ts" live "${build_url[$server]}" "$work/auth/$server-$caller" \
@@ -479,18 +490,14 @@ if [ "$priv_private" = 1 ]; then
       expect_status 201 "$server: carol comments on PUB-1 while $caller's live socket is open"
       remember "$server" "live comment for $caller" "$(jq -r .id "$work/body")"
     done
-    # The written file names the PUB comment, written after PRIV's: the probe reads until the feed
-    # has sent every event its log lets the caller read of the writes (socket-access.ts), however
-    # long an open transaction holds the feed back, and the feed sends in id order, so a PRIV event
-    # main leaked has come by the time the PUB comment's does. alice's PRIV token reads no comment
-    # of them, so it names none, and its probe waits for nothing past the log's answer. The file is
-    # written whole and then moved into place, so the probe reads no part of it.
+    # The written file names the PUB comment, written after PRIV's, for every unseeing caller, each
+    # of which sees PUB: the probe reads until the feed has sent every event its log lets the caller
+    # read of the writes (socket-access.ts), however long an open transaction holds the feed back,
+    # and the feed sends in id order, so a PRIV event main leaked has come by the time the PUB
+    # comment's does. The file is written whole and then moved into place, so the probe reads no
+    # part of it.
     for server in main twin; do
-      if [ "$caller" = alice-priv-token ]; then
-        : >"$work/live-written-$server.part"
-      else
-        recalled "$server" "live comment for $caller" >"$work/live-written-$server.part"
-      fi
+      recalled "$server" "live comment for $caller" >"$work/live-written-$server.part"
       mv "$work/live-written-$server.part" "$work/live-written-$server"
     done
     for server in main twin; do
@@ -499,12 +506,10 @@ if [ "$priv_private" = 1 ]; then
       cp "$work/live-body-$server" "$work/body"
       keep_answer "$server" "$server"
     done
-    if [ "$caller" != alice-priv-token ]; then
-      problem=''
-      grep -q '"type":"event"' "$work/answers/twin.body" ||
-        problem="$caller /ws/live: the twin sent no event of carol's PUB comment, so the compare saw nothing: $(head -c 300 "$work/answers/twin.body")"
-      judge "$(<"$work/answers/twin.status")" "$problem"
-    fi
+    problem=''
+    grep -q '"type":"event"' "$work/answers/twin.body" ||
+      problem="$caller /ws/live: the twin sent no event of carol's PUB comment, so the compare saw nothing: $(head -c 300 "$work/answers/twin.body")"
+    judge "$(<"$work/answers/twin.status")" "$problem"
     same_answers "$caller /ws/live (beside the twin)" main twin
   done
   # The document socket admits a person by their cookie alone, at the merge base as now, so a
@@ -541,7 +546,7 @@ if [ "$priv_private" = 1 ]; then
   begin writes
   if [ "$probes_read" = 1 ]; then
     walk_rows 'select(.method != "GET")'
-    note "walked $walked write rows that name an object, as each unseeing caller; $refused calls of rows whose object no project owns, each refused to a caller that is not open"
+    note "walked $walked write rows that name an object, as each unseeing caller; $refused calls of rows whose object no project owns, each refused to a caller that is not open or whose writes a list holds"
     [ "$walked" -gt 0 ] || unrun "the write walk compared no write row that names an object: the route index carol read, or the Probes, held none"
   fi
   pass

@@ -25,10 +25,11 @@ const unknownSessionsRoster = `[
 // whose listener sent no projects, is one nothing Dispatch holds places in any project, so it
 // reaches no caller: a private project's session that writes through a personal token, or a broker
 // session before its first write, is such a session. session-mixed, whose list names PRIV and PUB,
-// reaches only a caller that sees both: not alice, who sees PUB, nor bob or carol's token that
-// lists PRIV, who see PRIV alone. session-empty, whose token lists no project, reaches each open
-// viewer (K6). With no private project every open viewer lists all four, as before (R9), and a
-// viewer that is not open lists a session by its history alone, none of these.
+// reaches only a caller that sees both: carol and her token that lists PRIV, an open viewer that
+// sees both; not alice or her token that lists PRIV, who see PUB, nor bob or bob's token that lists
+// PRIV, who see PRIV alone. session-empty, whose token lists no project, reaches each open viewer
+// (K6). With no private project every open viewer lists all four, as before (R9), and a viewer that
+// is not open lists a session by its history alone, none of these.
 //
 // Controls: the migration's function reading a missing projects key as [] (B1), under which alice
 // lists session-unknown; and visibleRosterSessions passing a session whose list meets what the
@@ -57,8 +58,9 @@ func TestAnAgentsListHidesASessionWhoseProjectsAreUnknownOrUnseen(t *testing.T) 
 		{callerCarolToken, ofPublic},
 		{callerSharedToken, ofPublic},
 		{callerBob, []string{}},
-		{callerCarolPrivToken, []string{}},
-		{callerAlicePrivToken, []string{}},
+		{callerCarolPrivToken, []string{"session-mixed", "session-listed-pub", "session-empty"}},
+		{callerAlicePrivToken, ofPublic},
+		{callerBobPrivToken, []string{}},
 	} {
 		if got := list(test.caller); !slices.Equal(got, test.private) {
 			t.Errorf("with PRIV private: %s lists %v, want %v", test.caller, got, test.private)
@@ -74,8 +76,9 @@ func TestAnAgentsListHidesASessionWhoseProjectsAreUnknownOrUnseen(t *testing.T) 
 		{callerCarolToken, every},
 		{callerSharedToken, every},
 		{callerBob, []string{}},
-		{callerCarolPrivToken, []string{}},
-		{callerAlicePrivToken, []string{}},
+		{callerCarolPrivToken, every},
+		{callerAlicePrivToken, every},
+		{callerBobPrivToken, []string{}},
 	} {
 		if got := list(test.caller); !slices.Equal(got, test.public) {
 			t.Errorf("with no private project: %s lists %v, want %v (R9)", test.caller, got, test.public)

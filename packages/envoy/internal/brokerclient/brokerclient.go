@@ -286,10 +286,10 @@ type Client struct {
 
 	mu   sync.Mutex
 	held *Token
-	// halfway is when Token trades again for a held token that lived less than RenewBefore when
-	// it landed: halfway through that life (renewalAt). It is zero for every other token, which
-	// Token trades again for RenewBefore ahead of its expiry.
-	halfway time.Time
+	// renewAt is when Token trades again for the held token: its renewal time as it landed
+	// (renewalAt), RenewBefore ahead of its expiry, or halfway through what was left of the life of
+	// one shorter than that. The TypeScript client keeps the same one time (#renewAt).
+	renewAt time.Time
 }
 
 // WithoutTrailingSlashes is raw without the slashes it ends in: the one rule both halves of this
@@ -363,7 +363,7 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if now := c.now(); c.held != nil && (now.Before(c.held.Expiry.Add(-c.renewBefore)) || now.Before(c.halfway)) {
+	if c.held != nil && c.now().Before(c.renewAt) {
 		return c.held, nil
 	}
 	token, err := c.trade(ctx)
@@ -381,14 +381,9 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 	return nil, err
 }
 
-// hold keeps token as the held one, and, for a token that lives less than RenewBefore, when Token
-// trades again for it. c.mu is held.
+// hold keeps token as the held one, and when Token trades again for it (renewalAt). c.mu is held.
 func (c *Client) hold(token *Token) {
-	now := c.now()
-	c.held, c.halfway = token, time.Time{}
-	if !token.Expiry.Add(-c.renewBefore).After(now) {
-		c.halfway = c.renewalAt(token, now)
-	}
+	c.held, c.renewAt = token, c.renewalAt(token, c.now())
 }
 
 // Run keeps one token live until ctx ends, handing each one to onToken as it lands: the first

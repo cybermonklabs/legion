@@ -12,8 +12,8 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-// A removal that takes a restricted member off an access list owes the secrets broker the
-// revocation of the member's machine logins (recordMachineLoginRevocation, migration
+// A removal that takes a restricted member off their last access list owes the secrets broker the
+// revocation of the member's machine logins (removePerson, recordMachineLoginRevocation, migration
 // 20261120150130), and the broker revocation loop pays it after the commit (revokeOwedMachineLogins),
 // beside the revocations of replaced accounts and on the same wake. Nothing the 325-second bound on
 // a removal rests on waits for it: every trade of a restricted member's machine login names one
@@ -97,16 +97,7 @@ func (s *server) revokeOwedMachineLogins(ctx context.Context) time.Time {
 			"email", revocation.Email, "machine_logins", revoked, "settled", settled)
 	}
 	wait, due, err := revocations.NextDue(ctx, brokerRevocationRetry)
-	if err != nil {
-		if ctx.Err() == nil {
-			slog.Error("dispatch: read when the next machine-login revocation is due", "error", err)
-		}
-		return time.Now().Add(brokerRevocationRetry)
-	}
-	if !due {
-		return time.Time{}
-	}
-	return time.Now().Add(wait)
+	return nextPassAt(ctx, wait, due, err, "machine-login revocation")
 }
 
 // revokeMachineLoginsOf revokes at the broker the machine logins revocation's person approved for
@@ -171,29 +162,12 @@ func revokeMachineLoginsOf(ctx context.Context, client *agentsecrets.Client, rev
 // removal commits, so an age past a few minutes is one the broker does not confirm, whose member's
 // machine logins still refresh until it settles; every trade of theirs names a project the broker
 // checks against Dispatch, so the member gets no token of a project that dropped them either way.
-// A read that fails writes no sample, so a database outage never reads as nothing owed.
+// A read that fails writes no sample, so a database outage never reads as nothing owed
+// (registerOwedGauges).
 func RegisterMachineLoginRevocationMetrics(registry *metrics.Registry, pool *store.Pool) {
-	revocations := store.NewMachineLoginRevocations(pool)
-	read := func() (int64, time.Duration, bool) {
-		ctx, cancel := context.WithTimeout(context.Background(), brokerRevocationMetricsRead)
-		defer cancel()
-		count, oldest, err := revocations.Owed(ctx)
-		if err != nil {
-			slog.Warn("dispatch: the owed machine-login revocations could not be read for a metrics scrape", "error", err)
-			return 0, 0, false
-		}
-		return count, oldest, true
-	}
-	registry.NewOptionalGaugeFunc("envoy_dispatch_machine_login_revocations_owed",
+	registerOwedGauges(registry, store.NewMachineLoginRevocations(pool).Owed, "machine-login revocations",
+		"envoy_dispatch_machine_login_revocations_owed",
 		"Revocations of a restricted member's machine logins that Dispatch owes the secrets broker after a removal from an access list, and the broker has not confirmed; until each settles, those logins still refresh",
-		func() (int64, bool) {
-			count, _, ok := read()
-			return count, ok
-		})
-	registry.NewOptionalGaugeFunc("envoy_dispatch_machine_login_revocation_oldest_owed_seconds",
-		"Seconds since the removal of the oldest machine-login revocation not yet confirmed, written only while one is owed; past a few minutes the broker is not confirming it",
-		func() (int64, bool) {
-			count, oldest, ok := read()
-			return int64(oldest / time.Second), ok && count > 0
-		})
+		"envoy_dispatch_machine_login_revocation_oldest_owed_seconds",
+		"Seconds since the removal of the oldest machine-login revocation not yet confirmed, written only while one is owed; past a few minutes the broker is not confirming it")
 }

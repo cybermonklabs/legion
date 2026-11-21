@@ -344,28 +344,16 @@ func (s *server) refuseTransferOfAnotherOwnersPasskey(ctx context.Context, tx pg
 	return nil
 }
 
-// deleteProjectAccessPerson takes a person off the project's access list. A removal that took a
-// restricted member off it owes the broker the revocation of their machine logins, recorded in the
-// removal's transaction (recordMachineLoginRevocation) and paid after the commit; a removal that
-// left the list as it was owes nothing, so no project's owner ends the logins of a person another
-// project lists. Where passkey sign-in is on, the removal also ends, in its own transaction, the
-// person's unused links of this project and, once no list names them directly any more, a
-// restricted member's sign-in and passkeys (endUnlistedPasskeySignIn).
+// deleteProjectAccessPerson takes a person off the project's access list (removePerson). Where
+// passkey sign-in is on, the removal also ends, in its own transaction, the person's unused links of
+// this project and, once no list names them directly any more, a restricted member's sign-in and
+// passkeys (endUnlistedPasskeySignIn).
 func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
 	email := r.PathValue("email")
 	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
-		named, err := access.NamesPerson(ctx, tx, key, email)
+		answer, event, err := s.removePerson(ctx, tx, s.deps.Events, key, access.PrincipalPerson, email, by)
 		if err != nil {
 			return model.ProjectAccess{}, nil, err
-		}
-		answer, event, err := access.RemovePrincipal(ctx, tx, s.deps.Events, key, access.PrincipalPerson, email, by)
-		if err != nil {
-			return model.ProjectAccess{}, nil, err
-		}
-		if named {
-			if err := s.recordMachineLoginRevocation(ctx, tx, email); err != nil {
-				return model.ProjectAccess{}, nil, err
-			}
 		}
 		if err := s.endUnlistedPasskeySignIn(ctx, tx, key, email); err != nil {
 			return model.ProjectAccess{}, nil, err
@@ -374,28 +362,59 @@ func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// removePerson is access.RemovePrincipal for a person, which also owes the broker the revocation of
+// a restricted member's machine logins when the removal leaves them on no project's access list:
+// the moment Dispatch stops admitting their cookie and personal tokens too (restrictedOwnerAdmitted,
+// access.Listed). Under the person's removal lock (access.LockPersonRemoval), so two removals of
+// one person read each other's commit, it reads in the removal's transaction whether the list named
+// the person (access.NamesPerson) and, after the removal, whether any project still names them;
+// only a removal that took the person off their last list records the debt
+// (recordMachineLoginRevocation), paid after the commit. A machine login belongs to no project,
+// since each trade of it names its own, so a removal that leaves the person on another list ends
+// nothing: each trade naming the project they left is refused once the broker's 30-second cache of
+// Dispatch's answer runs out, and the logins keep serving the projects that still list them. So no
+// project's owner ends the logins a person holds for another project by naming them on their own
+// list and taking them off it.
+func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, email string, by model.Actor) (model.ProjectAccess, model.Event, error) {
+	if err := access.LockPersonRemoval(ctx, tx, email); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	named, err := access.NamesPerson(ctx, tx, key, email)
+	if err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	answer, event, err := access.RemovePrincipal(ctx, tx, ev, key, kind, email, by)
+	if err != nil || !named {
+		return answer, event, err
+	}
+	listed, err := access.Listed(ctx, tx, email)
+	if err != nil || listed {
+		return answer, event, err
+	}
+	if err := s.recordMachineLoginRevocation(ctx, tx, email); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	return answer, event, nil
+}
+
 // recordMachineLoginRevocation records, in tx, that Dispatch owes the secrets broker the
 // revocation of the machine logins person approved for their own machines before this write (the
 // debt's recorded_at; one approved after the person is put back survives it), when people records
 // person as a restricted member (store.RecordMachineLoginRevocation); a full member, a person with
 // no row and a deployment with no broker (Deps.AgentSecrets nil, where no machine login exists) owe
 // nothing. The broker revocation loop pays it after the write commits (revokeOwedMachineLogins), so
-// the write never waits on the broker: an owner removes a person while the broker is down, and the
-// person's cookie and personal tokens are refused from the commit on by Dispatch's own check of
-// the lists (restrictedOwnerAdmitted). A removal from an access list (deleteProjectAccessPerson)
-// records it; it is written to be the one record any other write that takes a restricted member
-// off a project makes in its own transaction.
+// the write never waits on the broker: an owner removes a person while the broker is down. A
+// removal that leaves the person on no list records it (removePerson); it is written to be the one
+// record any other write that takes a restricted member off their last project makes in its own
+// transaction.
 func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, person string) error {
 	person = model.CanonicalLogin(person)
 	if s.deps.AgentSecrets == nil || person == "" {
 		return nil
 	}
-	var kind string
-	if err := tx.QueryRow(ctx, `select coalesce((select member_kind from people where email = $1), '')`, person).Scan(&kind); err != nil {
+	kind, err := access.MemberKind(ctx, tx, person)
+	if err != nil || kind != model.MemberRestricted {
 		return err
-	}
-	if kind != string(model.MemberRestricted) {
-		return nil
 	}
 	return store.RecordMachineLoginRevocation(ctx, tx, person)
 }

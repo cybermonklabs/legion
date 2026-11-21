@@ -1128,23 +1128,26 @@ member, who signs in from outside the company, sees a project, public or private
 list names them directly. Every other caller reads a private project, and everything in it, as a
 project that does not exist.
 
-What each credential sees:
+What each credential sees. A credential's list of projects decides only which private projects it
+sees: a private project needs a token that lists it.
 
 - A person at the browser sees every project the rule above lets them see.
-- An agent's token that lists projects, a personal `dsp_` token from Settings or an access token
-  the secrets broker issued for a project, sees those of them its person sees and nothing else.
-  Of what belongs to no project it reads only the people and sessions of those projects, its own,
-  and its person's direct conversations with those sessions. A read of the whole deployment, such
-  as the priorities, the Pipeline page, the broadcasts or the groups, is refused
-  `403 DEPLOYMENT_READ_REFUSED`, and a write of it, such as a new project, a repository mapping or
-  a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`.
-- An agent's token that lists no project sees the public projects its person sees, and never a
-  private one.
+- A full member's agent token, a personal `dsp_` token from Settings or an access token the
+  secrets broker issued, sees every public project its person sees, whatever it lists, and the
+  private projects it lists that its person sees. It reads what belongs to no project as its
+  person does, but for the sessions and roles of private projects it does not see. A token that
+  lists projects is refused a write of the whole deployment, such as a new project, a repository
+  mapping or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`; a broker access token acting as its
+  person is refused it only while some project is private.
+- A restricted member's token that lists projects sees those of them its person sees and nothing
+  else; one that lists none sees the public projects its person sees. Of what belongs to no
+  project it reads only the people and sessions of those projects, its own, and its person's
+  direct conversations with those sessions.
 - A credential that acts for no person, the shared `DISPATCH_AGENT_TOKEN` or a Kubernetes
-  service-account token, sees the public projects.
+  service-account token, sees the public projects and the private projects its list names.
 
-With no private project in the deployment, a token that lists no project sees every project its
-person sees.
+With no private project in the deployment, a full member's token sees every project its person
+sees, whatever it lists.
 
 A restricted member's dashboard holds only what they may read. Their rail shows Inbox, Agents,
 Delivery, their projects and Settings, with no Priorities or Pipeline and no Peek. Delivery shows
@@ -1155,29 +1158,34 @@ is theirs, listing their own machine logins alone: there they approve, at their 
 login of their own agents, and list and revoke their own machine logins, and Dispatch decides or
 ends for them no other credential. The API refuses them, and every token they make, every read of
 the whole deployment, `403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`,
-but for those calls at their browser, and except that they revoke their own credential grants and
-end their own sign-ins, as a full member does: the secrets broker decides whose each one is. The
-secrets broker holds their agents' tokens to one project, which
-their agents name in `AGENT_SECRETS_PROJECTS`. Taking such a person off a project's list ends
-their tokens for it within 325 seconds, since the broker checks every trade against Dispatch, and
-Dispatch then revokes their machine logins at the broker, after the removal commits and again until
-the broker confirms; the log line `the secrets broker revoked the machine logins of a restricted
-member taken off an access list` records each, and the person approves a new machine login for a
-project that still lists them.
+but for the machine-login calls at their browser, and except that they revoke their own credential
+grants and end their own sign-ins, as a full member does: the secrets broker decides whose each one
+is. The machine-login calls are theirs at their browser alone: through a token of theirs each one,
+the list `GET /api/v1/machine-logins` included, is `403 OAUTH_SCOPE_REQUIRED` where the token lacks
+the call's scopes, as their agent's token does,
+and `403 RESTRICTED_MEMBER` otherwise. The secrets broker holds their agents' tokens to one
+project, which their agents name in `AGENT_SECRETS_PROJECTS`, and a token the broker scoped to
+their person gets no scope at Dispatch. Taking such a person off a project's list ends their tokens
+for it within 325 seconds, since the broker checks every trade against Dispatch. A removal that
+leaves them on no project's list also has Dispatch revoke their machine logins at the broker, after
+the removal commits and again until the broker confirms; the log line `the secrets broker revoked
+the machine logins of a restricted member taken off an access list` records each. A removal that
+leaves them on another project's list ends no login: their logins keep serving the projects that
+still list them.
 
 A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
-a token that lists no project read the private project as missing. A person who sees the project
+a token that does not list it read the private project as missing. A person who sees the project
 makes it in **Settings → Agent tokens**, picking the project under **Projects**, and the daemon
-reads it from the file its `dispatch_token_file` names. A token that lists projects sees no other
-project, so it lists every project in the daemon's `projects`. Every write of the daemon's agents
-is then attributed to the person who made the token.
+reads it from the file its `dispatch_token_file` names. The token lists every private project in
+the daemon's `projects`; it sees each public project whatever it lists. Every write of the
+daemon's agents is then attributed to the person who made the token.
 
 A project can be made private only once the deployment has provisioned it.
 `DISPATCH_PRIVATE_PROJECTS` holds, comma-separated, the keys of the projects whose private
 namespace, stores and grants the deployment has made; on a deployment built by `envoy-infra`'s
 `gcp:Dispatch`, the component's `privateProjects` input, a list of keys, renders it. An entry that
-is not a project key, the old value `1` included, stops the start. Unset or empty, no project can
-be made private.
+is not a project key, the old value `1` included, is ignored, and the start logs an ERROR line
+naming it. Unset or empty, no project can be made private.
 
 The owner switches a project private on its Access tab
 (`PATCH /api/v1/projects/{key}/access` with `{"visibility": "private"}`), and Dispatch checks, in

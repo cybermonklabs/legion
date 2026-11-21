@@ -17,20 +17,7 @@ func TestAClaimedMachineLoginRevocationIsSendableWithinItsWindow(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
 	revocations := NewMachineLoginRevocations(database.Pool)
-	record := func(email string) {
-		t.Helper()
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(ctx)
-		if err := RecordMachineLoginRevocation(ctx, tx, email); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
+	record := func(email string) { recordedMachineLoginRevocation(t, database, email) }
 	const email = "erin@other.example"
 	var before time.Time
 	if err := database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&before); err != nil {

@@ -109,9 +109,9 @@ func routeIndexRows(t *testing.T, mux *http.ServeMux) []string {
 }
 
 // servedPatterns reads every pattern mux serves out of net/http's own routing index
-// (net/http.routingIndex), which no exported API lists: each pattern is in its multis or in its
-// segments by its first segment. A ServeMux that no longer holds that index fails the test, naming
-// what it could not read, rather than reading as a mux that serves nothing.
+// (net/http.routingIndex), which no exported API lists: each pattern is in its multis or, once
+// for each of its segments, in its segments. A ServeMux that no longer holds that index fails the
+// test, naming what it could not read, rather than reading as a mux that serves nothing.
 func servedPatterns(t *testing.T, mux *http.ServeMux) []string {
 	t.Helper()
 	index := reflect.ValueOf(mux).Elem().FieldByName("index")

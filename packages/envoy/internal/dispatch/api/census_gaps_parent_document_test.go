@@ -14,8 +14,7 @@ import (
 )
 
 // censusGapsPublicReaders are the callers of verification v16 that read PUB and do not see PRIV:
-// alice, carol's token that lists no project and the shared token. alice's token that lists PRIV
-// reads neither project, so it reads none of PUB's objects these rows hold.
+// alice, carol's token that lists no project and the shared token.
 var censusGapsPublicReaders = []privateCaller{callerAlice, callerCarolToken, callerSharedToken}
 
 // parentDocumentSeed is verification v16's seed (private_seed_test.go) with a comment and an ask on

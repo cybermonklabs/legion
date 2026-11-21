@@ -430,12 +430,11 @@ func workflowRows(t *testing.T, database *store.Store) int {
 }
 
 // A credential scoped to one project writes no plan and no rating of another project's issue,
-// though it proves the session of that issue's daemon and the body names that session. While no
-// project is private the project check alone stands between them: 403 PROJECT_SCOPE with nothing
-// written, as before projects could be private (R9). Once a project is private, an issue of a
-// project the credential does not list is one it cannot see, so the write answers as a write of a
-// key no issue holds, 404 ISSUE_NOT_FOUND, with nothing written. The same writes over a credential
-// scoped to the issue's project land, which is the control.
+// though it proves the session of that issue's daemon and the body names that session. The project
+// check stands between them whatever the deployment holds: 403 PROJECT_SCOPE with nothing written,
+// as before projects could be private (R9), since a full member's token scoped to one project keeps
+// that write scope once a project is private, and OTH, public, is a project it sees. The same writes
+// over a credential scoped to the issue's project land, which is the control.
 func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 	for _, private := range []bool{false, true} {
 		t.Run(map[bool]string{false: "while no project is private", true: "once a project is private"}[private], func(t *testing.T) {
@@ -473,13 +472,8 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 			} {
 				before := workflowRows(t, rig.database)
 				refused := rig.serve(caller.presenting(t, http.MethodPut, write.path, elsewhere, write.body))
-				if private {
-					expectRefusal(t, "a "+write.name+" over a credential of "+brokerTestProject, refused, http.StatusNotFound,
-						"ISSUE_NOT_FOUND", issue)
-				} else {
-					expectRefusal(t, "a "+write.name+" over a credential of "+brokerTestProject, refused, http.StatusForbidden,
-						codeProjectScope, brokerTestProject, "OTH")
-				}
+				expectRefusal(t, "a "+write.name+" over a credential of "+brokerTestProject, refused, http.StatusForbidden,
+					codeProjectScope, brokerTestProject, "OTH")
 				if after := workflowRows(t, rig.database); after != before {
 					t.Fatalf("the refused %s took the workflow store from %d rows to %d, want none written", write.name, before, after)
 				}

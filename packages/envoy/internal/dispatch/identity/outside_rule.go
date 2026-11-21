@@ -91,8 +91,8 @@ func (r OutsideRule) AdmitsRestricted(ctx context.Context, email string) error {
 // admitsOutsider decides an account outside the Workspace (hosted, its own hd, not Domain) by its
 // address email: ErrNotInDomain under an empty Domain, which admits nobody from outside;
 // ErrWorkspaceAddress for an address on a domain the Workspace owns (ofTheWorkspace), without
-// reading the lists; ErrNotListed once no project names it (People); and an error matching
-// ErrMembershipUnreadable when the lists cannot be read. Person and AdmitsRestricted both ask it.
+// reading the lists; and then the lists' answer (admitsListed). Person and AdmitsRestricted both
+// ask it.
 func (r OutsideRule) admitsOutsider(ctx context.Context, email, hosted string) error {
 	if r.Domain == "" {
 		return fmt.Errorf("%s (hd %q): %w", email, hosted, ErrNotInDomain)
@@ -100,7 +100,14 @@ func (r OutsideRule) admitsOutsider(ctx context.Context, email, hosted string) e
 	if r.ofTheWorkspace(email) {
 		return fmt.Errorf("%s (hd %q): %w", email, hosted, ErrWorkspaceAddress)
 	}
-	listed, err := r.People.Listed(ctx, email)
+	return admitsListed(ctx, r.People, email)
+}
+
+// admitsListed is the outside rule's list arm, which ListedAdmission asks too: nil while people
+// says some project names email directly, ErrNotListed once none does, and an error matching
+// ErrMembershipUnreadable when the lists cannot be read.
+func admitsListed(ctx context.Context, people Lister, email string) error {
+	listed, err := people.Listed(ctx, email)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrMembershipUnreadable, err)
 	}
@@ -108,6 +115,23 @@ func (r OutsideRule) admitsOutsider(ctx context.Context, email, hosted string) e
 		return fmt.Errorf("%s: %w", email, ErrNotListed)
 	}
 	return nil
+}
+
+// ListedAdmission is what a dev sign-in server (cmd/dispatch's DISPATCH_DEV_SIGNIN=1) holds a
+// restricted member's credentials to: the outside rule's list arm alone (admitsListed), with no
+// Workspace-domain arm, since a dev sign-in server names no Workspace and signs anyone in by email.
+// Such a server has no sign-in rule, and without this a restricted member's token there would act
+// for nobody, which no deployment that holds a restricted member does; with it the token acts
+// while some project names the member directly, by the very check outside sign-in makes.
+type ListedAdmission struct {
+	People Lister
+}
+
+var _ RestrictedAdmission = ListedAdmission{}
+
+// AdmitsRestricted is admitsListed over People.
+func (a ListedAdmission) AdmitsRestricted(ctx context.Context, email string) error {
+	return admitsListed(ctx, a.People, email)
 }
 
 // ofTheWorkspace reports whether login, an address with its ASCII letters lowered, is on a domain

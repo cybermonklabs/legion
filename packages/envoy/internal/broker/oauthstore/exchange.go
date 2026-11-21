@@ -134,7 +134,8 @@ type ExchangeSession struct {
 	// moment the exchange's check of the token's projects against Dispatch returned
 	// (StartAccessLifetime), not from the mint, which waits on the exchange's transaction after it.
 	// So a token held to AccessLifetime ends that long after the last answer that admitted it,
-	// however long the transaction took. Zero is no deadline. Like Principal it is not stored.
+	// however long the transaction took. Zero with a lifetime decided is a start that never ran, and
+	// its token expires at once (SetExpiresAt). Like Principal it is not stored.
 	AccessDeadline time.Time `json:"-"`
 }
 
@@ -153,10 +154,12 @@ func (s *ExchangeSession) StartAccessLifetime(checked time.Time) {
 }
 
 // SetExpiresAt sets the expiry of the token of kind key, as the embedded session does, except that
-// an access token's is held to AccessDeadline, or to AccessLifetime from now where the exchange
-// set no deadline, when the expiry asked for is later: the library asks for its own lifetime, and a
-// shorter one the exchange decided wins. It never lengthens an expiry, so a token's lifetime is the
-// lesser of the two.
+// an access token's is held to AccessDeadline when the expiry asked for is later: the library asks
+// for its own lifetime, and a shorter one the exchange decided wins. It never lengthens an expiry,
+// so a token's lifetime is the lesser of the two. An exchange that decided a lifetime and never
+// started it (StartAccessLifetime) has no moment to count it from, so its token expires at once:
+// a trade that skipped the start mints a token that lives no time, which every caller and row
+// reading its expires_in sees, rather than one living the lifetime from its mint, past the bound.
 func (s *ExchangeSession) SetExpiresAt(key oauth2.TokenType, exp time.Time) {
 	if s.DefaultSession == nil {
 		s.DefaultSession = &oauth2.DefaultSession{}
@@ -164,7 +167,7 @@ func (s *ExchangeSession) SetExpiresAt(key oauth2.TokenType, exp time.Time) {
 	if key == oauth2.AccessToken && s.AccessLifetime > 0 {
 		latest := s.AccessDeadline
 		if latest.IsZero() {
-			latest = time.Now().UTC().Add(s.AccessLifetime)
+			latest = time.Now().UTC()
 		}
 		if exp.After(latest) {
 			exp = latest

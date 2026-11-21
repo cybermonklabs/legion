@@ -63,10 +63,11 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor)
+	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
+	key := r.PathValue("key")
 
 	tx, err := s.begin(r.Context())
 	if err != nil {

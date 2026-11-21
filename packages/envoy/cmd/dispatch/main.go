@@ -2069,6 +2069,7 @@ func appContextOptions(boot bootConfig, rule identity.SignInRule, built routes.A
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
+	built.DevRestrictedAdmission = devRestrictedAdmission(boot, built.Store)
 	return built
 }
 
@@ -2304,9 +2305,12 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // the RFC 9449 DPoP scheme. It is built from the settings Dispatch already has and needs none of
 // its own: the broker DISPATCH_AGENT_SECRETS_URL names, which the approval relays already call,
 // Dispatch's own projected ServiceAccount token from DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE,
-// which it already presents there, and DISPATCH_SERVER_URL as the origin a proof's 'htu' is
-// checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
-// the maintenance pass sweeps.
+// which it already presents there, and the origins a proof's 'htu' is checked against:
+// DISPATCH_SERVER_URL, and DISPATCH_OUTSIDE_ORIGIN where it is set. A request whose Host is the
+// outside origin's host is checked against the outside origin, as the router answers it as that
+// origin, so an agent whose Dispatch URL is the outside origin signs for it; every other request
+// is checked against DISPATCH_SERVER_URL. Spent proofs are recorded in Dispatch's own database
+// (store.DPoPProofs), which the maintenance pass sweeps.
 //
 // It serves a read-only token (brokertoken.Options.ServesReadOnly): the scope read alone, which
 // the broker mints from a read entry. Dispatch is the one service that asks for it, because its
@@ -2320,10 +2324,14 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	if boot.AgentSecretsURL == "" {
 		return nil, nil
 	}
+	origins := []string{strings.TrimSuffix(serverURL, "/")}
+	if boot.OutsideOrigin != "" {
+		origins = append(origins, boot.OutsideOrigin)
+	}
 	return brokertoken.New(brokertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
 		Account:   brokertoken.NewAccountToken(boot.AgentSecretsTokenFile),
-		Origin:    strings.TrimSuffix(serverURL, "/"),
+		Origins:   origins,
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is

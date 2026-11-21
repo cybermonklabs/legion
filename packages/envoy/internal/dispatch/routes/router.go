@@ -76,7 +76,8 @@ type AppContext struct {
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
 	// members of a Cognito pool's group, the people of a Google Workspace domain, or those people
 	// and the accounts outside the domain that a project names; the API holds a restricted
-	// member's tokens to that same rule (api.DepsInput.RestrictedAdmission). A nil SignIn is a
+	// member's tokens to that same rule (api.DepsInput.RestrictedAdmission), or, on a dev sign-in
+	// server, which has none, to AppContextOptions.DevRestrictedAdmission. A nil SignIn is a
 	// test/local header-identity or dev sign-in server, whose /auth/start and /auth/callback
 	// answer 503.
 	SignIn     *oidc.CodeFlow
@@ -218,6 +219,11 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// DevRestrictedAdmission is what a dev sign-in server (DevSignIn, which has no SignInRule) holds
+	// a restricted member's credentials to: cmd/dispatch sets identity.ListedAdmission over the
+	// access lists, the outside rule's list arm. A server with a SignInRule holds them to that rule
+	// instead, and BuildAppContext refuses this beside one, or without DevSignIn.
+	DevRestrictedAdmission identity.RestrictedAdmission
 	// BrokerRevocationsSuperseded is the process's count of revocations the secrets broker
 	// answered superseded (api.NewBrokerRevocationsSuperseded), beside Metrics; nil counts
 	// nothing. See api.DepsInput.
@@ -237,6 +243,17 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	}
 	if opts.Identity == nil {
 		return nil, fmt.Errorf("BuildAppContext: Identity required")
+	}
+	// The one rule a restricted member's credentials are held to: the sign-in rule where the
+	// server has one, and a dev sign-in server's list check where it has none.
+	var restricted identity.RestrictedAdmission
+	switch {
+	case opts.DevRestrictedAdmission != nil && (opts.SignInRule != nil || !opts.DevSignIn):
+		return nil, fmt.Errorf("BuildAppContext: DevRestrictedAdmission is a dev sign-in server's, which has no SignInRule")
+	case opts.DevRestrictedAdmission != nil:
+		restricted = opts.DevRestrictedAdmission
+	case opts.SignInRule != nil:
+		restricted = opts.SignInRule
 	}
 	var devSignInHost string
 	if opts.DevSignIn {
@@ -288,7 +305,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDC:                   opts.OIDC,
 		OIDCAccounts:           opts.OIDCAccounts,
 		AccessAccounts:         opts.AccessAccounts,
-		RestrictedAdmission:    opts.SignInRule,
+		RestrictedAdmission:    restricted,
 		BrokerTokens:           opts.BrokerTokens,
 		PrivateProjects:        opts.PrivateProjects,
 		BusProjects:            opts.BusProjects,

@@ -28,7 +28,9 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 const (
 	// dispatchOrigin is DISPATCH_SERVER_URL for these tests: the origin a caller signs its
-	// proof's 'htu' against, whatever host the request reaches Dispatch under.
+	// proof's 'htu' against. A verifier of this origin alone checks every request against it,
+	// whatever host the request reaches Dispatch under; a verifier of two origins (twoOrigins)
+	// checks against it every request whose host is not outsideOrigin's.
 	dispatchOrigin = "https://dispatch.test"
 	// resourcePath is the route a caller presents its token to.
 	resourcePath = "/api/v1/sessions"
@@ -106,7 +108,7 @@ func newRig(t *testing.T, options ...func(*brokertoken.Options)) *rig {
 	opts := brokertoken.Options{
 		BrokerURL: broker.Server.URL,
 		Account:   brokertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-		Origin:    dispatchOrigin,
+		Origins:   []string{dispatchOrigin},
 		Replay:    store.NewDPoPProofs(database.Pool),
 		Address:   sourceAddress,
 		Now:       tick.now,
@@ -902,29 +904,40 @@ func TestARequestPresentingNoDPoPTokenIsNotThisCredential(t *testing.T) {
 	}
 }
 
-// TestNewRefusesAnOriginItCannotCheckAProofAgainst: an origin that is not an absolute http(s)
-// origin is a deployment error, and it fails the build of the verifier rather than every
-// request.
+// TestNewRefusesAnOriginItCannotCheckAProofAgainst: no origin, an origin that is not an absolute
+// http(s) origin, and two origins with one Host (host and port), which no request's Host could
+// tell apart, are deployment errors, and each fails the build of the verifier rather than every
+// request. The control: two origins on two hosts build.
 func TestNewRefusesAnOriginItCannotCheckAProofAgainst(t *testing.T) {
 	database := storetest.Open(t)
-	for name, origin := range map[string]string{
-		"empty":       "",
-		"no scheme":   "dispatch.test",
-		"not http":    "ftp://dispatch.test",
-		"with a path": "https://dispatch.test/dispatch",
+	build := func(t *testing.T, origins []string) error {
+		_, err := brokertoken.New(brokertoken.Options{
+			BrokerURL: "https://broker.test",
+			Account:   brokertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+			Origins:   origins,
+			Replay:    store.NewDPoPProofs(database.Pool),
+			Address:   sourceAddress,
+		})
+		return err
+	}
+	for name, origins := range map[string][]string{
+		"none":                    nil,
+		"empty":                   {""},
+		"no scheme":               {"dispatch.test"},
+		"not http":                {"ftp://dispatch.test"},
+		"with a path":             {"https://dispatch.test/dispatch"},
+		"a second with a path":    {dispatchOrigin, "https://outside.test/dispatch"},
+		"a second with no scheme": {dispatchOrigin, "outside.test"},
+		"two on one host":         {dispatchOrigin, "http://DISPATCH.test"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := brokertoken.New(brokertoken.Options{
-				BrokerURL: "https://broker.test",
-				Account:   brokertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-				Origin:    origin,
-				Replay:    store.NewDPoPProofs(database.Pool),
-				Address:   sourceAddress,
-			})
-			if err == nil {
-				t.Fatalf("New accepted the origin %q", origin)
+			if err := build(t, origins); err == nil {
+				t.Fatalf("New accepted the origins %q", origins)
 			}
 		})
+	}
+	if err := build(t, []string{dispatchOrigin, outsideOrigin}); err != nil {
+		t.Fatalf("New refused two origins on two hosts: %v", err)
 	}
 }
 
@@ -938,7 +951,7 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 		return brokertoken.Options{
 			BrokerURL: "https://broker.test",
 			Account:   brokertoken.NewAccountToken(accountTokenFile(t, accountToken)),
-			Origin:    dispatchOrigin,
+			Origins:   []string{dispatchOrigin},
 			Replay:    store.NewDPoPProofs(database.Pool),
 		}
 	}

@@ -1895,7 +1895,8 @@ func dispatchPrivateProjects(entries []string) (keys, ignored []string) {
 		}
 		keys = append(keys, entry)
 	}
-	return slices.Compact(slices.Sorted(slices.Values(keys))), ignored
+	slices.Sort(keys)
+	return slices.Compact(keys), ignored
 }
 
 // privateProjectsIgnoredMessage is the diagnostic NewDispatch prints at preview for an entry of

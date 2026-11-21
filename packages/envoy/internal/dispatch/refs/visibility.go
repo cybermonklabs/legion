@@ -481,8 +481,7 @@ var (
 	}}
 	personScope  = nodeScope{name: "person", address: access.PersonClause}
 	sessionScope = nodeScope{name: "session", address: access.SessionClause}
-	// roleScope passes a role to an open viewer, or to one that sees the session holding it now.
-	roleScope = nodeScope{name: "role", address: access.RoleClause}
+	roleScope    = nodeScope{name: "role", address: access.RoleClause}
 	// pageScope is a session's page (`session/<id>`), its session's rule, or a role's page
 	// (`role/<name>`), its role's.
 	pageScope = nodeScope{name: "page", address: pageRule}

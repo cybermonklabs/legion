@@ -472,27 +472,30 @@ func callerScopes(actor model.Actor) []string {
 }
 
 // codeTokenProjectsInput refuses a list no token may hold: more keys than
-// contracts.MaxTokenProjects, a key the caller does not see, or, from a credential that lists
-// projects, a list naming none.
+// contracts.MaxTokenProjects, a key the caller does not see, or, from a credential whose writes a
+// list holds, a list naming none.
 const codeTokenProjectsInput = "TOKEN_PROJECTS_INPUT"
 
 // tokenProjects is the list a mint or an edit gives a token: the one the body names, or, where it
-// names none, the list the caller's own writes are held to. It writes its own refusal and answers
-// false for a list of more than contracts.MaxTokenProjects keys, for a key the caller does not
-// see, and for an empty list from a credential whose writes are held to a list, because a token
-// listing nothing sees every public project its person sees. Every project a credential holding a
-// list sees is on that list (internal/dispatch/access, the rule), so such a credential gives a
-// token only a part of its own.
+// names none, the list that holds the caller's own writes (writesHeldTo). It writes its own refusal
+// and answers false for a list of more than contracts.MaxTokenProjects keys, for a key the caller
+// does not see, and for an empty list from a credential whose writes a list holds, because a token
+// listing nothing reaches what that list does not: every public project its person sees, for a
+// restricted member's list, and the rows of the whole deployment, for every list
+// (withinProjectScope). What the caller sees is the rule's answer for its credential
+// (Viewer.Sees, which access.CredentialCovers decides with its person), so a token takes no
+// project its caller does not reach: a restricted member's credential gives a token only a part of
+// its own list, and a full member's a part of the public projects and of the private ones it lists.
 // A key named twice is listed once, and the list is stored sorted, as Credential.Projects holds it.
 //
-// What the caller sees, and the list its writes are held to (writesHeldTo), are read off the
-// write's reader (resolveReader, which finds the one withinProjectScope put in the request's
-// context) and the request's credential: a credential's list as it holds the credential now, so a
-// broker token acting as its person, whose list holds nothing while no project is private, gives a
-// token what a credential listing none gives (R9). A key the caller does not see is refused in the
-// same words whether a hidden project holds it or none does, so the refusal says nothing of a
-// project the caller may not see. So the list a mint answers, and the one an edit names, is one its
-// caller sees whole, and needs no cut (seeToken).
+// What the caller sees, and the list its writes are held to, are read off the write's reader
+// (resolveReader, which finds the one withinProjectScope put in the request's context) and the
+// request's credential: a credential's list as it holds the credential now, so a broker token
+// acting as its person, whose list decides nothing while no project is private, gives a token
+// what a credential listing none gives (R9). A key the caller does not see is refused in the same
+// words whether a hidden project holds it or none does, so the refusal says nothing of a project
+// the caller may not see. So the list a mint answers, and the one an edit names, is one its caller
+// sees whole, and needs no cut (seeToken).
 func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested *[]string) ([]string, bool) {
 	caller, _, err := s.optionalActor(r)
 	if err != nil {
@@ -503,7 +506,7 @@ func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested
 	if !ok {
 		return nil, false
 	}
-	own := writesHeldTo(reader.Viewer, caller.Credential)
+	own := writesHeldTo(reader, caller.Credential)
 	named := own
 	if requested != nil {
 		named = *requested
@@ -516,7 +519,7 @@ func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested
 		return nil, false
 	case len(projects) == 0 && len(own) > 0:
 		writeError(w, codeTokenProjectsInput, http.StatusBadRequest,
-			"this request's credential lists projects, so a token it gives lists some of them: a token listing none sees every public project")
+			"this request's credential lists projects, so a token it gives lists some of them: a token listing none reaches what that list does not")
 		return nil, false
 	case len(projects) == 0:
 		// Not nil: agent_tokens.projects is not null, and its empty list is a token listing none.

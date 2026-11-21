@@ -200,9 +200,8 @@ func TestM5M6AnAskNamesNoDocumentItsReaderMayNotSee(t *testing.T) {
 }
 
 // TestM5M6WithNoPrivateProjectAnAskNamesItsDocumentsAsBefore (R9): with PRIV public alice, a full
-// member, reads every family as the base answered it: the document beside each ask. Each answer is
-// logged with its times and ids blanked, beside its sha256, for the report's comparison of the two
-// commits.
+// member, reads every family as the base answered it: the document beside each ask. The sha256 of
+// each answer, its times and ids blanked, is logged for the report's comparison of the two commits.
 //
 // Control: askRowFromSeenBy's anchor clause made false for every reader; alice then reads no
 // anchor document and the row fails.

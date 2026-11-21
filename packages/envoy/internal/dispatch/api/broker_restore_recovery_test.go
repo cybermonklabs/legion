@@ -705,16 +705,7 @@ func TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince(t *
 	revocations := store.NewMachineLoginRevocations(database.Pool)
 	const since, before = "since@other.example", "before@other.example"
 	for _, email := range []string{since, before} {
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := store.RecordMachineLoginRevocation(ctx, tx, email); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
+		storetest.RecordMachineLoginRevocation(t, database, email)
 	}
 	claimed, err := revocations.Claim(ctx, time.Minute, 5)
 	if err != nil || len(claimed) != 2 {

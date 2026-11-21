@@ -292,7 +292,7 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 	for _, private := range []bool{false, true} {
 		name := "a credential that names one project is refused a target outside it"
 		if private {
-			name += " as a key nobody holds once a project is private"
+			name += ", and a hidden one as a key nobody holds, once a project is private"
 		}
 		t.Run(name, func(t *testing.T) {
 			rig := newBrokerTokenRig(t)
@@ -321,38 +321,38 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 			own := createIssue(brokerTestProject, "Its own project's issue")
 			sibling := createIssue(brokerTestProject, "Another issue of its own project")
 			outside := createIssue("OTH", "An issue of another project")
-			if private {
-				createProject("HIDE")
-				makePrivate(t, rig.database, "HIDE")
-			}
 
+			// A full member's credential scoped to one project keeps the write scope it had before
+			// projects could be private, whatever the deployment holds: a target of another project
+			// it sees is refused as before (R9), naming both projects.
 			refused := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
 				"blocked_by": []string{outside},
 			}))
-			if !private {
-				// While no project is private the credential reads every project, and its write of a
-				// target outside its own is refused as before projects could be private (R9), naming
-				// both projects.
-				if refused.Code != http.StatusForbidden {
-					t.Fatalf("a scoped caller linking across projects: status=%d body=%s, want 403", refused.Code, refused.Body.String())
-				}
-				refusal := decodeBody[refusalAnswer](t, refused)
-				if refusal.Code != codeProjectScope {
-					t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
-				}
-				if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "OTH") {
-					t.Fatalf("refusal %q names neither the project the credential covers (%s) nor the target's (OTH)",
-						refusal.Error, brokerTestProject)
-				}
-			} else {
-				// Once a project is private a credential that lists one project sees no other, so a
-				// target outside it is refused exactly as a key no issue holds, naming nothing of the
-				// project it belongs to.
+			if refused.Code != http.StatusForbidden {
+				t.Fatalf("a scoped caller linking across projects: status=%d body=%s, want 403", refused.Code, refused.Body.String())
+			}
+			refusal := decodeBody[refusalAnswer](t, refused)
+			if refusal.Code != codeProjectScope {
+				t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
+			}
+			if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "OTH") {
+				t.Fatalf("refusal %q names neither the project the credential covers (%s) nor the target's (OTH)",
+					refusal.Error, brokerTestProject)
+			}
+			if private {
+				// A target of a private project its person does not see is refused exactly as a key
+				// no issue holds, naming nothing of the project it belongs to.
+				createProject("HIDE")
+				hidden := createIssue("HIDE", "An issue of a project its person does not see")
+				hideFromBrokerPerson(t, rig, "HIDE")
+				refused := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
+					"blocked_by": []string{hidden},
+				}))
 				missing := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
 					"blocked_by": []string{"NOPE-1"},
 				}))
-				if refused.Code != http.StatusBadRequest || refused.Body.String() != strings.ReplaceAll(missing.Body.String(), "NOPE-1", outside) {
-					t.Fatalf("a scoped caller linking across projects: status=%d body=%s, want what a key nobody holds answers: status=%d body=%s",
+				if refused.Code != http.StatusBadRequest || refused.Body.String() != strings.ReplaceAll(missing.Body.String(), "NOPE-1", hidden) {
+					t.Fatalf("a scoped caller linking to a hidden issue: status=%d body=%s, want what a key nobody holds answers: status=%d body=%s",
 						refused.Code, refused.Body.String(), missing.Code, missing.Body.String())
 				}
 			}

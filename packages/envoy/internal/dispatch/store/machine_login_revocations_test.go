@@ -6,6 +6,26 @@ import (
 	"time"
 )
 
+// recordedMachineLoginRevocation records, in a transaction of its own, that Dispatch owes the
+// broker the revocation of email's machine logins, as a removal does in its own. It is
+// storetest.RecordMachineLoginRevocation for this package's own tests, which cannot import
+// storetest (it imports this package).
+func recordedMachineLoginRevocation(t *testing.T, database *Store, email string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := RecordMachineLoginRevocation(ctx, tx, email); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim: a machine-login revocation recorded in a
 // removal's transaction is owed from its commit, claimed once within the retry window, and settled
 // only at the generation the claim read. A removal recorded again after the claim owes it anew, so
@@ -19,20 +39,7 @@ func TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim(t *testing.T) {
 	database := migratedEmptyStore(t)
 	revocations := NewMachineLoginRevocations(database.Pool)
 	const email = "erin@other.example"
-	record := func() {
-		t.Helper()
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(ctx)
-		if err := RecordMachineLoginRevocation(ctx, tx, " Erin@Other.example "); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
+	record := func() { recordedMachineLoginRevocation(t, database, " Erin@Other.example ") }
 
 	if owed, _, err := revocations.Owing(ctx, email); err != nil || owed {
 		t.Fatalf("Owing(%s) before any removal = %t, %v; want nothing owed", email, owed, err)

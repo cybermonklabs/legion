@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
 
@@ -125,7 +124,9 @@ func requireNoEventOf(t *testing.T, who, sub, project string, events []liveEvent
 // log's one rule (eventReadableSQL), for the viewer the socket resolved, on the live feed and on a
 // resume's replay alike. carol comments twice on PRIV's issue, and alice pins a session between the
 // two. Every caller of verification v16 that does not see PRIV is sent alice's pin and nothing of
-// PRIV before it; every caller that sees PRIV is sent carol's first comment before her second.
+// PRIV before it, alice's token that lists PRIV among them, an open viewer that sees PUB alone
+// since alice does not see PRIV; every caller that sees PRIV is sent carol's first comment before
+// her second.
 func TestTheLiveSocketSendsNoEventOfAHiddenProject(t *testing.T) {
 	seed := seedPrivateProject(t)
 	url := liveURLOf(t, seed.handler)
@@ -144,13 +145,6 @@ func TestTheLiveSocketSendsNoEventOfAHiddenProject(t *testing.T) {
 
 	requireSent := func(t *testing.T, caller privateCaller, sub string, client *socketClient) {
 		t.Helper()
-		if caller == callerAlicePrivToken {
-			// alice's token lists only PRIV, which alice does not see, so it sees no project and no
-			// session, s1 included: no event of the seed reaches it, alice's pin neither, so its socket
-			// stays quiet once the callers before it have read the marker that event is.
-			client.quiet(t, 3*time.Second, string(caller)+"'s "+sub+", which sees no project and no session")
-			return
-		}
 		if !slices.Contains(callersOfPrivate, caller) {
 			requireNoEventOf(t, string(caller), sub, seedPrivate, liveEventsThrough(t, client, sub, agentStateOf(seedAlice)))
 			return
@@ -292,17 +286,18 @@ func requireResumeComplete(t *testing.T, seed privateSeed, url string, caller pr
 // TestAResumeAcrossAProjectTurnedPrivateOwesARefreshToWhoLostIt: PUB turns private with nobody on
 // its list but its owner carol. Every open caller read PUB while it was public and reads it no
 // more, so its resume across that change is not complete, though it may not read the change
-// itself: its page holds PUB's rows. A caller that never saw PUB - bob, a restricted member PUB's
-// list does not name, and alice's token that lists only PRIV - resumes complete.
+// itself: its page holds PUB's rows. alice's token that lists PRIV is one of them, a full member's
+// credential being open whatever it lists. A caller that never saw PUB - bob, a restricted member
+// PUB's list does not name, and bob's token that lists PRIV - resumes complete.
 func TestAResumeAcrossAProjectTurnedPrivateOwesARefreshToWhoLostIt(t *testing.T) {
 	seed := seedPrivateProject(t)
 	since := eventHead(t, seed.database)
 	seed.makePrivate(t, seedPublic)
 	url := liveURLOf(t, seed.handler)
-	for _, caller := range []privateCaller{callerAlice, callerCarolToken, callerSharedToken} {
+	for _, caller := range []privateCaller{callerAlice, callerAlicePrivToken, callerCarolToken, callerSharedToken} {
 		requireResumeComplete(t, seed, url, caller, since, false, "it read PUB while PUB was public, and its page holds PUB's rows")
 	}
-	for _, caller := range []privateCaller{callerBob, callerAlicePrivToken} {
+	for _, caller := range []privateCaller{callerBob, callerBobPrivToken} {
 		requireResumeComplete(t, seed, url, caller, since, true, "it never read PUB")
 	}
 }

@@ -31,10 +31,8 @@ type RouteProbe struct {
 	// Classes is a GET row's read classes, as readClasses gives them, and absent for a write. A
 	// row whose only class is none reads no row a caller's access decides, so it answers every
 	// caller alike, and the answer for the private project's own object can rightly differ from
-	// the answer for an id nobody holds (GET /api/v1/github/app-installation/{owner}/{repo}
-	// answers installed:true for a repository the App is installed on, whoever asks): the driver
-	// fills it with the private project's objects and holds each caller's answer to the answer of
-	// a server that never held the project.
+	// the answer for an id nobody holds: the driver fills it with the private project's objects
+	// and holds each caller's answer to the answer of a server that never held the project.
 	Classes []readclass.Class `json:"classes,omitempty"`
 }
 

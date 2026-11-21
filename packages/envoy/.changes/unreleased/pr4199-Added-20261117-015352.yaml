@@ -5,8 +5,8 @@ body: |-
   `envoy_dispatch_broker_revocation_oldest_owed_seconds`, and
   `envoy-dispatch clear-broker-revocation <email>` lists the revocations owed for an address, each
   as `<subject>:<generation>`; given those names after the address, it settles exactly those without
-  the broker, so the address's broker tokens are no longer refused, and leaves owed any recorded or
-  owed again since the list. Revoke the old account's machine logins at the broker first, since
+  the broker, changing nothing Dispatch admits, and leaves owed any recorded or owed again since the
+  list. Revoke the old account's machine logins at the broker first, since
   clearing revokes nothing there. Any answer from the broker but 200, a 404 included (a wrong
   `DISPATCH_AGENT_SECRETS_URL` or a proxy; the broker's route never answers it), leaves the
   revocation owed.

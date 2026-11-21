@@ -104,11 +104,11 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor)
+	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
-	s.writeIssueStep(w, r, input.write(), actor, key, false)
+	s.writeIssueStep(w, r, input.write(), actor, r.PathValue("key"), false)
 }
 
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
@@ -125,7 +125,7 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor)
+	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
@@ -136,7 +136,7 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 			write.Rating.Reason = *input.RatingReason
 		}
 	}
-	s.writeIssueStep(w, r, write, actor, key, true)
+	s.writeIssueStep(w, r, write, actor, r.PathValue("key"), true)
 }
 
 // writeIssueStep is the one write of a step record behind both routes, by actor to the issue key:
@@ -198,18 +198,6 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 		return
 	}
 	WriteJSON(w, http.StatusOK, record)
-}
-
-// requireIssueDaemon is the prelude of every record write: the caller's actor (requireActor) and
-// the issue key of the path. The writer is judged once the issue is read as the caller sees it
-// (lockRecordedIssue), so a key the caller cannot see answers as a key no issue holds, whatever
-// session the body names.
-func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supplied *model.Actor) (model.Actor, string, bool) {
-	actor, ok := s.requireActor(w, r, supplied)
-	if !ok {
-		return model.Actor{}, "", false
-	}
-	return actor, r.PathValue("key"), true
 }
 
 // lockRecordedIssue takes the owner lock of the issue key a record is written to, shared, then

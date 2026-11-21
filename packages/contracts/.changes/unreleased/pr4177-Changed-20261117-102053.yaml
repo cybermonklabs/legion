@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    `WhoamiAgent.project` is deprecated in favour of `projects`: it is the one key of a one-key list, and null for any other list or none.
+    `WhoamiAgent.project` is deprecated in favour of `projects`: it is the one project the credential's writes are held to, where they are held to one, and null for any other credential.
 time: 2026-11-17T10:20:53.988782717Z
 custom:
     Issue: pr4177

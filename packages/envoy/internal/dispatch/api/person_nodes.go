@@ -96,7 +96,7 @@ var personNodesTied = `
 // personPageShownQuery is whether the page of the person $1 names answers anyone but that person
 // (R15 of this change): the store holds the person, not gone, and the reader whose acting
 // credential is bound at $2 (refs.VisibilityArg) sees them, through the node's own predicate and
-// access.PersonClause, so a restricted member, or a credential that lists projects, opens only the
+// access.PersonClause, so a restricted member, or a credential acting for one, opens only the
 // pages of the people of the projects it sees; and the person is tied to at least one node, not
 // gone, that the reader may see (personNodesTied). Each tied node is held to the predicate of its
 // own kind, read off the one row the store holds of it (refs.VisibleRow), and a node the store
@@ -168,7 +168,7 @@ var personNodesQuery = personNodesTied + `, items as (
 // person (personPageShownQuery). Any other login answers 404, with the body a login nobody holds
 // answers, byte for byte: the read says nothing about whether that person exists, has signed in
 // or wrote anything. So a person the caller may not see (access.PersonClause) answers 404: a
-// restricted member, or a credential that lists projects, opens only its own page and the pages
+// restricted member, or a credential acting for one, opens only its own page and the pages
 // of the people of the projects it sees. So does bob's page to alice, whose node his comment in a
 // private project alice cannot see made, and the page of a person whose only node is reserved for
 // its author - a node a later release writes, beside which this one serves during a roll and alone

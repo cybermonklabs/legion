@@ -67,10 +67,7 @@ func brokerRevocationBatch(timeout time.Duration) int {
 	if timeout <= 0 || timeout >= brokerRevocationRetry {
 		return 1
 	}
-	if batch := int((brokerRevocationRetry - timeout) / timeout); batch > 1 {
-		return batch
-	}
-	return 1
+	return max(1, int((brokerRevocationRetry-timeout)/timeout))
 }
 
 // brokerRevocationMinGap is the least time between two passes' starts, whatever woke them
@@ -190,9 +187,16 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 			"email", revocation.Email, "signins", revoked.SignIns, "machine_logins", revoked.MachineLogins, "tokens_ended", revoked.TokensEnded, "settled", settled)
 	}
 	wait, due, err := revocations.NextDue(ctx, brokerRevocationRetry)
+	return nextPassAt(ctx, wait, due, err, "broker revocation")
+}
+
+// nextPassAt is when the loop next needs a pass for one debt, from that debt's NextDue read (wait,
+// due, err): wait from now for one owed, the zero time when none is, and brokerRevocationRetry
+// from now when the read failed, which is logged naming what unless ctx ended.
+func nextPassAt(ctx context.Context, wait time.Duration, due bool, err error, what string) time.Time {
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Error("dispatch: read when the next broker revocation is due", "error", err)
+			slog.Error("dispatch: read when the next "+what+" is due", "error", err)
 		}
 		return time.Now().Add(brokerRevocationRetry)
 	}
@@ -223,6 +227,32 @@ func revokedLog(passkey bool, did, then string) string {
 // brokerRevocationMetricsRead bounds one series' read of the owed revocations.
 const brokerRevocationMetricsRead = 2 * time.Second
 
+// registerOwedGauges puts on registry the two series of one revocation debt, each read by owed
+// (a store's Owed) when a scrape asks for it, two reads a scrape: owedName, how many the broker
+// has not confirmed, and oldestName, how long the oldest has been owed, written only while one is.
+// A read that fails writes no sample, so a database outage never reads as nothing owed, and is
+// logged naming what.
+func registerOwedGauges(registry *metrics.Registry, owed func(context.Context) (int64, time.Duration, error), what, owedName, owedHelp, oldestName, oldestHelp string) {
+	read := func() (int64, time.Duration, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), brokerRevocationMetricsRead)
+		defer cancel()
+		count, oldest, err := owed(ctx)
+		if err != nil {
+			slog.Warn("dispatch: the owed "+what+" could not be read for a metrics scrape", "error", err)
+			return 0, 0, false
+		}
+		return count, oldest, true
+	}
+	registry.NewOptionalGaugeFunc(owedName, owedHelp, func() (int64, bool) {
+		count, _, ok := read()
+		return count, ok
+	})
+	registry.NewOptionalGaugeFunc(oldestName, oldestHelp, func() (int64, bool) {
+		count, oldest, ok := read()
+		return int64(oldest / time.Second), ok && count > 0
+	})
+}
+
 // RegisterBrokerRevocationMetrics puts the broker revocations owed on registry, the process's
 // (GET /metrics), each series read from pool's broker_revocations when a scrape asks for it
 // (store.BrokerRevocations.Owed), so every process reports the deployment's whichever recorded them,
@@ -238,29 +268,11 @@ const brokerRevocationMetricsRead = 2 * time.Second
 // outage never reads as nothing owed. A revocation the broker answers superseded stays owed, so
 // both show it; NewBrokerRevocationsSuperseded counts each such answer.
 func RegisterBrokerRevocationMetrics(registry *metrics.Registry, pool *store.Pool) {
-	revocations := store.NewBrokerRevocations(pool)
-	read := func() (int64, time.Duration, bool) {
-		ctx, cancel := context.WithTimeout(context.Background(), brokerRevocationMetricsRead)
-		defer cancel()
-		count, oldest, err := revocations.Owed(ctx)
-		if err != nil {
-			slog.Warn("dispatch: the owed broker revocations could not be read for a metrics scrape", "error", err)
-			return 0, 0, false
-		}
-		return count, oldest, true
-	}
-	registry.NewOptionalGaugeFunc("envoy_dispatch_broker_revocations_owed",
+	registerOwedGauges(registry, store.NewBrokerRevocations(pool).Owed, "broker revocations",
+		"envoy_dispatch_broker_revocations_owed",
 		"Revocations of a replaced account's credentials that Dispatch owes the secrets broker and the broker has not confirmed; until each settles, the broker still holds those credentials for the secret reads it serves without asking Dispatch",
-		func() (int64, bool) {
-			count, _, ok := read()
-			return count, ok
-		})
-	registry.NewOptionalGaugeFunc("envoy_dispatch_broker_revocation_oldest_owed_seconds",
-		"Seconds since the replacing sign-in of the oldest broker revocation not yet confirmed, written only while one is owed; past a few minutes the broker is not confirming it (envoy-dispatch clear-broker-revocation settles one)",
-		func() (int64, bool) {
-			count, oldest, ok := read()
-			return int64(oldest / time.Second), ok && count > 0
-		})
+		"envoy_dispatch_broker_revocation_oldest_owed_seconds",
+		"Seconds since the replacing sign-in of the oldest broker revocation not yet confirmed, written only while one is owed; past a few minutes the broker is not confirming it (envoy-dispatch clear-broker-revocation settles one)")
 }
 
 // NewBrokerRevocationsSuperseded registers envoy_dispatch_broker_revocations_superseded_total on

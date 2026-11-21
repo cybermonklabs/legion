@@ -27,12 +27,14 @@ import (
 // before the row knows its caller may not see it. PRIV's issue is claimed by s1, a session the
 // listener holds live, so a claim that asked the listener about its holder first would ask it here.
 //
-// Five callers walk it. alice, at a browser, is an open viewer who sees PUB and no object of PRIV,
+// Seven callers walk it. alice, at a browser, is an open viewer who sees PUB and no object of PRIV,
 // and every session but one that has acted in PRIV (privateSession). alice's token that lists PRIV
-// sees no project at all, since alice does not see PRIV, and is not open: the deployment's rows are
-// refused it whatever they name, and a session is hidden from it unless it is its own or has acted
-// in a project it sees (access.SessionClause). alice's token that lists PUB sees PUB alone and is
-// not open, so it is held as her other token is. bob, a restricted member, and carol's token that
+// and her token that lists PUB are full members' credentials, so each is an open viewer that sees
+// PUB alone (alice does not see PRIV), and each list holds its writes from the deployment's rows,
+// which are refused it whatever they name. alice's broker token scoped to PUB is an open viewer
+// that sees PUB whose writes are held to PUB (namedProjectOf), so it walks the rows of a project's
+// object, which its scope refuses before the handler: the scope's read of the object's project
+// must answer PRIV's object as one nobody holds. bob, a restricted member, and bob's token that
 // lists PRIV each see PRIV alone, so a session that has acted in PUB alone is hidden from them too:
 // they walk the rows whose one hidden object is a session. Every row is walked by at least one of
 // them.
@@ -41,6 +43,10 @@ import (
 // a follower of an ask - is walked once more by each caller that sees a project, with that other
 // object one of the project it sees and the session alone hidden from it (compareSessionBeside): a
 // row that reads the other object first answers a hidden one before it ever reads the session.
+//
+// Control: projectResolverFor's reads without their project clause: PRIV's objects resolve to
+// PRIV for alice's broker token, its refusal names PRIV where an object nobody holds is refused
+// naming no project, and the walk fails naming each row of a project's object.
 func TestNoWriteReachesAHiddenObject(t *testing.T) {
 	walk := seedHiddenWrites(t)
 	rows := objectWriteRows()
@@ -49,31 +55,42 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 	}
 	walked := map[string]bool{}
 	besides := 0
+	// A named token holds no OAuth scope, so the gate refuses it every row that needs one before
+	// any read, and the test hooks' rows are no production write: the scope's own read is walked on
+	// the rest.
+	scoped := map[string]bool{}
+	for _, route := range walk.server.routes() {
+		scoped[route.Method+" "+route.Pattern] = len(route.OAuthScopes) > 0
+	}
 	for _, caller := range []struct {
 		who          privateCaller
-		open         bool
+		sight        walkSight
 		sessionsOnly bool
-		// sees is the project whose objects the caller sees, "" for none.
+		// sees is the project whose objects the caller sees, "" for none walked beside a session.
 		sees string
 	}{
-		{callerAlice, true, false, seedPublic},
-		{callerAlicePrivToken, false, false, ""},
-		{callerAlicePubToken, false, false, seedPublic},
-		{callerBob, false, true, seedPrivate},
-		{callerCarolPrivToken, false, true, seedPrivate},
+		{callerAlice, walkSight{open: true}, false, seedPublic},
+		{callerAlicePrivToken, walkSight{open: true, held: true}, false, seedPublic},
+		{callerAlicePubToken, walkSight{open: true, held: true}, false, seedPublic},
+		{callerAliceNamedToken, walkSight{open: true, held: true, named: true}, false, ""},
+		{callerBob, walkSight{}, true, seedPrivate},
+		{callerBobPrivToken, walkSight{held: true}, true, seedPrivate},
 	} {
 		for _, name := range rows {
 			probe := writeProbes[name]
+			if caller.sight.named && (writeClasses[name] != scopeProject || scoped[name] || strings.Contains(name, "/_test/")) {
+				continue
+			}
 			if caller.sees != "" && probe.namesASessionBeside() {
 				walked[name] = true
 				besides++
-				walk.compareSessionBeside(t, caller.who, caller.open, caller.sees, name)
+				walk.compareSessionBeside(t, caller.who, caller.sight, caller.sees, name)
 			}
-			if !probe.hides(caller.open) || caller.sessionsOnly && !probe.hidesOnlySessions(caller.open) {
+			if !probe.hides(caller.sight) || caller.sessionsOnly && !probe.hidesOnlySessions(caller.sight) {
 				continue
 			}
 			walked[name] = true
-			walk.compare(t, caller.who, caller.open, name)
+			walk.compare(t, caller.who, caller.sight, name)
 		}
 	}
 	for _, name := range rows {
@@ -142,8 +159,8 @@ var bodyReferences = []struct {
 // TestNoBodyReachesAHiddenObject: every field of a write's body that names an object
 // (bodyReferences) answers PRIV's object exactly as an object nobody holds - the same status and
 // bytes, the same work, and no table written - while the path names an object the caller sees, to
-// alice and to her token that lists PUB, which sees PUB alone and names its session (probeActor). An
-// object nobody holds is refused there, except where the row takes one (accepted).
+// alice and to her token that lists PUB, an open viewer that sees PUB alone and names its session
+// (probeActor). An object nobody holds is refused there, except where the row takes one (accepted).
 func TestNoBodyReachesAHiddenObject(t *testing.T) {
 	walk := seedHiddenWrites(t)
 	if walk.issue[seedPublic] != "PUB-1" {
@@ -152,7 +169,7 @@ func TestNoBodyReachesAHiddenObject(t *testing.T) {
 	for _, caller := range []struct {
 		who  privateCaller
 		open bool
-	}{{callerAlice, true}, {callerAlicePubToken, false}} {
+	}{{callerAlice, true}, {callerAlicePubToken, true}} {
 		for _, reference := range bodyReferences {
 			name := reference.row + " (" + reference.field + ")"
 			fill := walk.fills[reference.object]
@@ -315,14 +332,16 @@ func TestAGoingRunOfAHiddenProjectAnswersAsOneOfNoProject(t *testing.T) {
 // personAndSessionReferences is every field of a write's body that names a person or a session,
 // with a call a caller that sees one project alone may make that names it, on that project's
 // objects: the row, the path (hiddenWriteSeed.on), the body with %s where the person or session
-// goes. owner is a call only PRIV's owner makes, walked as carol's token alone. writes is a call
-// that writes either way - a message or a mention, each recorded and its delivery failed - and is
-// compared by its deliveries (deliveryPart); every other call is refused either way, writing
-// nothing, and compared whole. open is a call alice makes too, an open viewer who sees PUB, on
-// PUB's objects, naming privateSession, which has acted in PRIV; her broadcast to it is walked with
-// the body references (bodyReferences), which hold the listener calls of a pair too. A delivery's
-// `target` (POST /api/v1/comments/{id}/deliveries) names no session of its own: it picks one of
-// the comment's mentions, and its send resolves through the same resolveDeliveryTarget.
+// goes. owner is a call only PRIV's owner makes; the owner is a full member, so each credential of
+// hers is an open viewer, which sees every person, and no caller of the walk has a person hidden
+// there. writes is a call that writes either way - a message or a mention, each recorded and its
+// delivery failed - and is compared by its deliveries (deliveryPart); every other call is refused
+// either way, writing nothing, and compared whole. open is a call alice makes too, an open viewer
+// who sees PUB, on PUB's objects, naming privateSession, which has acted in PRIV; her broadcast to
+// it is walked with the body references (bodyReferences), which hold the listener calls of a pair
+// too. A delivery's `target` (POST /api/v1/comments/{id}/deliveries) names no session of its own:
+// it picks one of the comment's mentions, and its send resolves through the same
+// resolveDeliveryTarget.
 var personAndSessionReferences = []struct {
 	row, field, path string
 	object           probeObject
@@ -361,9 +380,9 @@ var personAndSessionReferences = []struct {
 
 // TestNoBodyNamesAHiddenPersonOrSession: every field of a write's body that names a person or a
 // session (personAndSessionReferences) answers one the caller may not see exactly as one nobody
-// holds, to the callers that see PRIV alone and are not open - bob, a restricted member, and
-// carol's token that lists PRIV - and a role whose holder it may not see as a role nobody holds;
-// and a session to alice, an open viewer, who does not see privateSession, which has acted in PRIV.
+// holds, to the callers that see PRIV alone and are not open - bob, a restricted member, and bob's
+// token that lists PRIV - and a role whose holder it may not see as a role nobody holds; and a
+// session to alice, an open viewer, who does not see privateSession, which has acted in PRIV.
 // An open viewer is answered as before: alice's message to s-pub and to the role it holds are
 // delivered, which also shows the walk's listener holds both, and she assigns dana.
 func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
@@ -374,9 +393,9 @@ func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
 		project string
 	}
 	for _, reference := range personAndSessionReferences {
-		callers := []walker{{callerBob, false, seedPrivate}, {callerCarolPrivToken, false, seedPrivate}}
+		callers := []walker{{callerBob, false, seedPrivate}, {callerBobPrivToken, false, seedPrivate}}
 		if reference.owner {
-			callers = []walker{{callerCarolPrivToken, false, seedPrivate}}
+			callers = nil
 		}
 		if reference.open {
 			callers = append(callers, walker{callerAlice, true, seedPublic})

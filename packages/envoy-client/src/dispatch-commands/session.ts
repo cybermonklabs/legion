@@ -64,11 +64,14 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // a session of its own: read either omission as that older build, not as "no session".
   const proved = identity.kind === "agent" ? (identity.session ?? null) : null;
   const project = identity.kind === "agent" ? (identity.project ?? null) : null;
-  // The projects the credential may use, which only the agent shape carries (a browser's cookie
-  // lists none), and which a Dispatch that predates the list leaves out, as it does for a
-  // credential that lists none; project is then the one it names, if any.
+  // The projects the credential lists, which only the agent shape carries (a browser's cookie
+  // lists none). A full member's list decides only which private projects it reads, so it uses
+  // every public project too; a restricted member's decides every project. A Dispatch that
+  // predates the list leaves it out, as it does for a credential that lists none and for a broker
+  // token while no project is private; project is then the one it names, if any.
   const projects =
     identity.kind === "agent" && identity.projects?.length ? identity.projects : null;
+  const restricted = identity.kind === "agent" && identity.member_kind === "restricted";
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
@@ -94,9 +97,15 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
     proved !== null && proved !== sessionId
       ? ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`
       : "";
+  const projectsNamed =
+    projects === null
+      ? ""
+      : `${projects.length === 1 ? "project" : "projects"} ${projects.join(", ")}`;
   const writable =
     projects !== null
-      ? ` It may use ${projects.length === 1 ? "project" : "projects"} ${projects.join(", ")} and no other.`
+      ? restricted
+        ? ` It may use ${projectsNamed} and no other.`
+        : ` It may use ${projectsNamed}, every public project, and no other private project.`
       : project !== null
         ? ` It may write project ${project} and no other.`
         : "";

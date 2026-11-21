@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -402,7 +403,9 @@ func errNoBrokerConfigured() *apiError {
 //     revoked or expired).
 //   - 401 BROKER_TOKEN_PROOF_INVALID — the proof did not meet RFC 9449 Section 4.3: a bad
 //     signature, a method or target URI that is not this request's, an 'iat' outside the window,
-//     a missing or wrong 'ath', or a proof already spent.
+//     a missing or wrong 'ath', or a proof already spent; or its 'jti' holds a control character,
+//     which the replay store records nothing of (store.ErrUnstorableProof) and the library reports
+//     as its own failure, so it is answered here as the caller's.
 //   - 401 BROKER_TOKEN_KEY_MISMATCH — a sound proof signed by a key that is not the token's
 //     'jkt', which is what makes a stolen token useless.
 //   - 401 BROKER_TOKEN_NOT_A_SESSION — the broker holds the token live, but it is not a
@@ -442,7 +445,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	case errors.Is(err, brokertoken.ErrKeyMismatch):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_KEY_MISMATCH",
 			"the DPoP proof's key is not the key this access token is bound to")
-	case errors.Is(err, brokertoken.ErrProofInvalid), errors.Is(err, brokertoken.ErrNotPresented):
+	case errors.Is(err, brokertoken.ErrProofInvalid), errors.Is(err, brokertoken.ErrNotPresented), errors.Is(err, store.ErrUnstorableProof):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_PROOF_INVALID",
 			"the DPoP proof did not verify")
 	case errors.Is(err, brokertoken.ErrNotASession):
@@ -476,14 +479,18 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// restricted member's machine login trades for one too: a person's own credential made that
 	// one, and it is held to that person's account (brokerPersonAdmitted, personCredential), but it
 	// is the outside person's agent held to the one project they work on, which acts in that
-	// project and settles nothing of the person's own, so it holds no scope either. A token that
+	// project and settles nothing of the person's own, so it holds no scope either. A restricted
+	// member's token the broker scoped to their person gets none for the same reason: a broker whose
+	// project check is off, an older broker during a rollout, or a token minted before the broker
+	// held restricted members to one project can still answer one, and brokerPersonAdmitted has read
+	// the member's kind above, so the scope does not rest on the broker's check alone. A token that
 	// names a service and no person gets none either, whatever scope the broker answered: there
 	// is no person for it to act as, and a scope that said otherwise would let it act as the
 	// session's own id on the routes that read what belongs to a person. A read-only token is
 	// one of those, and its one scope, read, is carried as the credential's ReadOnly mark and
 	// never as a scope a route could require.
 	var scopes []string
-	if caller.Person != "" && caller.ProjectScope == brokertoken.ProjectScopePerson {
+	if caller.Person != "" && caller.ProjectScope == brokertoken.ProjectScopePerson && !admission.Restricted {
 		scopes = model.Scopes
 	}
 	actor := model.Actor{
@@ -506,26 +513,26 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		actor.Service = &caller.Service
 	}
 	// A token's list is its credential's, which the one rule of what a caller sees reads
-	// (internal/dispatch/access), and what the list holds while the deployment holds no private
-	// project is what the token did before projects could be private (R9); once one is private,
-	// every list holds the token's reads and writes (R3). A token held to one project names that
-	// project: one an operator's entry mapped, today's named-scope rule, and a restricted member's
-	// machine login's (the broker's exchange.Set.Machine); brokertoken refuses a named token naming
-	// two. It holds the token's writes, and no read (model.ListHoldsWrites); a restricted member's
-	// reads are held by their viewer besides. A token acting as its person carries the list its
-	// trade asked for (brokertoken.Caller.Projects), which held nothing, since a dev box session's
-	// person writes wherever they may (model.ListHoldsNothing). Every other token carries no list: a
-	// named token naming none (the shared public-session account's), which reads and writes as a
-	// token naming no project does; the token of a machine naming a service and no person, which
-	// names no project at all; and a read-only token, whose project scope none names no project and
-	// writes none.
+	// (access.CredentialCovers): for a full member's token it decides only which private projects
+	// the token reaches, so while the deployment holds no private project it changes nothing the
+	// token did before projects could be private (R9); for a restricted member's token it narrows
+	// every project (R3). A token held to one project names that project: one an operator's entry
+	// mapped, today's named-scope rule, and a restricted member's machine login's (the broker's
+	// exchange.Set.Machine); brokertoken refuses a named token naming two. A full member's such token
+	// has its writes held to that project as they were before, whatever the deployment holds
+	// (NamedProject; namedProjectOf), and a restricted member's is held by its list, which covers
+	// that project alone. A token acting as its person carries the list its trade asked for
+	// (brokertoken.Caller.Projects), which holds no write by name, since a dev box session's person
+	// writes wherever they may. Every other token carries no list: a named token naming none (the
+	// shared public-session account's), which reads and writes as a token naming no project does;
+	// the token of a machine naming a service and no person, which names no project at all; and a
+	// read-only token, whose project scope none names no project and writes none.
 	switch {
 	case caller.ProjectScope == brokertoken.ProjectScopeNamed && len(caller.Projects) == 1:
 		actor.Credential.Projects = caller.Projects
-		actor.Credential.ListHoldsWhileNoPrivate = model.ListHoldsWrites
+		actor.Credential.NamedProject = caller.Projects[0]
 	case caller.ProjectScope == brokertoken.ProjectScopePerson && len(caller.Projects) > 0:
 		actor.Credential.Projects = caller.Projects
-		actor.Credential.ListHoldsWhileNoPrivate = model.ListHoldsNothing
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a

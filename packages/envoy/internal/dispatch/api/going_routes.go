@@ -140,8 +140,9 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// The project comes from the body, not from the address, so this row is classed
 	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves createIssue's
-	// (issue_create.go). It runs before the row is written: a credential that lists projects asks
-	// only of one of them, and asking of every project is asking outside them.
+	// (issue_create.go). It runs before the row is written: a credential asks only of a project its
+	// list covers (access.CredentialCovers), and a broker token scoped to one project only of that
+	// one; a restricted member's list covers no question over every project.
 	if s.refuseOutsideCallerProjects(w, r, project) {
 		return
 	}

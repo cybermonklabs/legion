@@ -4813,8 +4813,10 @@ describe("executeDispatchTool", () => {
   });
 
   // A credential that lists projects is told the list (KF4), and the deprecated project is not
-  // printed beside it: the list is what the credential may use. The list is the agent shape's: a
-  // person at a browser lists none, so a person's answer prints none.
+  // printed beside it: the list is what decides the credential's reads. A full member's list
+  // decides only which private projects it reads, so it is told it uses every public project too;
+  // a restricted member's list decides every project. The list is the agent shape's: a person at a
+  // browser lists none, so a person's answer prints none.
   test("dispatch_whoami prints the projects a credential lists in place of its project", async () => {
     const whoami = async (body: Record<string, unknown>) =>
       executeDispatchTool({
@@ -4838,10 +4840,22 @@ describe("executeDispatchTool", () => {
       project: null,
       projects: ["INFRA", "OPS"],
     });
-    expect(two.text).toContain("It may use projects INFRA, OPS and no other.");
+    expect(two.text).toContain(
+      "It may use projects INFRA, OPS, every public project, and no other private project."
+    );
 
     const one = await whoami({ ...agent, projects: ["INFRA"], project: "INFRA" });
-    expect(one.text).toContain("It may use project INFRA and no other.");
+    expect(one.text).toContain(
+      "It may use project INFRA, every public project, and no other private project."
+    );
+
+    const restricted = await whoami({
+      ...agent,
+      projects: ["INFRA", "OPS"],
+      project: null,
+      member_kind: "restricted",
+    });
+    expect(restricted.text).toContain("It may use projects INFRA, OPS and no other.");
     expect(one.text).not.toContain("may write project");
 
     const person = await whoami({ kind: "user", login: "alice", projects: ["OPS"], scopes: [] });

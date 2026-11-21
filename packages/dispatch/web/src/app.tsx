@@ -1114,7 +1114,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<DeliveryPage />} path="/delivery" />
                 {/* The machine-login page is a restricted member's page too: they approve there the
                     device login of their own agents, the one credential Dispatch lets them decide,
-                    and the page asks them for no list of the deployment's (`MachineLoginPage`). */}
+                    and the page lists and revokes their own machine logins alone, as Dispatch
+                    answers them (`MachineLoginPage`, `MachineLoginsSection` with `ownOnly`). */}
                 <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 <Route element={<DeploymentPages restricted={restricted} />}>
                   <Route element={<PrioritiesPage />} path="/priorities" />

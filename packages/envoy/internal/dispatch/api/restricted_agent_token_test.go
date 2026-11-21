@@ -48,27 +48,34 @@ func newRestrictedTokenRig(t *testing.T, configure ...func(*testServerOptions)) 
 	access := projectaccesstest.NewServer(t,
 		map[string]projectaccesstest.Row{"ACC": {Visibility: "private", Owner: "alice", Listed: []string{accessErin}}},
 		map[string]string{accessErin: projectaccess.MemberRestricted, accessCarol: projectaccess.MemberFull})
-	broker := brokertest.NewRig(t, brokertest.WithProjectAccess(projectaccess.New(access.URL, access.Account, nil)))
-	client := brokertest.NewClient(t, broker.URL, strings.TrimPrefix(broker.URL, "http://"))
-	client.DPoP, client.UIToken = brokerclient.NewDPoPTransport, broker.UIToken
-	dispatchAccount := accountTokenFile(t, broker.UIToken)
-	options := testServerOptions{
-		signInOutside: true,
-		brokerTokens: func(database *store.Store) *brokertoken.Verifier {
-			verifier, err := brokertoken.New(brokertoken.Options{
-				BrokerURL: broker.URL, Account: brokertoken.NewAccountToken(dispatchAccount), Origin: testServerURL,
-				Replay: store.NewDPoPProofs(database.Pool), Address: auth.ForwardedAddress,
-			})
-			if err != nil {
-				t.Fatalf("build the broker token verifier: %v", err)
-			}
-			return verifier
-		},
-		agentSecretsURL: broker.URL, agentSecretsTokenFile: dispatchAccount,
-	}
+	options := testServerOptions{}
 	for _, apply := range configure {
 		apply(&options)
 	}
+	return newRestrictedTokenRigWith(t, projectaccess.New(access.URL, access.Account, nil), options)
+}
+
+// newRestrictedTokenRigWith is the rig with the broker's project check asking access, and Dispatch
+// built with options beside what the rig sets itself: outside sign-in on, its broker tokens checked
+// at the rig's broker, and that broker as its secrets broker.
+func newRestrictedTokenRigWith(t *testing.T, access projectaccess.Access, options testServerOptions) restrictedTokenRig {
+	t.Helper()
+	broker := brokertest.NewRig(t, brokertest.WithProjectAccess(access))
+	client := brokertest.NewClient(t, broker.URL, strings.TrimPrefix(broker.URL, "http://"))
+	client.DPoP, client.UIToken = brokerclient.NewDPoPTransport, broker.UIToken
+	dispatchAccount := accountTokenFile(t, broker.UIToken)
+	options.signInOutside = true
+	options.brokerTokens = func(database *store.Store) *brokertoken.Verifier {
+		verifier, err := brokertoken.New(brokertoken.Options{
+			BrokerURL: broker.URL, Account: brokertoken.NewAccountToken(dispatchAccount), Origins: []string{testServerURL},
+			Replay: store.NewDPoPProofs(database.Pool), Address: auth.ForwardedAddress,
+		})
+		if err != nil {
+			t.Fatalf("build the broker token verifier: %v", err)
+		}
+		return verifier
+	}
+	options.agentSecretsURL, options.agentSecretsTokenFile = broker.URL, dispatchAccount
 	served, database, registered := newRegisteredAccessServer(t, options)
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
@@ -430,6 +437,43 @@ func TestARemovalFromAnotherProjectLeavesTheMembersLogins(t *testing.T) {
 	}
 	if _, err := r.client.Refresh(t, erins.key, erinsDevice); err != nil {
 		t.Errorf("erin's device login's refresh after carol's removal of erin from OTH: %v, want it answered", err)
+	}
+}
+
+// TestAnotherOwnersAddThenRemoveLeavesTheMembersLogins: a removal ends a restricted member's machine
+// logins only when it leaves them on no project's access list, the moment Dispatch stops admitting
+// their cookie and personal tokens too (restrictedOwnerAdmitted, access.Listed). carol owns OTH; she
+// names erin, whom ACC's list names, on OTH's list and takes her off it again. Both answer 200, the
+// removal records no revocation of erin's machine logins, and after the broker revocation loop's
+// pass erin's ACC token still introspects active and her device login's refresh is answered. So no
+// project's owner ends the logins a person holds for another project.
+//
+// Control: record the revocation on every removal that took the person off a list, as the head
+// before this row did, and erin's ACC token introspects not active and her refresh is refused,
+// each named.
+func TestAnotherOwnersAddThenRemoveLeavesTheMembersLogins(t *testing.T) {
+	r := newRestrictedTokenRig(t)
+	ctx := t.Context()
+	if created := dispatchRequest(t, r.dispatch, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Another project"}, accessCarol); created.Code != http.StatusCreated {
+		t.Fatalf("carol creates OTH: %d %s", created.Code, created.Body.String())
+	}
+	erins, erinsDevice, _ := r.approvedLogin(t, accessErin, "erin-laptop")
+	erinsToken := r.sessionToken(t, erins, erinsDevice, "erin-agent", "ACC")
+
+	for _, write := range []struct{ method, does string }{{http.MethodPut, "names erin on"}, {http.MethodDelete, "takes erin off"}} {
+		if response := dispatchRequest(t, r.dispatch, write.method, "/api/v1/projects/OTH/access/people/"+accessErin, nil, accessCarol); response.Code != http.StatusOK {
+			t.Fatalf("carol %s OTH's list: %d %s, want 200", write.does, response.Code, response.Body.String())
+		}
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(r.database.Pool).Owing(ctx, accessErin); err != nil || owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after carol took her off OTH while ACC's list names her, want nothing owed", owed, err)
+	}
+	r.server.revokeBrokerDebts(ctx)
+	if !r.introspect(t, erinsToken).Active {
+		t.Errorf("erin's ACC token introspects not active after carol named her on OTH and took her off it")
+	}
+	if _, err := r.client.Refresh(t, erins.key, erinsDevice); err != nil {
+		t.Errorf("erin's device login's refresh after carol named her on OTH and took her off it: %v, want it answered", err)
 	}
 }
 

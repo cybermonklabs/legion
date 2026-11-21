@@ -93,19 +93,22 @@ func heldScopes(t *testing.T, whoami *httptest.ResponseRecorder) []string {
 // an outside person approves the device login of their own agents, whose tokens the broker then
 // holds to one project. Every other decision of theirs is refused and reaches the broker as no
 // decision: another person's machine login, a shared record (approver anyone: a service's machine
-// login, a shared secret's request), a record other than the one their code names, the lookup of
-// any of those, and a dismissal, each 403 RESTRICTED_MEMBER; and every decision through their
-// personal token or a broker token, their own login's included, 403 RESTRICTED_MEMBER from a token
-// that holds the route's scopes and 403 OAUTH_SCOPE_REQUIRED from one that does not
-// (tokenRefusal), whichever scopes a broker token acting for its person is given. A full member's
-// decision reaches the broker as it always has, so the rig can see a call.
+// login, a shared secret's request), a record other than the one their code names, an approve or
+// a deny that carries no code, the lookup of any of those, and a dismissal, each 403
+// RESTRICTED_MEMBER; and every decision through their personal token or a broker token, their own
+// login's included, 403 RESTRICTED_MEMBER from a token that holds the route's scopes and 403
+// OAUTH_SCOPE_REQUIRED from one that does not (tokenRefusal), whichever scopes a broker token
+// acting for its person is given. A full member's decision reaches the broker as it always has, so
+// the rig can see a call.
 //
 // Controls, each run once: drop every clause but the record id's, and the rows of alice's, the
 // service's and the shared records fail; drop the approver comparison alone, and alice's row fails;
 // drop the service clause alone, and the row of the service's login naming erin fails; drop the
 // kind clause alone, and the row of her own secret's request fails; let any credential of a
 // restricted member past withinProjectScope (atBrowser answering true), and the rows of her
-// personal token fail, and those of her broker token where it holds the approve scope.
+// personal token fail; drop the own-login refusal (restrictedOwnLoginRefusal), and the personal
+// token's rows fail on its text, as refuseDeploymentWrite answers the same code; drop the refusal
+// of a decision that carries no code, and the code-less rows fail.
 func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	stub := brokertokentest.NewStubBroker(t)
@@ -161,6 +164,13 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	rig.bodyByRoute[lookup] = erinsOwnLogin
 	before := rig.decisions()
 	refused(dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/dismiss", nil, accessErin), "the dismissal of her own login", before)
+	// An approve or a deny of her own login that carries no code is refused before anything is looked
+	// up: the code is what names a login as hers.
+	for _, action := range []string{"approve", "deny"} {
+		before := rig.decisions()
+		refused(dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/"+action, map[string]any{}, accessErin),
+			action+" of her own login with no code", before)
+	}
 	minted := dispatchRequest(t, served, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "erin's agent"}, accessErin)
 	if minted.Code != http.StatusCreated {
 		t.Fatalf("erin mints a personal token at her browser: status=%d body=%s", minted.Code, minted.Body.String())
@@ -174,13 +184,14 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	whoami := httptest.NewRecorder()
 	served.ServeHTTP(whoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", erinsBrokerToken, nil))
 	held := heldScopes(t, whoami)
-	if !slices.Contains(held, model.ScopePerson) {
-		t.Fatalf("the broker token acting as erin holds %v, want the person scope", held)
-	}
 	for _, action := range []string{"approve", "deny"} {
 		path := "/api/v1/credential-requests/rec-erin/" + action
 		before := rig.decisions()
-		refused(agentRequest(t, served, http.MethodPost, path, code, personal), action+" of her own login with her personal token", before)
+		byToken := agentRequest(t, served, http.MethodPost, path, code, personal)
+		refused(byToken, action+" of her own login with her personal token", before)
+		if !strings.Contains(byToken.Body.String(), "at their browser alone") {
+			t.Errorf("%s of her own login with her personal token answered %s, want the own-login refusal naming the browser", action, byToken.Body.String())
+		}
 		byBroker := httptest.NewRecorder()
 		served.ServeHTTP(byBroker, caller.presenting(t, http.MethodPost, path, erinsBrokerToken, code))
 		refusedWith(byBroker, action+" of her own login with a broker token acting as her", before,
@@ -204,6 +215,59 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 	response := dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec1/approve", code, "alice")
 	if response.Code != http.StatusOK || rig.decisions() != before+1 || rig.lastBody != `{"approver":"alice","code":"ABCD-1234","approver_session_generation":0}` {
 		t.Errorf("the full member's approve answered %d with %d decisions reaching the broker and body %q, want 200, one naming alice", response.Code, rig.decisions()-before, rig.lastBody)
+	}
+}
+
+// TestARestrictedMembersPersonScopeBrokerTokenHoldsNoScope: a broker token the broker scoped to a
+// restricted member's person holds no scope at Dispatch, as their named token holds none. A broker
+// whose project check is off, an older broker during a rollout, or a token minted before the broker
+// held restricted members to one project can still answer such a token; Dispatch read the member's
+// kind for it in the same request (brokerPersonAdmitted), so it gives the token no scope: whoami
+// answers none, and GET /api/v1/inbox and POST /api/v1/me/agent-tokens are 403
+// OAUTH_SCOPE_REQUIRED. So an outside person's agent mints no token and decides nothing, whatever
+// the broker answered. A full member's person-scope token, the control, holds the person scope and
+// reads its inbox.
+//
+// Control: brokerTokenActor giving a person-scope token the person's scopes whatever their member
+// kind, and erin's token holds person and approve and reads her inbox, named.
+func TestARestrictedMembersPersonScopeBrokerTokenHoldsNoScope(t *testing.T) {
+	stub := brokertokentest.NewStubBroker(t)
+	served, _ := newAccessServerWith(t, testServerOptions{signInOutside: true, brokerTokens: stubBrokerTokens(t, stub)})
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	caller := newBrokerCaller(t)
+	for _, c := range []struct {
+		person, token string
+		restricted    bool
+	}{
+		{accessErin, "erins-person-scoped-broker-token", true},
+		{accessCarol, "carols-person-scoped-broker-token", false},
+	} {
+		answer := liveNamedToken(caller.jkt)
+		answer.Person, answer.ProjectScope, answer.Projects = c.person, brokertoken.ProjectScopePerson, nil
+		stub.Says(c.token, answer)
+		whoami := httptest.NewRecorder()
+		served.ServeHTTP(whoami, caller.presenting(t, http.MethodGet, "/api/v1/whoami", c.token, nil))
+		held := heldScopes(t, whoami)
+		inbox := httptest.NewRecorder()
+		served.ServeHTTP(inbox, caller.presenting(t, http.MethodGet, "/api/v1/inbox", c.token, nil))
+		if !c.restricted {
+			if !slices.Contains(held, model.ScopePerson) || inbox.Code != http.StatusOK {
+				t.Errorf("%s's person-scope broker token holds %v and reads the inbox %d %s, want the person scope and 200", c.person, held, inbox.Code, inbox.Body.String())
+			}
+			continue
+		}
+		if len(held) != 0 {
+			t.Errorf("%s's person-scope broker token holds %v, want no scope: %s is a restricted member", c.person, held, c.person)
+		}
+		minted := httptest.NewRecorder()
+		served.ServeHTTP(minted, caller.presenting(t, http.MethodPost, "/api/v1/me/agent-tokens", c.token, map[string]string{"name": "erin's agent's token"}))
+		for call, response := range map[string]*httptest.ResponseRecorder{"GET /api/v1/inbox": inbox, "POST /api/v1/me/agent-tokens": minted} {
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+codeScopeRequired+`"`) {
+				t.Errorf("%s with %s's person-scope broker token = %d %s, want 403 %s", call, c.person, response.Code, response.Body.String(), codeScopeRequired)
+			}
+		}
 	}
 }
 

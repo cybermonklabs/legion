@@ -48,8 +48,7 @@ const (
 	// internalColumn is a column no read answers: a queue, a backfill's cursor, a projection's
 	// bookkeeping.
 	internalColumn = "no read answers it"
-	// deploymentColumn is a deployment row's, read only by an open viewer (readclass.Deployment),
-	// which sees every session and person.
+	// deploymentColumn is a deployment row's, read only by an open viewer (readclass.Deployment).
 	deploymentColumn = "deployment row"
 	// filteredReference can name an object its reader does not see, and every read that answers
 	// it leaves such an object out: the reason names the reads and the filter.
@@ -236,11 +235,10 @@ func schemaReferenceColumns(t *testing.T, fixture fragmentCensusFixture) []strin
 }
 
 // crossReferences are the persons the cross seed (seedCrossReferences) names from each project's
-// rows, beside fragmentCensusFixture's own objects: a person each project's readers through one
-// caller do not see.
+// rows, beside fragmentCensusFixture's own objects.
 type crossReferences struct {
-	// publicPerson is a person no list of PUB's names, whom a token that lists PUB does not see:
-	// bob, PRIV's restricted member.
+	// publicPerson is a person no list of PUB's names: bob, PRIV's restricted member. Every walker
+	// that sees PUB is open and reads every person, so he is hidden from none of them.
 	publicPerson string
 	// privatePerson is a person whom a reader that sees PRIV alone does not see: dana.
 	privatePerson string
@@ -252,8 +250,11 @@ type crossReferences struct {
 // acted in the other alone; each issue's new ask is followed by that session; each issue's comment
 // mentions that session and cites the other's issue and document; each issue messages that
 // session; and each issue's design gate names the other's document. PUB's issue is assigned to bob,
-// whom its new ask then waits on, and PRIV's ask is handed to dana, PRIV's default assignee. PUB's
-// pull request is credited to PRIV's issue, as a mapping moved between the two would leave it.
+// whom its new ask then waits on; PRIV's issue is assigned to dana, PRIV's default assignee, whom a
+// reader that sees PRIV alone does not see, and its ask, which waits on dana as the assignee (an
+// ask asked of its issue's assignee stores no asked_of), is handed to alice, whom that reader does
+// not see either. PUB's pull request is credited to PRIV's issue, as a mapping moved between the two
+// would leave it.
 func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossReferences {
 	t.Helper()
 	seedPeople(t, fixture.database, hiddenPerson)
@@ -274,7 +275,7 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 		assignee, handed string
 	}{
 		{fixture.public, fixture.private, sessionOfPrivate, cross.publicPerson, ""},
-		{fixture.private, fixture.public, sessionOfPublic, seedCarol, cross.privatePerson},
+		{fixture.private, fixture.public, sessionOfPublic, cross.privatePerson, seedAlice},
 	} {
 		issue := "/api/v1/issues/" + pair.from.issue
 		// The issue waits on an issue of the other project of its own, so the two waits close no
@@ -431,12 +432,13 @@ func (h hiddenObjects) leaksOf(value any, path string) []leak {
 //
 // The census seed (seedFragmentCensus) is joined by seedCrossReferences, which writes a reference
 // from each project into the other in every column filteredReference names; the test reads back,
-// from the stored rows, that each such column holds one. Three readers then walk every GET row of
+// from the stored rows, that each such column holds one. Four readers then walk every GET row of
 // the route table whose read classes include project, graph, people or agents, filled with the
 // objects of the project each sees, and every answer is scanned for an object hidden from that
 // reader: alice, an open viewer who sees PUB and not PRIV's session, which has acted in PRIV
-// (access.SessionClause); alice's token that lists PUB, which sees PUB and neither PRIV's sessions
-// nor its people; and bob, a restricted member who sees PRIV alone. A found
+// (access.SessionClause); alice's token that lists PUB, a full member's and so an open viewer that
+// sees what alice sees; bob, a restricted member who sees PRIV alone; and bob's token that lists
+// PRIV, which sees what bob sees. A found
 // one fails naming the route, the JSON path of the answer, and what the object is. The stored
 // payloads are read too: every leaf of a payload a reader may read (eventReadableSQL) that names an
 // object hidden from that reader must sit under a key leaveOutHiddenReferences leaves out
@@ -468,8 +470,9 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 		hidden  hiddenObjects
 	}{
 		{callerAlice, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, nil)},
-		{callerAlicePubToken, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, []string{cross.publicPerson})},
+		{callerAlicePubToken, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, nil)},
 		{callerBob, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice})},
+		{callerBobPrivToken, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice})},
 	}
 	for _, column := range columns {
 		if referenceDispositions[column].kind != filteredReference {

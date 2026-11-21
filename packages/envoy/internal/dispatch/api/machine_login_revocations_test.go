@@ -8,9 +8,95 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// TestTwoRemovalsThatLeaveTheMemberOnNoListOweTheRevocation: alice and carol take erin off ACC's
+// and OTH's lists at once, her last two. Each removal reads, after its own delete, whether a list
+// still names her (removePerson), so with nothing ordering them each would read the other's row,
+// not yet deleted by a commit, and neither would owe the revocation of her machine logins. Removals
+// of one person take that person's lock in turn (access.LockPersonRemoval), so the second waits for
+// the first's commit, reads both rows gone, and owes the revocation.
+//
+// Control: removePerson without the person's lock, and the second removal reads ACC's row the first
+// has not committed, so nothing is owed, named.
+func TestTwoRemovalsThatLeaveTheMemberOnNoListOweTheRevocation(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
+		signInOutside:   true,
+		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+	})
+	ctx := t.Context()
+	if created := dispatchRequest(t, served, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Another project"}, accessCarol); created.Code != http.StatusCreated {
+		t.Fatalf("carol creates OTH: %d %s", created.Code, created.Body.String())
+	}
+	owners := map[string]string{"ACC": "alice", "OTH": accessCarol}
+	for key, owner := range owners {
+		if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/"+key+"/access/people/"+accessErin, nil, owner); listed.Code != http.StatusOK {
+			t.Fatalf("%s names erin on %s's list: %d %s", owner, key, listed.Code, listed.Body.String())
+		}
+	}
+	remove := func(tx pgx.Tx, key string) error {
+		_, _, err := registered.removePerson(ctx, tx, registered.deps.Events, key, access.PrincipalPerson, accessErin, model.Actor{Kind: "user", ID: owners[key]})
+		return err
+	}
+	waitingOnALock := func() bool {
+		var n int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
+			t.Fatalf("read whether a removal waits on a lock: %v", err)
+		}
+		return n > 0
+	}
+
+	first, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Rollback(ctx) }()
+	if err := remove(first, "ACC"); err != nil {
+		t.Fatalf("alice's removal of erin from ACC: %v", err)
+	}
+	second, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Rollback(ctx) }()
+	done := make(chan error, 1)
+	go func() { done <- remove(second, "OTH") }()
+	// The second removal waits on the lock the first holds, or, with no lock, has already read.
+	finished, secondErr := false, error(nil)
+	for giveUp := time.Now().Add(30 * time.Second); !finished && !waitingOnALock(); time.Sleep(20 * time.Millisecond) {
+		select {
+		case secondErr = <-done:
+			finished = true
+		default:
+			if time.Now().After(giveUp) {
+				t.Fatalf("carol's removal of erin from OTH neither finished nor waited on a lock within 30 s")
+			}
+		}
+	}
+	if err := first.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !finished {
+		secondErr = <-done
+	}
+	if secondErr != nil {
+		t.Fatalf("carol's removal of erin from OTH: %v", secondErr)
+	}
+	if err := second.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin); err != nil || !owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after two removals at once took her off her last two lists, want it owed", owed, err)
+	}
+}
 
 // TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend: one owed revocation costs
 // the person's list and a revoke for each login they approved for their own machines before the
