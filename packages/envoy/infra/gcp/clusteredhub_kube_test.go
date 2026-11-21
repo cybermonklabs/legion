@@ -440,7 +440,9 @@ func TestClusteredNatsHubNetworkPolicyWithoutMonitorsOrTailnet(t *testing.T) {
 }
 
 // Google Managed Prometheus scrapes the exporter of each hub pod: the PodMonitoring selects the
-// hub pods by the chart's selector labels and scrapes the exporter's named port every 30 s.
+// hub pods by the chart's selector labels, scrapes the exporter's named port every 30 s and drops
+// each consumer series, which TestTheHubsScrapeKeepsNoConsumerSeriesOnEveryRender applies to what
+// the exporter serves.
 func TestClusteredNatsHubPodMonitoring(t *testing.T) {
 	m := runClusteredHub(t, clusteredArgs())
 	r := m.Named(t, podMonitoringType, "envoy-nats")
@@ -450,8 +452,13 @@ func TestClusteredNatsHubPodMonitoring(t *testing.T) {
 		"kind":       "PodMonitoring",
 		"metadata":   map[string]any{"name": "envoy-nats", "namespace": "envoy"},
 		"spec": map[string]any{
-			"selector":  map[string]any{"matchLabels": hubPodLabels},
-			"endpoints": []any{map[string]any{"port": "prom-metrics", "interval": "30s"}},
+			"selector": map[string]any{"matchLabels": hubPodLabels},
+			"endpoints": []any{map[string]any{
+				"port": "prom-metrics", "interval": "30s",
+				"metricRelabeling": []any{map[string]any{
+					"action": "drop", "sourceLabels": []any{"__name__"}, "regex": "nats_consumer_.+",
+				}},
+			}},
 		},
 	}, r.Inputs.Mappable())
 }

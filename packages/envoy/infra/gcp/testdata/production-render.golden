@@ -7046,6 +7046,15 @@
                 "endpoints": [
                   {
                     "interval": "30s",
+                    "metricRelabeling": [
+                      {
+                        "action": "drop",
+                        "regex": "nats_consumer_.+",
+                        "sourceLabels": [
+                          "__name__"
+                        ]
+                      }
+                    ],
                     "port": "prom-metrics"
                   }
                 ],
@@ -8483,6 +8492,15 @@
                 "endpoints": [
                   {
                     "interval": "30s",
+                    "metricRelabeling": [
+                      {
+                        "action": "drop",
+                        "regex": "nats_consumer_.+",
+                        "sourceLabels": [
+                          "__name__"
+                        ]
+                      }
+                    ],
                     "port": "prom-metrics"
                   }
                 ],
