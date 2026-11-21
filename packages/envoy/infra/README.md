@@ -2350,6 +2350,29 @@ setting. The app's NetworkPolicy admits the two ranges to port 8766 beside the p
 make the group `example-dispatch` in each zone of the cluster's region. The load balancer, its
 backend service with IAP on, whose backends are that group in each zone, and its certificate are
 the stack's own ([Inputs](#inputs-1)).
+
+One `pulumi up` cannot build all of this. Pulumi registers a component only once each of its
+inputs resolves, so Dispatch waits for the backend service whose id `iapAudience` holds. The
+backend service's backends are the group in each zone, which GKE makes only once Dispatch's
+Service carries the annotation, within a few minutes of it, and Compute Engine answers a reference
+to a group that does not exist with
+`Error 404: The resource '…/networkEndpointGroups/<name>' was not found`. A backend that waits for
+Dispatch instead closes a dependency cycle. So the stack applies twice:
+
+1. The first `pulumi up` creates the backend service with no backend yet, and then Dispatch with
+   the inputs above. GKE then makes the group `example-dispatch` in each zone of the cluster's
+   region. Until the second apply no request through the load balancer reaches Dispatch, since its
+   backend service has no backend.
+2. Once `gcloud compute network-endpoint-groups list --filter=name=example-dispatch` lists the
+   group in every zone of the region, add each zone's group to the backend service's backends in
+   the stack, named by its URL,
+   `projects/<project>/zones/<zone>/networkEndpointGroups/example-dispatch`, and run `pulumi up`
+   again. Dispatch's inputs do not change, so this apply leaves Dispatch as it is.
+
+Do not create the groups in the stack instead: GKE syncs no endpoint into a group of that name
+that it did not make itself
+([NEG is not synced with Service](https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg#troubleshooting)).
+
 A stack that runs Google sign-in at its own origin instead sets the sign-in group in place of
 `iapAudience`, and its Google client lists `https://dispatch.example.com/auth/callback`.
 
