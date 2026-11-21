@@ -186,6 +186,11 @@ type AgentSecretsTokenResult struct {
 // again; a launcher process that restarts says false and is pushed the check again. The hello
 // does not refuse a tag of another shape than LeakCheckTagPattern: the launcher connects, and the
 // daemon refuses that tag as the cause of the start it cannot serve the check for.
+//
+// ResumesBySession is this launcher saying it can look a session up by its id and resume the file
+// it finds (LauncherStart.ResumeSession). A launcher built before the member sends none, and the
+// daemon names a session only to a launcher that said resumesBySession: to any other it names no
+// session, and the agent's own command carries `--resume=<session id>` instead.
 type LauncherHello struct {
 	Token              string `json:"token"`
 	Sandbox            string `json:"sandbox"`
@@ -194,6 +199,7 @@ type LauncherHello struct {
 	LauncherID         string `json:"launcherId"`
 	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
+	ResumesBySession   bool   `json:"resumesBySession,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
@@ -590,13 +596,28 @@ type LauncherState struct {
 // before the child starts, and removes the directory when the child ends — so a role started in a
 // running pod never waits on the kubelet to propagate a Secret. Argv and Env name those files by
 // path; no credential is ever in Argv, Env, or an error.
+//
+// ResumeFile is the session file the child resumes. ResumeSession is the id of a session the
+// child resumes where the daemon knows no file of it: the launcher looks the id up in the session
+// table and resumes the file it finds, as it resumes ResumeFile. An older launcher ignores
+// resumeSession and sends no resumesBySession in its hello, and the daemon names a session only to
+// a launcher that said resumesBySession (LauncherHello), so an older launcher is never sent one; an
+// older daemon sends no resumeSession.
 type LauncherStart struct {
-	ID         string            `json:"id"`
-	Generation uint64            `json:"generation"`
-	Argv       []string          `json:"argv"`
-	Env        []string          `json:"env"`
-	Files      map[string]string `json:"files,omitempty"`
-	ResumeFile string            `json:"resumeFile,omitempty"`
+	ID            string            `json:"id"`
+	Generation    uint64            `json:"generation"`
+	Argv          []string          `json:"argv"`
+	Env           []string          `json:"env"`
+	Files         map[string]string `json:"files,omitempty"`
+	ResumeFile    string            `json:"resumeFile,omitempty"`
+	ResumeSession string            `json:"resumeSession,omitempty"`
+	// AgentExecutable is the agent's executable as /proc/<pid>/exe reads it once any start
+	// wrapper has exec'd it: an absolute path, such as the image's /opt/omp/bin/omp. Argv cannot
+	// say it, because a deployment's setup wraps the agent in `/bin/sh -c <script> legion-start`.
+	// The daemon fills it for an Oh My Pi launch, and a launcher with a session writer token
+	// knows the agent's process by it (internal/launcher's sessionPeer). It is empty for a
+	// Claude Code launch, whose agent writes no session itself.
+	AgentExecutable string `json:"agentExecutable,omitempty"`
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's
@@ -1543,6 +1564,15 @@ func (f LauncherHello) Validate() error {
 	return nil
 }
 
+// Validate refuses a launcher start the launcher cannot act on: one with no id, no generation or
+// no argv, or with a file name that is not a plain file name. A start that names its session by
+// its id alone (ResumeSession) is refused too when it also names a file (ResumeFile), which is two
+// sessions to resume, when the id is not a single path element (it holds `/` or NUL), which no
+// session file name ends in, or when its argv does not hold exactly one element
+// `--resume=<ResumeSession>`: the launcher resumes the file it finds for the id by replacing that
+// one element with the file's path, and with none or two there is nothing certain to replace. The
+// daemon is the frame's only sender, so each of these is a bug of the daemon's, which the refusal
+// names.
 func (f LauncherStart) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1555,6 +1585,24 @@ func (f LauncherStart) Validate() error {
 	for name := range f.Files {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
 			return fmt.Errorf("%w: launcher_start file name %q is not a plain file name", ErrMalformedFrame, name)
+		}
+	}
+	if f.ResumeSession != "" {
+		if f.ResumeFile != "" {
+			return fmt.Errorf("%w: launcher_start names both resumeFile and resumeSession", ErrMalformedFrame)
+		}
+		if strings.ContainsAny(f.ResumeSession, "/\x00") {
+			return fmt.Errorf("%w: launcher_start resumeSession %q is not a single path element", ErrMalformedFrame, f.ResumeSession)
+		}
+		resume := "--resume=" + f.ResumeSession
+		held := 0
+		for _, arg := range f.Argv {
+			if arg == resume {
+				held++
+			}
+		}
+		if held != 1 {
+			return fmt.Errorf("%w: launcher_start argv holds %s %d times, want it exactly once for resumeSession", ErrMalformedFrame, resume, held)
 		}
 	}
 	return nil

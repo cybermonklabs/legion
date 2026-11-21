@@ -92,6 +92,6 @@ func (m *Manager) InstalledOn(ctx context.Context, role AppRole, repo ghrepo.Rep
 	case response.StatusCode == http.StatusNotFound:
 		return false, nil
 	default:
-		return false, transient(response, body, fmt.Errorf("read whether the %s App is installed on %s failed (%d)", role, repo, response.StatusCode))
+		return false, m.transient(response, body, fmt.Errorf("read whether the %s App is installed on %s failed (%d)", role, repo, response.StatusCode))
 	}
 }

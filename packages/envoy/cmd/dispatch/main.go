@@ -25,8 +25,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -1018,23 +1018,23 @@ func main() {
 	go reconcile.Run(ctx, deliveryReconcileLeases)
 	// waitIntakes waits for both intakes to stop once ctx is cancelled; StartIntakes returns it as
 	// a sync.OnceFunc, so a second call returns once the first has. The shutdown runs it before it
-	// closes the database pool: an intake releases its duty.Hold through that pool as it stops,
-	// and a hold left in place for its TTL names the stopped process's deliver subject, which a
-	// process of the build before holds, binding by lookup, goes on delivering at, so the next
-	// holder would read that binding as a dead holder's and take it over. Every exit after the
-	// intakes start runs it too (exitAfterIntakes, stopIntakesOnExit, and the stop during the
-	// registry's admission wait), since each intake can hold its durable before this process
-	// serves anything. With no NATS client there is nothing to wait for.
+	// closes the database pool: it closes the intakes' NATS clients after their Runs return, then
+	// waits for any hand-back finalizer to release its duty.Hold through that pool. A hold left in
+	// place for its TTL names the stopped process's deliver subject, which a process of the build
+	// before holds, binding by lookup, goes on delivering at, so the next holder would read that
+	// binding as a dead holder's and take it over. Every exit after the intakes start runs it too
+	// (exitAfterIntakes, stopIntakesOnExit, and the stop during the registry's admission wait), since
+	// each intake can hold its durable before this process serves anything. With no NATS client there
+	// is nothing to wait for.
 	waitIntakes := func() {}
 	if natsClient != nil {
 		// The intake and the job intake (LEGION-690) each bind a durable, so each takes a client of
-		// its own (delivery.StartIntakes). Their Runs return once ctx is cancelled; each begins
-		// stopping then, at the signal, beside the HTTP drain and the document shutdown, and
-		// returns once a message still in its handler has been acknowledged, or given up at its
-		// stop budget from the signal and handed back, with the messages behind it handed back too
-		// and the intake's hold released, so another process takes its durable over at once and
-		// the clients close after it. Each connects in the background as the publisher does, and
-		// its poll takes the durable's hold once it has.
+		// its own (delivery.StartIntakes). Their Runs begin stopping at the signal beside the HTTP
+		// drain and document shutdown, and return once a message in a handler has been acknowledged or
+		// given up at its stop budget and handed back. StartIntakes then closes both clients, waits for
+		// each pending hand-back's finalizer to release the hold through the pool, and returns. Each
+		// connects in the background as the publisher does, and its poll takes the durable's hold once
+		// it has.
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
@@ -2040,7 +2040,7 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
 // the maintenance pass sweeps.
 //
-// It serves a read-only token (brokertoken.Options.ServesReadOnly): the scope read alone, which
+// It serves a read-only token (ciphertoken.Options.ServesReadOnly): the scope read alone, which
 // the broker mints from a read entry. Dispatch is the one service that asks for it, because its
 // route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
 // and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
@@ -2048,13 +2048,13 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
 // (401 UNAUTHORIZED).
-func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL string) (*brokertoken.Verifier, error) {
+func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL string) (*ciphertoken.Verifier, error) {
 	if boot.AgentSecretsURL == "" {
 		return nil, nil
 	}
-	return brokertoken.New(brokertoken.Options{
+	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
-		Account:   brokertoken.NewAccountToken(boot.AgentSecretsTokenFile),
+		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
 		Origin:    strings.TrimSuffix(serverURL, "/"),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
