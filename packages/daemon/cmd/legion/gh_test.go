@@ -2741,12 +2741,14 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	records := t.TempDir()
 	ghRecord, running := filepath.Join(records, "gh"), filepath.Join(records, "running")
 	ghIgnored, release := filepath.Join(records, "ignored"), filepath.Join(records, "release")
-	// The stand-in writes the signals it was started ignoring (its own status's SigIgn), traps the
-	// hangup, says it is running, and then waits for the test's release, or for this test binary
-	// to be gone, in ticks short enough that a trap runs within one of them: a shell runs no trap
-	// while a foreground command of its own is still going.
+	ghPid := filepath.Join(records, "pid")
+	// The stand-in writes its pid, whole, and the signals it was started ignoring (its own
+	// status's SigIgn), traps the hangup, says it is running, and then waits for the test's
+	// release, or for this test binary to be gone, in ticks short enough that a trap runs within
+	// one of them: a shell runs no trap while a foreground command of its own is still going.
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) +
+		"echo $$ >\"$GH_STANDIN_PID.new\" && mv \"$GH_STANDIN_PID.new\" \"$GH_STANDIN_PID\"\n" +
 		"sed -n 's/^SigIgn:[[:space:]]*//p' /proc/$$/status >\"$GH_STANDIN_IGNORED\"\n" +
 		"trap 'printf \"gh caught the hangup\\n\" >>\"$GH_STANDIN_RECORD\"; exit 44' HUP\n" +
 		": >\"$GH_STANDIN_RUNNING\"\n" +
@@ -2759,7 +2761,7 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
 		"GH_STANDIN_RECORD": ghRecord, "GH_STANDIN_RUNNING": running, "GH_STANDIN_RELEASE": release,
-		"GH_STANDIN_IGNORED": ghIgnored, "GH_STANDIN_TEST_PID": strconv.Itoa(os.Getpid()),
+		"GH_STANDIN_IGNORED": ghIgnored, "GH_STANDIN_PID": ghPid, "GH_STANDIN_TEST_PID": strconv.Itoa(os.Getpid()),
 	}, "pr", "list")
 	// `sh -c 'trap "" HUP; exec …'` is what nohup does to the command it runs, and the exec is
 	// the wrapper's: `legion gh` starts here with the hangup ignored and no handler of its own,
@@ -2779,15 +2781,32 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
-	// A row that fails before it reads `legion gh`'s end releases gh here, kills `legion gh`, which
-	// a row that failed before gh ran could leave waiting on nothing the release reaches, and
-	// waits for it to end, so the row leaves neither process behind and waits on no clock.
+	// A row that fails before it reads `legion gh`'s end ends both processes here, by the order of
+	// their events. gh is released. A `legion gh` whose gh never started has nothing that release
+	// reaches, so it is killed at once; one whose gh runs ends with gh, and is killed only if it
+	// has not ended 10 s before the binary's deadline. Then the cleanup waits for the stand-in
+	// itself to be gone, which a killed `legion gh` no longer waits for, so nothing writes into the
+	// row's directories while they are removed.
 	ended := false
 	t.Cleanup(func() {
 		_ = os.WriteFile(release, nil, 0o600)
 		if !ended {
-			_ = command.Process.Kill()
-			<-done
+			if _, err := os.Stat(ghPid); err != nil {
+				_ = command.Process.Kill()
+			}
+			select {
+			case <-done:
+			case <-time.After(testwait.Bounded(t, 1<<60, 10*time.Second)):
+				_ = command.Process.Kill()
+				<-done
+			}
+		}
+		if pid, err := os.ReadFile(ghPid); err == nil {
+			stand := filepath.Join("/proc", strings.TrimSpace(string(pid)))
+			testwait.Eventually(t, "the stand-in gh to end", func() bool {
+				_, err := os.Stat(stand)
+				return err != nil
+			})
 		}
 	})
 	testwait.Eventually(t, "the stand-in gh to be running", func() bool {
