@@ -1231,9 +1231,15 @@ an address from a log line, so no peer can write a line of its own on the operat
 anything that can reach a pod's port 6222 can keep the check from reaching 0, though not make it
 pass.
 
-Exit 0 says that no process but the hub's servers held a route, or was handed the password, since
-the record was taken, from the logs that reach back to it; it says nothing of any time before the
-record. So a record is valid only for a `secretKey` that has never been under `authorization`: a
+Exit 0 says two things, and no more. Of the routes held when the check read them: each joins two
+of the hub's servers. Of the password: from the hangup that began the reload that loaded
+authorization, every route connection the pods' logs name came from a pod, so no other process was
+handed the password in that time. It says nothing of a process that held a route before that
+reload and left: such a peer is exit 0 by design, since before `authorization` the hub's servers
+send the password only on the routes they open to the hub's own pod names (the `routes` stage's
+URLs), and an implicit route to any other address carries none (`route.go:1092-1094`). And it says
+nothing of any time before the record. So a record is valid only for a `secretKey` that has never
+been under `authorization`: a
 record of a hub whose current `secretKey` was under `authorization` before, after a rollback below
 `authorization` and a restart of every pod, vouches for logs that lost the connections made under
 that first `authorization`, and the check against it can exit 0 of a hub whose password a peer
