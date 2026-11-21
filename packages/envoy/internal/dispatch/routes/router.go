@@ -32,6 +32,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -138,6 +139,9 @@ type AppContextOptions struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          api.ServiceTokenVerifier
+	// GitHubRate is the process's one count of its calls to GitHub (cmd/dispatch makes it once,
+	// for the rate reading); see api.DepsInput.
+	GitHubRate *githubrate.Counter
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
@@ -229,6 +233,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Events:                 opts.Events,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,
+		GitHubRate:             opts.GitHubRate,
 		OIDC:                   opts.OIDC,
 		BrokerTokens:           opts.BrokerTokens,
 		AgentStream:            opts.AgentStream,
@@ -340,7 +345,8 @@ func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 	mux.HandleFunc("GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
 	mux.HandleFunc("POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
 	mux.HandleFunc("GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
-	mux.HandleFunc(githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, r.apiGithubRest))
+	// The proxy's calls to GitHub are the API's, as every row's of the table are.
+	mux.HandleFunc(githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, api.TagGitHubCalls(r.apiGithubRest)))
 	background := api.Register(mux, r.ctx.lifetime, r.ctx.apiDeps)
 	r.eventHead = ctx.eventHead
 	if r.eventHead == nil {

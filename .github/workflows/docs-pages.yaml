@@ -148,6 +148,7 @@ on:
       - 'packages/envoy/subjectforms/*'
       - 'packages/envoy/natsversion/*'
       - 'packages/envoy/steprecord/*'
+      - 'packages/envoy/githubrate/*'
       # ci-filters.yaml's *dispatch_server:
       - 'packages/envoy/cmd/dispatch/*'
       - 'packages/envoy/going/*'

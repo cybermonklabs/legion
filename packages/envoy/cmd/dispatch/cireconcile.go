@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -80,14 +81,15 @@ func (r *registeredInstance) get() string {
 //
 // instance is the holder the registration fills in (registeredInstance), which each pass records
 // its row under: the loop starts before the process is registered, so a pass has to ask for the
-// id rather than be handed it.
+// id rather than be handed it. counted is the process's one count of its calls to GitHub, which
+// the pass's client counts on for the rate reading (nil counts none).
 func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, reviewer string,
-	interval time.Duration, instance *registeredInstance) (*cireconcile.Reconciler, error) {
+	interval time.Duration, instance *registeredInstance, counted *githubrate.Counter) (*cireconcile.Reconciler, error) {
 	if natsClient == nil {
 		return nil, nil
 	}
 	limits := ratelimit.New(database.Pool)
-	github, err := githubapp.New(app, apiBase, githubapp.WithLimits(limits))
+	github, err := githubapp.New(app, apiBase, githubapp.WithLimits(limits), githubapp.WithRateCounter(counted))
 	if err != nil || github == nil {
 		return nil, err
 	}

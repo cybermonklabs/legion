@@ -104,6 +104,7 @@ env:
     --patch-path .github/go-release-targets.json
     -- packages/daemon/ packages/daemon/internal/prompts/roles/ packages/daemon/internal/prompts/go/
     packages/envoy/cipheraddr/ packages/envoy/cipherclient/ packages/envoy/dispatchbody/
+    packages/envoy/githubrate/
     packages/envoy/internal/cipher/oauthwire/ packages/envoy/internal/cipherclient/
     packages/envoy/internal/contracts/ packages/envoy/internal/ctxlock/
     packages/envoy/internal/dispatch/bytelru/ packages/envoy/internal/dispatch/itemblocks/

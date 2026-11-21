@@ -58,11 +58,12 @@ func Run(ctx context.Context, importer *Importer, leases duty.Leases, atStart bo
 // no caller takes as data, and each sync notes the reads of GitHub it gave up (syncOnce). It opens
 // here and not in Sync, which the Settings Refresh route and `dispatch architecture-sync` also
 // run, and it is recorded on the context the lease handed the pass, so a pass this process's
-// shutdown cut short records nothing.
+// shutdown cut short records nothing. Begin also names the read as the caller kind its calls to
+// GitHub are counted under, for the rate reading.
 func syncAllLeased(ctx context.Context, importer *Importer, leases duty.Leases, due time.Time) {
 	duty.Exclusive(ctx, leases, architectureImportLease, due, SyncInterval, func(caller context.Context) {
-		ctx, attempt := githubreads.Begin(caller)
-		defer githubreads.Finish(caller, githubreads.ArchitectureImport, attempt, importer.GitHubReads, nil)
+		ctx, attempt := githubreads.Begin(caller, githubreads.ArchitectureImport)
+		defer githubreads.Finish(caller, attempt, importer.GitHubReads, nil)
 		syncAll(ctx, importer)
 	})
 }

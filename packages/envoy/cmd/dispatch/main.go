@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -543,6 +544,13 @@ func main() {
 		slog.Error("dispatch: build the answerer", "error", err)
 		os.Exit(1)
 	}
+	// The process's one count of its own calls to GitHub, by installation, counter and caller
+	// kind, which the two GitHub clients of the process that call with an installation token
+	// count on, and the rate reading reports (runRateReading): the API's, which the architecture
+	// importer and the delivery intakes and reconcile share, and the CI reconcile's. The webhook
+	// redelivery sweep's client calls with the App's JWT alone, which GitHub charges to no
+	// installation, so it counts on nothing.
+	gitHubCalls := githubrate.NewCounter()
 
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
@@ -560,6 +568,7 @@ func main() {
 		Embedder:       embedder,
 		Events:         broker,
 		App:            appCfg,
+		GitHubRate:     gitHubCalls,
 		AgentStream:    agentStream,
 		AgentPublisher: agentPublisher,
 		Files:          fileStore,
@@ -673,8 +682,10 @@ func main() {
 	//     listener hub (its connection is this process's membership and every loop above waits on
 	//     a wake of this process's own, so it has to run in every process), the room sync
 	//     registered on it (it serves the rooms resident in this process: it catches them up with
-	//     the other processes' writes and answers their room queries) and the document sockets'
-	//     schema re-check (it closes this process's own sockets).
+	//     the other processes' writes and answers their room queries), the document sockets'
+	//     schema re-check (it closes this process's own sockets) and the GitHub rate reading
+	//     (runRateReading: the own calls it reports are this process's, and its lines name the
+	//     process).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
 	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and SeedRepoProjects
 	//     above, and the embedding coverage pass (two processes' passes at once leave what one
@@ -976,7 +987,7 @@ func main() {
 	// ciInstance is filled in once this process is registered, below, and each pass records its
 	// counts in ci_reconcile_passes under the id it then holds.
 	ciInstance := &registeredInstance{}
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance)
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance, gitHubCalls)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -997,6 +1008,18 @@ func main() {
 
 	appCtx.Architecture().GitHubReads = recordGitHubRead
 	go architecture.Run(ctx, appCtx.Architecture(), architectureImportLeases, boot.ArchitectureImportAtStart)
+
+	// The GitHub rate reading: every 10 minutes, and once in the last minute before each counter
+	// resets, one github_rate_reading line for each installation of the App, through a JSON logger
+	// of its own, so a log store reads the line's fields where the rest of the log is text. It reads
+	// with the API's client, which counts on gitHubCalls with the CI reconcile's, and needs the
+	// App's private key.
+	if gitHub := appCtx.GitHub(); gitHub != nil {
+		slog.Info("dispatch: reading the GitHub rate counters of each installation of the App", "client_id", appCfg.ClientID, "interval", githubrate.Interval)
+		go runRateReading(ctx, gitHub, slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	} else {
+		slog.Info("dispatch: GitHub rate reading off: it needs the GitHub App private key")
+	}
 
 	// dispatch://INFRA-1077: each project whose legion_settings row names a Legion daemon has its
 	// `GET /legion/v1/state` read once a minute from one replica, under the `legion-state` lease,

@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -771,9 +773,10 @@ func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, servin
 // A completion the workflow refuses whatever GitHub shows reads nothing: the route calls this only
 // for one that is not already applied (eventID, its key, read with intake.Applied), whose tree does
 // not linger and whose handoff record is not the one the implementer named for its previous phase
-// (workflow's HANDOFF_NOT_NEW). It returns false when it wrote the answer.
+// (workflow's HANDOFF_NOT_NEW). It returns false when it wrote the answer. Its mint and its read
+// count as handoffPullRequestCaller's (githubrate.WithCaller).
 func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Request, issue *record.Issue, recorded *record.PullRequest, eventID string) bool {
-	ctx := r.Context()
+	ctx := githubrate.WithCaller(r.Context(), handoffPullRequestCaller)
 	applied, err := intake.Applied(ctx, s.pool, "api", []string{eventID})
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read whether a completion is already applied", "issue", issue.Key)
@@ -850,6 +853,10 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 	}
 	return true
 }
+
+// handoffPullRequestCaller is the caller kind of implementationPullRequest's GitHub calls, which
+// the daemon's rate reading counts its calls on each installation by.
+const handoffPullRequestCaller = "handoff_pull_request"
 
 // checkReport records the checking role's report on look, the look of its closed issue's
 // production check the caller's own live assignment is (supervise.Claim.ServingCheck, which the

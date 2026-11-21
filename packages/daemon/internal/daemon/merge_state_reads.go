@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -327,6 +329,7 @@ func (w *workflowRuntime) mergeStateWait() time.Duration {
 // answers is GitHub's state for the head it read, and the push the record took is itself a fact
 // that asks for a read of the head it left (workflow's askMergeState).
 func (w *workflowRuntime) readMergeState(ctx context.Context, issue, head string) (record.MergeState, string, error) {
+	ctx = githubrate.WithCaller(ctx, callerMergeStateReads)
 	_, recorded, err := issueRecord(ctx, w.pool, w.records, issue)
 	if err != nil {
 		return record.MergeStateUnread, "", err
