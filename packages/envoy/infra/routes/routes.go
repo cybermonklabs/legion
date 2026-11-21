@@ -655,7 +655,9 @@ func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[stri
 // form, each read by the runtime within stampSkew of its logger time and carrying the start line's
 // process id. The start line is the server's when the runtime read it at the container's start,
 // since a line a peer forges carries the time the runtime read the line it was written in; a log
-// that does not begin with it may have lost its lines since the env roll, which is PasswordRead.
+// that does not begin with it may have lost its lines since the env roll, which is PasswordRead,
+// and then it returns every line whose times agree, whatever its process id, since no start line
+// names the server's.
 // A log with lines that carry no time of the runtime's is judged by none of this, since which of
 // its lines the server wrote cannot be told: it is Unknown, and serversLines returns no line.
 // Every rule after this one reads only the lines it returns. It returns, too, the index in
