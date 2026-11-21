@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -377,8 +378,9 @@ func newAncestryLine(t *testing.T, tree string, recorded ...record.Issue) *ances
 		w: &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos, defaultBranches: branches, log: log}}
 }
 
-// deliver prepares event and applies it as its fact, as the consumer does.
-func (l *ancestryLine) deliver(event intake.DispatchIssue) {
+// deliver prepares event and applies it as its fact, as the consumer does, and is the prepared
+// fact.
+func (l *ancestryLine) deliver(event intake.DispatchIssue) intake.DispatchIssue {
 	l.t.Helper()
 	prepared, err := l.w.prepareRepository(context.Background(), event)
 	if err != nil {
@@ -387,13 +389,15 @@ func (l *ancestryLine) deliver(event intake.DispatchIssue) {
 	if _, err := intake.ApplyFact(context.Background(), l.pool, "dispatch", fmt.Sprintf("%s-%d", event.Key, event.Seq), prepared, l.engine, l.admit); err != nil {
 		l.t.Fatalf("apply the event of %s: %v", event.Key, err)
 	}
+	return prepared
 }
 
-// queue delivers the todo event of key, labelled under parent, as Dispatch shows it.
-func (l *ancestryLine) queue(key, parent string) {
+// queue delivers the todo event of key, labelled under parent, as Dispatch shows it, and is the
+// prepared fact.
+func (l *ancestryLine) queue(key, parent string) intake.DispatchIssue {
 	l.t.Helper()
 	l.client.issues[key] = shownUnder(key, "todo", parent, true)
-	l.deliver(intake.DispatchIssue{Key: key, Seq: 2, Type: "issue.updated", Status: "todo", Title: key, Parent: parent, Rank: "B", HandedOver: true, ResolvedRepo: "acme/widgets"})
+	return l.deliver(intake.DispatchIssue{Key: key, Seq: 2, Type: "issue.updated", Status: "todo", Title: key, Parent: parent, Rank: "B", HandedOver: true, ResolvedRepo: "acme/widgets"})
 }
 
 // slotted is whether key holds a slot, and its record.
@@ -583,5 +587,99 @@ func TestAStaleEventOfAMovedAncestorBringsBackNoAncestryHold(t *testing.T) {
 	line.deliver(intake.DispatchIssue{Key: member, Seq: 4, Type: "issue.updated", Status: "backlog", Title: member, Parent: tree, Rank: "A", ResolvedRepo: "acme/widgets"})
 	if _, issue := line.slotted(child); slices.Contains(issue.Ancestry, tree) || !line.waiting(child) {
 		t.Fatalf("%s recorded %#v after %s's stale event at sequence 4; want it still waiting under no live root", child, issue, member)
+	}
+}
+
+// A labelled todo issue whose Dispatch parent is an issue of another project is a root of its own
+// project: its chain ends before that parent, the first ancestor of another project, whose own
+// project's daemon runs its tree. So its preparation reads no ancestry, and it waits in its own
+// project's line or takes a slot as any labelled todo root does, also where that parent stands
+// under a live tree of the issue's own project, which a chain read on through the parent would
+// reach and hold the issue under.
+func TestAChainEndsBeforeItsFirstAncestorOfAnotherProject(t *testing.T) {
+	const tree = "LEGION-1"
+	for _, tc := range []struct{ name, key, parent string }{
+		{name: "a parent of another project", key: "LEGION-10", parent: "OTHR-5"},
+		{name: "a parent of another project under a live tree of the issue's own project", key: "LEGION-12", parent: "OTHR-6"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := newAncestryLine(t, tree)
+			line.client.issues["OTHR-5"] = shownUnder("OTHR-5", "in_progress", "", true)
+			line.client.issues["OTHR-6"] = shownUnder("OTHR-6", "in_progress", tree, true)
+
+			if prepared := line.queue(tc.key, tc.parent); len(prepared.Ancestry) != 0 {
+				t.Fatalf("%s under %s prepared with ancestry %v, want none: its chain ends before %s, an issue of another project", tc.key, tc.parent, prepared.Ancestry, tc.parent)
+			}
+			slotted, issue := line.slotted(tc.key)
+			if issue == nil || len(issue.Ancestry) != 0 {
+				t.Fatalf("%s recorded as %#v, want a record with no ancestry", tc.key, issue)
+			}
+			if waiting := line.waiting(tc.key); !slotted && !waiting {
+				t.Fatalf("%s neither holds a slot nor waits in the line, recorded %#v; want it a root of its own project, held under no tree", tc.key, issue)
+			}
+		})
+	}
+}
+
+// A root a person moves under a parent of another project keeps what it keeps when moved to no
+// parent at all, since its chain ends before that parent: a labelled todo root waiting in the line
+// stays in its own project's line, and a member of a live tree at implementing keeps its tree, its
+// phase and its run. The two lines run the same steps and differ only in the parent the moves name.
+func TestARootMovedUnderAParentOfAnotherProjectKeepsWhatAMoveToNoParentKeeps(t *testing.T) {
+	const tree, full, queued, member, foreign = "LEGION-1", "LEGION-2", "LEGION-13", "LEGION-14", "OTHR-5"
+	// kept is what the test compares of one issue after the moves.
+	type kept struct {
+		Tree             string
+		Phase            phase.Phase
+		Generation       uint64
+		Ancestry         []string
+		Waiting, Slotted bool
+	}
+	moved := func(to string) map[string]kept {
+		t.Helper()
+		running := recordedOn(member, tree, "in_progress")
+		running.Phase, running.Parent, running.HandedOver = phase.Implementing, record.ParentOf(tree), false
+		line := newAncestryLine(t, tree, running, recordedOn(full, full, "in_progress"))
+		// A second live tree holds the second slot, so the root queued below waits in the line.
+		if err := pgx.BeginFunc(context.Background(), line.pool, func(tx pgx.Tx) error {
+			if err := line.records.PutSlot(context.Background(), tx, record.Slot{Issue: full, Index: 1, AdmittedAt: time.Now()}); err != nil {
+				return err
+			}
+			return openTreeTx(context.Background(), tx, "LEGION", full)
+		}); err != nil {
+			t.Fatalf("fill the second slot: %v", err)
+		}
+		line.client.issues[foreign] = shownUnder(foreign, "in_progress", "", true)
+		line.client.issues[member] = shownUnder(member, "in_progress", tree, false)
+		line.queue(queued, "")
+		if !line.waiting(queued) {
+			t.Fatalf("%s does not wait in the line before the move, want it queued behind the two slots held", queued)
+		}
+
+		line.client.issues[queued] = shownUnder(queued, "todo", to, true)
+		line.deliver(intake.DispatchIssue{Key: queued, Seq: 3, Type: "issue.updated", Status: "todo", Title: queued, Parent: to, Rank: "B", HandedOver: true, ResolvedRepo: "acme/widgets"})
+		line.client.issues[member] = shownUnder(member, "in_progress", to, false)
+		line.deliver(intake.DispatchIssue{Key: member, Seq: 3, Type: "issue.updated", Status: "in_progress", Title: member, Parent: to, Rank: "A", ResolvedRepo: "acme/widgets"})
+
+		keeps := make(map[string]kept, 2)
+		for _, key := range []string{queued, member} {
+			slotted, issue := line.slotted(key)
+			if issue == nil {
+				t.Fatalf("%s has no record after its move to %q", key, to)
+			}
+			ancestry := issue.Ancestry
+			if len(ancestry) == 0 {
+				ancestry = nil
+			}
+			keeps[key] = kept{Tree: issue.Tree, Phase: issue.Phase, Generation: issue.Generation, Ancestry: ancestry, Waiting: line.waiting(key), Slotted: slotted}
+		}
+		return keeps
+	}
+
+	toNone, toForeign := moved(""), moved(foreign)
+	for _, key := range []string{queued, member} {
+		if !reflect.DeepEqual(toForeign[key], toNone[key]) {
+			t.Errorf("%s moved under %s keeps %+v, want what a move to no parent keeps: %+v", key, foreign, toForeign[key], toNone[key])
+		}
 	}
 }

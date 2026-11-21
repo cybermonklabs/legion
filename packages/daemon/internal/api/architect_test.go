@@ -797,6 +797,41 @@ func TestWaveReleaseReleasesUnreleasedChildrenOfTheTreeOverTheDispatchGraph(t *t
 	}
 }
 
+// release_children's walk of a child's Dispatch chain ends before the first ancestor of another
+// project, as the daemon's own read of a queued root's chain does (daemon's chainOf): that
+// ancestor's own project's daemon runs its tree, so an issue under it is a root of its own
+// project, and the architect of a live tree of the issue's project above that ancestor does not
+// reach it. A child that reaches the tree through its own project's issues alone is released, the
+// control.
+func TestWaveReleaseEndsTheChainBeforeAnAncestorOfAnotherProject(t *testing.T) {
+	h, _, statuses := newArchitectHarness(t, nil, nil)
+	root, foreign := "LEGION-1", "OTHR-6"
+	seedTree(t, h, root)
+	statuses.issues = map[string]dispatch.Issue{
+		root:        {Key: root, Project: "LEGION", ResolvedRepo: "acme/widgets", Status: "in_progress"},
+		foreign:     {Key: foreign, Project: "OTHR", ResolvedRepo: "acme/other", Status: "in_progress", Parent: &root},
+		"LEGION-12": {Key: "LEGION-12", Project: "LEGION", ResolvedRepo: "acme/widgets", Status: "backlog", Parent: &foreign},
+		"LEGION-13": {Key: "LEGION-13", Project: "LEGION", ResolvedRepo: "acme/widgets", Status: "backlog", Parent: &root},
+	}
+	architect := newLiveClaim(t, h, root, claim.RoleArchitect)
+
+	refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
+		"grantId": architect.grant(t), "issues": []string{"LEGION-12"},
+	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
+	if len(statuses.writes) != 0 {
+		t.Fatalf("Dispatch writes after the refusal = %#v, want none: LEGION-12's chain ends before %s, an issue of another project", statuses.writes, foreign)
+	}
+
+	if recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
+		"grantId": architect.grant(t), "issues": []string{"LEGION-13"},
+	}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("the release of LEGION-13, a child of %s, = %d: %s", root, recorder.Code, recorder.Body)
+	}
+	if len(statuses.writes) != 1 || statuses.writes[0] != (statusWrite{issue: "LEGION-13", status: "todo"}) {
+		t.Fatalf("Dispatch writes = %#v, want LEGION-13 written todo alone", statuses.writes)
+	}
+}
+
 // release_children writes one child at a time, so a Dispatch failure part way through leaves the
 // earlier children released and answers 502. The architect's retry is the whole wave again, and a
 // child already todo is exactly what this call produces: it is released, not refused, and is not
