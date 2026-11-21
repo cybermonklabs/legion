@@ -56,15 +56,17 @@ func endedCIPass(t *testing.T, database *store.Store, instance string, startedAg
 }
 
 // seedServerProcess writes the registry row processes.Register writes, with a heartbeat of the
-// given age, and answers the instance id.
+// given age, and answers the instance id. It names this build's owner lock protocol, as Register
+// does: a row at the column's default, 0, is an earlier build's arrival, whose insert waits for
+// the owner lock gate (fleetProcess in internal/dispatch/docs says why).
 func seedServerProcess(t *testing.T, database *store.Store, heartbeatAge time.Duration) string {
 	t.Helper()
 	var instance string
 	if err := database.Pool.QueryRow(context.Background(), `
-		insert into server_processes (instance, heartbeat_at)
-		values (gen_random_uuid(), now() - make_interval(secs => $1))
+		insert into server_processes (instance, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), now() - make_interval(secs => $1), $2)
 		returning instance::text
-	`, heartbeatAge.Seconds()).Scan(&instance); err != nil {
+	`, heartbeatAge.Seconds(), store.OwnerLockProtocol).Scan(&instance); err != nil {
 		t.Fatalf("seed a server process: %v", err)
 	}
 	return instance

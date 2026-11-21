@@ -497,14 +497,15 @@ func prunedRow(t *testing.T, tx pgx.Tx, id string) {
 }
 
 // livePeer writes the row of a live process holding setting straight into the registry, past
-// Register's check, as a process registered while ours had dropped out of Live leaves it.
+// Register's check, as a process registered while ours had dropped out of Live leaves it: with
+// this build's owner lock protocol, as Register writes it.
 func livePeer(t *testing.T, tx pgx.Tx, setting string) string {
 	t.Helper()
 	var id string
 	if err := tx.QueryRow(context.Background(), `
-		insert into server_processes (instance, commit, dashboard_build, signing_keys)
-		values (gen_random_uuid(), 'c9', 'build-c9', $1)
-		returning instance::text`, fingerprints(t, setting)).Scan(&id); err != nil {
+		insert into server_processes (instance, commit, dashboard_build, signing_keys, owner_lock_protocol)
+		values (gen_random_uuid(), 'c9', 'build-c9', $1, $2)
+		returning instance::text`, fingerprints(t, setting), store.OwnerLockProtocol).Scan(&id); err != nil {
 		t.Fatalf("add a live peer holding %q: %v", setting, err)
 	}
 	return id

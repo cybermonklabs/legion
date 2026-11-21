@@ -245,22 +245,26 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 // DISPATCH_FILE_STORE_BUCKET, or one of a build that predates the fleet columns, which registers
 // no file_store - an upload to a process with a bucket keeps its bytes in its row as well as in the
 // bucket, so the bucketless process serves it. A live process with a bucket, or a bucketless one
-// whose row has lapsed, leaves the bytes in the bucket alone.
+// whose row has lapsed, leaves the bytes in the bucket alone. Each row but the earlier build's is
+// this build's process, so it names this build's owner lock protocol ($1), as processes.Register
+// writes it.
 func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
+	thisBuild := []any{store.OwnerLockProtocol}
 	for _, tc := range []struct {
 		name, insert string
+		args         []any
 		keepsBytes   bool
 	}{
-		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store) values (gen_random_uuid(), '{fingerprint}', 1, 1, false)`, true},
-		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys) values (gen_random_uuid(), '{fingerprint}')`, true},
-		{"process with a bucket", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store) values (gen_random_uuid(), '{fingerprint}', 1, 1, true)`, false},
-		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour')`, false},
+		{"bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, $1)`, thisBuild, true},
+		{"process that predates the fleet columns", `insert into server_processes (instance, signing_keys) values (gen_random_uuid(), '{fingerprint}')`, nil, true},
+		{"process with a bucket", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, true, $1)`, thisBuild, false},
+		{"lapsed bucketless process", `insert into server_processes (instance, signing_keys, schema_version, schema_creatable, file_store, heartbeat_at, owner_lock_protocol) values (gen_random_uuid(), '{fingerprint}', 1, 1, false, now() - interval '1 hour', $1)`, thisBuild, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			memory := filestest.NewMemory()
 			handler, database, _ := newTestServer(t, testServerOptions{files: memory})
 			issue := fileIssue(t, handler)
-			if _, err := database.Pool.Exec(context.Background(), tc.insert); err != nil {
+			if _, err := database.Pool.Exec(context.Background(), tc.insert, tc.args...); err != nil {
 				t.Fatalf("add the other server process: %v", err)
 			}
 			image := pngBytes("both places")

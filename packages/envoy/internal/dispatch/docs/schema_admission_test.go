@@ -571,7 +571,12 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	}
 
 	biggest := 0
-	_ = reader.SetReadDeadline(time.Now().Add(30 * time.Second))
+	// The page reads until the revoke's close, however long a loaded runner takes to deliver the
+	// messages queued before it. The one hang guard is the test binary's deadline, less
+	// roomWaitMargin for the cleanups, which hold the service's Shutdown.
+	if deadline, bounded := t.Deadline(); bounded {
+		_ = reader.SetReadDeadline(deadline.Add(-roomWaitMargin))
+	}
 	for {
 		_, message, err := reader.ReadMessage()
 		if err != nil {

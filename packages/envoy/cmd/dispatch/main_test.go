@@ -2033,9 +2033,11 @@ func TestBackfillFilesRefusesWhileAProcessWithoutABucketIsLive(t *testing.T) {
 	ctx := context.Background()
 	seedBackfillFile(t, database)
 	var bucketless, older string
+	// The bucketless process is this build's, started without DISPATCH_FILE_STORE_BUCKET, so its
+	// row names this build's owner lock protocol; the older one's, like its build, names none.
 	if err := database.Pool.QueryRow(ctx, `
-		insert into server_processes (instance, commit, signing_keys, schema_version, schema_creatable, file_store)
-		values (gen_random_uuid(), 'bucketless0commit', '{fingerprint}', 1, 1, false) returning instance::text`).Scan(&bucketless); err != nil {
+		insert into server_processes (instance, commit, signing_keys, schema_version, schema_creatable, file_store, owner_lock_protocol)
+		values (gen_random_uuid(), 'bucketless0commit', '{fingerprint}', 1, 1, false, $1) returning instance::text`, store.OwnerLockProtocol).Scan(&bucketless); err != nil {
 		t.Fatalf("add a bucketless server process: %v", err)
 	}
 	if err := database.Pool.QueryRow(ctx, `
