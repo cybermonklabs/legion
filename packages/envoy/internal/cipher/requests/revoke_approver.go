@@ -349,10 +349,11 @@ func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor str
 // The revoke is the approver's and not the operator's, since whoever ends it stands in for the
 // record's approver and withholds nothing from a session that is not theirs. A grant whose
 // approver is a group (grantApprover) is each member's to end, as the one owner ends their own,
-// by the members the group's last good read listed however old that read is (groupListed): a
-// revoke only takes power away, so a member keeps the power to end the group's grant while the
-// group is stale. A login outside the group ends nothing. The sentinel is no signed-in person
-// itself, and neither is an empty login or one spelled as a group: none of them revokes anything.
+// by the members the group's last good read listed however old that read is
+// (record.GroupStanding's listed, read without its freshness): a revoke only takes power away, so
+// a member keeps the power to end the group's grant while the group is stale. A login outside the
+// group ends nothing. The sentinel is no signed-in person itself, and neither is an empty login or
+// one spelled as a group: none of them revokes anything.
 func mayRevoke(login string, approver, operator *string, groups record.Groups) (allowed, asOperator bool) {
 	if _, loginIsGroup := record.GroupOf(record.CanonicalLogin(login)); loginIsGroup {
 		return false, false
@@ -364,20 +365,14 @@ func mayRevoke(login string, approver, operator *string, groups record.Groups) (
 	if login == "" || login == record.AnyoneApprover {
 		return false, false
 	}
-	anyone := approver != nil && record.CanonicalLogin(*approver) == record.AnyoneApprover
-	return anyone || approver != nil && groupListed(groups, *approver, login), false
-}
-
-// groupListed reports whether the last good read of the group approver names (group:<address>)
-// listed login, however old that read is (mayRevoke's rule). An approver that is no group and a
-// nil groups list nobody.
-func groupListed(groups record.Groups, approver, login string) bool {
-	group, ok := record.GroupOf(record.CanonicalLogin(approver))
-	if !ok || groups == nil {
-		return false
+	if approver == nil {
+		return false, false
 	}
-	listed, _ := groups.Membership(group, login)
-	return listed
+	if record.CanonicalLogin(*approver) == record.AnyoneApprover {
+		return true, false
+	}
+	_, listed, _, group := record.GroupStanding(groups, *approver, login)
+	return group && listed, false
 }
 
 // namedOnGrant answers whether login is a person a grant names, and whether as the operator of

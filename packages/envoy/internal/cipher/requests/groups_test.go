@@ -487,6 +487,34 @@ func TestAMemberRevokesTheGroupsGrantWhileItIsStale(t *testing.T) {
 	}
 }
 
+// TestAMemberDismissesAnExpiredGroupRequest: an expired request waiting on the group is on each
+// member's Inbox list by state, and a member dismisses it: it leaves the second member's list too.
+// A person outside the group, and a login spelled as the group, are refused.
+func TestAMemberDismissesAnExpiredGroupRequest(t *testing.T) {
+	f := newGroupFixture(t)
+	ctx := context.Background()
+	req := f.ask(t, f.asker, f.askerKey, "TEAM_KEY")
+	if req.State != "pending" || req.RecordID == nil {
+		t.Fatalf("the asker's TEAM_KEY = %+v; want pending on the group", req)
+	}
+	pastDeadline(t, f.m, req.ID)
+	expired := *req.RecordID + "=expired"
+	if got := listedStates(t, f.m, secondMember, bothStates); !slices.Contains(got, expired) {
+		t.Fatalf("the second member's list = %v; want the expired group request %s", got, expired)
+	}
+	for _, login := range []string{groupOutsider, approversForm} {
+		if d, err := f.m.Dismiss(ctx, *req.RecordID, login); !errors.Is(err, record.ErrNotApprover) {
+			t.Fatalf("Dismiss by %s = %+v, %v; want record.ErrNotApprover", login, d, err)
+		}
+	}
+	if d, err := f.m.Dismiss(ctx, *req.RecordID, groupMember); err != nil || !d.Wrote || d.DismissedBy != groupMember {
+		t.Fatalf("Dismiss by a member = %+v, %v; want it written by %s", d, err, groupMember)
+	}
+	if got := listedStates(t, f.m, secondMember, bothStates); slices.Contains(got, expired) {
+		t.Fatalf("the second member's list after a member's dismissal = %v; want it gone", got)
+	}
+}
+
 // retag stores secret, the store's form of the policy's secret name, and rereads name, as an
 // owner's retag and the reread after it do.
 func (f *groupFixture) retag(t *testing.T, name string, secret secrets.LocalSecret) {
@@ -501,7 +529,9 @@ func (f *groupFixture) retag(t *testing.T, name string, secret secrets.LocalSecr
 // line at its release and at the reuse an ask makes, after its secret was handed to a person and
 // while its group is stale: the chain check reads the record's group, whoever owns the secret now.
 // A grant a person approved writes no lapsed line once its secret is handed to a group the person
-// is not in: no group approved it.
+// is not in, at its release nor at the reuse an ask makes: no group approved it. The reuse half is
+// the one that can fail, since the reuse path is where a lapsed line was once written from the
+// policy's approver rather than the record's.
 func TestTheLapseLineFollowsTheRecordsGroup(t *testing.T) {
 	capture := captureRecords(t)
 	f := newGroupFixture(t)
@@ -531,7 +561,8 @@ func TestTheLapseLineFollowsTheRecordsGroup(t *testing.T) {
 	if _, err := f.m.Values(ctx, dec.GrantID, f.member, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values of the person's grant after its secret went to the group = %v, want ErrGrantNotLive", err)
 	}
+	f.ask(t, f.member, f.memberKey, "OWNER_KEY")
 	if lines := loggedLines(t, capture, GrantApproverLapsedMessage)[mark:]; len(lines) != 0 {
-		t.Fatalf("a person's approval wrote %q lines: %v", GrantApproverLapsedMessage, lines)
+		t.Fatalf("a person's approval wrote %q lines at its release or its reuse: %v", GrantApproverLapsedMessage, lines)
 	}
 }

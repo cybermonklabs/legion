@@ -191,6 +191,76 @@ func TestEvaluateAdmitsAGroupMember(t *testing.T) {
 	}
 }
 
+// turningDirectory is a group reader whose read of every group lands between two looks: the first
+// Membership answers the group stale and its member unlisted, every later one a fresh read listing
+// the member.
+type turningDirectory struct{ looks int }
+
+func (d *turningDirectory) Membership(string, string) (listed, fresh bool) {
+	d.looks++
+	return d.looks > 1, d.looks > 1
+}
+func (d *turningDirectory) GroupsOf(string) []string { return nil }
+func (d *turningDirectory) Want([]string)            {}
+
+// TestARequestersGroupIsReadInOneLook: Evaluate reads a requesters group once, so a read landing
+// between two looks cannot pair the first look's stale group with the second's fresh one and deny a
+// member as not on the list, which ends a grant for good: the one look finds the group stale, and
+// the member is denied as the group unread, which pauses a grant.
+func TestARequestersGroupIsReadInOneLook(t *testing.T) {
+	loaded := loadOnly(t, secrets.NewLocal(
+		policytest.ListedSecret("LISTED_KEY", policy.OwnerShared, policy.TierAgent, approversOwner, "v"),
+	))
+	turning := &turningDirectory{}
+	got, err := policy.NewSetWithGroups(loaded.Secrets, turning).Evaluate("LISTED_KEY", policy.Requester{Operator: groupMember})
+	if err != nil || got.Outcome != policy.Deny || got.Reason != policy.ReasonRequesterGroupUnread {
+		t.Fatalf("Evaluate as the group turns fresh between looks = %+v, %v; want %s", got, err, policy.ReasonRequesterGroupUnread)
+	}
+	if turning.looks != 1 {
+		t.Fatalf("Evaluate looked at the group %d times, want once", turning.looks)
+	}
+}
+
+// TestEvaluateReadsTheRequestersGroupBeforeTheProject: a shared agent-tier secret tagged with a
+// private project whose requesters name a group: a member whose credential names the project gets
+// it at once; a member whose credential does not is denied by the project rule; a person outside
+// the group is denied as not listed, even with no project state, since the list is read first;
+// and while the group is stale every member is denied as the group unread, before the project
+// rule is read.
+func TestEvaluateReadsTheRequestersGroupBeforeTheProject(t *testing.T) {
+	tagged := policytest.ListedSecret("PRIV_LISTED", policy.OwnerShared, policy.TierAgent, approversOwner, "v")
+	tagged.Tags[policy.TagProject] = "PRIV"
+	loader := policytest.Loader(secrets.NewLocal(tagged))
+	loader.ProjectChecks = true
+	loaded, err := loader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	fake := groupstest.New()
+	fake.Set(approversGroup, groupMember)
+	set := policy.NewSetWithGroups(loaded.Secrets, fake)
+	private := map[string]policy.ProjectState{"PRIV": policy.ProjectPrivate}
+	naming := func(operator string) policy.Requester {
+		return policy.Requester{Operator: operator, Named: []string{"PRIV"}, Projects: []string{"PRIV"}, ProjectStates: private}
+	}
+	check := func(what string, r policy.Requester, outcome, reason string) {
+		t.Helper()
+		d, err := set.Evaluate("PRIV_LISTED", r)
+		if err != nil || d.Outcome != outcome || d.Reason != reason {
+			t.Errorf("%s: Evaluate = %+v, %v; want %s %q", what, d, err, outcome, reason)
+		}
+	}
+	check("a member naming PRIV", naming(groupMember), policy.Automatic, "")
+	check("a member naming no project", policy.Requester{Operator: groupMember, ProjectStates: private}, policy.Deny, policy.ReasonProjectNotNamed)
+	check("an outsider naming PRIV", naming(groupOutsider), policy.Deny, policy.ReasonRequesterNotListed)
+	if _, err := set.Evaluate("PRIV_LISTED", policy.Requester{Operator: groupOutsider}); err != nil {
+		t.Errorf("an outsider with no project state: Evaluate = %v; want the list's denial, read before the project's state", err)
+	}
+	fake.MarkStale(approversGroup)
+	check("a member naming PRIV, group stale", naming(groupMember), policy.Deny, policy.ReasonRequesterGroupUnread)
+	check("a member naming no project, group stale", policy.Requester{Operator: groupMember}, policy.Deny, policy.ReasonRequesterGroupUnread)
+}
+
 // TestALoadNamesItsGroupsAndARereadDoesNot: a full load names every group the served secrets name
 // to the reader; a reread that retags a secret to a new group publishes the new owner at once and
 // names nothing, so the reader, never told of the new group, admits nobody to it; and the next

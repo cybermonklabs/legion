@@ -34,7 +34,8 @@ func (secret Secret) requesterNames() []string {
 }
 
 // lists reports whether secret's requesters name r: the person whose session it is, a group
-// groups admits that person to (record.GroupAdmits), or the service of the pod it is. Each sort is
+// groups admits that person to (record.GroupStanding, listed and fresh), or the service of the pod
+// it is. Each sort is
 // matched only by an entry of its own sort: a group entry only by a member of that group, and of
 // the rest the @ tells a person from a service (ParseRequesters makes every person entry hold one
 // and every service entry hold none): a login record.CanonicalLogin answers may be a GitHub login
@@ -48,15 +49,16 @@ func (secret Secret) requesterNames() []string {
 // unread reports, for a requester the list does not name, whether it cannot say so: the requester
 // has a person, and a group entry names a group whose last good read is not fresh (or a set with
 // no group reader), so the person may be on it. A grant is paused for that and not ended
-// (ReasonRequesterGroupUnread).
+// (ReasonRequesterGroupUnread). Each group entry is looked at once, so its members and its
+// freshness come from one read.
 func (secret Secret) lists(r Requester, groups record.Groups) (listed, unread bool) {
 	operator := record.CanonicalLogin(r.Operator)
 	for _, entry := range secret.requesterNames() {
-		if group, ok := record.GroupOf(entry); ok {
-			if record.GroupAdmits(groups, entry, operator) {
+		if _, member, fresh, ok := record.GroupStanding(groups, entry, operator); ok {
+			if operator != "" && member && fresh {
 				return true, false
 			}
-			if operator != "" && (groups == nil || !groupFresh(groups, group, operator)) {
+			if operator != "" && !fresh {
 				unread = true
 			}
 			continue
@@ -70,12 +72,6 @@ func (secret Secret) lists(r Requester, groups record.Groups) (listed, unread bo
 		}
 	}
 	return false, unread
-}
-
-// groupFresh reports whether group's last good read is fresh, as groups answers it for login.
-func groupFresh(groups record.Groups, group, login string) bool {
-	_, fresh := groups.Membership(group, login)
-	return fresh
 }
 
 // RequesterFault is which condition of the requesters rules refuses a secret's requesters tag,

@@ -794,12 +794,12 @@ var errSourceMoved = errors.New("source moved")
 // never brings back a grant they held while they were off it; they ask again instead.
 var errRequesterNotListed = errors.New("requester not listed")
 
-// errJudgedAdminSecret is judgeStillDecides's refusal of a judged grant of a secret the live
-// policy tags as an administrator's (policy.TagAdmin): the tag was added after the model judge
-// decided the request, and a person approves every release of such a secret. Values and
-// reuseLiveGrant end such a grant for good (endGrant), so taking the tag off again never brings
-// back a grant no person approved; the session asks again, as a new request, which the judge
-// refuses while the tag stands.
+// errJudgedAdminSecret is judgeStillDecides's refusal of a judged grant of a secret a person now
+// approves every release of under the live policy (policy.Secret.PersonApprovesEveryRelease): one
+// tagged as an administrator's (policy.TagAdmin) after the model judge decided the request, or one
+// retagged to the anthropic-federation type. Values and reuseLiveGrant end such a grant for good
+// (endGrant), so taking the tag off again never brings back a grant no person approved; the
+// session asks again, as a new request, which the judge refuses while the tag stands.
 var errJudgedAdminSecret = errors.New("judged administrator's secret")
 
 // JudgePolicy answers what the live policy says about name for the enrollment that asked,
@@ -1205,20 +1205,24 @@ func writtenBeforeMigration13(alias string) string {
 // the policy it was decided under is still current, no granted name is a service's
 // (anyServiceOwned: the policy's version does not cover which service BROKER_SERVICES' accounts
 // prove), no granted name carries a requesters tag (anyListed: an entry naming a service
-// matches by those same accounts) and the grant is no person's pod's (personPodGrant: the
-// policy's version does not cover which person BROKER_POD_OPERATORS maps the pod's account to),
-// or the current policy still allows it to the session
-// (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules still
-// give its name, over the lifetime this reuse matched it on, the grant's own, and refuses one
-// whose secret the policy now tags as an administrator's), and its whole approval chain still
-// verifies (verifyChainForRelease, the same check Values makes). A caller that already holds a
-// live grant for these exact names never re-asks a human who already approved it, a policy
-// tightened since then is never bypassed by reuse, and neither is a chain that no longer
-// verifies.
+// matches by those same accounts, and one naming a group by the group's members), no granted name
+// is a group's (anyGroupOwned: the version does not cover the group's members), no granted name
+// is tagged with a project (anyProjectTagged: whether it is private is Dispatch's) and the grant
+// is no person's pod's (personPodGrant: the policy's version does not cover which person
+// BROKER_POD_OPERATORS maps the pod's account to), or the current policy still allows it to the
+// session (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules
+// still give its name, over the lifetime this reuse matched it on, the grant's own, and refuses
+// one whose secret the policy now tags as an administrator's), and its whole approval chain still
+// verifies (verifyChainForRelease, the same check Values makes, read first). A caller that already
+// holds a live grant for these exact names never re-asks a human who already approved it, a policy
+// tightened since then is never bypassed by reuse, and neither is a chain that no longer verifies.
 // Every exact match is a candidate, newest grant first, and each gets those checks in turn. A
-// candidate whose chain fails is passed over for the next, and logged (GrantChainInvalidMessage,
-// at=reuse). A session's next enrollment adopts its earlier enrollment's live grants (enroll.go,
-// adopt), so a session that moved here from a broker of another BROKER_PUBLIC_URL sharing this
+// candidate whose chain fails, or whose group approval has lapsed, is passed over for the next,
+// and logged (GrantChainInvalidMessage, GrantApproverLapsedMessage, at=reuse). A grant a
+// requesters group not read in the last two hours pauses (policy.ReasonRequesterGroupUnread)
+// answers no reusable grant and is not ended, as Values leaves it. A session's next enrollment
+// adopts its earlier enrollment's live grants (enroll.go, adopt), so a session that moved here
+// from a broker of another BROKER_PUBLIC_URL sharing this
 // database can hold that broker's grant, whose chain fails here ("aud does not match"), and,
 // after its first grant here, a newer one of this broker for the same names. Without the order,
 // Postgres may answer the old grant first on any call, which would ask a person or the judge
@@ -1228,8 +1232,9 @@ func writtenBeforeMigration13(alias string) string {
 // at that candidate, as with one: a policy end (below) answers no reusable grant, a grant no
 // longer live answers none, and any other error is returned. With no candidate left there is
 // none, and Create asks afresh.
-// A grant whose secret no longer lists this requester, and a judged grant of a secret the policy
-// now tags as an administrator's, are not merely passed over: each is ended for good here, as
+// A grant whose secret no longer lists this requester, and a judged grant of a secret a person now
+// approves every release of (an administrator's, or an Anthropic federation secret), are not
+// merely passed over: each is ended for good here, as
 // Values ends it (errRequesterNotListed, errJudgedAdminSecret), and Create goes on to ask for
 // the names afresh — the denied request that tells the session why, where the list dropped it,
 // and the card the tag's own person answers, where the tag ended it.

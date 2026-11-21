@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The federation fixtures: one bound Google account and the Anthropic identifiers of one rule,
@@ -313,6 +314,32 @@ func TestTheFederationExchangeIsSentOnce(t *testing.T) {
 	}
 }
 
+// TestTheFederationExchangeFollowsNoRedirect: an exchange answered with a 307 or a 308 releases
+// nothing, and the body carrying the identity token never reaches the address the redirect names.
+func TestTheFederationExchangeFollowsNoRedirect(t *testing.T) {
+	var elsewhere atomic.Int64
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		elsewhere.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": federationToken, "expires_in": 3600})
+	}))
+	t.Cleanup(other.Close)
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, other.URL+r.URL.Path, status)
+		}))
+		r := newFederationRig(t)
+		r.minter.TokenURL = redirecting.URL + "/v1/oauth/token"
+		minted, err := r.mint(t, federationValue(federationAccount, ""))
+		redirecting.Close()
+		if err == nil || minted.Value != "" {
+			t.Fatalf("Mint answered %d = %+v, %v; want it refused, with no value", status, minted, err)
+		}
+	}
+	if got := elsewhere.Load(); got != 0 {
+		t.Fatalf("the redirect's target got %d exchanges, want none", got)
+	}
+}
+
 // TestTwoConcurrentFederationMintsPresentTwoIdentityTokens: two mints of one secret made at once,
 // through the identity-token reader cmd/cipherd builds, each mint an identity token of their own
 // while IAM holds the first, and present different ones, so no two exchanges carry one token. A
@@ -320,10 +347,9 @@ func TestTheFederationExchangeIsSentOnce(t *testing.T) {
 func TestTwoConcurrentFederationMintsPresentTwoIdentityTokens(t *testing.T) {
 	ciphertokentest.NewMetadataStand(t)
 	var minted atomic.Int64
-	arrived, gate := make(chan struct{}, 2), make(chan struct{})
+	gate := make(chan struct{})
 	iam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		n := minted.Add(1)
-		arrived <- struct{}{}
 		<-gate
 		_ = json.NewEncoder(w).Encode(map[string]string{"token": fmt.Sprintf("identity-%d", n)})
 	}))
@@ -342,14 +368,10 @@ func TestTwoConcurrentFederationMintsPresentTwoIdentityTokens(t *testing.T) {
 			}
 		})
 	}
-	for range 2 {
-		select {
-		case <-arrived:
-		case <-time.After(5 * time.Second):
-			close(gate)
-			done.Wait()
-			t.Fatalf("two concurrent mints reached IAM %d times within 5s while it held them, want twice", minted.Load())
-		}
+	if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { return minted.Load() >= 2 }) {
+		close(gate)
+		done.Wait()
+		t.Fatalf("two concurrent mints reached IAM %d times within 5s while it held them, want twice", minted.Load())
 	}
 	close(gate)
 	done.Wait()
@@ -361,7 +383,8 @@ func TestTwoConcurrentFederationMintsPresentTwoIdentityTokens(t *testing.T) {
 
 // TestAFederationSecretBoundToNoAccountReleasesNothing: a secret the deployment binds to no
 // account, and one whose stored value names another account than the bound one, are refused
-// ErrMintNotBound before any call is made; so is a value the decoder refuses, ErrMintStoredValue.
+// ErrMintNotBound before any call is made; so is a value the decoder refuses, ErrMintStoredValue;
+// and a minter given no identity-token reader refuses ErrMintUpstream and exchanges nothing.
 func TestAFederationSecretBoundToNoAccountReleasesNothing(t *testing.T) {
 	r := newFederationRig(t)
 	if _, err := r.minter.Mint(t.Context(), secrets.MintRequest{Name: "UNBOUND", Value: federationValue(federationAccount, "")}); !errors.Is(err, secrets.ErrMintNotBound) {
@@ -381,6 +404,11 @@ func TestAFederationSecretBoundToNoAccountReleasesNothing(t *testing.T) {
 		if _, err := r.mint(t, value); !errors.Is(err, secrets.ErrMintStoredValue) {
 			t.Fatalf("Mint of the value %s = %v, want ErrMintStoredValue", value, err)
 		}
+	}
+	unread := *r.minter
+	unread.IdentityToken = nil
+	if minted, err := unread.Mint(t.Context(), secrets.MintRequest{Name: "FED_ADMIN", Type: "anthropic-federation", Value: federationValue(federationAccount, "")}); !errors.Is(err, secrets.ErrMintUpstream) || minted.Value != "" {
+		t.Fatalf("Mint with no identity-token reader = %+v, %v; want ErrMintUpstream and no value", minted, err)
 	}
 	if asked := r.iam.Requests(); len(asked) != 0 {
 		t.Fatalf("a refused mint asked IAM %d times, want none", len(asked))

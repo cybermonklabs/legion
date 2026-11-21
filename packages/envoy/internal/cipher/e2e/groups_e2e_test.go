@@ -215,7 +215,7 @@ func TestGroupOwnersEndToEnd(t *testing.T) {
 		serviceAccounts: map[string]string{"FED_ADMIN": federationAccount},
 		now:             clock.Now,
 	})
-	testwait.Eventually(t, "the first policy load's read of the group", func() bool { return ts.Groups.Fresh(approversGroup) })
+	testwait.Eventually(t, "the first policy load's read of the group", func() bool { _, fresh := ts.Groups.Membership(approversGroup, ""); return fresh })
 	if log := ts.Log.String(); !strings.Contains(log, groups.ReadMessage+" group="+approversGroup+" members=1 result=ok") {
 		t.Fatalf("the broker logged no successful read of %s:\n%s", approversGroup, log)
 	}
@@ -289,7 +289,7 @@ func TestGroupOwnersEndToEnd(t *testing.T) {
 	stands.mu.Unlock()
 	clock.advance(2*time.Hour + time.Minute)
 	ts.Groups.ReadAll(t.Context())
-	if ts.Groups.Fresh(approversGroup) {
+	if _, fresh := ts.Groups.Membership(approversGroup, ""); fresh {
 		t.Fatal("the group is fresh after a failed read and two hours")
 	}
 	ts.refused(t, outsiderKey, outsider, approved, "GRANT_NOT_LIVE")

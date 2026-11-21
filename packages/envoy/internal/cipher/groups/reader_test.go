@@ -77,8 +77,10 @@ type directory struct {
 	groups   map[string][]listed
 	pageSize int
 	refuse   func(group, pageToken string) *refusal
-	// hang, when set, holds a request for that group until its caller gives up.
+	// hang, when set, holds a request for that group until its caller gives up, or until release,
+	// when set, is closed.
 	hang     string
+	release  chan struct{}
 	requests []directoryRequest
 }
 
@@ -94,10 +96,13 @@ func newDirectory(t *testing.T, groups map[string][]listed) *directory {
 		}
 		d.mu.Lock()
 		d.requests = append(d.requests, request)
-		hang := d.hang != "" && d.hang == request.group
+		hang, release := d.hang != "" && d.hang == request.group, d.release
 		d.mu.Unlock()
 		if hang {
-			<-r.Context().Done()
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
 			return
 		}
 		d.mu.Lock()
@@ -190,14 +195,14 @@ func newRigFor(t *testing.T, account string, members map[string][]listed) *rig {
 	c := newClock()
 	log := &logtest.Recorder{}
 	reader := &groups.Reader{BaseURL: d.server.URL, HTTP: d.server.Client(), Source: g.source(account), Now: c.Now, Log: slog.New(log)}
-	t.Cleanup(func() { groups.Settle(reader) })
+	t.Cleanup(func() { reader.WaitReads(context.Background()) })
 	return &rig{iam: g, directory: d, clock: c, log: log, reader: reader}
 }
 
 // want names groups to the reader, as a policy load does, and waits for every read that started.
 func (r *rig) want(names ...string) {
 	r.reader.Want(names)
-	groups.Settle(r.reader)
+	r.reader.WaitReads(context.Background())
 }
 
 // readLine is one record of the reader's log line.
@@ -346,7 +351,7 @@ func TestAReadWantStartsEndsWithTheReadersContext(t *testing.T) {
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
-		groups.Settle(r.reader)
+		r.reader.WaitReads(context.Background())
 	}()
 	select {
 	case <-settled:
@@ -445,24 +450,33 @@ func TestAFailedCallIsLoggedByItsClass(t *testing.T) {
 }
 
 // TestWaitReadsReturnsOnceTheFirstReadsEnd: WaitReads returns once every read Want started has
-// ended, or once its context ends while one is still under way.
+// ended, and returns at once on a context already ended while a read is still under way, which
+// the stand-in holds until the test lets it go.
 func TestWaitReadsReturnsOnceTheFirstReadsEnd(t *testing.T) {
 	r := newRig(t, map[string][]listed{approvers: {user(member)}, reviewers: {user(member)}})
 	r.reader.Want([]string{approvers})
 	r.reader.WaitReads(t.Context())
-	if !r.reader.Fresh(approvers) {
+	if _, fresh := r.reader.Membership(approvers, member); !fresh {
 		t.Fatal("WaitReads returned before the read Want started ended")
 	}
-	r.directory.set(func(d *directory) { d.hang = reviewers })
-	// The hung read gives up soon, so the rig's cleanup does not wait out the read's minute.
-	groups.SetReadTimeout(r.reader, 2*time.Second)
+	release := make(chan struct{})
+	r.directory.set(func(d *directory) { d.hang, d.release = reviewers, release })
 	r.reader.Want([]string{approvers, reviewers})
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-	defer cancel()
-	r.reader.WaitReads(ctx)
-	if ctx.Err() == nil {
-		t.Fatal("WaitReads returned while a read was still under way and its context was not done")
+	ended, cancel := context.WithCancel(t.Context())
+	cancel()
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		r.reader.WaitReads(ended)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		close(release)
+		<-returned
+		t.Fatal("WaitReads on an ended context waited for a read still under way")
 	}
+	close(release)
 }
 
 // TestANewGroupIsReadAtOnce: a load that names a group for the first time reads it at once,

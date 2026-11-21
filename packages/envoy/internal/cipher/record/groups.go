@@ -41,26 +41,37 @@ type Directory interface {
 	Want(groups []string)
 }
 
-// GroupAdmits reports whether groups admits login to the group approver names (group:<address>)
-// now: the group's last good read lists login and is fresh. An approver that is no group, an empty
-// login and a nil groups admit nobody. It is the one rule every decision site holds a group to:
-// MayDecide's group branch, and a requesters entry naming a group (policy).
-func GroupAdmits(groups Groups, approver, login string) bool {
-	group, ok := GroupOf(CanonicalLogin(approver))
-	login = CanonicalLogin(login)
-	if !ok || login == "" || groups == nil {
-		return false
+// GroupStanding answers, from one look at groups (Groups.Membership), where login stands in the
+// group approver names (group:<address>): the group's bare address, whether its last good read
+// lists login whatever that read's age, and whether that read is fresh. ok is false for an
+// approver that is no group, and then nothing is looked at. A nil groups is a group never read
+// (false, false), and an empty login is listed in no group, though the group's freshness is still
+// answered. Every group rule reads it, so no rule pairs one read's members with another read's age:
+// GroupAdmits, CheckDecider, a requesters entry naming a group (policy), and the revoke of a
+// group's grant (requests' mayRevoke), which reads listed alone.
+func GroupStanding(groups Groups, approver, login string) (group string, listed, fresh, ok bool) {
+	group, ok = GroupOf(CanonicalLogin(approver))
+	if !ok || groups == nil {
+		return group, false, false, ok
 	}
-	listed, fresh := groups.Membership(group, login)
-	return listed && fresh
+	listed, fresh = groups.Membership(group, CanonicalLogin(login))
+	return group, listed, fresh, true
+}
+
+// GroupAdmits reports whether groups admits login to the group approver names (group:<address>)
+// now: the group's last good read lists login and is fresh (GroupStanding). An approver that is no
+// group, an empty login and a nil groups admit nobody.
+func GroupAdmits(groups Groups, approver, login string) bool {
+	_, listed, fresh, ok := GroupStanding(groups, approver, login)
+	return ok && CanonicalLogin(login) != "" && listed && fresh
 }
 
 // CheckDecider answers why login may not decide a record of kind whose approver is approver and
 // whose signed request names service, and nil when it may (MayDecide's rule). For an agent_secret
 // record whose approver is a group the group does not admit login to now, it is an
-// ApproverNotAdmittedError whose Fresh is read in the same look as the membership, so a read
-// landing between two looks cannot turn a lapse into a broken chain; a nil groups is a group never
-// read. Every other refusal is ErrNotApprover.
+// ApproverNotAdmittedError whose Fresh comes from the same look as the membership
+// (GroupStanding), so a read landing between two looks cannot turn a lapse into a broken chain; a
+// nil groups is a group never read. Every other refusal is ErrNotApprover.
 func CheckDecider(kind, approver, service, login string, groups Groups) error {
 	login, approver = CanonicalLogin(login), CanonicalLogin(approver)
 	_, judge := JudgeLogin(login)
@@ -72,13 +83,9 @@ func CheckDecider(kind, approver, service, login string, groups Groups) error {
 	case kind == KindAgentSecret && approver == AnyoneApprover:
 		return nil
 	}
-	if group, ok := GroupOf(approver); ok {
+	if group, listed, fresh, ok := GroupStanding(groups, approver, login); ok {
 		if kind != KindAgentSecret {
 			return ErrNotApprover
-		}
-		var listed, fresh bool
-		if groups != nil {
-			listed, fresh = groups.Membership(group, login)
 		}
 		if listed && fresh {
 			return nil

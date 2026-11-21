@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The two accounts GoogleAccounts reads for: example names alone.
@@ -91,11 +92,9 @@ func TestGoogleAccountsMintsForEachConcurrentReader(t *testing.T) {
 	for range 2 {
 		done.Go(func() { _, _ = accounts.Read(firstAccount) })
 	}
-	for deadline := time.Now().Add(5 * time.Second); len(iam.Requests()) < 2; time.Sleep(2 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("two concurrent reads reached IAM %d times within 5s while it held them, want twice", len(iam.Requests()))
-		}
-	}
+	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "two concurrent reads at IAM while it holds them", func() bool {
+		return len(iam.Requests()) >= 2
+	})
 	release()
 	done.Wait()
 }

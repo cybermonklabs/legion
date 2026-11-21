@@ -59,12 +59,14 @@ A secret's `owner` tag, and any entry of its `requesters` tag, may name a Google
 and the group's lowercase email (`group:approvers@example.com`); an entry that starts `group:` and
 holds no lowercase email is refused, as a malformed owner or requester is. Each member of an owner
 group decides the secret's requests on the approval page, which Dispatch's Inbox lists for each
-member, and lists and revokes the grants the group approved, as the one owner of a person's secret
-does. No rule stops a member approving a request their own session made, as a sole owner may
-approve their own: a group owner is not a second person. An agent-tier secret a group owns goes to
-a member's own sessions at once and waits for a member's approval from any other session. A group
-in `requesters` admits its members' sessions. A list or revoke that names a group as its approver,
-rather than a member, is refused `400 APPROVER_IS_GROUP`.
+member, who may dismiss one once it expires. While the group reads fresh, every member lists the
+grants the group approved, as the one owner of a person's secret does, and a member the group's
+last good read listed may revoke them, however old that read is. No rule stops a member approving
+a request their own session made, as a sole owner may approve their own: a group owner is not a
+second person. An agent-tier secret a group owns goes to a member's own sessions at once and
+waits for a member's approval from any other session. A group in `requesters` admits its members'
+sessions. A list, revoke or dismissal that names a group as its approver, rather than a member,
+is refused `400 APPROVER_IS_GROUP`.
 
 The broker reads the members of each group a served secret names with the Directory API's
 `members.list`, nested members included (`internal/cipher/groups`): a group the five-minute policy

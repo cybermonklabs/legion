@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The group, its member, an outsider and the reader account of the wiring test: example names
@@ -35,7 +34,8 @@ const (
 
 // groupStands are stand-ins of IAM's generateAccessToken, answering the reader account's token,
 // and of the Directory's members.list, answering wiredMember as the one member of wiredGroup when
-// it is asked with that token.
+// it is asked with that token, a fifth of a second after it is asked: slow enough that a boot that
+// did not wait for its first reads would serve before them.
 func groupStands(t *testing.T) (iam, directory *httptest.Server) {
 	t.Helper()
 	iam = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,31 +51,35 @@ func groupStands(t *testing.T) (iam, directory *httptest.Server) {
 			http.Error(w, `{"error":{"code":403,"errors":[{"reason":"forbidden"}]}}`, http.StatusForbidden)
 			return
 		}
+		time.Sleep(200 * time.Millisecond)
 		_ = json.NewEncoder(w).Encode(map[string]any{"members": []map[string]string{{"email": wiredMember, "type": "USER", "role": "MEMBER"}}})
 	}))
 	t.Cleanup(directory.Close)
 	return iam, directory
 }
 
-// TestEveryDecisionSiteAdmitsAMember builds the broker's decision sites as main wires them — the
-// group reader (newGroupReader), the policy's loader (policyLoader) and the request machine with
-// its chain check (newRequestMachine), which the approval page reads its group reader from — with
-// the reader at stand-ins that list one member, and asks each site about that member and an
-// outsider: the policy gives the member the group's agent-tier secret at once and asks the group
-// for the outsider's; record.MayDecide on the policy's groups admits the member alone; the
-// machine lists the group for the member alone; its chain check admits the member alone.
+// TestEveryDecisionSiteAdmitsAMember boots the broker's decision sites as main wires them — the
+// group reader (newGroupReader), the policy's loader (policyLoader), the first load
+// (loadFirstPolicy) and the request machine with its chain check (newRequestMachine), which the
+// approval page reads its group reader from — with the reader at stand-ins that list one member,
+// and asks each site about that member and an outsider: the group is read when the first load
+// returns, since the boot waits for its first reads; the policy gives the member the group's
+// agent-tier secret at once and asks the group for the outsider's; record.MayDecide on the
+// policy's groups admits the member alone; the machine lists the group for the member alone; its
+// chain check admits the member alone.
 func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 	iam, directory := groupStands(t)
 	cfg := config.Config{SecretsPrefix: policytest.Prefix, DirectoryURL: directory.URL, DirectoryAccount: wiredReader}
 	reader := newGroupReader(cfg, iam.URL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podBearer}))
-	reader.Start(t.Context())
 
 	local := secrets.NewLocal(policytest.Secret("TEAM_TOKEN", record.GroupPrefix+wiredGroup, policy.TierAgent, "team-v1"))
-	current, err := policy.NewCurrent(t.Context(), policyLoader(cfg, policytest.Store(local), proxyrules.Rules{}, metrics.New(), reader), time.Hour)
+	current, err := loadFirstPolicy(t.Context(), policyLoader(cfg, policytest.Store(local), proxyrules.Rules{}, metrics.New(), reader), reader, metrics.New(), firstGroupReadsWait)
 	if err != nil {
-		t.Fatalf("NewCurrent: %v", err)
+		t.Fatalf("loadFirstPolicy: %v", err)
 	}
-	testwait.Eventually(t, "the group read the first load started", func() bool { return reader.Fresh(wiredGroup) })
+	if _, fresh := reader.Membership(wiredGroup, ""); !fresh {
+		t.Fatal("the first load returned before the group read it started had ended")
+	}
 
 	set := current.Get()
 	for _, c := range []struct {

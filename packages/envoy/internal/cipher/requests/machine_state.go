@@ -1476,9 +1476,10 @@ type Dismissal struct {
 // other read of the record gives them, so a person outside a private project learns nothing of its
 // records from a dismissal that names one; ErrProjectAccessUnavailable where Dispatch could not
 // say whether login may see it; record.ErrNotApprover when the record's approver is neither
-// record.CanonicalLogin(login) nor record.AnyoneApprover, which is the list's own rule for whose
-// list holds a record, and for an empty login or one that is record.AnyoneApprover itself, which
-// name nobody; ErrNotExpired for a record nobody has decided whose deadline has not passed; and
+// record.CanonicalLogin(login), record.AnyoneApprover, nor a group the group reader admits login
+// to now (record.GroupAdmits), which is the list's own rule for whose list holds a record, and for
+// an empty login, one that is record.AnyoneApprover itself, or one spelled as a group, which name
+// nobody; ErrNotExpired for a record nobody has decided whose deadline has not passed; and
 // ErrTerminal for every other record, one approved, denied or revoked, and a secret request
 // cancelled before its deadline. A secret request cancelled after its deadline is expired, and is
 // dismissed like any other.
@@ -1517,7 +1518,9 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 		return Dismissal{}, err
 	}
 	login = record.CanonicalLogin(login)
-	if login == "" || login == record.AnyoneApprover || approver != login && approver != record.AnyoneApprover {
+	_, loginIsGroup := record.GroupOf(login)
+	if login == "" || login == record.AnyoneApprover || loginIsGroup ||
+		approver != login && approver != record.AnyoneApprover && !record.GroupAdmits(m.Groups, approver, login) {
 		return Dismissal{}, record.ErrNotApprover
 	}
 	lock := `select 1 from credential_requests where id=$1 for share`
@@ -1734,6 +1737,13 @@ var ErrJudgeHolds = errors.New("the model judge is deciding this request; it goe
 
 // ErrJudgeHoldEnded is the judge's own write refused on a request it does not hold.
 var ErrJudgeHoldEnded = errors.New("the model judge no longer holds this request")
+
+// ErrRequestersGroupUnread is a decision refused because a name's requesters tag names a Google
+// group the broker has not read in the last two hours (policy.ReasonRequesterGroupUnread): the
+// list may still name the session's person, so the request stays pending, and the same decision
+// is taken once the group is read. It is always wrapped beside record.ErrNotApprover, so a caller
+// that knows only that refusal reads it as one.
+var ErrRequestersGroupUnread = errors.New("who may ask for it names a Google group the broker has not read in the last two hours")
 
 // DenyJudged ends recordID as the model judge running as modelID refusing it: the one way a
 // request the judge holds ends other than in the judge's grant, its hand-over to its person
@@ -2578,7 +2588,7 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 			// The list may still name this session's person, which no read in the last two hours
 			// can say: the decision is refused and the request stays pending, rather than recorded
 			// as the request's own denial, which a fresh read could prove wrong.
-			return fmt.Errorf("%w: %s's requesters name a group whose members were not read in the last two hours, so no one may approve it now; it stays pending until the group is read", record.ErrNotApprover, g.name)
+			return fmt.Errorf("%w: %w: %s; it stays pending until the group is read", record.ErrNotApprover, ErrRequestersGroupUnread, g.name)
 		}
 		if d.Outcome == policy.Deny && (d.Reason == policy.ReasonRequesterNotListed || projectDeny(d)) {
 			return &policyDenial{name: g.name, reason: policy.CallerReason(d.Reason)}

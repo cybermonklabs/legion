@@ -589,16 +589,16 @@ func (b Body) ApproverLogin(kind, service, login string, groups Groups) (string,
 // signed request names service (CheckDecider answers nil): for a machine login that names a
 // service, any login at all, since its credential acts as that service and as no person; for an
 // agent_secret record whose approver is AnyoneApprover, any login; for an agent_secret record whose
-// approver is a group (group:<address>, GroupOf), a login groups admits to that group now
-// (GroupAdmits), and nobody when groups is nil or the group is stale; and otherwise the person the
-// approver names. No login is AnyoneApprover itself, no login spelled as a group is the group, and
-// no empty login decides anything. A person's machine login's approver is the person whose
-// machine it becomes, so AnyoneApprover there admits no one, whatever binary opened the record,
-// and a group there admits no one either. Nor is a judge actor (JudgeLogin) ever a login that
-// decides: the judge's own approval is recorded under JudgeActor and never as a person, so an
-// owner tag or a login_hint spelled "judge:..." makes no record the judge's to approve as a
-// person. No rule keeps a person from deciding their own request: a member of a group approver
-// may approve a request their own session made, as a sole owner may.
+// approver is a group (group:<address>, GroupOf), a login the group's one look (GroupStanding)
+// finds listed and fresh, and nobody when groups is nil or the group is stale; and otherwise the
+// person the approver names. No login is AnyoneApprover itself, no login spelled as a group is the
+// group, and no empty login decides anything. A person's machine login's approver is the person
+// whose machine it becomes, so AnyoneApprover there admits no one, whatever binary opened the
+// record, and a group there admits no one either. Nor is a judge actor (JudgeLogin) ever a login
+// that decides: the judge's own approval is recorded under JudgeActor and never as a person, so an
+// owner tag or a login_hint spelled "judge:..." makes no record the judge's to approve as a person.
+// No rule keeps a person from deciding their own request: a member of a group approver may approve
+// a request their own session made, as a sole owner may.
 func MayDecide(kind, approver, service, login string, groups Groups) bool {
 	return CheckDecider(kind, approver, service, login, groups) == nil
 }

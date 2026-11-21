@@ -22,7 +22,6 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 const (
@@ -69,8 +68,11 @@ type Reader struct {
 	ctx context.Context
 	// wanted is each group the last Want named, by its bare address.
 	wanted map[string]*group
-	// inflight counts the reads Want started, which WaitReads waits for.
-	inflight sync.WaitGroup
+	// running counts the reads Want started that have not ended, and idle is closed while it is
+	// zero: a read that starts from zero makes a new idle, and the last read to end closes it, so
+	// WaitReads waits on the idle of the moment it looks, and no Add ever meets a Wait.
+	running int
+	idle    chan struct{}
 	// every and readTimeout are ReadEvery and readTimeout unless a test sets them.
 	every, readTimeout time.Duration
 }
@@ -118,13 +120,25 @@ func (r *Reader) Want(names []string) {
 		if !g.readAt.IsZero() || g.reading {
 			continue
 		}
-		r.inflight.Add(1)
+		if r.running == 0 {
+			r.idle = make(chan struct{})
+		}
+		r.running++
 		go func() {
-			defer r.inflight.Done()
+			defer r.readEnded()
 			r.read(ctx, name)
 		}()
 	}
 	r.wanted = next
+}
+
+// readEnded counts one read Want started as ended, and closes idle when it was the last.
+func (r *Reader) readEnded() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.running--; r.running == 0 {
+		close(r.idle)
+	}
 }
 
 // WaitReads returns once every read Want started has ended, or once ctx ends, whichever is
@@ -132,13 +146,15 @@ func (r *Reader) Want(names []string) {
 // comes up does not answer for a group it has not read yet when the read would have taken a
 // moment.
 func (r *Reader) WaitReads(ctx context.Context) {
-	done := make(chan struct{})
-	go func() {
-		r.inflight.Wait()
-		close(done)
-	}()
+	r.mu.Lock()
+	idle := r.idle
+	running := r.running
+	r.mu.Unlock()
+	if running == 0 {
+		return
+	}
 	select {
-	case <-done:
+	case <-idle:
 	case <-ctx.Done():
 	}
 }
@@ -169,13 +185,6 @@ func (r *Reader) Run(ctx context.Context) {
 	}
 }
 
-// HasMember answers whether login is a member of group, by the members its last good read kept,
-// when that read is StaleAfter old or newer (Membership).
-func (r *Reader) HasMember(group, login string) bool {
-	listed, fresh := r.Membership(group, login)
-	return listed && fresh
-}
-
 // Membership answers, from one look at group under the reader's lock, whether its last good read
 // listed login, whatever that read's age, and whether that read is fresh: StaleAfter old or newer.
 // A group no load names, or never read, answers false and false. The two answers come from one
@@ -192,7 +201,7 @@ func (r *Reader) Membership(group, login string) (listed, fresh bool) {
 	return listed, r.fresh(g)
 }
 
-// GroupsOf answers every wanted group HasMember admits login to, sorted.
+// GroupsOf answers every wanted group whose last good read lists login and is fresh, sorted.
 func (r *Reader) GroupsOf(login string) []string {
 	login = record.CanonicalLogin(login)
 	r.mu.Lock()
@@ -207,16 +216,7 @@ func (r *Reader) GroupsOf(login string) []string {
 	return names
 }
 
-// Fresh answers whether group's last good read is StaleAfter old or newer, the rule HasMember
-// admits members by: false for a group never read and for one no load names.
-func (r *Reader) Fresh(group string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	g, ok := r.wanted[group]
-	return ok && r.fresh(g)
-}
-
-// fresh is Fresh for g; r.mu is held.
+// fresh reports whether g's last good read is StaleAfter old or newer; r.mu is held.
 func (r *Reader) fresh(g *group) bool {
 	return !g.readAt.IsZero() && !r.now().After(g.readAt.Add(StaleAfter))
 }
@@ -267,7 +267,8 @@ func (r *Reader) list(ctx context.Context, name string) (map[string]struct{}, er
 	if err != nil {
 		return nil, err
 	}
-	client := redirects.Refused(cmp.Or(r.HTTP, http.DefaultClient))
+	// The calls go through call (token.go), which follows no redirect: they carry a token.
+	client := cmp.Or(r.HTTP, http.DefaultClient)
 	endpoint := cmp.Or(r.BaseURL, googleDirectoryURL) + "/admin/directory/v1/groups/" + url.PathEscape(name) + "/members"
 	members := map[string]struct{}{}
 	query := url.Values{"includeDerivedMembership": {"true"}, "maxResults": {pageSize}}

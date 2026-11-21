@@ -405,23 +405,7 @@ func main() {
 		// from `again` and answers with os.Exit(1) (measured: gone within 30 ms of that signal),
 		// or the kubelet's SIGKILL at the end of the grace period.
 		LoadPolicy: func(serving context.Context) (*policy.Current, error) {
-			// The group reads run on serving, as the reload does: a read a load starts, and the
-			// hourly read, end when the broker stops serving rather than at the signal, so a
-			// draining pod still admits the members it read.
-			groupReader.Start(serving)
-			current, err := policy.NewCurrent(serving, loader, policyRefresh)
-			if err != nil {
-				return nil, err
-			}
-			// The first load named its groups, and their reads started: the pod waits a bounded
-			// time for them, so it does not serve its first requests with no group read yet. A
-			// read still under way after the wait goes on, and its group admits nobody until it
-			// ends; a failed one is read again at the next load (groups.Reader.Want).
-			firstReads, cancel := context.WithTimeout(serving, firstGroupReadsWait)
-			groupReader.WaitReads(firstReads)
-			cancel()
-			policy.NewUnservableSecrets(registry, current)
-			return current, nil
+			return loadFirstPolicy(serving, loader, groupReader, registry, firstGroupReadsWait)
 		},
 		// The receiving half of the reread fan-out, started after the first policy load (it
 		// rereads into that policy) and before the bind, so a pod that cannot hold a LISTEN
@@ -1285,8 +1269,8 @@ var _ record.Directory = (*groups.Reader)(nil)
 // at BROKER_DIRECTORY_URL (Google's when unset) with the token of the reader account
 // BROKER_DIRECTORY_ACCOUNT names, which it mints at IAM's generateAccessToken (iamURL, Google's
 // when empty, where a test names its stand-in) with own, this pod's own Google credential. With no
-// reader account it reads no group, and every group admits nobody. Its Context, the serving
-// context, is set where the first policy load starts.
+// reader account it reads no group, and every group admits nobody. The first policy load starts it
+// on the serving context (loadFirstPolicy).
 func newGroupReader(cfg config.Config, iamURL string, own oauth2.TokenSource) *groups.Reader {
 	return &groups.Reader{
 		BaseURL: cfg.DirectoryURL,
@@ -1310,6 +1294,26 @@ func policyLoader(cfg config.Config, secretStore secrets.Store, rules proxyrules
 // before the pod serves: a read is a token mint and a page or two of members, well inside it, and
 // a Directory that does not answer holds the boot no longer than this.
 const firstGroupReadsWait = 15 * time.Second
+
+// loadFirstPolicy is the broker's first policy load (the boot's LoadPolicy): it starts the group
+// reader on serving, as the reload does, so a read a load starts and the hourly read end when the
+// broker stops serving rather than at the signal, and a draining pod still admits the members it
+// read; it loads the policy, which names its groups to the reader and starts their reads; and it
+// waits up to wait for those reads, so the pod does not serve its first requests with no group
+// read yet. A read still under way after the wait goes on, and its group admits nobody until it
+// ends; a failed one is read again at the next load (groups.Reader.Want).
+func loadFirstPolicy(serving context.Context, loader policy.Loader, groupReader *groups.Reader, registry *metrics.Registry, wait time.Duration) (*policy.Current, error) {
+	groupReader.Start(serving)
+	current, err := policy.NewCurrent(serving, loader, policyRefresh)
+	if err != nil {
+		return nil, err
+	}
+	firstReads, cancel := context.WithTimeout(serving, wait)
+	groupReader.WaitReads(firstReads)
+	cancel()
+	policy.NewUnservableSecrets(registry, current)
+	return current, nil
+}
 
 // vmPersonsByAccount is the person each BROKER_VM_EXCHANGE_ACCOUNTS entry names, keyed by its
 // account, an entry that names none left out: whose Inbox lists a request one of that fleet's

@@ -578,16 +578,18 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 // id no record has (requests.Machine.ReadRecordFor), and one Dispatch could not answer for prints its
 // own line (unansweredOutcome).
 var refusalSentences = map[string]string{
-	refusedPolicy: "still pending; it was not decided: the current policy no longer lets you approve it.",
-	refusedChain:  "still pending; it was not decided: its approval chain no longer verifies.",
-	refusedError:  "still pending; it was not decided: the secrets broker could not decide it. Try again shortly.",
+	refusedPolicy:      "still pending; it was not decided: the current policy no longer lets you approve it.",
+	refusedChain:       "still pending; it was not decided: its approval chain no longer verifies.",
+	refusedError:       "still pending; it was not decided: the secrets broker could not decide it. Try again shortly.",
+	refusedGroupUnread: "still pending; it was not decided: who may ask for it names a Google group the broker has not read in the last two hours. Approve it again once the group is read.",
 }
 
 // The codes refusalSentences maps, which decide answers.
 const (
-	refusedPolicy = "policy"
-	refusedChain  = "chain"
-	refusedError  = "error"
+	refusedPolicy      = "policy"
+	refusedChain       = "chain"
+	refusedError       = "error"
+	refusedGroupUnread = "group-unread"
 )
 
 // decide decides one record as login and answers what became of it, for the log, the code of why
@@ -605,7 +607,9 @@ const (
 // them nothing of it. A refusal record.ErrNotApprover carries for a record whose approver line
 // names someone else is said by the page it lands on in its own words ("not yours to decide"),
 // and carries no code; one for a record login may still see and decide is the current policy's —
-// its owner, a max-grant or a withheld name moved since the page was printed.
+// its owner, a max-grant or a withheld name moved since the page was printed — or, where a name's
+// requesters name a group the broker has not read in the last two hours, that group's
+// (requests.ErrRequestersGroupUnread), which the same approval passes once the group is read.
 func (p *Page) decide(ctx context.Context, id string, approve bool, login string) (outcome, refusal string, made bool) {
 	kind, err := p.cfg.Machine.RecordKind(ctx, id)
 	switch {
@@ -631,6 +635,8 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 		return "already decided", "", false
 	case errors.Is(err, requests.ErrGrantChainInvalid):
 		return "refused: " + err.Error(), refusedChain, false
+	case errors.Is(err, requests.ErrRequestersGroupUnread):
+		return "refused: " + err.Error(), refusedGroupUnread, false
 	case errors.Is(err, record.ErrNotApprover):
 		if d, read := p.cfg.Machine.ReadRecord(ctx, id); read == nil && !record.MayDecide(d.Kind, d.Approver, d.Service, login, p.cfg.Machine.Groups) {
 			return "refused: " + err.Error(), "", false
