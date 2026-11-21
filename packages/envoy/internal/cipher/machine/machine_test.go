@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -337,11 +338,16 @@ func (f fakeTokens) Verify(context.Context, string) (enroll.PodClaims, error) {
 // daemonTokenAccount is the ServiceAccount the token-login tests list for legion-daemon.
 const daemonTokenAccount = "system:serviceaccount:legion-system:legion-daemon-test"
 
-// withTokenAccount lists daemonTokenAccount for legion-daemon and has svc's verifier answer a
-// token for it issued at issued and expiring at expires.
+// tokenIssuer is the one issuer the token-login tests' broker trusts, named by a bare URL as one
+// cluster's BROKER_K8S_OIDC_ISSUER is, so it has no name.
+var tokenIssuer = oidc.NamedIssuer{URL: "https://cluster.example"}
+
+// withTokenAccount lists daemonTokenAccount for legion-daemon, from tokenIssuer, and has svc's
+// verifier answer a token of tokenIssuer for it, issued at issued and expiring at expires.
 func withTokenAccount(svc *Service, issued, expires time.Time) {
-	svc.Enroll.Pod = fakeTokens{claims: enroll.AccountClaims{Subject: daemonTokenAccount, IssuedAt: issued, Expiry: expires}}
-	svc.Enroll.ServiceLogins = map[string]string{daemonTokenAccount: "legion-daemon"}
+	svc.Enroll.Pod = fakeTokens{claims: enroll.AccountClaims{Subject: daemonTokenAccount, IssuedAt: issued, Expiry: expires, Issuer: tokenIssuer}}
+	svc.Enroll.Issuers = []oidc.NamedIssuer{tokenIssuer}
+	svc.Enroll.ServiceLogins = map[string]enroll.ServiceLogin{daemonTokenAccount: {Service: "legion-daemon", Issuers: []string{tokenIssuer.Name}}}
 }
 
 // TestATokenLoginsCredentialEnrollsOnlyPods pins that a credential a service's token login issued

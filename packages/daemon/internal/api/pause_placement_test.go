@@ -23,9 +23,9 @@ import (
 // compaction refused PROJECT_PAUSED (refusedWhilePaused). Each is asked as three callers: a pod
 // whose plugin is the contract before pauseContract, a pod at it, and a caller in no pod that
 // states this daemon's contract. The other writers of a PauseFailure — PROJECT_ALREADY_PAUSED,
-// the resume's PROJECT_NOT_PAUSED, refuseWithoutPause on the pause and the resume, and
-// refusedWhilePaused on its other requests — are placed because they write through writeAnswer,
-// which reads placedByPod; no route test here drives them.
+// the resume's PROJECT_NOT_PAUSED, refuseWithoutPause on the pause and the resume,
+// refusedWhilePaused on its other requests, and startProjectRelease's PROJECT_PAUSED — are placed
+// because they write through writeAnswer, which reads placedByPod; no route test here drives them.
 
 const (
 	// pauseAtPodUID is a second pod of the project, whose plugin records pauseContract, and

@@ -1037,9 +1037,9 @@ Exposure checks: kept-pod drops from the launch log; the date any arm left the f
 
 ## Secrets and files
 
-- **The operator token** authenticates `legion controller start`, `legion claims` and
-  `legion issue status <issue> <status>` from an operator's shell. Make one long random string in a
-  file only you can read:
+- **The operator token** authenticates `legion controller start`, `legion claims`,
+  `legion issue status <issue> <status>` and `legion project release` from an operator's shell. Make
+  one long random string in a file only you can read:
 
   ```sh
   openssl rand -hex 32 > operator-token && chmod 0600 operator-token

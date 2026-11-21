@@ -142,10 +142,7 @@ func newE2EServer(t *testing.T) *e2eServer {
 	// verifies one in production.
 	issuer := oidctest.New(t)
 	issuerKey := issuer.PublishKey(t, "signing-key")
-	accountTokens, err := oidc.New(context.Background(), issuer.URL(), dispatchAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
+	accountTokens := oidc.NewIssuerSet([]oidc.NamedIssuer{{URL: issuer.URL()}}, dispatchAudience, 0)
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
@@ -156,7 +153,7 @@ func newE2EServer(t *testing.T) *e2eServer {
 	api.Register(mux, api.Deps{
 		PublicURL:     srv.URL,
 		APIAccounts:   map[string]api.Account{dispatchAccount: ciphertest.Caller(t, "dispatch")},
-		AccountTokens: enroll.K8sPodVerifier{Verifier: accountTokens},
+		AccountTokens: enroll.K8sPodVerifier{Issuers: accountTokens},
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},

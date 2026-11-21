@@ -153,6 +153,14 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// release is the daemon's project release mark, set by attach: while it holds, the idle and
+	// unowned ticks decide no pod (idlePass) and the wakes fire nothing (wakePass). Nil, in a test
+	// that builds the runtime by hand, holds nothing.
+	release *projectRelease
+	// releaseStopped is the claims a boot found stopped by a project release whose sessions do not
+	// hold their roles yet, the set attach also gives the outbox: a claim's turn or failure takes
+	// it out (claimDurableState). Nil, in a test that builds the runtime by hand, holds no claim.
+	releaseStopped *releaseStoppedClaims
 	// now is the daemon's one clock (overrides.clock, the machines' clock, the wall clock in
 	// production), which the engine stamps its deadlines with (workflow.Config.Clock) and the
 	// idle, wake and stuck passes read their now from, so a test clock moves all of them
@@ -1592,7 +1600,9 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
 // unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
 // and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
-// which also drops that repository (podEndsOn).
+// which also drops that repository (podEndsOn). The claims a boot found stopped by a project
+// release are the set supervision read from the store at the boot (readReleaseStoppedClaims),
+// before any machine exists and so before the boot's start of any of them runs.
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
@@ -1601,6 +1611,9 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
+	w.outbox.release, w.release = supervision.plan.release, supervision.plan.release
+	w.releaseStopped = supervision.releaseStopped
+	w.outbox.releaseStopped = w.releaseStopped
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
@@ -1860,8 +1873,16 @@ func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState
 // claimDurableState is the daemon's one durable-state callback, because a supervisor keeps one
 // (supervisor.OnDurableState): a claim's ready and its failure are workflow facts (terminal), and
 // the same transitions measure a released pod's resume — its replacement pod is up at the first
-// ready, and the woken role took its work at the first turn (podResume).
+// ready, and the woken role took its work at the first turn (podResume). Two of the three states
+// it reports also end the wait a delivery makes for a claim a boot found stopped by a project
+// release (releaseStoppedClaims): working is a session that holds its role, and a failed claim
+// holds it no more. A ready ends no such wait: the plugin takes the role after the ready, at the
+// session's first turn or at the first-turn bound (supervise.SaidReady), and the set reads that
+// bound from the claim's own ready (releaseStoppedClaims.comingBack).
 func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.ClaimState) {
+	if state == supervise.StateWorking || state == supervise.StateFailed {
+		w.releaseStopped.settled(c.Token)
+	}
 	w.podResume(c, state)
 	if state == supervise.StateReady || state == supervise.StateFailed {
 		w.terminal(c, state)

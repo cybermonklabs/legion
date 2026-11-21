@@ -39,6 +39,7 @@ legion probe-boot	--config string
 legion probe-image	hidden	--claude-code-pin string	--claude-root string	--daemon-api-version string	--envoy-plugin-root string	--omp string	--plugin-root string	--pod-safety bool	--probe-budget duration	--provider-env-dir string	--role-config-files role=files	--role-namespaces string	--role-references string	--skip-agent-models bool	--skip-browser bool	--test-postgres string
 legion project
 legion project pause	--config string	--json bool	--operator-token-file string	--port int	--reason string
+legion project release	--bound duration	--config string	--dry-run bool	--json bool	--operator-token-file string	--port int	--wait duration
 legion project resume	--config string	--json bool	--operator-token-file string	--port int
 legion restart
 legion sessions

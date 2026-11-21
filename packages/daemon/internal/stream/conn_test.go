@@ -895,6 +895,68 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 	}
 }
 
+// The project release reads each pod's workspace through one role's shim, and asks that pod's
+// roles whenever the read did not say: a shim that could not read, and a shim built before the
+// read, which forwards the frame to Oh My Pi and is refused as an unknown command. Both reach the
+// caller as a RefusedError carrying the far side's words and naming the read, never as a
+// workspace with nothing unpushed, and neither is a sentinel the supervisor charges.
+func TestReadUnpushedAsksTheShimAndReadsItsResult(t *testing.T) {
+	read := func(t *testing.T, answer func(id string) shimwire.Frame) (shimwire.ReadUnpushed, runtime.UnpushedWork, error) {
+		t.Helper()
+		h := startListener(t, harnessOptions{})
+		p := h.connect(testToken)
+		var work runtime.UnpushedWork
+		result := async(func() (err error) {
+			work, err = h.conn().ReadUnpushed(context.Background(), "INFRA-945", 3*time.Second)
+			return err
+		})
+		request := p.expect(shimwire.TypeReadUnpushed).(shimwire.ReadUnpushed)
+		p.send(answer(request.ID))
+		return request, work, awaitResult(t, result)
+	}
+	t.Run("the shim's count and flag", func(t *testing.T) {
+		request, work, err := read(t, func(id string) shimwire.Frame {
+			return shimwire.ReadUnpushedResult{ID: id, OK: true, Commits: 2, WorkingCopyChanged: true}
+		})
+		if request.ID == "" || request.Issue != "INFRA-945" || request.TimeoutMs != 3000 {
+			t.Fatalf("read-unpushed frame = %#v", request)
+		}
+		if err != nil || work != (runtime.UnpushedWork{Commits: 2, WorkingCopyChanged: true}) {
+			t.Fatalf("ReadUnpushed = %#v, %v; want the shim's 2 commits and its changed working copy", work, err)
+		}
+	})
+	for _, tc := range []struct {
+		name   string
+		reason string
+		answer func(id, reason string) shimwire.Frame
+	}{
+		{"the shim refuses the read", "worker-shim: LEGION_WORKSPACE is not set; no workspace to read for unpushed work",
+			func(id, reason string) shimwire.Frame {
+				return shimwire.ReadUnpushedResult{ID: id, Error: reason}
+			}},
+		{"an older shim forwards the read and OMP refuses the command it does not know", "Unknown command: read-unpushed",
+			func(id, reason string) shimwire.Frame {
+				return shimwire.Response{ID: id, Command: shimwire.TypeReadUnpushed, Success: false, Error: reason}
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, work, err := read(t, func(id string) shimwire.Frame { return tc.answer(id, tc.reason) })
+			var refused *RefusedError
+			if !errors.As(err, &refused) || refused.Command != shimwire.TypeReadUnpushed {
+				t.Fatalf("ReadUnpushed = %#v, %v; want a RefusedError naming %s", work, err, shimwire.TypeReadUnpushed)
+			}
+			if reason := runtime.RefusalReason(err); reason != tc.reason {
+				t.Fatalf("runtime.RefusalReason(%v) = %q, want the far side's words %q", err, reason, tc.reason)
+			}
+			for _, sentinel := range []error{runtime.ErrPromptRefused, runtime.ErrAdoptRefused, runtime.ErrTokenRefused} {
+				if errors.Is(err, sentinel) {
+					t.Fatalf("a refused read is %v", sentinel)
+				}
+			}
+		})
+	}
+}
+
 func TestAgentSecretsEnrollmentIsAnsweredByTheShim(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)

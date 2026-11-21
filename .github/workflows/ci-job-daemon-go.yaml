@@ -5,8 +5,8 @@ name: CI job daemon-go
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
 # What runs here is the Go daemon's own tests — the plain step over every package of
-# packages/daemon but the five concurrent ones and the text checks, less the two pure table
-# pins of internal/supervise, which the text-check job runs by name and this step skips by name,
+# packages/daemon but the five concurrent ones and the text checks, less the four pure pins of
+# internal/supervise, which the text-check job runs by name and this step skips by name,
 # the race step over those five packages, and the Stage 1 live proof, which builds ./cmd/legion
 # and boots it against this job's Postgres. They left ci.yaml's `test` job, which runs
 # thirty-two shell-script harnesses and a handful of Bun suites behind one filter: that filter
@@ -72,11 +72,14 @@ jobs:
     # prints the goroutine dump that names it. A step's worst case is therefore its largest
     # measured green duration plus its own -timeout: the setup before the plain step is now this
     # job's alone (no Bun install, no changie, no Bun suite), then that step's 839 s and its 15
-    # minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is under
-    # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
-    # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
-    # push runs).
-    timeout-minutes: 70
+    # minutes, then the race step's 1,901 s, the largest green one measured (its own comment says
+    # where) and its 40, then the step of what the race build cannot run, 26 s (24 s and 26 s in
+    # jobs 136067045968 and 136107224074) and its 10, then Stage 1 and the report. The three Go
+    # steps' share is 6,666 s; with the 325 s of setup and the 13 s after the race step that the
+    # `test` job measured when it carried these steps, upper bounds for this job's, that is
+    # 7,004 s, or about 116.7 minutes, and 117 minutes holds it (dispatch://INFRA-1052 measured
+    # the other figures over the 30 newest counted test jobs of main push runs).
+    timeout-minutes: 117
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -184,7 +187,7 @@ jobs:
       # pattern is built in .github/scripts/ci_job_reads.py from the race step's own package
       # list and that one package name, so the two steps cannot name different sets.
       #
-      # The -skip is the text-check job's two tests of internal/supervise, the pure table pins
+      # The -skip is the text-check job's four tests of internal/supervise, the pure pins
       # ci_job_reads.py's SUPERVISE_TABLE_TESTS names: they read that package's own source and
       # no database, so they run in .github/workflows/ci-job-text-checks.yaml beside the other
       # tests whose subject is text, where they wait behind no fixture, and a test run twice is
@@ -196,7 +199,7 @@ jobs:
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/intake|internal/shimwire|internal/textcheck)$' | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/intake|internal/shimwire|internal/textcheck)$' | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestStatesIsEveryDeclaredStateOnce|TestSuspendSourcesNameEveryConstant|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
@@ -225,9 +228,22 @@ jobs:
       # The step carries a package deadline of its own, as the envoy race lanes do: under go
       # test's ten-minute default, internal/daemon, by far the slowest of the five packages, took
       # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
-      # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
-      # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
-      # slowest run.
+      # main at job 125691048644 (run 41562777668). The project release's tests run in this step
+      # too, its two move tests among them (TestAProjectMovesToAnotherClusterAndBack took 243 s
+      # without -race in an issue pod on 2026-11-15). With them internal/daemon took 1,766.673 s
+      # on run 44669548677 (job 136067045968, the step 03:55:46Z to 04:25:57Z, 1,811 s) at
+      # d8582528, a head of the pull request that added them, while each of its test binaries
+      # built `legion` four times. The four builds became one (9ac96a1c), and the package still
+      # took 1,731.355 s on run 44731626340 (job 136272918493, the step 12:09:33Z to 12:39:02Z,
+      # 1,769 s) at b9eddd39. It took 1,853.104 s on run 44760054868 (job 136372026117, the step
+      # 15:27:15Z to 15:58:56Z, 1,901 s) at 831a1845, and at 81a1bd12 it ran into the 33 minutes
+      # the step then gave it, with no test failing first, on run 44787767496 (job 136467164419,
+      # the step 18:08:34Z to 18:42:25Z, 2,031 s), so 1,980.274 s is a lower bound of that run's
+      # time. On main, without the project release's tests, the package took 1,409.674 s (run
+      # 44759465127), 1,413.201 s (run 44768586470) and 1,475.337 s (run 44754421273) in the merge
+      # groups of 2026-11-20. The runs of that pull request's heads on 2026-11-20 spread from
+      # 1,731.355 s to more than 1,980.274 s, so the deadline is that lower bound plus 21%,
+      # 2,396 s, rounded up to whole minutes: 40 minutes, 2,400 s.
       #
       # The -skip is the plugin-pack job's three tests, the ones of internal/daemon that
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
@@ -239,7 +255,7 @@ jobs:
       # other job's from the one list and holds each step to it, so the skip and the run cannot
       # come to name different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
+        run: go test -count=1 -race -timeout 40m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one

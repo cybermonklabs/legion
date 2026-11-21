@@ -153,6 +153,9 @@ type Store interface {
 	// Claims is every stored claim, including retired claims whose session files can
 	// remain on a Sandbox-owned volume until its cleanup reaps it.
 	Claims(ctx context.Context) ([]supervise.Claim, error)
+	// ClaimByToken is token's stored claim, and whether the store holds one: the one claim a
+	// request its shim answers goes over (issueRoleConn), read alone rather than with every other.
+	ClaimByToken(ctx context.Context, token claim.Token) (supervise.Claim, bool, error)
 }
 
 // Options is what a Runtime is built from. Every field without a stated default is required.
@@ -422,6 +425,14 @@ type Options struct {
 	// daemon that runs with no GitHub App, which refuses the start of every role whose launcher
 	// names a tag and starts a launcher that names none as it is.
 	LeakCheck LeakCheckReader
+	// ProjectReleaseHolds is whether the daemon's project release holds every pod of the project
+	// now (internal/daemon's projectRelease, dispatch://INFRA-3583 R7). While it answers true the
+	// runtime makes no pod: createSandbox, the Running patch of a relaunch and of a repository
+	// cache's pod, ensureCacheSandbox, createProbe and ReplacePod each refuse with
+	// runtime.ErrProjectReleased before they write anything (releaseHolds). It is read at each of
+	// those acts rather than once, because the mark is set while the daemon runs and cleared again
+	// only when the release's record could not be written. Nil holds nothing.
+	ProjectReleaseHolds func() bool
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.

@@ -177,6 +177,14 @@ var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 // started.
 var ErrSessionStore = errors.New("the session store could not be asked")
 
+// ErrProjectReleased is an act the runtime refused because the daemon's project release holds
+// every pod of the project until the daemon's next boot (dispatch://INFRA-3583 R7): the Sandbox
+// runtime creates no Sandbox, patches none to Running, makes no repository cache or image probe
+// and replaces no pod while it holds. Nothing was started. It is no fault of the claim's: a launch
+// that raced the release's mark past the launch check meets it here, and the caller charges
+// nothing for it (supervise's start), as it charges nothing for ErrSessionStore.
+var ErrProjectReleased = errors.New("the project release holds every pod of the project until the daemon's next boot")
+
 // ErrSessionLookupUnavailable is a Resume by id (spec.ResumeSession, without spec.ResumeByAgent)
 // that the runtime did not send, because the pod's launcher has not said that it can look a
 // session up by its id (shimwire.LauncherHello.ResumesBySession). Nothing was started, and the
@@ -283,6 +291,69 @@ type IssueVolumeReader interface {
 // pod saves nothing because there is no such pod.
 type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
+}
+
+// ProjectPods is what a project release needs of a runtime that runs the project's pods
+// (dispatch://INFRA-3583 R6): every Sandbox of the project as the runtime watches it and as the
+// API server lists it now, a read of an issue workspace's unpushed work through one role's shim,
+// and the deletes of the Sandboxes that are no issue's. The issue pods themselves go through
+// IssueSuspender. A runtime that runs no pod implements none of it, so the daemon on it refuses a
+// release, and the assertion is made where the release is built, as IssueSuspender's is.
+//
+// Both deletes here refuse a Sandbox written since the delete was decided, where the runtime's own
+// deletes keep it for the next orphan sweep: the release holds that sweep, and the sweep takes no
+// cache or probe, so a Sandbox kept so would stand while the release reported it deleted.
+type ProjectPods interface {
+	IssueSuspender
+	// ProjectSandboxes is every Sandbox of the project the runtime's store holds, in name order,
+	// not counting one already being deleted.
+	ProjectSandboxes(ctx context.Context) ([]ProjectSandbox, error)
+	// ProjectSandboxesFromAPI is ProjectSandboxes as the API server lists them now rather than
+	// as the runtime's store holds them, so a Sandbox the store has not heard of yet is in it.
+	ProjectSandboxesFromAPI(ctx context.Context) ([]ProjectSandbox, error)
+	// ReadUnpushed has role's shim read the unpushed work of the issue's workspace
+	// (Conn.ReadUnpushed), under WorkspaceBundleTimeout.
+	ReadUnpushed(ctx context.Context, issue string, role claim.Role) (UnpushedWork, error)
+	// DeleteProjectSandbox deletes the repository cache's or the image probe's Sandbox name, as
+	// the runtime's own deletes of those do: under the pod's launch turn, fenced to the Sandbox
+	// as the API holds it when the delete reads it, behind the session-volume guard, whose refusal
+	// is the error. A Sandbox already gone is deleted. A Sandbox of any other kind is refused, and
+	// so is one written between the read and the delete.
+	DeleteProjectSandbox(ctx context.Context, name string) error
+	// ReleaseProjectController is Runtime.Release of the controller's claim token, which deletes
+	// the controller's Sandbox behind that delete's own volume guard, except that a Sandbox
+	// written since the delete was decided is refused rather than kept.
+	ReleaseProjectController(ctx context.Context, token claim.Token) error
+}
+
+// ProjectSandboxKind is what one Sandbox of a project is for (ProjectSandbox.Kind).
+type ProjectSandboxKind string
+
+const (
+	// ProjectSandboxIssue is an issue's pod, which runs the roles of that issue.
+	ProjectSandboxIssue ProjectSandboxKind = "issue"
+	// ProjectSandboxController is the project's controller pod.
+	ProjectSandboxController ProjectSandboxKind = "controller"
+	// ProjectSandboxCache is a repository cache's pod.
+	ProjectSandboxCache ProjectSandboxKind = "cache"
+	// ProjectSandboxProbe is an image probe's pod.
+	ProjectSandboxProbe ProjectSandboxKind = "probe"
+	// ProjectSandboxUnknown is a Sandbox of the project whose labels name none of the four, which
+	// no act of the daemon made and none of them deletes.
+	ProjectSandboxUnknown ProjectSandboxKind = "unknown"
+)
+
+// ProjectSandbox is one Sandbox of a project as the runtime's store holds it: its name and kind,
+// the issue and tree its labels name (an issue pod's alone), the uid of the pod it owns now (""
+// when it owns none that runs), and whether that pod runs the image the daemon's configuration
+// names, every container of it included (false for a Sandbox with no such pod).
+type ProjectSandbox struct {
+	Name            string
+	Kind            ProjectSandboxKind
+	Issue           string
+	Tree            string
+	PodUID          string
+	ConfiguredImage bool
 }
 
 // SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,

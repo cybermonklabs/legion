@@ -428,7 +428,7 @@ func (p *projectPause) applyResumePass(ctx context.Context, ended store.Pause) {
 // has no live role stays until a role of it is ready again or the pod is deleted. A failed end is
 // logged and the hold stays.
 func (p *projectPause) endLiveHolds(ctx context.Context, ended store.Pause) {
-	holds, err := p.store.OpenPausePodHolds(ctx, p.project)
+	holds, err := p.store.OpenPausePodHolds(ctx, p.token)
 	if err != nil {
 		p.log.Error("pause: the resume could not read the pods a pause holds; their holds stay until a role of each is ready",
 			"pause", ended.ID, "error", err)

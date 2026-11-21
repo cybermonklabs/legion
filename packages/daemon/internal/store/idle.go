@@ -189,6 +189,11 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 // written, as a fault of the rule that decided it rather than of the database: the save of the
 // workspace is asked of the role the mark names, so a release without one and without the
 // second rule's kind is a release nobody can carry out.
+//
+// Neither rule's release starts while the project has a project release no boot has ended
+// (project_releases.ended_at null): the transaction refuses with errProjectReleaseRunning before
+// it reads the view or decides anything, since that release holds every pod of the project until
+// the daemon's next boot (dispatch://INFRA-3583 R7).
 func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
 	if project == "" || issue == "" {
 		return false, errors.New("an idle release needs its project and its issue")
@@ -197,6 +202,18 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
+		}
+		// A project release no boot has ended holds every pod of the project, and its own start
+		// takes this same serializer (StartProjectRelease), so the two commit in a line: a tick
+		// that read the daemon's mark before the release set it, and reached here after the
+		// release's take-over committed, finds the release's row and starts no idle release
+		// beside it. One that commits first is taken over by the release's own transaction.
+		running, err := projectReleaseRunning(ctx, tx, project)
+		if err != nil {
+			return err
+		}
+		if running {
+			return errProjectReleaseRunning
 		}
 		view, err := readIdleView(ctx, tx, project, issue)
 		if err != nil {

@@ -60,7 +60,9 @@ func TestVerifyGoogleIdentityReadsTheAccount(t *testing.T) {
 // a verifier of https://accounts.google.com. A token of either spelling that fails is refused
 // for what is wrong with it, not as another issuer's: the class is what an operator reads, and
 // what a caller that tries several verifiers takes "not mine" from (ErrIssuer). Both spellings
-// also pick Google's verifier (Issues), and no other issuer does.
+// also pick Google's verifier (Issues), and no other issuer does. Issues reads a token as Verify
+// does, every space removed, so each white-spaced form of a token picks the verifier its compact
+// form picks.
 func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
 	issuer := oidctest.New(t)
 	signing := oidctest.NewKey(t, "google-signing-key")
@@ -80,6 +82,11 @@ func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
 		if !google.Issues(raw) {
 			t.Errorf("iss %q does not pick Google's verifier", spelling)
 		}
+		for name, spaced := range whiteSpaced(raw) {
+			if !google.Issues(spaced) {
+				t.Errorf("iss %q with %s does not pick Google's verifier", spelling, name)
+			}
+		}
 	}
 	other := googleIdentityClaims(issuer, googleTestAudience)
 	other["iss"] = "https://accounts.google.com.example"
@@ -89,5 +96,10 @@ func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
 	}
 	if google.Issues(raw) {
 		t.Errorf("another issuer picks Google's verifier")
+	}
+	for name, spaced := range whiteSpaced(raw) {
+		if google.Issues(spaced) {
+			t.Errorf("a token of another issuer with %s picks Google's verifier", name)
+		}
 	}
 }

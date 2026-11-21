@@ -60,11 +60,12 @@ func personPodSchemas() []personPodSchema {
 }
 
 // newPersonPodRig is a podRig whose settings map adaPodAccount to ada: BROKER_SERVICE_LOGINS
-// gives the account ada's own login service, and BROKER_POD_OPERATORS maps it to her.
+// gives the account ada's own login service, from the rig's one issuer, and BROKER_POD_OPERATORS
+// maps it to her.
 func newPersonPodRig(t *testing.T, schema personPodSchema) podRig {
 	t.Helper()
 	r := schema.rig(t)
-	r.svc.ServiceLogins[adaPodAccount] = adaLoginService
+	r.svc.ServiceLogins[adaPodAccount] = ServiceLogin{Service: adaLoginService, Issuers: []string{""}}
 	r.svc.PodOperators = map[string]string{adaPodAccount: adaPerson}
 	return r
 }
@@ -360,7 +361,7 @@ func TestAPersonPodLoginEndsItsOwnPodAlone(t *testing.T) {
 		t.Run(schema.name, func(t *testing.T) {
 			r := newPersonPodRig(t, schema)
 			ctx := context.Background()
-			r.svc.ServiceLogins[adaBatchAccount] = adaBatchLoginService
+			r.svc.ServiceLogins[adaBatchAccount] = ServiceLogin{Service: adaBatchLoginService, Issuers: []string{""}}
 			r.svc.PodOperators[adaBatchAccount] = adaPerson
 
 			first := personLogin(t, r, adaPodAccount, "pod-uid-ada-one", adaPerson)

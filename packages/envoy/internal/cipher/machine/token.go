@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,12 +34,18 @@ var (
 	// ErrTokenInvalid is VerifyServiceToken's refusal of a token that does not verify: another
 	// issuer or audience, a bad signature, or a malformed token.
 	ErrTokenInvalid = errors.New("the ServiceAccount token does not verify")
+	// ErrIssuerUnavailable is VerifyServiceToken's answer to a token whose issuer the broker cannot
+	// read: the issuer's discovery document has not been read yet, or its key set cannot be.
+	// Nothing was decided about the token, so the caller presents it again later, where
+	// ErrTokenInvalid is a token judged and refused. It wraps oidc.ErrIssuerUnavailable.
+	ErrIssuerUnavailable = fmt.Errorf("the ServiceAccount token's issuer cannot be read yet: %w", oidc.ErrIssuerUnavailable)
 	// ErrTokenTooLongLived is VerifyServiceToken's refusal of a verified token that names no issue
 	// time, or lives longer than MaxTokenLoginLifetime from it: a projected token's
 	// expirationSeconds, or `kubectl create token --duration`, must be at most an hour.
 	ErrTokenTooLongLived = errors.New("the ServiceAccount token lives longer than an hour from its issue")
 	// ErrAccountNotListed is the refusal of a verified token whose ServiceAccount
-	// BROKER_SERVICE_LOGINS does not name, or names for another service than the request asks.
+	// BROKER_SERVICE_LOGINS does not name, names for another service than the request asks, or
+	// names with issuers that do not hold the one that signed the token.
 	ErrAccountNotListed = errors.New("this ServiceAccount does not log in as this service")
 )
 
@@ -70,15 +77,17 @@ type TokenCredential struct {
 }
 
 // VerifyServiceToken verifies a service's projected Kubernetes ServiceAccount token and maps it
-// to the service it logs in as: the token goes to the cluster's verifier (s.Enroll.Pod, the one
-// pod enrollment uses) and its subject must be in BROKER_SERVICE_LOGINS. It is held to
+// to the service it logs in as: the token goes to the clusters' verifier (s.Enroll.Pod, the one
+// pod enrollment uses), which checks it against the issuer it names, and its subject must be in
+// BROKER_SERVICE_LOGINS with an entry that names that issuer. It is held to
 // MaxTokenLoginLifetime from its issue, and AuthenticateLauncher reads the same setting for
 // every credential a login issues. It is both the check a token login makes and the check the
 // routes whose callers are a deployment's daemons make (api's serviceAuth class,
 // POST /v1/oauth/exchange/pod-sessions and POST /v1/oauth/exchange/pod-sessions/release), so
 // they refuse the same accounts for the same reasons. With no Kubernetes issuer it is
-// ErrTokenLoginsOff. The other refusals are ErrTokenExpired, ErrTokenInvalid,
-// ErrTokenTooLongLived and ErrAccountNotListed; none repeats the token.
+// ErrTokenLoginsOff, and a token whose issuer the broker cannot read yet is ErrIssuerUnavailable.
+// The other refusals are ErrTokenExpired, ErrTokenInvalid, ErrTokenTooLongLived and
+// ErrAccountNotListed; none repeats the token.
 //
 // The answer also names the person that BROKER_POD_OPERATORS maps the account to
 // (ServiceAccount.Person), as the setting is at this call. It names no person for an account that
@@ -97,10 +106,14 @@ func (s *Service) VerifyServiceToken(ctx context.Context, token string) (Service
 }
 
 // tokenRefusal is a ServiceAccount token that did not verify: ErrTokenExpired for one past its
-// expiry, else ErrTokenInvalid, each naming why.
+// expiry, ErrIssuerUnavailable for one whose issuer could not be read, else ErrTokenInvalid, each
+// naming why.
 func tokenRefusal(err error) error {
-	if errors.Is(err, oidc.ErrExpired) {
+	switch {
+	case errors.Is(err, oidc.ErrExpired):
 		return fmt.Errorf("%w (%v)", ErrTokenExpired, err)
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		return fmt.Errorf("%w (%v)", ErrIssuerUnavailable, err)
 	}
 	return fmt.Errorf("%w (%v)", ErrTokenInvalid, err)
 }
@@ -119,19 +132,25 @@ func (s *Service) lifetimeProblem(claims enroll.AccountClaims) string {
 
 // verifyKubernetes maps a verified ServiceAccount token through BROKER_SERVICE_LOGINS to the
 // service it logs in as, and through BROKER_POD_OPERATORS to the person it acts for
-// (ServiceAccount.Person, "" for an account that the setting does not map). It reads both settings
-// at each login, so a removed or moved entry takes effect at the pod's next login.
+// (ServiceAccount.Person, "" for an account that the setting does not map). A listed subject's
+// token is taken only from an issuer its entry names: the same account name in another cluster is
+// another ServiceAccount, which the entry does not list, so it is ErrAccountNotListed as an
+// unlisted subject is, mapped account or not. It reads both settings at each login, so a removed
+// or moved entry takes effect at the pod's next login.
 func (s *Service) verifyKubernetes(claims enroll.AccountClaims) (ServiceAccount, error) {
 	if problem := s.lifetimeProblem(claims); problem != "" {
 		return ServiceAccount{}, fmt.Errorf("%w: it %s", ErrTokenTooLongLived, problem)
 	}
-	service, listed := s.Enroll.ServiceLogins[claims.Subject]
+	login, listed := s.Enroll.ServiceLogins[claims.Subject]
 	if !listed {
 		return ServiceAccount{}, fmt.Errorf("%w: %s is not in BROKER_SERVICE_LOGINS", ErrAccountNotListed, claims.Subject)
 	}
+	if !slices.Contains(login.Issuers, claims.Issuer.Name) {
+		return ServiceAccount{}, fmt.Errorf("%w: %s's BROKER_SERVICE_LOGINS entry does not name the issuer %q, which signed this token", ErrAccountNotListed, claims.Subject, claims.Issuer.Name)
+	}
 	namespace, name, _ := strings.Cut(strings.TrimPrefix(claims.Subject, "system:serviceaccount:"), ":")
 	return ServiceAccount{
-		AccountClaims: claims, Service: service, Host: namespace + "/" + name,
+		AccountClaims: claims, Service: login.Service, Host: namespace + "/" + name,
 		Person: s.Enroll.PodOperator(&claims.Subject),
 	}, nil
 }
@@ -176,7 +195,8 @@ func (s *Service) TokenLogin(ctx context.Context, account ServiceAccount, compac
 	}
 	expires = expires.UTC().Truncate(time.Microsecond)
 	login := enroll.TokenLogin{
-		Subject: account.Subject, Service: account.Service, Host: account.Host, PodUID: account.PodUID, TokenExpires: account.Expiry,
+		Subject: account.Subject, Service: account.Service, Host: account.Host, PodUID: account.PodUID,
+		Issuer: account.Issuer.URL, TokenExpires: account.Expiry,
 		Thumbprint: obj.Thumbprint, JWK: jwk, Expires: expires,
 	}
 	if account.PodUID != "" {

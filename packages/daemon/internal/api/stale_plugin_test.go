@@ -20,7 +20,10 @@ import (
 
 // newStaleHarness is a harness with its log captured so a test can read the Warn line a
 // stale-caller or an undecodable-body refusal writes (LEGION-164). Its supervise deps can
-// relaunch a stale-plugin process (newHarness's default).
+// relaunch a stale-plugin process (newHarness's default). It serves the project release's two
+// routes over a release that never ran (fakeProjectRelease), so a test that walks every route
+// (TestNoRouteTakesABodyStringHoldingANul) reaches each one's own answer rather than the 500 of
+// a daemon that serves no release.
 func newStaleHarness(t *testing.T) (*harness, *bytes.Buffer) {
 	t.Helper()
 	h := newHarness(t)
@@ -31,7 +34,8 @@ func newStaleHarness(t *testing.T) (*harness, *bytes.Buffer) {
 		Controller: h.store, Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
 		PromptAgents: testPromptAgents, PluginRelaunchable: true,
 		State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
-		Log: slog.New(slog.NewJSONHandler(logs, nil)),
+		Log:            slog.New(slog.NewJSONHandler(logs, nil)),
+		ProjectRelease: &fakeProjectRelease{},
 	}).Handler
 	return h, logs
 }

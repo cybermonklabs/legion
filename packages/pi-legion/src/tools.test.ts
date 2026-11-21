@@ -307,7 +307,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "other role stops with its conversation kept, an idle one at once and one in a turn when that turn ends, and the " +
   "pause deletes no pod. Each task, notice and wake for a stopped role waits for the resume. The answer is the " +
   "pause: its id, since, by and reason. The daemon refuses a second pause (PROJECT_ALREADY_PAUSED, naming the " +
-  "pause that stands) and a pause its configuration cannot hold (PAUSE_UNAVAILABLE, naming the setting). " +
+  "pause that stands), a pause its configuration cannot hold (PAUSE_UNAVAILABLE, naming the setting) and a pause " +
+  "while a project release runs (PROJECT_RELEASING, naming the release). " +
   "resume ends the pause whoever made it, the operator's included. Each role the pause held something for then " +
   "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
   "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
@@ -2110,9 +2111,9 @@ test("the controller pauses the project with its reason and resumes it, and each
 });
 
 // The daemon's refusals reach the controller as every other write's do: the code, then the
-// daemon's sentence, which names the pause that stands, the last pause, or the setting that
-// turns the pause off. The bodies are the daemon's goldens, which carry that pause beside the
-// sentence; the client reads the code and the sentence.
+// daemon's sentence, which names the pause that stands, the last pause, the setting that turns the
+// pause off, or the project release that runs. The bodies are the daemon's goldens, which carry
+// that pause beside the sentence; the client reads the code and the sentence.
 test("a refused pause and a refused resume tell the controller the daemon's code and its sentence", async () => {
   const refusals = [
     [
@@ -2126,6 +2127,12 @@ test("a refused pause and a refused resume tell the controller the daemon's code
       "/legion/v1/project/pause",
       "project-pause-unavailable.json",
       "PAUSE_UNAVAILABLE",
+    ],
+    [
+      { op: "pause", reason: "a pause while a release runs" },
+      "/legion/v1/project/pause",
+      "project-pause-releasing.json",
+      "PROJECT_RELEASING",
     ],
     [
       { op: "resume" },

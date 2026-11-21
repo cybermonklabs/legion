@@ -8,14 +8,17 @@ import (
 	"strings"
 
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // loadNATSCallout reads the NATS auth service's settings (Config.NATS): none set is no service;
-// any set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its own kind;
-// BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying user info,
-// or one that is no URL, is refused by its place in the list (hubURLRefusal). No refusal carries
-// a seed or a URL.
-func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout, error) {
+// any set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its kind;
+// BROKER_NATS_K8S_AUDIENCE needs k8sIssuers, the issuers BROKER_K8S_OIDC_ISSUER names, of which
+// BROKER_NATS_SERVICES' entries name theirs (natscallout.ParseServices). A hub URL carrying user
+// info, or one that is no URL, is refused by its place in the list (hubURLRefusal). No refusal
+// carries a seed or a URL.
+func loadNATSCallout(getenv func(string) string, k8sIssuers []oidc.NamedIssuer) (NATSCallout, error) {
 	settings := NATSCallout{
 		SeedFile:       strings.TrimSpace(getenv("BROKER_NATS_SEED_FILE")),
 		IssuerSeedFile: strings.TrimSpace(getenv("BROKER_NATS_ISSUER_SEED_FILE")),
@@ -53,7 +56,7 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 			return NATSCallout{}, err
 		}
 	}
-	if settings.K8sAudience != "" && k8sIssuer == "" {
+	if settings.K8sAudience != "" && len(k8sIssuers) == 0 {
 		return NATSCallout{}, errors.New("BROKER_NATS_K8S_AUDIENCE needs BROKER_K8S_OIDC_ISSUER, whose projected tokens a service presents to the NATS auth service")
 	}
 	return settings, nil
@@ -80,12 +83,17 @@ func hubURLRefusal(entry string) string {
 }
 
 // CutNATSServiceEntry splits a BROKER_NATS_SERVICES entry, <kind>/<machine id or ->/<* or
-// ->=<account>, at its first = into the head before it and the account after it. ok is false for
-// an entry with no =. It is the one reading of an entry's account: natscallout.ParseServices
-// parses the head and holds the account to ParseAccount's form, and mappedAccountRefusal matches
-// the account against BROKER_POD_OPERATORS, so the two cannot read one entry two ways.
-func CutNATSServiceEntry(text string) (head, account string, ok bool) {
-	return strings.Cut(text, "=")
+// ->=<account>[=<issuer name>[,<issuer name>…]], into the head before its first =, the account
+// after it, and the issuer names after the account's = (CutIssuerNames), nil where it names none.
+// ok is false for an entry with no =, and for one that ends in the account's = with no issuer
+// name after it. It is the one reading of an entry's account: natscallout.ParseServices parses
+// the head, holds the account to ParseAccount's form and the names to AccountIssuers', and
+// mappedAccountRefusal matches the account against BROKER_POD_OPERATORS, so the two cannot read
+// one entry two ways.
+func CutNATSServiceEntry(text string) (head, account string, names []string, ok bool) {
+	withAccount, names, named := CutIssuerNames(text)
+	head, account, ok = strings.Cut(withAccount, "=")
+	return head, account, names, ok && named
 }
 
 // ReadSeedFile is the key pair the nkey seed in the file at path makes, refused, naming setting

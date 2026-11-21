@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  The daemon API contract is 209. `legion-api.ts` gains `LegionProjectReleaseRequest` and
+  `LegionProjectReleaseResponse`, the bodies of `POST` and `GET /legion/v1/operator/project/release`,
+  and the state's optional `projectRelease`, the project's newest project release, which a caller
+  that states a contract below 209, or states none from a pod whose claims record one below 193, is
+  not served. No plugin code reads the release, so every field of it is optional to the reader. Its
+  `outcome`, `endedBy` and a stopped claim's `ended` are enums of the words the daemon writes,
+  `LEGION_RELEASE_OUTCOMES`, `LEGION_PROJECT_RELEASE_ENDERS` and `LEGION_RELEASED_CLAIM_ENDS`, each
+  held to the daemon's own list in `fixtures/daemon-api/project-release-words.json`, and its six
+  enumerated fields are rows of `fixtures/daemon-api/enumerated-fields.json`. A claim's
+  `suspendedBy` gains `project_release`, a claim the project release stopped, which the daemon's
+  next boot starts again. The release's refusal while the project is paused or a pod a pause stopped
+  is still held is `PROJECT_PAUSED` with `heldPods` (fixture `project-release-paused.json`), and a
+  pause while a project release runs is refused `PROJECT_RELEASING` (fixture
+  `project-pause-releasing.json`).

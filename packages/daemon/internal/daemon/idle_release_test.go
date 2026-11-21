@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -564,9 +565,9 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	logs := &testlog.Buffer{}
 	rig.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
 
-	woken, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
-	if err != nil || !woken {
-		t.Fatalf("the wake meeting the open resume = %t, %v; want the claim woken", woken, err)
+	if err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0); !errors.Is(err, wait.ErrWaiting) ||
+		!strings.Contains(err.Error(), "a notice of "+rig.issue.Key+" waits for the released pod of") {
+		t.Fatalf("the wake meeting the open resume = %v; want the claim woken and the delivery waiting for its released pod", err)
 	}
 	stuck := loggedLines(t, logs.String(), `"msg":"wake: a released pod's resume stands open with no process behind it; this wake resumes it"`)
 	if len(stuck) != 1 || stuck[0]["level"] != "WARN" {
@@ -588,9 +589,8 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	// And a wake that meets the open resume of a role whose process is running resumes nothing:
 	// that pod is back, which is what the refusal means when the claim is no longer released.
 	before := len(rig.rt.CallsOf("Resume"))
-	woken, _, err = rig.runner.wakeForDelivery(ctx, rig.token, "a second notice of "+rig.issue.Key, 0)
-	if err != nil || woken {
-		t.Fatalf("the wake of a running claim = %t, %v; want it to wake nothing", woken, err)
+	if err := rig.runner.wakeForDelivery(ctx, rig.token, "a second notice of "+rig.issue.Key, 0); err != nil {
+		t.Fatalf("the wake of a running claim = %v; want it to wake nothing", err)
 	}
 	if after := len(rig.rt.CallsOf("Resume")); after != before {
 		t.Fatalf("resumes after the wake of a running claim = %d, want the %d it already had", after, before)

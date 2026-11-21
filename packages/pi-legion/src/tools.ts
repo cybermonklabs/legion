@@ -549,7 +549,8 @@ export function createLegionTool(deps: {
         "other role stops with its conversation kept, an idle one at once and one in a turn when that turn ends, and the " +
         "pause deletes no pod. Each task, notice and wake for a stopped role waits for the resume. The answer is the " +
         "pause: its id, since, by and reason. The daemon refuses a second pause (PROJECT_ALREADY_PAUSED, naming the " +
-        "pause that stands) and a pause its configuration cannot hold (PAUSE_UNAVAILABLE, naming the setting). " +
+        "pause that stands), a pause its configuration cannot hold (PAUSE_UNAVAILABLE, naming the setting) and a pause " +
+        "while a project release runs (PROJECT_RELEASING, naming the release). " +
         "resume ends the pause whoever made it, the operator's included. Each role the pause held something for then " +
         "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
         "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +

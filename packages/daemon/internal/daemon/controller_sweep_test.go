@@ -37,6 +37,9 @@ func (s liveTrees) ClaimUnretired(_ context.Context, token claim.Token) (bool, e
 	return token != "" && token == s.unretired, nil
 }
 func (liveTrees) Claims(context.Context) ([]supervise.Claim, error) { return nil, nil }
+func (liveTrees) ClaimByToken(context.Context, claim.Token) (supervise.Claim, bool, error) {
+	return supervise.Claim{}, false, nil
+}
 
 // The orphan sweep is told what knownClaims makes of the daemon's claims, and the Sandbox runtime
 // keeps the controller's Sandbox while a known claim is the controller's or the store holds that

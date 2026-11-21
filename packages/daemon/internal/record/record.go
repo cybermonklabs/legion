@@ -1923,6 +1923,15 @@ type Store interface {
 	// converts. A claim on no issue — the project's own controller holds one — is left out by the
 	// query, since it stands in no tree and the measure could place it nowhere.
 	ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error)
+	// SuspendedClaims is every claim of the project on an issue that is suspended by source, in
+	// token order: its token, issue and role. It is what the boot reads the claims the project
+	// release stopped by (workflow's booted, its start of every such claim), whatever their role
+	// and wherever their issue stands, since the release lists them nowhere the boot reads.
+	//
+	// project is the claim project token (claim.ProjectToken), as ProjectClaims takes it. A claim
+	// on no issue — the project's own controller — is left out, since it stands in no tree and
+	// its own keeper resumes it.
+	SuspendedClaims(ctx context.Context, tx pgx.Tx, project string, source supervise.SuspendSource) ([]SuspendedClaim, error)
 	// AddParkedDecision keeps a relayed decision under the issue it was decided on, for the next
 	// start or catch-up of the tree that issue stands in. A ref that issue already keeps keeps its
 	// newest decision: a later one, by At, replaces it, KEPT again, so a changes request the
@@ -2255,7 +2264,9 @@ type Store interface {
 	// is what a claim's record of the rows it has taken a task from rests on. A row a lane holds
 	// now is not touched, including one it takes while the call waits on its row lock, and the
 	// caller's row is written beside it. A lapsed lease holds nothing and is taken out like any
-	// other.
+	// other. A row taken out of another role, of row's generation, whose role holds a claim the
+	// project release stopped leaves that role that claim's start in its place
+	// (ReleaseStoppedStart).
 	EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// OwedStarts is every pending worker start of the Dispatch project key project that waits for
 	// its issue's admission slot and that no live lease holds, a row whose lease has lapsed among
@@ -2297,6 +2308,10 @@ type Store interface {
 	// committing it beside the replacement worker's own.
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
+	// HoldOutbox returns row id to the outbox unrun while leaseToken holds it: due again at nextAt
+	// with lastErr as its last error and its lease cleared, and its attempts as they were, since
+	// nothing of the row was tried. A stale lease's hold is a no-op.
+	HoldOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
 	Handover(ctx context.Context, tx pgx.Tx, issue string) (*Handover, error)
 	PutHandover(ctx context.Context, tx pgx.Tx, handover Handover) error
@@ -2374,6 +2389,15 @@ type Store interface {
 	// without its first, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
+}
+
+// SuspendedClaim is one suspended claim as Store.SuspendedClaims names it: its token, the issue
+// it is on and its role. The reader asks the rest of the claim of the role's run
+// (Store.RoleRuns), at the generation its issue holds.
+type SuspendedClaim struct {
+	Token claim.Token
+	Issue string
+	Role  claim.Role
 }
 
 // RoleRunKey identifies one role's run of an issue generation.
@@ -2526,6 +2550,13 @@ type RoleClaim struct {
 	// confirmation where there is one.
 	Handshake supervise.EntryHandshake
 	Pending   *supervise.Delivery
+}
+
+// ProjectReleased is whether the project release stopped the claim and the claim waits for the
+// daemon's next boot to start it: the same rule as supervise.Claim.ProjectReleased, for the
+// store's read of a role's claim. A nil claim, a role that holds none, is not one.
+func (c *RoleClaim) ProjectReleased() bool {
+	return c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByProjectRelease
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger

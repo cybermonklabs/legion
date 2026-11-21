@@ -162,12 +162,23 @@ func (s *Store) PausePodHoldOf(ctx context.Context, project, issue string) (Paus
 	return h, true, nil
 }
 
-// OpenPausePodHolds is every hold standing on a pod of project, by issue: the pods the resume
-// ends the holds of where a role is live (decision 22), and the pods a project release names when
-// it refuses (departure 1). project is the Dispatch key.
+// OpenPausePodHolds is openPausePodHolds read through the pool, for the resume's end of the holds
+// of pods with a live role (internal/daemon's projectPause.endLiveHolds). project is the project
+// token.
 func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PausePodHold, error) {
-	rows, err := s.pool.Query(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
-		where project = $1 and ended_at is null order by issue`, project)
+	return openPausePodHolds(ctx, s.pool, project)
+}
+
+// openPausePodHolds is every hold standing on a pod of project, by issue, read through q, the pool
+// or a transaction. It has two callers: the resume, which ends the hold of each of those pods in
+// which a role is live (decision 22, internal/daemon's projectPause.endLiveHolds through
+// OpenPausePodHolds), and a project release's refusal, which names each of those pods
+// (departure 1, releasePauseRefusal, on the pool and in StartProjectRelease's transaction).
+// project is the project token, as the claims table holds it; the hold's own Dispatch key is read
+// as the key it lowercases.
+func openPausePodHolds(ctx context.Context, q rowsQuerier, project string) ([]PausePodHold, error) {
+	rows, err := q.Query(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
+		where lower(project) = $1 and ended_at is null order by issue`, project)
 	if err != nil {
 		return nil, fmt.Errorf("read the pod holds of %s: %w", project, err)
 	}

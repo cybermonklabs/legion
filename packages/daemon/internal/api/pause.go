@@ -109,16 +109,33 @@ type ProjectResumeResponse struct {
 	Released int       `json:"released"`
 }
 
-// PauseFailure is the refusal of a pause, a resume, or a turn while the project is paused: the
-// Failure every workflow route refuses with, and what the refusal names beside its sentence. A
-// PAUSE_UNAVAILABLE names the setting that turns the pause off (absent for a daemon with no
-// workflow, whose sentence says why); a PROJECT_ALREADY_PAUSED and a PROJECT_PAUSED name the pause
-// that stands; a PROJECT_NOT_PAUSED names the project's last pause, where one has ended.
+// PauseFailure is the refusal of a pause, a resume, a turn while the project is paused, or a
+// project release while a pause holds the project: the Failure every workflow route refuses with,
+// and what the refusal names beside its sentence. A PAUSE_UNAVAILABLE names the setting that turns
+// the pause off (absent for a daemon with no workflow, whose sentence says why); a
+// PROJECT_ALREADY_PAUSED and a PROJECT_PAUSED name the pause that stands; a PROJECT_NOT_PAUSED
+// names the project's last pause, where one has ended. The project release's PROJECT_PAUSED
+// (releasePausedFailure) names the pause where one stands, and each pod a pause still holds
+// (HeldPods). A PROJECT_RELEASING names nothing beside its sentence, which names the release that
+// runs.
 type PauseFailure struct {
 	Failure
-	Setting   string     `json:"setting,omitempty"`
-	Pause     *PauseView `json:"pause,omitempty"`
-	LastPause *PauseView `json:"lastPause,omitempty"`
+	Setting   string             `json:"setting,omitempty"`
+	Pause     *PauseView         `json:"pause,omitempty"`
+	LastPause *PauseView         `json:"lastPause,omitempty"`
+	HeldPods  []PauseHeldPodView `json:"heldPods,omitempty"`
+}
+
+// PauseHeldPodView is one pod a pause still holds, as a refused project release names it
+// (store.HeldPausePod): its issue, the pause that holds it and since when, and the claims of the
+// pod stored suspended by `released`, the source a pause stops a role by, in token order and
+// never null. An operator's `legion claims resume --claim <token>` of one of them runs a role of
+// the pod again, and its ready ends the hold.
+type PauseHeldPodView struct {
+	Issue  string        `json:"issue"`
+	Pause  int64         `json:"pause"`
+	HeldAt time.Time     `json:"heldAt"`
+	Claims []claim.Token `json:"claims"`
 }
 
 // projectPaused is the code of a request refused because the project is paused (decision 20).
@@ -190,11 +207,13 @@ func (s *server) pauseActor(w http.ResponseWriter, r *http.Request, grantID, act
 }
 
 // pauseProject pauses the project for reason, by `by`, through the pause service, which refuses a
-// blank reason, a configuration that cannot hold a pause and a second pause, each answered here in
-// its code (decision 20). The service logs the pause and tells the controller when the operator
-// paused (decisions 23 and 24). The pause it began is written as answer, the id of the route's own
-// answer: AnswerProjectPause on the controller's route, and answerUnparsed on the operator's,
-// which writeUnparsedAnswer writes its bodies under. Every refusal is AnswerRefusal.
+// blank reason, a configuration that cannot hold a pause, a second pause and a pause while a
+// project release runs (PROJECT_RELEASING, dispatch://INFRA-3583 R13), each answered here in its
+// code (decision 20). A refused pause writes nothing and stops no role. The service logs the pause
+// and tells the controller when the operator paused (decisions 23 and 24). The pause it began is
+// written as answer, the id of the route's own answer: AnswerProjectPause on the controller's
+// route, and answerUnparsed on the operator's, which writeUnparsedAnswer writes its bodies under.
+// Every refusal is AnswerRefusal.
 func (s *server) pauseProject(w http.ResponseWriter, r *http.Request, answer AnswerID, by store.PauseActor, reason string) {
 	if s.pause == nil {
 		s.refuseWithoutPause(w, r, "pause")
@@ -204,6 +223,7 @@ func (s *server) pauseProject(w http.ResponseWriter, r *http.Request, answer Ans
 	var (
 		unavailable *pause.UnavailableError
 		standing    *store.AlreadyPausedError
+		releasing   *store.ProjectReleasingError
 	)
 	switch {
 	case err == nil:
@@ -223,6 +243,12 @@ func (s *server) pauseProject(w http.ResponseWriter, r *http.Request, answer Ans
 				"the project is already paused (%s); this pause changed nothing", describePause(standing.Standing))},
 			Pause: &view,
 		})
+	case errors.As(err, &releasing):
+		release := releasing.Release
+		s.log.Info("api: refused a pause: a project release runs", "release", release.ID, "by", string(by.Kind), "by_session", by.Session)
+		s.writeFailure(w, r, http.StatusConflict, pause.CodeReleasing, fmt.Sprintf(
+			"project release %d runs (started %s, bound %s): it reads each pod's unpushed work through a running role and asks those roles to push it, and a pause would stop them, so the release would delete their pods unread; nothing was paused and no role was stopped. Pause once the release has finished (legion project release reads it)",
+			release.ID, release.StartedAt.UTC().Format(time.RFC3339), release.BoundAt.UTC().Format(time.RFC3339)))
 	default:
 		s.logRequestFailure(r, err, "api: the project's pause failed", "by", string(by.Kind), "by_session", by.Session)
 		s.writeFailure(w, r, http.StatusInternalServerError, "PAUSE_FAILED", "the project's pause failed: "+err.Error())

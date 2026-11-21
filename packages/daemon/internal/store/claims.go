@@ -624,7 +624,8 @@ func runsNothingStates() []string { return claimStateNames(supervise.RunsNothing
 // text array a query binds: the store names no state of that set itself.
 func goneStates() []string { return claimStateNames(supervise.GoneStates()) }
 
-// claimStateNames is states as the text array a query binds.
+// claimStateNames is states as the text array a query binds, so the store names no state of
+// supervise's sets itself.
 func claimStateNames(states []supervise.ClaimState) []string {
 	names := make([]string, len(states))
 	for i, state := range states {
@@ -678,7 +679,18 @@ func (s *Store) HasLegacySandboxClaims(ctx context.Context, project string) (boo
 // ClaimByBootTokenHash finds the claim whose current launch minted the boot token with this hash
 // — how a shim's hello and an agent's registration find the claim they belong to.
 func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervise.Claim, bool, error) {
-	c, err := scanClaim(s.pool.QueryRow(ctx, claimSelect+" where c.boot_token_hash = $1", hash))
+	return claimWhere(ctx, s.pool, "c.boot_token_hash = $1", hash)
+}
+
+// ClaimByToken is token's claim as the store holds it, and whether it holds one: the one claim a
+// request a role's shim answers goes over (the sandbox runtime's issueRoleConn), read alone.
+func (s *Store) ClaimByToken(ctx context.Context, token claim.Token) (supervise.Claim, bool, error) {
+	return claimWhere(ctx, s.pool, "c.token = $1", string(token))
+}
+
+// claimWhere is the one claim claimSelect reads under where, and whether a row matched.
+func claimWhere(ctx context.Context, q queryRower, where string, args ...any) (supervise.Claim, bool, error) {
+	c, err := scanClaim(q.QueryRow(ctx, claimSelect+" where "+where, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, false, nil
 	}

@@ -8,6 +8,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -46,13 +48,12 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193 is the constant rather than its number, because the entry that added the shaped answers
-// names it: a renumber of that entry moves shapedAnswersContract and this list with it, and moving
-// one of the two alone would describe a shape at a contract no entry declares. The last is
-// repositoriesLiveContract rather than its number for the same reason: it is this daemon's own
-// contract, dispatch://INFRA-4401's, and a renumber of that change moves the constant and this
-// list with it.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract}
+// shapedAnswersContract is #3659's (version.go's 193), repositoriesLiveContract
+// dispatch://INFRA-4401's (version.go's 202) and projectReleaseContract dispatch://INFRA-3583's
+// (version.go's 209), constants rather than numbers because the entries that added them name
+// them: a renumber of any of those entries moves its constant and this list with it, and moving
+// an entry or its constant alone would describe a shape at a contract no entry declares.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, projectReleaseContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -134,8 +135,11 @@ var typedSettings = []TypedSetting{
 }
 
 // Answers is one row per answer a plugin parses. The operator's claim answers, the operator's
-// pause and resume answers (`legion project pause|resume`) and the controller's secret and
-// credential answers are no rows: no plugin parses them.
+// pause and resume answers (`legion project pause|resume`), the operator's project release
+// answers (`legion project release`, `POST` and `GET /legion/v1/operator/project/release`) and
+// the controller's secret and credential answers are no rows: no plugin parses them. A plugin
+// reads the project release only as the state's `projectRelease`, which is a band of the state's
+// row (shaping.go's projectReleaseContract).
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
 	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor, TypedSettings: typedSettings},
@@ -403,6 +407,19 @@ var stateEnumeratedFields = []EnumeratedField{
 	// served down below that contract whole (shaping.go's withoutHeld), so no body below 98
 	// carries a value of it.
 	{Answer: AnswerState, KeyPath: "admission.held.*.reason", Values: heldReasons},
+	// The project's newest project release (api.ProjectReleaseResponse): who ended it, and on
+	// each line of its result a Sandbox's `kind` and `outcome` and each asked role's `role`, and a
+	// stopped claim's `role` and `ended`. All six arrived with `projectRelease`, which is served
+	// down below that contract whole (shaping.go's withoutProjectRelease), so no body below 209
+	// carries a value of any of them. A claim line's role takes `controller` beside the claim
+	// roles, since the release stops the controller's claim too; an asked role never does, since
+	// the release asks the roles of an issue pod alone.
+	{Answer: AnswerState, KeyPath: "projectRelease.endedBy", Values: releaseEnders},
+	{Answer: AnswerState, KeyPath: "projectRelease.result.sandboxes.*.kind", Values: releasedSandboxKinds},
+	{Answer: AnswerState, KeyPath: "projectRelease.result.sandboxes.*.outcome", Values: releaseOutcomes},
+	{Answer: AnswerState, KeyPath: "projectRelease.result.sandboxes.*.asked.*.role", Values: releaseAskRoles},
+	{Answer: AnswerState, KeyPath: "projectRelease.result.claims.*.role", Values: releasedClaimRoles},
+	{Answer: AnswerState, KeyPath: "projectRelease.result.claims.*.ended", Values: releaseClaimEnds},
 }
 
 // valuesFrom is every value of a field whose list has not moved since the field arrived: each
@@ -548,6 +565,44 @@ var wakeRoles = valuesFrom(wakesWaitingContract, floorRoles...)
 // each claim the open pause waits on takes (api.PauseStopView.Role): no `paused` is served below
 // that contract at all (shaping.go's withoutPause).
 var pauseStopRoles = valuesFrom(pauseContract, floorRoles...)
+
+// releaseAskRoles is the same list of roles at the contract `projectRelease` arrived at, which
+// the role of each asked role of a release's Sandbox line takes (api.ReleasedAsk.Role): no
+// `projectRelease` is served below that contract at all (shaping.go's withoutProjectRelease).
+var releaseAskRoles = valuesFrom(projectReleaseContract, floorRoles...)
+
+// releasedClaimRoles is the role of each claim a release stopped (api.ReleasedClaim.Role): the
+// same list of roles with `controller` beside them, since the release stops the project's
+// controller too, recorded at the contract `projectRelease` arrived at, as releaseAskRoles is.
+var releasedClaimRoles = valuesFrom(projectReleaseContract, append(slices.Clone(floorRoles), claim.RoleController)...)
+
+// releaseEnders is every word of `projectRelease.endedBy` (store.ProjectReleaseEnder): the
+// daemon's next boot, and nothing else. releaseOutcomes is every outcome of a Sandbox's line
+// (api.ReleaseOutcome), and releasedSandboxKinds every kind of Sandbox a line names
+// (runtime.ProjectSandboxKind). releaseClaimEnds is every word for how a claim of the stop set
+// ended (api.ReleasedClaimEnd): each claim state but `suspended`, each suspension source, and
+// `unrecorded`. All four are recorded at projectReleaseContract, the contract `projectRelease`
+// arrived at. Each names its constants rather than reading api.ReleaseOutcomes or
+// api.ReleasedClaimEnds, as failureCauses names its causes, because a word added to one of those
+// later arrives at its own contract and not at this one; TestProjectReleaseWordsGolden holds the
+// rosters themselves to the plugin's enums.
+var releaseEnders = valuesFrom(projectReleaseContract, store.ProjectReleaseEndedByBoot)
+var releaseOutcomes = valuesFrom(projectReleaseContract,
+	ReleaseWaiting, ReleaseDeletedClean, ReleaseDeletedUnread, ReleaseDeletedLost, ReleaseDeletedReadRefused,
+	ReleaseDeleted, ReleaseLeft)
+var releasedSandboxKinds = valuesFrom(projectReleaseContract,
+	runtime.ProjectSandboxIssue, runtime.ProjectSandboxController, runtime.ProjectSandboxCache,
+	runtime.ProjectSandboxProbe, runtime.ProjectSandboxUnknown)
+var releaseClaimEnds = valuesFrom(projectReleaseContract,
+	ReleasedClaimEnd(supervise.StateQueued), ReleasedClaimEnd(supervise.StateLaunchUncertain),
+	ReleasedClaimEnd(supervise.StateLaunching), ReleasedClaimEnd(supervise.StateShimConnected),
+	ReleasedClaimEnd(supervise.StateRegistered), ReleasedClaimEnd(supervise.StateReady),
+	ReleasedClaimEnd(supervise.StateWorking), ReleasedClaimEnd(supervise.StateIdle),
+	ReleasedClaimEnd(supervise.StateFailed), ReleasedClaimEnd(supervise.StateRetired),
+	ReleasedClaimEnd(supervise.SuspendedByUnknown), ReleasedClaimEnd(supervise.SuspendedByOperator),
+	ReleasedClaimEnd(supervise.SuspendedByDaemon), ReleasedClaimEnd(supervise.SuspendedByExit),
+	ReleasedClaimEnd(supervise.SuspendedByReleased), ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
+	ReleasedClaimUnrecorded)
 
 // updateStates is every value of a claim view's `updateState`, recorded at the contract this
 // change adds the key under. The words are the four the package declares (updatestate.go), so a

@@ -78,7 +78,7 @@ func TestEveryReaderReadsTheProjectsOfBothCredentials(t *testing.T) {
 		}
 		// The asking pod's account is mapped to PRIV here directly, standing in for any way the
 		// projects of the two credentials come to differ.
-		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, "")
+		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{""}}}, nil, nil, nil, "")
 		if err != nil {
 			t.Fatalf("exchange.NewSet: %v", err)
 		}

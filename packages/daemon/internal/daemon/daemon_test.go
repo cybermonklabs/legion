@@ -97,7 +97,7 @@ func testConfig(t *testing.T) config.Config {
 	// for it. zero is a value config.Load refuses (config.go:871-874, "worker_stream_port must be a
 	// positive integer"): it is a fixture, never a configuration. The derivation from a real port
 	// is pinned by TestPrepareDerivesTheWorkerStreamAddressFromWorkerStreamPort.
-	port := holdPortOn(t, "127.0.0.1")
+	port := holdPort(t, t, "127.0.0.1", 0)
 	return config.Config{
 		Project:                                 "TEST" + randomSuffix(t),
 		Port:                                    port,
@@ -184,30 +184,35 @@ func TestThePortsHandedToADaemonCannotBeTakenBeforeItBinds(t *testing.T) {
 	}
 }
 
-// heldPorts are the listeners holdPortOn holds, by address, until a daemon takes one (heldListen).
+// heldPorts are the listeners holdPort holds, by address, until a daemon takes one (heldListen).
 var heldPorts = struct {
 	sync.Mutex
 	byAddress map[string]net.Listener
 }{byAddress: map[string]net.Listener{}}
 
-// holdPortOn listens on a free port of host for t and returns it. The listener is held until a
-// daemon of t's takes it through heldListen, or t ends. It is held under net.JoinHostPort(host,
-// port), the address the daemon builds from bind, not the listener's Addr(): Go reports a 0.0.0.0
-// listener as [::]:<port>, the dual-stack wildcard.
-func holdPortOn(t *testing.T, host string) int {
+// holdPort listens on port of host, a free one when port is 0, and returns the port it holds,
+// failing t when it cannot bind. The listener is held until a daemon takes it through heldListen,
+// or owner ends: owner is t itself but for a rig's step, whose failure is the step's while what
+// it starts outlives it (idleWakeRig.owner). It is held under net.JoinHostPort(host, port), the
+// address the daemon builds from bind, not the listener's Addr(): Go reports a 0.0.0.0 listener as
+// [::]:<port>, the dual-stack wildcard. A port a stopped daemon served binds again at once, since
+// that daemon closed its listener.
+func holdPort(t, owner *testing.T, host string, port int) int {
 	t.Helper()
-	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
-		t.Fatalf("hold a free port on %s: %v", host, err)
+		t.Fatalf("hold port %d on %s: %v", port, host, err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
+	port = listener.Addr().(*net.TCPAddr).Port
 	address := net.JoinHostPort(host, strconv.Itoa(port))
 	heldPorts.Lock()
 	heldPorts.byAddress[address] = listener
 	heldPorts.Unlock()
-	t.Cleanup(func() {
+	owner.Cleanup(func() {
 		heldPorts.Lock()
-		delete(heldPorts.byAddress, address)
+		if heldPorts.byAddress[address] == listener {
+			delete(heldPorts.byAddress, address)
+		}
 		heldPorts.Unlock()
 		_ = listener.Close()
 	})
@@ -250,13 +255,13 @@ func heldSocket(t *testing.T) (*os.File, int) {
 // rebinding: it is always port 0, resolved fresh on every bind.
 func rebindHeldPorts(t *testing.T, cfg *config.Config) {
 	t.Helper()
-	cfg.Port = holdPortOn(t, "127.0.0.1")
+	cfg.Port = holdPort(t, t, "127.0.0.1", 0)
 	cfg.DaemonURL = "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
 }
 
-// heldListen is the daemon's listen under test: the listener holdPortOn holds for address, handed
+// heldListen is the daemon's listen under test: the listener holdPort holds for address, handed
 // over once. An address nothing holds is refused rather than bound, since a port found free and
-// bound later is the race holdPortOn closes: a test that starts a daemon again on one config calls
+// bound later is the race holdPort closes: a test that starts a daemon again on one config calls
 // rebindHeldPorts first.
 func heldListen(network, address string) (net.Listener, error) {
 	heldPorts.Lock()
@@ -269,7 +274,7 @@ func heldListen(network, address string) (net.Listener, error) {
 	return listener, nil
 }
 
-// pollClient bounds each poll of a daemon's port: holdPortOn's listener queues a connection until a
+// pollClient bounds each poll of a daemon's port: holdPort's listener queues a connection until a
 // daemon takes the listener and serves it, and a daemon that exits before then never answers it.
 var pollClient = &http.Client{Timeout: time.Second}
 
@@ -311,7 +316,8 @@ type built struct {
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Source,
-			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
+			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository,
+			_ func() bool) (runtime.Runtime, error) {
 			record.mu.Lock()
 			defer record.mu.Unlock()
 			record.conns, record.address, record.apps, record.repository, record.store, record.cached = listener, address, apps, repository, st, cached
@@ -383,9 +389,10 @@ func runStoppedOnceItsStoreIsOpen(cfg config.Config) error {
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	build := o.runtime
 	o.runtime = func(buildCtx context.Context, listener *stream.Listener, address string, apps appauth.Source,
-		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository,
+		held func() bool) (runtime.Runtime, error) {
 		cancel()
-		return build(buildCtx, listener, address, apps, repository, st, mapped)
+		return build(buildCtx, listener, address, apps, repository, st, mapped, held)
 	}
 	return run(ctx, cfg, quietLogger(), o)
 }

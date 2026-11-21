@@ -67,6 +67,10 @@ type controllerKeeper struct {
 	// and backoff the wait that set it.
 	retryAt time.Time
 	backoff time.Duration
+	// release is the daemon's project release mark: while it holds, the keeper does nothing, and
+	// the controller a release stopped is resumed by the keeper of the daemon's next boot. Nil
+	// holds nothing.
+	release *projectRelease
 	// heldLogged is the line keep last wrote for a retry the hold refused, and heldReason that
 	// refusal, for the episode the refused retry holds the claim in (keep, held): the line is
 	// written once per episode and cause, and the reason rides each later retry's Warn. Both are
@@ -96,8 +100,13 @@ func (k *controllerKeeper) run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// keep is one look at the controller's claim, and the one request its state calls for.
+// keep is one look at the controller's claim, and the one request its state calls for. While the
+// project release holds every start it looks at nothing: no claim is created, launched, resumed or
+// retried, and no retry's wait is counted.
 func (k *controllerKeeper) keep() error {
+	if k.release.held() {
+		return nil
+	}
 	// Each look is a fresh call on k.ctx, beside the ready route, so it takes a hold mark of its
 	// own, which its create and its request share as they run one after another.
 	ctx := store.ForConcurrentWorker(k.ctx)

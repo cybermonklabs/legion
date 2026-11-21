@@ -115,8 +115,8 @@ type sessionHiddenRig struct {
 func newSessionHiddenRig(t *testing.T) *sessionHiddenRig {
 	t.Helper()
 	pods, err := exchange.NewSet([]exchange.AccountEntry{
-		{Account: workerAccount, Project: "PRIV", Person: testApprover},
-		{Account: otherAccount, Project: "PUB", Person: testApprover},
+		{Account: workerAccount, Project: "PRIV", Person: testApprover, Issuers: []string{""}},
+		{Account: otherAccount, Project: "PUB", Person: testApprover, Issuers: []string{""}},
 	}, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)

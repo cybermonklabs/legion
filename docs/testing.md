@@ -413,19 +413,25 @@ service and the machine's CPU, and on a small machine `api` and `docs` then each
 `daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race
 detector, in its race step, once per job; the plain step ("Test the Go daemon") leaves it out,
 and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
-figures below were measured while these steps were the `test` job's. On CI's runners, while the
-plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
-2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
-125688799071). Under `-race` it took up
+figures below were measured while these steps were the `test` job's, but for those of 2026-11-20,
+which are `daemon-go`'s race step's. On CI's runners, while the plain step still ran it, it took at
+most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to
+733.581 s in the jobs whose race step timed out (job 125688799071). Under `-race` it took up
 to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
 measured, on main and on pull requests, and ran go test's own ten minutes out on main at
-job 125691048644 of run 41562777668; the race step gives it 30 minutes. On a busy machine it
-takes longer still (908 s under `-race` on a shared devbox), so a command that runs the whole
-package, alone or in a pattern that includes it, passes `-timeout 30m`:
+job 125691048644 of run 41562777668; on a busy machine it took longer still (908 s under
+`-race` on a shared devbox). With the project release's tests it took 1,766.673 s in `daemon-go`'s
+race step at d8582528 (job 136067045968), 1,731.355 s at b9eddd39 (job 136272918493) and
+1,853.104 s at 831a1845 (job 136372026117), and at 81a1bd12 (job 136467164419) it ran into the
+33 minutes the step then gave it, so 1,980.274 s is a lower bound of that run's time, all on
+2026-11-20. On main, without the project release's tests, it took 1,409.674 s to 1,475.337 s in
+that day's merge groups. The race step gives it 40 minutes, that bound plus 21% rounded up, and a
+command that runs the whole package, alone or in a pattern that includes it, passes
+`-timeout 40m`:
 
 ```sh
 cd packages/daemon
-go test -race -timeout 30m ./internal/daemon/
+go test -race -timeout 40m ./internal/daemon/
 ```
 
 A Legion issue pod does not run that whole package either: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.

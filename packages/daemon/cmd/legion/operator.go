@@ -34,9 +34,10 @@ type operatorCall struct {
 	port           *int
 	stdout, stderr io.Writer
 	// wait is the bound the command's whole call runs under, when the command takes one
-	// (withWait), and until the moment that bound expires, fixed when check reads the call. Every
-	// request the command makes is bounded by that one moment, so a command that reads the claims
-	// in a loop is bounded by its --wait and not by --wait per request.
+	// (withWait), and until the moment that bound expires: fixed when check reads the call, or set
+	// and moved by a command that bounds its call otherwise (`legion project release`,
+	// waitUntil). Every request the command makes is bounded by that one moment, so a command that
+	// reads the claims in a loop is bounded by its --wait and not by --wait per request.
 	wait  *time.Duration
 	until time.Time
 }
@@ -51,8 +52,9 @@ func (c *operatorCall) withWait(usage string) {
 	c.wait = c.flags.Duration("wait", time.Minute, usage)
 }
 
-// bound is ctx under the command's remaining --wait, and ctx itself for a command that takes no
-// --wait. The deadline is the one check fixed, so every request shares it.
+// bound is ctx under the command's deadline (until), and ctx itself while none is set. check sets
+// it from --wait, or a command that bounds its call otherwise sets it itself (waitUntil), so every
+// request shares it.
 func (c *operatorCall) bound(ctx context.Context) (context.Context, context.CancelFunc) {
 	if c.until.IsZero() {
 		return ctx, func() {}
@@ -137,23 +139,34 @@ func (c *operatorCall) send(ctx context.Context, op operator, method, path strin
 // command refuses with a reason, and the daemon goes on with what it began under its own
 // deadlines, which this bound never cancels.
 func (c *operatorCall) request(ctx context.Context, op operator, method, path string, body any) (int, []byte, bool) {
+	status, answer, cut, ok := c.requestCut(ctx, op, method, path, body)
+	if cut {
+		fmt.Fprintf(c.stderr, "%s: %s %s was not answered within the --wait bound of %s; the daemon goes on with it under its own deadlines. Read `legion claims list` to see where the claim stood, and ask again\n",
+			c.name(), method, op.base+path, *c.wait)
+	}
+	return status, answer, ok
+}
+
+// requestCut is request for a command that bounds its call otherwise and says itself what goes
+// on in the daemon when that bound ends a request (`legion project release`): cut is true for
+// such a request, which it reports nothing of, and answers false with it. Every other failure — no
+// answer for another reason, an answer outside 2xx — is reported as request reports it.
+func (c *operatorCall) requestCut(ctx context.Context, op operator, method, path string, body any) (status int, answer []byte, cut, ok bool) {
 	bounded, cancel := c.bound(ctx)
 	defer cancel()
 	status, answer, err := op.do(bounded, method, path, body)
 	if err != nil {
 		if bounded.Err() != nil && ctx.Err() == nil {
-			fmt.Fprintf(c.stderr, "%s: %s %s was not answered within the --wait bound of %s; the daemon goes on with it under its own deadlines. Read `legion claims list` to see where the claim stood, and ask again\n",
-				c.name(), method, op.base+path, *c.wait)
-			return 0, nil, false
+			return 0, nil, true, false
 		}
 		fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
-		return 0, nil, false
+		return 0, nil, false, false
 	}
 	if status/100 != 2 {
 		fmt.Fprintf(c.stderr, "%s: %s\n", c.name(), refusal(status, answer))
-		return 0, nil, false
+		return 0, nil, false, false
 	}
-	return status, answer, true
+	return status, answer, false, true
 }
 
 // printAnswer hands a 2xx answer path served to print; one it cannot read fails the command.

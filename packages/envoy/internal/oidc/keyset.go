@@ -13,8 +13,8 @@ import (
 // asked for.
 var keySetAlgorithms = []jose.SignatureAlgorithm{jose.RS256, jose.ES256}
 
-// keySet is a *Keys as the KeySet go-oidc's verifier asks for: it answers whether a compact JWT's
-// signature verifies, from the key the token's header names.
+// keySet is a KeySource, a *Keys among them, as the KeySet go-oidc's verifier asks for: it answers
+// whether a compact JWT's signature verifies, from the key the token's header names.
 //
 // It exists so that verifying a token and the RFC 8693 exchange's own key lookup read one cache.
 // go-oidc's RemoteKeySet re-reads the issuer's key set for every token naming a key id it does not
@@ -22,7 +22,7 @@ var keySetAlgorithms = []jose.SignatureAlgorithm{jose.RS256, jose.ES256}
 // a token signed by a key nobody ever published, replayed in a loop, costs the issuer one read per
 // token. Keys bounds those reads at one per MinRefresh and still makes a rotation visible inside
 // it.
-type keySet struct{ keys *Keys }
+type keySet struct{ keys KeySource }
 
 // VerifySignature resolves the key raw's header names and returns the payload that key's
 // signature covers. go-oidc has parsed raw already and keeps the result on ctx under a key of its

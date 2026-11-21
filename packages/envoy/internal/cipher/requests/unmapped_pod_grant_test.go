@@ -26,7 +26,7 @@ import (
 func TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: dave.account, Project: privProject, Person: insider}}, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: dave.account, Project: privProject, Person: insider, Issuers: []string{""}}}, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant(t *testing.T) {
 func TestAnUnmappedPersonsPodsFormerPersonEndsAGrantTheySeeOnlyAsAnyoneMay(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: dave.account, Project: teamProject, Person: insider}}, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: dave.account, Project: teamProject, Person: insider, Issuers: []string{""}}}, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestAPodsAutomaticGrantIsOnThePageOfWhoeverMaySeeIt(t *testing.T) {
 			var key *ecdsa.PrivateKey
 			if c.pod == "person" {
 				p := personPod{person: dave, service: "person-dave", account: "system:serviceaccount:people:dave"}
-				set, err := exchange.NewSet([]exchange.AccountEntry{{Account: p.account, Project: c.project, Person: insider}}, nil, nil, nil, "")
+				set, err := exchange.NewSet([]exchange.AccountEntry{{Account: p.account, Project: c.project, Person: insider, Issuers: []string{""}}}, nil, nil, nil, "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -172,7 +172,7 @@ func TestAPodsAutomaticGrantIsOnThePageOfWhoeverMaySeeIt(t *testing.T) {
 					delete(m.PodOperators, p.account)
 				}
 			} else {
-				set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: c.project, Person: insider}}, nil, nil, nil, "")
+				set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: c.project, Person: insider, Issuers: []string{""}}}, nil, nil, nil, "")
 				if err != nil {
 					t.Fatal(err)
 				}

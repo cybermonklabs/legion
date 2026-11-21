@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 )
@@ -36,7 +37,7 @@ func newPersonPodProjectsServer(t *testing.T) *testServer {
 	}, map[string]string{projectsPodPerson: projectaccess.MemberRestricted})
 	return newTestServerWith(t, func(d *api.Deps) {
 		d.Enroll.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
-		d.Enroll.ServiceLogins[projectsPodAccount] = projectsPodService
+		d.Enroll.ServiceLogins[projectsPodAccount] = enroll.ServiceLogin{Service: projectsPodService, Issuers: []string{""}}
 		d.Enroll.PodOperators = map[string]string{projectsPodAccount: projectsPodPerson}
 	})
 }

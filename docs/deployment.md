@@ -847,6 +847,10 @@ written by whichever daemon wrote last — so the order matters:
    over a locator of the other runtime is refused, and a tmux daemon pointed at a store a
    Kubernetes daemon still drives refuses to start rather than take its claims.
 
+`legion project release` does not serve this move. It releases a project's pods for a move between
+Kubernetes clusters, and no test boots a daemon of the tmux runtime after a release, so take step 1
+by hand as it says (`docs/kubernetes.md`, "Releasing a project's pods").
+
 ## Rotating broker-held App keys
 
 Rotate the keys in the broker's `github-app` secrets, not on the daemon's machine:

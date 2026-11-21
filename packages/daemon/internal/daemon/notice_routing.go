@@ -34,7 +34,7 @@ const noticeSummarySeparator = " on "
 // can hold it again, or an earlier notice held for the same architect has not gone yet, and a later
 // one must not overtake it. The row is tried again on the outbox's backoff, logged once, or,
 // while the wake pacing holds its architect's launch, at that launch's turn or parkedWakeBound
-// on, whichever comes first (wakeForDelivery's turn, parkedWait).
+// on, whichever comes first (wakeForDelivery's parkedWait).
 var errNoticeWaits = wait.New("the notice waits for its architect")
 
 // errNoticeUnroutable is a notice whose architect cannot be resolved from the record: its issue is
@@ -186,12 +186,17 @@ func noticeArchitect(project string, tree map[string]record.Issue, issue record.
 
 // holdsRole is whether held's claim keeps its role through the decision in flight: the record's
 // rule holds (record.HoldsRole: it has not ended, and it is not suspended unless the idle release
-// suspended it), and that decision is not stopping its process for good (supervise.ClaimView's
-// Stopping) — a suspension, a failure, a release. The owner walk reads it, so no notice but a
-// catch-up is routed to a sub-architect whose session is being stopped: such a notice goes on up
-// the tree while the stop runs. It goes on up after the stop too, unless the stop is the idle
-// release's, whose released claim holds its role again (record.HoldsRole). A catch-up waits for
-// the architect of its own issue (noticeArchitect).
+// or the project release suspended it), and that decision is not stopping its process for good
+// (supervise.ClaimView's Stopping) — a suspension, a failure, a release. The owner walk reads it,
+// so no notice but a catch-up is routed to a sub-architect whose session is being stopped: such a
+// notice goes on up the tree while the stop runs. It goes on up after the stop too, unless the
+// stop is the idle release's or the project release's, whose claim holds its role again
+// (record.HoldsRole). A catch-up waits for the architect of its own issue (noticeArchitect).
+//
+// A notice for a claim the project release stopped waits in the database while the release holds
+// every delivery. After the daemon's next boot it is routed to that owner as to a released one,
+// and it waits for the start the boot queued rather than for a wake, which nothing makes for it
+// (wakeForDelivery's awaitsBootStart).
 func holdsRole(held supervise.ClaimView) bool {
 	return record.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
 }

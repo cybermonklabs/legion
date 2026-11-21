@@ -224,7 +224,9 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/operator/claims/{token}/close":          {none: noRequester},
 		"POST /legion/v1/operator/project/pause":                 {none: noRequester},
 		"POST /legion/v1/operator/project/resume":                {none: noRequester},
-		"/": {none: "the catch-all answers no route; " + noFact},
+		"POST " + ProjectReleaseRoute:                            {none: noRequester},
+		"GET " + ProjectReleaseRoute:                             {none: noRequester},
+		"/":                                                      {none: "the catch-all answers no route; " + noFact},
 	}
 
 	served := (&server{}).routes()

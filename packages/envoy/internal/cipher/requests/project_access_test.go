@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // The projects and people of the project tests. PRIV is private, owned by otherPerson (alice),
@@ -85,13 +86,13 @@ func privateTeam(listed ...string) projectaccesstest.Row {
 // operator, whose list alone would hold it. On a list everyone reads, the project rule is what
 // must hide a private project's rows from the people outside it, so the tests of that rule make
 // their requests here. project, when set, is the project an operator's exchange entry maps the
-// pod's account to (Exchange.MappedProjects), which its credential then names; m's exchange set
-// is replaced by that one entry.
+// pod's account to (Exchange.PodProjects), which its credential then names; m's exchange set
+// is replaced by that one entry, which names the fixture's one issuer (fixtureIssuer).
 func everyonesPod(t *testing.T, m *Machine, name, project string) (string, *ecdsa.PrivateKey) {
 	t.Helper()
 	subject := "system:serviceaccount:example:" + name
 	if project != "" {
-		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: project, Person: insider}}, nil, nil, nil, "")
+		set, err := exchange.NewSet([]exchange.AccountEntry{{Account: subject, Project: project, Person: insider, Issuers: []string{""}}}, nil, nil, nil, "")
 		if err != nil {
 			t.Fatalf("exchange.NewSet: %v", err)
 		}
@@ -101,8 +102,9 @@ func everyonesPod(t *testing.T, m *Machine, name, project string) (string, *ecds
 }
 
 // newProjectFixture is newPlaceholderFixture on a broker that checks projects: its loader serves
-// projectSecrets (Loader.ProjectChecks), rules are in force, and Dispatch answers rows. The
-// enrollment is a session of the fixture's operator naming no project.
+// projectSecrets (Loader.ProjectChecks), rules are in force, Dispatch answers rows, and the
+// broker trusts one cluster issuer (fixtureIssuer). The enrollment is a session of the fixture's
+// operator naming no project.
 func newProjectFixture(t *testing.T, rules proxyrules.Rules, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
 	t.Helper()
 	st := storetest.Open(t)
@@ -124,6 +126,7 @@ func newProjectFixture(t *testing.T, rules proxyrules.Rules, team projectaccesst
 		Skew:              time.Minute,
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
+		Issuers:           []oidc.NamedIssuer{{URL: fixtureIssuer}},
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
 	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = rules, testProxyURL, testCACertificate
@@ -197,8 +200,8 @@ func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	const otherSubject = "system:serviceaccount:example:other-sa"
 	set, err := exchange.NewSet([]exchange.AccountEntry{
-		{Account: fixtureSubject, Project: privProject, Person: insider},
-		{Account: otherSubject, Project: teamProject, Person: insider},
+		{Account: fixtureSubject, Project: privProject, Person: insider, Issuers: []string{""}},
+		{Account: otherSubject, Project: teamProject, Person: insider, Issuers: []string{""}},
 	}, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)

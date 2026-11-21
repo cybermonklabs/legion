@@ -57,10 +57,11 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 //     awaiting_merge issue there, and a hold from merging is the architect's to retry, which
 //     starts the merger (restart).
 //   - the merger's claim is suspended by `released`: every other claim has a starter of its own.
-//     A claim the daemon or its exit suspended gets booted's resume, and an operator's suspension
-//     holds for the operator. The owners' read answers no live claim, which the boot relaunches
-//     onto this daemon's plugin and whose ready gives it its phase's task (readyWorkerTask), and
-//     no failed claim, which waits for the architect.
+//     A claim the daemon or its exit suspended gets booted's resume, a claim the project release
+//     stopped gets booted's start of those claims, and an operator's suspension holds for the
+//     operator. The owners' read answers no live claim, which the boot relaunches onto this
+//     daemon's plugin and whose ready gives it its phase's task (readyWorkerTask), and no failed
+//     claim, which waits for the architect.
 //   - its pull request record is open: the merger merges an open pull request, and the architect
 //     is told of one closed unmerged.
 //   - the merger's phase row holds a READY head (HandoffCommit): the old build moved the issue

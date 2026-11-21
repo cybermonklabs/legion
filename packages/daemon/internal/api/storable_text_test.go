@@ -205,6 +205,8 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/operator/claims/{token}/close":          noBody,
 		"POST /legion/v1/operator/project/pause":                 reads("reason"),
 		"POST /legion/v1/operator/project/resume":                noString,
+		"POST /legion/v1/operator/project/release":               reads("bound"),
+		"GET /legion/v1/operator/project/release":                noBody,
 	}
 
 	served := (&server{}).routes()

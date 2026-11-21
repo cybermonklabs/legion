@@ -254,7 +254,10 @@ func TestAForgedAccountTokenFloodCostsAFetchEachWithoutTheKeyCachesMinimumRefres
 	var counting *countingAccountTokens
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.TrustedProxyHeader = "X-Forwarded-For"
-		d.AccountTokens = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(issuer.URL(), podAudience, keys)}
+		d.AccountTokens = enroll.K8sPodVerifier{Issuers: keysIssuer{
+			verifier: oidc.NewWithKeys(issuer.URL(), podAudience, keys),
+			issuer:   oidc.NamedIssuer{URL: issuer.URL()},
+		}}
 		counting = countVerifications(d)
 	})
 
@@ -279,6 +282,20 @@ func TestAForgedAccountTokenFloodCostsAFetchEachWithoutTheKeyCachesMinimumRefres
 	if got := issuer.JWKSFetches() - fetchesBefore; got != floodTokens {
 		t.Fatalf("the issuer's key set was read %d times for %d forged tokens against a cache with no minimum refresh, want %d: one for every token, since every miss reopens the window at once", got, floodTokens, floodTokens)
 	}
+}
+
+// keysIssuer is enroll.IssuerVerifier over one verifier reading through a key set the test
+// configures itself, which an oidc.IssuerSet builds for each of its issuers out of reach. It
+// answers issuer for every token, a bare URL with no name as the server's own one issuer is, so
+// the listed caller's entry takes its tokens as it takes the server's.
+type keysIssuer struct {
+	verifier *oidc.Verifier
+	issuer   oidc.NamedIssuer
+}
+
+func (k keysIssuer) VerifyClaims(ctx context.Context, raw string, into ...any) (oidc.Claims, oidc.NamedIssuer, error) {
+	claims, err := k.verifier.VerifyClaims(ctx, raw, into...)
+	return claims, k.issuer, err
 }
 
 // browserCall is one request a browser makes on a route of the approval page, arriving through

@@ -318,9 +318,9 @@ func TestASecretOwnedByAMappedAccountsLoginServiceIsRefusedAtLoad(t *testing.T) 
 	if err != nil {
 		t.Fatalf("config.Load of the person-pod deployment: %v", err)
 	}
-	if cfg.PodOperators[personPodAdaAccount] != personPodPerson || cfg.ServiceLogins[personPodAdaAccount] != personPodAdaService {
+	if cfg.PodOperators[personPodAdaAccount] != personPodPerson || cfg.ServiceLogins[personPodAdaAccount].Service != personPodAdaService {
 		t.Fatalf("config.Load maps %s to %q under login service %q, want %s under %s: the owner tag below must name a mapped account's login service",
-			personPodAdaAccount, cfg.PodOperators[personPodAdaAccount], cfg.ServiceLogins[personPodAdaAccount], personPodPerson, personPodAdaService)
+			personPodAdaAccount, cfg.PodOperators[personPodAdaAccount], cfg.ServiceLogins[personPodAdaAccount].Service, personPodPerson, personPodAdaService)
 	}
 
 	set := policytest.Current(t, secrets.NewLocal(

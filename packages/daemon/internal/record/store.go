@@ -978,6 +978,30 @@ func (s *Postgres) ProjectClaims(ctx context.Context, tx pgx.Tx, project string)
 	return claims, nil
 }
 
+// SuspendedClaims reads every claim of the project on an issue suspended by source, in token
+// order (the interface's own doc). project is the claim project token, as ProjectClaims takes it.
+func (s *Postgres) SuspendedClaims(ctx context.Context, tx pgx.Tx, project string, source supervise.SuspendSource) ([]SuspendedClaim, error) {
+	rows, err := tx.Query(ctx, `select token, issue, role from claims
+		where project = $1 and issue <> '' and state = $2 and suspended_by = $3 order by token`,
+		project, string(supervise.StateSuspended), string(source))
+	if err != nil {
+		return nil, fmt.Errorf("read the claims of project %s suspended by %s: %w", project, source, err)
+	}
+	defer rows.Close()
+	var claims []SuspendedClaim
+	for rows.Next() {
+		var held SuspendedClaim
+		if err := rows.Scan(&held.Token, &held.Issue, &held.Role); err != nil {
+			return nil, fmt.Errorf("read the claims of project %s suspended by %s: %w", project, source, err)
+		}
+		claims = append(claims, held)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the claims of project %s suspended by %s: %w", project, source, err)
+	}
+	return claims, nil
+}
+
 // keptCounts is the validity rule as SQL: the claim and the hold a kept row carries count only
 // while they stand in the same tree as the row's own issue. row is the kept row's alias and owner
 // the alias of the issues row of its issue, which is where the tree it is owed to is read. A void
@@ -2686,6 +2710,14 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // and the error it last recorded — so a row backing off keeps its backoff and carries the later
 // task into it.
 //
+// A row taken out of another role than row's, of row's generation, whose role holds a claim
+// stored suspended by the project release (claims.state `suspended`, claims.suspended_by
+// `project_release`), leaves that role, in the same statement, the start of a claim the project
+// release stopped (ReleaseStoppedStart) with the taken row's tree, role and generation, due at
+// once. A row of row's own role leaves none, since row starts that claim itself, and neither
+// does a row of an earlier generation, which the outbox's generation fence would finish without
+// acting.
+//
 // A partial unique index on the pending start would be the other way to keep one row, and is not
 // available: Enqueue allows one `on conflict` target per statement and already spends it on
 // ready_merge (readyMergeConflict).
@@ -2696,7 +2728,8 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 	// The row taken out is one that waits for what row waits for, read from the payload the
 	// caller hands over rather than asked of the caller again: a payload that names no mark
 	// carries the mark's zero (SuperviseRequest.NeedsSlot is omitempty), which is a start that
-	// waits for no slot.
+	// waits for no slot. The insert named stopped writes, in place of the row taken out, the
+	// payload ReleaseStoppedStart builds (the doc above).
 	if _, err := tx.Exec(ctx, `with owed as (
 			delete from outbox where id = (select id from outbox
 				where `+pendingPhaseStart+`
@@ -2704,12 +2737,22 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 					and (lease_until is null or lease_until <= $3)
 				order by created_at, id limit 1)
 				and (lease_until is null or lease_until <= $3)
-			returning attempts, next_at, last_error, created_at)
+			returning attempts, next_at, last_error, created_at, payload),
+		stopped as (
+			insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
+			select 'supervise', $1, jsonb_build_object('op', 'start', 'tree', owed.payload->'tree', 'role', owed.payload->'role',
+					'generation', owed.payload->'generation', 'ruleResume', true), 0, $3, '', '', null
+			from owed
+			where owed.payload->>'role' <> ($2::jsonb)->>'role'
+				and owed.payload->'generation' = ($2::jsonb)->'generation'
+				and exists (select 1 from claims where claims.issue = $1 and claims.role = owed.payload->>'role'
+					and claims.state = $6 and claims.suspended_by = $7))
 		insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
 		select 'supervise', $1, $2, coalesce(owed.attempts, $4), coalesce(owed.next_at, $3), coalesce(owed.last_error, $5),
 			coalesce(owed.created_at, now()), '', null
 		from (values (1)) as caller(one) left join owed on true`,
-		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError); err != nil {
+		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError,
+		string(supervise.StateSuspended), string(supervise.SuspendedByProjectRelease)); err != nil {
 		return fmt.Errorf("enqueue the start of %s: %w", row.Issue, err)
 	}
 	return nil
@@ -3344,6 +3387,16 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 	if _, err := tx.Exec(ctx, `update outbox set attempts = attempts + 1, next_at = $3, last_error = $4,
 		lease_token = '', lease_until = null where id = $1 and lease_token = $2`, id, leaseToken, nextAt, storetext.FarSideError(lastErr)); err != nil {
 		return fmt.Errorf("retry outbox row %d: %w", id, err)
+	}
+	return nil
+}
+
+// HoldOutbox is RetryOutbox without the attempt: it puts back a row its lane claimed and did not
+// run, which is a row the daemon's project release holds (the daemon's outbox.runRow).
+func (s *Postgres) HoldOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error {
+	if _, err := tx.Exec(ctx, `update outbox set next_at = $3, last_error = $4,
+		lease_token = '', lease_until = null where id = $1 and lease_token = $2`, id, leaseToken, nextAt, lastErr); err != nil {
+		return fmt.Errorf("hold outbox row %d: %w", id, err)
 	}
 	return nil
 }

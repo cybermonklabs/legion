@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// booted is the daemon's boot (intake.DaemonBooted). It does three things, in this order.
+// booted is the daemon's boot (intake.DaemonBooted). It does four things, in this order.
 //
 // First, the upgrade's sweep (sweepMerged): an issue of this project that awaits its merge on a
 // pull request already merged is one the migration moved out of production_check, and the merge
@@ -57,9 +57,22 @@ import (
 // it answered with would be refused as behind that entry. A claim level with that entry is sent
 // the task that takes its phase on (ResumePhaseTask), which the outbox does not deliver to a claim
 // still holding its phase's task. Either start resumes the claim by rule and takes the slot mark
-// the slot rule gives its phase (StartOrOwe), as every start of a phase worker does, so it waits
-// for the issue's admission slot in a phase up to the review and for none past it. A role a start
-// already covers (StartFor) gets no second.
+// the slot rule gives its phase (StartOrOwe), as every start of a phase worker built through
+// started does, so it waits for the issue's admission slot in a phase up to the review and for
+// none past it; the fourth step's start of a phase owner level with its entry is enqueued
+// directly and takes none (startStoppedClaim). A role a start already covers (StartFor) gets no
+// second.
+//
+// Fourth, the start of every claim the project release stopped (startReleaseStopped), of every
+// role: the release holds every start until this boot, and the claims it stopped are read by
+// their source alone, `project_release` (supervise.SuspendedByProjectRelease), since nothing
+// else records them for the boot. It runs after the resume by rule, which acts on none of them,
+// and after the two other boot steps that can start such a claim, which write their starts
+// before this fact: admission's first pass, the listing's reconcile, which sends a claim behind
+// its entry that entry's work (admit's owedEntryRoles), and the cutover's repair. A claim one of
+// them started is covered by that queued start (StartFor) and gets none here. A phase owner
+// level with its entry starts with its phase's resume task, so its ready writes no second start
+// (readyWorkerTask); a claim behind its entry gets that entry's work, and any other claim no task.
 //
 // The sweep runs first so the resume reads the trees it closed as lingering. The owners' read
 // (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
@@ -98,7 +111,221 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		e.logOnCommit(ctx, "workflow: the boot starts a suspended claim that owns its issue's phase", "issue", issue.Key, "role", owner.role,
 			"phase", issue.Phase, "suspendedBy", held.SuspendedBy)
 	}
+	if err := e.startReleaseStopped(ctx, tx, owners); err != nil {
+		return intake.Result{}, err
+	}
 	return intake.Result{}, nil
+}
+
+// releaseStopped is one claim the project release stopped that the boot weighs a start of
+// (startReleaseStopped): the claim as the store names it, its issue, and either the issue's tree
+// root, for an issue in the workflow whose tree runs, or the open production check whose look
+// the claim works, for an issue the workflow has taken out.
+type releaseStopped struct {
+	held  record.SuspendedClaim
+	issue record.Issue
+	root  record.Issue
+	look  *record.ProductionCheck
+}
+
+// startReleaseStopped is booted's fourth step: it starts again each claim of the project the
+// project release stopped (dispatch://INFRA-3583/spec R8), every role but the controller, whose
+// claim stands on no issue and which the controller keeper resumes, since it resumes every
+// suspension but an operator's (the daemon's controllerKeeper). It reads them by their source,
+// with a read of its own (record.Store.SuspendedClaims): the claims of an issue in the workflow
+// whose tree runs (record.RunningRoots, the rule the resume by rule reads), whose run it reads at
+// the generation the issue holds, which is the run the start it writes serves; and the role that
+// works an open look of a closed issue's production check (record.ProductionCheck.Role), which the
+// release stopped mid-look. Every other such claim is left as it stands — one of an issue taken
+// out of the workflow is a close's, and one of a tree that lingers or waits in the line is its
+// re-admission's or its promotion's, which start every role of a mid-phase member (admit's
+// startMidPhaseMembers) — as the resume by rule leaves those.
+//
+// Each claim gets one start, and none when a queued start already covers it (StartFor): the
+// start of a phase owner behind the entry its phases row names that admission's first pass
+// wrote, the cutover's repair of a merger, a start the release held in the outbox. Whichever
+// start a claim has, the claim is still started once the issue has left the phase or the entry
+// that start names, by the start put in that start's place (record.ReleaseStoppedStart).
+// What a start carries is the work the record owes the role, and nothing else:
+//
+//   - A phase owner behind that entry is sent the work of that entry at that entry
+//     (sendOwedEntry, with the ruleResume mark), as the resume by rule sends it.
+//   - A phase owner level with its entry — its phase unfinished, nothing owed — gets one start of
+//     its phase carrying the phase's resume task (ResumePhaseTask, marked ResumeTask) and the
+//     ruleResume mark: its turn ended with nothing pending, and readyWorkerTask, which gives such
+//     a worker that same task once it reports ready, would otherwise write it a second start.
+//     The outbox delivers no resume task to a claim that still holds a task of the phase, so a
+//     claim whose turn the release cut is sent its own kept task on the resume and not this one.
+//   - Every other claim — an architect, a sub-architect, a role of an earlier phase, the owner of
+//     a phase its terminating fact has met — gets one start with no task and the ruleResume mark,
+//     enqueued directly as admission's start of a role that does not own its member's phase is
+//     (startMidPhaseMembers), so it waits for no slot. The outbox's start resumes the claim by
+//     rule, paced as every launch is (supervise's reserveWake), and its pending task, if it holds
+//     one, is sent on that resume, since a project release does not retire it
+//     (supervise.SuspendSource.RetiresPhaseTask). A phase owner's start names its phase, so the
+//     phase rules that read a queued start of the owner (StartFor, OwedEntry, readyWorkerTask's
+//     cover) see it; any other role's names none, as an architect's start names none, so the
+//     outbox's phase fence cannot end it when the phase moves while it waits its turn. Its cover
+//     is read under both, the issue's phase and none, since a promotion's start of such a role
+//     names the member's phase.
+//   - The production check's role gets the open look's start again: a start carrying that look
+//     (CheckLook) and the check it belongs to, the shape startLook writes, without startLook's
+//     Looks++, which opens the next look rather than this one. It is the one start an issue out
+//     of the workflow runs (the outbox's checkLookHolds). It carries no task: the look's own task
+//     is the one the claim kept and is sent on the resume, and a task on this row would be
+//     delivered a second time, since the outbox holds back no task of a start that names no
+//     phase.
+func (e *Engine) startReleaseStopped(ctx context.Context, tx pgx.Tx, owners phaseOwners) error {
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return err
+	}
+	stopped, err := e.store.SuspendedClaims(ctx, tx, project, supervise.SuspendedByProjectRelease)
+	if err != nil || len(stopped) == 0 {
+		return err
+	}
+	byKey := make(map[string]record.Issue, len(owners.issues))
+	for _, issue := range owners.issues {
+		byKey[issue.Key] = issue
+	}
+	var checks map[string]record.ProductionCheck
+	candidates := make([]releaseStopped, 0, len(stopped))
+	keys := make([]record.RoleRunKey, 0, len(stopped))
+	for _, held := range stopped {
+		issue, ok := byKey[held.Issue]
+		if !ok || issue.Project != e.cfg.Project {
+			continue
+		}
+		candidate := releaseStopped{held: held, issue: issue}
+		if record.InWorkflow(issue) {
+			root, ok := byKey[issue.Tree]
+			if !ok {
+				continue
+			}
+			if _, runs := owners.running[root.Key]; !runs {
+				continue
+			}
+			candidate.root = root
+		} else {
+			if checks == nil {
+				if checks, err = e.openChecks(ctx, tx); err != nil {
+					return err
+				}
+			}
+			check, ok := checks[issue.Key]
+			if !ok || !check.LookOpen || check.Role != held.Role {
+				continue
+			}
+			candidate.look = &check
+		}
+		candidates = append(candidates, candidate)
+		keys = append(keys, record.RoleRunKey{Token: held.Token, Issue: issue.Key, Role: held.Role, Generation: issue.Generation})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	runs, err := e.store.RoleRuns(ctx, tx, keys)
+	if err != nil {
+		return err
+	}
+	for _, stopped := range candidates {
+		run := runs[stopped.held.Token]
+		// The claim is read again with its run, and one no longer stopped by the release — a
+		// resume between the two reads — is no longer this step's.
+		if !run.Claim.ProjectReleased() {
+			continue
+		}
+		if stopped.look != nil {
+			if err := e.startStoppedLook(ctx, tx, stopped, run); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := e.startStoppedClaim(ctx, tx, stopped, run); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// openChecks is every open production check of the project, by issue.
+func (e *Engine) openChecks(ctx context.Context, tx pgx.Tx) (map[string]record.ProductionCheck, error) {
+	open, err := e.store.OpenProductionChecks(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	checks := make(map[string]record.ProductionCheck, len(open))
+	for _, check := range open {
+		if check.Project == e.cfg.Project {
+			checks[check.Issue] = check
+		}
+	}
+	return checks, nil
+}
+
+// startStoppedLook gives the production check's role the release stopped mid-look the open
+// look's start again, unless a start of that look is already queued (startReleaseStopped).
+func (e *Engine) startStoppedLook(ctx context.Context, tx pgx.Tx, stopped releaseStopped, run record.RoleRun) error {
+	issue, check := stopped.issue, *stopped.look
+	for _, queued := range run.Queued {
+		if queued.Request.Op == "start" && queued.Request.CheckLook == check.Looks && check.NamedBy(queued.Request.CheckOpenedAt) {
+			return nil
+		}
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: check.Role,
+		Generation: issue.Generation, CheckLook: check.Looks, CheckOpenedAt: check.OpenedAt, RuleResume: true}); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: the boot starts a claim the project release stopped on the production check look it was in",
+		"issue", issue.Key, "role", check.Role, "look", check.Looks)
+	return nil
+}
+
+// startStoppedClaim gives a claim the project release stopped, of an issue in the workflow whose
+// tree runs, its one start of the boot, unless a queued start covers it (startReleaseStopped): a
+// phase owner's carries the entry it is behind, or else its phase's resume task.
+func (e *Engine) startStoppedClaim(ctx context.Context, tx pgx.Tx, stopped releaseStopped, run record.RoleRun) error {
+	issue, root, role := stopped.issue, stopped.root, stopped.held.Role
+	owns := role != claim.RoleArchitect && phase.RoleFor(issue.Phase) == role
+	if owns {
+		// A phase its own terminating fact has met has no owner, as the resume by rule and the
+		// promotion read it (suspendedPhaseOwners, startMidPhaseMembers): its role comes back
+		// with no work, like a role of an earlier phase.
+		finished, err := e.phaseFinished(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		owns = !finished
+	}
+	request := record.ReleaseStoppedStart(issue.Tree, role, issue.Generation)
+	if owns {
+		if !StartFor(run, root, issue.Generation, issue.Phase) {
+			return nil
+		}
+		row, err := e.phaseRow(ctx, tx, issue.Key, role)
+		if err != nil {
+			return err
+		}
+		if OwedEntry(run, root, row.Entry) {
+			if err := e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{ruleResume: true}); err != nil {
+				return err
+			}
+			e.logOnCommit(ctx, "workflow: the boot starts a claim the project release stopped behind the entry its phases row names on that entry's work",
+				"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry)
+			return nil
+		}
+		// Level with its entry: the phase's resume task rides this start, so readyWorkerTask finds
+		// the task held once the worker reports ready and writes no second start.
+		request.Phase, request.Task, request.ResumeTask = issue.Phase, ResumePhaseTask(issue), true
+	} else if !StartFor(run, root, issue.Generation, "") || !StartFor(run, root, issue.Generation, issue.Phase) {
+		return nil
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, request); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: the boot starts a claim the project release stopped", "issue", issue.Key, "role", role,
+		"phase", issue.Phase, "ownsPhase", owns)
+	return nil
 }
 
 // suspendedOwner is a claim that owns its issue's unfinished phase in a running tree and stands

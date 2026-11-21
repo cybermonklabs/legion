@@ -37,6 +37,10 @@ const (
 	// CodeNotPaused is a resume of a project that is not paused (*store.NotPausedError), answered
 	// 409.
 	CodeNotPaused = "PROJECT_NOT_PAUSED"
+	// CodeReleasing is a pause while a project release of the project runs
+	// (*store.ProjectReleasingError, dispatch://INFRA-3583 R13), answered 409: the release reads
+	// each pod's work through a running role, and a pause would stop those roles.
+	CodeReleasing = "PROJECT_RELEASING"
 )
 
 // ErrReasonRequired is a pause refused because its reason is empty or white space alone. The
@@ -184,10 +188,12 @@ func (s *Service) Paused() (int64, bool) {
 
 // Pause pauses the project for reason, by `by` (decisions 3, 20 and 24). It refuses a blank reason
 // (ErrReasonRequired) and a daemon that cannot hold a pause (*UnavailableError), then runs the
-// store's pause transaction, which refuses a second pause with the *store.AlreadyPausedError it
-// returns unchanged. Once that commits it sets the flag, runs Effects.Paused with the claims the
-// transaction asked to stop, and logs the pause. A caller that goes away does not stop an act
-// under way, so no pause commits without its flag and its after-commit steps.
+// store's pause transaction, which refuses a second pause with the *store.AlreadyPausedError, and a
+// pause while a project release runs with the *store.ProjectReleasingError, each returned
+// unchanged; a refused pause sets no flag and stops no role. Once that commits it sets the flag,
+// runs Effects.Paused with the claims the transaction asked to stop, and logs the pause. A caller
+// that goes away does not stop an act under way, so no pause commits without its flag and its
+// after-commit steps.
 func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string) (store.Pause, error) {
 	if strings.TrimSpace(reason) == "" {
 		return store.Pause{}, ErrReasonRequired

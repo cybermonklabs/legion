@@ -301,6 +301,9 @@ func (r *Runtime) ensureCacheSandbox(ctx context.Context, name string, repo ghre
 	for {
 		u, err := r.sandboxClient().Get(ctx, name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
+			if err := r.releaseHolds("create sandbox " + name + ", the repository cache of " + repo.String()); err != nil {
+				return nil, err
+			}
 			manifest, err := encodeSandbox(r.cacheManifest(repo))
 			if err != nil {
 				return nil, err
@@ -453,6 +456,12 @@ func (r *Runtime) reconcileCachePod(ctx context.Context, s *sandbox, repo ghrepo
 			return nil
 		}
 	}
+	// A pod made again is refused while the project release holds every pod, before the running
+	// one is suspended: the cache keeps serving, or keeps its Suspended Sandbox, for the release
+	// to delete, rather than lose its pod to a replacement that can never be made.
+	if err := r.releaseHolds("start sandbox " + s.Name + "'s repository cache pod"); err != nil {
+		return err
+	}
 	if s.mode() != modeSuspended {
 		if err := r.setMode(ctx, s, modeSuspended); err != nil {
 			return fmt.Errorf("suspend sandbox %s: %w", s.Name, err)
@@ -460,6 +469,9 @@ func (r *Runtime) reconcileCachePod(ctx context.Context, s *sandbox, repo ghrepo
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {
 		return fmt.Errorf("wait out sandbox %s's pod: %w", s.Name, err)
+	}
+	if err := r.releaseHolds("set sandbox " + s.Name + " running"); err != nil {
+		return err
 	}
 	if _, err := r.patch(ctx, s,
 		jsonPatchOp{Op: "add", Path: "/spec/podTemplate", Value: r.cachePodTemplate(s.Name, repo)},

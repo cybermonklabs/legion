@@ -16,7 +16,10 @@ import { integerSetting, type StallLimitsLog } from "./stall-limits";
 
 /** 30 seconds: three times the longest launch measured on this deployment, where the slowest
  * launch read took 10 seconds from the daemon's launch to the task it refused (INFRA-1573's
- * spec, which reads 8 and 10 seconds for the two launches it measures). */
+ * spec, which reads 8 and 10 seconds for the two launches it measures). The daemon holds a copy
+ * (`packages/daemon/internal/config/claimbound.go`, `ClaimFirstTurnBound`), which its golden
+ * writes to `packages/contracts/fixtures/daemon-api/claim-first-turn-bound.json` and
+ * `src/legion-claim-core.test.ts` holds equal to this one. */
 export const DEFAULT_CLAIM_FIRST_TURN_BOUND_MS = 30_000;
 
 /** The one variable that moves the bound, in the `LEGION_*` family a Legion session's

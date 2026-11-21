@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -362,7 +363,9 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // where populatedState's pause waits on an implementer alone. Its repositories block names five
 // live repositories, both role Apps installed on each, whose caches stand in the five states a
 // cache can be in, so `repositories.live.*.cache.state` carries every word of that field, which
-// arrived with the block at repositoriesLiveContract (answers.go's liveCacheStates).
+// arrived with the block at repositoriesLiveContract (answers.go's liveCacheStates). The project's
+// release carries every word of its six enumerated fields (releaseCarryingEveryDeclaredValue),
+// where populatedState's carries some of each.
 //
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
 // `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
@@ -502,7 +505,60 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
 		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
 		// pause carries the held rows.
-		Paused: pausedViewOf(goldenPause(false), stops, nil),
+		Paused:         pausedViewOf(goldenPause(false), stops, nil),
+		ProjectRelease: releaseCarryingEveryDeclaredValue(at, roleWords),
+	}
+}
+
+// releaseCarryingEveryDeclaredValue is the third state body's project release (contract 209): a
+// release a boot ended, which carries every value of the six fields answers.go's EnumeratedFields
+// declares under `projectRelease`, and the three keys the populated state's finished release
+// (goldenProjectRelease) carries none of: `endedAt`, `endedBy` and the result's `failure`. One
+// Sandbox line stands for each outcome, together naming every kind of Sandbox, the waiting pod's
+// line asks every role a pod's line can ask, the six workflow roles the caller passes as roles,
+// and one claim line stands for each word of `ended`, its role taken from those roles and the
+// controller in turn, so the lines name every one.
+func releaseCarryingEveryDeclaredValue(at time.Time, roles []claim.Role) *ProjectReleaseResponse {
+	claimRoles := append(slices.Clone(roles), claim.RoleController)
+	ends := []ReleasedClaimEnd{
+		ReleasedClaimEnd(supervise.StateQueued), ReleasedClaimEnd(supervise.StateLaunchUncertain),
+		ReleasedClaimEnd(supervise.StateLaunching), ReleasedClaimEnd(supervise.StateShimConnected),
+		ReleasedClaimEnd(supervise.StateRegistered), ReleasedClaimEnd(supervise.StateReady),
+		ReleasedClaimEnd(supervise.StateWorking), ReleasedClaimEnd(supervise.StateIdle),
+		ReleasedClaimEnd(supervise.StateFailed), ReleasedClaimEnd(supervise.StateRetired),
+		ReleasedClaimEnd(supervise.SuspendedByUnknown), ReleasedClaimEnd(supervise.SuspendedByOperator),
+		ReleasedClaimEnd(supervise.SuspendedByDaemon), ReleasedClaimEnd(supervise.SuspendedByExit),
+		ReleasedClaimEnd(supervise.SuspendedByReleased), ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
+		ReleasedClaimUnrecorded}
+	asked := make([]ReleasedAsk, 0, len(roles))
+	for _, role := range roles {
+		asked = append(asked, ReleasedAsk{Role: role})
+	}
+	claims := make([]ReleasedClaim, 0, len(ends))
+	for i, ended := range ends {
+		role := claimRoles[i%len(claimRoles)]
+		claims = append(claims, ReleasedClaim{Token: claim.Token(fmt.Sprintf("legion-values-values-%d-%s", i+1, role)),
+			Role: role, Ended: ended, BootStarts: ended == ReleasedClaimEnd(supervise.SuspendedByProjectRelease)})
+	}
+	finished, ended := at.Add(31*time.Minute), at.Add(2*time.Hour)
+	return &ProjectReleaseResponse{
+		ID: 9, StartedAt: at, BoundAt: at.Add(30 * time.Minute), Bound: (30 * time.Minute).String(),
+		FinishedAt: &finished, EndedAt: &ended, EndedBy: store.ProjectReleaseEndedByBoot,
+		Result: ProjectReleaseResult{
+			Sandboxes: []ReleasedSandbox{
+				{Name: "legion-values-values-1", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-1", Outcome: ReleaseWaiting, Asked: asked},
+				{Name: "legion-values-values-2", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-2", Outcome: ReleaseDeletedClean},
+				{Name: "legion-values-values-3", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-3", Outcome: ReleaseDeletedUnread},
+				{Name: "legion-values-values-4", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-4", Outcome: ReleaseDeletedLost},
+				{Name: "legion-values-values-5", Kind: runtime.ProjectSandboxIssue, Issue: "VALUES-5", Outcome: ReleaseDeletedReadRefused},
+				{Name: "legion-values-controller", Kind: runtime.ProjectSandboxController, Outcome: ReleaseDeleted},
+				{Name: "legion-values-cache-acme-widgets", Kind: runtime.ProjectSandboxCache, Outcome: ReleaseLeft, Reason: "its delete was refused"},
+				{Name: "legion-values-probe", Kind: runtime.ProjectSandboxProbe, Outcome: ReleaseDeleted},
+				{Name: "legion-values-unlabelled", Kind: runtime.ProjectSandboxUnknown, Outcome: ReleaseLeft, Reason: "no label names its kind"},
+			},
+			Claims:  claims,
+			Failure: "list the project's Sandboxes again: the API server answered 503",
+		},
 	}
 }
 
@@ -642,8 +698,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// is not a success, so the fixture holds each and the record is the keys of the three read
 		// as one set. The pause refusals are the three the goldens hold (TestPauseRouteGoldens):
 		// the setting that turns the pause off, the pause that stands, and the last pause, ended,
-		// which between them carry every key of a PauseFailure. Their pause is the controller's,
-		// richer than the goldens' operator's (controllerPause).
+		// which between them carry every key of a PauseFailure but one, and the project release's
+		// refusal while a pause holds the project (contract 209), which carries that one,
+		// `heldPods`. Their pause is the controller's, richer than the goldens' operator's
+		// (controllerPause).
 		AnswerRefusal: {
 			roots: typesOf(claim.Refusal{}, Failure{}, PauseFailure{}),
 			bodies: []any{
@@ -664,6 +722,9 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 						Error: "the project is not paused: its last pause (" + describePause(controllerPause(true)) + ") ended 2026-11-15T09:41:30Z by the controller (session ses_controller); this resume changed nothing"},
 					LastPause: &ended,
 				},
+				releasePausedFailure(&store.ProjectPausedError{Project: "legion", Pause: controllerPause(false), Paused: true,
+					Held: []store.HeldPausePod{{Issue: "LEGION-208", Pause: 7, HeldAt: released,
+						Claims: []claim.Token{"legion-legion-legion-208-implementer"}}}}),
 			},
 		},
 		// The pause the controller began, richer than the golden, which is the operator's pause
@@ -2019,17 +2080,26 @@ type answerField struct {
 // census below reads the fixture bodies rather than the records, so the three stay entries here.
 // They go with the key, when the loader stops accepting it.
 //
-// The other two are the end of the pause the controller's pause answers (contract 178): that
-// answer is the pause the route began (pauseProject, pauseViewOf), which no resume has ended, so
-// no body of it carries `endedAt` or `endedBy`. Both are realised by the resume's answer, whose
-// pause is ended, and by the refusal's `lastPause`.
+// Two more are the end of the pause the controller's pause answers (contract 178): that answer
+// is the pause the route began (pauseProject, pauseViewOf), which no resume has ended, so no body
+// of it carries `endedAt` or `endedBy`. Both are realised by the resume's answer, whose pause is
+// ended, and by the refusal's `lastPause`.
+//
+// The last is a dry run's mark on the project release the state carries (contract 209): the
+// state carries the project's newest recorded release, and a dry run is answered and never
+// recorded (ProjectReleaseResponse), so no state body carries `dryRun`. The release's own routes,
+// which answer a dry run, answer the `legion` command, and are no row of Answers.
 var excludedDeclaredFields = map[answerField]string{
-	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "repo"}}:      deploysNeverFilled,
-	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "workflow"}}:  deploysNeverFilled,
-	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "step"}}:      deploysNeverFilled,
-	{answer: AnswerProjectPause, field: declaredField{typ: "api.PauseView", name: "endedAt"}}: pauseNeverEnded,
-	{answer: AnswerProjectPause, field: declaredField{typ: "api.PauseView", name: "endedBy"}}: pauseNeverEnded,
+	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "repo"}}:           deploysNeverFilled,
+	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "workflow"}}:       deploysNeverFilled,
+	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "step"}}:           deploysNeverFilled,
+	{answer: AnswerProjectPause, field: declaredField{typ: "api.PauseView", name: "endedAt"}}:      pauseNeverEnded,
+	{answer: AnswerProjectPause, field: declaredField{typ: "api.PauseView", name: "endedBy"}}:      pauseNeverEnded,
+	{answer: AnswerState, field: declaredField{typ: "api.ProjectReleaseResponse", name: "dryRun"}}: releaseNeverDry,
 }
+
+// releaseNeverDry is the reason of the state's release entry.
+const releaseNeverDry = "the state carries the project's newest recorded release, and a dry run is never recorded, so no state body carries `dryRun`"
 
 // pauseNeverEnded is the reason the two entries of the pause's answer share.
 const pauseNeverEnded = "the pause the route answers is the one it began, which no resume has ended, so no body of the answer carries an end (pauseProject)"

@@ -472,6 +472,13 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	if v.pod == nil || string(v.pod.UID) != k.Locator.Sandbox.PodUID {
 		return nil
 	}
+	// A pod the project release holds is not ended for its round: the release reads it and
+	// deletes it itself, and the resumes a replacement leads to would make the pod the release
+	// holds against. The refusal comes last, beside due, so a mark set while this waited for the
+	// pod's launch turn still holds.
+	if err := r.releaseHolds("replace " + string(k.Claim) + "'s pod"); err != nil {
+		return err
+	}
 	if err := due(ctx); err != nil {
 		return err
 	}

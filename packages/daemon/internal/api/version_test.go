@@ -40,18 +40,19 @@ func TestFailureCausesGolden(t *testing.T) {
 }
 
 // The role rows of EnumeratedFields record each role at the contract it arrived at: claimRoles,
-// wakeRoles and pauseStopRoles (answers.go), each read from floorRoles, the six roles named one
-// by one at ServingFloor. A role added to claim.Roles and to none of those lists would be on no
-// row: nothing would record when it arrived, no value strip would hold it back, and a reader of
-// an older contract, whose role enum is strict, would be served it and refuse the whole state. So
-// every role claim.Roles holds must have a value in each of the three lists, at whatever contract
-// it arrived at. A role claim.Roles drops stays in the lists, which are the history of what was
-// served.
+// wakeRoles, pauseStopRoles, releaseAskRoles and releasedClaimRoles (answers.go), each read from
+// floorRoles, the six roles named one by one at ServingFloor. A role added to claim.Roles and to
+// none of those lists would be on no row: nothing would record when it arrived, no value strip
+// would hold it back, and a reader of an older contract, whose role enum is strict, would be
+// served it and refuse the whole state. So every role claim.Roles holds must have a value in each
+// of the five lists, at whatever contract it arrived at. A role claim.Roles drops stays in the
+// lists, which are the history of what was served.
 func TestEveryRoleAClaimCanHoldHasARecordedArrival(t *testing.T) {
 	lists := []struct {
 		name   string
 		values []EnumeratedValue
-	}{{"claimRoles", claimRoles}, {"wakeRoles", wakeRoles}, {"pauseStopRoles", pauseStopRoles}}
+	}{{"claimRoles", claimRoles}, {"wakeRoles", wakeRoles}, {"pauseStopRoles", pauseStopRoles},
+		{"releaseAskRoles", releaseAskRoles}, {"releasedClaimRoles", releasedClaimRoles}}
 	for _, role := range claim.Roles {
 		for _, list := range lists {
 			holds := func(v EnumeratedValue) bool { return v.Value == string(role) }

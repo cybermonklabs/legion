@@ -319,6 +319,39 @@ func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.D
 	return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeBundleWorkspace, answer.FrameType())
 }
 
+// ReadUnpushed asks the shim whether the workspace it runs in holds unpushed work: how many of its
+// commits no remote branch or tag holds, and whether its working copy holds a change. The shim
+// runs its jj reads within timeout; the answer is awaited for that plus the RPC timeout, the round
+// trip. A shim built before the read forwards the frame to Oh My Pi, which refuses a command it
+// does not know, and that refusal is a RefusedError like the shim's own, so the caller reads such
+// a pod as one whose workspace could not be read, never as one with nothing unpushed.
+func (c *Conn) ReadUnpushed(ctx context.Context, issue string, timeout time.Duration) (runtime.UnpushedWork, error) {
+	id := rand.Text()
+	frame := shimwire.ReadUnpushed{ID: id, Issue: issue, TimeoutMs: int(timeout.Milliseconds())}
+	if err := frame.Validate(); err != nil {
+		return runtime.UnpushedWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+	}
+	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
+	if err != nil {
+		return runtime.UnpushedWork{}, err
+	}
+	switch answer := answer.(type) {
+	case shimwire.ReadUnpushedResult:
+		if err := answer.Validate(); err != nil {
+			return runtime.UnpushedWork{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+		}
+		if !answer.OK {
+			return runtime.UnpushedWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeReadUnpushed, Reason: answer.Error}
+		}
+		return runtime.UnpushedWork{Commits: answer.Commits, WorkingCopyChanged: answer.WorkingCopyChanged}, nil
+	case shimwire.Response:
+		if !answer.Success {
+			return runtime.UnpushedWork{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeReadUnpushed, Reason: answer.Error}
+		}
+	}
+	return runtime.UnpushedWork{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeReadUnpushed, answer.FrameType())
+}
+
 // AgentSecretsEnrollment hands the shim the broker's enrollment id for its pod; the shim writes it
 // beside the key and starts the lease renewer, and answers. Bounded by the RPC timeout: a file
 // write, not a command.
@@ -561,6 +594,8 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 	case shimwire.AgentSecretsTokenResult:
 		c.answerShim(frame.ID, frame)
 	case shimwire.BundleWorkspaceResult:
+		c.answerShim(frame.ID, frame)
+	case shimwire.ReadUnpushedResult:
 		c.answerShim(frame.ID, frame)
 	}
 }

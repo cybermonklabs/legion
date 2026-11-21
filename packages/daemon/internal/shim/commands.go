@@ -17,17 +17,17 @@ import (
 // The commands the daemon asks this shim for: the working copy's adoption, answered in a
 // goroutine of its own (answer), and the context every such command runs on, which the shim ends
 // at its own end and waits out before Run returns (endCommands, drainCommands). The release's save
-// is a command of this kind too and lives in bundle.go, which is long enough to be a file of its
-// own.
+// and the project release's read of unpushed work are commands of this kind too, each in a file of
+// its own (bundle.go, unpushed.go).
 
-// answer runs one frame's answer — the adoption, the release's save — in a goroutine of its own,
-// so the connection's reader never waits on the git and jj it starts, and counts it so that Run
-// waits for it before it returns (drainCommands). Every one of them is dispatched from
-// fromDaemon, which the reader calls one frame at a time, so a command is counted before the
-// frame after it is read. Two counts are kept: commandRuns, which the drain waits on, and
-// commandsInFlight, which says whether there is anything to wait for at all. The second is
-// lowered first, so a count of 0 means every command has returned and nothing but the
-// goroutines' own last line is left.
+// answer runs one frame's answer — the adoption, the release's save, the project release's read —
+// in a goroutine of its own, so the connection's reader never waits on the git and jj it starts,
+// and counts it so that Run waits for it before it returns (drainCommands). Every one of them is
+// dispatched from fromDaemon, which the reader calls one frame at a time, so a command is counted
+// before the frame after it is read. Two counts are kept: commandRuns, which the drain waits on,
+// and commandsInFlight, which says whether there is anything to wait for at all. The second is
+// lowered first, so a count of 0 means every command has returned and nothing but the goroutines'
+// own last line is left.
 func (s *shim) answer(command func()) {
 	s.commandsInFlight.Add(1)
 	s.commandRuns.Add(1)

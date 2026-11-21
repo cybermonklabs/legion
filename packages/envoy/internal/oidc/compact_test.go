@@ -122,6 +122,24 @@ func TestATokenCarryingWhiteSpaceVerifiesAsBefore(t *testing.T) {
 	}
 }
 
+// An issuer set reads a token's iss as a Verifier reads the token, every space removed, so each
+// white-spaced form of a token of the set's second issuer goes to that issuer alone and verifies,
+// as it verifies through a Verifier.
+func TestATokenCarryingWhiteSpaceVerifiesThroughAnIssuerSet(t *testing.T) {
+	set, first, second, _, secondKey := twoIssuers(t)
+	compact := second.Mint(t, secondKey, second.Claims(testSubject, testAudience))
+	want := NamedIssuer{Name: "second", URL: second.URL()}
+	for name, raw := range whiteSpaced(compact) {
+		claims, issuer, err := set.VerifyClaims(context.Background(), raw)
+		if err != nil || claims.Subject != testSubject || issuer != want {
+			t.Errorf("%s: claims %+v, issuer %+v, err %v; want it verified by the second issuer as the compact token is", name, claims, issuer, err)
+		}
+	}
+	if got := reads(first); got != [2]int{} {
+		t.Fatalf("the second issuer's tokens read the first issuer's discovery document and key set %v times, want none", got)
+	}
+}
+
 // The sign-in's verifier (newVerifier) checks signatures with go-oidc's own RemoteKeySet, which
 // verifies the JWS JSON serialization too, so verify's own refusal is the one compact check that
 // verifier has: a JSON-form ID token is refused as malformed there, and a compact one, white

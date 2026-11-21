@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natscred"
@@ -51,29 +52,30 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var presented []string
-	services, err := natscallout.ParseServices("listener/example-hub/*=" + serviceTokenAccount)
+	// The one issuer of a bare BROKER_K8S_OIDC_ISSUER URL, whose name, "", the stub answers.
+	services, err := natscallout.ParseServices("listener/example-hub/*="+serviceTokenAccount, []oidc.NamedIssuer{{URL: "https://cluster.example"}})
 	require.NoError(t, err)
 	service, err := natscallout.Start(t.Context(), natscallout.Settings{
 		URLs: []string{url}, SeedFile: write("service.seed", keys.ServiceSeed),
 		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed), XKeySeedFile: write("xkey.seed", keys.XKeySeed), Services: services,
 	}, natscallout.Deps{
-		ServiceToken: func(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+		ServiceToken: func(_ context.Context, raw string) (natscallout.ServiceIdentity, error) {
 			mu.Lock()
 			presented = append(presented, raw)
 			mu.Unlock()
 			parts := strings.Split(raw, ".")
 			payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 			if err != nil {
-				return "", false, time.Time{}, time.Time{}, err
+				return natscallout.ServiceIdentity{}, err
 			}
 			var claims struct {
 				Sub      string
 				Iat, Exp int64
 			}
 			if err := json.Unmarshal(payload, &claims); err != nil {
-				return "", false, time.Time{}, time.Time{}, err
+				return natscallout.ServiceIdentity{}, err
 			}
-			return claims.Sub, false, time.Unix(claims.Iat, 0), time.Unix(claims.Exp, 0), nil
+			return natscallout.ServiceIdentity{Account: claims.Sub, Issued: time.Unix(claims.Iat, 0), Expiry: time.Unix(claims.Exp, 0)}, nil
 		},
 		Log: slog.New(slog.DiscardHandler),
 	})

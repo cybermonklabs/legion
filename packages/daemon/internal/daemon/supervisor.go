@@ -140,6 +140,24 @@ func (s *supervisor) wakeIssue(token claim.Token) {
 	}
 }
 
+// sendHeldTasks asks every machine to send the task it holds, once the project release's mark is
+// cleared because the release's record did not commit (projectRelease.unmark): the machines held
+// every task while the mark stood (supervise.Deps.ProjectReleaseHolds), and nothing of a claim
+// that is ready or idle would ask again until some unrelated event reached it. It posts the event
+// whose one act is that send (supervise's IssueTurnEnded, which carries no fact of its own): a
+// claim in a state that sends nothing ignores it, and a task another hold still keeps — a turn of
+// another role of the issue — is held again by the send's own questions.
+func (s *supervisor) sendHeldTasks() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.stopped {
+		return
+	}
+	for token, m := range s.machines {
+		m.inbox.put(supervise.IssueTurnEnded{Claim: token})
+	}
+}
+
 // OnDurableState applies one durable-state callback to every current and future machine.
 func (s *supervisor) OnDurableState(callback func(supervise.Claim, supervise.ClaimState)) {
 	s.mu.Lock()

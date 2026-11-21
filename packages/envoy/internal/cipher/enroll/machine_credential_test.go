@@ -181,7 +181,7 @@ func TestOnlyAMachinesOwnCredentialEnrolsItsSession(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
 	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
-	svc.ServiceLogins = map[string]string{"system:serviceaccount:example:example-daemon": "legion-daemon"}
+	svc.ServiceLogins = map[string]ServiceLogin{"system:serviceaccount:example:example-daemon": {Service: "legion-daemon", Issuers: []string{""}}}
 
 	daemon, err := svc.CredentialForKey(ctx, func() string {
 		tx, err := svc.Store.Pool.Begin(ctx)

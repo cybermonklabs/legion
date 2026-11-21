@@ -76,9 +76,9 @@ type testServer struct {
 	// server calls take; minted once per server so a test may send it from a goroutine too.
 	uiToken string
 	// ServiceLogins is the broker's live BROKER_SERVICE_LOGINS, daemonAccount and
-	// otherDaemonAccount each logging in as legion-daemon; a test removes an entry to take an
-	// account off it.
-	ServiceLogins map[string]string
+	// otherDaemonAccount each logging in as legion-daemon from the server's one issuer; a test
+	// removes an entry to take an account off it.
+	ServiceLogins map[string]enroll.ServiceLogin
 	// registry is the server's own metrics, the answer recorder's broker_answers_total among them.
 	registry *metrics.Registry
 	// sessions is the store the enrollment route binds session names through
@@ -138,18 +138,24 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
-	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
-	if err != nil {
-		t.Fatalf("oidc.NewKeys: %v", err)
+	// One issuer, as a deployment's BROKER_K8S_OIDC_ISSUER names one cluster: a bare URL, so the
+	// issuer has no name, and every entry below names it by that empty name, as config.Load fills
+	// an entry that names none.
+	podIssuers := []oidc.NamedIssuer{{URL: issuer.URL()}}
+	podVerifier := enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet(podIssuers, podAudience, 0)}
+	registrationVerifier := enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet(podIssuers, registrationAudience, 0)}
+	serviceLogins := map[string]enroll.ServiceLogin{
+		daemonAccount:      {Service: "legion-daemon", Issuers: []string{""}},
+		otherDaemonAccount: {Service: "legion-daemon", Issuers: []string{""}},
 	}
-	podVerifier := oidc.NewWithKeys(issuer.URL(), podAudience, keys)
-	registrationVerifier := oidc.NewWithKeys(issuer.URL(), registrationAudience, keys)
-	serviceLogins := map[string]string{daemonAccount: "legion-daemon", otherDaemonAccount: "legion-daemon"}
 	// BROKER_SERVICES: both accounts the pods these tests enrol run as, bound to the service both
 	// daemon accounts log in as, which is what lets their logins enrol those pods. An account
 	// outside it is a pod no login here launches (POD_NOT_LAUNCHED).
 	servicesByAccount := map[string]string{workerAccount: "legion-daemon", otherAccount: "legion-daemon"}
-	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
+	enr := &enroll.Service{
+		Store: st, Lease: time.Hour, Pod: podVerifier, Issuers: podIssuers,
+		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount,
+	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	// Wired as cmd/cipherd/main.go wires the enrollment route, so the route refuses a name another
 	// principal holds, unless a test pairs that principal's account with the enrolling pod's
@@ -177,6 +183,10 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		Store: st, Policy: cur, Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
+		// The issuers the enrollment service verifies pods' tokens against, as cmd/cipherd wires
+		// both from BROKER_K8S_OIDC_ISSUER: a pod's enrollment records its issuer's URL, which
+		// the machine reads as that issuer's name against the entry of the pod's account.
+		Issuers: podIssuers,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
@@ -189,9 +199,9 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	deps := api.Deps{
 		PublicURL:     srv.URL,
 		APIAccounts:   map[string]api.Account{dispatchAccount: ciphertest.Caller(t, dispatchCaller)},
-		AccountTokens: enroll.K8sPodVerifier{Verifier: podVerifier},
+		AccountTokens: podVerifier,
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
-		PodRegistrars: podRegistrars, PodRegistrationTokens: enroll.K8sPodVerifier{Verifier: registrationVerifier},
+		PodRegistrars: podRegistrars, PodRegistrationTokens: registrationVerifier,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,

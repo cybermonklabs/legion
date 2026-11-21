@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The plugin declares daemon API contract 209, which adds the shim's `read-unpushed` frame, the
+  project release routes `POST` and `GET /legion/v1/operator/project/release`, the state's
+  `projectRelease`, and the suspension source `project_release`. A role's `ready_for_update`
+  answers the project release's ask with its `release:<id>` round, which the plugin already takes.

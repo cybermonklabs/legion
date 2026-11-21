@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // ErrProjectAccessUnavailable is a request, release, decision or airlock connection that holds a
@@ -131,9 +132,14 @@ func anyProjectTagged(set *policy.Set, granted []requestedSecret) bool {
 // BROKER_POD_OPERATORS still maps its account to its person (personPodGrant, unmappedPersonPod),
 // since it named them when it enrolled as that session does and was checked against that person
 // (enroll.Service.Create); a pod of no person names the one project its operator's entry maps its
-// service account to (exchange.Set.MappedProjects), checked against that entry's person, and so
-// does a person's pod the setting no longer maps, which acts for no person; a machine's own
-// session the one its fleet's Google account maps to; anything else names none.
+// service account to, checked against that entry's person, and so does a person's pod the
+// setting no longer maps, which acts for no person — but only while that entry names the issuer
+// whose token enrolled the pod (exchange.Set.PodProjects), since the same account name in another
+// cluster is another ServiceAccount, whose token the exchange refuses too. The enrollment records
+// that issuer's URL, read as its name in BROKER_K8S_OIDC_ISSUER (Issuers, oidc.IssuerName): one
+// recording none was enrolled before enrollments recorded one, under the first issuer, and a URL
+// the setting no longer holds is no issuer's, so such a pod names no project. A machine's own
+// session names the one its fleet's Google account maps to; anything else names none.
 func (m *Machine) credentialProjects(e enrollmentRow) (person string, projects []string) {
 	switch {
 	case e.Kind == "session" && e.Operator != nil:
@@ -143,7 +149,11 @@ func (m *Machine) credentialProjects(e enrollmentRow) (person string, projects [
 	case m.Exchange == nil || e.Subject == nil:
 		return "", nil
 	case e.Kind == "pod":
-		person, projects, _ := m.Exchange.MappedProjects(exchange.AccountPrincipal(*e.Subject))
+		issuer, known := oidc.IssuerName(m.Issuers, e.Issuer)
+		if !known {
+			return "", nil
+		}
+		person, projects, _ := m.Exchange.PodProjects(*e.Subject, issuer)
 		return person, projects
 	case e.Kind == "session":
 		if read := exchange.ReadSubject(*e.Subject); read.Kind == exchange.SubjectMachine {
@@ -656,12 +666,13 @@ func (m *Machine) judgeMayDecide(ctx context.Context, row string, states map[str
 }
 
 // namedProjects is the projects e's credential names: a person's session's enrollment list, the
-// project a pod's operator entry maps its account to, or the one a machine's fleet maps to
-// (credentialProjects). It is the one source every reader uses — the release (projectFacts), the
-// decision (mayDecide), the record a person reads (ReadRecord) and both approver lists — so the
-// path that releases a secret and the path that shows a request cannot disagree on whose it is:
-// a service's pod's enrollment row names no project of its own, and reading that column alone
-// showed a private project's pod requests to everyone.
+// project a pod's operator entry maps its account to while that entry names the issuer the pod
+// enrolled under, or the one a machine's fleet maps to (credentialProjects). It is the one source
+// every reader uses — the release (projectFacts), the decision (mayDecide), the record a person
+// reads (ReadRecord) and both approver lists — so the path that releases a secret and the path
+// that shows a request cannot disagree on whose it is: a service's pod's enrollment row names no
+// project of its own, and reading that column alone showed a private project's pod requests to
+// everyone.
 func (m *Machine) namedProjects(e enrollmentRow) []string {
 	_, named := m.credentialProjects(e)
 	return named

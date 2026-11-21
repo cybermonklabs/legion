@@ -1245,8 +1245,7 @@ var (
 func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, bool, error) {
 	claims, err := s.deps.OIDC.Verify(r.Context(), token)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
-		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "OIDC_ISSUER_UNAVAILABLE",
-			"the service-account token issuer cannot be reached; try again in a minute")
+		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, oidc.IssuerUnavailableCode, oidc.IssuerUnavailableMessage)
 	}
 	if err != nil {
 		reason := oidc.Reason(err)

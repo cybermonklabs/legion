@@ -3,7 +3,9 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,6 +24,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/client-go/rest"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -102,6 +105,89 @@ func writeKubeconfig(t *testing.T, server, current string) string {
 		t.Fatalf("write the kubeconfig: %v", err)
 	}
 	return path
+}
+
+// A daemon reaches a cluster it does not run in through a kubeconfig whose user holds no token and
+// is an exec credential instead: a command, which prints a token of the daemon's own cloud
+// identity. kubeClient, which the boot calls for runtime.kubernetes.kubeconfig, keeps that command
+// on the config it returns, so the first request a client of that config sends runs the command,
+// and the token the command printed is the request's bearer. The API server speaks TLS, as a
+// cluster's does: clientcmd reads a kubeconfig's user only for a server it reaches over TLS
+// (rest.IsConfigTransportTLS), so a plain-HTTP server would be sent no credential of any kind.
+func TestKubeClientCallsTheExecCommandOfItsUser(t *testing.T) {
+	var mu sync.Mutex
+	var bearers []string
+	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		bearers = append(bearers, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"kind": "APIVersions", "versions": []string{"v1"}})
+	}))
+	defer apiServer.Close()
+	authority := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: apiServer.Certificate().Raw})
+
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	command := filepath.Join(dir, "credential")
+	if strings.Contains(calls, "'") {
+		t.Fatalf("%s cannot be quoted in the credential command", calls)
+	}
+	const token = "token-the-exec-command-printed"
+	credential, err := json.Marshal(map[string]any{
+		"apiVersion": "client.authentication.k8s.io/v1", "kind": "ExecCredential",
+		"status": map[string]string{"token": token},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nprintf 'called\\n' >>'" + calls + "'\ncat <<'CREDENTIAL'\n" + string(credential) + "\nCREDENTIAL\n"
+	if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
+		t.Fatalf("write the credential command: %v", err)
+	}
+	kubeconfig := filepath.Join(dir, "kubeconfig")
+	body := "apiVersion: v1\nkind: Config\n" +
+		"clusters:\n- name: test\n  cluster:\n    server: " + strconv.Quote(apiServer.URL) + "\n" +
+		"    certificate-authority-data: " + base64.StdEncoding.EncodeToString(authority) + "\n" +
+		"users:\n- name: test\n  user:\n    exec:\n" +
+		"      apiVersion: client.authentication.k8s.io/v1\n" +
+		"      command: " + strconv.Quote(command) + "\n" +
+		"      interactiveMode: Never\n" +
+		"contexts:\n- name: test\n  context:\n    cluster: test\n    user: test\n" +
+		"current-context: test\n"
+	if err := os.WriteFile(kubeconfig, []byte(body), 0o600); err != nil {
+		t.Fatalf("write the kubeconfig: %v", err)
+	}
+
+	rc, err := kubeClient(config.Kubernetes{Kubeconfig: kubeconfig})
+	if err != nil {
+		t.Fatalf("kubeClient: %v", err)
+	}
+	client, err := rest.HTTPClientFor(rc)
+	if err != nil {
+		t.Fatalf("a client of kubeClient's config: %v", err)
+	}
+	response, err := client.Get(apiServer.URL + "/api")
+	if err != nil {
+		t.Fatalf("the request to the API server: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("the API server answered %s", response.Status)
+	}
+
+	recorded, err := os.ReadFile(calls)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(recorded), "called\n"); got != 1 {
+		t.Errorf("the kubeconfig's exec command ran %d times for one request, want once", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"Bearer " + token}; !slices.Equal(bearers, want) {
+		t.Errorf("the API server got the bearers %q, want %q: the token the exec command printed", bearers, want)
+	}
 }
 
 // A cluster without Agent Sandbox is refused by name (LEGION-206 Requirement 10) before the boot
@@ -504,7 +590,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 	cfg := workflowConfig(t, workflowNATS(t))
 	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
 	cfg.Bind, cfg.AdvertiseHost = "0.0.0.0", "legion-daemon-legsmoke.legion.svc"
-	cfg.Port = holdPortOn(t, "0.0.0.0")
+	cfg.Port = holdPort(t, t, "0.0.0.0", 0)
 	cfg.DaemonURL = "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
 	record := &built{}
 	o := fakeRuntime(fake.NewRuntime(), record)

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -414,6 +415,69 @@ func TestPauseRoutes(t *testing.T) {
 			t.Fatalf("a resume of the running project named %+v, want the last pause, %+v", again.LastPause, resumed.Pause)
 		}
 		h.wantActs(1, 1, "controller", "ses_controller")
+	})
+
+	// dispatch://INFRA-3583 R13: while a project release runs — its record neither finished nor
+	// ended by a boot — a pause answers PROJECT_RELEASING at both doors, naming the release, and
+	// writes nothing: no pause, no stop of a live role, no `pause_stop` row, no flag. Once the
+	// release has finished, a pause is taken and stops the live roles as any pause does, though
+	// the release's mark still holds every start until the next boot.
+	t.Run("a pause while a project release runs answers PROJECT_RELEASING and is taken once it finished", func(t *testing.T) {
+		h := newPauseHarness(t, pauseCapable())
+		grant := h.controllerSession()
+		implementer, _ := h.launch("LEGION-208", claim.RoleImplementer)
+		h.ready(implementer, "ses_implementer", 1)
+		started := pauseStartsAt.Add(-5 * time.Minute)
+		release, _, _, err := h.store.StartProjectRelease(h.ctx, testProject, started, started.Add(30*time.Minute))
+		if err != nil {
+			t.Fatalf("record the release: %v", err)
+		}
+		before, err := h.store.Claims(h.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, door := range []struct {
+			target string
+			body   any
+			header http.Header
+		}{
+			{controllerPauseRoute, ProjectPauseRequest{GrantID: grant, Reason: "the controller's outage"}, nil},
+			{operatorPauseRoute, OperatorPauseRequest{Reason: "the operator's outage"}, bearer},
+		} {
+			refused := h.pauseRefused(door.target, door.body, door.header, http.StatusConflict, pause.CodeReleasing)
+			if !strings.Contains(refused.Error, fmt.Sprintf("project release %d runs", release.ID)) || refused.Pause != nil || len(refused.HeldPods) != 0 {
+				t.Fatalf("POST %s refused %+v, want it to name release %d and nothing beside its sentence", door.target, refused, release.ID)
+			}
+		}
+		after, err := h.store.Claims(h.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(after, before) {
+			t.Fatalf("the refused pauses changed the claims:\nbefore %+v\nafter  %+v", before, after)
+		}
+		for _, table := range []string{"project_pauses", "project_pause_stops", "outbox where payload->>'op' = 'pause_stop'"} {
+			var n int
+			if err := h.store.Pool().QueryRow(h.ctx, `select count(*) from `+table).Scan(&n); err != nil || n != 0 {
+				t.Fatalf("the refused pauses left %d rows of %s (%v), want none", n, table, err)
+			}
+		}
+		if _, open := h.svc.Paused(); open {
+			t.Fatal("a refused pause set the pause flag")
+		}
+		h.wantActs(0, 0, "", "")
+
+		if err := h.store.FinishProjectRelease(h.ctx, release.ID, []byte(`{}`), pauseStartsAt); err != nil {
+			t.Fatalf("finish the release: %v", err)
+		}
+		began := beganPause(t, h.pauseOK(operatorPauseRoute, OperatorPauseRequest{Reason: "after the release"}, bearer))
+		if id, open := h.svc.Paused(); !open || id != began.ID {
+			t.Fatalf("the flag reads %d, %t after the pause the finished release let through, want pause %d", id, open, began.ID)
+		}
+		var stops int
+		if err := h.store.Pool().QueryRow(h.ctx, `select count(*) from project_pause_stops where claim = $1`, string(implementer)).Scan(&stops); err != nil || stops != 1 {
+			t.Fatalf("the pause after the release asked %d stops of %s (%v), want one", stops, implementer, err)
+		}
 	})
 
 	// While the project is paused, every request that would start a turn of a role but the

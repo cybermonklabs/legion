@@ -11,7 +11,8 @@ import type { ClaimCapability } from "./legion-phase-ops";
 /** The contract the build under test speaks, which its client states on every request. */
 const CONTRACT = 60;
 
-/** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
+/** A fixture one of the daemon's golden tests wrote: a response (`packages/daemon/internal/api`),
+ * or its copy of the claim-first-turn bound (`packages/daemon/internal/config`). */
 function daemonFixture(name: string): Record<string, unknown> {
   return JSON.parse(
     readFileSync(path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name), "utf8")
@@ -507,4 +508,15 @@ test("the bound is 30 seconds, moved by one variable, which honours 0 and warns 
       `legion: LEGION_CLAIM_FIRST_TURN_BOUND_MS is not an integer of 0 or more; using ${DEFAULT_CLAIM_FIRST_TURN_BOUND_MS}`,
     ]);
   }
+});
+
+// The daemon holds a copy of this bound (`packages/daemon/internal/config/claimbound.go`,
+// ClaimFirstTurnBound): it holds a delivery for a claim the project release stopped until the
+// claim has stood ready for that bound and a margin, by when its session holds its role.
+// `go test -run ClaimFirstTurnBound ./internal/config/ -update` writes this fixture from that
+// copy; this is where the two are held together, so neither can move alone.
+test("the daemon's fixture carries the same bound", () => {
+  expect(daemonFixture("claim-first-turn-bound.json")).toEqual({
+    claimFirstTurnBoundMs: DEFAULT_CLAIM_FIRST_TURN_BOUND_MS,
+  });
 });

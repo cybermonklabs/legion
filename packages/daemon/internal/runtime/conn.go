@@ -69,7 +69,9 @@ var ErrTokenRefused = errors.New("runtime: the shim did not read its projected t
 // a handful of jj reads and one `git bundle create` over the commits no remote branch holds,
 // which is a pack of a working copy's own change and a few unpushed commits, never the clone's
 // history. It is the runtimes' budget for the request, not a setting: a release that cannot get
-// a bundle in this long is one the daemon stops rather than one it waits longer for.
+// a bundle in this long is one the daemon stops rather than one it waits longer for. The read of
+// a workspace's unpushed work (Conn.ReadUnpushed) has the same budget, because it makes the same
+// working-copy snapshot the bundle's first read makes.
 const WorkspaceBundleTimeout = 5 * time.Minute
 
 // CompactTimeout is how long Oh My Pi is given to compact a session: the operation's own bound,
@@ -116,6 +118,12 @@ type Conn interface {
 	// away. A bundle larger than MaxWorkspaceBundleBytes is refused rather than sent, with the
 	// size it would have been in the refusal, so the release can stop and record why.
 	BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (WorkspaceBundle, error)
+	// ReadUnpushed has the agent's side read whether the workspace every role of issue shares
+	// holds unpushed work, for a project release about to delete the pod with its disk. It builds
+	// no bundle and sends no commit. A shim that could not read the workspace, and one too old to
+	// know the read, are each a refusal carrying its words (RefusalReason), never an answer that
+	// nothing is unpushed; every other error is transport.
+	ReadUnpushed(ctx context.Context, issue string, timeout time.Duration) (UnpushedWork, error)
 	// AgentSecretsEnrollment hands the agent's shim the secrets broker's enrollment id for its
 	// process, which the shim keeps beside the key it generated.
 	AgentSecretsEnrollment(ctx context.Context, enrollmentID string) error
@@ -138,4 +146,13 @@ type Conns interface {
 // ConnState is the agent's answer to `get_state`, reduced to the one field the daemon acts on.
 type ConnState struct {
 	IsStreaming bool
+}
+
+// UnpushedWork is the agent's side's read of the unpushed work of the workspace every role of an
+// issue shares (Conn.ReadUnpushed). Commits is how many of the workspace's commits no remote
+// branch or tag holds, each working copy with no change left out; WorkingCopyChanged is whether
+// the working copy of the role that read it holds a change. Nothing of the work itself is in it.
+type UnpushedWork struct {
+	Commits            int
+	WorkingCopyChanged bool
 }

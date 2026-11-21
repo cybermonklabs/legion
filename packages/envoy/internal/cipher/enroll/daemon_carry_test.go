@@ -34,7 +34,10 @@ func twoDaemons(t *testing.T) (svc *Service, issuer *oidctest.Issuer, key *oidct
 	t.Helper()
 	svc = newService(t)
 	issuer, key = withPodVerifier(t, svc)
-	svc.ServiceLogins = map[string]string{acmeDaemonAccount: "legion-daemon", globexDaemonAccount: "legion-daemon"}
+	svc.ServiceLogins = map[string]ServiceLogin{
+		acmeDaemonAccount:   {Service: "legion-daemon", Issuers: []string{""}},
+		globexDaemonAccount: {Service: "legion-daemon", Issuers: []string{""}},
+	}
 	svc.ServicesByAccount = map[string]string{carryPodAccount: "legion-daemon"}
 	rig := podRig{svc: svc}
 	return svc, issuer, key, rig.login(t, acmeDaemonAccount, ""), rig.login(t, globexDaemonAccount, "")
@@ -166,7 +169,7 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: carryPodAccount, Project: "LEGION", Person: "ada@example.com"}}, nil, nil, nil, "")
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: carryPodAccount, Project: "LEGION", Person: "ada@example.com", Issuers: []string{""}}}, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}
@@ -189,7 +192,7 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 			if got := carryPrincipalOf(t, svc, enr.ID); got != row.wantCarry {
 				t.Fatalf("the enrolment's grants follow %q, want %q", got, row.wantCarry)
 			}
-			claims, err := set.Pod(map[string]any{"sub": carryPodAccount, "kubernetes.io": map[string]any{"pod": map[string]any{"uid": uid}}}, session, nil)
+			claims, err := set.Pod(map[string]any{"sub": carryPodAccount, "kubernetes.io": map[string]any{"pod": map[string]any{"uid": uid}}}, "", session, nil)
 			if err != nil {
 				t.Fatalf("the exchange's reading of the pod's token: %v", err)
 			}

@@ -1940,9 +1940,14 @@ notice comes once per handoff commit, from whichever read finds it first.
   [Secrets Broker](/legion/broker/) with its own ServiceAccount token, read from `token_file`, at
   every start and again before each credential expires; pods wait to be enrolled until a login
   succeeds. The answer says why: `ACCOUNT_NOT_LISTED` (the broker's `BROKER_SERVICE_LOGINS` does not
-  name the daemon's ServiceAccount for `legion-daemon`: add it and redeploy the broker),
-  `TOKEN_EXPIRED` or `TOKEN_INVALID` (the token file is stale, or not a token for the broker's
-  issuer and audience: check the daemon's projected-token volume), `TOKEN_TOO_LONG_LIVED` (the
+  name the daemon's ServiceAccount for `legion-daemon`, or its entry does not name the issuer of the
+  daemon's own cluster: add it and redeploy the broker), `TOKEN_EXPIRED` or `TOKEN_INVALID` (the
+  token file is stale, or not a token of an issuer the broker's `BROKER_K8S_OIDC_ISSUER` names for
+  its audience: check the daemon's projected-token volume), `OIDC_ISSUER_UNAVAILABLE` (a `503`: the
+  broker has not read the issuer of the daemon's cluster yet, which its boot line
+  `broker: kubernetes issuer … read=false` says, or the token names a key the broker does not hold
+  while it cannot read that issuer's key set, which it logs as
+  `broker: kubernetes issuer cannot be read`), `TOKEN_TOO_LONG_LIVED` (the
   token lives longer than an hour from its issue: set the projected token's `expirationSeconds`,
   or `kubectl create token`'s `--duration`, to at most an hour), `TOKEN_LOGIN_OFF` (the broker
   trusts no Kubernetes token issuer), `read the ServiceAccount token` (the file is missing), a
@@ -1973,6 +1978,9 @@ notice comes once per handoff commit, from whichever read finds it first.
   and enrolls the key with it; check the two hosts' clocks.
 - **`supervise: agent-secrets: enrollment refused; waiting for the shim's next hello`** with
   `403 POD_IDENTITY_MISMATCH: the projected token does not identify this pod`. The token is not
-  this pod's: it names another pod UID, it is not signed by the cluster the broker trusts
-  (`BROKER_K8S_OIDC_ISSUER`), or it is for another audience. An expired token is answered
-  `POD_TOKEN_EXPIRED` instead.
+  this pod's: it names another pod UID, it is not signed by an issuer the broker's
+  `BROKER_K8S_OIDC_ISSUER` names, or it is for another audience. An expired token is answered
+  `POD_TOKEN_EXPIRED` instead. A token whose issuer the broker cannot read yet is answered
+  `503 OIDC_ISSUER_UNAVAILABLE`, which decides nothing about the pod: the daemon logs
+  `supervise: agent-secrets: enrollment failed; retrying on the next observation` and enrolls the
+  pod once the broker reads that issuer.

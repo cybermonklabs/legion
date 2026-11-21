@@ -543,6 +543,11 @@ func unlessStopped(ctx context.Context, err error, detail string) bootprobe.Outc
 // daemon's for every boot of the project and image, and a Prober's for its run alone (probeName),
 // so neither ever meets the other's Sandbox here.
 func (r *Runtime) createProbe(ctx context.Context, name, digest string, manifest func() (*unstructured.Unstructured, error), budget time.Duration) (types.UID, bootprobe.Outcome, bool) {
+	// A probe pod is a pod of the project, which the project release holds as it holds every
+	// other: the refusal ends the probe, since a retry would meet the same mark until the boot.
+	if err := r.releaseHolds("create probe sandbox " + name); err != nil {
+		return "", bootprobe.Outcome{Refusal: err}, false
+	}
 	create := func() (types.UID, error) {
 		object, err := manifest()
 		if err != nil {

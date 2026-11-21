@@ -1116,6 +1116,214 @@
     ]
   },
   {
+    "answer": "state",
+    "keyPath": "projectRelease.endedBy",
+    "values": [
+      {
+        "value": "boot",
+        "since": 209
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "projectRelease.result.sandboxes.*.kind",
+    "values": [
+      {
+        "value": "cache",
+        "since": 209
+      },
+      {
+        "value": "controller",
+        "since": 209
+      },
+      {
+        "value": "issue",
+        "since": 209
+      },
+      {
+        "value": "probe",
+        "since": 209
+      },
+      {
+        "value": "unknown",
+        "since": 209
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "projectRelease.result.sandboxes.*.outcome",
+    "values": [
+      {
+        "value": "deleted",
+        "since": 209
+      },
+      {
+        "value": "deleted_clean",
+        "since": 209
+      },
+      {
+        "value": "deleted_lost",
+        "since": 209
+      },
+      {
+        "value": "deleted_read_refused",
+        "since": 209
+      },
+      {
+        "value": "deleted_unread",
+        "since": 209
+      },
+      {
+        "value": "left",
+        "since": 209
+      },
+      {
+        "value": "waiting",
+        "since": 209
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "projectRelease.result.sandboxes.*.asked.*.role",
+    "values": [
+      {
+        "value": "architect",
+        "since": 209
+      },
+      {
+        "value": "implementer",
+        "since": 209
+      },
+      {
+        "value": "merger",
+        "since": 209
+      },
+      {
+        "value": "planner",
+        "since": 209
+      },
+      {
+        "value": "reviewer",
+        "since": 209
+      },
+      {
+        "value": "tester",
+        "since": 209
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "projectRelease.result.claims.*.role",
+    "values": [
+      {
+        "value": "architect",
+        "since": 209
+      },
+      {
+        "value": "controller",
+        "since": 209
+      },
+      {
+        "value": "implementer",
+        "since": 209
+      },
+      {
+        "value": "merger",
+        "since": 209
+      },
+      {
+        "value": "planner",
+        "since": 209
+      },
+      {
+        "value": "reviewer",
+        "since": 209
+      },
+      {
+        "value": "tester",
+        "since": 209
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "projectRelease.result.claims.*.ended",
+    "values": [
+      {
+        "value": "daemon",
+        "since": 209
+      },
+      {
+        "value": "exit",
+        "since": 209
+      },
+      {
+        "value": "failed",
+        "since": 209
+      },
+      {
+        "value": "idle",
+        "since": 209
+      },
+      {
+        "value": "launch_uncertain",
+        "since": 209
+      },
+      {
+        "value": "launching",
+        "since": 209
+      },
+      {
+        "value": "operator",
+        "since": 209
+      },
+      {
+        "value": "project_release",
+        "since": 209
+      },
+      {
+        "value": "queued",
+        "since": 209
+      },
+      {
+        "value": "ready",
+        "since": 209
+      },
+      {
+        "value": "registered",
+        "since": 209
+      },
+      {
+        "value": "released",
+        "since": 209
+      },
+      {
+        "value": "retired",
+        "since": 209
+      },
+      {
+        "value": "shim_connected",
+        "since": 209
+      },
+      {
+        "value": "unknown",
+        "since": 209
+      },
+      {
+        "value": "unrecorded",
+        "since": 209
+      },
+      {
+        "value": "working",
+        "since": 209
+      }
+    ]
+  },
+  {
     "answer": "issue-record",
     "keyPath": "phase",
     "values": [

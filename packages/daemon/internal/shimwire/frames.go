@@ -69,6 +69,12 @@ const (
 	TypeLauncherBundle        = "launcher_bundle"
 	TypeLauncherBundleResult  = "launcher_bundle_result"
 	TypeLauncherRestored      = "launcher_restored"
+	// The project release's read of the unpushed work of the workspace every role of an issue
+	// shares: the daemon asking one role's shim how many of the workspace's commits no remote
+	// branch or tag holds, and whether its working copy holds a change. The answer carries the
+	// count and the flag, never a commit, and the shim builds no bundle for it.
+	TypeReadUnpushed       = "read-unpushed"
+	TypeReadUnpushedResult = "read-unpushed-result"
 	// The launcher's memory guard reports each process it ended, unasked, so the daemon can tell
 	// that process's role why it is gone (INFRA-3557). The settings the guard runs by travel the
 	// other way, on the launcher_hello_ack (LauncherMemoryGuard).
@@ -939,6 +945,29 @@ type LauncherRestored struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// ReadUnpushed asks the shim whether the workspace it runs in holds unpushed work, for a project
+// release that is about to delete the pod with its disk. The daemon names the issue, as it does
+// for a bundle, and the budget, never a command or a path: the shim reads the workspace with the
+// jj it already works in, and builds no bundle and sends no commit.
+type ReadUnpushed struct {
+	ID        string `json:"id"`
+	Issue     string `json:"issue"`
+	TimeoutMs int    `json:"timeoutMs"`
+}
+
+// ReadUnpushedResult answers ReadUnpushed with two facts and nothing of the work itself: Commits
+// is how many of the workspace's commits no remote branch or tag holds, each working copy with no
+// change left out, and WorkingCopyChanged is whether the shim's own working copy holds a change.
+// A refusal carries its reason and claims neither, so a shim that could not read the workspace
+// never answers that nothing is unpushed.
+type ReadUnpushedResult struct {
+	ID                 string `json:"id"`
+	OK                 bool   `json:"ok"`
+	Commits            int    `json:"commits"`
+	WorkingCopyChanged bool   `json:"workingCopyChanged"`
+	Error              string `json:"error,omitempty"`
+}
+
 // LauncherLeakCheck is one slice of the shared public leak check on its way to a pod's launcher:
 // the daemon reads the check's directory at the tag the launcher's hello named
 // (LauncherHello.LeakCheckTag), packs it, and pushes it before it starts a role of that launcher,
@@ -1035,6 +1064,8 @@ func (BundleWorkspaceResult) FrameType() string        { return TypeBundleWorksp
 func (LauncherBundle) FrameType() string               { return TypeLauncherBundle }
 func (LauncherBundleResult) FrameType() string         { return TypeLauncherBundleResult }
 func (LauncherRestored) FrameType() string             { return TypeLauncherRestored }
+func (ReadUnpushed) FrameType() string                 { return TypeReadUnpushed }
+func (ReadUnpushedResult) FrameType() string           { return TypeReadUnpushedResult }
 func (LauncherMemoryKill) FrameType() string           { return TypeLauncherMemoryKill }
 func (LauncherVolumeReport) FrameType() string         { return TypeLauncherVolumeReport }
 func (LauncherLeakCheck) FrameType() string            { return TypeLauncherLeakCheck }
@@ -1198,6 +1229,16 @@ func (f LauncherRestored) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeLauncherRestored, plain(f))
 }
 
+func (f ReadUnpushed) MarshalJSON() ([]byte, error) {
+	type plain ReadUnpushed
+	return marshalFrame(TypeReadUnpushed, plain(f))
+}
+
+func (f ReadUnpushedResult) MarshalJSON() ([]byte, error) {
+	type plain ReadUnpushedResult
+	return marshalFrame(TypeReadUnpushedResult, plain(f))
+}
+
 func (f LauncherMemoryKill) MarshalJSON() ([]byte, error) {
 	type plain LauncherMemoryKill
 	return marshalFrame(TypeLauncherMemoryKill, plain(f))
@@ -1294,6 +1335,36 @@ func (f BundleWorkspaceResult) Validate() error {
 		return fmt.Errorf("%w: bundle-workspace-result carries no head", ErrMalformedFrame)
 	case f.OK && f.SizeBytes != len(f.Bundle):
 		return fmt.Errorf("%w: bundle-workspace-result says %d bytes and carries %d", ErrMalformedFrame, f.SizeBytes, len(f.Bundle))
+	}
+	return nil
+}
+
+// Validate refuses a read request the shim would refuse. The daemon is its only sender.
+func (f ReadUnpushed) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: read-unpushed carries no id", ErrMalformedFrame)
+	case !issueKeyShape.MatchString(f.Issue):
+		return fmt.Errorf("%w: read-unpushed issue %q is not an issue key", ErrMalformedFrame, f.Issue)
+	case f.TimeoutMs <= 0:
+		return fmt.Errorf("%w: read-unpushed timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
+	}
+	return nil
+}
+
+// Validate refuses a read result the daemon could not act on: one answering no request, a
+// negative count, a refusal with no reason, and a refusal that still counts work, which a reader
+// of the counts alone would take for a read.
+func (f ReadUnpushedResult) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: read-unpushed-result carries no id", ErrMalformedFrame)
+	case f.Commits < 0:
+		return fmt.Errorf("%w: read-unpushed-result counts %d commits", ErrMalformedFrame, f.Commits)
+	case !f.OK && f.Error == "":
+		return fmt.Errorf("%w: read-unpushed-result refuses without a reason", ErrMalformedFrame)
+	case !f.OK && (f.Commits != 0 || f.WorkingCopyChanged):
+		return fmt.Errorf("%w: read-unpushed-result refuses and still counts unpushed work", ErrMalformedFrame)
 	}
 	return nil
 }
@@ -1799,6 +1870,10 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[LauncherBundleResult](trimmed)
 	case TypeLauncherRestored:
 		return decodeInto[LauncherRestored](trimmed)
+	case TypeReadUnpushed:
+		return decodeInto[ReadUnpushed](trimmed)
+	case TypeReadUnpushedResult:
+		return decodeInto[ReadUnpushedResult](trimmed)
 	case TypeLauncherMemoryKill:
 		return decodeInto[LauncherMemoryKill](trimmed)
 	case TypeLauncherVolumeReport:

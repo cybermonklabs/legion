@@ -97,7 +97,8 @@ type OperatorClaim struct {
 	// Pending is the task the claim holds, until the turn it started ends.
 	Pending *DeliveryView `json:"pending,omitempty"`
 	// SuspendedBy is who suspended the claim while it is suspended: operator, daemon, exit,
-	// released (its idle pod was released), or unknown (a suspension recorded before migration
+	// released (its idle pod was released), project_release (the project release stopped it, and
+	// the daemon's next boot starts it), or unknown (a suspension recorded before migration
 	// 0038); absent otherwise. These routes are the one surface that serves it: a session parses
 	// every body it reads with the schema of its own contract, so a key an older contract does not
 	// know refuses the whole body at a plugin whose answer side predates INFRA-1048, and is dropped
@@ -423,7 +424,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, r, "spawn") {
+	if s.stopped(w, r, "spawn") || s.releaseRefused(w, r, "spawn") {
 		return
 	}
 	c := supervise.Claim{
@@ -550,9 +551,13 @@ func (s *server) postClaimEvent(w http.ResponseWriter, r *http.Request, m *super
 	return true, m.Handle(ctx, ev)
 }
 
-// deliverEvent is the operator's task for a claim, which starts a turn the pause holds for every
-// claim but the controller's (refusedWhilePaused).
+// deliverEvent is the operator's task for a claim, which a project release refuses as it refuses
+// every request that would prompt a role (releaseRefused), and which starts a turn the pause holds
+// for every claim but the controller's (refusedWhilePaused). The release's refusal is asked first.
 func (s *server) deliverEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
+	if s.releaseRefused(w, r, "deliver") {
+		return nil, false
+	}
 	var req DeliverRequest
 	if !s.readBody(w, r, &req, nil) || !s.requireFields(w, r, field{"task", req.Task}) {
 		return nil, false
@@ -567,9 +572,13 @@ func suspendEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (su
 	return supervise.RequestSuspend{Claim: c.Token, Reason: "the operator suspended it", By: supervise.SuspendedByOperator}, true
 }
 
-// resumeEvent is the operator's resume of a suspended claim, a launch the pause holds for every
-// claim but the controller's (refusedWhilePaused).
+// resumeEvent is the operator's resume of a suspended claim, which a project release refuses as
+// it refuses every request that would start a role (releaseRefused), and a launch the pause holds
+// for every claim but the controller's (refusedWhilePaused). The release's refusal is asked first.
 func (s *server) resumeEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
+	if s.releaseRefused(w, r, "resume") {
+		return nil, false
+	}
 	if s.refusedWhilePaused(w, r, "resume", c) {
 		return nil, false
 	}
@@ -663,7 +672,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req RetryRequest
-	if !s.readOptionalBody(w, r, &req) {
+	if !s.readOptionalBody(w, r, &req) || s.releaseRefused(w, r, "retry") {
 		return
 	}
 	var (

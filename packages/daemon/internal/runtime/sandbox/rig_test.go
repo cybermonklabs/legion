@@ -357,6 +357,14 @@ func (s *fakeStore) Claims(context.Context) ([]supervise.Claim, error) {
 	defer s.mu.Unlock()
 	return slices.Clone(s.claims), nil
 }
+func (s *fakeStore) ClaimByToken(_ context.Context, token claim.Token) (supervise.Claim, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := slices.IndexFunc(s.claims, func(c supervise.Claim) bool { return c.Token == token }); i >= 0 {
+		return s.claims[i], true, nil
+	}
+	return supervise.Claim{}, false, nil
+}
 
 // admit records token's claim as stored and unretired, as the supervisor writes it before its
 // launch begins (supervise.Machine.launchAfter).

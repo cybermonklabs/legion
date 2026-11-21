@@ -85,10 +85,12 @@ type podSessionResponse struct {
 // verifier an enrolling pod's token is verified with (Deps.Enroll.Pod), which the serviceAuth
 // class has already proved the broker has, and, when BROKER_POD_REGISTRATION_AUDIENCE is set, that
 // one (Deps.PodRegistrationTokens), which no other route accepts, so a registrar can hold a pod's
-// token that registers it and does nothing else. A token either verifier accepts names the pod.
-// Any other is answered the verdict of the verifier whose audience it carries: an expired token
-// of either audience is 401 POD_TOKEN_EXPIRED, which a registrar retries, and every other, one of
-// neither audience included, 401 POD_TOKEN_INVALID.
+// token that registers it and does nothing else. Each verifier checks the token against the issuer
+// of BROKER_K8S_OIDC_ISSUER it names, so a daemon registers a pod of any cluster the broker trusts.
+// A token either verifier accepts names the pod. Any other is answered the verdict of the verifier
+// whose audience it carries: an expired token of either audience is 401 POD_TOKEN_EXPIRED, which a
+// registrar retries, one whose issuer the broker cannot read yet 503 OIDC_ISSUER_UNAVAILABLE, and
+// every other, one of neither audience included, 401 POD_TOKEN_INVALID.
 //
 // The caller must then be listed for the pod's account: an entry of BROKER_POD_REGISTRARS
 // (Deps.PodRegistrars) pairs the account it logs in as with the account the verified token
@@ -158,6 +160,9 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 	case errors.Is(err, oidc.ErrExpired):
 		writeError(w, http.StatusUnauthorized, "POD_TOKEN_EXPIRED", "the pod's ServiceAccount token has expired")
 		return
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w)
+		return
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "POD_TOKEN_INVALID", "the pod's ServiceAccount token does not verify")
 		return
@@ -221,12 +226,16 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 
 // podSessionToken verifies a registration's pod token, raw: at the broker's own audience
 // (Deps.Enroll.Pod) and, where BROKER_POD_REGISTRATION_AUDIENCE is set, at that audience too
-// (Deps.PodRegistrationTokens). A token either verifier accepts is answered its claims. Any other
-// is answered the error of the verifier whose audience it carries: an oidc.ErrAudience from one
-// verifier yields to the other's error. A verifier judges a token's audience before its expiry,
-// so an expired token of either audience answers oidc.ErrExpired, and the daemon retries it; a
-// token of neither audience answers the second verifier's oidc.ErrAudience. registerPodSession is
-// the one caller, so no other route accepts a token of the registration audience.
+// (Deps.PodRegistrationTokens), each against the issuer the token names. A token either verifier
+// accepts is answered its claims. Any other is answered the error of the verifier whose audience
+// it carries: an oidc.ErrAudience from one verifier yields to the other's error. A verifier judges
+// a token's audience before its expiry and before a key it cannot read, so an expired token of
+// either audience answers oidc.ErrExpired, and the daemon retries it; a token of either audience
+// whose issuer the broker cannot read answers oidc.ErrIssuerUnavailable, from the broker's own
+// audience's verifier where the issuer's discovery document has not been read, and from the
+// verifier of the token's audience where its key cannot be read; and a token of neither audience
+// answers the second verifier's oidc.ErrAudience. registerPodSession is the one caller, so no
+// other route accepts a token of the registration audience.
 func (s *server) podSessionToken(ctx context.Context, raw string) (enroll.AccountClaims, error) {
 	claims, err := s.deps.Enroll.Pod.VerifyAccount(ctx, raw)
 	if err == nil || s.deps.PodRegistrationTokens == nil {

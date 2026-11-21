@@ -150,6 +150,28 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			AdoptWorkingCopyResult{ID: "r4", OK: false, Error: "no workspace"},
 		},
 		{
+			"read-unpushed",
+			`{"type":"read-unpushed","id":"read-1","issue":"INFRA-945","timeoutMs":300000}`,
+			ReadUnpushed{ID: "read-1", Issue: "INFRA-945", TimeoutMs: 300_000},
+		},
+		{
+			"read-unpushed-result",
+			`{"type":"read-unpushed-result","id":"read-1","ok":true,"commits":2,"workingCopyChanged":true}`,
+			ReadUnpushedResult{ID: "read-1", OK: true, Commits: 2, WorkingCopyChanged: true},
+		},
+		{
+			// A workspace with nothing unpushed says so in both members: an absent count is
+			// not what the shim writes.
+			"read-unpushed-result of a workspace with nothing unpushed",
+			`{"type":"read-unpushed-result","id":"read-1","ok":true,"commits":0,"workingCopyChanged":false}`,
+			ReadUnpushedResult{ID: "read-1", OK: true},
+		},
+		{
+			"refused read-unpushed-result",
+			`{"type":"read-unpushed-result","id":"read-1","ok":false,"commits":0,"workingCopyChanged":false,"error":"worker-shim: LEGION_WORKSPACE is not set; no workspace to read for unpushed work"}`,
+			ReadUnpushedResult{ID: "read-1", Error: "worker-shim: LEGION_WORKSPACE is not set; no workspace to read for unpushed work"},
+		},
+		{
 			"rpc_chunk",
 			`{"type":"rpc_chunk","chunkId":"agent-end-1","index":0,"count":2,"byteLength":1048577,"data":"eA=="}`,
 			RPCChunk{ChunkID: "agent-end-1", Index: 0, Count: 2, ByteLength: 1_048_577, Data: "eA=="},
@@ -742,6 +764,47 @@ func TestTokenFramesRoundTrip(t *testing.T) {
 		}
 		if decoded.FrameType() != frame.FrameType() || !reflect.DeepEqual(decoded, frame) {
 			t.Fatalf("decoded %#v from %s, want %#v", decoded, line, frame)
+		}
+	}
+}
+
+// The project release reads a refused read as a pod whose workspace it could not read, never as
+// one with nothing unpushed, so a result that refuses and still counts work, one that refuses
+// with no reason and one with a negative count are each refused before the release reads them;
+// and the request is the daemon's alone, so a malformed one is refused by the shim.
+func TestAReadOfUnpushedWorkRefusesItsMalformedForms(t *testing.T) {
+	if err := (ReadUnpushed{ID: "read-1", Issue: "INFRA-945", TimeoutMs: 1}).Validate(); err != nil {
+		t.Fatalf("ReadUnpushed.Validate: %v", err)
+	}
+	for name, request := range map[string]ReadUnpushed{
+		"no id":              {Issue: "INFRA-945", TimeoutMs: 1},
+		"no issue":           {ID: "read-1", TimeoutMs: 1},
+		"an issue not a key": {ID: "read-1", Issue: `INFRA-945") | all() | ("`, TimeoutMs: 1},
+		"no timeout":         {ID: "read-1", Issue: "INFRA-945"},
+		"a negative timeout": {ID: "read-1", Issue: "INFRA-945", TimeoutMs: -1},
+	} {
+		if err := request.Validate(); !errors.Is(err, ErrMalformedFrame) {
+			t.Errorf("a read-unpushed with %s: Validate = %v, want ErrMalformedFrame", name, err)
+		}
+	}
+	for name, result := range map[string]ReadUnpushedResult{
+		"nothing unpushed":        {ID: "read-1", OK: true},
+		"a working copy's change": {ID: "read-1", OK: true, Commits: 1, WorkingCopyChanged: true},
+		"a refusal":               {ID: "read-1", Error: "Unknown command: read-unpushed"},
+	} {
+		if err := result.Validate(); err != nil {
+			t.Errorf("a read-unpushed-result of %s: Validate = %v", name, err)
+		}
+	}
+	for name, result := range map[string]ReadUnpushedResult{
+		"no id":                         {OK: true},
+		"a negative count":              {ID: "read-1", OK: true, Commits: -1},
+		"a refusal with no reason":      {ID: "read-1"},
+		"a refusal that counts commits": {ID: "read-1", Commits: 2, Error: "timed out"},
+		"a refusal that marks a change": {ID: "read-1", WorkingCopyChanged: true, Error: "timed out"},
+	} {
+		if err := result.Validate(); !errors.Is(err, ErrMalformedFrame) {
+			t.Errorf("a read-unpushed-result with %s: Validate = %v, want ErrMalformedFrame", name, err)
 		}
 	}
 }

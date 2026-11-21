@@ -32,17 +32,15 @@ func newService(t *testing.T, params ...string) *Service {
 	return &Service{Store: st, Lease: time.Hour, Sessions: oauthstore.New(st.Pool)}
 }
 
-// withPodVerifier wires svc to a real K8sPodVerifier backed by a fresh local OIDC issuer, and
+// withPodVerifier wires svc to a real K8sPodVerifier backed by a fresh local OIDC issuer, the one
+// issuer of svc.Issuers, named by a bare URL as one cluster's issuer is, so it has no name; and
 // returns the issuer and its published signing key so a test can mint pod tokens.
 func withPodVerifier(t *testing.T, svc *Service) (*oidctest.Issuer, *oidctest.Key) {
 	t.Helper()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "signing-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), testAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
-	svc.Pod = K8sPodVerifier{Verifier: verifier}
+	svc.Issuers = []oidc.NamedIssuer{{URL: issuer.URL()}}
+	svc.Pod = K8sPodVerifier{Issuers: oidc.NewIssuerSet(svc.Issuers, testAudience, 0)}
 	return issuer, key
 }
 

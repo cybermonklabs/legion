@@ -78,6 +78,10 @@ type Account struct {
 	// Name is what the caller calls as, the identity a handler logs when it acts.
 	Name   string
 	powers power
+	// Issuers names, by their names in BROKER_K8S_OIDC_ISSUER, the issuers whose tokens a
+	// Kubernetes caller's ServiceAccount is taken from: its entry's own, or the first issuer's
+	// alone where the entry names none, as config.Load fills it. A Google caller's is empty.
+	Issuers []string
 }
 
 // may reports whether this caller holds p. noPower is held by nobody, so a route that declares
@@ -164,8 +168,11 @@ func renewAuth(h func(*server, http.ResponseWriter, *http.Request, string)) rout
 // token: Dispatch's server, which lists what waits on a person, relays a person's machine-login
 // decisions, dismissals and revokes, and links the broker's own page for a secret request; and
 // whatever resource server reads a token back through introspection. The token is verified
-// against the broker's Kubernetes issuer and its account must be one BROKER_API_ACCOUNTS lists,
-// and the handler is given that entry's name — the caller's identity, which it logs when it acts.
+// against the issuer of BROKER_K8S_OIDC_ISSUER that its iss names, its account must be one
+// BROKER_API_ACCOUNTS lists with that issuer among the issuers its entry names (403
+// ACCOUNT_NOT_LISTED otherwise), and a token whose issuer the broker cannot read is 503
+// OIDC_ISSUER_UNAVAILABLE. The handler is given that entry's name — the caller's identity, which
+// it logs when it acts.
 //
 // Each such route declares the power its caller must hold, and the caller's name answers the
 // powers it has (accountPowers), which authenticate checks before the handler runs: being listed

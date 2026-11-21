@@ -78,10 +78,9 @@ func TestTheTokenFileVerifiesAgainstTheIssuerAndIsRewrittenBeforeItLapses(t *tes
 	})
 
 	issuerURL := awaitListening(t, &stderr)
-	verifier, err := oidc.New(context.Background(), issuerURL, testAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%s): %v", issuerURL, err)
-	}
+	// The broker's own verifier over this one issuer, as a deployment that names it as its one
+	// BROKER_K8S_OIDC_ISSUER builds it.
+	verifier := enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet([]oidc.NamedIssuer{{URL: issuerURL}}, testAudience, 0)}
 	readRaw := func() string {
 		t.Helper()
 		raw, err := os.ReadFile(file)
@@ -92,7 +91,7 @@ func TestTheTokenFileVerifiesAgainstTheIssuerAndIsRewrittenBeforeItLapses(t *tes
 	}
 	verify := func(token string) enroll.AccountClaims {
 		t.Helper()
-		claims, err := enroll.K8sPodVerifier{Verifier: verifier}.VerifyAccount(context.Background(), token)
+		claims, err := verifier.VerifyAccount(context.Background(), token)
 		if err != nil {
 			t.Fatalf("the token in %s does not verify against the issuer it names: %v", file, err)
 		}

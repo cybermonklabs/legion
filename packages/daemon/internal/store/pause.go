@@ -91,6 +91,20 @@ func (e *NotPausedError) Error() string {
 	return fmt.Sprintf("project %s is not paused", e.Project)
 }
 
+// ProjectReleasingError is a pause refused because a project release of the project runs
+// (dispatch://INFRA-3583 R13): its record is neither finished nor ended by a boot
+// (ProjectRelease.Runs). The release reads each pod's unpushed work through a running role and
+// asks those roles to push it; a pause would stop them, and the release would then delete their
+// pods with no read. Release is the release that runs, which the refusal names.
+type ProjectReleasingError struct {
+	Release ProjectRelease
+}
+
+func (e *ProjectReleasingError) Error() string {
+	return fmt.Sprintf("project release %d of %s runs: it started %s and its bound is %s", e.Release.ID, e.Release.Project,
+		e.Release.StartedAt.UTC().Format(time.RFC3339), e.Release.BoundAt.UTC().Format(time.RFC3339))
+}
+
 // PauseRow is one outbox row a pause or a resume queues, encoded by its caller
 // (record.NewOutboxRow). The store does not import record, whose own tests import the store, so
 // the payload is the caller's to build, as every row of an idle release is (IdleReleaseRow).
@@ -134,11 +148,14 @@ type PauseRequest struct {
 // Pause is the pause's one transaction (decision 3 of dispatch://INFRA-3759). It takes the
 // daemon's fact serializer first (treelifecycle.Serialize), as ReleaseIdleIssue does, so a pause
 // and a fact's writes never interleave. It refuses a second open pause with an
-// *AlreadyPausedError naming the pause that stands, writes the pause row, reads the project's live
-// claims — every claim of the project that is not suspended, failed or retired, the controller's
-// claim excepted (claim.IsController) — and writes for each one stop row and one `pause_stop`
-// outbox row (req.StopRow), then queues the controller's notice when req.Notice is given. It
-// answers the pause and the claims it asked to stop, in token order.
+// *AlreadyPausedError naming the pause that stands, and a pause while a project release of the
+// project runs with a *ProjectReleasingError naming that release (runningProjectReleaseTx; the
+// release's own transaction takes the same serializer, StartProjectRelease). Then it writes the
+// pause row, reads the project's live claims — every claim of the project that is not suspended,
+// failed or retired, the controller's claim excepted (claim.IsController) — and writes for each
+// one stop row and one `pause_stop` outbox row (req.StopRow), then queues the controller's notice
+// when req.Notice is given. It answers the pause and the claims it asked to stop, in token order.
+// A refused pause writes nothing.
 func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStopClaim, error) {
 	if err := req.By.validate(); err != nil {
 		return Pause{}, nil, fmt.Errorf("pause %s: %w", req.Project, err)
@@ -166,6 +183,11 @@ func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStop
 		}
 		if open {
 			return &AlreadyPausedError{Standing: standing}
+		}
+		if running, runs, err := runningProjectReleaseTx(ctx, tx, token); err != nil {
+			return err
+		} else if runs {
+			return &ProjectReleasingError{Release: running}
 		}
 		if pause, err = scanPause(tx.QueryRow(ctx, `insert into project_pauses (project, began_at, by_kind, by_session, reason)
 			values ($1, $2, $3, $4, $5) returning `+pauseColumns,

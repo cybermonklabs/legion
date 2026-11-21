@@ -1,13 +1,13 @@
 // vm_identity_test.go pins how the broker boots with Google identity tokens: the Google issuer's
 // key set is read, and named in one boot line, only when BROKER_GOOGLE_OIDC_AUDIENCE is set; the
 // machine services reach the policy loader; and a Google audience with no Google caller, or a
-// person's device sign-in with no machine service, refuses the boot.
+// person's device sign-in with no machine service, refuses the boot. It also pins the boot's read
+// of one bare cluster issuer, which the Google rows share.
 package main
 
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"maps"
@@ -34,9 +34,10 @@ import (
 // project or instance name appears in a test.
 const exampleVMAccount = "example-fleet@example-project.iam.gserviceaccount.com"
 
-// vmConfig loads the broker's configuration with the cluster's issuer and, when audience is set,
-// one VM service: example-fleet, run by exampleVMAccount in example-project as example-vm-*.
-func vmConfig(t *testing.T, audience string) config.Config {
+// vmConfig loads the broker's configuration with cluster as its one cluster issuer, a bare URL,
+// and, when audience is set, one VM service: example-fleet, run by exampleVMAccount in
+// example-project as example-vm-*.
+func vmConfig(t *testing.T, cluster, audience string) config.Config {
 	t.Helper()
 	env := map[string]string{
 		"BROKER_DATABASE_URL":        "postgres://unused",
@@ -44,7 +45,7 @@ func vmConfig(t *testing.T, audience string) config.Config {
 		"BROKER_MACHINE_LOGIN_URL":   "https://dispatch.example/credentials/machine",
 		"BROKER_SECRETS_PREFIX":      testSecretsPrefix,
 		"BROKER_SECRETS_KMS_KEY_ARN": testSecretsKMSKeyARN,
-		"BROKER_K8S_OIDC_ISSUER":     "https://cluster.example",
+		"BROKER_K8S_OIDC_ISSUER":     cluster,
 		"BROKER_K8S_OIDC_AUDIENCE":   "example-broker-pod",
 		"BROKER_SERVICES":            "example-service=system:serviceaccount:example:example-sa",
 		// The four the approval page's sign-in needs, which every broker refuses to start
@@ -83,11 +84,14 @@ func (d *discovery) keysFor(_ context.Context, issuer string) (*oidc.Keys, error
 	return d.keys[issuer], nil
 }
 
-// issuedBy is an unsigned token naming issuer, enough for oidc.Verifier.Issues, which reads the
-// claim without verifying anything.
-func issuedBy(issuer string) string {
-	payload, _ := json.Marshal(map[string]string{"iss": issuer})
-	return "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".c2ln"
+// localCluster is a cluster issuer this process serves, for a row that runs the boot's read of the
+// clusters' issuers, which reads each one over HTTP: a placeholder host would leave that read
+// waiting on a name no resolver holds.
+func localCluster(t *testing.T) *oidctest.Issuer {
+	t.Helper()
+	cluster := oidctest.New(t)
+	cluster.PublishKey(t, "cluster-key")
+	return cluster
 }
 
 // captureLog sends slog's default logger to a buffer until t ends.
@@ -98,28 +102,40 @@ func captureLog(t *testing.T) *bytes.Buffer {
 	return &logged
 }
 
-// TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer: with no Google audience the broker reads
-// the cluster's key set alone, builds the pod verifier on it, answers that same key set for the
-// token exchange, holds no Google key set, and logs nothing about Google.
+// TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer: with one bare cluster issuer URL and no
+// Google audience, the broker reads that one issuer at boot and logs one line naming its URL and
+// that it was read; builds the pod verifier over it, which verifies that issuer's tokens; reads no
+// key set through keysFor, since there is neither an exchange audience nor a Google one; and logs
+// nothing about Google.
 func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 	logged := captureLog(t)
+	cluster := oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
 	d := &discovery{}
-	found, err := discoverVerifiers(context.Background(), vmConfig(t, ""), d.keysFor)
+	found, err := discoverVerifiers(context.Background(), vmConfig(t, cluster.URL(), ""), d.keysFor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"https://cluster.example"}; !slices.Equal(d.asked, want) {
-		t.Fatalf("read the key sets of %v, want the cluster's issuer alone, %v", d.asked, want)
+	if len(d.asked) != 0 {
+		t.Fatalf("read the key sets of %v at boot, want none: the clusters' issuers are the pod verifier's own to read, and there is no exchange or Google issuer", d.asked)
 	}
-	cluster, ok := found.Pod.(enroll.K8sPodVerifier)
-	if !ok || !cluster.Verifier.Issues(issuedBy("https://cluster.example")) {
-		t.Fatalf("verifiers = pod %#v; want a pod verifier for the cluster's issuer", found.Pod)
+	wantLine := `msg="` + issuerBootMessage + `" url=` + cluster.URL() + ` read=true`
+	if lines := strings.Count(logged.String(), `msg="`+issuerBootMessage+`"`); lines != 1 || !strings.Contains(logged.String(), wantLine) {
+		t.Fatalf("log = %q, want one line holding %q: the one issuer, read at boot", logged, wantLine)
 	}
-	if found.K8sKeys == nil || found.K8sKeys != d.keys["https://cluster.example"] {
-		t.Fatalf("the exchange's key source = %p, want the cluster's own, %p", found.K8sKeys, d.keys["https://cluster.example"])
+	pods, ok := found.Pod.(enroll.K8sPodVerifier)
+	if !ok {
+		t.Fatalf("verifiers = pod %#v; want an enroll.K8sPodVerifier", found.Pod)
 	}
-	if found.GoogleKeys != nil {
-		t.Fatalf("the exchange was handed a Google key set (%p) with no Google audience; it must then register no Google subject token type", found.GoogleKeys)
+	if _, ok := pods.Issuers.(loggedIssuers); !ok {
+		t.Fatalf("the pod verifier checks tokens with %T, want loggedIssuers over the clusters' oidc.IssuerSet", pods.Issuers)
+	}
+	token := cluster.Mint(t, clusterKey, cluster.Claims("system:serviceaccount:example:example-sa", "example-broker-pod"))
+	if claims, err := pods.VerifyAccount(context.Background(), token); err != nil || claims.Issuer != (oidc.NamedIssuer{URL: cluster.URL()}) {
+		t.Fatalf("the pod verifier on a token of the cluster's issuer = %+v, %v; want it verified, naming that issuer with no name", claims, err)
+	}
+	if found.ExchangeK8s != nil || found.GoogleKeys != nil {
+		t.Fatalf("the exchange was handed cluster issuers (%+v) or a Google key set (%p) with neither audience set; it must then register neither subject token type", found.ExchangeK8s, found.GoogleKeys)
 	}
 	if strings.Contains(strings.ToLower(logged.String()), "google") {
 		t.Fatalf("log with no Google audience names Google:\n%s", logged)
@@ -134,11 +150,11 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
 	logged := captureLog(t)
 	d := &discovery{}
-	found, err := discoverVerifiers(context.Background(), vmConfig(t, "example-vm-audience"), d.keysFor)
+	found, err := discoverVerifiers(context.Background(), vmConfig(t, localCluster(t).URL(), "example-vm-audience"), d.keysFor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"https://cluster.example", config.DefaultGoogleOIDCIssuer}; !slices.Equal(d.asked, want) {
+	if want := []string{config.DefaultGoogleOIDCIssuer}; !slices.Equal(d.asked, want) {
 		t.Fatalf("read the key sets of %v, want %v", d.asked, want)
 	}
 	if found.GoogleKeys == nil || found.GoogleKeys != d.keys[config.DefaultGoogleOIDCIssuer] {
@@ -157,13 +173,13 @@ func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
 func TestAStandInIssuerIsDiscoveredInGooglesPlace(t *testing.T) {
 	logged := captureLog(t)
 	d := &discovery{}
-	cfg := vmConfig(t, "example-vm-audience")
+	cfg := vmConfig(t, localCluster(t).URL(), "example-vm-audience")
 	cfg.GoogleOIDCIssuer = "http://127.0.0.1:18080"
 	found, err := discoverVerifiers(context.Background(), cfg, d.keysFor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"https://cluster.example", cfg.GoogleOIDCIssuer}; !slices.Equal(d.asked, want) {
+	if want := []string{cfg.GoogleOIDCIssuer}; !slices.Equal(d.asked, want) {
 		t.Fatalf("read the key sets of %v, want %v", d.asked, want)
 	}
 	if found.GoogleKeys == nil || found.GoogleKeys != d.keys[cfg.GoogleOIDCIssuer] {
@@ -179,7 +195,7 @@ func TestAStandInIssuerIsDiscoveredInGooglesPlace(t *testing.T) {
 // stops authenticating at its next call, and the request decisions, without which a machine's
 // session is never its fleet's.
 func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
-	cfg := vmConfig(t, "example-vm-audience")
+	cfg := vmConfig(t, "https://cluster.example", "example-vm-audience")
 	enr := &enroll.Service{VMServicesByAccount: cfg.VMServicesByAccount}
 	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(enr.VMServicesByAccount, want) {
 		t.Fatalf("the enrollment service's VMServicesByAccount = %v, want %v", enr.VMServicesByAccount, want)
@@ -200,7 +216,7 @@ func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
 // BROKER_JUDGE_DISPATCH_URL is set, and is the very read main gives the model judge.
 func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	const otherAccount = "example-other@example-project.iam.gserviceaccount.com"
-	cfg := vmConfig(t, "example-vm-audience")
+	cfg := vmConfig(t, "https://cluster.example", "example-vm-audience")
 	cfg.ExchangeGoogleAccounts = []exchange.GoogleEntry{
 		{Account: exampleVMAccount, Service: "example-fleet", Project: "ACME", Person: "ada@example.com"},
 		{Account: otherAccount, Service: "example-fleet"},
@@ -232,10 +248,10 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 // BROKER_VM_SERVICES', sorted and each once, so a secret a machine service owns is that
 // service's and not refused as owner-tag-malformed.
 func TestThePolicyServesTheVMServicesSecrets(t *testing.T) {
-	if got, want := serviceNames(vmConfig(t, "example-vm-audience")), []string{"example-fleet", "example-service"}; !slices.Equal(got, want) {
+	if got, want := serviceNames(vmConfig(t, "https://cluster.example", "example-vm-audience")), []string{"example-fleet", "example-service"}; !slices.Equal(got, want) {
 		t.Fatalf("serviceNames = %v, want %v", got, want)
 	}
-	if got, want := serviceNames(vmConfig(t, "")), []string{"example-service"}; !slices.Equal(got, want) {
+	if got, want := serviceNames(vmConfig(t, "https://cluster.example", "")), []string{"example-service"}; !slices.Equal(got, want) {
 		t.Fatalf("serviceNames with no VM service = %v, want %v", got, want)
 	}
 }

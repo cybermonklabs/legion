@@ -147,6 +147,11 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // takes it again. A released claim nothing has woken is not stranded: it waits for a delivery, as
 // a released pod is meant to.
 //
+// A claim the project release stopped (supervise.Claim.ProjectReleased) is left out of both cases
+// too: until the daemon's next boot the release holds every start, and that boot starts every
+// such claim of an issue in the workflow whose tree runs (booted), which are the only claims this
+// report reads, so the report leaves each of them to that boot.
+//
 // Candidates' queued starts and their claims are read through RoleRuns in bounded batches: a
 // fleet of hundreds of suspended claims makes a few snapshot queries, never one pair per claim.
 // steps are the design-gate steps the deployment gates, which say whether a root's tree runs.
@@ -199,6 +204,12 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// wake for it has run out of StrandedReleaseWake with no turn, and then whatever its role,
 		// since the pod the wake was taken for never came back.
 		if c.Released() && !woken[releasedRole{issue: c.Issue, role: string(c.Role)}] {
+			continue
+		}
+		// A claim the project release stopped is no claim nothing will wake: the daemon's next
+		// boot starts it whatever its role (booted), and the release holds every start of this
+		// process until then, so no move the report could name would bring it back sooner.
+		if c.ProjectReleased() {
 			continue
 		}
 		// current is the phase the start that would wake the claim names; the architect's names

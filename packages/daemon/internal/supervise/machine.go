@@ -78,7 +78,8 @@ var allStates = []ClaimState{
 }
 
 // States is every state a claim can be in, in the order they are declared: the one list a test
-// outside this package walks to cover each state. It is a copy, so no caller changes the
+// outside this package walks to cover each state, and the list a project release's words for how
+// a claim ended are built from (api.ReleasedClaimEnds). It is a copy, so no caller changes the
 // package's own list.
 func States() []ClaimState {
 	return slices.Clone(allStates)
@@ -89,7 +90,8 @@ func States() []ClaimState {
 // (RequestRuleResume) — unless an operator suspended it: that suspension holds until the operator
 // resumes the claim. The boot's resume by rule, which main did not have, acts only on a source
 // ByRule names, so it never overrides a drain recorded before the source existed, and it leaves a
-// released claim to the wake that brings its pod back.
+// released claim to the wake that brings its pod back. A claim the project release stopped has
+// a boot step of its own (workflow's booted).
 type SuspendSource string
 
 const (
@@ -116,25 +118,48 @@ const (
 	// its pod back, the stranded report once a wake has run out with no turn, and that cutover
 	// repair.
 	SuspendedByReleased SuspendSource = "released"
+	// SuspendedByProjectRelease: the project release stopped the claim and deleted its pod, so the
+	// project's pods can move to another cluster. The claim keeps its phase, its session and its
+	// pending task, as a released claim does, and the daemon's next boot starts it again, whatever
+	// its role (workflow's booted, its step for these claims; the controller keeper for the
+	// controller's). The release holds every start of the project until that boot, so nothing
+	// before it resumes such a claim. It is no source ByRule names: the boot's resume by rule
+	// starts only the owner of a phase, and these claims are every role's.
+	SuspendedByProjectRelease SuspendSource = "project_release"
 )
+
+// suspendSources is every SuspendSource, in the order declared above: the roster of the set, kept
+// by hand and held to the constants of its type (TestSuspendSourcesNameEveryConstant), as
+// allStates is to its own.
+var suspendSources = []SuspendSource{SuspendedByUnknown, SuspendedByOperator, SuspendedByDaemon, SuspendedByExit,
+	SuspendedByReleased, SuspendedByProjectRelease}
+
+// SuspendSources is every SuspendSource, in the order declared above (suspendSources). A project
+// release's words for how a claim ended are built from it too (api.ReleasedClaimEnds). It is a
+// copy, so no caller changes the package's own roster.
+func SuspendSources() []SuspendSource {
+	return slices.Clone(suspendSources)
+}
 
 // ByRule is whether the source is one the daemon itself recorded as a stop of its own — its own
 // suspend, or a root's exit: the sources a daemon rule resumes with no operator, and the only
 // suspended phase workers the stranded report leaves out. A release is not one of them. It is a
 // stop the daemon recorded too, but no rule here acts on it: the boot's resume by rule leaves it to
 // its role's wake (workflow's booted), and the stranded report holds it to R6's one fact
-// (workflow's stranded).
+// (workflow's stranded). Nor is the project release's, which the next boot starts by a step of
+// its own for every role rather than by this one, which starts phase owners alone.
 func (s SuspendSource) ByRule() bool {
 	return s == SuspendedByDaemon || s == SuspendedByExit
 }
 
 // RetiresPhaseTask is whether a suspension by this source ends the claim's phase, so a task queued
-// for that phase goes with it (settle). Every source does but two: an operator's, and a release.
-// Each of those resumes this same claim in the same phase — the operator's by hand, a released
-// claim's at its role's next wake — so the pending task waits through the suspension and is sent
-// on that resume.
+// for that phase goes with it (settle). Every source does but three: an operator's, an idle
+// release's and a project release's. Each of those resumes this same claim in the same phase — the
+// operator's by hand, a released claim's at its role's next wake, a project release's at the
+// daemon's next boot — so the pending task waits through the suspension and is sent on that
+// resume: the task of a turn the project release cut is sent again that way.
 func (s SuspendSource) RetiresPhaseTask() bool {
-	return s != SuspendedByOperator && s != SuspendedByReleased
+	return s != SuspendedByOperator && s != SuspendedByReleased && s != SuspendedByProjectRelease
 }
 
 // SessionLoss is why a launch forgot the session its claim recorded and started a fresh agent
@@ -715,7 +740,8 @@ func (c Claim) LeftPodRound(round string) bool {
 func (c Claim) HoldsSession(session string) bool { return c.Session == storetext.Text(session) }
 
 // RuleMayResume says whether the rule may resume this suspended claim: every suspension but the
-// operator's, which holds until an operator resumes the claim.
+// operator's, which holds until an operator resumes the claim. A claim the project release
+// stopped is among them, so the boot's start of it and the controller keeper both resume it.
 func (c Claim) RuleMayResume() bool {
 	return c.State == StateSuspended && c.SuspendedBy != SuspendedByOperator
 }
@@ -725,9 +751,20 @@ func (c Claim) RuleMayResume() bool {
 // wake for its role resumes it (SuspendedByReleased). Every rule that acts on a released claim —
 // the wakes, the notice routing and a reader in a transaction (both through record.HoldsRole), the
 // stranded report, a release the store cancelled — reads it here rather than spelling the pair out
-// again.
+// again. A claim the project release stopped is not one: no wake brings it back, since the
+// daemon's next boot starts it (ProjectReleased), though it holds its role as a released claim
+// does (record.HoldsRole).
 func (c Claim) Released() bool {
 	return c.State == StateSuspended && c.SuspendedBy == SuspendedByReleased
+}
+
+// ProjectReleased is whether the project release stopped the claim and the claim waits, as it
+// left it, for the daemon's next boot to start it (SuspendedByProjectRelease). The rules that
+// read it treat it as they treat a released claim where the claim's role is concerned — the notice
+// routing and a reader in a transaction keep its role (record.HoldsRole) — and never wake it,
+// since the boot is what brings it back.
+func (c Claim) ProjectReleased() bool {
+	return c.State == StateSuspended && c.SuspendedBy == SuspendedByProjectRelease
 }
 
 // RuleHolds is whether an operator's suspension blocks a daemon rule: the claim is suspended by the
@@ -1012,6 +1049,15 @@ type Deps struct {
 	// topic (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
 	// (internal/daemon's refreshStalePlugins).
 	NoPluginInstall func(c Claim) bool
+	// ProjectReleaseHolds is whether the daemon's project release holds every start of the
+	// project now (internal/daemon's projectRelease, dispatch://INFRA-3583 R7). While it answers
+	// true no claim is handed a task (sendPending): a role whose turn ends while the release waits
+	// on its pod — the turn that answered the release's ask among them — keeps its pending task,
+	// which is sent once the daemon's next boot has started the claim again, rather than starting
+	// work it would hold its pod open for. A release whose record did not commit clears the mark
+	// in this process, and the daemon then has each machine send the task it held
+	// (IssueTurnEnded, internal/daemon's sendHeldTasks). Nil holds nothing.
+	ProjectReleaseHolds func() bool
 	// TaskConfirmed is told of each claim whose pending delivery a turn has just confirmed: the
 	// agent took the work the daemon gave it. The workflow decides what a root still owes its
 	// architect from that (admission's ReconcileAwaiting), so without it a root whose wait was
@@ -2852,6 +2898,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt)
 		}
+		if errors.Is(err, runtime.ErrProjectReleased) {
+			return m.startWaitsForRelease(starting, err, charged, exempt)
+		}
 		var tooLarge *runtime.PromptTooLarge
 		if errors.As(err, &tooLarge) {
 			return m.promptRefused(ctx, starting, err)
@@ -2965,6 +3014,22 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 		err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
 	m.tellStoreFault(cause)
 	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
+	return errors.Join(err, m.persist(ctx))
+}
+
+// startWaitsForRelease is a start the runtime refused because the daemon's project release holds
+// every pod of the project (runtime.ErrProjectReleased): a launch that passed the launch check
+// just before the release's mark was set, and met the mark at the runtime instead. It is no fault
+// of the claim's, so nothing is charged and nobody is told, as for a store that could not answer.
+// The process this launch let go is stopped, as after every refused start, and the launch is
+// tried again at the probe interval (relaunchLater), where the launch check refuses it, uncharged
+// again, for as long as the release holds (relaunchRefused). The release stops the claim, or the
+// daemon's next boot starts it.
+func (m *Machine) startWaitsForRelease(ctx context.Context, cause error, charged, exempt bool) error {
+	err := errors.Join(cause, m.stopPrevious(ctx))
+	m.log.Info("supervise: the project release holds every pod of the project; this start charges nothing and waits",
+		"generation", m.claim.Generation, "retry", m.deps.Timeouts.Probe, "error", err)
+	m.relaunchLater(m.deps.Timeouts.Probe, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
 	return errors.Join(err, m.persist(ctx))
 }
 
@@ -3767,17 +3832,24 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 		m.log.Info("supervise: the claim retires holding its round's ask, which nothing of it will answer; the ask goes with the round",
 			"round", m.claim.UpdateRound, "delivery", m.claim.Pending.ID)
 	}
-	m.clearUpdate()
-	if drops {
-		if err := m.retirePending(ctx); err != nil {
-			return err
-		}
-	} else if err := m.persist(ctx); err != nil {
+	if err := m.writeLeavingRound(ctx, drops); err != nil {
 		return err
 	}
 	// Every drop of a delivery answers the question a restart armed for it; a retired claim is
 	// answered nothing there (answerAskFirstAfterDrop).
 	return m.answerAskFirstAfterDrop(ctx)
+}
+
+// writeLeavingRound takes the claim out of its update round and writes it, with the round's ask
+// in that same write when drops says the ask goes with the round (dropsUpdateTask): the tail of a
+// retirement (retire) and of the project release's stop (leaveRoundForRelease), each of which
+// says on its own line why the claim leaves the round.
+func (m *Machine) writeLeavingRound(ctx context.Context, drops bool) error {
+	m.clearUpdate()
+	if drops {
+		return m.retirePending(ctx)
+	}
+	return m.persist(ctx)
 }
 
 // letGo ends what the machine had with the claim's process: no timer watches it — the ladder's
@@ -4314,6 +4386,17 @@ func HoldsCapability(state ClaimState) bool {
 // default) for a session that is given no task at all.
 func SaidReady(state ClaimState) bool {
 	return state == StateReady || state == StateWorking || state == StateIdle
+}
+
+// StartedWithoutTurn is whether a claim in state has been started and its session may not hold
+// its role yet: the claim is coming up (unready: queued, launch_uncertain, launching,
+// shim_connected or registered), or it stands ready or idle (prompted), which its agent reports
+// before its session takes the role at its first turn or at the first-turn bound (SaidReady). A
+// working claim's session holds its role, and a suspended, failed or retired claim is not started.
+// The daemon reads it of a claim the project release stopped, whose deliveries wait until its
+// session holds its role again (internal/daemon's releaseStoppedClaims).
+func StartedWithoutTurn(state ClaimState) bool {
+	return slices.Contains(unready, state) || slices.Contains(prompted, state)
 }
 
 func claimOf(ev Event) claim.Token {

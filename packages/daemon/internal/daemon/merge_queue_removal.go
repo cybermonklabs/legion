@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -197,6 +196,11 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		r.log.Info(m.claimEnded, append(m.attributes, "state", held.State)...)
 		return nil
 	}
+	// A role the project release stopped is not woken by this row (wakeForDelivery): the boot's
+	// start brings it back, which the outbox holds behind the design gate itself for a merger
+	// (mergerWaitsForTheDesignGate), and once that start's session holds the role it is told as
+	// every role whose session holds it is, gate or none. So the gate is read here for a released
+	// role alone.
 	if held.Released() {
 		closed, err := r.designGateClosed(ctx, m.issue)
 		if err != nil {
@@ -207,16 +211,14 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
-	// role on every attempt and wait for a session nothing brings back. A launch the wake pacing
-	// holds is waited for until it runs, the claim read again at its turn or parkedWakeBound on,
-	// whichever comes first (parkedWait).
-	if waits, turn, err := r.wakeForDelivery(ctx, m.token, m.what, row.HeldByPause); err != nil {
+	// role on every attempt and wait for a session nothing brings back. The wait it answers says
+	// whether the role's released pod is coming back, the role's launch waits for its turn in the
+	// wake pacing, the claim read again at that turn or parkedWakeBound on, whichever comes first
+	// (parkedWait), or the role waits for the start the daemon's boot gives it after a project
+	// release (awaitsBootStart). A row a pause held wakes its role with that pause's held wake
+	// (wakeForDelivery's mark).
+	if err := r.wakeForDelivery(ctx, m.token, m.what, row.HeldByPause); err != nil {
 		return err
-	} else if !turn.IsZero() {
-		return r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
-			m.what, m.role, turn.UTC().Format(time.RFC3339)))
-	} else if waits {
-		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
 	published := r.publish(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
 	switch {

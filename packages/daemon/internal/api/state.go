@@ -130,6 +130,13 @@ type State struct {
 	// locator up with its process and lowers it by nothing, however old the plugin it last
 	// recorded (contract 193).
 	LowestPluginContract *int `json:"lowestPluginContract,omitempty"`
+	// ProjectRelease is the newest project release of the project (dispatch://INFRA-3583 R7: a
+	// released daemon still serves its API, and `legion state --json` shows the release and its
+	// result): its record's id, times and bound, who ended it, and its result as the release last
+	// recorded it, the same body its own `GET /legion/v1/operator/project/release` answers.
+	// Absent while no release of the project was ever recorded, and from a body served a caller
+	// below projectReleaseContract (shaping.go's withoutProjectRelease).
+	ProjectRelease *ProjectReleaseResponse `json:"projectRelease,omitempty"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below shaping.go's
 	// wakesWaitingContract): that reader knows no `wakesWaiting` and refuses the key as surely
@@ -1739,6 +1746,10 @@ func StrandedMoves() []StrandedMove {
 // state: read as released, it would name a pod coming back from a wake, and nothing is coming
 // back. For the same reason the released case asks for the suspended state itself rather than for
 // anything that has not failed.
+//
+// No move names a claim the project release stopped: workflow.Stranded never lists one, since
+// the daemon's next boot starts it, and a resume the operator asked for before that boot would be
+// refused while the release holds every start.
 func (c StrandedClaim) Move(suspendedBy string) StrandedMove {
 	state := supervise.ClaimState(c.State)
 	switch {

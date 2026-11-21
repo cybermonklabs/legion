@@ -235,10 +235,13 @@ func recordedContractAtOrBelow(n int) int {
 // Two more rows take keys off, below pauseContract, which added keys to two answers beside the
 // state and the record: the release records' row serves every resume without its `pause`
 // (withoutResumePauses), and the refusal's row serves a PauseFailure as its Failure alone, with
-// no `setting`, `pause` or `lastPause`. Both follow strip, as every band of stateNarrowings
-// does, and placedByPod places the caller of both by its pod, so a band here reaches the caller
-// of a pod as the state's do. A plain refusal, a claim.Refusal or a Failure, carries no key of
-// that contract and is the identity at every contract.
+// no `setting`, `pause` or `lastPause`. The refusal's row takes one key more, below
+// projectReleaseContract, which added `heldPods` to a PauseFailure: a caller from pauseContract
+// to below it is served the PauseFailure without that list (withoutHeldPods). Each follows
+// strip, as every band of stateNarrowings does, and placedByPod places the caller of both answers
+// by its pod, so a band here reaches the caller of a pod as the state's do. A plain refusal, a
+// claim.Refusal or a Failure, carries no key of either contract and is the identity at every
+// contract.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in (withFixAttempts, withMaxFixAttempts). A settings key no reader
@@ -282,6 +285,9 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		case PauseFailure:
 			if strip < pauseContract {
 				return refusal.Failure, took
+			}
+			if strip < projectReleaseContract {
+				return withoutHeldPods(refusal), took
 			}
 			return refusal, took
 		default:
@@ -558,6 +564,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: projectReleaseContract, state: withoutProjectRelease, dropped: "projectRelease"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -971,9 +978,34 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with this change's own number, and it is the last number of answers.go's SupportedContracts,
-// which names the constant rather than its number for that reason.
+// with the number version.go's INFRA-4401 entry declares, and answers.go's SupportedContracts
+// names the constant rather than its number for that reason.
 const repositoriesLiveContract = 202
+
+// projectReleaseContract is the daemon contract that added the project release (version.go's
+// 209, dispatch://INFRA-3583). It added keys to two answers a plugin parses: `projectRelease`,
+// the project's newest project release and its result, to the state, and `heldPods`, each pod a
+// pause still holds, to a refusal (api.PauseFailure, which the release's own route answers while
+// a pause holds the project). A plugin before it is served the state without its key
+// (withoutProjectRelease, its row of stateNarrowings) and a PauseFailure without its list
+// (withoutHeldPods, in the refusal's row of shapeAnswer): one built before sjawhar/legion#2788
+// reads the state with a strict schema and would refuse the whole body for a key it does not
+// name, and one built after strips the key instead, so the strip is what keeps the release from a
+// caller that did not ask for it. The roles a running release asks are such callers, and they are
+// asked to push and end their turn on that same body. repositoriesLiveContract stands below it
+// with no row of stateNarrowings between the two, so a caller at or above
+// repositoriesLiveContract and below this contract, 202 to 208, is served the `live` block and
+// not `projectRelease`. The release's six enumerated fields (answers.go's releaseOutcomes and the
+// rows beside it) arrived with the key at this contract and ride its band, so no value strip is
+// owed. The release's own two routes answer the `legion` command, which is built from the
+// daemon's own commit, so their bodies are no row of answers.go's Answers.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract these keys arrived at stays where it is. It moves only with
+// the number version.go's dispatch://INFRA-3583 entry declares, and it is the last number of
+// answers.go's SupportedContracts, which names the constant rather than its number for that
+// reason.
+const projectReleaseContract = 209
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1574,6 +1606,25 @@ func withoutPause(state State) (State, bool) {
 	return state, moved
 }
 
+// withoutProjectRelease is state with no `projectRelease`, the one key projectReleaseContract
+// added to the state; the routes and the shim frame that contract added are not on this route.
+// The key is a pointer with `omitempty`, absent while the project has recorded no release, so the
+// band reports a move only for a state that carries one. The field is the state's own value, so
+// the state the source answered is left as it was, as withoutPause leaves it.
+func withoutProjectRelease(state State) (State, bool) {
+	moved := state.ProjectRelease != nil
+	state.ProjectRelease = nil
+	return state, moved
+}
+
+// withoutHeldPods is refusal with no `heldPods`, the one key projectReleaseContract added to a
+// PauseFailure, which only the project release's refusal while a pause holds the project carries.
+// The refusal is a value of its own, so the body the route built is left as it was.
+func withoutHeldPods(refusal PauseFailure) PauseFailure {
+	refusal.HeldPods = nil
+	return refusal
+}
+
 // withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added
 // to the release records. The key is `omitempty` and absent from a wake no pause held, so records
 // whose resumes carry none are returned as they are, with no copy made. Otherwise the resumes are
@@ -1750,7 +1801,8 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
 // by the claims of its pod: true for the release records and for a refusal whose body is a
 // PauseFailure, and false for every other answer. Those two answers' shapes moved at
-// pauseContract, and their writers answer from no snapshot of their own, so writeAnswer reads the
+// pauseContract, and the refusal's moved again at projectReleaseContract (`heldPods`,
+// withoutHeldPods); their writers answer from no snapshot of their own, so writeAnswer reads the
 // claims for them (placingClaims). Every other answer writeAnswer writes is the identity at every
 // contract, and so is a plain refusal (a claim.Refusal or a Failure), so a read of the claims for
 // one of them would decide nothing. A serving-down added to one of them reaches the caller of a

@@ -26,7 +26,7 @@ func TestNewSetRefusesAnEntryWhoseProjectIsNoProjectKey(t *testing.T) {
 				names     string
 			}{
 				{setting: "BROKER_EXCHANGE_ACCOUNTS",
-					accounts: []exchange.AccountEntry{{Account: workerAccount, Project: bad, Person: person}}, names: workerAccount},
+					accounts: []exchange.AccountEntry{{Account: workerAccount, Project: bad, Person: person, Issuers: []string{firstIssuer}}}, names: workerAccount},
 				{setting: "BROKER_EXCHANGE_WORKFLOWS",
 					workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Project: bad, Person: person}}, names: workflow},
 				{setting: "BROKER_VM_EXCHANGE_ACCOUNTS",

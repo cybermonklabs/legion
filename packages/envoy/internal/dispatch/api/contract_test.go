@@ -102,13 +102,13 @@ func newContractRig(t *testing.T) *contractRig {
 
 	issuer := oidctest.New(t)
 	issuerKey := issuer.PublishKey(t, "signing-key")
-	tokenVerifier, err := oidc.New(context.Background(), issuer.URL(), contractTokenAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
+	// One issuer, as a deployment's BROKER_K8S_OIDC_ISSUER names one cluster: a bare URL, so the
+	// issuer has no name, and the daemon's entry names it by that empty name.
+	tokenIssuers := []oidc.NamedIssuer{{URL: issuer.URL()}}
+	tokenVerifier := enroll.K8sPodVerifier{Issuers: oidc.NewIssuerSet(tokenIssuers, contractTokenAudience, 0)}
 	enr := &enroll.Service{
-		Store: brokerStore, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: tokenVerifier},
-		ServiceLogins: map[string]string{contractDaemonAccount: "legion-daemon"},
+		Store: brokerStore, Lease: time.Hour, Pod: tokenVerifier, Issuers: tokenIssuers,
+		ServiceLogins: map[string]enroll.ServiceLogin{contractDaemonAccount: {Service: "legion-daemon", Issuers: []string{""}}},
 	}
 	enr.Chain = enroll.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute)
 	reqMachine := &requests.Machine{
@@ -132,7 +132,7 @@ func newContractRig(t *testing.T) *contractRig {
 	brokerapi.Register(brokerMux, brokerapi.Deps{
 		PublicURL:     brokerServer.URL,
 		APIAccounts:   map[string]brokerapi.Account{contractDispatchAccount: ciphertest.Caller(t, "dispatch")},
-		AccountTokens: enroll.K8sPodVerifier{Verifier: tokenVerifier},
+		AccountTokens: tokenVerifier,
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},

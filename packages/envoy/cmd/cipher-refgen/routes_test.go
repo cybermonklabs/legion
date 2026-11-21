@@ -155,6 +155,29 @@ func TestTheSignInClassRefusesPastTheRateLimit(t *testing.T) {
 	}
 }
 
+// TestARefusalWrittenWithAnotherPackagesConstantsIsRead reads the broker's own source, as the
+// docs build does. authenticate's authService case answers a token whose issuer the broker cannot
+// read through writeIssuerUnavailable, which writes its code and its sentence as two constants of
+// package oidc, the pair Dispatch answers the same fault with. refgen has to read both as the
+// text they hold, or it refuses the whole build for a refusal whose code it cannot read.
+func TestARefusalWrittenWithAnotherPackagesConstantsIsRead(t *testing.T) {
+	a, err := readAPI(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(a.classes, func(c authClass) bool { return c.Wrapper == "serviceAuth" })
+	if i < 0 {
+		t.Fatalf("no serviceAuth class among %+v", a.classes)
+	}
+	class := a.classes[i]
+	const code, sentence = "OIDC_ISSUER_UNAVAILABLE", "the service-account token issuer cannot be reached; try again in a minute"
+	if !slices.ContainsFunc(class.Refusals, func(o outcome) bool {
+		return o.Status == http.StatusServiceUnavailable && o.Code == code && slices.Equal(o.Messages, []string{sentence})
+	}) {
+		t.Errorf("the %s class refuses %+v, want a 503 %s saying %q", class.Label, class.Refusals, code, sentence)
+	}
+}
+
 // TestACallOfANameTwoDeclarationsShareIsRefused: refgen runs no type checker and resolves a call
 // by its name alone, so a package may declare one name on two types, as the API package declares
 // UnmarshalJSON on two request bodies, and refgen reads that package while it resolves no call of

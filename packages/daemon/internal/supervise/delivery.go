@@ -654,6 +654,13 @@ func (c Claim) openRoundHoldsTask() bool {
 // could be worked with. So such a task waits for the credit and then for the replacement
 // process's ready, which is the same wait every other task of that claim is already in.
 //
+// A daemon whose project release holds every start hands no claim anything at all
+// (Deps.ProjectReleaseHolds): the release deletes the pod at its bound, so a task a role took up
+// when its turn ended would be work held open to that bound and lost with the pod. The task stays
+// pending, and the ready of the process the next boot starts sends it, or, when the release's
+// record did not commit and the mark was cleared in this process, the IssueTurnEnded the daemon
+// posts to every machine then (internal/daemon's sendHeldTasks).
+//
 // This daemon queues no ask of an update round as a task: it publishes the ask to the role's
 // Envoy topic (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one
 // an older daemon queued, and a claim restored from the store can hold one. Such a task is
@@ -693,6 +700,10 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// A claim holding a suspension is handed nothing (holdSuspension), and neither is one whose
 	// paced launch is about to replace the process a send would reach (launchWaits).
 	if state := m.claim.State; (state != StateReady && state != StateIdle) || m.held != nil || m.launchWaits() {
+		return nil
+	}
+	// Nor is any claim while the daemon's project release holds every start (the doc above).
+	if m.deps.ProjectReleaseHolds != nil && m.deps.ProjectReleaseHolds() {
 		return nil
 	}
 	// A claim that answered its open update round is handed nothing until the round ends.

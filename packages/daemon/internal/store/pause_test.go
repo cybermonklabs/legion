@@ -412,7 +412,7 @@ func TestAPausePodHoldOpensOnceAndEnds(t *testing.T) {
 	if err != nil || !found || hold.Pause != pause.ID || hold.Project != "LEGION" || !hold.HeldAt.Equal(pausedAt) {
 		t.Fatalf("PausePodHoldOf = %+v, %t, %v; want pause %d's hold from %s", hold, found, err, pause.ID, pausedAt)
 	}
-	if holds, err := st.OpenPausePodHolds(ctx, "LEGION"); err != nil || len(holds) != 1 || holds[0].Issue != "LEGION-208" {
+	if holds, err := st.OpenPausePodHolds(ctx, "legion"); err != nil || len(holds) != 1 || holds[0].Issue != "LEGION-208" {
 		t.Fatalf("OpenPausePodHolds = %+v, %v; want LEGION-208's", holds, err)
 	}
 	if opened, err := holdPod(st, pause, "INFRA-5", pausedAt); err != nil || !opened {

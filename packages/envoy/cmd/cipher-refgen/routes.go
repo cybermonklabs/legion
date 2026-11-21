@@ -569,8 +569,8 @@ func (g *graph) caseSentinels(file *ast.File, stack []ast.Node) []string {
 	return nil
 }
 
-// sentinel reads the message of an error variable: one of this package's, or pkg.Name from one
-// of the broker's own packages.
+// sentinel reads the message of an error variable, or the text of a string constant
+// (source.stringConst): one of this package's, or pkg.Name from one of the broker's own packages.
 func (g *graph) sentinel(file *ast.File, e ast.Expr) (string, bool) {
 	switch x := e.(type) {
 	case *ast.Ident:
@@ -757,8 +757,9 @@ func paramIndex(params []string, e ast.Expr) (int, bool) {
 }
 
 // eval is every string e can be: a literal, true or false, a parameter's candidates, an
-// http.Status constant's code, a concatenation of those, err.Error() (the case clause's sentinel
-// messages, or varies), or an fmt.Sprintf with its verbs shown as "…". Nil means e cannot be read.
+// http.Status constant's code, a string constant of another of the broker's packages (sentinel),
+// a concatenation of those, err.Error() (the case clause's sentinel messages, or varies), or an
+// fmt.Sprintf with its verbs shown as "…". Nil means e cannot be read.
 func (g *graph) eval(e ast.Expr, env map[string][]string, sentinels []string) []string {
 	switch x := e.(type) {
 	case *ast.BasicLit:
@@ -782,6 +783,9 @@ func (g *graph) eval(e ast.Expr, env map[string][]string, sentinels []string) []
 			if code, ok := httpStatus[x.Sel.Name]; ok {
 				return []string{strconv.Itoa(code)}
 			}
+		}
+		if text, ok := g.sentinel(g.src.fileOf(x), x); ok {
+			return []string{text}
 		}
 	case *ast.BinaryExpr:
 		if x.Op != token.ADD {

@@ -110,14 +110,17 @@ func TreeByKey(members []Issue) map[string]Issue {
 
 // HoldsRole is whether a claim the store records in state, suspended by by, holds its role: this
 // daemon supervises it (state is not ""), it has not failed or retired, and it is not suspended,
-// unless the suspension is the idle release's (supervise.Claim's Released). A claim the outbox has
-// not created yet has no state and holds none: a new child's architect is such a claim until the
-// outbox runs the start its child's first phase start queued, and holds its role from that run on,
-// queued or launching. A released claim keeps its session, its phase and its task, and the next
-// wake for its role resumes it, so what it owns is still its own; any other suspension stops the
-// claim until a rule or an operator starts it again. Were a released architect to lose its role
-// here, a notice for it would walk up to the architect above it, which owns neither the issue nor
-// the answer.
+// unless the suspension is the idle release's (supervise.Claim's Released) or the project
+// release's (supervise.Claim's ProjectReleased). A claim the outbox has not created yet has no
+// state and holds none: a new child's architect is such a claim until the outbox runs the start
+// its child's first phase start queued, and holds its role from that run on, queued or launching.
+// A released claim keeps its session, its phase and its task, and the next wake for its role
+// resumes it, so what it owns is still its own. A claim the project release stopped keeps them
+// too, as the release left them, and the daemon's next boot starts it (workflow's
+// startReleaseStopped) rather than a wake: a delivery for it waits for that start (the daemon's
+// awaitsBootStart). Any other suspension stops the claim until a rule or an operator starts it
+// again. Were a released or stopped architect to lose its role here, a notice for it would walk up
+// to the architect above it, which owns neither the issue nor the answer.
 //
 // It is the whole rule for a reader in a transaction (ArchitectRuns). The daemon's outbox reads
 // the same rule over the machine's live view and also passes over a claim whose process a
@@ -127,7 +130,8 @@ func HoldsRole(state supervise.ClaimState, by supervise.SuspendSource) bool {
 	case "", supervise.StateFailed, supervise.StateRetired:
 		return false
 	case supervise.StateSuspended:
-		return supervise.Claim{State: state, SuspendedBy: by}.Released()
+		held := supervise.Claim{State: state, SuspendedBy: by}
+		return held.Released() || held.ProjectReleased()
 	}
 	return true
 }

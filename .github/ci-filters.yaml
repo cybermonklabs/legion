@@ -2172,6 +2172,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/redirects/*'
   - 'packages/envoy/internal/serverwait/*'
   - 'packages/envoy/internal/testpg/testdb/*'
+  - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/internal/cipher/rulehost/*'

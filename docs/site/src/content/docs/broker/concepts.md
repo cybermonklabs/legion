@@ -30,7 +30,7 @@ pod for itself. An enrollment has one of two kinds:
 | Kind | What it is | Who holds its key | Who enrolls it |
 | --- | --- | --- | --- |
 | `session` | An agent session on a machine a person logged in: running directly on the machine, or in a container on it (a **box**). | For a session on the machine, the machine's helper, in memory; for a box, the container, in `key.pem` under `AGENT_SECRETS_KEY_DIR`. | The machine's helper: when the session registers with `agent-secrets register`, or, for a box, when whoever starts the container runs `agent-secrets enroll --helper` ([run an agent in a container](/legion/broker/guides/run-an-agent-in-a-container/)). |
-| `pod` | A Kubernetes pod: a Legion worker pod, or one an operator launches by hand. | The pod, in its key directory. | The Legion daemon, which proves the pod with a projected service-account token the broker verifies against `BROKER_K8S_OIDC_ISSUER`; or the pod itself, with `agent-secrets enroll --pod`, when its ServiceAccount is one `BROKER_SERVICE_LOGINS` names. An enrollment's runtime id must be the pod UID of the token presented with it, which the broker verifies against the cluster's issuer and refuses otherwise, so a pod enrolling itself enrols the pod whose token it holds. |
+| `pod` | A Kubernetes pod: a Legion worker pod, or one an operator launches by hand. | The pod, in its key directory. | The Legion daemon, which proves the pod with a projected service-account token that the broker verifies against the issuer of `BROKER_K8S_OIDC_ISSUER` that the token names, one issuer for each cluster; or the pod itself, with `agent-secrets enroll --pod`, when its ServiceAccount is one `BROKER_SERVICE_LOGINS` names. An enrollment's runtime id must be the pod UID of the token presented with it, which the broker verifies against that issuer and refuses otherwise, so a pod enrolling itself enrols the pod whose token it holds. While the broker cannot read the token's issuer, it answers `503 OIDC_ISSUER_UNAVAILABLE`, which decides nothing about the pod, and the daemon tries the enrollment again. |
 
 A machine holding a Google identity token enrols a `session` too: it trades that token at the
 broker's token exchange, which answers a Dispatch access token and the machine login that trade
@@ -69,7 +69,8 @@ An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session
 renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
 a pod. A pod's renewal carries the pod's current projected token, and the broker refuses it
 (`POD_IDENTITY_MISMATCH`) unless the token names the pod UID and service account the enrollment was
-made for. The token is not yet required. The broker ratchets each pod UID instead: once any
+made for. While the broker cannot read the token's issuer, it answers the renewal
+`503 OIDC_ISSUER_UNAVAILABLE`, and the renewer tries again. The token is not yet required. The broker ratchets each pod UID instead: once any
 enrollment naming a pod UID, live or ended, has renewed with that pod's token, the broker refuses a
 renewal without one (`POD_TOKEN_REQUIRED`) from every enrollment naming that pod, whichever machine
 login made it.
@@ -311,7 +312,8 @@ sessions it enrolled keep running.
 A service, such as the Legion daemon, logs in with its own projected Kubernetes ServiceAccount
 token instead, and no person approves it: the broker verifies the token as it verifies a pod's,
 refuses one that lives longer than an hour from its issue, and issues the credential when the
-token's account is one `BROKER_SERVICE_LOGINS` names for that service
+token's account is one `BROKER_SERVICE_LOGINS` names for that service and the token's issuer is
+one that entry names
 ([Operate](/legion/broker/operate/#what-to-run)). Each such account holds one credential, which
 every login moves to the login's key and to the token's expiry, at most an hour away, so the
 service logs in again before then and at every restart; a running daemon proves the same key at
@@ -349,7 +351,8 @@ A credential enrolls sessions only for its own operator: an enrollment naming an
 `OPERATOR_MISMATCH`. The broker's rate limiter caps how often anyone can start a machine login, per
 source address and per named person, and how often anyone can try a token login: per source
 address before the token is verified, and per account once it is. A token login the broker could
-not complete (a 5xx, such as while its database is away) spends neither.
+not complete (a 5xx, such as while its database is away, or while the token's issuer cannot be
+read) gives back what it spent.
 
 ## Owner and tier: who may have which secret
 
@@ -649,8 +652,11 @@ names that project** and whose person may still see it:
   session naming none enrols as before. The list is fixed for the session's life: start a new
   session to name another, and `agent-secrets self` prints it as a `projects:` line.
 - A **pod** names no list of its own: its project is the one its operator's entry in
-  `BROKER_EXCHANGE_ACCOUNTS` maps its service account to, for that entry's person. A machine's own
-  session likewise names the one `BROKER_VM_EXCHANGE_ACCOUNTS` maps its fleet's Google account to.
+  `BROKER_EXCHANGE_ACCOUNTS` maps its service account to, for that entry's person, while that entry
+  names the issuer whose token enrolled the pod. The same account name in another cluster is another
+  ServiceAccount, so a pod enrolled with a token of an issuer its entry does not name names no
+  project. A machine's own session likewise names the one `BROKER_VM_EXCHANGE_ACCOUNTS` maps its
+  fleet's Google account to.
   A [person's pod](#a-persons-pod) acts for its person, so it names its list as that person's
   session does.
 
@@ -765,17 +771,17 @@ The broker reads the setting at each decision about the pod, not only when the p
 it to another person, the pod's enrollment acts for no person from its next call. A grant the pod
 got at once because it was the person stops releasing and is not reused, a grant a person approved
 still releases, and a grant of a secret whose `requesters` names the person ends for good. It also
-names no list of its own from then on, only its account's `BROKER_EXCHANGE_ACCOUNTS` project, as
-any pod of no person does, so a grant of a private project's secret that its list named ends for
-good at its next release. The enrollment's own record keeps the person it was made for, so the
-grant log names them, and their **Live grants** still lists each grant of the pod they may see,
-naming no operator on it: the pod no longer acts for them, so they end a grant only if they
-approved it or its approver is `anyone`, and their revoke withholds nothing from the pod. A grant
-the policy gave the pod without asking names no approver either, so it is listed, as a service's
-pod's is, to every signed-in person who may see it, and its row reads **Ends with its machine
-login**: revoking the pod's login ends it. A grant of a private project they are not on, which
-the pod may now get through its exchange entry, is hidden from them as from anyone outside the
-project, and is on the pages of that project's people.
+names no list of its own from then on, only its account's `BROKER_EXCHANGE_ACCOUNTS` project while
+that entry names the issuer the pod enrolled under, as any pod of no person does, so a grant of a
+private project's secret that its list named ends for good at its next release. The enrollment's own
+record keeps the person it was made for, so the grant log names them, and their **Live grants**
+still lists each grant of the pod they may see, naming no operator on it: the pod no longer acts for
+them, so they end a grant only if they approved it or its approver is `anyone`, and their revoke
+withholds nothing from the pod. A grant the policy gave the pod without asking names no approver
+either, so it is listed, as a service's pod's is, to every signed-in person who may see it, and its
+row reads **Ends with its machine login**: revoking the pod's login ends it. A grant of a private
+project they are not on, which the pod may now get through its exchange entry, is hidden from them
+as from anyone outside the project, and is on the pages of that project's people.
 [Operate](/legion/broker/operate/#what-to-run) says what else a removal or a move does.
 
 ## Requests and grants
@@ -1004,10 +1010,17 @@ nothing but the grants it asks for.
 Two Kubernetes service accounts can be paired so that either takes a session name the other holds:
 `BROKER_SESSION_ACCOUNT_PAIRS`, which an operator sets before moving a deployment's pods from one
 account to the other ([Operate](/legion/broker/operate/#what-to-run)).
-A pod's principal is the account its projected token proves, so without the pair a role's next
-pod, on the new account, is refused its own session name, and what the name carries stays behind.
+A pod's principal is the account its projected token proves, by the account's name alone,
+whichever of the broker's clusters signed the token, so a pod that moves to another cluster under
+the same account keeps its session names with no pair, and without the pair a role's next pod, on
+a new account, is refused its own session name, and what the name carries stays behind.
 With the pair, the claim takes the name, whether an enrollment or a token exchange makes it
 (`oauthstore/exchange.go`, `BindSession`).
+A pair names no issuer, and the claim it widens is made only once the broker has taken the pod's
+token where it came in: from an issuer `BROKER_K8S_OIDC_ISSUER` names at an enrollment
+(`enroll.go`, `verifyPodToken`), and from one the account's own exchange entry names at the token
+exchange (`packages/envoy/internal/cipher/exchange/exchange.go`, `Set.Pod`), so a token either of
+them refuses takes no name through a pair.
 An enrollment under the name then takes what the other account's enrollments of it still hold, by
 the rule above for a successor under the same principal: the grants, the pending requests and the
 withheld names (`enroll.go`, `adopt`).
@@ -1471,8 +1484,9 @@ at the first that fails, asking the model nothing:
 5. no key is withheld from that session;
 6. the request is no private project's: a `dispatch-project` tag on any of its keys naming a
    private project or a project key Dispatch holds no project for, a credential that names a
-   private project (a session's list, or the project a pod's or a machine's exchange entry maps it
-   to), or any issue key of a private project that the signed reason names leaves the request to
+   private project (a session's list, the project a pod's exchange entry maps it to while that
+   entry names the issuer the pod enrolled under, or the one a machine's entry maps it to), or any
+   issue key of a private project that the signed reason names leaves the request to
    a person, since the judge's own token names no person and so sees no private project. These are
    the projects that hide a request from a person outside them too. A request whose keys carry no
    such tag, whose credential names no project and whose reason names no issue key makes no call
@@ -1608,8 +1622,9 @@ it did not parse) and
 `launcher_credential.revoked` (naming the machine login's `credential_id`, its `host`, its
 `service` for a service's login, and under `enrollments` the sessions the revoke ended) and
 `launcher_credential.token_login` (a service's token login: the `credential_id`, its `service`, the
-token's `subject`, the `pod_uid` the token is bound to when it is, the login's `key_thumbprint`,
-the credential's `expires_at` and the token's own `token_expires_at`). Each row names its actor:
+token's `subject`, the `pod_uid` the token is bound to when it is, the URL of the `issuer` that
+signed a Kubernetes token, the login's `key_thumbprint`, the credential's `expires_at` and the
+token's own `token_expires_at`). Each row names its actor:
 `human:<email>` for a decision a person made on the broker's approval page or a change Dispatch
 made for its signed-in person, `session:<enrollment id>` for
 a session's own, `launcher:<credential id>` for one

@@ -50,6 +50,8 @@ func TestOperatorRoutesRefuseAnythingButTheOperatorBearer(t *testing.T) {
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/close"},
 		{http.MethodPost, "/legion/v1/operator/project/pause"},
 		{http.MethodPost, "/legion/v1/operator/project/resume"},
+		{http.MethodPost, ProjectReleaseRoute},
+		{http.MethodGet, ProjectReleaseRoute},
 	}
 	for _, route := range routes {
 		for name, header := range map[string]http.Header{

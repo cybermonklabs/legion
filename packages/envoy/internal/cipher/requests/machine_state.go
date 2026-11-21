@@ -56,6 +56,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -366,9 +367,17 @@ type Machine struct {
 	// secret (policy.Loader.ProjectChecks).
 	Projects projectaccess.Access
 	// Exchange is the broker's token exchange configuration, read for the project an operator's
-	// entry maps a pod's or a machine's account to (exchange.Set.MappedProjects), which is the
+	// entry maps a pod's account to (exchange.Set.PodProjects, for the issuer the pod's
+	// enrollment recorded) or a machine's account to (exchange.Set.MappedProjects), which is the
 	// project such a credential names. nil names none.
 	Exchange *exchange.Set
+	// Issuers is BROKER_K8S_OIDC_ISSUER, the issuers whose tokens a pod enrolls with, in the
+	// setting's order: the value enroll.Service.Issuers takes. A pod's enrollment records the URL
+	// of the issuer whose token enrolled it, and credentialProjects reads that URL as its name
+	// here (oidc.IssuerName): a service's pod names the project its account's Exchange entry maps
+	// only while that entry names the issuer. Empty, every pod's issuer is no issuer's, and a
+	// service's pod names no project.
+	Issuers []oidc.NamedIssuer
 	// SignInOff is BROKER_SIGNIN=off: the broker signs nobody in and serves no approval page, so
 	// no person can ever decide a request. Create then denies at once every name whose answer
 	// would be an approval, policy.ReasonSignInOff, and writes no pending request, no record and
@@ -476,10 +485,13 @@ type enrollmentRow struct {
 	// no person. A pod acts for this person only while BROKER_POD_OPERATORS still maps its
 	// account to that person (requester). Service is the service of the launcher credential that
 	// enrolled it, nil for a person's machine. Subject is a pod's verified service account or the
-	// credential subject a machine's session recorded, nil for every other session. Host is that
-	// credential's host.
-	Operator, Service, Subject, Host *string
-	RuntimeID, Slot                  string
+	// credential subject a machine's session recorded, nil for every other session. Issuer is the
+	// URL of the issuer whose token proved a pod's Subject (enrollments.issuer), nil for a pod
+	// enrolled before enrollments recorded one, which was the first issuer's, and for every other
+	// kind: a service's pod names its exchange entry's project only while that entry names this
+	// issuer (credentialProjects). Host is that credential's host.
+	Operator, Service, Subject, Issuer, Host *string
+	RuntimeID, Slot                          string
 	// SessionID is the Envoy session this enrollment recorded, empty for one that names none.
 	// It is read with the rest of the row, rather than looked up when a decision is logged, so
 	// the grant-log line a committed transaction writes names the session it decided for
@@ -2691,10 +2703,10 @@ func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string)
 // enrollment reads a live enrollment (not revoked, lease not lapsed); pgx.ErrNoRows otherwise.
 func (m *Machine) enrollment(ctx context.Context, id string) (enrollmentRow, error) {
 	var e enrollmentRow
-	err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, c.service, c.host, e.subject, e.thumbprint, e.runtime_id, e.slot, coalesce(e.session_id,''), e.projects, coalesce(e.claim,'') from enrollments e
+	err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, c.service, c.host, e.subject, e.issuer, e.thumbprint, e.runtime_id, e.slot, coalesce(e.session_id,''), e.projects, coalesce(e.claim,'') from enrollments e
 		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where e.id=$1 and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)`, id).
-		Scan(&e.ID, &e.Kind, &e.Operator, &e.Service, &e.Host, &e.Subject, &e.Thumbprint, &e.RuntimeID, &e.Slot, &e.SessionID, &e.Projects, &e.Claim)
+		Scan(&e.ID, &e.Kind, &e.Operator, &e.Service, &e.Host, &e.Subject, &e.Issuer, &e.Thumbprint, &e.RuntimeID, &e.Slot, &e.SessionID, &e.Projects, &e.Claim)
 	return e, err
 }
 

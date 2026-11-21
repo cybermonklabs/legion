@@ -85,21 +85,23 @@ func introspector(sessions ...*session) func(context.Context, string) (oauthwire
 }
 
 // platformToken is a service's platform identity token as the stub ServiceToken reads it: the
-// account it names and its life.
+// account it names, the name of the issuer that signed it ("" for a Google token and for the one
+// issuer of a bare BROKER_K8S_OIDC_ISSUER URL), and its life.
 type platformToken struct {
 	account        string
 	google         bool
+	issuer         string
 	issued, expiry time.Time
 }
 
 // serviceTokens verifies each raw token tokens names, and refuses every other.
-func serviceTokens(tokens map[string]platformToken) func(context.Context, string) (string, bool, time.Time, time.Time, error) {
-	return func(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+func serviceTokens(tokens map[string]platformToken) func(context.Context, string) (ServiceIdentity, error) {
+	return func(_ context.Context, raw string) (ServiceIdentity, error) {
 		token, ok := tokens[raw]
 		if !ok {
-			return "", false, time.Time{}, time.Time{}, errors.New("the token did not verify")
+			return ServiceIdentity{}, errors.New("the token did not verify")
 		}
-		return token.account, token.google, token.issued, token.expiry, nil
+		return ServiceIdentity{Account: token.account, Google: token.google, Issuer: token.issuer, Issued: token.issued, Expiry: token.expiry}, nil
 	}
 }
 
@@ -107,12 +109,14 @@ func serviceRequest(raw string) Request {
 	return Request{UserNkey: "UUSER", ServerID: "NSERVER", Nonce: "nonce", User: natscred.ServiceUser, Password: raw, Host: "10.0.0.7"}
 }
 
+// exampleServices are entries of a broker whose BROKER_K8S_OIDC_ISSUER is one bare URL, so each
+// Kubernetes account's token is taken from that issuer, whose name is "".
 var exampleServices = []ServiceEntry{
-	{Kind: KindDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
-	{Kind: KindListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
-	{Kind: KindDaemon, Account: daemonAccount, AllProjects: true},
+	{Kind: KindDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", Issuers: []string{""}, AllProjects: true},
+	{Kind: KindListener, MachineID: "example-hub", Account: listenerAccount, Issuers: []string{""}, AllProjects: true},
+	{Kind: KindDaemon, Account: daemonAccount, Issuers: []string{""}, AllProjects: true},
 	{Kind: KindMeasure, Account: measureAccount, Google: true, AllProjects: true},
-	{Kind: KindDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+	{Kind: KindDaemon, Account: "system:serviceaccount:example-ns:held-daemon", Issuers: []string{""}},
 }
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
@@ -156,6 +160,49 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 }
 
+// A Kubernetes service's token is taken only from an issuer its entry names, and an entry that
+// names none takes the first issuer of BROKER_K8S_OIDC_ISSUER alone: the same account's token
+// from another issuer is another cluster's ServiceAccount, refused as an account no entry lists.
+// A Google entry names no issuer, and a subject no entry lists is refused from every issuer.
+func TestAServiceTokenIsTakenFromTheIssuersItsEntryNames(t *testing.T) {
+	const stranger = "system:serviceaccount:example-ns:stranger"
+	now := time.Now()
+	services, err := ParseServices("daemon/-/*="+daemonAccount+" listener/example-hub/*="+listenerAccount+"=first,second"+
+		" measure/-/*=google:"+measureAccount, twoIssuers)
+	require.NoError(t, err)
+	token := func(account, issuer string) platformToken {
+		return platformToken{account: account, issuer: issuer, issued: now, expiry: now.Add(time.Hour)}
+	}
+	tokens := map[string]platformToken{
+		"daemon-of-first":    token(daemonAccount, "first"),
+		"daemon-of-second":   token(daemonAccount, "second"),
+		"listener-of-first":  token(listenerAccount, "first"),
+		"listener-of-second": token(listenerAccount, "second"),
+		"stranger-of-first":  token(stranger, "first"),
+		"stranger-of-second": token(stranger, "second"),
+		"measure":            {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
+	}
+	deps := Deps{ServiceToken: serviceTokens(tokens)}
+	for raw, listed := range map[string]bool{
+		"daemon-of-first": true, "daemon-of-second": false,
+		"listener-of-first": true, "listener-of-second": true,
+		"stranger-of-first": false, "stranger-of-second": false,
+		"measure": true,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, err := Decide(t.Context(), deps, services, serviceRequest(raw))
+			if listed {
+				require.NoError(t, err)
+				return
+			}
+			var refused *Refusal
+			require.True(t, errors.As(err, &refused), "%v", err)
+			require.Equal(t, labelServiceNotListed, refused.Label)
+			require.Equal(t, "service not listed: "+tokens[raw].account, refused.Reason)
+		})
+	}
+}
+
 // Every refusal is one line naming why, carries nothing of the credential, and is counted under
 // its own fixed label, the decision counter's reason. A row whose ctx is set decides under that
 // context instead of the test's: a spent one is a decision past its budget.
@@ -195,8 +242,8 @@ func TestRefusals(t *testing.T) {
 		Introspect: func(ctx context.Context, _ string) (oauthwire.Introspection, error) {
 			return oauthwire.Introspection{}, ctx.Err()
 		},
-		ServiceToken: func(ctx context.Context, _ string) (string, bool, time.Time, time.Time, error) {
-			return "", false, time.Time{}, time.Time{}, ctx.Err()
+		ServiceToken: func(ctx context.Context, _ string) (ServiceIdentity, error) {
+			return ServiceIdentity{}, ctx.Err()
 		},
 	}
 	spent, cancel := context.WithCancel(context.Background())

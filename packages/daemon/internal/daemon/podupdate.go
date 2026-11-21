@@ -1953,10 +1953,12 @@ func workingClaims(group []supervise.Claim) []string {
 }
 
 // backgroundHold is the background hold over a round's pod replacement
-// (dispatch://INFRA-4203 R1) as backgroundClaims reads it: running is each role whose activity
-// report names background work that runs, with the kinds that report names, and unreported is
-// each role that has sent no report since its last turn started, in the group's order. It holds
-// the replacement when it names a role; the zero value names none.
+// (dispatch://INFRA-4203 R1) as backgroundClaims reads it, and over a project release's delete of
+// an issue pod (dispatch://INFRA-3583 R6) as projectReleaser.background reads it, each claim by
+// one rule (weigh): running is each role whose activity report names background work that runs,
+// with the kinds that report names, and unreported is each role that has sent no report since
+// its last turn started, in the group's order. It holds the replacement, or the delete, when it
+// names a role; the zero value names none.
 type backgroundHold struct {
 	running    map[string][]string
 	unreported []string
@@ -1998,40 +2000,45 @@ func (h backgroundHold) refusal() string {
 
 // backgroundClaims is the background hold as group reads it (dispatch://INFRA-4203 R1): every
 // claim that can still run work in the round's own pod whose activity report does not say that
-// nothing of its own runs. Such a claim is not gone (supervise.Claim.Gone): it is in no failed,
-// retired or suspended state, none of which runs a process. Its locator records a process in the
-// round's pod (inRoundPod), as podProcess reads it: a claim whose process is in another pod runs
-// nothing this round's replacement ends. A claim the round does not ask is weighed too, since a
-// role launched into the round's pod after the round opened, or still launching there with no
-// session, runs in the pod the replacement deletes all the same.
-//
-// The report is read by claim.ReadSessionWork against the claim's last turn start
-// (supervise.Claim.LastTurnStart), which every turn moves. A report that names running background
-// work holds the round with the kinds it names. No report, or one read before that turn started,
-// holds the round as unreported, because such a turn can have started work the report does not
-// name. The report is the store row's, at the view's own launch (roundGroup).
+// nothing of its own runs (weigh). Its locator records a process in the round's pod (inRoundPod),
+// as podProcess reads it: a claim whose process is in another pod runs nothing this round's
+// replacement ends. A claim the round does not ask is weighed too, since a role launched into the
+// round's pod after the round opened, or still launching there with no session, runs in the pod
+// the replacement deletes all the same. The report is the store row's, at the view's own launch
+// (roundGroup).
 func backgroundClaims(group []supervise.Claim, round string) backgroundHold {
 	var hold backgroundHold
 	for _, c := range group {
-		if c.Gone() {
-			continue
-		}
-		if !inRoundPod(c, round) {
-			continue
-		}
-		switch claim.ReadSessionWork(c.ActivityAt, c.LastTurnStart, c.ActivityBackground) {
-		case claim.WorkRunning:
-			if hold.running == nil {
-				hold.running = map[string][]string{}
-			}
-			hold.running[string(c.Role)] = c.ActivityKinds
-		case claim.WorkUnreported:
-			hold.unreported = append(hold.unreported, string(c.Role))
-		case claim.WorkSettled:
-			// A report read since the last turn started that names nothing running holds nothing.
+		if inRoundPod(c, round) {
+			hold.weigh(c)
 		}
 	}
 	return hold
+}
+
+// weigh adds c to the hold by its activity report, the one rule an update round's replacement
+// (backgroundClaims) and a project release's ask and wait (projectReleaser.background) read a
+// claim by. A claim that is gone (supervise.Claim.Gone) holds nothing: it is in a failed, retired
+// or suspended state, none of which runs a process. The report of any other claim is read by
+// claim.ReadSessionWork against the claim's last turn start (supervise.Claim.LastTurnStart),
+// which every turn moves. A report that names running background work holds with the kinds it
+// names. No report, or one read before that turn started, holds as unreported, because such a
+// turn can have started work the report does not name.
+func (h *backgroundHold) weigh(c supervise.Claim) {
+	if c.Gone() {
+		return
+	}
+	switch claim.ReadSessionWork(c.ActivityAt, c.LastTurnStart, c.ActivityBackground) {
+	case claim.WorkRunning:
+		if h.running == nil {
+			h.running = map[string][]string{}
+		}
+		h.running[string(c.Role)] = c.ActivityKinds
+	case claim.WorkUnreported:
+		h.unreported = append(h.unreported, string(c.Role))
+	case claim.WorkSettled:
+		// A report read since the last turn started that names nothing running holds nothing.
+	}
 }
 
 // podProcess is the process the round's pod is ended through: the first claim of the group that

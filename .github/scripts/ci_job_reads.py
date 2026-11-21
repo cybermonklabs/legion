@@ -553,7 +553,7 @@ RULES = {
         Read(path, "internal/api/reachstates_test.go:50 lists ../supervise and :60 parses each .go file of it but the test files (:57)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1391 (path from goldenPath at :1380, declared :38)")),
+    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1502 (path from goldenPath at :1491, declared :38)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
@@ -569,7 +569,7 @@ RULES = {
     f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
-    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1331")),
+    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1367")),
     # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
     # (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
     # `legion` their panes run and packs both Oh My Pi plugins into the run's own profile. No job
@@ -588,12 +588,12 @@ RULES = {
         (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/nats_permissions_test.go:77"),
         (f"{DAEMON}/internal/intake/testdata/github/pr-opened.json", "internal/daemon/nats_permissions_test.go:78")),
     f"{DAEMON}/internal/daemon/outbox_scratch_dispatch_test.go": [
-        run(ENVOY, ["./cmd/dispatch"], "internal/daemon/outbox_scratch_dispatch_test.go:354 testbuild.EnvoyBinary, which runs go build ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
+        run(ENVOY, ["./cmd/dispatch"], "internal/daemon/outbox_scratch_dispatch_test.go:354 testbuild.EnvoyBinary, which runs go build ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:123)", mode="build")],
     f"{DAEMON}/internal/daemon/supervision_test.go": [
         Read(path, "internal/daemon/supervision_test.go:1254 Glob ../stream/*.go, and :1263 parses each file it finds but the test files (:1260)")
         for path in files_but_tests(f"{DAEMON}/internal/stream")],
     f"{DAEMON}/internal/intake/redelivered_test.go": [
-        run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
+        run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:123)", mode="build")],
     f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
@@ -608,7 +608,7 @@ RULES = {
     f"{DAEMON}/internal/runtime/sandbox/boundary_test.go": [legion_build("internal/runtime/sandbox/boundary_test.go:757 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/tmux/tmux_real_test.go": [
         legion_build("internal/runtime/tmux/tmux_real_test.go:88-89 go build .../daemon/cmd/legion"),
-        Read(f"{DAEMON}/cmd/legion/testdata/gh-help/**", "internal/runtime/tmux/tmux_real_test.go:1843,1850")],
+        Read(f"{DAEMON}/cmd/legion/testdata/gh-help/**", "internal/runtime/tmux/tmux_real_test.go:1847,1854")],
     f"{DAEMON}/internal/stream/integration_test.go": [legion_build("internal/stream/integration_test.go:157 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/workerbin/workerbin_test.go": reads((f"{DAEMON}/docker/gh", "internal/runtime/workerbin/workerbin_test.go:99")),
     f"{DAEMON}/internal/textcheck/design_approved_wake_test.go": reads(
@@ -835,7 +835,7 @@ RULES = {
          "cmd/spec-check/main_test.go:432 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
          "lists at :69 and its built binary reads")),
     f"{ENVOY}/internal/cipher/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem",
-                                                            "internal/cipher/config/config_test.go:1836,1866 Load the URL whose sslrootcert is this bundle (rdsBundle :1796), which pgx reads to build the root pool")),
+                                                            "internal/cipher/config/config_test.go:1839,1869 Load the URL whose sslrootcert is this bundle (rdsBundle :1799), which pgx reads to build the root pool")),
     f"{ENVOY}/internal/cipher/store/storetest/storetest_test.go": [
         run(f"{ENVOY}/internal/cipher/store/storetest", ["."], "internal/cipher/store/storetest/storetest_test.go:22 go list -deps .", mode="build")],
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:85")),
@@ -1421,7 +1421,7 @@ if PLUGIN_PACK_PACKAGE not in DAEMON_RACE_PACKAGES:
     raise ValueError(f"the plugin-pack tests are in {PLUGIN_PACK_PACKAGE}, which the race step does not run, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step that "
                      f"runs them")
-DAEMON_RACE_SCRIPT = f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
+DAEMON_RACE_SCRIPT = f"go test -count=1 -race -timeout 40m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
 
 
 PLUGIN_PACK_SOURCE = f"{DAEMON}/{PLUGIN_PACK_PACKAGE}"
@@ -1507,29 +1507,34 @@ def hold_plugin_pack_tests():
 hold_plugin_pack_tests()
 
 
-# ---------------------------------------------------------------- the supervise table's pure pins
-# The two tests of internal/supervise/table_test.go whose subject is the table itself rather than a
-# claim in motion: TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState, which holds every
-# event of the sealed set to a row or a named ignore in every state, and TestNoTwoEventTypesShareAKind.
-# Each reads source and nothing else - sealed() (table_test.go:27-58) parses every non-test .go file
-# of the directory, and the type-check of those files reads the source of every package they import
-# too, since table_test.go:99 builds the checker with importer.ForCompiler(..., "source", ...), so
+# ---------------------------------------------------------------- the supervise package's pure pins
+# The four tests of internal/supervise whose subject is the package's own source rather than a
+# claim in motion: of table_test.go, TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState,
+# which holds every event of the sealed set to a row or a named ignore in every state,
+# TestNoTwoEventTypesShareAKind, and TestStatesIsEveryDeclaredStateOnce, which holds States() to
+# the ClaimState constants; of rosters_test.go, TestSuspendSourcesNameEveryConstant, which holds
+# the package's hand-kept roster of suspend sources to the constants of its type.
+# Each reads source and nothing else - packageSets() (table_test.go:46-90) parses every non-test .go
+# file of the directory, and the type-check of those files reads the source of every package they
+# import too, since table_test.go:93 builds the checker with importer.ForCompiler(..., "source", ...), so
 # the whole import closure is read from source: of this repository internal/claim, phase, runtime,
 # wait, treelifecycle and backoff and what those import, which packages/daemon/**/*.go carries, and
-# outside it the standard library and the module cache - and neither starts a database, a container,
+# outside it the standard library and the module cache - and none starts a database, a container,
 # tmux or jj, so they are text-check work: they run in the text-checks job, where they wait behind
 # no fixture, and the daemon-go plain step, which runs their package, skips them by name, so each
 # runs once per run of the router (dispatch://INFRA-1413, R3).
-# The other three tests of that file drive a machine and stay in the plain step. Nothing of the file
-# moves package - all five read unexported identifiers of internal/supervise - which is why these
-# two are run by name rather than moved into a package of text checks.
+# The other three tests of table_test.go drive a machine and stay in the plain step. Nothing of the
+# two files moves package - all seven tests read unexported identifiers of internal/supervise - which
+# is why these four are run by name rather than moved into a package of text checks.
 # Both step texts are built from this one list, and check-ci-filters.sh pins each step's whole
 # script, so the -skip and the -run cannot come to name different tests.
 SUPERVISE_TABLE_TESTS = ["TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState",
-                         "TestNoTwoEventTypesShareAKind"]
+                         "TestNoTwoEventTypesShareAKind",
+                         "TestStatesIsEveryDeclaredStateOnce",
+                         "TestSuspendSourcesNameEveryConstant"]
 SUPERVISE_TABLE_PACKAGE = "internal/supervise"
 SUPERVISE_TABLE_SOURCE = f"{DAEMON}/{SUPERVISE_TABLE_PACKAGE}"
-SUPERVISE_TABLE_STEP = "Test the supervise table's two pure pins (no database)"
+SUPERVISE_TABLE_STEP = "Test the supervise package's four pure pins (no database)"
 SUPERVISE_TABLE_PATTERN = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS))})$'"
 SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
@@ -1537,7 +1542,7 @@ SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SU
 # the race step's five and the text checks, and this package moved into one of those while these
 # tests stayed here would run them in that step too.
 if SUPERVISE_TABLE_PACKAGE in DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]:
-    raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which the plain step leaves out, so "
+    raise ValueError(f"the pure pins are in {SUPERVISE_TABLE_PACKAGE}, which the plain step leaves out, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step "
                      f"that runs them")
 DAEMON_PLAIN_SCRIPT = f"""\
@@ -1556,12 +1561,12 @@ def hold_supervise_table_tests():
     carrying no //go:build line (GO_BUILD_LINE), since neither step passes -tags and a name behind a
     constraint is one the -run cannot reach and the -skip need not skip.
     hold_plugin_pack_tests()'s second rule - that its list name every test of the one file that job
-    took whole - is not ported here, because this list is part of a file's tests rather than all of
+    took whole - is not ported here, because this list is part of its files' tests rather than all of
     them. That rule holds a gate whose reads are keyed on test names: the plugin-pack gate declares
     the lockfile, skills/ and the prepack because those three tests read them, so a test of that file
     left out of the list would run in the daemon-go race step, whose filter names none of them. These
-    two pins read source alone - the package's own, and the source of everything it imports, which
-    their type-checker reads from source too (table_test.go:99) and which of this repository is
+    four pins read source alone - the package's own, and the source of everything it imports, which
+    their type-checker reads from source too (table_test.go:93) and which of this repository is
     packages/daemon's own packages - and both jobs' filters already carry it: text_checks
     through packages/daemon/**/*.go and daemon_go_tests through the module's own closure - so no read
     moves with a name here, and a test of table_test.go this list does not name runs in the plain
@@ -2625,10 +2630,10 @@ GATES = [
     # below: with them goes the Bun install, which no other test of this module needs, and with
     # that the lockfile and the workspace manifests, and with them skills/ and the prepack script
     # that stages each plugin's partition of it, which no other test of this module reads.
-    # The plain step leaves two tests out as well, internal/supervise's table pins
+    # The plain step leaves four tests out as well, internal/supervise's pure pins
     # (SUPERVISE_TABLE_TESTS), which the text-check job runs by name: they read that package's
     # source and the source of everything it imports, which their type-checker reads from source
-    # too (table_test.go:99) and which of this repository is packages/daemon's own packages, so no
+    # too (table_test.go:93) and which of this repository is packages/daemon's own packages, so no
     # read leaves this job with them.
     gate("daemon_go_tests", "daemon-go", runs=[
         script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
@@ -2637,7 +2642,7 @@ GATES = [
         # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
         # pinned, as the envoy-go unit step's is - and it carries a -skip besides, which is no
         # form that check reduces either. What it compiles is every test file of every package
-        # it lists, the two skipped table pins' included: -skip leaves a test out of the run,
+        # it lists, the four skipped pure pins' included: -skip leaves a test out of the run,
         # never out of the build, so the closure here is the step's whole closure. The Run names
         # the packages the step's own `grep -Ev` keeps (packages_kept over DAEMON_PLAIN_PATTERN),
         # rather than the superset ./...: the race step's Run below claims the five packages
@@ -2650,7 +2655,7 @@ GATES = [
         pinned_step("daemon-go", DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
             (DAEMON, packages_kept(DAEMON, DAEMON_PLAIN_PATTERN),
              "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps, the "
-             "supervise table's two pure pins skipped by name", {}),
+             "supervise package's four pure pins skipped by name", {}),
         ]),
         # The race step carries a -skip, which is no form check-ci-filters.sh reduces either, so
         # its script is pinned too. What it compiles is every test file of the five packages,
@@ -2939,7 +2944,7 @@ GATES = [
         ("packages/envoy-client/test/fake-dispatch.ts", "packages/pi-shared/src/handoff-record.test.ts:10 imports @legion/envoy-client/test/fake-dispatch"),
         (CONTRACTS_SRC, "pi-shared and envoy-client import @legion/contracts (contracts exports.bun -> src)"),
         (TEST_FIXTURES_SRC, "packages/pi-shared's src and test suites import @legion/test-fixtures"),
-        (f"{FIX}/daemon-api/**", "packages/pi-shared/src/daemon-client.test.ts:23, legion-claim-core.test.ts:17, legion-phase-ops.test.ts:32"),
+        (f"{FIX}/daemon-api/**", "packages/pi-shared/src/daemon-client.test.ts:23, legion-claim-core.test.ts:18, legion-phase-ops.test.ts:32"),
         ("packages/pi-legion/src/**", "packages/pi-shared/src/daemon-client.test.ts:1426-1431,1577-1588 walks every .ts of it that is no test, holding LEGION_ANSWER_READS to the fields a read in it names"),
         ("packages/pi-legion/extensions/**", "packages/pi-shared/src/daemon-client.test.ts:1426-1431,1577-1588 walks every .ts of it that is no test, as above"),
         ("packages/claude-envoy/src/**", "packages/pi-shared/src/daemon-client.test.ts:1426-1431,1577-1588 walks every .ts of it that is no test, as above"),
@@ -3453,13 +3458,13 @@ GATES = [
         pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
             (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's seventeen source-check tests in {GUARD_PACKAGE}", {}),
         ]),
-        # The supervise table's two pure pins by name (SUPERVISE_TABLE_TESTS), which the
+        # The supervise package's four pure pins by name (SUPERVISE_TABLE_TESTS), which the
         # daemon-go plain step skips: pinned whole for the same reason, and its Run is the plain
         # go test of the package, since the step compiles every test file of internal/supervise
-        # whichever two the -run then selects.
+        # whichever four the -run then selects.
         pinned_step(TEXT_CHECK_JOB, SUPERVISE_TABLE_STEP, DAEMON, SUPERVISE_TABLE_SCRIPT, [
             (DAEMON, [f"./{SUPERVISE_TABLE_PACKAGE}/"],
-             f"go test -run of the table's two pure pins in {SUPERVISE_TABLE_PACKAGE}", {}),
+             f"go test -run of the package's four pure pins in {SUPERVISE_TABLE_PACKAGE}", {}),
         ]),
     ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod")),
 

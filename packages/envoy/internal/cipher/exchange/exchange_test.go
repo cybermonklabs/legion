@@ -31,7 +31,13 @@ const (
 	nightlySession = "ci-nightly"
 	machineSession = "example-fleet-1"
 	podUID         = "11111111-2222-3333-4444-555555555555"
-	credentialID   = "66666666-7777-8888-9999-aaaaaaaaaaaa"
+	// firstIssuer and secondIssuer are the names, in BROKER_K8S_OIDC_ISSUER, of the two clusters'
+	// issuers whose tokens the listed accounts' pods present; thirdIssuer names a cluster no entry
+	// names.
+	firstIssuer  = "first"
+	secondIssuer = "second"
+	thirdIssuer  = "third"
+	credentialID = "66666666-7777-8888-9999-aaaaaaaaaaaa"
 	// The three Google accounts the set lists, each a placeholder: pinnedAccount is held to one
 	// Compute Engine project and one instance-name pattern and writes for a person, poolAccount
 	// is pinned to nothing and names no person, so its machines are its service and nothing
@@ -67,19 +73,20 @@ const (
 	fixedPrincipal   = "google:" + fixedAccount
 )
 
-// listed is the set every decision test asks: one account whose sessions name themselves, one
-// account whose session the entry fixes, one read entry, the same pair for one workflow of one
-// repository on one ref, and three Google accounts — one pinned to a project and an
-// instance-name pattern that writes for a person, one pinned to nothing that names no person,
-// and one that fixes the session its machines write under.
+// listed is the set every decision test asks: one account whose sessions name themselves, whose
+// pods exchange from both clusters, one account whose session the entry fixes, whose pods exchange
+// from the first alone, one read entry, whose pods exchange from the first alone too, the same
+// pair for one workflow of one repository on one ref, and three Google accounts — one pinned to a
+// project and an instance-name pattern that writes for a person, one pinned to nothing that names
+// no person, and one that fixes the session its machines write under.
 func listed(t *testing.T) *exchange.Set {
 	t.Helper()
 	set, err := exchange.NewSet(
 		[]exchange.AccountEntry{
-			{Account: workerAccount, Project: project, Person: person},
-			{Account: daemonAccount, Project: project, Person: person, Session: fixedSession},
+			{Account: workerAccount, Project: project, Person: person, Issuers: []string{firstIssuer, secondIssuer}},
+			{Account: daemonAccount, Project: project, Person: person, Session: fixedSession, Issuers: []string{firstIssuer}},
 		},
-		[]exchange.ReadEntry{{Account: readerAccount, Service: readerService, Session: readerSession}},
+		[]exchange.ReadEntry{{Account: readerAccount, Service: readerService, Session: readerSession, Issuers: []string{firstIssuer}}},
 		[]exchange.WorkflowEntry{
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
 			{Repository: repository, Workflow: nightly, Ref: ref, Project: project, Person: person, Session: nightlySession},
@@ -123,7 +130,7 @@ func workflowToken(repo, workflowRef, jobRef, gitRef string) map[string]any {
 func runRef(path string) string { return repository + "/" + path + "@" + ref }
 
 func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
-	account := exchange.AccountEntry{Account: workerAccount, Project: project, Person: person}
+	account := exchange.AccountEntry{Account: workerAccount, Project: project, Person: person, Issuers: []string{firstIssuer}}
 	flow := exchange.WorkflowEntry{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person}
 	with := func(change func(*exchange.AccountEntry)) exchange.AccountEntry {
 		entry := account
@@ -141,7 +148,7 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 		change(&entry)
 		return entry
 	}
-	reader := exchange.ReadEntry{Account: readerAccount, Service: readerService, Session: readerSession}
+	reader := exchange.ReadEntry{Account: readerAccount, Service: readerService, Session: readerSession, Issuers: []string{firstIssuer}}
 	withReader := func(change func(*exchange.ReadEntry)) exchange.ReadEntry {
 		entry := reader
 		change(&entry)
@@ -171,6 +178,8 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: workerAccount},
 		{name: "the same account twice",
 			accounts: []exchange.AccountEntry{account, with(func(e *exchange.AccountEntry) { e.Project = "OTHER" })}, names: "account entry 2"},
+		{name: "an account that names no issuer",
+			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Issuers = nil })}, names: workerAccount},
 		{name: "a repository that is not <owner>/<name>",
 			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "example-repo" })}, names: "example-repo"},
 		// A repository's owner is a GitHub login, so each owner below is refused for what no
@@ -208,7 +217,7 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 		{name: "a session name two accounts fix",
 			accounts: []exchange.AccountEntry{
 				with(func(e *exchange.AccountEntry) { e.Session = fixedSession }),
-				{Account: daemonAccount, Project: project, Person: person, Session: fixedSession},
+				{Account: daemonAccount, Project: project, Person: person, Session: fixedSession, Issuers: []string{firstIssuer}},
 			}, names: "account entry 1"},
 		{name: "a session name an account and a workflow fix",
 			accounts:  []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Session = fixedSession })},
@@ -254,6 +263,8 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Session = strings.Repeat("s", exchange.MaxSessionBytes+1) })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "the same read account twice",
 			reads: []exchange.ReadEntry{reader, withReader(func(e *exchange.ReadEntry) { e.Session = "example-reader-other" })}, names: `read entry 2, "` + readerAccount + `"`},
+		{name: "a read entry that names no issuer",
+			reads: []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Issuers = nil })}, names: `read entry 1, "` + readerAccount + `"`},
 		{name: "an account an account entry and a read entry both list",
 			accounts: []exchange.AccountEntry{account},
 			reads:    []exchange.ReadEntry{withReader(func(e *exchange.ReadEntry) { e.Account = workerAccount })}, names: `read entry 1, "` + workerAccount + `"`},
@@ -276,36 +287,33 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 // TestAnAccountEntryWithNoProjectNamesNone: an account entry may name a person and no project,
 // which is the shared public-session account's entry. Its pods' tokens are named, act for the
 // entry's person, and name no project; a request naming one is refused as any entry's is; and
-// MappedProjects and ProjectsForAccount answer the same empty list. Only an account entry may do
-// this: a workflow's and a person-naming Google entry's empty project is still refused (the
-// table above), and a blank project that is not empty is still refused too.
+// MappedProjects answers the empty list. Only an account entry may do this: a workflow's and a
+// person-naming Google entry's empty project is still refused (the table above), and a blank
+// project that is not empty is still refused too.
 func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
-	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Person: person}}, nil, nil, nil, signInDomain)
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Person: person, Issuers: []string{firstIssuer}}}, nil, nil, nil, signInDomain)
 	if err != nil {
 		t.Fatalf("NewSet with an account entry naming no project = %v, want it taken", err)
 	}
-	claims, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", nil)
+	claims, err := set.Pod(podToken(workerAccount, podUID), firstIssuer, "public-session-1", nil)
 	want := exchange.Claims{Session: "public-session-1", Person: person, Scope: exchange.ProjectScopeNamed, Principal: workerPrincipal, Instance: podUID}
 	if err != nil || !reflect.DeepEqual(claims, want) {
 		t.Fatalf("Pod under an entry naming no project = %+v, %v; want %+v: named, its person, no project", claims, err, want)
 	}
-	if _, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", []string{project}); !errors.Is(err, exchange.ErrProjectsFixed) {
+	if _, err := set.Pod(podToken(workerAccount, podUID), firstIssuer, "public-session-1", []string{project}); !errors.Is(err, exchange.ErrProjectsFixed) {
 		t.Fatalf("a request naming %s under an entry naming none = %v, want ErrProjectsFixed", project, err)
 	}
 	if gotPerson, projects, ok := set.MappedProjects(workerPrincipal); gotPerson != person || len(projects) != 0 || !ok {
 		t.Fatalf("MappedProjects = %q, %v, %v; want %s, no project, true", gotPerson, projects, ok, person)
 	}
-	if projects, ok := set.ProjectsForAccount(workerAccount); len(projects) != 0 || !ok {
-		t.Fatalf("ProjectsForAccount = %v, %v; want no project, true", projects, ok)
-	}
-	if _, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Project: "  ", Person: person}}, nil, nil, nil, signInDomain); err == nil {
+	if _, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Project: "  ", Person: person, Issuers: []string{firstIssuer}}}, nil, nil, nil, signInDomain); err == nil {
 		t.Fatal("NewSet with an account entry whose project is blank but not empty = nil error, want a refusal")
 	}
 }
 
 func TestNewSetTakesTheSameAccountAndWorkflowKeyTwiceApart(t *testing.T) {
 	set, err := exchange.NewSet(
-		[]exchange.AccountEntry{{Account: workerAccount, Project: project, Person: person}},
+		[]exchange.AccountEntry{{Account: workerAccount, Project: project, Person: person, Issuers: []string{firstIssuer}}},
 		nil,
 		[]exchange.WorkflowEntry{
 			{Repository: repository, Workflow: workflow, Ref: ref, Project: project, Person: person},
@@ -367,34 +375,38 @@ func TestTheReservationsAreTheNamesTheEntriesFix(t *testing.T) {
 // TestPodAnswersTheListedAccount pins what each kind of entry answers, Instance included: an
 // entry that fixes no session answers the pod uid, which a registration has to name for the
 // exchange to go through, and an entry that fixes one answers none, since every pod of that
-// account writes under the configuration's name and is registered for nothing. A read entry
-// always fixes one, and answers its service and session, the project scope that writes nothing,
-// and no person and no project.
+// account writes under the configuration's name and is registered for nothing. An entry that
+// names two issuers answers a token of either. A read entry always fixes one, and answers a token
+// of the first issuer, the one it takes, its service and session, the project scope that writes
+// nothing, and no person and no project.
 func TestPodAnswersTheListedAccount(t *testing.T) {
 	set := listed(t)
 	for _, c := range []struct {
 		name    string
 		token   map[string]any
+		issuer  string
 		session string
 		want    exchange.Claims
 	}{
-		{name: "the session the request names", token: podToken(workerAccount, podUID), session: "implementer-g1",
+		{name: "the session the request names", token: podToken(workerAccount, podUID), issuer: firstIssuer, session: "implementer-g1",
 			want: exchange.Claims{Session: "implementer-g1", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: workerPrincipal, Instance: podUID}},
-		{name: "the session the entry fixes, the request naming none", token: podToken(daemonAccount, podUID), session: "",
+		{name: "a token of the second issuer the entry names", token: podToken(workerAccount, podUID), issuer: secondIssuer, session: "implementer-g1",
+			want: exchange.Claims{Session: "implementer-g1", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: workerPrincipal, Instance: podUID}},
+		{name: "the session the entry fixes, the request naming none", token: podToken(daemonAccount, podUID), issuer: firstIssuer, session: "",
 			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
-		{name: "the session the entry fixes, the request naming the same", token: podToken(daemonAccount, podUID), session: fixedSession,
+		{name: "the session the entry fixes, the request naming the same", token: podToken(daemonAccount, podUID), issuer: firstIssuer, session: fixedSession,
 			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
-		{name: "another pod of the account is the same principal", token: podToken(daemonAccount, "another-pod-uid"), session: "",
+		{name: "another pod of the account is the same principal", token: podToken(daemonAccount, "another-pod-uid"), issuer: firstIssuer, session: "",
 			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
-		{name: "a read entry's session, the request naming none", token: podToken(readerAccount, podUID), session: "",
+		{name: "a read entry's session, the request naming none", token: podToken(readerAccount, podUID), issuer: firstIssuer, session: "",
 			want: exchange.Claims{Session: readerSession, Service: readerService, Scope: exchange.ProjectScopeNone, Principal: readerPrincipal}},
-		{name: "a read entry's session, the request naming the same", token: podToken(readerAccount, podUID), session: readerSession,
+		{name: "a read entry's session, the request naming the same", token: podToken(readerAccount, podUID), issuer: firstIssuer, session: readerSession,
 			want: exchange.Claims{Session: readerSession, Service: readerService, Scope: exchange.ProjectScopeNone, Principal: readerPrincipal}},
-		{name: "another pod of the read account is the same principal", token: podToken(readerAccount, "another-pod-uid"), session: "",
+		{name: "another pod of the read account is the same principal", token: podToken(readerAccount, "another-pod-uid"), issuer: firstIssuer, session: "",
 			want: exchange.Claims{Session: readerSession, Service: readerService, Scope: exchange.ProjectScopeNone, Principal: readerPrincipal}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Pod(c.token, c.session, nil)
+			claims, err := set.Pod(c.token, c.issuer, c.session, nil)
 			if err != nil || !reflect.DeepEqual(claims, c.want) {
 				t.Fatalf("Pod(%s) = %+v, %v; want %+v", c.name, claims, err, c.want)
 			}
@@ -402,37 +414,49 @@ func TestPodAnswersTheListedAccount(t *testing.T) {
 	}
 }
 
+// TestPodRefusesWhatItCannotDecide: each refusal names what to fix. Every entry names the first
+// issuer, so a case that presents its token is refused for something other than its issuer. The
+// read entry takes the first issuer alone, so a token of the second or a third is refused it.
 func TestPodRefusesWhatItCannotDecide(t *testing.T) {
 	set := listed(t)
 	for _, c := range []struct {
 		name    string
 		token   map[string]any
+		issuer  string
 		session string
 		want    error
 		names   string
 	}{
-		{name: "a token with no subject", token: map[string]any{}, session: "implementer-g1", want: exchange.ErrClaimMissing, names: "sub"},
-		{name: "a subject that is not a string", token: map[string]any{"sub": 7}, session: "implementer-g1", want: exchange.ErrClaimMissing, names: "sub"},
-		{name: "a token bound to no pod", token: podToken(workerAccount, ""), session: "implementer-g1", want: exchange.ErrNoPodBinding, names: workerAccount},
-		{name: "a pod binding with no uid", token: map[string]any{"sub": workerAccount, "kubernetes.io": map[string]any{"pod": map[string]any{}}},
+		{name: "a token with no subject", token: map[string]any{}, issuer: firstIssuer, session: "implementer-g1", want: exchange.ErrClaimMissing, names: "sub"},
+		{name: "a subject that is not a string", token: map[string]any{"sub": 7}, issuer: firstIssuer, session: "implementer-g1", want: exchange.ErrClaimMissing, names: "sub"},
+		{name: "a token bound to no pod", token: podToken(workerAccount, ""), issuer: firstIssuer, session: "implementer-g1", want: exchange.ErrNoPodBinding, names: workerAccount},
+		{name: "a pod binding with no uid", token: map[string]any{"sub": workerAccount, "kubernetes.io": map[string]any{"pod": map[string]any{}}}, issuer: firstIssuer,
 			session: "implementer-g1", want: exchange.ErrNoPodBinding, names: workerAccount},
-		{name: "an account no entry lists", token: podToken("system:serviceaccount:example-ns:example-other", podUID),
+		{name: "an account no entry lists", token: podToken("system:serviceaccount:example-ns:example-other", podUID), issuer: firstIssuer,
 			session: "implementer-g1", want: exchange.ErrNoEntry, names: "system:serviceaccount:example-ns:example-other"},
-		{name: "a session the entry does not fix", token: podToken(daemonAccount, podUID), session: "implementer-g1",
+		{name: "a token of an issuer the account's entry does not name", token: podToken(daemonAccount, podUID), issuer: secondIssuer,
+			session: fixedSession, want: exchange.ErrIssuerNotNamed, names: daemonAccount},
+		{name: "a token of an issuer no entry names", token: podToken(workerAccount, podUID), issuer: thirdIssuer,
+			session: "implementer-g1", want: exchange.ErrIssuerNotNamed, names: `"third"`},
+		{name: "a read account's token of the second issuer", token: podToken(readerAccount, podUID), issuer: secondIssuer,
+			session: "", want: exchange.ErrIssuerNotNamed, names: readerAccount},
+		{name: "a read account's token of an issuer no entry names", token: podToken(readerAccount, podUID), issuer: thirdIssuer,
+			session: "", want: exchange.ErrIssuerNotNamed, names: `"third"`},
+		{name: "a session the entry does not fix", token: podToken(daemonAccount, podUID), issuer: firstIssuer, session: "implementer-g1",
 			want: exchange.ErrSessionMismatch, names: fixedSession},
-		{name: "a session the read entry does not fix", token: podToken(readerAccount, podUID), session: "implementer-g1",
+		{name: "a session the read entry does not fix", token: podToken(readerAccount, podUID), issuer: firstIssuer, session: "implementer-g1",
 			want: exchange.ErrSessionMismatch, names: readerSession},
-		{name: "a read account's token bound to no pod", token: podToken(readerAccount, ""), session: "",
+		{name: "a read account's token bound to no pod", token: podToken(readerAccount, ""), issuer: firstIssuer, session: "",
 			want: exchange.ErrNoPodBinding, names: readerAccount},
-		{name: "no session where the entry fixes none", token: podToken(workerAccount, podUID), session: "",
+		{name: "no session where the entry fixes none", token: podToken(workerAccount, podUID), issuer: firstIssuer, session: "",
 			want: exchange.ErrSessionRequired, names: workerAccount},
-		{name: "a session carrying whitespace", token: podToken(workerAccount, podUID), session: "implementer g1",
+		{name: "a session carrying whitespace", token: podToken(workerAccount, podUID), issuer: firstIssuer, session: "implementer g1",
 			want: exchange.ErrSessionInvalid, names: workerAccount},
-		{name: "a session longer than the cap", token: podToken(workerAccount, podUID), session: strings.Repeat("s", exchange.MaxSessionBytes+1),
+		{name: "a session longer than the cap", token: podToken(workerAccount, podUID), issuer: firstIssuer, session: strings.Repeat("s", exchange.MaxSessionBytes+1),
 			want: exchange.ErrSessionInvalid, names: workerAccount},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Pod(c.token, c.session, nil)
+			claims, err := set.Pod(c.token, c.issuer, c.session, nil)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Pod(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
 			}
@@ -492,7 +516,7 @@ func TestRegistrationRefusesWhatNeedsNoRegistration(t *testing.T) {
 func TestPodNeverRepeatsAnUnusableSessionName(t *testing.T) {
 	set := listed(t)
 	const unusable = "implementer\x00g1"
-	_, err := set.Pod(podToken(workerAccount, podUID), unusable, nil)
+	_, err := set.Pod(podToken(workerAccount, podUID), firstIssuer, unusable, nil)
 	if !errors.Is(err, exchange.ErrSessionInvalid) {
 		t.Fatalf("Pod(an unprintable session) = %v, want ErrSessionInvalid", err)
 	}
@@ -603,7 +627,7 @@ func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T
 // from the zero value in a refusal or a log line too.
 func TestEveryDecisionCarriesItsProjects(t *testing.T) {
 	set := listed(t)
-	pod, err := set.Pod(podToken(workerAccount, podUID), "implementer-g1", nil)
+	pod, err := set.Pod(podToken(workerAccount, podUID), firstIssuer, "implementer-g1", nil)
 	if err != nil {
 		t.Fatalf("Pod: %v", err)
 	}
@@ -611,7 +635,7 @@ func TestEveryDecisionCarriesItsProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Workflow: %v", err)
 	}
-	read, err := set.Pod(podToken(readerAccount, podUID), "", nil)
+	read, err := set.Pod(podToken(readerAccount, podUID), firstIssuer, "", nil)
 	if err != nil {
 		t.Fatalf("Pod of the read account: %v", err)
 	}
@@ -688,7 +712,7 @@ func TestMachineRefusesWhatItCannotDecide(t *testing.T) {
 func TestSessionAtTheCapIsUsable(t *testing.T) {
 	set := listed(t)
 	name := strings.Repeat("s", exchange.MaxSessionBytes)
-	claims, err := set.Pod(podToken(workerAccount, podUID), name, nil)
+	claims, err := set.Pod(podToken(workerAccount, podUID), firstIssuer, name, nil)
 	if err != nil || claims.Session != name {
 		t.Fatalf("Pod(a session of exactly %d bytes) = %+v, %v; want it answered", exchange.MaxSessionBytes, claims, err)
 	}

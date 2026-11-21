@@ -17,8 +17,9 @@ import (
 // releasedClaimSelect reads the columns a wake needs of a released claim: a claim this daemon's
 // project holds, suspended with the source `released` (supervise.Claim.Released), which is the
 // one state a wake acts on. Every other suspended claim is somebody else's to resume — an
-// operator's, a close's — and a path that takes a released claim over (an operator's suspend, a
-// linger) re-stamps its source, which takes it out of every read here.
+// operator's, a close's, the next boot's for a claim the project release stopped — and a path
+// that takes a released claim over (an operator's suspend, a linger, the project release)
+// re-stamps its source, which takes it out of every read here.
 //
 // It is deliberately not claimSelect: a wake reads no delivery and no launch state, only who the
 // claim is, the session it kept and the run it was serving.

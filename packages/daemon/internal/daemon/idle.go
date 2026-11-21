@@ -67,17 +67,28 @@ func (w *workflowRuntime) tickIdle(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// The release of a pod no claim owns runs first, and outside the gate the idle
-			// release reads (workflowRuntime.listenerLive). That gate exists because an idle
-			// release suspends live claims, and such a claim comes back for a role or an agent
-			// message only while the Envoy listener reports those messages. This release
-			// suspends no claim and leaves none waiting for a message, and the two starts that
-			// build its pod again — an operator's retry and a start the daemon queues — read no
-			// listener, so nothing of that reasoning reaches it.
-			w.releaseUnownedPods(ctx)
-			w.releaseIdlePods(ctx)
+			w.idlePass(ctx)
 		}
 	}
+}
+
+// idlePass is one tick of both rules (tickIdle). While the project release holds every pod it
+// decides none: that release stops and deletes every pod of the project itself, and an idle
+// release started beside it would stop roles and save work the project release has taken over.
+// The store refuses such a release as well (store.ReleaseIdleIssue), for a pass that read the mark
+// just before the release set it.
+func (w *workflowRuntime) idlePass(ctx context.Context) {
+	if w.release.held() {
+		return
+	}
+	// The release of a pod no claim owns runs first, and outside the gate the idle release reads
+	// (workflowRuntime.listenerLive). That gate exists because an idle release suspends live
+	// claims, and such a claim comes back for a role or an agent message only while the Envoy
+	// listener reports those messages. This release suspends no claim and leaves none waiting for
+	// a message, and the two starts that build its pod again — an operator's retry and a start the
+	// daemon queues — read no listener, so nothing of that reasoning reaches it.
+	w.releaseUnownedPods(ctx)
+	w.releaseIdlePods(ctx)
 }
 
 // releaseIdlePods decides each pod of the project in turn. One issue's failure is logged and the

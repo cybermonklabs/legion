@@ -312,7 +312,7 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 func (r *busyRelaunchLive) overrides() overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
+			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository, _ func() bool) (runtime.Runtime, error) {
 			r.rt.conns, r.rt.stream = listener, address
 			return r.rt, nil
 		},

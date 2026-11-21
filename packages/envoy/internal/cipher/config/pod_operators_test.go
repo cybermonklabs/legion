@@ -3,10 +3,13 @@ package config
 
 import (
 	"maps"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/cipher/enroll"
 )
 
 // The accounts BROKER_POD_OPERATORS maps in these tests, and the login service each one logs in
@@ -128,7 +131,7 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			reachable: func(cfg Config) (string, bool) {
 				_, binds := cfg.ServicesByAccount[adaAccount]
 				return "BROKER_SERVICES names the login service " + adaLoginService + " of " + adaAccount + " and does not bind the account itself",
-					cfg.ServiceLogins[adaAccount] == adaLoginService && slices.Contains(slices.Collect(maps.Values(cfg.ServicesByAccount)), adaLoginService) && !binds
+					cfg.ServiceLogins[adaAccount].Service == adaLoginService && slices.Contains(slices.Collect(maps.Values(cfg.ServicesByAccount)), adaLoginService) && !binds
 			},
 			names: []string{"BROKER_SERVICES names its login service " + strconv.Quote(adaLoginService)},
 		},
@@ -142,7 +145,7 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			},
 			reachable: func(cfg Config) (string, bool) {
 				return "BROKER_SERVICES binds " + adaAccount + " to legion-daemon and names no service " + adaLoginService,
-					cfg.ServiceLogins[adaAccount] == adaLoginService && cfg.ServicesByAccount[adaAccount] == "legion-daemon" &&
+					cfg.ServiceLogins[adaAccount].Service == adaLoginService && cfg.ServicesByAccount[adaAccount] == "legion-daemon" &&
 						!slices.Contains(slices.Collect(maps.Values(cfg.ServicesByAccount)), adaLoginService)
 			},
 			names: []string{"BROKER_SERVICES binds it to the service " + strconv.Quote("legion-daemon")},
@@ -157,7 +160,7 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			},
 			reachable: func(cfg Config) (string, bool) {
 				return "BROKER_VM_SERVICES names example-service, the login service of " + adaAccount + ", and BROKER_SERVICES is unset",
-					cfg.ServiceLogins[adaAccount] == "example-service" && cfg.VMServicesByAccount[exampleVMServiceAccount] == "example-service" && len(cfg.ServicesByAccount) == 0
+					cfg.ServiceLogins[adaAccount].Service == "example-service" && cfg.VMServicesByAccount[exampleVMServiceAccount] == "example-service" && len(cfg.ServicesByAccount) == 0
 			},
 			names: []string{"BROKER_VM_SERVICES names its login service " + strconv.Quote("example-service")},
 		},
@@ -190,9 +193,31 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			},
 			reachable: func(cfg Config) (string, bool) {
 				return "the NATS auth service runs, and BROKER_NATS_SERVICES names " + adaAccount,
-					cfg.NATS.Enabled() && cfg.NATS.Services == "daemon/-/*="+adaAccount && cfg.ServiceLogins[adaAccount] == adaLoginService
+					cfg.NATS.Enabled() && cfg.NATS.Services == "daemon/-/*="+adaAccount && cfg.ServiceLogins[adaAccount].Service == adaLoginService
 			},
 			names: []string{"the BROKER_NATS_SERVICES entry " + strconv.Quote("daemon/-/*="+adaAccount) + " names it"},
+		},
+		{
+			// The entry ends in the issuer names its account's token is taken from, which
+			// mappedAccountRefusal cuts off before it reads the account, as natscallout.ParseServices
+			// does (CutNATSServiceEntry).
+			name: "a BROKER_NATS_SERVICES entry that names its issuers names it",
+			env: func() map[string]string {
+				e := namedIssuersEnv()
+				e["BROKER_SERVICE_LOGINS"] = adaLoginService + "=" + adaAccount + "=" + firstIssuer.Name
+				e["BROKER_NATS_URLS"] = "nats://hub-a:4222"
+				e["BROKER_NATS_SEED_FILE"] = natsUser
+				e["BROKER_NATS_ISSUER_SEED_FILE"] = natsIssuer
+				e["BROKER_NATS_XKEY_SEED_FILE"] = natsCurve
+				e["BROKER_NATS_SERVICES"] = "daemon/-/*=" + adaAccount + "=" + firstIssuer.Name + "," + secondIssuer.Name
+				return e
+			},
+			reachable: func(cfg Config) (string, bool) {
+				return "the NATS auth service runs, and BROKER_NATS_SERVICES names " + adaAccount + " with the issuers first and second",
+					cfg.NATS.Enabled() && cfg.NATS.Services == "daemon/-/*="+adaAccount+"=first,second" &&
+						reflect.DeepEqual(cfg.ServiceLogins[adaAccount], enroll.ServiceLogin{Service: adaLoginService, Issuers: []string{firstIssuer.Name}})
+			},
+			names: []string{"the BROKER_NATS_SERVICES entry " + strconv.Quote("daemon/-/*="+adaAccount+"=first,second") + " names it"},
 		},
 		{
 			name: "a BROKER_API_ACCOUNTS entry names it",
@@ -205,7 +230,7 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			reachable: func(cfg Config) (string, bool) {
 				caller, calls := cfg.APIAccounts[adaAccount]
 				return "BROKER_API_ACCOUNTS names " + adaAccount + " as the caller dispatch",
-					calls && caller.Name == "dispatch" && cfg.ServiceLogins[adaAccount] == adaLoginService
+					calls && caller.Name == "dispatch" && cfg.ServiceLogins[adaAccount].Service == adaLoginService
 			},
 			names: []string{"BROKER_API_ACCOUNTS names it as the caller " + strconv.Quote("dispatch")},
 		},
@@ -219,7 +244,7 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			},
 			reachable: func(cfg Config) (string, bool) {
 				return "BROKER_POD_REGISTRARS pairs " + adaAccount + ", as the registrar, with " + adaWorker,
-					len(cfg.PodRegistrars) == 1 && cfg.PodRegistrars.Lists(adaAccount, adaWorker) && cfg.ServiceLogins[adaAccount] == adaLoginService
+					len(cfg.PodRegistrars) == 1 && cfg.PodRegistrars.Lists(adaAccount, adaWorker) && cfg.ServiceLogins[adaAccount].Service == adaLoginService
 			},
 			names: []string{"the BROKER_POD_REGISTRARS entry " + strconv.Quote(adaAccount+"="+adaWorker) + " names it as a registrar"},
 		},
@@ -235,7 +260,7 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			reachable: func(cfg Config) (string, bool) {
 				return "BROKER_EXCHANGE_READ_ACCOUNTS names " + adaAccount + " as a reader of example-reader",
 					len(cfg.ExchangeReadAccounts) == 1 && cfg.ExchangeReadAccounts[0].Account == adaAccount && cfg.ExchangeReadAccounts[0].Service == "example-reader" &&
-						cfg.ServiceLogins[adaAccount] == adaLoginService
+						cfg.ServiceLogins[adaAccount].Service == adaLoginService
 			},
 			names: []string{"BROKER_EXCHANGE_READ_ACCOUNTS names it as a reader of the service " + strconv.Quote("example-reader")},
 		},
@@ -249,7 +274,7 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			},
 			reachable: func(cfg Config) (string, bool) {
 				return "BROKER_SESSION_ACCOUNT_PAIRS pairs " + adaAccount + " with " + adaWorker,
-					len(cfg.SessionAccountPairs) == 1 && cfg.SessionAccountPairs[0] == [2]string{adaAccount, adaWorker} && cfg.ServiceLogins[adaAccount] == adaLoginService
+					len(cfg.SessionAccountPairs) == 1 && cfg.SessionAccountPairs[0] == [2]string{adaAccount, adaWorker} && cfg.ServiceLogins[adaAccount].Service == adaLoginService
 			},
 			names: []string{"the BROKER_SESSION_ACCOUNT_PAIRS pair " + strconv.Quote(adaAccount+"="+adaWorker) + " names it"},
 		},
@@ -263,7 +288,7 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			},
 			reachable: func(cfg Config) (string, bool) {
 				return "BROKER_SESSION_ACCOUNT_PAIRS pairs " + adaWorker + " with " + adaAccount,
-					len(cfg.SessionAccountPairs) == 1 && cfg.SessionAccountPairs[0] == [2]string{adaWorker, adaAccount} && cfg.ServiceLogins[adaAccount] == adaLoginService
+					len(cfg.SessionAccountPairs) == 1 && cfg.SessionAccountPairs[0] == [2]string{adaWorker, adaAccount} && cfg.ServiceLogins[adaAccount].Service == adaLoginService
 			},
 			names: []string{"the BROKER_SESSION_ACCOUNT_PAIRS pair " + strconv.Quote(adaWorker+"="+adaAccount) + " names it"},
 		},
@@ -364,7 +389,8 @@ func TestPodOperatorsUnsetMapsNoDaemonToAPerson(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]string{alphaDaemon: "legion-daemon", betaDaemon: "legion-daemon"}; !maps.Equal(cfg.ServiceLogins, want) {
+	want := map[string]enroll.ServiceLogin{alphaDaemon: {Service: "legion-daemon", Issuers: []string{""}}, betaDaemon: {Service: "legion-daemon", Issuers: []string{""}}}
+	if !reflect.DeepEqual(cfg.ServiceLogins, want) {
 		t.Fatalf("ServiceLogins = %v, want %v", cfg.ServiceLogins, want)
 	}
 	if len(cfg.ExchangeAccounts) != 2 || cfg.ExchangeAccounts[0].Person != "ada@example.com" || cfg.ExchangeAccounts[1].Person != "ada@example.com" {

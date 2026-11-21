@@ -178,6 +178,11 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 	case errors.Is(err, enroll.ErrPodTokenExpired):
 		writeError(w, http.StatusForbidden, "POD_TOKEN_EXPIRED", err.Error())
 		return
+	// A pod token whose issuer the broker cannot read yet (enroll.ErrIssuerUnavailable): nothing
+	// was decided about it, so the launcher enrolls the pod again once the issuer can be read.
+	case errors.Is(err, enroll.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w)
+		return
 	case errors.Is(err, enroll.ErrPodIdentity):
 		writeError(w, http.StatusForbidden, "POD_IDENTITY_MISMATCH", err.Error())
 		return
@@ -444,6 +449,9 @@ func (s *server) renewEnrollment(w http.ResponseWriter, r *http.Request, id stri
 		return
 	case errors.Is(err, enroll.ErrPodTokenExpired):
 		writeError(w, http.StatusForbidden, "POD_TOKEN_EXPIRED", err.Error())
+		return
+	case errors.Is(err, enroll.ErrIssuerUnavailable):
+		writeIssuerUnavailable(w)
 		return
 	case errors.Is(err, enroll.ErrPodIdentity):
 		writeError(w, http.StatusForbidden, "POD_IDENTITY_MISMATCH", err.Error())

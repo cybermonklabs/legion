@@ -662,15 +662,18 @@ type startMarks struct {
 	stored bool
 	// ruleResume says the start is the boot's start of a claim the daemon itself suspended, so the
 	// outbox finishes the row rather than retrying the claim it resumed when that claim spends its
-	// launch budget (record.SuperviseRequest.RuleResume). The boot sets it on the two starts it
-	// makes of such a claim, and no other start carries it: its resume by rule (booted) and the
-	// cutover's one-time repair of a merger the idle release suspended (cutoverMergerRepair), whose
-	// starts one builder makes (startSuspendedOwner). The mark names the door the start comes
-	// through — the boot's resume of a claim the daemon suspended, where the outbox finishes the
-	// row rather than retrying a claim that is spending its launch budget — and not the task's
-	// text. So each of the two carries it on the work of the entry its role's phases row names as
-	// well as on the phase's resume task (sendOwedEntry), and changing what the task says does not
-	// change whose budget is at risk.
+	// launch budget (record.SuperviseRequest.RuleResume). The boot sets it on the starts it makes
+	// of such a claim, and no other start carries it: its resume by rule (booted), the cutover's
+	// one-time repair of a merger the idle release suspended (cutoverMergerRepair), whose starts
+	// one builder makes (startSuspendedOwner), and its start of each claim the project release
+	// stopped (startReleaseStopped), which sends a claim behind its entry that entry's work here
+	// and writes its other starts — its phase's resume task to a phase owner level with its entry,
+	// no task to any other role — with the mark itself. The mark names the door the start
+	// comes through — the boot's resume of a claim the daemon suspended, where the outbox finishes
+	// the row rather than retrying a claim that is spending its launch budget — and not the task's
+	// text. So each of them carries it on the work of the entry its role's phases row names as
+	// well as on the phase's resume task or on no task (sendOwedEntry), and changing what the task
+	// says does not change whose budget is at risk.
 	ruleResume bool
 	// freshSession says the start must not resume the session the claim records but begin one of
 	// its own (record.SuperviseRequest.FreshSession). Only the operator's `legion claims retry
@@ -696,9 +699,12 @@ type startMarks struct {
 // resume that hands the role no new work, which is the boot's resume, the cutover's repair and
 // the silence repair of a claim level with the entry its phases row names (startSuspendedOwner,
 // which booted and cutoverMergerRepair share, and repairSilence) — and each of which names its
-// own marks. It is the one place a start of a phase worker is built, so a reader
-// asking what such a row carries reads this request and no other, and a field added here
-// reaches every one of those starts. It goes through startOrOwe, so the worker comes back on
+// own marks. It is where a start of a phase worker is built, so a reader asking what such a row
+// carries reads this request, and a field added here reaches every one of those starts. The one
+// start of a phase worker built elsewhere is the boot's start of a phase owner level with its
+// entry that the project release stopped (resume.go's startStoppedClaim), which writes its own row
+// with its phase's resume task and no slot mark, since it puts no worker to work on a phase it
+// was not already at (the list below). started goes through startOrOwe, so the worker comes back on
 // the one row that carries its new task, and that row waits for the issue's admission slot where
 // the phase it starts holds one: a transition's start into a phase up to the review puts a
 // worker to work on the change, which is exactly what the cap counts. The issue carries the
@@ -814,26 +820,31 @@ const (
 // role because the row's creation time is the issue's place in the waiting line: an issue that
 // already owes a start and has not had its slot keeps that place — what is written is a row of
 // its own carrying that creation time — and carries the later transition's task instead, so two
-// transitions before the slot start the worker once. The superseded role never starts, which is
-// right — the issue has left that phase, so that role never had work to do, while the role the
-// later transition names has it. Where there is no such row — the first start, or one the lane
-// has already leased because the slot came — the same statement writes the caller's own row,
-// which is what the daemon has always done for back-to-back transitions.
+// transitions before the slot start the worker once. The superseded role is given no work, which
+// is right — the issue has left that phase, so that role never had work to do, while the role the
+// later transition names has it. A superseded role whose claim the project release stopped is
+// still started, with no task, by a row the same statement writes in its place
+// (record.ReleaseStoppedStart). Where there is no row to take out — the first start, or one the
+// lane has already leased because the slot came — the same statement writes the caller's own
+// row, which is what the daemon has always done for back-to-back transitions.
 //
 // No other start of the daemon's comes through here, and none may: the tree architect's start
 // (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row
 // the cap counts is its root's, the production check's look (check.go), the pod wake (wake.go),
 // the resume of a cancelled idle release (the daemon's outbox), the roles admission brings back
-// beside a member's phase worker (admit's startMidPhaseMembers) and the phase's resume task a
-// ready worker level with the entry its phases row names is given (catch_up.go's
-// readyWorkerTask) are enqueued directly and stay claimable at once. None of the first five puts
-// a worker to work on a phase, so none of them is the cap's to hold, and a slot they waited for
-// might never be offered. The last is sent to a worker already at work on the phase it is in —
-// its agent has just reported ready — so in a phase up to its review the issue holds the row the
-// cap counts already or gave it back to wait on another issue, a wait that stops none of its
-// work, and past its review it needs none (record.KeepsSlot), so this one has nothing to wait
-// for in any case. The work of an entry that same ready worker stands below is sent through
-// SendOwedEntry, and that start comes through here with the rest.
+// beside a member's phase worker (admit's startMidPhaseMembers), the boot's start of a claim the
+// project release stopped that is not behind its entry, with no task or a phase owner's resume
+// task (resume.go's startStoppedClaim), and the phase's resume
+// task a ready worker level with the entry its phases row names is given (catch_up.go's
+// readyWorkerTask) are enqueued directly and stay claimable at once. None of the first six puts
+// a worker to work on a phase it was not already at, so none of them is the cap's to hold, and a
+// slot they waited for might never be offered. The last is sent to a worker already at work on
+// the phase it is in — its agent has just reported ready — so in a phase up to its review the
+// issue holds the row the cap counts already or gave it back to wait on another issue, a wait
+// that stops none of its work, and past its review it needs none (record.KeepsSlot), so this one
+// has nothing to wait for in any case. The work of an entry that same ready worker stands below,
+// or a claim the project release stopped stands below, is sent through sendOwedEntry, and that
+// start comes through here with the rest.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
 	return startOrOwe(ctx, tx, store, issue, payload, at, newsOfTheIssue)
 }

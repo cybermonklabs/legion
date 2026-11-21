@@ -246,7 +246,9 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if s.stopped(w, r, "compact") {
+	// A compaction runs the agent and then sends it the task it owes, which the project release
+	// holds at both doors.
+	if s.stopped(w, r, "compact") || s.releaseRefused(w, r, "compact") {
 		return CompactResponse{}, false
 	}
 	// A compaction sends the claim's task again once it ends, which is a turn the pause holds

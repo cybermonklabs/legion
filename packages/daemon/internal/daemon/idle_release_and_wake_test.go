@@ -403,9 +403,9 @@ type idleRigWake struct {
 // idleRigWakes is the five wakes with the task each gives, written once: the pass that drives
 // them waits for each of these tasks and the subtest that counts them reads the same words, so
 // neither can assert on a wording the other does not wait for. The role token and the session id
-// are the released process's, and a relaunched process registers the same of both (the session
-// is derived from the pod and the role, idleRigRoleProcess.register), so this reads the same
-// before a wake and after it.
+// are the released process's, and a relaunched process registers the same of both (a resumed
+// session keeps the id of the session file its launch resumes, newIdleRigRoleProcess), so this
+// reads the same before a wake and after it.
 func idleRigWakes(rig *idleWakeRig) []idleRigWake {
 	checks, role, agent := rig.issue(idleRigChecks), rig.issue(idleRigRoleWake), rig.issue(idleRigAgentWake)
 	return []idleRigWake{

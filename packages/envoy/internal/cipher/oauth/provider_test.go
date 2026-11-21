@@ -671,7 +671,10 @@ func TestNewRefusesAConfigurationItCouldNotServe(t *testing.T) {
 		"no proof skew":               func(c *oauth.Config) { c.ProofSkew = 0 },
 		"a secret too short":          func(c *oauth.Config) { c.Secret = make([]byte, 31) },
 		"an issuer configured in part": func(c *oauth.Config) {
-			c.Exchange.Kubernetes = oauth.IssuerConfig{Issuer: "https://kubernetes.example"}
+			c.Exchange.Kubernetes = []oauth.IssuerConfig{{Issuer: "https://kubernetes.example"}}
+		},
+		"a Kubernetes issuer listed and configured not at all": func(c *oauth.Config) {
+			c.Exchange.Kubernetes = []oauth.IssuerConfig{{}}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

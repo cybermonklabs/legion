@@ -1093,7 +1093,95 @@ func populatedState(t *testing.T) State {
 		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
 		state.Issues[key] = issue
 	}
+	release := goldenProjectRelease()
+	state.ProjectRelease = &release
 	return state
+}
+
+// goldenProjectRelease is a finished project release with one line of every kind a release
+// writes: an issue pod deleted with nothing unpushed, one deleted with work lost after its asked
+// role answered, one whose shim refused the read and whose asked role let the bound pass, one
+// with no read, one left because an operator suspended a claim of it, the controller's pod, a
+// repository cache whose delete the volume guard refused, and a claim line of each way a claim
+// ends. It is the body of `GET /legion/v1/operator/project/release` and the state's
+// `projectRelease`.
+func goldenProjectRelease() ProjectReleaseResponse {
+	started := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	answered, finished := started.Add(4*time.Minute), started.Add(31*time.Minute)
+	one, changed, unchanged := 1, true, false
+	none := 0
+	return ProjectReleaseResponse{
+		ID: 7, StartedAt: started, BoundAt: started.Add(30 * time.Minute), Bound: (30 * time.Minute).String(), FinishedAt: &finished,
+		Result: ProjectReleaseResult{
+			Sandboxes: []ReleasedSandbox{
+				{Name: "legion-legion-cache-legion-legion", Kind: "cache", Outcome: ReleaseLeft,
+					Reason: "sandbox runtime: refused to delete a Sandbox whose volume holds session files"},
+				{Name: "legion-legion-controller", Kind: "controller", Outcome: ReleaseDeleted},
+				{Name: "legion-legion-legion-208", Kind: "issue", Issue: "LEGION-208", Outcome: ReleaseDeletedClean,
+					Commits: &none, WorkingCopyChanged: &unchanged},
+				{Name: "legion-legion-legion-209", Kind: "issue", Issue: "LEGION-209", Outcome: ReleaseDeletedLost,
+					Commits: &one, WorkingCopyChanged: &changed,
+					Asked: []ReleasedAsk{{Role: claim.RoleImplementer, AnsweredAt: &answered}}},
+				{Name: "legion-legion-legion-210", Kind: "issue", Issue: "LEGION-210", Outcome: ReleaseDeletedReadRefused,
+					Refusal: "Unknown command: read-unpushed", OtherImage: true,
+					Asked: []ReleasedAsk{{Role: claim.RoleTester, Bound: true}}},
+				{Name: "legion-legion-legion-211", Kind: "issue", Issue: "LEGION-211", Outcome: ReleaseDeletedUnread},
+				{Name: "legion-legion-legion-212", Kind: "issue", Issue: "LEGION-212", Outcome: ReleaseLeft,
+					Reason: "an operator suspended its reviewer"},
+			},
+			Claims: []ReleasedClaim{
+				{Token: "legion-legion-controller", Role: claim.RoleController, Session: "ses_controller", Ended: "project_release", BootStarts: true},
+				{Token: "legion-legion-legion-208-architect", Issue: "LEGION-208", Role: claim.RoleArchitect, Session: "ses_architect",
+					Ended: "project_release", BootStarts: true},
+				{Token: "legion-legion-legion-209-implementer", Issue: "LEGION-209", Role: claim.RoleImplementer, Session: "ses_implementer",
+					Ended: "project_release", BootStarts: true},
+				{Token: "legion-legion-legion-210-tester", Issue: "LEGION-210", Role: claim.RoleTester, Session: "ses_tester",
+					Ended: "daemon"},
+				{Token: "legion-legion-legion-212-planner", Issue: "LEGION-212", Role: claim.RolePlanner, Session: "ses_planner",
+					Ended: "working", Detail: "not stored suspended by operator within 20s: it stands working"},
+			},
+		},
+	}
+}
+
+// The project release's own route answers the release as the state carries it
+// (dispatch://INFRA-3583, contract 209).
+func TestProjectReleaseResponseGolden(t *testing.T) {
+	golden(t, "project-release.json", goldenProjectRelease())
+}
+
+// projectReleaseWords is project-release-words.json: every word of the project release's three
+// finite fields, ReleasedSandbox.Outcome, ProjectReleaseResponse.EndedBy and ReleasedClaim.Ended.
+type projectReleaseWords struct {
+	Outcomes []ReleaseOutcome            `json:"outcomes"`
+	EndedBy  []store.ProjectReleaseEnder `json:"endedBy"`
+	Ended    []ReleasedClaimEnd          `json:"ended"`
+}
+
+// The project release's three finite fields are strict enums in
+// `packages/contracts/src/legion-api.ts` (`LEGION_RELEASE_OUTCOMES`,
+// `LEGION_PROJECT_RELEASE_ENDERS` and `LEGION_RELEASED_CLAIM_ENDS`), and a word the daemon writes
+// that its enum does not name refuses the whole state body at every plugin that reads it. So the
+// Go roster of each is written where the contracts suite reads it, as the failure causes are
+// (TestFailureCausesGolden), and `legion-api.test.ts` holds each enum equal to its list, word for
+// word and in order. The words are written out here beside it, so a constant renamed on the Go
+// side fails here by its own name rather than rewriting the fixture.
+func TestProjectReleaseWordsGolden(t *testing.T) {
+	words := projectReleaseWords{
+		Outcomes: ReleaseOutcomes,
+		EndedBy:  []store.ProjectReleaseEnder{store.ProjectReleaseEndedByBoot},
+		Ended:    ReleasedClaimEnds,
+	}
+	want := projectReleaseWords{
+		Outcomes: []ReleaseOutcome{"waiting", "deleted_clean", "deleted_unread", "deleted_lost", "deleted_read_refused", "deleted", "left"},
+		EndedBy:  []store.ProjectReleaseEnder{"boot"},
+		Ended: []ReleasedClaimEnd{"queued", "launch_uncertain", "launching", "shim_connected", "registered", "ready", "working", "idle",
+			"failed", "retired", "unknown", "operator", "daemon", "exit", "released", "project_release", "unrecorded"},
+	}
+	if !reflect.DeepEqual(words, want) {
+		t.Fatalf("the project release's words = %q, want the wire words %q", words, want)
+	}
+	golden(t, "project-release-words.json", words)
 }
 
 // newest is the latest of times, which is how the quiet time takes a tree's movement from the
@@ -1328,8 +1416,16 @@ func (s stubPauses) Paused() (int64, bool) { return s.paused, s.paused != 0 }
 // does not name fails here before it reaches a fixture.
 func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, want int, into any) {
 	t.Helper()
+	operatorRouteAnswer(t, Options{Pause: svc}, target, body, want, into)
+}
+
+// operatorRouteAnswer is pauseRouteAnswer over the services opts names: the pause service, and the
+// project release for a route of the release's.
+func operatorRouteAnswer(t *testing.T, opts Options, target string, body any, want int, into any) {
+	t.Helper()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet}).Handler
+	opts.Project, opts.OperatorToken, opts.Log = testProject, testOperatorToken, quiet
+	handler := NewServer("127.0.0.1", 8437, opts).Handler
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -1353,7 +1449,11 @@ func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, w
 // held rows it let out; a blank reason; a daemon whose configuration cannot hold a pause, naming
 // the setting; a daemon with no workflow, which names no setting; a second pause, naming the pause
 // that stands; a resume of a running project, naming the last pause; and a turn refused while the
-// project is paused (PROJECT_PAUSED, here the operator's spawn), naming the pause that stands.
+// project is paused (PROJECT_PAUSED, here the operator's spawn), naming the pause that stands. The
+// two refusals between the pause and the project release (dispatch://INFRA-3583 R13) have one
+// each too: a pause while a release runs (PROJECT_RELEASING), which names the release in its
+// sentence alone, and a release while a pause holds the project (PROJECT_PAUSED, through the
+// release's own route), naming the pause that stands and each pod a pause holds.
 func TestPauseRouteGoldens(t *testing.T) {
 	const pauseRoute, resumeRoute = "/legion/v1/operator/project/pause", "/legion/v1/operator/project/resume"
 	reason := OperatorPauseRequest{Reason: goldenPause(false).Reason}
@@ -1370,22 +1470,33 @@ func TestPauseRouteGoldens(t *testing.T) {
 	pauseRouteAnswer(t, stubPauses{pauseErr: pause.ErrReasonRequired}, pauseRoute, OperatorPauseRequest{}, http.StatusBadRequest, &blank)
 	golden(t, "project-pause-reason-required.json", blank)
 
+	running := store.ProjectRelease{ID: 3, Project: "legion", StartedAt: goldenPauseSince.Add(-10 * time.Minute),
+		BoundAt: goldenPauseSince.Add(20 * time.Minute)}
+	held := &store.ProjectPausedError{Project: "legion", Pause: goldenPause(false), Paused: true, Held: []store.HeldPausePod{
+		{Issue: "LEGION-208", Pause: 7, HeldAt: goldenPauseSince.Add(4 * time.Second), Claims: []claim.Token{"legion-legion-legion-208-implementer"}},
+		{Issue: "LEGION-209", Pause: 7, HeldAt: goldenPauseSince.Add(6 * time.Second)},
+	}}
 	for name, tc := range map[string]struct {
-		svc    PauseService
-		target string
-		body   any
+		svc     PauseService
+		release ProjectRelease
+		target  string
+		body    any
 	}{
-		"project-pause-unavailable.json": {stubPauses{pauseErr: &pause.UnavailableError{Setting: pause.SettingTmux}}, pauseRoute, reason},
-		"project-pause-no-workflow.json": {nil, pauseRoute, reason},
-		"project-pause-refused.json": {stubPauses{pauseErr: fmt.Errorf("pause LEGION: %w",
-			&store.AlreadyPausedError{Standing: goldenPause(false)})}, pauseRoute, reason},
-		"project-resume-refused.json": {stubPauses{resumeErr: &store.NotPausedError{Project: "LEGION"},
-			last: goldenPause(true), lastFound: true}, resumeRoute, nil},
-		"project-paused.json": {stubPauses{paused: 7, open: goldenPause(false), openFound: true}, "/legion/v1/operator/claims",
-			SpawnRequest{Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleImplementer}},
+		"project-pause-unavailable.json": {svc: stubPauses{pauseErr: &pause.UnavailableError{Setting: pause.SettingTmux}}, target: pauseRoute, body: reason},
+		"project-pause-no-workflow.json": {target: pauseRoute, body: reason},
+		"project-pause-refused.json": {svc: stubPauses{pauseErr: fmt.Errorf("pause LEGION: %w",
+			&store.AlreadyPausedError{Standing: goldenPause(false)})}, target: pauseRoute, body: reason},
+		"project-resume-refused.json": {svc: stubPauses{resumeErr: &store.NotPausedError{Project: "LEGION"},
+			last: goldenPause(true), lastFound: true}, target: resumeRoute},
+		"project-paused.json": {svc: stubPauses{paused: 7, open: goldenPause(false), openFound: true}, target: "/legion/v1/operator/claims",
+			body: SpawnRequest{Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleImplementer}},
+		"project-pause-releasing.json": {svc: stubPauses{pauseErr: fmt.Errorf("pause LEGION: %w",
+			&store.ProjectReleasingError{Release: running})}, target: pauseRoute, body: reason},
+		"project-release-paused.json": {release: &fakeProjectRelease{paused: fmt.Errorf("start the project release of legion: %w", held)},
+			target: ProjectReleaseRoute, body: ProjectReleaseRequest{}},
 	} {
 		var refused PauseFailure
-		pauseRouteAnswer(t, tc.svc, tc.target, tc.body, http.StatusConflict, &refused)
+		operatorRouteAnswer(t, Options{Pause: tc.svc, ProjectRelease: tc.release}, tc.target, tc.body, http.StatusConflict, &refused)
 		golden(t, name, refused)
 	}
 }

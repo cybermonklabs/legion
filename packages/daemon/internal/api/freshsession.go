@@ -356,6 +356,11 @@ func roleList() string {
 // asked of it, at both doors, and nothing of it changes: the start this operation ends in is a
 // launch the pause holds (refusedWhilePaused, decision 20 of dispatch://INFRA-3759).
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (status int, notRestarted string, started, ok bool) {
+	// A fresh session stops the claim and starts it again, which the project release holds at
+	// both doors, before anything of the claim is read or asked.
+	if s.releaseRefused(w, r, "fresh-session") {
+		return 0, "", false, false
+	}
 	c := m.Claim()
 	if c.Role == claim.RoleController {
 		// The keeper's resume is the rule's, which an operator's suspension holds against (the

@@ -47,7 +47,9 @@ type StreamTurnEnd struct{ Claim claim.Token }
 // an issue work one jj workspace, so a phase task this claim is holding rather than adopt that
 // working copy under an open turn (sendPending) may go now. It carries no fact of its own — the
 // send asks again which claims are in a turn — so one posted for a turn another role began
-// meanwhile simply holds again.
+// meanwhile simply holds again. That is why the daemon also posts it, to every claim and with no
+// turn ended, once the project release's mark is cleared because the release's record did not
+// commit (internal/daemon's sendHeldTasks): its one act is the send the mark held back.
 type IssueTurnEnded struct{ Claim claim.Token }
 
 // StreamToolStep is one tool call of the agent's turn beginning or ending, as the stream read
@@ -476,12 +478,12 @@ type ResumePause struct {
 
 // RequestRuleResume is the daemon's own resume, by rule: it relaunches a suspended claim's session
 // unless an operator suspended it (Claim.RuleMayResume): that suspension holds until the operator
-// resumes the claim. The daemon asks it of
-// a claim that owns its issue's current phase (the outbox's start of that phase, the boot's
-// included) and of its own controller. It resumes nothing that is not suspended — a failed claim's
-// launch budget is spent, and only the workflow's retry relaunches it — so it is asked again as
-// often as the rule meets the claim without ever relaunching one that is running. Reason is the
-// rule, for the line it logs.
+// resumes the claim. The daemon asks it of a claim that owns its issue's current phase (the
+// outbox's start of that phase, the boot's included), of every claim the project release stopped
+// (the outbox's start the next boot writes for each, workflow's booted) and of its own controller.
+// It resumes nothing that is not suspended — a failed claim's launch budget is spent, and only the
+// workflow's retry relaunches it — so it is asked again as often as the rule meets the claim
+// without ever relaunching one that is running. Reason is the rule, for the line it logs.
 type RequestRuleResume struct {
 	Claim  claim.Token
 	Reason string
@@ -1008,7 +1010,7 @@ func fillTable(t *builder) {
 	t.ignore(onTurnEnd, "the agent is not ready, so no turn of a delivery is in flight", unready...)
 	t.ignore(onTurnEnd, noProcess, gone...)
 
-	t.row(onIssueTurnEnd, "a turn ended elsewhere on the issue: send the task that was waiting for the working copy they share",
+	t.row(onIssueTurnEnd, "a turn ended elsewhere on the issue, or the project release's mark was cleared: send the task the claim holds",
 		issueTurnEnded, []ClaimState{StateWorking}, prompted...)
 	t.ignore(onIssueTurnEnd, "the claim is in a turn of its own; what it holds goes when that turn ends", StateWorking)
 	t.ignore(onIssueTurnEnd, noSend, unready...)
@@ -2180,11 +2182,12 @@ func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 	return m.sendPending(ctx)
 }
 
-// issueTurnEnded is a turn ending on another claim of this claim's issue. It carries nothing the
-// claim records: the send it may unblock asks for itself which claims of the issue are in a turn
-// (sendPending), so a wake that arrives while another role has started one holds the task again,
-// and a wake that never arrives — a turn whose process died instead of ending it — costs nothing,
-// because the sweep's next observation asks the same question.
+// issueTurnEnded is a turn ending on another claim of this claim's issue, or the project release's
+// mark cleared in this process (IssueTurnEnded). It carries nothing the claim records: the send it
+// may unblock asks for itself which claims of the issue are in a turn (sendPending), so a wake that
+// arrives while another role has started one holds the task again, and a wake that never arrives
+// — a turn whose process died instead of ending it — costs nothing, because the sweep's next
+// observation asks the same question.
 func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.sendPending(ctx) }
 
 // promptResulted is Oh My Pi's answer to the one question the turn frames cannot settle: which
@@ -3188,11 +3191,12 @@ func (m *Machine) endCurrentPluginRound(ctx context.Context) error {
 
 // clearUpdate drops every field an update round writes, which is what a round leaving this claim
 // means: the round the sweep ends (endPodUpdate), the round a new one replaces, whose fields are
-// each the earlier round's (openPodUpdate), and the round a claim retires in (retire).
+// each the earlier round's (openPodUpdate), the round a claim retires in (retire), and the round
+// of a claim the project release stops (leaveRoundForRelease), whose pod the release deletes.
 //
 // It is the one place the round a claim left goes too (UpdateLeftRound): the end of the round is
-// the only thing that may forget any part of it, and a relaunch, a suspension, a letGo and a
-// restart each leave it exactly as it is.
+// the only thing that may forget any part of it, and a relaunch, every other suspension, a letGo
+// and a restart each leave it exactly as it is.
 func (m *Machine) clearUpdate() {
 	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateHead = "", "", ""
 	m.claim.UpdateOpenedAt, m.claim.UpdateTaskedAt = nil, nil

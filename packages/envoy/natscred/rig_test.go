@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -52,7 +53,7 @@ type rig struct {
 // introspect and services with serviceToken, the one service listed being a daemon on
 // daemonAccount.
 func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.Introspection, error),
-	serviceToken func(context.Context, string) (string, bool, time.Time, time.Time, error)) *rig {
+	serviceToken func(context.Context, string) (natscallout.ServiceIdentity, error)) *rig {
 	t.Helper()
 	keys := testnats.NewCalloutKeys(t)
 	server, url := testnats.StartWithCalloutServer(t, keys)
@@ -62,7 +63,8 @@ func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.In
 		require.NoError(t, os.WriteFile(path, []byte(seed), 0o600))
 		return path
 	}
-	services, err := natscallout.ParseServices("daemon/-/*=" + daemonAccount)
+	// The one issuer of a bare BROKER_K8S_OIDC_ISSUER URL, whose name, "", the stubs answer.
+	services, err := natscallout.ParseServices("daemon/-/*="+daemonAccount, []oidc.NamedIssuer{{URL: "https://cluster.example"}})
 	require.NoError(t, err)
 	log := &logtest.Buffer{}
 	registry := metrics.New()
@@ -151,22 +153,23 @@ func platformToken(account string, expiry time.Time) string {
 		encode(map[string]any{"sub": account, "iat": time.Now().Unix(), "exp": expiry.Unix()}) + ".unsigned"
 }
 
-// readPlatformToken is a stub ServiceToken: the account, issue and expiry raw names, unverified.
-func readPlatformToken(raw string) (string, bool, time.Time, time.Time, error) {
+// readPlatformToken is a stub ServiceToken: the account, issue and expiry raw names, unverified,
+// from the one issuer of a bare BROKER_K8S_OIDC_ISSUER URL, whose name is "".
+func readPlatformToken(raw string) (natscallout.ServiceIdentity, error) {
 	parts := strings.Split(raw, ".")
 	if len(parts) != 3 {
-		return "", false, time.Time{}, time.Time{}, errors.New("no JWT")
+		return natscallout.ServiceIdentity{}, errors.New("no JWT")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", false, time.Time{}, time.Time{}, err
+		return natscallout.ServiceIdentity{}, err
 	}
 	var claims struct {
 		Sub      string `json:"sub"`
 		Iat, Exp int64
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", false, time.Time{}, time.Time{}, fmt.Errorf("claims: %w", err)
+		return natscallout.ServiceIdentity{}, fmt.Errorf("claims: %w", err)
 	}
-	return claims.Sub, false, time.Unix(claims.Iat, 0), time.Unix(claims.Exp, 0), nil
+	return natscallout.ServiceIdentity{Account: claims.Sub, Issued: time.Unix(claims.Iat, 0), Expiry: time.Unix(claims.Exp, 0)}, nil
 }

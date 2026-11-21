@@ -233,7 +233,7 @@ The daemon-go job: what its two Go steps read together — the plain step, which
 tests every package of packages/daemon but the five concurrent ones, and the race
 step, which tests those five — so the filter covers the whole module's closure,
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
-packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
+packages they compile, the Dispatch server internal/testbuild/testbuild.go:123 builds
 for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
 outside the daemon: contracts' fixtures
 (internal/api/state_golden_test.go:1391, internal/intake/intake_test.go:856,960), the
@@ -613,11 +613,11 @@ matches no file (its rule 9).
 ## text_checks: The text checks of the three Go modules, the Dispatch
 
 The text checks of the three Go modules, the Dispatch API's nine static source
-checks, and the two pure pins of packages/daemon's supervise table: the tests whose
+checks, and the four pure pins of packages/daemon's supervise package: the tests whose
 subject is a file's words. Their job runs packages/envoy/internal/textcheck,
 packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
 which the three Go lanes leave out of their own runs, those checks' seventeen tests
-by name, and those two pins by name, which the daemon-go plain step skips.
+by name, and those four pins by name, which the daemon-go plain step skips.
 packages/envoy stays a wide
 root: file_copy_test.go walks every .go file under it (infra included), the API's
 guards and one_expression_guard_test.go walk every non-test .go file of the
@@ -1739,10 +1739,10 @@ compile runs in the lint job's notices step.
 ## The checks whose subject is text: each module's internal/textcheck package, the Dispatch
 
 The checks whose subject is text: each module's internal/textcheck package, the Dispatch API's
-nine static source checks, which read the module's own source, and the two pure pins of
-packages/daemon's supervise table. None of them opens a database or starts a container, so the
+nine static source checks, which read the module's own source, and the four pure pins of
+packages/daemon's supervise package. None of them opens a database or starts a container, so the
 job carries no service and no `bun install`, and the three Go lanes (daemon-go, envoy-go and envoy-infra-go) leave those
-packages, those seventeen tests and those two pins out of their own runs
+packages, those seventeen tests and those four pins out of their own runs
 (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
 walk, so it is selected often, which is why the job is kept this cheap: five `go test` calls —
 the four that preceded the supervise pins take 4 minutes 4 seconds with an empty build cache,

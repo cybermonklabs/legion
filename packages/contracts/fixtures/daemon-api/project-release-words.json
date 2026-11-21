@@ -1,0 +1,33 @@
+{
+  "outcomes": [
+    "waiting",
+    "deleted_clean",
+    "deleted_unread",
+    "deleted_lost",
+    "deleted_read_refused",
+    "deleted",
+    "left"
+  ],
+  "endedBy": [
+    "boot"
+  ],
+  "ended": [
+    "queued",
+    "launch_uncertain",
+    "launching",
+    "shim_connected",
+    "registered",
+    "ready",
+    "working",
+    "idle",
+    "failed",
+    "retired",
+    "unknown",
+    "operator",
+    "daemon",
+    "exit",
+    "released",
+    "project_release",
+    "unrecorded"
+  ]
+}

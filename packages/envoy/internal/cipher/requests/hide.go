@@ -83,8 +83,8 @@ func (m *Machine) readRowFacts(ctx context.Context, key rowKey, id string) (rowF
 		left join enrollments cur on cur.id = `+key.held+`
 		left join launcher_credentials c on c.id = cur.launcher_credential_id
 		where `+key.where, id).
-		Scan(&f.kind, &f.approver, &f.holder.ID, &f.reason, &f.names, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
-			&f.holder.Kind, &f.holder.Operator, &f.holder.Subject, &f.holder.Projects, &f.holder.Service)
+		Scan(&f.kind, &f.approver, &f.holder.ID, &f.reason, &f.names, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Issuer, &asked.Projects,
+			&f.holder.Kind, &f.holder.Operator, &f.holder.Subject, &f.holder.Issuer, &f.holder.Projects, &f.holder.Service)
 	if err != nil {
 		return rowFacts{}, err
 	}
@@ -247,8 +247,8 @@ func (m *Machine) hideGrantFromSession(ctx context.Context, grantID, enrollmentI
 // atDecision's bound together.
 func (m *Machine) hideFromSession(ctx context.Context, row, enrollmentID string, facts rowFacts) error {
 	var caller enrollmentRow
-	if err := m.Store.Pool.QueryRow(ctx, `select kind, operator, subject, coalesce(projects, '{}') from enrollments where id=$1`, enrollmentID).
-		Scan(&caller.Kind, &caller.Operator, &caller.Subject, &caller.Projects); err != nil {
+	if err := m.Store.Pool.QueryRow(ctx, `select kind, operator, subject, issuer, coalesce(projects, '{}') from enrollments where id=$1`, enrollmentID).
+		Scan(&caller.Kind, &caller.Operator, &caller.Subject, &caller.Issuer, &caller.Projects); err != nil {
 		return err
 	}
 	person, named := m.credentialProjects(caller)

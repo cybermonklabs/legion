@@ -1,0 +1,66 @@
+kind: Changed
+body: |-
+  The secrets broker trusts each Kubernetes cluster its configuration names. `BROKER_K8S_OIDC_ISSUER`
+  takes comma-separated `<name>=<issuer URL>` entries, one for each cluster, or one bare issuer URL
+  as before, and the broker checks each token against the issuer its `iss` claim names.
+  The broker reads each issuer in the background, so it starts and serves while one of them cannot
+  be read, and it answers the tokens of that issuer `503 OIDC_ISSUER_UNAVAILABLE` until it can. It
+  answers the same to a token whose key it cannot read: a key it does not hold from its last good
+  read of the issuer's key set, while that key set cannot be read. It reads such a key set again at
+  most once in 5 seconds. At its start it logs `broker: kubernetes issuer` for each issuer, with
+  `read=true` or `read=false`. It logs `broker: kubernetes issuer cannot be read` once when it
+  starts to answer the tokens of an issuer it has read so. It logs
+  `broker: kubernetes issuer can be read again` once when an issuer it could not read, at its start
+  or since, can be read, written by whichever comes first: a token of that issuer that verifies,
+  or, for an issuer its start could not read, the background read of it. Before, it refused to
+  start when it could not read its one issuer, and it answered a token whose key it could not read
+  `403 POD_IDENTITY_MISMATCH` or `401 TOKEN_INVALID`.
+  An entry of `BROKER_API_ACCOUNTS` or `BROKER_SERVICE_LOGINS` may end with
+  `=<issuer name>[,<issuer name>…]`, the issuers its account's token is taken from. An entry that
+  names none takes the first issuer of the list alone, so an existing entry keeps its meaning. A
+  listed account's token from another issuer is `403 ACCOUNT_NOT_LISTED`. A token login's
+  credential records the issuer whose token made it (migration 0041), and it stops working once
+  the account's entry no longer names that issuer.
+  A `BROKER_POD_OPERATORS` entry names an account and no issuer: the pod of a mapped account logs
+  in only with a token of an issuer its `BROKER_SERVICE_LOGINS` entry names, and its token of
+  another issuer is `403 ACCOUNT_NOT_LISTED`. The broker refuses to start on a mapped account that
+  an entry of another setting names, whatever issuers that entry names.
+  An entry of `BROKER_NATS_SERVICES` may end with `=<issuer name>[,<issuer name>…]` in the same
+  way, and the NATS auth service admits a Kubernetes account's token, verified with the keys the
+  broker reads for its issuer in the background, only from the issuers the account's entry names,
+  the first issuer of the list alone for an entry that names none, and refuses one of another
+  issuer as it refuses an account no entry lists.
+  `BROKER_EXCHANGE_K8S_ISSUER` names, by their names in `BROKER_K8S_OIDC_ISSUER` and separated by
+  commas, the issuers whose tokens the token exchange takes. It is required with
+  `BROKER_EXCHANGE_K8S_AUDIENCE` when the list names two or more issuers. The exchange reads those
+  issuers in the background with the rest of the list, so one it cannot read no longer stops the
+  broker from starting, and it answers that issuer's tokens `503 OIDC_ISSUER_UNAVAILABLE` until it
+  can. A token of an issuer the setting does not name is `400 invalid_request`.
+  An entry of `BROKER_EXCHANGE_ACCOUNTS` may name its issuers as
+  `<service account>=<project>=<person>=[<session>]=<issuer name>[,<issuer name>…]`, and the
+  exchange takes that account's token only from those issuers. An entry that names none takes the
+  first issuer of the list alone, so an existing entry keeps its meaning. An entry names its
+  issuers in a fifth `=`-separated field, after its session field (empty for none), and the broker
+  reads that field after the entry's last `=`. So from this release on, an entry written as four
+  fields whose session holds `=` is read as five: the session's text after its last `=` is read as
+  issuer names. Beside one bare issuer URL, as every deployment before this release has, every
+  issuer name and an empty issuer field are refused, so the broker refuses to start on such an
+  entry. To keep such a session, name the issuers in `BROKER_K8S_OIDC_ISSUER` as
+  `<name>=<issuer URL>` entries and write `=<name>` after the session, in one change. The broker
+  refuses to start, too, on an entry with no issuer field whose session is only issuer names, such
+  as `<service account>=<project>=<person>=first,second`, which would write under the session
+  `first,second`: write those names after an empty session,
+  `<service account>=<project>=<person>==first,second`. An entry that names no project names its
+  issuers the same way, `<service account>==<person>==first,second`.
+  A service's pod names the private project its account's `BROKER_EXCHANGE_ACCOUNTS` entry maps
+  only while that entry names the issuer whose token enrolled the pod: only then is it released
+  that project's secrets, and only then are its requests that project's. A pod's enrollment
+  records that issuer (migration 0041). A pod enrolled before this release records none and counts
+  as the first issuer's, and a pod enrolled with a token of another issuer, or of an issuer
+  `BROKER_K8S_OIDC_ISSUER` no longer names, names no project.
+  A read entry of `BROKER_EXCHANGE_READ_ACCOUNTS` names no issuer, so the exchange takes its
+  account's token from the first issuer of `BROKER_K8S_OIDC_ISSUER` alone, as it does for an
+  exchange entry that names none, and a token of any other issuer is `400 invalid_request`, so a
+  read account's pods stay on that first issuer's cluster. The broker refuses to start, naming
+  `BROKER_EXCHANGE_READ_ACCOUNTS`, the entry and `BROKER_EXCHANGE_K8S_ISSUER`, on a read entry
+  while `BROKER_EXCHANGE_K8S_ISSUER` leaves out that first issuer.

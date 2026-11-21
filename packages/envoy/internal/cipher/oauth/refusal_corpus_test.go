@@ -48,6 +48,7 @@ var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidRequest, "The subject token was refused: its entry names the project %s, which its person %s cannot see.", []any{corpusProject, corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The subject token was refused: its entry names no project, and its person %s is a restricted member, who sees only the projects that name them.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrTemporarilyUnavailable, "Dispatch could not be asked whether the token's person sees the projects it names; try again.", nil, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "Claim 'iss' from token names no issuer this broker's exchange takes.", nil, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The session name '%s' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last %d days. Ask under a name of your own.", []any{corpusSession, 30}, "exchange.go"},
 	// The broker writes this one's description as oauthwire.PodSessionNotRegistered and a colon in
 	// place of the library's invalid_grant sentence (registeredPodSession).
@@ -86,6 +87,7 @@ var corpusSessionRule = fmt.Sprintf("a session name is printable, carries no whi
 var policyRefusals = []policyRefusal{
 	{"%w: %s presented a token bound to no pod, which proves only that the account exists", []any{exchange.ErrNoPodBinding, corpusAccount}, policySource},
 	{"%w: no entry lists the service account %s", []any{exchange.ErrNoEntry, corpusAccount}, policySource},
+	{"%w: the entry of %s names the issuers %q, and its token is of %q", []any{exchange.ErrIssuerNotNamed, corpusAccount, []string{"home", "other"}, "third"}, policySource},
 	{"%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", []any{exchange.ErrSessionFixed, corpusAccount, "legion-broker"}, policySource},
 	{"%w: the registration of %s names a session of %d bytes; %s", []any{exchange.ErrSessionInvalid, corpusAccount, 230, corpusSessionRule}, policySource},
 	{"%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", []any{exchange.ErrNoEntry, corpusRepository, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, "cybermonklabs/actions/.github/workflows/build.yaml@refs/heads/main"}, policySource},

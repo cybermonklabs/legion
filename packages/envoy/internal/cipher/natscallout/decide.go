@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/machine"
@@ -35,9 +36,9 @@ type Deps struct {
 	// introspection, in the broker's process.
 	Introspect func(ctx context.Context, token string) (oauthwire.Introspection, error)
 	// ServiceToken verifies a service's platform identity token for the NATS audiences
-	// (BROKER_NATS_K8S_AUDIENCE, BROKER_NATS_GOOGLE_AUDIENCE) and answers the account it names,
-	// whether that is a Google account, and when the token was issued and expires.
-	ServiceToken func(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error)
+	// (BROKER_NATS_K8S_AUDIENCE, BROKER_NATS_GOOGLE_AUDIENCE) and answers what it says of the
+	// service (PlatformTokens.Verify).
+	ServiceToken func(ctx context.Context, raw string) (ServiceIdentity, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
 	// Log is where the service's reporter writes the refusals, failed answers and drops it
@@ -55,6 +56,20 @@ func (d Deps) now() time.Time {
 		return time.Now()
 	}
 	return d.Now()
+}
+
+// ServiceIdentity is what a service's verified platform identity token says of it
+// (Deps.ServiceToken).
+type ServiceIdentity struct {
+	// Account is the account the token names.
+	Account string
+	// Google is whether Account is a Google account.
+	Google bool
+	// Issuer is the name of the issuer of BROKER_K8S_OIDC_ISSUER that signed a Kubernetes token:
+	// "" for a Google token, and for the one issuer of a bare URL.
+	Issuer string
+	// Issued and Expiry are when the token was issued and when it expires.
+	Issued, Expiry time.Time
 }
 
 // Request is what the server asks about one connection, read from its authorization request.
@@ -168,8 +183,9 @@ func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
 // is answered with natsgrant.Session of the session its live token names, once its proof verifies
 // over req's nonce; a service with its kind's grant, held to its projects (scopeGrant), once its
 // platform token verifies and lives no longer than a token login may (an hour, beside the proof
-// clock skew) and its account is listed in services. The grant it answers is not yet checked:
-// every answer passes the guard in admit (callout.go), whatever decided it.
+// clock skew) and its account is listed in services, a Kubernetes account's from an issuer its
+// entry names. The grant it answers is not yet checked: every answer passes the guard in admit
+// (callout.go), whatever decided it.
 func Decide(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 	switch credentialKind(req) {
 	case credentialSession:
@@ -251,7 +267,7 @@ func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error
 const longestServiceToken = machine.MaxTokenLoginLifetime + ciphertoken.ProofClockSkew
 
 func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
-	account, google, issued, expiry, err := deps.ServiceToken(ctx, req.Password)
+	identity, err := deps.ServiceToken(ctx, req.Password)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Decision{}, budgetRefusal("the service token's verification")
@@ -261,25 +277,27 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 		// (internal/oidc), so the cause is safe to log; it is never answered.
 		return Decision{}, refuse(labelServiceToken, "service token not verified").because(err)
 	}
-	if expiry.Sub(issued) > longestServiceToken {
+	if identity.Expiry.Sub(identity.Issued) > longestServiceToken {
 		return Decision{}, refuse(labelTokenTooLong, "token lives longer than an hour")
 	}
-	if !expiry.After(deps.now()) {
+	if !identity.Expiry.After(deps.now()) {
 		return Decision{}, refuse(labelTokenNotLive, "token not live")
 	}
 	var entry *ServiceEntry
 	for index := range services {
-		if services[index].Account == account && services[index].Google == google {
+		if services[index].Account == identity.Account && services[index].Google == identity.Google {
 			entry = &services[index]
 			break
 		}
 	}
-	if entry == nil {
-		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
+	// A listed Kubernetes account's token is taken only from an issuer its entry names: the same
+	// account name in another cluster is another ServiceAccount, which the entry does not list.
+	if entry == nil || !entry.Google && !slices.Contains(entry.Issuers, identity.Issuer) {
+		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+identity.Account)
 	}
 	grant, err := scopeGrant(*entry, serviceGrant(*entry))
 	if err != nil {
 		return Decision{}, err
 	}
-	return Decision{Name: entry.name(), Grant: grant, Expires: expiry}, nil
+	return Decision{Name: entry.name(), Grant: grant, Expires: identity.Expiry}, nil
 }

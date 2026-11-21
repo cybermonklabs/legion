@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-var updateGolden = flag.Bool("update", false, "rewrite the golden fixture this package pins")
+var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
 
 // stallDefaults is the fixture's shape. Milliseconds, because that is the unit of the plugin's
 // own numbers and of every LEGION_STALL_* variable; one field per number, each named as the

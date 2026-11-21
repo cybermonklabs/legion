@@ -52,6 +52,13 @@ const INSTANCE_PATTERN = "[A-Za-z0-9*?._\\[\\]-]{1,100}";
 const NUMBER = "[0-9]{1,6}";
 const CLAIM = "[A-Za-z0-9_.:-]{1,64}";
 const URI = "[A-Za-z0-9:/._-]{1,200}";
+/** An issuer's name in `BROKER_K8S_OIDC_ISSUER` (Go's `issuerNamePattern`), as `%q` writes it and
+ *  the broker's OAuth library hands it on: its `RFC6749Error.GetDescription` writes each double
+ *  quote of a description as a single one. */
+const ISSUER_NAME = "'[a-z0-9-]{1,64}'";
+/** A list of issuer names, as `%q` writes a Go `[]string` and the library hands it on:
+ *  `['home' 'other']`. */
+const ISSUER_LIST = `\\[${ISSUER_NAME}(?: ${ISSUER_NAME}){0,31}\\]`;
 /** The exchange policy's one sentence of what a session name may be (Go's `sessionRule`). */
 const SESSION_RULE =
   "a session name is printable, carries no whitespace, and is at most [0-9]{1,4} bytes";
@@ -60,9 +67,10 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** A Go format's literal words, escaped, with each `%s` or `%d` replaced by its slot in order. */
+/** A Go format's literal words, escaped, with each `%s`, `%d` or `%q` replaced by its slot in
+ *  order; a `%q` slot's pattern carries the quotes the description holds. */
 function formatPattern(format: string, slots: readonly string[]): string {
-  const words = format.split(/%[sd]/);
+  const words = format.split(/%[sdq]/);
   if (words.length !== slots.length + 1) {
     throw new Error(`the format ${JSON.stringify(format)} takes ${words.length - 1} slots`);
   }
@@ -73,6 +81,7 @@ function formatPattern(format: string, slots: readonly string[]): string {
  *  each wraps, as the broker hands them on: `The subject token was refused: <sentinel>: <detail>.` */
 const POLICY_SENTINELS = {
   noEntry: "exchange: no entry lists this identity",
+  issuerNotNamed: "exchange: the identity's entry does not name the issuer of its token",
   noPodBinding: "exchange: the subject token is bound to no pod",
   sessionMismatch: "exchange: the request names a session the entry does not fix",
   sessionRequired: "exchange: the request names no session and the entry fixes none",
@@ -105,6 +114,13 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
     K8S_ACCOUNT
   ),
   policy("noEntry", "no entry lists the service account %s", K8S_ACCOUNT),
+  policy(
+    "issuerNotNamed",
+    "the entry of %s names the issuers %q, and its token is of %q",
+    K8S_ACCOUNT,
+    ISSUER_LIST,
+    ISSUER_NAME
+  ),
   policy(
     "sessionFixed",
     "%s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name",
@@ -256,6 +272,9 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   `The subject token was refused: its entry names the project ${PROJECT_SLOT}, which its person ${PERSON_SLOT} cannot see\\.`,
   `The subject token was refused: its entry names no project, and its person ${PERSON_SLOT} is a restricted member, who sees only the projects that name them\\.`,
   "Dispatch could not be asked whether the token's person sees the projects it names; try again\\.",
+  // The exchange's answer to a subject token whose `iss` names no issuer it takes
+  // (`oauth/exchange.go`, `issuerNotTakenRefusal`).
+  "Claim 'iss' from token names no issuer this broker's exchange takes\\.",
   `The session name '${SESSION_SLOT}' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last [0-9]{1,4} days\\. Ask under a name of your own\\.`,
   `No registration says this pod may write under the session name '${SESSION_SLOT}'\\. A pod writes under a session name its deployment registered for it\\.`,
   `Refused: this pod's registration for session '${SESSION_SLOT}' is bound to another key; a role trades only for its own session\\.`,

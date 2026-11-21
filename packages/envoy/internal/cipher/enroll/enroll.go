@@ -64,6 +64,11 @@ var (
 	// person's pod login makes (PersonPodLogin), which carry that person as their operator.
 	ErrNotEnrollingCredential = errors.New("only the machine login that made this enrollment may end it")
 	ErrPodTokenRequired       = errors.New("a pod enrollment's renewal must carry its projected token")
+	// ErrIssuerUnavailable is a pod token whose issuer the broker cannot read: the issuer's
+	// discovery document has not been read yet, or its key set cannot be. Nothing was decided
+	// about the token, so the launcher or renewer presents it again later, where ErrPodIdentity
+	// is a token judged and refused. It wraps oidc.ErrIssuerUnavailable.
+	ErrIssuerUnavailable = fmt.Errorf("the projected token's issuer cannot be read yet: %w", oidc.ErrIssuerUnavailable)
 	// ErrPodSelfEnrollOnly refuses a pod enrollment under the enrolling pod's own token login —
 	// one whose subject is the very ServiceAccount the presented pod token proves — whose runtime
 	// id names another pod. Such a credential belongs to one pod, the pod whose token logged in
@@ -110,10 +115,10 @@ var (
 	// named twice.
 	ErrProjectsInvalid = errors.New("projects is a list of at most 16 Dispatch project keys, each once")
 	// ErrProjectsNeedAPerson refuses projects named by an enrollment that acts for no person: a
-	// service's pod, whose project is the one its operator's entry maps its account to
-	// (exchange.Set.MappedProjects), and a machine's own session. A list is what a person's
-	// session asks for, and a person's pod (PersonPodLogin) too, which acts for its person; only a
-	// person can be asked whether they may see a project.
+	// service's pod, whose project is the one its operator's entry maps its account to for the
+	// issuer it enrolled under (exchange.Set.PodProjects), and a machine's own session. A list is
+	// what a person's session asks for, and a person's pod (PersonPodLogin) too, which acts for
+	// its person; only a person can be asked whether they may see a project.
 	ErrProjectsNeedAPerson = errors.New("only a session or a pod that acts for a person names projects")
 	// ErrProjectsUnchecked refuses a session naming projects that the broker cannot check with
 	// Dispatch: it holds no client of Dispatch's project access (BROKER_PROJECT_ACCESS_URL), or
@@ -226,14 +231,23 @@ type Enrollment struct {
 	// records it (ownerKey): Create works it out from what the caller proved and from the claim a
 	// launcher stated, so, like carry, it is never a caller's to state.
 	owner *string
+	// issuer is the URL of the issuer whose token proved a pod enrollment's Subject
+	// (PodClaims.Issuer), as enrollments.issuer records it, and nil for every other kind: the
+	// request machine gives the pod of a service the project an operator's entry maps its account
+	// to only while that entry names this issuer (requests.Machine.credentialProjects). Create
+	// sets it from the token, as it sets Subject, so it is never a caller's to state either.
+	issuer *string
 }
 
+// PodClaims are a verified pod token's subject, the pod it is bound to, and the URL of the issuer
+// of BROKER_K8S_OIDC_ISSUER that signed it.
 type PodClaims struct {
 	Subject string
 	PodUID  string
+	Issuer  string
 }
 
-// PodVerifier verifies the cluster's projected ServiceAccount tokens (K8sPodVerifier): Verify a
+// PodVerifier verifies the clusters' projected ServiceAccount tokens (K8sPodVerifier): Verify a
 // pod's own token, bound to its pod, for enrollment and renewal; VerifyAccount a service's token,
 // bound to a pod or to none, for its token login (machine.Service.TokenLogin).
 type PodVerifier interface {
@@ -259,6 +273,15 @@ type SessionBinder interface {
 	PairedWith(principal string) []string
 }
 
+// ServiceLogin is one BROKER_SERVICE_LOGINS entry, which Service.ServiceLogins keys by its
+// ServiceAccount subject: the service the account logs in as, and the names, in
+// BROKER_K8S_OIDC_ISSUER, of the issuers whose tokens it logs in with — the entry's own, or the
+// first issuer's alone where it names none, which config.Load fills in.
+type ServiceLogin struct {
+	Service string
+	Issuers []string
+}
+
 type Service struct {
 	Store *store.Store
 	Lease time.Duration
@@ -268,10 +291,15 @@ type Service struct {
 	// for both, so the window the sweep keeps and the window a launcher is told of are one
 	// window. 0 is no carry: the next sweep ends every dormant enrollment it finds.
 	Carry time.Duration
-	// Pod verifies the cluster's projected ServiceAccount tokens against BROKER_K8S_OIDC_ISSUER and
-	// BROKER_K8S_OIDC_AUDIENCE; nil on a broker that trusts no Kubernetes token issuer, which enrolls
-	// no pod and serves no Kubernetes token login.
+	// Pod verifies the projected ServiceAccount tokens of the clusters BROKER_K8S_OIDC_ISSUER names,
+	// each against the issuer it names, for BROKER_K8S_OIDC_AUDIENCE; nil on a broker that trusts no
+	// Kubernetes token issuer, which enrolls no pod and serves no Kubernetes token login.
 	Pod PodVerifier
+	// Issuers is BROKER_K8S_OIDC_ISSUER: the issuers whose tokens Pod verifies, in the setting's
+	// order. AuthenticateLauncher reads it to tell which issuer's token made a token login's
+	// credential: the credential records that issuer's URL, and a credential that records none,
+	// made before credentials recorded one, was made under the first.
+	Issuers []oidc.NamedIssuer
 
 	// Projects asks Dispatch whether a person may see a project and what kind of member they are
 	// (projectaccess.Client, BROKER_PROJECT_ACCESS_URL): Create checks a session's list through it
@@ -303,9 +331,9 @@ type Service struct {
 	Chain *record.ChainVerifier
 
 	// ServiceLogins is BROKER_SERVICE_LOGINS: each ServiceAccount subject that logs in as a service
-	// with its token, answering that service. AuthenticateLauncher reads it for every credential a
-	// Kubernetes token login issued.
-	ServiceLogins map[string]string
+	// with its token, answering that service and the issuers whose tokens it logs in with.
+	// AuthenticateLauncher reads it for every credential a Kubernetes token login issued.
+	ServiceLogins map[string]ServiceLogin
 	// PodOperators is BROKER_POD_OPERATORS: each Kubernetes ServiceAccount subject that the
 	// deployment maps to a person, answering that person's login (record.CanonicalLogin).
 	// machine.Service.TokenLogin reads it at each login of a mapped account from a pod-bound
@@ -398,7 +426,12 @@ type TokenLogin struct {
 	//
 	// A machine's own credential and every other Kubernetes login act for no person. Their
 	// enrollments reach their service's secrets alone.
-	Operator     string
+	Operator string
+	// Issuer is the URL of the BROKER_K8S_OIDC_ISSUER issuer that signed a Kubernetes
+	// ServiceAccount's token, which the credential records so that AuthenticateLauncher holds it
+	// to the issuers its BROKER_SERVICE_LOGINS entry names. "" for a machine's login and a
+	// person's sign-in, whose tokens are Google's and whose credentials record none.
+	Issuer       string
 	TokenExpires time.Time
 	Thumbprint   string
 	JWK          json.RawMessage
@@ -452,10 +485,12 @@ func (s *Service) IssueTokenLogin(ctx context.Context, login TokenLogin) (uuid.U
 // enrolled under it stays there. A machine's subject names that one machine
 // (exchange.MachineSubject) and a sign-in's names one person on one box
 // (exchange.PersonSubject), so each machine of a fleet, and each person signed in on each of its
-// boxes, holds a credential of its own and no login moves another's. Its host and its pod are
-// login's. Each login writes a launcher_credential.token_login audit row naming the subject, the
-// pod the token is bound to, the key, and both expiries. A key another live credential holds is
-// a unique violation (store.IsUniqueViolation), and nothing is written.
+// boxes, holds a credential of its own and no login moves another's. Its host, its pod and the
+// issuer whose token made it (a ServiceAccount's; a machine's and a sign-in's record none) are
+// login's, so a subject that logs in from another cluster moves its credential to that cluster's
+// issuer. Each login writes a launcher_credential.token_login audit row naming the subject, the
+// pod the token is bound to, the issuer, the key, and both expiries. A key another live
+// credential holds is a unique violation (store.IsUniqueViolation), and nothing is written.
 func (s *Service) IssueTokenLoginTx(ctx context.Context, tx pgx.Tx, login TokenLogin) (uuid.UUID, error) {
 	var operator *string
 	if login.Operator != "" {
@@ -512,20 +547,20 @@ func (s *Service) IssueTokenLoginTx(ctx context.Context, tx pgx.Tx, login TokenL
 		}
 	}
 	var id uuid.UUID
-	if err := tx.QueryRow(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, subject, pod_uid, expires_at)
-		values ($1, $2, $3, $4, $5, $6, null, $7, nullif($8::text,''), $9)
+	if err := tx.QueryRow(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, subject, pod_uid, issuer, expires_at)
+		values ($1, $2, $3, $4, $5, $6, null, $7, nullif($8::text,''), nullif($9::text,''), $10)
 		on conflict `+conflict+`
 		do update set operator=excluded.operator, service=excluded.service, host=excluded.host,
 			key_thumbprint=excluded.key_thumbprint, public_jwk=excluded.public_jwk,
-			pod_uid=excluded.pod_uid, expires_at=excluded.expires_at
+			pod_uid=excluded.pod_uid, issuer=excluded.issuer, expires_at=excluded.expires_at
 		returning id`,
-		uuid.New(), operator, login.Service, login.Host, login.Thumbprint, []byte(login.JWK), login.Subject, login.PodUID, login.Expires).Scan(&id); err != nil {
+		uuid.New(), operator, login.Service, login.Host, login.Thumbprint, []byte(login.JWK), login.Subject, login.PodUID, login.Issuer, login.Expires).Scan(&id); err != nil {
 		return uuid.Nil, err
 	}
 	if _, err := tx.Exec(ctx, `insert into audit (kind, actor, detail) values ('launcher_credential.token_login',$1,
 		jsonb_strip_nulls(jsonb_build_object('credential_id',$2::text,'service',$3::text,'subject',$4::text,'pod_uid',nullif($5::text,''),
-			'operator',nullif($6::text,''),'key_thumbprint',$7::text,'expires_at',$8::timestamptz,'token_expires_at',$9::timestamptz)))`,
-		record.LauncherActor(id.String()), id.String(), login.Service, login.Subject, login.PodUID, login.Operator,
+			'operator',nullif($6::text,''),'issuer',nullif($7::text,''),'key_thumbprint',$8::text,'expires_at',$9::timestamptz,'token_expires_at',$10::timestamptz)))`,
+		record.LauncherActor(id.String()), id.String(), login.Service, login.Subject, login.PodUID, login.Operator, login.Issuer,
 		login.Thumbprint, login.Expires, login.TokenExpires); err != nil {
 		return uuid.Nil, err
 	}
@@ -575,18 +610,19 @@ func NewChainVerifier(st *store.Store, audience string, skew time.Duration) *rec
 // never authenticates. A credential a token login issued (IssueTokenLoginTx, its subject set,
 // and so its service, as the table's check constraint holds) authenticates while its subject is
 // still listed for its service (tokenLoginListed), so removing an account from
-// BROKER_SERVICE_LOGINS or BROKER_VM_SERVICES ends its credential at its next call. A missing,
-// expired, revoked, chain-broken or no-longer-listed credential all answer ("", false, nil); only a
+// BROKER_SERVICE_LOGINS or BROKER_VM_SERVICES ends its credential at its next call, as does an
+// entry that stops naming the issuer whose token made the credential. A missing, expired,
+// revoked, chain-broken or no-longer-listed credential all answer ("", false, nil); only a
 // genuine dependency failure is a non-nil error, matching Lookup's own contract.
 func (s *Service) AuthenticateLauncher(ctx context.Context, lid string) (string, bool, error) {
 	if _, err := uuid.Parse(lid); err != nil {
 		return "", false, nil
 	}
 	var thumbprint string
-	var recordID, service, subject *string
+	var recordID, service, subject, issuer *string
 	var expiresAt time.Time
-	err := s.Store.Pool.QueryRow(ctx, `select key_thumbprint, record_id, service, subject, expires_at from launcher_credentials where id=$1 and revoked_at is null`, lid).
-		Scan(&thumbprint, &recordID, &service, &subject, &expiresAt)
+	err := s.Store.Pool.QueryRow(ctx, `select key_thumbprint, record_id, service, subject, issuer, expires_at from launcher_credentials where id=$1 and revoked_at is null`, lid).
+		Scan(&thumbprint, &recordID, &service, &subject, &issuer, &expiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
@@ -597,7 +633,7 @@ func (s *Service) AuthenticateLauncher(ctx context.Context, lid string) (string,
 		return "", false, nil
 	}
 	if subject != nil {
-		if !s.tokenLoginListed(*subject, *service) {
+		if !s.tokenLoginListed(*subject, *service, issuer) {
 			return "", false, nil
 		}
 		return thumbprint, true, nil
@@ -616,9 +652,11 @@ func (s *Service) AuthenticateLauncher(ctx context.Context, lid string) (string,
 
 // tokenLoginListed reports whether a token login's subject still logs in as service: a machine
 // and a person's sign-in on one while BROKER_VM_SERVICES still lists that box's Google account
-// for that service, and a Kubernetes ServiceAccount while BROKER_SERVICE_LOGINS names it.
-// Which of the three a subject is, and the account a machine's and a sign-in's carry, are one
-// reading (exchange.ReadSubject).
+// for that service, and a Kubernetes ServiceAccount while BROKER_SERVICE_LOGINS names it for
+// that service and names the issuer whose token made the credential, the URL issuer is
+// (loginIssuerNamed). Which of the three a subject is, and the account a machine's and a
+// sign-in's carry, are one reading (exchange.ReadSubject). A machine's and a sign-in's
+// credential record no issuer, since Google signed their tokens, and issuer is not read for them.
 //
 // A machine's own test is the account alone, because the account is what a listed identity is:
 // where the machine runs, and which of two machines of one account this is, were decided by the
@@ -633,13 +671,23 @@ func (s *Service) AuthenticateLauncher(ctx context.Context, lid string) (string,
 // person has revoked is not this but the revoke itself, which ends that credential in the
 // transaction it revokes the sign-in in (RevokePersonSignIn): "listed" is a question about the
 // configuration, and a revoke is a fact about the row.
-func (s *Service) tokenLoginListed(subject, service string) bool {
+func (s *Service) tokenLoginListed(subject, service string, issuer *string) bool {
 	if read := exchange.ReadSubject(subject); read.Kind != exchange.SubjectOther {
 		listed, isListed := s.VMServicesByAccount[read.Account]
 		return isListed && listed == service
 	}
-	listed, found := s.ServiceLogins[subject]
-	return found && listed == service
+	login, found := s.ServiceLogins[subject]
+	return found && login.Service == service && s.loginIssuerNamed(login.Issuers, issuer)
+}
+
+// loginIssuerNamed reports whether issuer, the URL a token login's credential records, is the URL
+// of one of names, the issuers its BROKER_SERVICE_LOGINS entry names. A credential that records
+// none was made before credentials recorded one, when BROKER_K8S_OIDC_ISSUER named one issuer,
+// which stays its first. An issuer the setting no longer holds is one no entry names
+// (oidc.IssuerName, the rule a pod's enrollment is read by too).
+func (s *Service) loginIssuerNamed(names []string, issuer *string) bool {
+	name, ok := oidc.IssuerName(s.Issuers, issuer)
+	return ok && slices.Contains(names, name)
 }
 
 // CredentialForKey loads a launcher credential's own identity (operator, service, host, and a
@@ -683,8 +731,9 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // back (Existing), a different key in a live slot is ErrAlreadyEnrolled, and another slot of the
 // same pod is an enrollment of its own. A slot is valid only on a pod enrollment (ErrInvalidSlot);
 // a pod's runtime id is always the pod UID its projected token proves, whichever slot it enrolls.
-// A pod token past its expiry is ErrPodTokenExpired, naming that expiry; any other token that does
-// not prove this pod is ErrPodIdentity. Under a token login, whose whole authorization is the
+// A pod token past its expiry is ErrPodTokenExpired, naming that expiry; one whose issuer the
+// broker cannot read yet is ErrIssuerUnavailable; any other token that does not prove this pod is
+// ErrPodIdentity. Under a token login, whose whole authorization is the
 // deployment's settings, the pod must be one of two (podUnderTokenLogin): the login's own pod,
 // when the token proves the login's own account (ErrPodSelfEnrollOnly for any other pod of it),
 // or a pod of an account BROKER_SERVICES binds to the login's service, which is the deployment
@@ -767,7 +816,7 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		if err := s.podUnderTokenLogin(cred, claims, in); err != nil {
 			return Enrollment{}, err
 		}
-		in.Subject = &claims.Subject
+		in.Subject, in.issuer = &claims.Subject, nullable(claims.Issuer)
 	}
 	// The list is held sorted, the one order a credential's list takes (oauthwire.ValidProjects),
 	// so a caller's order is no refusal and two spellings of one list are one list.
@@ -892,10 +941,11 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 	}
 	// pod_token_renewed_at starts null on every row, a pod's included: the first renewal carrying
 	// the pod's token sets it, and from then on Renew refuses a token-less renewal from every live
-	// enrollment naming that pod UID (podTokenRatcheted).
-	_, err = tx.Exec(ctx, `insert into enrollments (id, kind, runtime_id, slot, operator, thumbprint, session_id, carry_principal, subject, launcher_credential_id, lease_expires_at, claim, owner, projects)
-		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,coalesce($14::text[], '{}'))`,
-		in.ID, in.Kind, in.RuntimeID, in.Slot, in.Operator, in.Thumbprint, in.SessionID, in.carry, in.Subject, cred.ID, in.LeaseExpires, nullable(in.Claim), in.owner, in.Projects)
+	// enrollment naming that pod UID (podTokenRatcheted). A pod's row records the issuer whose
+	// token proved its subject; every other kind's records none.
+	_, err = tx.Exec(ctx, `insert into enrollments (id, kind, runtime_id, slot, operator, thumbprint, session_id, carry_principal, subject, launcher_credential_id, lease_expires_at, claim, owner, projects, issuer)
+		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,coalesce($14::text[], '{}'),$15)`,
+		in.ID, in.Kind, in.RuntimeID, in.Slot, in.Operator, in.Thumbprint, in.SessionID, in.carry, in.Subject, cred.ID, in.LeaseExpires, nullable(in.Claim), in.owner, in.Projects, in.issuer)
 	if store.IsUniqueViolation(err) {
 		// The failed insert aborted tx, which still holds its pooled connection. Release it before
 		// recovery asks the pool for one: holding one connection while waiting for a second is how
@@ -1851,17 +1901,20 @@ type Renewal struct {
 // verifyPodToken verifies a pod's projected service-account token (issuer, audience, signature,
 // expiry) and requires it to name a pod UID. Create and Renew both call it before any transaction
 // opens, so the issuer's key-set fetch on an unknown key id never holds a row lock or a pooled
-// connection. A token past its expiry is ErrPodTokenExpired, naming that expiry; every other
-// failure, and a broker with no BROKER_K8S_OIDC_ISSUER, is ErrPodIdentity.
+// connection. A token past its expiry is ErrPodTokenExpired, naming that expiry; a token whose
+// issuer the broker cannot read yet is ErrIssuerUnavailable, since nothing was decided about it;
+// every other failure, and a broker with no BROKER_K8S_OIDC_ISSUER, is ErrPodIdentity.
 func (s *Service) verifyPodToken(ctx context.Context, raw string) (PodClaims, error) {
 	if s.Pod == nil {
 		return PodClaims{}, fmt.Errorf("%w: a pod's token needs BROKER_K8S_OIDC_ISSUER", ErrPodIdentity)
 	}
 	claims, err := s.Pod.Verify(ctx, raw)
-	if errors.Is(err, oidc.ErrExpired) {
+	switch {
+	case errors.Is(err, oidc.ErrExpired):
 		return PodClaims{}, fmt.Errorf("%w (%v)", ErrPodTokenExpired, err)
-	}
-	if err != nil || claims.PodUID == "" {
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		return PodClaims{}, fmt.Errorf("%w (%v)", ErrIssuerUnavailable, err)
+	case err != nil || claims.PodUID == "":
 		return PodClaims{}, ErrPodIdentity
 	}
 	return claims, nil
@@ -1955,9 +2008,10 @@ func (s *Service) Renew(ctx context.Context, id, podToken string) (Renewal, erro
 	}
 	// The row's own half of "live" is credLive, read above; what is left is the configuration's
 	// half, the account still listed for the credential's service, which no column holds. cred
-	// is one machineCredential has answered for, so its subject and its service are both set.
+	// is one machineCredential has answered for, so its subject and its service are both set,
+	// and its credential records no issuer, a machine's token being Google's.
 	if kind == "session" && machineCredential(cred) &&
-		!(credLive && s.tokenLoginListed(*cred.Subject, *cred.Service)) {
+		!(credLive && s.tokenLoginListed(*cred.Subject, *cred.Service, nil)) {
 		return Renewal{}, ErrMachineLoginEnded
 	}
 	switch {

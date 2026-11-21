@@ -1,0 +1,31 @@
+kind: Added
+body: |-
+  `legion project release --operator-token-file <file> [--bound <duration>] [--wait <duration>]
+  [--dry-run] [--json]` releases every pod of the daemon's project, the first step of moving the
+  project's pods to another Kubernetes cluster. The daemon reads each issue pod's workspace for
+  commits no remote holds. It asks each running role of a pod with such commits, a refused read or
+  a turn in progress to push to `legion/<KEY>`, to let its subagents and background jobs finish
+  and push what they made, and to answer. It waits for the answers or the bound,
+  `pod_update_grace_minutes` by default. Then it stops every role process and deletes every
+  Sandbox of the project. It saves no workspace.
+  A role whose activity report names a running subagent or background job, or that has sent no
+  report since its last turn, is asked and waited for as a role in a turn is, as an update round
+  reads that report, and the ask tells each role so.
+  From the release's start the daemon starts nothing of the project. The daemon's next boot ends
+  the release and starts each claim the release stopped, once, on the session it had, in the
+  cluster the daemon's configuration then names, and charges it no launch failure and no death.
+  A pod that holds a claim an operator suspended, or whose ask to its roles could not be written
+  before the bound or reached no session of them by it, is left with its disk, and the claims that
+  ran there stay held for an operator.
+  A notice, role message, hook prompt, merge-queue removal message or merge-forward message held
+  through the release reaches its claim once the next boot's start of it holds its role again.
+  While the project is paused, or while a pod that a pause stopped is still held after the resume,
+  the release answers `409 PROJECT_PAUSED`, its dry run included, names each held pod with the
+  claims to resume (`legion claims resume --claim <token>`), and records, stops and deletes
+  nothing. While a release runs, `legion project pause` and the controller's `pause` answer
+  `409 PROJECT_RELEASING` and pause nothing; once the release has finished, a pause is taken.
+  The command prints one line for each Sandbox and each stopped claim, and exits 0 once the
+  release finished and left no Sandbox of the project. `--dry-run` shows what a release would do
+  now and changes nothing. `POST` and `GET /legion/v1/operator/project/release` start and read the
+  release, and `legion state --json` shows it as `projectRelease`. docs/kubernetes.md, "Releasing
+  a project's pods" and "Moving a project's pods to another cluster", give the steps of a move.

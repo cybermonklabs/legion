@@ -14,9 +14,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
+	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -1115,7 +1117,7 @@ func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
 			}
 			if row.api {
 				caller, _ := api.AccountFor("listener")
-				if want := map[string]api.Account{exampleListenerAccount: caller}; !maps.Equal(cfg.GoogleAPIAccounts, want) {
+				if want := map[string]api.Account{exampleListenerAccount: caller}; !reflect.DeepEqual(cfg.GoogleAPIAccounts, want) {
 					t.Fatalf("GoogleAPIAccounts = %v, want %v", cfg.GoogleAPIAccounts, want)
 				}
 			}
@@ -1337,11 +1339,12 @@ func TestLoadReadsTheServiceLogins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{
-		"system:serviceaccount:legion-system:legion-daemon-a": "legion-daemon",
-		"system:serviceaccount:legion-system:legion-daemon-b": "legion-daemon",
+	// Each entry names no issuer, so each takes BROKER_K8S_OIDC_ISSUER's one, unnamed issuer.
+	want := map[string]enroll.ServiceLogin{
+		"system:serviceaccount:legion-system:legion-daemon-a": {Service: "legion-daemon", Issuers: []string{""}},
+		"system:serviceaccount:legion-system:legion-daemon-b": {Service: "legion-daemon", Issuers: []string{""}},
 	}
-	if !maps.Equal(cfg.ServiceLogins, want) {
+	if !reflect.DeepEqual(cfg.ServiceLogins, want) {
 		t.Fatalf("ServiceLogins = %v, want %v", cfg.ServiceLogins, want)
 	}
 
@@ -1399,8 +1402,8 @@ func TestLoadTakesOneAccountInBothServiceLists(t *testing.T) {
 	if !maps.Equal(cfg.ServicesByAccount, want) {
 		t.Errorf("ServicesByAccount = %v, want %v", cfg.ServicesByAccount, want)
 	}
-	if !maps.Equal(cfg.ServiceLogins, want) {
-		t.Errorf("ServiceLogins = %v, want %v", cfg.ServiceLogins, want)
+	if wantLogins := map[string]enroll.ServiceLogin{account: {Service: "legion-daemon", Issuers: []string{""}}}; !reflect.DeepEqual(cfg.ServiceLogins, wantLogins) {
+		t.Errorf("ServiceLogins = %v, want %v", cfg.ServiceLogins, wantLogins)
 	}
 }
 
@@ -1937,6 +1940,14 @@ func withK8sIssuer() map[string]string {
 	return e
 }
 
+// withExchange is withK8sIssuer, whose issuer is one bare URL, with the audience of a token
+// exchange, which takes that issuer.
+func withExchange() map[string]string {
+	e := withK8sIssuer()
+	e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
+	return e
+}
+
 // exampleListenerAccount is the placeholder Google service account a listed caller on a VM runs
 // as, as BROKER_API_ACCOUNTS names it; this repository is public, so no real account appears.
 const exampleListenerAccount = "example-listener@example-project.iam.gserviceaccount.com"
@@ -1960,13 +1971,16 @@ func TestLoadReadsTheAPIAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Each entry names no issuer, so each takes BROKER_K8S_OIDC_ISSUER's one, unnamed issuer.
 	dispatchCaller, _ := api.AccountFor("dispatch")
+	dispatchCaller.Issuers = []string{""}
 	listenerCaller, _ := api.AccountFor("listener")
+	listenerCaller.Issuers = []string{""}
 	want := map[string]api.Account{
 		"system:serviceaccount:example-ns:example-dispatch": dispatchCaller,
 		"system:serviceaccount:example-ns:example-listener": listenerCaller,
 	}
-	if !maps.Equal(cfg.APIAccounts, want) || cfg.GoogleAPIAccounts != nil {
+	if !reflect.DeepEqual(cfg.APIAccounts, want) || cfg.GoogleAPIAccounts != nil {
 		t.Fatalf("APIAccounts = %v and GoogleAPIAccounts = %v, want %v and no Google caller", cfg.APIAccounts, cfg.GoogleAPIAccounts, want)
 	}
 	for _, bad := range []string{
@@ -1999,7 +2013,10 @@ func TestLoadReadsTheAPIAccounts(t *testing.T) {
 // prove is refused here as BROKER_VM_SERVICES refuses it; and the two kinds live side by side.
 func TestLoadReadsAGoogleAPIAccount(t *testing.T) {
 	listenerCaller, _ := api.AccountFor("listener")
+	// A Kubernetes entry naming no issuer takes BROKER_K8S_OIDC_ISSUER's one, unnamed issuer; a
+	// Google entry takes none.
 	dispatchCaller, _ := api.AccountFor("dispatch")
+	dispatchCaller.Issuers = []string{""}
 
 	e := validVMEnv()
 	e["BROKER_API_ACCOUNTS"] = "listener=google:" + exampleListenerAccount
@@ -2008,7 +2025,7 @@ func TestLoadReadsAGoogleAPIAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantGoogle := map[string]api.Account{exampleListenerAccount: listenerCaller}
-	if !maps.Equal(cfg.GoogleAPIAccounts, wantGoogle) || cfg.APIAccounts != nil {
+	if !reflect.DeepEqual(cfg.GoogleAPIAccounts, wantGoogle) || cfg.APIAccounts != nil {
 		t.Fatalf("GoogleAPIAccounts = %v and APIAccounts = %v, want %v and no Kubernetes caller: a Google entry needs no cluster at all", cfg.GoogleAPIAccounts, cfg.APIAccounts, wantGoogle)
 	}
 
@@ -2021,7 +2038,7 @@ func TestLoadReadsAGoogleAPIAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantK8s := map[string]api.Account{"system:serviceaccount:example-ns:example-dispatch": dispatchCaller}
-	if !maps.Equal(cfg.APIAccounts, wantK8s) || !maps.Equal(cfg.GoogleAPIAccounts, wantGoogle) {
+	if !reflect.DeepEqual(cfg.APIAccounts, wantK8s) || !reflect.DeepEqual(cfg.GoogleAPIAccounts, wantGoogle) {
 		t.Fatalf("APIAccounts = %v, GoogleAPIAccounts = %v; want %v and %v: each entry goes to the list its own kind is verified from", cfg.APIAccounts, cfg.GoogleAPIAccounts, wantK8s, wantGoogle)
 	}
 
@@ -2076,6 +2093,418 @@ func TestLoadRefusesACallerTheBrokerDoesNotKnow(t *testing.T) {
 	}
 }
 
+// The two cluster issuers the named-issuer tests list, as namedIssuersEnv names them: placeholders,
+// as every host in a test is.
+var (
+	firstIssuer  = oidc.NamedIssuer{Name: "first", URL: "https://oidc.first.example"}
+	secondIssuer = oidc.NamedIssuer{Name: "second", URL: "https://oidc.second.example"}
+)
+
+// namedIssuersEnv is validEnv with the cluster issuers firstIssuer and secondIssuer, in that order,
+// and the audience their tokens carry.
+func namedIssuersEnv() map[string]string {
+	e := validEnv()
+	e["BROKER_K8S_OIDC_ISSUER"] = firstIssuer.Name + "=" + firstIssuer.URL + "," + secondIssuer.Name + "=" + secondIssuer.URL
+	e["BROKER_K8S_OIDC_AUDIENCE"] = "agent-secrets"
+	return e
+}
+
+// refusedNaming fails t unless Load refuses e with an error naming each of want.
+func refusedNaming(t *testing.T, e map[string]string, want ...string) {
+	t.Helper()
+	_, err := Load(env(e))
+	if err == nil {
+		t.Fatalf("Load = no error, want a refusal naming %q", want)
+	}
+	for _, w := range want {
+		if !strings.Contains(err.Error(), w) {
+			t.Fatalf("Load refused with %q, want a refusal naming %q", err, w)
+		}
+	}
+}
+
+// TestTheK8sIssuerSettingTakesNamedIssuers pins BROKER_K8S_OIDC_ISSUER's list: one bare URL loads
+// one issuer with no name, with the audiences and the account maps a deployment of one cluster
+// holds; named entries load in their order; and the setting refuses, naming itself, a malformed
+// entry, a repeated name, a repeated URL and a bare URL beside named entries.
+// BROKER_EXCHANGE_K8S_ISSUER names the exchange's issuers, which load in its order, may be left
+// out beside one issuer, and refuses, naming itself, an exchange whose issuers are unclear.
+func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
+	t.Run("one bare URL loads one issuer with no name", func(t *testing.T) {
+		e := validEnv()
+		maps.Copy(e, map[string]string{
+			"BROKER_K8S_OIDC_ISSUER":       " https://oidc.eks.example.invalid/id/EXAMPLE ",
+			"BROKER_K8S_OIDC_AUDIENCE":     "agent-secrets",
+			"BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange",
+			"BROKER_API_ACCOUNTS":          "dispatch=system:serviceaccount:example-ns:example-dispatch",
+			"BROKER_SERVICE_LOGINS":        "legion-daemon=system:serviceaccount:legion-system:legion-daemon",
+		})
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A deployment that names its one cluster by its URL alone keeps the meaning of its
+		// settings: the URL, trimmed, as the cluster's issuer and the exchange's, the two
+		// audiences, the dispatch caller for its subject and legion-daemon for its login. Each
+		// entry takes the list's one issuer, which has no name.
+		bare := oidc.NamedIssuer{URL: "https://oidc.eks.example.invalid/id/EXAMPLE"}
+		if want := []oidc.NamedIssuer{bare}; !slices.Equal(cfg.K8sOIDCIssuers, want) {
+			t.Errorf("K8sOIDCIssuers = %+v, want %+v", cfg.K8sOIDCIssuers, want)
+		}
+		if cfg.K8sOIDCAudience != "agent-secrets" {
+			t.Errorf("K8sOIDCAudience = %q, want agent-secrets", cfg.K8sOIDCAudience)
+		}
+		if !slices.Equal(cfg.ExchangeK8sIssuers, []oidc.NamedIssuer{bare}) || cfg.ExchangeK8sAudience != "dispatch-exchange" {
+			t.Errorf("the exchange's issuers and audience = %+v and %q, want %+v and dispatch-exchange", cfg.ExchangeK8sIssuers, cfg.ExchangeK8sAudience, bare)
+		}
+		dispatch, _ := api.AccountFor("dispatch")
+		dispatch.Issuers = []string{""}
+		if want := map[string]api.Account{"system:serviceaccount:example-ns:example-dispatch": dispatch}; !reflect.DeepEqual(cfg.APIAccounts, want) {
+			t.Errorf("APIAccounts = %+v, want %+v", cfg.APIAccounts, want)
+		}
+		if want := map[string]enroll.ServiceLogin{"system:serviceaccount:legion-system:legion-daemon": {Service: "legion-daemon", Issuers: []string{""}}}; !reflect.DeepEqual(cfg.ServiceLogins, want) {
+			t.Errorf("ServiceLogins = %+v, want %+v", cfg.ServiceLogins, want)
+		}
+	})
+
+	t.Run("two named entries load in their order", func(t *testing.T) {
+		e := validEnv()
+		maps.Copy(e, map[string]string{
+			"BROKER_K8S_OIDC_ISSUER":       "second=https://oidc.second.example, first=https://oidc.first.example",
+			"BROKER_K8S_OIDC_AUDIENCE":     "agent-secrets",
+			"BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange",
+			"BROKER_EXCHANGE_K8S_ISSUER":   "first",
+		})
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []oidc.NamedIssuer{secondIssuer, firstIssuer}; !slices.Equal(cfg.K8sOIDCIssuers, want) {
+			t.Errorf("K8sOIDCIssuers = %+v, want %+v", cfg.K8sOIDCIssuers, want)
+		}
+		if want := []oidc.NamedIssuer{firstIssuer}; !slices.Equal(cfg.ExchangeK8sIssuers, want) {
+			t.Errorf("ExchangeK8sIssuers = %+v, want the issuer BROKER_EXCHANGE_K8S_ISSUER names, %+v", cfg.ExchangeK8sIssuers, want)
+		}
+	})
+
+	t.Run("the exchange's issuers load in the setting's order", func(t *testing.T) {
+		e := namedIssuersEnv()
+		maps.Copy(e, map[string]string{
+			"BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange",
+			"BROKER_EXCHANGE_K8S_ISSUER":   "second, first",
+		})
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []oidc.NamedIssuer{secondIssuer, firstIssuer}; !slices.Equal(cfg.ExchangeK8sIssuers, want) {
+			t.Errorf("ExchangeK8sIssuers = %+v, want %+v", cfg.ExchangeK8sIssuers, want)
+		}
+	})
+
+	t.Run("beside one named issuer the exchange's issuer may be left out", func(t *testing.T) {
+		e := validEnv()
+		maps.Copy(e, map[string]string{
+			"BROKER_K8S_OIDC_ISSUER":       "first=https://oidc.first.example",
+			"BROKER_K8S_OIDC_AUDIENCE":     "agent-secrets",
+			"BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange",
+		})
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(cfg.K8sOIDCIssuers, []oidc.NamedIssuer{firstIssuer}) || !slices.Equal(cfg.ExchangeK8sIssuers, []oidc.NamedIssuer{firstIssuer}) {
+			t.Errorf("K8sOIDCIssuers = %+v and ExchangeK8sIssuers = %+v, want %+v as both", cfg.K8sOIDCIssuers, cfg.ExchangeK8sIssuers, firstIssuer)
+		}
+	})
+
+	const issuerSetting, exchangeSetting = "BROKER_K8S_OIDC_ISSUER", "BROKER_EXCHANGE_K8S_ISSUER"
+	for _, c := range []struct {
+		name     string
+		settings map[string]string
+		want     []string
+	}{
+		{
+			name:     "a malformed entry: a name in capitals",
+			settings: map[string]string{issuerSetting: "First=https://oidc.first.example,second=https://oidc.second.example"},
+			want:     []string{issuerSetting, `"First=https://oidc.first.example"`},
+		},
+		{
+			name:     "a malformed entry: an empty name",
+			settings: map[string]string{issuerSetting: "=https://oidc.first.example,second=https://oidc.second.example"},
+			want:     []string{issuerSetting, `"=https://oidc.first.example"`},
+		},
+		{
+			name:     "a malformed entry: a name longer than 64",
+			settings: map[string]string{issuerSetting: strings.Repeat("a", 65) + "=https://oidc.first.example,second=https://oidc.second.example"},
+			want:     []string{issuerSetting, strconv.Quote(strings.Repeat("a", 65) + "=https://oidc.first.example")},
+		},
+		{
+			name:     "a malformed entry: a URL that is not absolute",
+			settings: map[string]string{issuerSetting: "first=oidc.first.example,second=https://oidc.second.example"},
+			want:     []string{issuerSetting, `"first=oidc.first.example"`},
+		},
+		{
+			name:     "a malformed entry: an empty entry",
+			settings: map[string]string{issuerSetting: "first=https://oidc.first.example,,second=https://oidc.second.example"},
+			want:     []string{issuerSetting, `got ""`},
+		},
+		{
+			name:     "a repeated name",
+			settings: map[string]string{issuerSetting: "first=https://oidc.first.example,first=https://oidc.second.example"},
+			want:     []string{issuerSetting, "first", "https://oidc.first.example", "https://oidc.second.example"},
+		},
+		{
+			name:     "a repeated URL",
+			settings: map[string]string{issuerSetting: "first=https://oidc.first.example,second=https://oidc.first.example"},
+			want:     []string{issuerSetting, "https://oidc.first.example", "first", "second"},
+		},
+		{
+			name:     "a bare URL beside named entries",
+			settings: map[string]string{issuerSetting: "https://oidc.first.example,second=https://oidc.second.example"},
+			want:     []string{issuerSetting, `"https://oidc.first.example"`},
+		},
+		{
+			// An empty value is an unset one to Load.
+			name:     "the list without its audience",
+			settings: map[string]string{"BROKER_K8S_OIDC_AUDIENCE": ""},
+			want:     []string{issuerSetting, "BROKER_K8S_OIDC_AUDIENCE"},
+		},
+		{
+			name:     "the exchange's issuer left out beside two issuers",
+			settings: map[string]string{"BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange"},
+			want:     []string{exchangeSetting, "first, second"},
+		},
+		{
+			name:     "the exchange naming an issuer the list does not hold",
+			settings: map[string]string{"BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange", exchangeSetting: "third"},
+			want:     []string{exchangeSetting, `"third"`, "first, second"},
+		},
+		{
+			name:     "the exchange naming an issuer beside one bare URL",
+			settings: map[string]string{issuerSetting: "https://oidc.first.example", "BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange", exchangeSetting: "first"},
+			want:     []string{exchangeSetting, `"first"`},
+		},
+		{
+			name:     "the exchange naming one issuer twice",
+			settings: map[string]string{"BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange", exchangeSetting: "first,second,first"},
+			want:     []string{exchangeSetting, `"first"`, "twice"},
+		},
+		{
+			name:     "the exchange naming an empty name",
+			settings: map[string]string{"BROKER_EXCHANGE_K8S_AUDIENCE": "dispatch-exchange", exchangeSetting: "first,,second"},
+			want:     []string{exchangeSetting, `"first,,second"`},
+		},
+		{
+			name:     "the exchange's issuer set without the exchange's audience",
+			settings: map[string]string{exchangeSetting: "first"},
+			want:     []string{exchangeSetting, "BROKER_EXCHANGE_K8S_AUDIENCE"},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := namedIssuersEnv()
+			maps.Copy(e, c.settings)
+			refusedNaming(t, e, c.want...)
+		})
+	}
+}
+
+// TestAnAccountEntryNamesItsIssuers pins the issuer names a BROKER_API_ACCOUNTS,
+// BROKER_SERVICE_LOGINS or BROKER_EXCHANGE_ACCOUNTS entry may end with: an entry that names none
+// takes the first issuer of BROKER_K8S_OIDC_ISSUER alone, one that names some takes those in its
+// order, and a Google entry takes none. An exchange entry gives its names in a fifth
+// "="-separated field, after its session field (empty for none), which the broker reads after the
+// entry's last "=", so its session is everything between its third and its last "=", and an entry
+// naming no project names its issuers the same way, <service account>==<person>==<issuer names>.
+// Each setting refuses, naming itself and the entry, a name the list does not hold, one name
+// twice, an entry ending in "=" with no name, a name on a google: entry, and any name while the
+// list is one bare URL. BROKER_EXCHANGE_ACCOUNTS refuses as well, naming
+// BROKER_EXCHANGE_K8S_ISSUER, a name that setting does not name, an entry naming none while that
+// setting leaves out the list's first issuer, and, saying where the issuer field goes, a fixed
+// session holding "=" written with no issuer field; and, naming the session it would read, an
+// entry with no issuer field, whether it names a project or none, whose session is only issuer
+// names of the list, which beside one bare URL stays a session.
+// BROKER_SERVICES takes no names. A BROKER_EXCHANGE_READ_ACCOUNTS entry names none and takes the
+// first issuer alone, even while the exchange takes a second, and it is refused, naming itself,
+// the entry and BROKER_EXCHANGE_K8S_ISSUER, while that setting leaves out the first issuer.
+func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
+	const (
+		dispatchSubject = "system:serviceaccount:example-ns:example-dispatch"
+		daemonSubject   = "system:serviceaccount:legion-system:legion-daemon"
+		workerSubject   = "system:serviceaccount:example-ns:example-worker"
+		readerEntry     = "system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session"
+		exchangeSetting = "BROKER_EXCHANGE_K8S_ISSUER"
+	)
+	// exchangeTaking is namedIssuersEnv with a token exchange that takes the issuers names names.
+	exchangeTaking := func(names string) func() map[string]string {
+		return func() map[string]string {
+			e := namedIssuersEnv()
+			e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
+			e[exchangeSetting] = names
+			return e
+		}
+	}
+	dispatchWith := func(issuers ...string) api.Account {
+		account, _ := api.AccountFor("dispatch")
+		account.Issuers = issuers
+		return account
+	}
+
+	googleWithIssuers := func() map[string]string {
+		e := validVMEnv()
+		e["BROKER_K8S_OIDC_ISSUER"] = namedIssuersEnv()["BROKER_K8S_OIDC_ISSUER"]
+		e["BROKER_K8S_OIDC_AUDIENCE"] = "agent-secrets"
+		return e
+	}
+
+	t.Run("an entry that names no issuer takes the first", func(t *testing.T) {
+		e := namedIssuersEnv()
+		e["BROKER_API_ACCOUNTS"] = "dispatch=" + dispatchSubject
+		e["BROKER_SERVICE_LOGINS"] = "legion-daemon=" + daemonSubject
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := map[string]api.Account{dispatchSubject: dispatchWith("first")}; !reflect.DeepEqual(cfg.APIAccounts, want) {
+			t.Errorf("APIAccounts = %+v, want %+v", cfg.APIAccounts, want)
+		}
+		if want := map[string]enroll.ServiceLogin{daemonSubject: {Service: "legion-daemon", Issuers: []string{"first"}}}; !reflect.DeepEqual(cfg.ServiceLogins, want) {
+			t.Errorf("ServiceLogins = %+v, want %+v", cfg.ServiceLogins, want)
+		}
+	})
+
+	t.Run("an entry names its issuers in its order and a Google entry none", func(t *testing.T) {
+		e := googleWithIssuers()
+		e["BROKER_API_ACCOUNTS"] = "dispatch=" + dispatchSubject + "=second,first listener=google:" + exampleListenerAccount
+		e["BROKER_SERVICE_LOGINS"] = "legion-daemon=" + daemonSubject + "=second"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := map[string]api.Account{dispatchSubject: dispatchWith("second", "first")}; !reflect.DeepEqual(cfg.APIAccounts, want) {
+			t.Errorf("APIAccounts = %+v, want %+v", cfg.APIAccounts, want)
+		}
+		listener, _ := api.AccountFor("listener")
+		if want := map[string]api.Account{exampleListenerAccount: listener}; !reflect.DeepEqual(cfg.GoogleAPIAccounts, want) {
+			t.Errorf("GoogleAPIAccounts = %+v, want %+v, which names no issuer", cfg.GoogleAPIAccounts, want)
+		}
+		if want := map[string]enroll.ServiceLogin{daemonSubject: {Service: "legion-daemon", Issuers: []string{"second"}}}; !reflect.DeepEqual(cfg.ServiceLogins, want) {
+			t.Errorf("ServiceLogins = %+v, want %+v", cfg.ServiceLogins, want)
+		}
+	})
+
+	t.Run("an exchange entry names its issuers after its session slot", func(t *testing.T) {
+		e := exchangeTaking("first,second")()
+		e["BROKER_EXCHANGE_ACCOUNTS"] = workerSubject + "=ACME=ada@example.com " +
+			daemonSubject + "=ACME=ada@example.com=legion-daemon:ACME=1=second,first " +
+			dispatchSubject + "=ACME=ada@example.com==second"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []exchange.AccountEntry{
+			{Account: workerSubject, Project: "ACME", Person: "ada@example.com", Issuers: []string{"first"}},
+			{Account: daemonSubject, Project: "ACME", Person: "ada@example.com", Session: "legion-daemon:ACME=1", Issuers: []string{"second", "first"}},
+			{Account: dispatchSubject, Project: "ACME", Person: "ada@example.com", Issuers: []string{"second"}},
+		}
+		if !reflect.DeepEqual(cfg.ExchangeAccounts, want) {
+			t.Errorf("ExchangeAccounts = %+v, want %+v", cfg.ExchangeAccounts, want)
+		}
+	})
+
+	t.Run("an exchange entry's issuers after an empty session load, and a session of other text stays a session", func(t *testing.T) {
+		e := exchangeTaking("first,second")()
+		e["BROKER_EXCHANGE_ACCOUNTS"] = workerSubject + "=ACME=ada@example.com==first,second " +
+			daemonSubject + "=ACME=ada@example.com=first,example-session"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []exchange.AccountEntry{
+			{Account: workerSubject, Project: "ACME", Person: "ada@example.com", Issuers: []string{"first", "second"}},
+			{Account: daemonSubject, Project: "ACME", Person: "ada@example.com", Session: "first,example-session", Issuers: []string{"first"}},
+		}
+		if !reflect.DeepEqual(cfg.ExchangeAccounts, want) {
+			t.Errorf("ExchangeAccounts = %+v, want %+v", cfg.ExchangeAccounts, want)
+		}
+	})
+
+	t.Run("an exchange entry naming no project and no session names its issuers", func(t *testing.T) {
+		e := exchangeTaking("first,second")()
+		e["BROKER_EXCHANGE_ACCOUNTS"] = workerSubject + "==ada@example.com==first,second"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []exchange.AccountEntry{{Account: workerSubject, Project: "", Person: "ada@example.com", Issuers: []string{"first", "second"}}}
+		if !reflect.DeepEqual(cfg.ExchangeAccounts, want) {
+			t.Errorf("ExchangeAccounts = %+v, want %+v", cfg.ExchangeAccounts, want)
+		}
+	})
+
+	t.Run("beside one bare URL an exchange session of issuer-like names stays a session", func(t *testing.T) {
+		e := withExchange()
+		e["BROKER_EXCHANGE_ACCOUNTS"] = workerSubject + "=ACME=ada@example.com=first,second"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []exchange.AccountEntry{{Account: workerSubject, Project: "ACME", Person: "ada@example.com", Session: "first,second", Issuers: []string{""}}}
+		if !reflect.DeepEqual(cfg.ExchangeAccounts, want) {
+			t.Errorf("ExchangeAccounts = %+v, want %+v", cfg.ExchangeAccounts, want)
+		}
+	})
+
+	t.Run("a read entry takes the first issuer alone while the exchange takes two", func(t *testing.T) {
+		e := exchangeTaking("first,second")()
+		e["BROKER_EXCHANGE_READ_ACCOUNTS"] = readerEntry
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []exchange.ReadEntry{{Account: "system:serviceaccount:example-ns:example-reader", Service: "example-reader", Session: "example-reader-session", Issuers: []string{"first"}}}
+		if !reflect.DeepEqual(cfg.ExchangeReadAccounts, want) {
+			t.Errorf("ExchangeReadAccounts = %+v, want %+v", cfg.ExchangeReadAccounts, want)
+		}
+	})
+
+	for _, c := range []struct {
+		name    string
+		base    func() map[string]string
+		setting string
+		entry   string
+		want    []string
+	}{
+		{"BROKER_API_ACCOUNTS: an issuer the list does not hold", namedIssuersEnv, "BROKER_API_ACCOUNTS", "dispatch=" + dispatchSubject + "=third", []string{`"third"`, "first, second"}},
+		{"BROKER_SERVICE_LOGINS: an issuer the list does not hold", namedIssuersEnv, "BROKER_SERVICE_LOGINS", "legion-daemon=" + daemonSubject + "=third", []string{`"third"`, "first, second"}},
+		{"BROKER_API_ACCOUNTS: one issuer twice", namedIssuersEnv, "BROKER_API_ACCOUNTS", "dispatch=" + dispatchSubject + "=first,second,first", []string{`"first"`}},
+		{"BROKER_SERVICE_LOGINS: one issuer twice", namedIssuersEnv, "BROKER_SERVICE_LOGINS", "legion-daemon=" + daemonSubject + "=second,second", []string{`"second"`}},
+		{"BROKER_API_ACCOUNTS: an entry ending in = with no name", namedIssuersEnv, "BROKER_API_ACCOUNTS", "dispatch=" + dispatchSubject + "=", nil},
+		{"BROKER_SERVICE_LOGINS: an entry ending in = with no name", namedIssuersEnv, "BROKER_SERVICE_LOGINS", "legion-daemon=" + daemonSubject + "=", nil},
+		{"BROKER_API_ACCOUNTS: an issuer name on a google: entry", googleWithIssuers, "BROKER_API_ACCOUNTS", "listener=google:" + exampleListenerAccount + "=first", []string{"Google"}},
+		{"BROKER_API_ACCOUNTS: an issuer name beside one bare URL", withK8sIssuer, "BROKER_API_ACCOUNTS", "dispatch=" + dispatchSubject + "=first", []string{"BROKER_K8S_OIDC_ISSUER", "bare"}},
+		{"BROKER_SERVICE_LOGINS: an issuer name beside one bare URL", withK8sIssuer, "BROKER_SERVICE_LOGINS", "legion-daemon=" + daemonSubject + "=first", []string{"BROKER_K8S_OIDC_ISSUER", "bare"}},
+		{"BROKER_SERVICES: an entry names no issuer", namedIssuersEnv, "BROKER_SERVICES", "legion-daemon=system:serviceaccount:legion:legion-worker=first", nil},
+		{"BROKER_EXCHANGE_ACCOUNTS: an issuer the list does not hold", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com==third", []string{`"third"`, exchangeSetting}},
+		{"BROKER_EXCHANGE_ACCOUNTS: an issuer BROKER_EXCHANGE_K8S_ISSUER does not name", exchangeTaking("first"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com==second", []string{`"second"`, exchangeSetting}},
+		{"BROKER_EXCHANGE_ACCOUNTS: one issuer twice", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=example-session=first,first", []string{`"first"`, "twice", exchangeSetting}},
+		{"BROKER_EXCHANGE_ACCOUNTS: an entry ending in = with no name", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=example-session=", nil},
+		{"BROKER_EXCHANGE_ACCOUNTS: an entry naming none while the exchange leaves out the first issuer", exchangeTaking("second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com", []string{`"first"`, exchangeSetting}},
+		{"BROKER_EXCHANGE_ACCOUNTS: an issuer name beside one bare URL", withExchange, "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com==first", []string{"BROKER_K8S_OIDC_ISSUER", "bare"}},
+		{"BROKER_EXCHANGE_ACCOUNTS: a fixed session holding = with no issuer field", withExchange, "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=legion-daemon:EXAMPLE=1", []string{"<session>=<issuer name>"}},
+		{"BROKER_EXCHANGE_ACCOUNTS: issuer names as the session of an entry with no issuer field", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=first,second", []string{`reads "first,second"`, "as its session", "<service account>=<project>=<person>==<issuer names>"}},
+		{"BROKER_EXCHANGE_ACCOUNTS: one issuer name as the session of an entry with no issuer field", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com=second", []string{`reads "second"`, "as its session", "<service account>=<project>=<person>==<issuer names>"}},
+		{"BROKER_EXCHANGE_ACCOUNTS: issuer names as the session of an entry naming no project", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "==ada@example.com=first,second", []string{`reads "first,second"`, "as its session", "<service account>=<project>=<person>==<issuer names>"}},
+		{"BROKER_EXCHANGE_READ_ACCOUNTS: an entry while the exchange leaves out the first issuer", exchangeTaking("second"), "BROKER_EXCHANGE_READ_ACCOUNTS", readerEntry, []string{`"first"`, exchangeSetting}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := c.base()
+			e[c.setting] = c.entry
+			refusedNaming(t, e, append([]string{c.setting, strconv.Quote(c.entry)}, c.want...)...)
+		})
+	}
+}
+
 // TestLoadReadsTheAccessTokenLifetime pins BROKER_ACCESS_TOKEN_SECONDS: whole seconds, 900 by
 // default, and a refusal naming the variable and its range for anything else.
 func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
@@ -2095,11 +2524,12 @@ func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
 }
 
 // TestLoadReadsTheExchangeAccounts pins BROKER_EXCHANGE_ACCOUNTS: whitespace-separated
-// <account>=<project>=<person>[=<session>] entries in order, none when unset, a session that may
-// itself carry "=", an empty project (the shared public-session account's entry, whose named
-// tokens name no project), and refusals naming the entry for one that is not of that form, has a
-// blank account or person, names a namespace's default account or lists an account twice. It
-// needs the cluster issuer and the exchange audience, whose tokens its pods present.
+// <account>=<project>=<person>[=<session>] entries in order, each taking the list's one issuer,
+// none when unset, a session that may itself carry "=" when the issuer field follows it, an empty
+// project (the shared public-session account's entry, whose named tokens name no project), and
+// refusals naming the entry for one that is not of that form, has a blank account or person,
+// names a namespace's default account or lists an account twice. It needs the cluster issuer and
+// the exchange audience, whose tokens its pods present.
 func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -2108,25 +2538,35 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 	if cfg.ExchangeAccounts != nil {
 		t.Fatalf("ExchangeAccounts = %v, want nil when BROKER_EXCHANGE_ACCOUNTS is unset", cfg.ExchangeAccounts)
 	}
-	withExchange := func() map[string]string {
-		e := withK8sIssuer()
-		e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
-		return e
-	}
 	e := withExchange()
 	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com\n" +
-		" system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE=1 " +
+		" system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE " +
 		"system:serviceaccount:example-ns:example-public==ada@example.com"
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Each entry takes the list's one issuer, which, written as a bare URL, has the empty name.
 	want := []exchange.AccountEntry{
-		{Account: "system:serviceaccount:example-ns:example-worker", Project: "EXAMPLE", Person: "ada@example.com"},
-		{Account: "system:serviceaccount:example-ns:example-daemon", Project: "EXAMPLE", Person: "ada@example.com", Session: "legion-daemon:EXAMPLE=1"},
-		{Account: "system:serviceaccount:example-ns:example-public", Project: "", Person: "ada@example.com"},
+		{Account: "system:serviceaccount:example-ns:example-worker", Project: "EXAMPLE", Person: "ada@example.com", Issuers: []string{""}},
+		{Account: "system:serviceaccount:example-ns:example-daemon", Project: "EXAMPLE", Person: "ada@example.com", Session: "legion-daemon:EXAMPLE", Issuers: []string{""}},
+		{Account: "system:serviceaccount:example-ns:example-public", Project: "", Person: "ada@example.com", Issuers: []string{""}},
 	}
-	if !slices.Equal(cfg.ExchangeAccounts, want) {
+	if !reflect.DeepEqual(cfg.ExchangeAccounts, want) {
+		t.Fatalf("ExchangeAccounts = %v, want %v", cfg.ExchangeAccounts, want)
+	}
+	// A session that holds "=" is fixed by an entry whose issuer field follows it, here naming the
+	// list's one issuer by its name.
+	e = withExchange()
+	e["BROKER_K8S_OIDC_ISSUER"] = "first=https://oidc.first.example"
+	e["BROKER_EXCHANGE_ACCOUNTS"] = "system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE=1=first"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	want = []exchange.AccountEntry{
+		{Account: "system:serviceaccount:example-ns:example-daemon", Project: "EXAMPLE", Person: "ada@example.com", Session: "legion-daemon:EXAMPLE=1", Issuers: []string{"first"}},
+	}
+	if !reflect.DeepEqual(cfg.ExchangeAccounts, want) {
 		t.Fatalf("ExchangeAccounts = %v, want %v", cfg.ExchangeAccounts, want)
 	}
 	for _, bad := range []string{
@@ -2158,12 +2598,13 @@ func TestLoadReadsTheExchangeAccounts(t *testing.T) {
 }
 
 // TestLoadReadsTheExchangeReadAccounts pins BROKER_EXCHANGE_READ_ACCOUNTS: whitespace-separated
-// <account>=<service>=<session> entries in order, none when unset, a session that may itself
-// carry "=", and refusals naming the setting and the entry for one with fewer than three fields
-// or a blank one, an account that is not a service account's subject, a namespace's default
-// account, a service that is not a service's name or is the shared owner, and an account listed
-// twice. An account BROKER_EXCHANGE_ACCOUNTS lists too is refused naming both settings, and the
-// setting needs the cluster issuer and the exchange audience, whose tokens its pods present.
+// <account>=<service>=<session> entries in order, each taking the list's one issuer, none when
+// unset, a session that may itself carry "=", and refusals naming the setting and the entry for
+// one with fewer than three fields or a blank one, an account that is not a service account's
+// subject, a namespace's default account, a service that is not a service's name or is the shared
+// owner, and an account listed twice. An account BROKER_EXCHANGE_ACCOUNTS lists too is refused
+// naming both settings, and the setting needs the cluster issuer and the exchange audience, whose
+// tokens its pods present.
 func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
@@ -2184,12 +2625,13 @@ func TestLoadReadsTheExchangeReadAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Each entry takes the list's one issuer, which, written as a bare URL, has the empty name.
 	want := []exchange.ReadEntry{
-		{Account: "system:serviceaccount:example-ns:example-reader", Service: "example-reader", Session: "example-reader-session"},
-		{Account: "system:serviceaccount:example-ns:example-viewer", Service: "example-viewer", Session: "example-viewer=1"},
+		{Account: "system:serviceaccount:example-ns:example-reader", Service: "example-reader", Session: "example-reader-session", Issuers: []string{""}},
+		{Account: "system:serviceaccount:example-ns:example-viewer", Service: "example-viewer", Session: "example-viewer=1", Issuers: []string{""}},
 	}
-	if !slices.Equal(cfg.ExchangeReadAccounts, want) {
-		t.Fatalf("ExchangeReadAccounts = %v, want %v", cfg.ExchangeReadAccounts, want)
+	if !reflect.DeepEqual(cfg.ExchangeReadAccounts, want) {
+		t.Fatalf("ExchangeReadAccounts = %#v, want %#v", cfg.ExchangeReadAccounts, want)
 	}
 	for _, bad := range []string{
 		"system:serviceaccount:example-ns:example-reader",

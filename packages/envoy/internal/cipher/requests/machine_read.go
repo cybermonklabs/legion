@@ -160,10 +160,10 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	var live bool
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select g.enrollment_id, g.expires_at, g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
-		g.request_id, r.reason, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, c.service, c.host, e.projects
+		g.request_id, r.reason, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, e.issuer, c.service, c.host, e.projects
 		from grants g join enrollments e on e.id=g.enrollment_id join requests r on r.id=g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where g.id=$1`, grantID).
-		Scan(&enrollmentID, &expires, &live, &requestID, &reason, &policyVersion, &decidedBy, &lifetime, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Service, &enr.Host, &enr.Projects)
+		Scan(&enrollmentID, &expires, &live, &requestID, &reason, &policyVersion, &decidedBy, &lifetime, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Issuer, &enr.Service, &enr.Host, &enr.Projects)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return grantRelease{}, ErrGrantNotLive
 	}
@@ -1422,14 +1422,14 @@ const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce
 	where (cr.approver = $1 or cr.approver = $2) and `
 
 // credentialColumns are the enrollment's columns namedProjects reads, over a left join aliased
-// enr, in the order a scan into enrollmentRow's Kind, Operator, Subject and Projects takes them. A
-// record no enrollment asked answers an empty kind, which names no project.
-const credentialColumns = `coalesce(enr.kind, ''), enr.operator, enr.subject, coalesce(enr.projects, '{}')`
+// enr, in the order a scan into enrollmentRow's Kind, Operator, Subject, Issuer and Projects takes
+// them. A record no enrollment asked answers an empty kind, which names no project.
+const credentialColumns = `coalesce(enr.kind, ''), enr.operator, enr.subject, enr.issuer, coalesce(enr.projects, '{}')`
 
 // currentCredentialColumns are credentialColumns over a left join aliased cur: the enrollment a
 // request hangs off now, where enr is the one that asked. A record with no request (a machine
 // login) answers an empty kind, which names no project.
-const currentCredentialColumns = `coalesce(cur.kind, ''), cur.operator, cur.subject, coalesce(cur.projects, '{}')`
+const currentCredentialColumns = `coalesce(cur.kind, ''), cur.operator, cur.subject, cur.issuer, coalesce(cur.projects, '{}')`
 
 // pendingForApproverQuery is PendingForApprover's statement for a caller that asks for no state
 // (PendingStates' zero value): every record of the approver still pending by what is stored,
@@ -1551,8 +1551,8 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 		var createdAt, expiresAt time.Time
 		var asked, current enrollmentRow
 		if err := rows.Scan(&id, &kind, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt, &notify,
-			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
-			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
+			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Issuer, &asked.Projects,
+			&current.Kind, &current.Operator, &current.Subject, &current.Issuer, &current.Projects); err != nil {
 			return nil, err
 		}
 		identifiers, reason, err := m.requestedIdentifiers(canonical, createdAt)
@@ -1807,8 +1807,8 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		left join enrollments cur on cur.id = req.enrollment_id
 		where cr.id=$1`, recordID).
 		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state, &judgeDeciding,
-			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
-			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
+			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Issuer, &asked.Projects,
+			&current.Kind, &current.Operator, &current.Subject, &current.Issuer, &current.Projects); err != nil {
 		return RecordDetail{}, err
 	}
 	// A record the judge holds reads pending, with JudgeDeciding saying who decides it: the page
@@ -1983,7 +1983,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	}
 	rows, err := m.Store.Pool.Query(ctx, `select g.id, r.record_id, e.kind, e.runtime_id, coalesce(e.operator,''), e.slot, coalesce(g.approver,''), coalesce(r.decided_by,''), g.expires_at, g.created_at,
 		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}'),
-		coalesce(e.projects, '{}'), e.subject, r.reason, `+credentialColumns+`
+		coalesce(e.projects, '{}'), e.subject, e.issuer, r.reason, `+credentialColumns+`
 		from grants g
 		join requests r on r.id=g.request_id
 		join enrollments e on e.id=g.enrollment_id
@@ -2013,8 +2013,8 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		var s seen
 		var current, asked enrollmentRow
 		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names,
-			&current.Projects, &current.Subject, &s.reason,
-			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects); err != nil {
+			&current.Projects, &current.Subject, &current.Issuer, &s.reason,
+			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Issuer, &asked.Projects); err != nil {
 			return nil, err
 		}
 		current.Kind = g.Enrollment.Kind

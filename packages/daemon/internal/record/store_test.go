@@ -1296,6 +1296,82 @@ func TestClaimRowLeasesADueRowExactlyOnceUntilItsLeaseLapses(t *testing.T) {
 	})
 }
 
+// HoldOutbox puts back a row its lane claimed and did not run: the row is due again at the moment
+// the hold names, unleased, with the hold's error as its last, and its attempts are what they
+// were, where RetryOutbox counts one. A hold under a lease that is no longer the row's changes
+// nothing.
+func TestHoldOutboxPutsARowBackWithoutCountingAnAttempt(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	now := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	var id int64
+	inTx(t, st, func(tx pgx.Tx) {
+		row, err := NewOutboxRow("LEGION-208", MergeQueueRead{Number: 86, Head: "sha-1"}, now)
+		must(t, err)
+		must(t, records.Enqueue(ctx, tx, row))
+		must(t, tx.QueryRow(ctx, "select id from outbox").Scan(&id))
+	})
+	claim := func(at time.Time) OutboxRow {
+		t.Helper()
+		var claimed OutboxRow
+		inTx(t, st, func(tx pgx.Tx) {
+			row, ok, err := records.ClaimRow(ctx, tx, id, at, time.Minute)
+			must(t, err)
+			if !ok {
+				t.Fatalf("the row is not claimable at %s", at.Format(time.RFC3339))
+			}
+			claimed = row
+		})
+		return claimed
+	}
+
+	first := claim(now)
+	now = now.Add(time.Second)
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.RetryOutbox(ctx, tx, id, first.LeaseToken, now, "GitHub answered 502"))
+	})
+
+	const held = "the project release holds every start until the daemon's next boot"
+	for hold := 1; hold <= 3; hold++ {
+		leased := claim(now)
+		if leased.Attempts != 1 {
+			t.Fatalf("hold %d: the claimed row has %d attempts, want the one its retry counted", hold, leased.Attempts)
+		}
+		due := now.Add(30 * time.Second)
+		inTx(t, st, func(tx pgx.Tx) {
+			must(t, records.HoldOutbox(ctx, tx, id, leased.LeaseToken, due, held))
+			early, err := records.DueRows(ctx, tx, "LEGION", "", nil, due.Add(-time.Second))
+			must(t, err)
+			if len(early) != 0 {
+				t.Fatalf("hold %d: rows due before the hold's moment = %#v, want none", hold, early)
+			}
+			rows, err := records.DueRows(ctx, tx, "LEGION", "", nil, due)
+			must(t, err)
+			if len(rows) != 1 || rows[0].ID != id {
+				t.Fatalf("hold %d: rows due at the hold's moment = %#v, want the held row alone", hold, rows)
+			}
+			if got := rows[0]; got.Attempts != 1 || !got.NextAt.Equal(due) || got.LastError != held || got.LeaseToken != "" || got.LeaseUntil != nil {
+				t.Fatalf("hold %d: the row has %d attempts, is due at %s on %q, and is leased %q until %v; want its one attempt, due at %s on the hold's error, unleased",
+					hold, got.Attempts, got.NextAt.UTC().Format(time.RFC3339), got.LastError, got.LeaseToken, got.LeaseUntil, due.Format(time.RFC3339))
+			}
+		})
+		now = due
+	}
+
+	leased := claim(now)
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.HoldOutbox(ctx, tx, id, "stale-lease", now.Add(24*time.Hour), "stale"))
+		var token, lastError string
+		var nextAt time.Time
+		must(t, tx.QueryRow(ctx, "select lease_token, last_error, next_at from outbox where id = $1", id).Scan(&token, &lastError, &nextAt))
+		if token != leased.LeaseToken || lastError != held || !nextAt.Equal(now) {
+			t.Fatalf("after a stale lease's hold the row is leased %q with %q, due at %s; want it untouched under the lease %q",
+				token, lastError, nextAt.Format(time.RFC3339), leased.LeaseToken)
+		}
+	})
+}
+
 // ClaimRow decides by the row as it is at the claim, not as the lane listed it: a start the branch
 // rule holds behind an older issue_branch row of its issue is refused though due and unleased, and
 // claimable once the branch row finishes.
