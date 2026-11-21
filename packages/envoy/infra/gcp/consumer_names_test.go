@@ -43,26 +43,32 @@ func consumerNamesVars(env map[string]any) []string {
 	return nil
 }
 
-// withoutConsumerNames is template with ENVOY_CONSUMER_NAMES taken out of every container's
-// environment, so a template rendered with the setting compares with one rendered without it on
-// everything else; a container with no environment is left as it is. It edits template, which
-// deploymentPodTemplate builds afresh on each call.
-func withoutConsumerNames(template map[string]any) map[string]any {
-	for _, item := range template["spec"].(map[string]any)["containers"].([]any) {
-		container := item.(map[string]any)
-		env, ok := container["env"].([]any)
-		if !ok {
-			continue
-		}
-		kept := []any{}
-		for _, variable := range env {
-			if variable.(map[string]any)["name"] != "ENVOY_CONSUMER_NAMES" {
-				kept = append(kept, variable)
+// withoutCreatorsConsumerNames is objects, renderedObjects of a render with the setting, with
+// ENVOY_CONSUMER_NAMES taken out of the containers of the creators' Deployments, named creators,
+// and of no other object, so it compares with the render without the setting on everything else:
+// a variable that reached any other container, an init container of a creator's included, still
+// differs; a container with no environment is left as it is. It edits objects, which
+// renderedObjects builds afresh on each call.
+func withoutCreatorsConsumerNames(objects map[string]any, creators ...string) map[string]any {
+	for _, name := range creators {
+		deployment := objects[deploymentType+"::"+name].(map[string]any)
+		template := deployment["spec"].(map[string]any)["template"].(map[string]any)
+		for _, item := range template["spec"].(map[string]any)["containers"].([]any) {
+			container := item.(map[string]any)
+			env, ok := container["env"].([]any)
+			if !ok {
+				continue
 			}
+			kept := []any{}
+			for _, variable := range env {
+				if variable.(map[string]any)["name"] != "ENVOY_CONSUMER_NAMES" {
+					kept = append(kept, variable)
+				}
+			}
+			container["env"] = kept
 		}
-		container["env"] = kept
 	}
-	return template
+	return objects
 }
 
 // renderedObjects is every registration of m, its inputs with every output and secret wrapper off,
@@ -134,22 +140,25 @@ var clusteredListenerPlaces = []struct {
 
 // gcp:ClusteredNatsHub renders its session listener's consumer-name setting into the listener
 // container's environment exactly as it is given, wherever the listener is declared, and changes
-// nothing else of the pod; unset, it renders no variable, so the pod is what it was before the
-// input existed (clustered-hub-listener-pod.golden, and testdata/production-render.golden byte for
-// byte). A setting the creators refuse stops the constructor with the InputError naming the
-// listener's input, quoting the value, before anything registers.
+// nothing else of any object the hub renders, the tailnet hosts' Deployment among them; unset, it
+// renders no variable, so the pod is what it was before the input existed
+// (clustered-hub-listener-pod.golden, and testdata/production-render.golden byte for byte). A
+// setting the creators refuse stops the constructor with the InputError naming the listener's
+// input, quoting the value, before anything registers.
 func TestClusteredNatsHubListenerConsumerNames(t *testing.T) {
 	for _, place := range clusteredListenerPlaces {
 		args := clusteredArgs()
 		place.at(args)
-		base := deploymentPodTemplate(t, runClusteredHub(t, args), clusteredListenerName)
+		base := renderedObjects(runClusteredHub(t, args))
 		for _, row := range consumerNamesRenderings {
 			t.Run(place.path+" renders "+row.name, func(t *testing.T) {
 				args := clusteredArgs()
 				place.at(args).ConsumerNames = row.value
-				template := deploymentPodTemplate(t, runClusteredHub(t, args), clusteredListenerName)
+				m := runClusteredHub(t, args)
+				template := deploymentPodTemplate(t, m, clusteredListenerName)
 				require.Equal(t, row.want, consumerNamesVars(containerEnv(t, podContainer(t, template, "listener"))))
-				require.Equal(t, base, withoutConsumerNames(template), "the setting changes nothing else of the pod")
+				require.Equal(t, base, withoutCreatorsConsumerNames(renderedObjects(m), clusteredListenerName),
+					"the setting reaches no other container and changes nothing else")
 			})
 		}
 		for _, value := range consumerNamesRefusals {
@@ -172,14 +181,15 @@ func TestClusteredNatsHubListenerConsumerNames(t *testing.T) {
 
 // gcp:Dispatch renders its consumer-name setting into both creators' environments, the app's
 // envoy-dispatch and the listener's envoy-listener, exactly as it is given, and changes nothing
-// else of either pod or of the front door's, which creates no consumer; unset, it renders no
-// variable (dispatch-pod.golden, dispatch-listener-pod.golden, and
+// else of any object it renders, the front door's Deployment, which creates no consumer, among
+// them; unset, it renders no variable (dispatch-pod.golden, dispatch-listener-pod.golden, and
 // testdata/production-render.golden byte for byte). A setting the creators refuse stops the
 // constructor with the InputError naming the input, quoting the value, before anything but the
 // test's providers registers.
 func TestDispatchConsumerNames(t *testing.T) {
-	base, err := runDispatch(t, dispatchArgs(), true)
+	baseMocks, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
+	base := renderedObjects(baseMocks)
 	for _, row := range consumerNamesRenderings {
 		t.Run("renders "+row.name, func(t *testing.T) {
 			args := dispatchArgs()
@@ -188,10 +198,8 @@ func TestDispatchConsumerNames(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, row.want, consumerNamesVars(appEnv(t, m)), "the app")
 			require.Equal(t, row.want, consumerNamesVars(listenerEnv(t, m)), "the listener")
-			for _, deployment := range []string{"example-dispatch", "example-dispatch-listener", "example-dispatch-tailnet"} {
-				require.Equal(t, deploymentPodTemplate(t, base, deployment), withoutConsumerNames(deploymentPodTemplate(t, m, deployment)),
-					"the setting changes nothing else of %s's pod", deployment)
-			}
+			require.Equal(t, base, withoutCreatorsConsumerNames(renderedObjects(m), "example-dispatch", "example-dispatch-listener"),
+				"the setting reaches no other container and changes nothing else")
 		})
 	}
 	for _, value := range consumerNamesRefusals {
