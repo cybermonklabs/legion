@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -135,9 +136,10 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// The project comes from the body, not from the address, so this row is classed
 	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves createIssue's
-	// (issue_create.go). It runs before the row is written: a credential that may write one
-	// project asks only of that project, and asking of every project is asking outside it.
-	if covers, scoped := s.callerProject(r); scoped && covers != project {
+	// (issue_create.go). It runs before the row is written. A credential that names one project
+	// asks of every project that access.CredentialCovers covers, and of all projects at once,
+	// which the empty project names. The one exception is a private project it does not name.
+	if covers, scoped := s.callerProject(r); scoped && !access.CredentialCovers(access.Credential{Listed: []string{covers}}, project, false) {
 		refuseWriteOutsideProjectScope(w, covers, project)
 		return
 	}

@@ -10,6 +10,8 @@ agent's host (Oh My Pi or Claude Code) puts it on the agent's `PATH` and tells i
 it acts for. `dispatch --help` lists the commands, `dispatch <command> --help` gives a command's
 flags and an example, and `--dry-run` checks a command's arguments as the call would and prints
 them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref), sending nothing.
+`dispatch proxy --dry-run` checks the proxy's arguments and its environment instead. It prints the
+Dispatch server, the session and the socket that the proxy would use, and starts nothing.
 The `dispatch` skill in this repository, `skills/dispatch/SKILL.md`, teaches the workflow. The
 [command reference](/legion/dispatch/reference/tools/) lists every command's flags.
 
@@ -51,9 +53,9 @@ goes through a `dispatch` command.
    resolves.
 
    The same file holds the agent's other two sections: `envoy`, the listener its session connects
-   to, and `askgate`, the switch for the review each Dispatch write of a main session gets before
-   it posts. AskGate is on in every session that loads the Oh My Pi plugin; this turns it off for
-   the session that reads this file:
+   to, and `askgate`, the switch for AskGate, the review that some writes of a main session's
+   `dispatch` commands get before they post. AskGate is on in every session that loads the Oh My Pi
+   plugin; this turns it off for the session that reads this file:
 
    ```json
    { "askgate": { "enabled": false } }
@@ -61,7 +63,7 @@ goes through a `dispatch` command.
 
    Only that file switches it. A checkout's `.envoy/envoy.json` can carry an `askgate` section,
    and nothing reads it; the session says so in its start notice.
-   [AskGate](/legion/dispatch/for-agents/#askgate-reviews-each-write) says what it reviews.
+   [AskGate](/legion/dispatch/for-agents/#what-askgate-reviews) says what it reviews.
 
 Everything the agent writes is attributed to the person who made the token: Dispatch shows the
 agent's name followed by `(for <login>)`, and an issue the agent creates without naming an
@@ -102,6 +104,9 @@ New epic waits for the create's answer before registering parent changes. Start 
 A command with several problems is refused once, with every problem listed, so the next run can
 fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or AskGate refused it. It
 exits 2 on a usage error, such as an unknown command or flags it refused before any request.
+`dispatch proxy` exits with the status of the command it runs instead. It exits 127 for a command
+that does not exist, 126 for a command that cannot run, 128 plus the signal's number for a command
+that a signal ended, and 2 on a usage error or when it cannot start ([The proxy](#the-proxy)).
 
 Long text, such as a message body or a document, goes on stdin through a quoted here-document, so
 the shell expands nothing in it:
@@ -115,13 +120,15 @@ EOF
 Only one flag of a call may read stdin. The command refuses `--body -`, and its refusal names
 `--body-file -`.
 
-## AskGate reviews each write
+## What AskGate reviews
 
-In an Oh My Pi session with the Envoy plugin, one model call reviews each Dispatch write of the
-main agent before it posts: `dispatch ask`, `message`, `edit-ask`, `comment`, `doc-edit`,
-`request-approval`, an `issue` with a spec, and an `artifact` that uploads a markdown document.
-Every other command posts unreviewed. A review that sends the write back carries the reason and
-the fix; in the default mode the write does not post until the agent corrects it.
+In an Oh My Pi session with the Envoy plugin, one model call reviews these writes of the main
+agent's `dispatch` commands before they post: `dispatch ask`, `message`, `edit-ask`, `comment`,
+`doc-edit`, `request-approval`, an `issue` with a spec, and an `artifact` that uploads a markdown
+document. Every other command posts unreviewed. The comment POST that `dispatch proxy` sends for a
+tool posts unreviewed too, in block mode as well ([The proxy](#the-proxy) says why). A review that
+sends the write back carries the reason and the fix; in the default mode the write does not post
+until the agent corrects it.
 
 AskGate reads one form of the call, so that the bytes it reviews are the bytes that post:
 
@@ -381,12 +388,14 @@ text before its body, or `Re: block <id> (removed)` once an edit removed it.
 The `dispatch` commands cover everyday work. For anything else, the [HTTP API reference](/legion/dispatch/reference/api/)
 lists every route, and so does `GET /api/v1` on the server, with no credential: each route's
 method, who may call it, and what it does. An agent calls the API with its token as
-`Authorization: Bearer <token>`.
+`Authorization: Bearer <token>`. A session under `DISPATCH_TOKEN_BROKER=1` holds no bearer: its
+tools read the API, and post a comment, through `dispatch proxy` ([The proxy](#the-proxy)).
 
-Every `POST` and `PATCH` an agent makes through `dispatch` is keyed: each write a command makes
-carries an `Idempotency-Key` header of its own, and the command asks again under that key when an
-attempt fails on the way, gets no answer for 20 seconds while none of its body is going out,
-Dispatch answers 5xx, 408 or 429, or Dispatch is still running an earlier attempt
+Every `POST` and `PATCH` an agent makes through `dispatch` is keyed: each write that a command
+other than `dispatch proxy` makes carries an `Idempotency-Key` header of its own, and the command
+asks again under that key when an attempt fails on the way, gets no answer for 20 seconds while
+none of its body is going out, Dispatch answers 5xx, 408 or 429, or Dispatch is still running an
+earlier attempt
 (`409 KEY_IN_FLIGHT`): at most five attempts, the last starting within 30 seconds of the first, and
 the whole command within 60. Once an attempt got no answer for 20 seconds or was told
 `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and it finishes it whatever the
@@ -412,3 +421,130 @@ the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters
 `_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
 each key's answer for 24 hours; the same key with a different request is refused
 `422 KEY_REUSED`.
+
+## The proxy
+
+`dispatch proxy --socket <path> -- <command> [<argument>...]` runs a command, such as a script that
+reads Dispatch, with a proxy to Dispatch on a unix socket. It is for a session under
+`DISPATCH_TOKEN_BROKER=1`, which holds no bearer to give a tool, and it runs only there. It is the
+one `dispatch` command that no Dispatch spec defines. `dispatch proxy --help` prints its help, and
+the [command reference](/legion/dispatch/reference/tools/) shows the same text.
+
+The proxy listens on the socket for the whole run of the command. It starts the command only when
+the socket takes connections, with `DISPATCH_PROXY_SOCKET` set to the socket's path. The command
+inherits the proxy's standard input, standard output and standard error. The proxy sends each
+request to the Dispatch server and the session that a `dispatch` command resolves in the same
+environment. It sends the request with the session's broker token and a new DPoP proof, so the
+tool holds no credential and signs nothing.
+
+The proxy gives back Dispatch's status, end-to-end headers and body as Dispatch sent them, a binary
+body included. An answer that carries `Transfer-Encoding` as well as `Content-Length` is the one
+exception: it comes back without that `Content-Length` (RFC 9112, section 6.3), with its body
+chunked. It gives back a redirect, and does not follow it. It trades for the token once before it
+starts the command. It trades again only when the token has less than five minutes to live, or
+after Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE`. After that answer, it sends the request once
+more with the new token.
+
+The proxy sends two kinds of request, and refuses every other one:
+
+- a GET whose path starts with `/api/`
+- a POST to `/api/v1/issues/<key>/comments` that carries an `Idempotency-Key` header
+
+It sends no other write. A tool reads much and writes little. Each other write goes through the
+`dispatch` command named for it, so AskGate reviews it wherever AskGate gates that command. The
+comment is the one write that a tool needs, such as a report that it posts at the end of a run.
+The `Idempotency-Key` lets the tool send the comment again after a lost answer, and Dispatch posts
+it once. The proxy sends a request once, and once more only after `401 BROKER_TOKEN_NOT_ACTIVE`.
+So the tool sends the comment again itself, with the same key.
+
+The comment POST passes no AskGate review, because `dispatch proxy` is not one of the writes that
+AskGate gates. The `dispatch` command asks for no reviewed marker for it, in block mode too.
+Dispatch's server checks no marker. So a role that holds the bearer of `DISPATCH_TOKEN_FILE` can
+already send the same comment with `curl` and no review. The proxy keeps that reach for a role
+under `DISPATCH_TOKEN_BROKER=1`, and only for a comment that carries an `Idempotency-Key`.
+
+The proxy listens on a unix socket only, and opens no TCP port. The roles of a pod share the pod's
+network, so a TCP port would let another role act as this role's session. The proxy makes the
+socket with mode 0600, so only processes of the same user can connect. It refuses a socket path
+that exists, a socket that a killed proxy left included. Give it a path in a new directory, such
+as `"$(mktemp -d)/d.sock"`. It removes its socket when it exits.
+
+A tool connects to the socket that `DISPATCH_PROXY_SOCKET` names. The proxy does not read the host
+of a URL, so the tool can write any host. Only the command's environment holds the variable, so a
+shell line that reads it runs in a shell that the proxy starts:
+
+```sh
+dispatch proxy --socket "$(mktemp -d)/d.sock" -- \
+  sh -c 'curl --unix-socket "$DISPATCH_PROXY_SOCKET" http://dispatch/api/v1/issues'
+```
+
+In Python, an `http.client.HTTPConnection` whose `connect` opens an `AF_UNIX` socket reads and
+posts the comment. Run it as `dispatch proxy --socket "$(mktemp -d)/d.sock" -- python3 report.py`:
+
+```python
+import http.client
+import json
+import os
+import socket
+
+
+class ProxyConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(os.environ["DISPATCH_PROXY_SOCKET"])
+
+
+connection = ProxyConnection("dispatch")
+connection.request("GET", "/api/v1/issues?project=DSP")
+answer = connection.getresponse()
+print(answer.status, json.load(answer))
+
+connection.request(
+    "POST",
+    "/api/v1/issues/DSP-1/comments",
+    body=json.dumps({"body": "The run ended."}),
+    headers={"Content-Type": "application/json", "Idempotency-Key": "run-42-end"},
+)
+answer = connection.getresponse()
+print(answer.status, json.load(answer))
+```
+
+A refusal of the proxy's own has a JSON body with a `code` and an `error`, as Dispatch's refusals
+have. Each of its codes starts with `PROXY_`, and no code of Dispatch's does. The proxy never
+answers 403 or 404 itself, so each 403 and 404 is Dispatch's answer.
+
+| Answer | When |
+| --- | --- |
+| `400 PROXY_TARGET_REFUSED` | The request target names a host: `http://…` or `//…`. |
+| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use. |
+| `502 PROXY_TRADE_REFUSED` | The token has ended and the broker refused a new one. The error is in the broker's words, and the proxy sends nothing to Dispatch. |
+| `502 PROXY_DISPATCH_UNREACHABLE` | Dispatch did not answer. |
+
+The proxy sends SIGTERM, SIGINT and SIGHUP on to its command, and serves until the command ends.
+Then it removes its socket and exits with the command's status. It exits 128 plus the signal's
+number for a command that a signal ended, 127 for a command that does not exist, and 126 for a
+command that cannot run. It exits 2 on a usage error or when it cannot start, and then it runs no
+command. It names the cause on standard error. It cannot start in these cases:
+
+- `DISPATCH_TOKEN_BROKER` is not `1`
+- a `dispatch` command would resolve no session or no Dispatch server
+- the session's credential is not a DPoP-bound broker token
+- the socket path exists, or the proxy cannot listen on it
+- the broker refuses the first trade
+
+The last line that the proxy writes on standard error is its exit line. It writes the line on each
+run, a run that cannot start included:
+
+```text
+dispatch proxy: <n> requests, <m> trades, <r> after BROKER_TOKEN_NOT_ACTIVE
+```
+
+`n` counts the requests sent to Dispatch, the one resend after `BROKER_TOKEN_NOT_ACTIVE` included.
+`m` counts the trades that gave a token, the first trade included. `r` counts those of the `m`
+trades that followed a `BROKER_TOKEN_NOT_ACTIVE` answer. `--help`, `--dry-run` and a usage error
+write no exit line.
+
+`--dry-run` checks the arguments and the environment as a run does before its first trade, the
+socket path included. It prints the Dispatch server, the session and the socket that the proxy
+would use, and starts nothing: no trade, no socket and no command. The proxy writes nothing to the
+session's records, and prints no credential.

@@ -93,9 +93,12 @@ func (c *Credential) Holds(scope string) bool {
 // the verified Kubernetes subject of the projected service-account token a
 // session authenticated with ("system:serviceaccount:<namespace>:<name>"), set
 // by the server from the token and never from a request body. Project is the
-// one project key a broker-issued access token lets its session write, set by
-// the server from that token and never from a request body; it is nil for
-// every other credential and for a token whose scope names no single project.
+// one project key a broker-issued access token names, set by the server from
+// that token and never from a request body. It is nil for every other
+// credential and for a token whose scope names no single project. A token that
+// names a project writes every project's objects that a credential naming none
+// may write, a private project it does not name excepted. A target that
+// resolves to no project or to nothing is refused it (api/project_scope.go).
 type Actor struct {
 	Kind    string       `json:"kind"`
 	ID      string       `json:"id"`

@@ -24,10 +24,12 @@ import (
 // that its session holds.
 //
 // A write must name the actor session legion-daemon:<project> (legionDaemonSessionOf), the session
-// the daemon of the issue's project writes as. Before the airlock, Dispatch takes the session that
-// a bearer caller names as the caller names it, so any caller whose Dispatch credential proves no
-// session of its own can name that session: the deployment's shared token, and a person's own
-// agent token whatever its scopes. The airlock closes that case, and this route does not.
+// the daemon of the issue's project writes as, or the session of another project's daemon that
+// the request's broker token proves (isIssueDaemon). Before the airlock, Dispatch takes the
+// session that a bearer caller names as the caller names it, so any caller whose Dispatch
+// credential proves no session of its own can name the session of the issue's project's daemon:
+// the deployment's shared token, and a person's own agent token whatever its scopes. The airlock
+// closes that case, and this route does not.
 //
 // A claim ends when the daemon retires it, fails it or suspends it. The session of an ended claim
 // leaves the set only when the daemon's next publication lands, and until then its row stays. The
@@ -89,12 +91,36 @@ type issueRoleHoldersInput struct {
 	Actor   *model.Actor       `json:"actor"`
 }
 
-// legionDaemonSessionOf is the session the Legion daemon writes the issue key's project as:
+// legionDaemonSessionOf is the session of the Legion daemon of the issue key's project:
 // legion-daemon:<the key up to its first ->, the daemon's own rule (packages/daemon's
-// dispatch.DaemonSession).
+// dispatch.DaemonSession). A daemon whose broker token proves its own session writes another
+// project's issue as that session instead (isIssueDaemon).
 func legionDaemonSessionOf(key string) string {
 	project, _, _ := strings.Cut(key, "-")
 	return legionDaemonSessionPrefix + project
+}
+
+// isIssueDaemon reports whether actor writes the records of the issue key: its step records, their
+// ratings, its plans and its role holders. The Legion daemon of the issue's project writes them as
+// legionDaemonSessionOf(key). A daemon that runs a claim on another project's issue writes that
+// issue's records as itself, legion-daemon:<P>. Only a broker token proves that session, so the
+// request's broker token must prove the actor's session and name the project P. A credential that
+// proves no session, such as the shared token, cannot write as another project's daemon by naming
+// its session in the body.
+func (s *server) isIssueDaemon(r *http.Request, actor model.Actor, key string) bool {
+	if actor.Kind != "session" {
+		return false
+	}
+	if actor.ID == legionDaemonSessionOf(key) {
+		return true
+	}
+	project, daemon := strings.CutPrefix(actor.ID, legionDaemonSessionPrefix)
+	if !daemon {
+		return false
+	}
+	session, proved := s.callerSession(r)
+	named, ok := s.callerProject(r)
+	return proved && session == actor.ID && ok && named == project
 }
 
 // heldRole is the role that session holds on issueKey, and "" when it holds none. An empty session
@@ -184,11 +210,11 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := r.PathValue("key")
-	if daemon := legionDaemonSessionOf(key); actor.Kind != "session" || actor.ID != daemon {
+	if !s.isIssueDaemon(r, actor, key) {
 		project, _, _ := strings.Cut(key, "-")
 		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
-			"only the Legion daemon of project %s names the sessions that hold the roles of %s. That daemon writes as session %s.",
-			project, key, daemon))
+			"only a Legion daemon names the sessions that hold the roles of %s: the daemon of project %s, as session %s, or another project's daemon, as session legion-daemon:<P> with a broker token that names P and proves that session.",
+			key, project, legionDaemonSessionOf(key)))
 		return
 	}
 	if input.Holders == nil {

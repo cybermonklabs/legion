@@ -539,8 +539,8 @@ func requireSessionProven(t *testing.T, what string, actor model.Actor, want boo
 }
 
 // TestANamedBrokerTokenNamingTwoProjectsWritesNothing: no exchange mints a named token naming two
-// projects, and Dispatch writes its project limit only for one; such an answer is refused before
-// any write rather than read as a caller no project limits.
+// projects, and Dispatch reads a named token's project only where it names one. Such an answer is
+// refused before any write rather than read as a caller that names no project.
 func TestANamedBrokerTokenNamingTwoProjectsWritesNothing(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -580,9 +580,10 @@ func TestAnOlderBrokersNamedAnswerWritesNothing(t *testing.T) {
 	}
 }
 
-// TestANamedBrokerTokenLimitsWritesToItsProject: a token an operator's entry mapped to one
-// project writes that project and no other, as it always has.
-func TestANamedBrokerTokenLimitsWritesToItsProject(t *testing.T) {
+// TestANamedBrokerTokenWritesAnotherProject: a token an operator's entry mapped to one project
+// writes that project, and writes another project as a credential that names no project does
+// (INFRA-4799): an issue made in either is made in the project its body names.
+func TestANamedBrokerTokenWritesAnotherProject(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-named-token"
@@ -599,8 +600,11 @@ func TestANamedBrokerTokenLimitsWritesToItsProject(t *testing.T) {
 	other := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 		"project": "OTHER", "title": "Written into another project", "spec": "# Spec",
 	}))
-	if refusal := decodeBody[refusalAnswer](t, other); other.Code != http.StatusForbidden || refusal.Code != codeProjectScope {
-		t.Fatalf("a named token's write into another project: status=%d body=%s, want 403 %s", other.Code, other.Body.String(), codeProjectScope)
+	if other.Code != http.StatusCreated {
+		t.Fatalf("a named token's write into another project: status=%d body=%s, want 201", other.Code, other.Body.String())
+	}
+	if issue := decodeBody[model.Issue](t, other); issue.Project != "OTHER" {
+		t.Fatalf("the issue written into another project is %s of project %q, want OTHER", issue.Key, issue.Project)
 	}
 }
 

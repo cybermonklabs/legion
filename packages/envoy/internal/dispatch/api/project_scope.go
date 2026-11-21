@@ -2,7 +2,7 @@ package api
 
 // project_scope.go answers what a write is about to touch — which project does the object it
 // addresses belong to, and which session does its path name? — and refuses a caller whose
-// credential covers another project, or proves another session. owner.go is not this: it
+// credential does not cover that project, or proves another session. owner.go is not this: it
 // resolves collaboration ownership, the issue or unlinked document a comment, an ask or an
 // event hangs from and whether that owner is still open, and decides no authority at all.
 // These resolvers decide authority.
@@ -17,11 +17,11 @@ package api
 //     `update ... set project_key` and no `update ... set issue_key` exists outside the
 //     migrations and the tests, and the three writes that take another issue's project into
 //     account move nothing: a parent and a rank neighbour outside the issue's own project are
-//     refused, while a `blocked_by` target may be an issue of any project, which the write
-//     refuses only to a caller whose credential names one project (`PROJECT_SCOPE`, written
-//     inside the write because this check reads the project of the object the path names and no
-//     key in the body). So the project this check reads before the handler runs is the project
-//     the handler will write, and the check needs no transaction of its own.
+//     refused, while a `blocked_by` target may be an issue of any project. The `blocked_by`
+//     write asks access.CredentialCovers about each target of another project itself, because
+//     this check reads the project of the object the path names and no key in the body. So the
+//     project this check reads before the handler runs is the project the handler will write,
+//     and the check needs no transaction of its own.
 //   - The check is a no-op for a credential that carries no project: a browser cookie, a personal
 //     agent token, a Kubernetes service-account token and the shared token name none, and so do
 //     four access tokens the broker issues, each of which reaches brokerTokenActor with no
@@ -39,25 +39,25 @@ package api
 //     every caller that exists today writes exactly what it wrote before, which is what lets
 //     this deploy before anything presents a broker token.
 //
-// For a credential that does name a project, the check fails closed: only a target that
-// resolves to that credential's own project reaches the handler. A target that resolves to
-// another project, to no project at all, or to nothing at all — no such row, or an id Postgres
-// will not read as a uuid — is refused. Each resolver sends Postgres the value the prefix layer
-// resolved, the one the handler behind it sends too: an id written as a unique prefix is the
-// whole id by the time either reads it, and anything else is the path value as written
-// (resolveIDPrefixes, which register wraps outside this check for exactly that reason). So the
-// parser that decides what this check resolved is the parser the handler then addresses its row
-// by, and the two cannot disagree about which object a path names: Go's uuid.Parse refuses
-// spellings Postgres accepts (a hyphen after any group of four digits), and a check that
-// resolved nothing where the handler resolves a row would be a write nothing judged.
+// A credential that names one project writes every project's objects that a credential naming
+// none may write. The one exception is a private project that the credential does not name.
+// access.CredentialCovers holds that test. Every caller passes private as false while Dispatch
+// holds no private project, so a target of another project reaches the handler. A target that
+// resolves to no project at all, or to nothing at all — no such row, or an id Postgres will not
+// read as a uuid — is still refused, so the check fails closed. Each resolver sends Postgres the
+// value the prefix layer resolved, the one the handler behind it sends too: an id written as a
+// unique prefix is the whole id by the time either reads it, and anything else is the path
+// value as written (resolveIDPrefixes, which register wraps outside this check for exactly that
+// reason). So the parser that decides what this check resolved is the parser the handler then
+// addresses its row by, and the two cannot disagree about which object a path names: Go's
+// uuid.Parse refuses spellings Postgres accepts (a hyphen after any group of four digits), and
+// a check that resolved nothing where the handler resolves a row would be a write nothing
+// judged.
 //
-// Failing closed does not close the existence oracle, and does not claim to. The two refusals
-// still read differently — a target of another project is told which project that is, and one
-// that resolved to nothing is told the write resolves to no project of that credential's — so a
-// scoped caller can tell an object of another project from an id nobody holds. Nothing is read
-// out that way: no GET route is project-scoped, so every answer this check can colour is a
-// refusal of the caller's own write, and what it learns is which of its own refused writes
-// addressed something that exists.
+// Failing closed does not hide which ids exist, and does not claim to. A target of another
+// project reaches its handler. A target that resolves to nothing gets this refusal. So a scoped
+// caller can tell an object that exists from an id nobody holds. Nothing is read out that way:
+// no GET route is project-scoped, so the caller reads every project's objects already.
 
 import (
 	"context"
@@ -71,12 +71,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 const (
-	// codeProjectScope refuses a write the caller's credential does not cover: an object of
-	// another project, or one this check could not resolve to the caller's own.
+	// codeProjectScope refuses a write the caller's credential does not cover. That is a target
+	// that resolves to no project or to nothing, or an object of a private project that the
+	// credential does not name.
 	codeProjectScope = "PROJECT_SCOPE"
 	// codeProjectScopeDeployment refuses a project-scoped caller a write that belongs to the
 	// deployment rather than to any one project.
@@ -104,10 +106,10 @@ func (s *server) brokerCredentialActor(r *http.Request) (model.Actor, bool) {
 	return actor, true
 }
 
-// callerProject is the one project this request's credential lets the caller write, and whether
-// it names one at all. Only an access token the secrets broker issued for a named project
-// carries one (model.Actor.Project, set by brokerTokenActor from the token and never from a
-// body).
+// callerProject is the one project this request's credential names, and whether it names one
+// at all. Only an access token the secrets broker issued for a named project carries one
+// (model.Actor.Project, set by brokerTokenActor from the token and never from a body). Such a
+// caller writes every project that access.CredentialCovers covers, not only the one it names.
 func (s *server) callerProject(r *http.Request) (string, bool) {
 	actor, resolved := s.brokerCredentialActor(r)
 	if !resolved || actor.Project == nil || *actor.Project == "" {
@@ -271,9 +273,11 @@ func unaddressed(err error) bool {
 // class is decided once here, at mount, as withinSessionScope decides its own: a class this
 // check does not cover returns the handler unchanged, so no route it leaves alone pays for it.
 //
-// For a caller whose credential names no project — every caller that exists today — a covered
-// route costs one header read and calls the handler. For one that names a project it fails
-// closed: only a target this check resolved to that same project reaches the handler.
+// For a caller whose credential names no project, a covered route costs one header read and
+// calls the handler. For one that names a project, the check resolves the target's project. A
+// target of a project that access.CredentialCovers covers reaches the handler, whichever
+// project the credential names. A target that resolves to no project or to nothing is refused,
+// so the check fails closed.
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	switch route.Scope {
 	case scopeProject:
@@ -303,11 +307,14 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 				s.writeHandlerError(w, err)
 				return
 			}
-			if belongsTo != covers {
-				// Including a target that resolved to no project at all: an object belonging
-				// to none, a row that is not there, and an id Postgres will not read.
-				// Refusing those too is what makes the check fail closed — not what hides
-				// which ids exist, which this does not claim to do (the file comment).
+			if belongsTo == "" {
+				// An object that belongs to no project, a row that is not there, or an id
+				// Postgres will not read. Refusing these is what makes the check fail closed. It
+				// does not hide which ids exist, and it does not claim to (the file comment).
+				refuseWriteOutsideProjectScope(w, covers, "")
+				return
+			}
+			if !access.CredentialCovers(access.Credential{Listed: []string{covers}}, belongsTo, false) {
 				refuseWriteOutsideProjectScope(w, covers, belongsTo)
 				return
 			}
@@ -321,30 +328,31 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 				return
 			}
 			writeError(w, codeProjectScopeDeployment, http.StatusForbidden, fmt.Sprintf(
-				"this request's credential may write project %s and nothing else; %s %s belongs to the deployment rather than to a project",
+				"this request's credential names project %s, and %s %s belongs to the deployment rather than to a project",
 				covers, route.Method, route.Pattern))
 		}
 	default:
 		// A write that belongs to the calling session (scopeSession, held to its own session by
-		// withinSessionScope), the issue create, whose project its handler reads from the body
-		// (scopeProjectInBody), and a row that writes nothing at all (scopeNoWrite).
+		// withinSessionScope), the issue create and the going request, whose project each
+		// handler reads from the body (scopeProjectInBody), and a row that writes nothing at
+		// all (scopeNoWrite).
 		return handler
 	}
 }
 
-// refuseWriteOutsideProjectScope names the project the caller's credential covers and the
+// refuseWriteOutsideProjectScope names the project the caller's credential names and the
 // project the write belongs to where one resolved, and nothing of the credential itself. It
 // names no project at all for a write that resolved to none, since there is none to name and
 // an invented one would say something about what exists.
 func refuseWriteOutsideProjectScope(w http.ResponseWriter, covers, belongsTo string) {
 	if belongsTo == "" {
 		writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
-			"this request's credential may write project %s; this write resolves to no project of that credential's",
+			"this request's credential names project %s, and this write resolves to no project",
 			covers))
 		return
 	}
 	writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
-		"this request's credential may write project %s; this write belongs to project %s", covers, belongsTo))
+		"this request's credential names project %s, and this write belongs to project %s, a private project that the credential does not name", covers, belongsTo))
 }
 
 // withinSessionScope runs the session check in front of one mutating route's handler. A row

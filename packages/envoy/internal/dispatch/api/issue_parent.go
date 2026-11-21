@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -185,8 +186,8 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // owner locks and its rank-allocation lock, and its row locks in its write phase. Its reads are
 // plain and its locks are advisory transaction locks, so none of it assigns the transaction an id
 // (INFRA-636): it is the first step of the write's read phase. project is the issue's own project,
-// targets are its blocked_by targets, and caller is the one project the request's credential may
-// write, empty for a credential that names none.
+// targets are its blocked_by targets, and caller is the one project the request's credential
+// names, empty for a credential that names none.
 //
 // The project locks are taken in lock id order, not key order, because the lock id is what
 // Postgres waits on: two key sets whose keys collide in hashtext would, in key order, take the
@@ -201,19 +202,26 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // route moves an issue between projects (project_scope.go's file doc), and a key created between
 // that read and the lock is still refused by writeBlockedBy's own read inside the transaction.
 //
-// A caller whose credential names one project is refused a target outside it here, before any
-// lock is taken: the pre-handler check reads the project of the object the path names and no key
-// of the body (project_scope.go), so this is the first point at which a target's project is
-// known, and a caller that may not write at all would otherwise take the deployment-wide lock
-// first. writeBlockedBy refuses it again under the locks, which is the authoritative refusal;
-// both word it through refuseBlockedByOutsideCallerProject.
+// A caller whose credential names one project links a target of every project that
+// access.CredentialCovers covers. The one exception is a private project it does not name. This
+// step asks about each target of another project before any lock is taken. The pre-handler check
+// reads the project of the object the path names and no key of the body (project_scope.go). So
+// this is the first point at which a target's project is known, and a caller that may not write
+// the link would otherwise take the deployment-wide lock first. writeBlockedBy asks again under
+// the locks, and that is the authoritative refusal. Both refuse in the same words.
 func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string) error {
 	foreign, err := foreignTargets(ctx, tx, project, targets)
 	if err != nil {
 		return err
 	}
-	if caller != "" && len(foreign) > 0 {
-		return refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
+	if caller != "" {
+		for _, target := range foreign {
+			if !access.CredentialCovers(access.Credential{Listed: []string{caller}}, target.project, false) {
+				return errorf(http.StatusForbidden, codeProjectScope,
+					"this request's credential names project %s, and blocked_by issue %s belongs to project %s, a private project that the credential does not name",
+					caller, target.key, target.project)
+			}
+		}
 	}
 	projects := make([]string, 0, len(foreign)+1)
 	projects = append(projects, project)
@@ -254,16 +262,6 @@ func foreignTargets(ctx context.Context, q queryer, project string, targets []st
 		var target foreignTarget
 		return target, row.Scan(&target.key, &target.project)
 	})
-}
-
-// refuseBlockedByOutsideCallerProject is what a caller whose credential names one project is
-// answered for a blocked_by target outside it. Two steps of the same write refuse it — the lock
-// step before any lock is taken, and writeBlockedBy under the locks — so the wording lives here
-// once and the two cannot drift.
-func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
-	return errorf(http.StatusForbidden, codeProjectScope,
-		"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
-		caller, target, targetProject)
 }
 
 // lockIssueOwners takes the owner locks of key and of the issues in others in one statement, in the
@@ -447,10 +445,12 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 // another project: an issue that waits on work tracked elsewhere has to be able to record that
 // wait, and the walk below is what refuses a ring, between projects as inside one.
 //
-// caller is the one project the request's credential may write, empty for a credential that
-// names none (callerProject). A target outside it is refused here, under the locks, which is the
-// authoritative refusal: lockIssueDependencyWrite refuses the same caller before any lock is
-// taken, and both word it through refuseBlockedByOutsideCallerProject.
+// caller is the one project the request's credential names, empty for a credential that names
+// none (callerProject). A credential that names one project links a target of every project
+// that access.CredentialCovers covers. The one exception is a private project it does not name.
+// writeBlockedBy asks about each target of another project here, under the locks, and this is
+// the authoritative refusal. lockIssueDependencyWrite asks the same before any lock is taken,
+// and refuses in the same words.
 func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller string, targets []string) error {
 	if slices.Contains(targets, issue) {
 		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
@@ -464,8 +464,11 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller strin
 		if err != nil {
 			return err
 		}
-		if targetProject != project && caller != "" {
-			return refuseBlockedByOutsideCallerProject(caller, target, targetProject)
+		if targetProject != project && caller != "" &&
+			!access.CredentialCovers(access.Credential{Listed: []string{caller}}, targetProject, false) {
+			return errorf(http.StatusForbidden, codeProjectScope,
+				"this request's credential names project %s, and blocked_by issue %s belongs to project %s, a private project that the credential does not name",
+				caller, target, targetProject)
 		}
 	}
 	from := make([]waitNode, len(targets))

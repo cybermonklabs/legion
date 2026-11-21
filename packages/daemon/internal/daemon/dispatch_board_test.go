@@ -224,13 +224,13 @@ func (b *liveDispatch) showHandoff(id string, w http.ResponseWriter) {
 }
 
 // putStep takes one write of the step record id of key, as Dispatch's PUT
-// /api/v1/issues/{key}/steps/{id} does: only the session legion-daemon:<project> writes one (403
-// STEP_WRITER for any other writer), each field is written once and kept, a field a write leaves
-// out keeps what an earlier write gave it, and the answer is 200 with the record as it stands after
-// the write and its attempt: the place of the record among the issue's records of the same task,
-// kind and step, in the order of their first write. An id whose record is another issue's is
-// refused 409 STEP_OTHER_ISSUE (writeStep). The daemon sends a rating to the rating route alone
-// (dispatch.HTTPClient.PutStep), so no write here carries one.
+// /api/v1/issues/{key}/steps/{id} does for a credential that proves no session: only the session
+// legion-daemon:<project> writes one (403 STEP_WRITER for any other writer), each field is written
+// once and kept, a field a write leaves out keeps what an earlier write gave it, and the answer is
+// 200 with the record as it stands after the write and its attempt: the place of the record among
+// the issue's records of the same task, kind and step, in the order of their first write. An id
+// whose record is another issue's is refused 409 STEP_OTHER_ISSUE (writeStep). The daemon sends a
+// rating to the rating route alone (dispatch.HTTPClient.PutStep), so no write here carries one.
 func (b *liveDispatch) putStep(key, id string, req *http.Request, w http.ResponseWriter) {
 	write, ok := b.daemonWrite(key, "a step record", req, w)
 	if !ok {
@@ -257,9 +257,9 @@ func (b *liveDispatch) putRating(key, id string, req *http.Request, w http.Respo
 	b.writeStep(key, id, write, true, w)
 }
 
-// daemonWrite decodes a write to a record of key, which only the session legion-daemon:<project>
-// makes (403 STEP_WRITER for any other writer, naming what), and answers its fields without the
-// actor.
+// daemonWrite decodes a write to a record of key and answers its fields without the actor. It
+// takes the write only from the session legion-daemon:<project>, as Dispatch does for a credential
+// that proves no session, and refuses any other writer 403 STEP_WRITER, naming what.
 func (b *liveDispatch) daemonWrite(key, what string, req *http.Request, w http.ResponseWriter) (map[string]any, bool) {
 	var write map[string]any
 	if err := json.NewDecoder(req.Body).Decode(&write); err != nil {
@@ -361,16 +361,17 @@ func setOnce(nodes map[string]map[string]any, key, id string, write map[string]a
 	return stored
 }
 
-// putPlan takes the plan id of key, as Dispatch's PUT /api/v1/issues/{key}/plans/{id} does: only
-// the session legion-daemon:<project> writes one (403 STEP_WRITER for any other writer), a plan
-// names at least one task, each with at least one step (400 PLAN_INPUT otherwise, before the node
-// of its id is found, as the store checks a write's fields first), an id whose plan is another
-// issue's is refused 409 PLAN_OTHER_ISSUE and nothing of the write is kept, each field is set
-// once, and the answer is 200 with the plan as it stands after the write. It does not refuse a
-// plan for its generation, its source or its document, as Dispatch does: dispatch.PlanWrite names
-// the generation and the source on every write, the default plan names no document (workflow's
-// defaultPlan), and no test sends the board a plan Dispatch refuses for those values, so a second
-// copy of Dispatch's rules here would refuse nothing that reaches it.
+// putPlan takes the plan id of key, as Dispatch's PUT /api/v1/issues/{key}/plans/{id} does for a
+// credential that proves no session: only the session legion-daemon:<project> writes one (403
+// STEP_WRITER for any other writer), a plan names at least one task, each with at least one step
+// (400 PLAN_INPUT otherwise, before the node of its id is found, as the store checks a write's
+// fields first), an id whose plan is another issue's is refused 409 PLAN_OTHER_ISSUE and nothing
+// of the write is kept, each field is set once, and the answer is 200 with the plan as it stands
+// after the write. It does not refuse a plan for its generation, its source or its document, as
+// Dispatch does: dispatch.PlanWrite names the generation and the source on every write, the
+// default plan names no document (workflow's defaultPlan), and no test sends the board a plan
+// Dispatch refuses for those values, so a second copy of Dispatch's rules here would refuse
+// nothing that reaches it.
 func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.ResponseWriter) {
 	write, ok := b.daemonWrite(key, "a plan", req, w)
 	if !ok {

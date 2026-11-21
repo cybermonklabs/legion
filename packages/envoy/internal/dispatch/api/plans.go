@@ -11,7 +11,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
-// The plan each run of an issue ran from, which the Legion daemon of the issue's project writes
+// The plan each run of an issue ran from, which a Legion daemon writes (isIssueDaemon: the
+// daemon of the issue's project, or the daemon of another project whose broker token proves it)
 // when the run's work starts (PUT /api/v1/issues/{key}/plans/{id}), and the read of a project's
 // finished issues (GET /api/v1/projects/{key}/plans): each with its plan, the rating each retro
 // gave it with the reason, the time from the first start of its step records to the last end,

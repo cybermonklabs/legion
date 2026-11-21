@@ -976,8 +976,9 @@ person's trade decline the launcher credential (`personDeclinesNothing`). The cl
 the issuer's discovery document once. A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS`
 (900 seconds by default), and the client trades again five minutes before the token lapses
 (`DEFAULT_RENEW_BEFORE_MS`). So with the broker's default, a long-lived session that keeps
-calling trades about every ten minutes. Every `dispatch` command, Claude Code hook and
-`envoy-send` is a process of its own, so each one trades once.
+calling trades about every ten minutes. `dispatch proxy` is such a session: it runs for the life
+of the command it starts (below). Every other `dispatch` command, Claude Code hook and `envoy-send`
+is a process of its own, so each one trades once.
 
 A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
 refused with words that name `agent-secrets login`. The revoke does not end a personal agent
@@ -1000,9 +1001,10 @@ the operator's sign-in (above).
 
 Agents reach Dispatch through one command, `dispatch <command> [flags]`, which each host plugin
 bundles from `bin/dispatch.ts` into its `dist/dispatch.js` and puts on its agents' shell `PATH`
-through a `bin/dispatch` shim. `dispatch-command.ts` derives the commands and flags from the
-specs: one command per spec, named by the spec's name without its `dispatch_` prefix and with
-hyphens for underscores (`issue-update`), one flag per field
+through a `bin/dispatch` shim. The command line has one command per spec, and `proxy`, which no
+spec defines (`dispatch proxy`, below). `dispatch-command.ts` derives the spec commands and their
+flags from the specs: one command per spec, named by the spec's name without its `dispatch_`
+prefix and with hyphens for underscores (`issue-update`), one flag per field
 (`reply_to_ask` → `--reply-to-ask`), `--<field>-file <path>` for every string (`-` reads stdin),
 `--no-<field>` for a boolean, `--clear-<field>` for a nullable field or a list, a repeated
 singular flag for a list (`--label a --label b`, `--option "Label: what it costs"`, split at the
@@ -1015,12 +1017,16 @@ an example, and `--dry-run` runs the call's own argument check (`checkDispatchCa
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
 them (an issue from LEGION_ISSUE or the ref). It reads neither Dispatch nor this session's state,
-so it runs with Dispatch off too, and a call it passed can still stop on either. The one exception
+so it runs with Dispatch off too, and a call it passed can still stop on either. One exception
 is a `dispatch result` record: its dry run needs Dispatch on, as the record does, and after the
 arguments prints the pull-request body line Dispatch answers on `POST …/results/dry-run`, recording
-nothing. A retraction's dry run sends nothing.
+nothing. A retraction's dry run sends nothing. The other exception is `dispatch proxy --dry-run`.
+It checks the proxy's arguments and its environment as a run does before its first trade, so it
+needs Dispatch on. It prints the Dispatch server, the session and the socket that the proxy would
+use, and starts nothing.
 
-`runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
+`runDispatchCli` (`dispatch-cli.ts`) runs one call per process, or for `dispatch proxy` one proxy
+for the life of its command. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude
 Code, where claude-envoy's QA override `ENVOY_SESSION_ID` wins as it does on the
 session's claim; `DISPATCH_SESSION_ID` elsewhere); with either missing the command exits 2
@@ -1037,7 +1043,11 @@ includes every refusal of the flags or arguments before any request, and a corru
 Under Claude Code the whole output stays under 25,000 characters: the result text is cut to fit,
 the full text written to a file the output names, and the picture lines and follow notice kept.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
-be written, the result still prints, with one line saying so.
+be written, the result still prints, with one line saying so. `dispatch proxy` is the exception to
+this paragraph's output and exit statuses. It leaves standard output to its command, and it writes
+each line of its own on standard error. It exits with its command's status: 127 for a command that
+does not exist, 126 for a command that cannot run, 128 plus the signal's number for a command that
+a signal ended, and 2 when it refuses its own arguments or cannot start.
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a
@@ -1045,19 +1055,163 @@ long-lived host remembered across calls (the triage lines and pictures already s
 whose follow notice was printed, which Dispatch lately showed it runs the keyed layer), and
 `results.jsonl` gets one line per call with the tool's `details` or its refusal, a refusal the CLI
 made before the call reached Dispatch included, which pi-envoy's run-end check reads; a line that
-is not JSON is named (file and line number) and skipped. Directories idle for 14 days are removed,
-at most once a day.
+is not JSON is named (file and line number) and skipped. `dispatch proxy` writes no line there, for
+itself or for a request it sends. Directories idle for 14 days are removed, at most once a day.
 
 `bun bin/stand-in-gateway.ts --status 502 --body html` serves one non-Dispatch answer (`html`,
 `empty`, `text` or `json`, from `src/stand-in-gateway.ts`) on `--port` (ephemeral by default) and
 prints its URL, for proving what a command shows when a gateway, not Dispatch, answers.
 
+### `dispatch proxy`
+
+`dispatch proxy --socket <path> [--dry-run] -- <command> [<argument>...]` runs `<command>` with a
+proxy to Dispatch on a unix socket (`src/dispatch-proxy.ts`). It is the one command of `dispatch`
+that no spec defines. `src/dispatch-proxy-command.ts` holds its parser, its help and its exit line,
+and `dispatch proxy --help` prints the help. The proxy is for a tool that calls Dispatch's HTTP API
+in a session under `DISPATCH_TOKEN_BROKER=1`. Such a session holds no bearer to give the tool, and
+the proxy runs only under that setting.
+
+The proxy listens on the socket for the whole run of `<command>`. It starts the command only when
+the socket takes connections, with `DISPATCH_PROXY_SOCKET` set to the socket's absolute path. The
+command inherits the proxy's standard input, standard output and standard error. The proxy sends
+each request to the Dispatch server and the session that a `dispatch` command resolves in the same
+environment. It sends the request with this session's broker token and a new DPoP proof, so the
+tool holds no credential and signs nothing.
+
+The proxy sends the method, the path, the query, the end-to-end headers and the body of a request.
+It does not copy `Host` or a hop-by-hop header, and it replaces `Authorization` and `DPoP`. It asks
+Dispatch for no content encoding (`Accept-Encoding: identity`). It gives back Dispatch's status,
+end-to-end headers and body as Dispatch sent them, a binary body included. An answer that carries
+`Transfer-Encoding` as well as `Content-Length` is the one exception: it comes back without that
+`Content-Length` (RFC 9112, section 6.3), with its body chunked. It gives back a redirect, and does
+not follow it.
+
+The proxy holds one broker credential for the session, as a `dispatch` command does. It trades for
+the token once before it starts the command. It trades again only when the token has less than
+five minutes to live, or after Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE`. After that answer,
+it sends the request once more with the new token. With the broker's default token life of 900
+seconds, a long run that keeps sending requests trades about every ten minutes, for any count of
+requests.
+
+The proxy sends two kinds of request, and refuses every other one:
+
+- a GET whose path starts with `/api/`
+- a POST to `/api/v1/issues/<key>/comments` that carries an `Idempotency-Key` header
+
+It sends no other write. A tool reads much and writes little. Each other write goes through the
+`dispatch` command named for it, so AskGate reviews it wherever AskGate gates that command. The
+comment is the one write that a tool needs, such as a report that it posts at the end of a run.
+The `Idempotency-Key` lets the tool send the comment again after a lost answer, and Dispatch posts
+it once. The proxy sends a request once, and once more only after `401 BROKER_TOKEN_NOT_ACTIVE`.
+So the tool sends the comment again itself, with the same key.
+
+The comment POST passes no AskGate review, because `dispatch proxy` is not one of the writes that
+AskGate gates (`gatedWrite`, `src/askgate-marker.ts`). The CLI asks for no AskGate marker for it,
+also where the session's AskGate record is in `block` mode. Dispatch's server checks no marker. So
+a role that holds the bearer of `DISPATCH_TOKEN_FILE` can already send the same comment with `curl`
+and no review. The proxy keeps that reach for a role under `DISPATCH_TOKEN_BROKER=1`, and only for
+a comment that carries an `Idempotency-Key`.
+
+The proxy listens on a unix socket only, and opens no TCP port. The roles of a pod share the pod's
+network, so a TCP port would let another role act as this role's session. The proxy makes the
+socket with mode 0600, so only processes of the same user can connect. It refuses a socket path
+that exists, a socket that a killed proxy left included, and a path over 107 bytes. Give it a path
+in a new directory, such as `"$(mktemp -d)/d.sock"`. It removes its socket when it exits.
+
+A tool connects to the socket that `DISPATCH_PROXY_SOCKET` names. The proxy does not read the host
+of a URL, so the tool can write any host. Only the command's environment holds the variable, so a
+shell line that reads it runs in a shell that the proxy starts:
+
+```sh
+dispatch proxy --socket "$(mktemp -d)/d.sock" -- \
+  sh -c 'curl --unix-socket "$DISPATCH_PROXY_SOCKET" http://dispatch/api/v1/issues'
+```
+
+In Python, an `http.client.HTTPConnection` whose `connect` opens an `AF_UNIX` socket reads and
+posts the comment. Run it as `dispatch proxy --socket "$(mktemp -d)/d.sock" -- python3 report.py`:
+
+```python
+import http.client
+import json
+import os
+import socket
+
+
+class ProxyConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(os.environ["DISPATCH_PROXY_SOCKET"])
+
+
+connection = ProxyConnection("dispatch")
+connection.request("GET", "/api/v1/issues?project=DSP")
+answer = connection.getresponse()
+print(answer.status, json.load(answer))
+
+connection.request(
+    "POST",
+    "/api/v1/issues/DSP-1/comments",
+    body=json.dumps({"body": "The run ended."}),
+    headers={"Content-Type": "application/json", "Idempotency-Key": "run-42-end"},
+)
+answer = connection.getresponse()
+print(answer.status, json.load(answer))
+```
+
+A refusal of the proxy's own has a JSON body `{"code": …, "error": …}`, the shape of Dispatch's
+refusals. Each of its codes starts with `PROXY_`, and no code of Dispatch's does, so a tool can tell
+the two apart. The proxy never answers 403 or 404 itself, so a tool reads each 403 and 404 as
+Dispatch's.
+
+| Answer | When |
+| --- | --- |
+| `400 PROXY_TARGET_REFUSED` | The request target names a host: `http://…` or `//…`. |
+| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use. |
+| `502 PROXY_TRADE_REFUSED` | The token has ended and the broker refused a new one. The error is in the broker's words, and the proxy sends nothing to Dispatch. |
+| `502 PROXY_DISPATCH_UNREACHABLE` | Dispatch did not answer. |
+
+When a renewal fails while the token is still live, the proxy goes on with that token.
+
+The proxy sends SIGTERM, SIGINT and SIGHUP on to its command, and serves until the command ends.
+Then it removes its socket and exits with the command's status. It exits 128 plus the signal's
+number for a command that a signal ended, 127 for a command that does not exist, and 126 for a
+command that cannot run. It exits 2 when it refuses its own arguments or cannot start, and then it
+runs no command. It names the cause on standard error. It cannot start in these cases:
+
+- `DISPATCH_TOKEN_BROKER` is not `1`
+- a `dispatch` command would resolve no session or no Dispatch server
+- the session's credential is not a DPoP-bound broker token
+- the socket path exists, or the proxy cannot listen on it
+- the broker refuses the first trade
+
+A SIGTERM, SIGINT or SIGHUP before the command starts ends the proxy at once with 128 plus the
+signal's number, and no command runs.
+
+The last line that the proxy writes on standard error is its exit line. It writes the line on each
+run, a run that cannot start included:
+
+```text
+dispatch proxy: <n> requests, <m> trades, <r> after BROKER_TOKEN_NOT_ACTIVE
+```
+
+`n` counts the requests sent to Dispatch, the one resend after `BROKER_TOKEN_NOT_ACTIVE` included.
+`m` counts the trades that gave a token, the first trade included. `r` counts those of the `m`
+trades that followed a `BROKER_TOKEN_NOT_ACTIVE` answer. The words are fixed, so a reader matches
+one form. `--help`, `--dry-run` and a refusal of the proxy's own arguments write no exit line.
+
+`--dry-run` checks the arguments and the environment as a run does before its first trade, the
+socket path included. It prints the Dispatch server, the session and the socket that the proxy
+would use on standard output, and starts nothing: no trade, no socket and no command. It exits 0,
+or 2 with the cause. The proxy writes nothing to the session's records (`results.jsonl`), for
+itself or for a request, and it prints no credential.
+
 ## Command specs
 
 `@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-eight
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
-and example. `dispatch-command.ts` derives the command and its flags from them, and no host
-adds aliases or descriptions of its own.
+and example. `dispatch-command.ts` derives one command and its flags from each spec, and no host
+adds aliases or descriptions of its own. `dispatch proxy` is the one command that no spec defines:
+`dispatch-proxy-command.ts` holds its parser and its help.
 `dispatch issue-update` reads the issue first and sends `PATCH /api/v1/issues/{key}` as the
 session actor: `status` (a Legion lifecycle status), `title`, `labels` (replacing the set),
 `priority` (`0` for P0 down to `3` for P3, or `null` to clear it), `route`,

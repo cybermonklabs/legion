@@ -4747,7 +4747,7 @@ describe("executeDispatchTool", () => {
       project: "INFRA",
     });
     expect(result.text).toContain("Session session-1 acts for alice");
-    expect(result.text).toContain("It may write project INFRA and no other.");
+    expect(result.text).toContain("Its token names project INFRA.");
     expect(result.text).not.toContain("which is not this host session");
   });
 
@@ -4783,7 +4783,7 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain(
       "Your credential names session ses_from_the_broker, which is not this host session (session-1): Dispatch records every write you make as ses_from_the_broker."
     );
-    expect(result.text).not.toContain("may write project");
+    expect(result.text).not.toContain("Its token names project");
   });
 
   test("dispatch_whoami reads an omitted session as an older Dispatch, not as none", async () => {

@@ -493,8 +493,8 @@ const FAILURE_12 = /\bcontent\s+(?:failures?\s+)?12\b|(?:^|[^\w.])12\s*\(\s*cont
 /** The gate entry outcomes that record a refusal no review stands behind (askgateReview). */
 const NOT_REVIEWS = ["unreadable", "unmarked"];
 
-/** askgate: AskGate (the pi-envoy plugin's review of each Dispatch write) on a seeded issue whose
- * one comment is the person's. The run's label is its profile: `off` was built with
+/** askgate: AskGate (the pi-envoy plugin's review of each gated Dispatch write) on a seeded issue
+ * whose one comment is the person's. The run's label is its profile: `off` was built with
  * `{"askgate":{"enabled":false}}` in its envoy.json, every other label leaves the gate on. The
  * run's directory names its case, and `case.txt` names the prompt rig.sh gave, which must be the
  * same case. The row's scenario is `askgate:<case>`, so the counts are per case. A gate entry with

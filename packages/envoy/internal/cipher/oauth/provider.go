@@ -7,7 +7,7 @@
 // The same token endpoint runs the RFC 8693 token exchange: a pod, a continuous-integration
 // workflow run or a dev box session presents the identity its platform already gave it and is
 // answered a short-lived Dispatch access token, bound to its own key, saying which session is
-// writing, which person it acts for and which project it may write. Those tokens stay opaque, so
+// writing, which person it acts for and which project it names. Those tokens stay opaque, so
 // Dispatch reads one back through Introspect, the RFC 7662 answer.
 package oauth
 

@@ -279,9 +279,10 @@ func TestGoingRequestRefusesAQuestionItCannotAsk(t *testing.T) {
 	}
 }
 
-// A credential scoped to one project asks only of that project: the check runs on the project
-// the body names, as createIssue's does, before anything is recorded.
-func TestGoingRequestRefusesAProjectScopedCallerAnotherProject(t *testing.T) {
+// A credential scoped to one project asks of any project, as a credential that names no project
+// does (INFRA-4799): of another project, of every project, and of its own, each question recorded
+// with the project its body names.
+func TestAProjectScopedCallerAsksAnotherProjectAndEveryProject(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-scoped-to-one-project"
@@ -289,22 +290,22 @@ func TestGoingRequestRefusesAProjectScopedCallerAnotherProject(t *testing.T) {
 	seedProject(t, rig, brokerTestProject, "Broker")
 	seedProject(t, rig, "OTH", "Other")
 
-	response := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/going/requests", token, map[string]any{
-		"words": "what is going on in the other project?", "project": "OTH",
-	}))
-	refusal := decodeBody[refusalAnswer](t, response)
-	if response.Code != http.StatusForbidden || refusal.Code != codeProjectScope {
-		t.Fatalf("status=%d refusal=%+v, want 403 %s", response.Code, refusal, codeProjectScope)
-	}
-	if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "OTH") {
-		t.Fatalf("the refusal names %q, want both projects", refusal.Error)
-	}
-
-	own := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/going/requests", token, map[string]any{
-		"words": "what is going on in my own project?", "project": brokerTestProject,
-	}))
-	if own.Code != http.StatusCreated {
-		t.Fatalf("asking of its own project: status=%d body=%s", own.Code, own.Body.String())
+	for _, asked := range []struct{ name, project string }{
+		{"another project", "OTH"},
+		{"every project", ""},
+		{"its own project", brokerTestProject},
+	} {
+		t.Run(asked.name, func(t *testing.T) {
+			response := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/going/requests", token, map[string]any{
+				"words": "what is going on in " + asked.name + "?", "project": asked.project,
+			}))
+			if response.Code != http.StatusCreated {
+				t.Fatalf("asking of %s: status=%d body=%s, want 201", asked.name, response.Code, response.Body.String())
+			}
+			if recorded := decodeBody[goingRequest](t, response); recorded.Project != asked.project {
+				t.Fatalf("the question was recorded of project %q, want %q", recorded.Project, asked.project)
+			}
+		})
 	}
 }
 

@@ -26,6 +26,8 @@ import {
   executeDispatchTool,
 } from "./dispatch-execute";
 import { DispatchWriteLandedError } from "./dispatch-http";
+import { runDispatchProxy, socketPathTaken } from "./dispatch-proxy";
+import { PROXY_COMMAND, parseProxyArgv, proxyExitLine, proxyHelp } from "./dispatch-proxy-command";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
@@ -42,6 +44,7 @@ import { messageFor } from "./errors";
 import { nearestAncestorNamed } from "./process-ancestry";
 import {
   handedConfigFile,
+  type SessionConfigFile,
   sessionConfigFile,
   sessionDispatchSettings,
   sessionEnvoySettings,
@@ -236,6 +239,183 @@ function commandHost(
   return env.CLAUDE_CODE_CHILD_SESSION === "1" ? "claude" : undefined;
 }
 
+/** The session a call acts as, its state directory and the envoy.json its plugin chose: what
+ *  every command and `dispatch proxy` resolve alike before they read Dispatch's configuration. */
+interface CallSession {
+  readonly host: DispatchHost;
+  readonly sessionId: string;
+  readonly dir: string;
+  readonly file: SessionConfigFile;
+}
+
+/** A call refused before it reaches Dispatch, in the words the command prints. */
+interface CallRefused {
+  readonly refused: string;
+}
+
+/** The session a call acts as under Claude Code: the one claude-envoy registers and claims under,
+ *  its QA override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in
+ *  claude-envoy). */
+function claudeSessionOf(env: Readonly<Record<string, string>>): string | undefined {
+  return env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
+}
+
+/**
+ * The host `hostName` names (`commandHost`), the session that host's variable names, the
+ * session's state directory, and the file the session's plugin handed its shell (each plugin sets
+ * `DISPATCH_HOST` and `ENVOY_CONFIG_FILE` together), else the host's own rule; or why the call
+ * has none of them, each a usage error.
+ */
+function callSession(
+  env: Readonly<Record<string, string>>,
+  hostName: string | undefined
+): CallSession | CallRefused {
+  const host = HOSTS.find((name) => name === hostName);
+  if (host === undefined) {
+    return {
+      refused:
+        hostName === undefined
+          ? "dispatch: DISPATCH_HOST is not set. The host plugin sets it in an agent's shell. From an agent's session, send the command as a bash call. To run dispatch by hand, set DISPATCH_HOST, and set DISPATCH_SESSION_ID to the id of your own session."
+          : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp, claude or codex.`,
+    };
+  }
+  const [sessionId, sessionVariable] =
+    host === "claude"
+      ? [claudeSessionOf(env), "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
+      : host === "codex"
+        ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
+        : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
+  if (sessionId === undefined) {
+    return {
+      refused: `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
+    };
+  }
+  let dir: string;
+  try {
+    dir = sessionDirectory(env, sessionId);
+  } catch (error) {
+    return { refused: messageFor(error) };
+  }
+  const file =
+    (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
+    sessionConfigFile(host, env);
+  return { host, sessionId, dir, file };
+}
+
+/**
+ * Dispatch's configuration for `session`, read now, with each line the read of its file says
+ * beside it; or why Dispatch is off. The session is the one a broker trade writes under, so the
+ * token the call presents names it rather than naming none or another of this machine's.
+ */
+function callDispatch(
+  session: CallSession,
+  env: Readonly<Record<string, string>>,
+  cwd: string
+): { readonly warnings: readonly string[] } & (
+  | { readonly config: ActiveDispatchConfig }
+  | CallRefused
+) {
+  const { file, sessionId } = session;
+  if (file.path === null) return { warnings: [], refused: `dispatch: ${file.error}` };
+  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
+    cwd,
+    session: sessionId,
+  });
+  if (!resolution.enabled) {
+    return {
+      warnings,
+      refused:
+        resolution.error === null
+          ? `dispatch: ${resolution.notice}`
+          : `dispatch: dispatch config: ${resolution.error}`,
+    };
+  }
+  return { warnings, config: resolution };
+}
+
+/**
+ * `dispatch proxy --socket <path> -- <command>`: its own arguments (`parseProxyArgv`), then the
+ * host, the session and Dispatch resolved as every command resolves them, under
+ * `DISPATCH_TOKEN_BROKER=1` with a DPoP credential, then the proxy itself (`runDispatchProxy`).
+ * Every line of its own goes to standard error, since standard output belongs to its command, and
+ * none goes to the session's records: it calls neither `refuse` nor `recordOutcome`. A run that
+ * cannot start ends with the exit line, as every run does; `--help`, `--dry-run` and a refusal of
+ * its own arguments print none. `--dry-run` checks what a run checks before it trades and prints
+ * the Dispatch server, the session and the socket on standard output.
+ */
+async function runProxyCommand(
+  rest: readonly string[],
+  env: Readonly<Record<string, string>>,
+  rawEnv: Readonly<Record<string, string | undefined>>,
+  io: DispatchCliIo,
+  hostName: () => string | undefined
+): Promise<number> {
+  const say = (text: string): void => io.stderr(`${text}\n`);
+  const parsed = parseProxyArgv(rest, io.cwd);
+  if (parsed.kind === "help") {
+    io.stdout(proxyHelp());
+    return OK;
+  }
+  if (parsed.kind === "refused") {
+    say(`dispatch proxy: ${parsed.problem} Run dispatch proxy --help.`);
+    return USAGE;
+  }
+  const { dryRun, socket, command } = parsed;
+  const cannotStart = (text: string): number => {
+    say(text);
+    if (!dryRun) say(proxyExitLine(0, 0, 0));
+    return USAGE;
+  };
+
+  const session = callSession(env, hostName());
+  if ("refused" in session) return cannotStart(session.refused);
+  // Read before the configuration, whose refusal without the setting would name a bearer the
+  // proxy never presents. A value other than 1 is refused there too, unquoted.
+  if ((env.DISPATCH_TOKEN_BROKER ?? "").trim() !== "1") {
+    return cannotStart(
+      "dispatch proxy: DISPATCH_TOKEN_BROKER is not 1, so this session holds no broker token for the proxy to serve with. The proxy runs only where the deployment trades this session's Dispatch credential at the secrets broker, and never with a bearer."
+    );
+  }
+  const dispatch = callDispatch(session, env, io.cwd);
+  for (const warning of dispatch.warnings) say(`dispatch: ${warning}`);
+  if ("refused" in dispatch) return cannotStart(dispatch.refused);
+  const { config } = dispatch;
+  if (config.credential.scheme !== "DPoP") {
+    return cannotStart(
+      "dispatch proxy: this session's Dispatch credential is not a DPoP-bound broker token, and the proxy serves only with one."
+    );
+  }
+
+  if (dryRun) {
+    const taken = socketPathTaken(socket);
+    if (taken !== undefined) return cannotStart(taken);
+    io.stdout(
+      [
+        `Dispatch server: ${config.url}`,
+        `Session: ${session.sessionId}`,
+        `Socket: ${socket}`,
+        "",
+      ].join("\n")
+    );
+    return OK;
+  }
+  // The command's environment is the one the proxy was given, an empty variable kept as it is.
+  const commandEnv: Record<string, string> = {};
+  for (const [name, value] of Object.entries(rawEnv)) {
+    if (value !== undefined) commandEnv[name] = value;
+  }
+  return await runDispatchProxy({
+    socket,
+    command,
+    env,
+    commandEnv,
+    cwd: io.cwd,
+    config,
+    sessionId: session.sessionId,
+    stderr: (text) => io.stderr(text),
+  });
+}
+
 export async function runDispatchCli(
   argv: readonly string[],
   rawEnv: Readonly<Record<string, string | undefined>>,
@@ -252,9 +432,8 @@ export async function runDispatchCli(
   // The host need not be known for the session to be: a Python `subprocess.run(["dispatch", …])`
   // inherits the session id without `DISPATCH_HOST`. A ledger that cannot be written changes
   // nothing here: the refusal is already printed, and the caller is exiting.
-  // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
-  // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
-  const claudeSession = env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
+  // Under Claude Code the session is the one claude-envoy registers and claims under.
+  const claudeSession = claudeSessionOf(env);
   // The host, worked out once and only when asked: the walk of the parent processes it may take
   // runs at most once per call, for the refusal ledger and the call alike.
   let resolvedHost: { readonly name: string | undefined } | undefined;
@@ -289,6 +468,13 @@ export async function runDispatchCli(
     return code;
   };
 
+  // `dispatch proxy` is the one command no Dispatch tool spec defines: its own parser takes `--`
+  // and the command after it, and it prints every line of its own on standard error, since its
+  // command's standard output is the command's alone.
+  if (argv[0] === PROXY_COMMAND) {
+    return await runProxyCommand(argv.slice(1), env, rawEnv, io, ledgerHost);
+  }
+
   let parsed: ParsedCommand;
   try {
     parsed = parseCommand(argv, io);
@@ -313,42 +499,9 @@ export async function runDispatchCli(
         );
   }
 
-  const hostName = ledgerHost();
-  const host = HOSTS.find((name) => name === hostName);
-  if (host === undefined) {
-    return refuse(
-      hostName === undefined
-        ? "dispatch: DISPATCH_HOST is not set. The host plugin sets it in an agent's shell. From an agent's session, send the command as a bash call. To run dispatch by hand, set DISPATCH_HOST, and set DISPATCH_SESSION_ID to the id of your own session."
-        : `dispatch: DISPATCH_HOST is ${JSON.stringify(hostName)}, not omp, claude or codex.`,
-      USAGE,
-      parsed.tool
-    );
-  }
-  const [sessionId, sessionVariable] =
-    host === "claude"
-      ? [claudeSession, "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
-      : host === "codex"
-        ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
-        : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
-  if (sessionId === undefined) {
-    return refuse(
-      `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
-      USAGE,
-      parsed.tool
-    );
-  }
-  let dir: string;
-  try {
-    dir = sessionDirectory(env, sessionId);
-  } catch (error) {
-    return refuse(messageFor(error), USAGE, parsed.tool);
-  }
-
-  // The file the session's plugin handed its shell (each plugin sets DISPATCH_HOST and
-  // ENVOY_CONFIG_FILE together), else the host's own rule.
-  const file =
-    (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
-    sessionConfigFile(host, env);
+  const session = callSession(env, ledgerHost());
+  if ("refused" in session) return refuse(session.refused, USAGE, parsed.tool);
+  const { host, sessionId, dir, file } = session;
   if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
     // The call's own argument check, so the call refuses no arguments its dry run passed; what
     // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
@@ -372,27 +525,11 @@ export async function runDispatchCli(
     print(JSON.stringify(parsed.args, null, 2));
     return OK;
   }
-  if (file.path === null) {
-    return refuse(`dispatch: ${file.error}`, USAGE, parsed.tool);
-  }
-  // The session this call acts as is the session a broker trade writes under, so the token this
-  // call presents names it rather than naming none or another of this machine's.
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
-    cwd: io.cwd,
-    session: sessionId,
-  });
+  const dispatch = callDispatch(session, env, io.cwd);
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
-  for (const warning of warnings) print(`dispatch: ${warning}`);
-  if (!resolution.enabled) {
-    return refuse(
-      resolution.error === null
-        ? `dispatch: ${resolution.notice}`
-        : `dispatch: dispatch config: ${resolution.error}`,
-      USAGE,
-      parsed.tool
-    );
-  }
-  const config: ActiveDispatchConfig = resolution;
+  for (const warning of dispatch.warnings) print(`dispatch: ${warning}`);
+  if ("refused" in dispatch) return refuse(dispatch.refused, USAGE, parsed.tool);
+  const { config } = dispatch;
 
   // A `dispatch result` record's dry run (`dryRunAsksDispatch`) prints the JSON, then the
   // pull-request body line the record would print, which Dispatch writes and records nothing

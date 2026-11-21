@@ -27,10 +27,12 @@ export interface AuthenticatedUser {
  *  token's owner (a lowercase email) — null under the shared token or a verified service token —
  *  and that service token's subject (`service`), null unless one authenticated the request.
  *  `session` is the session the credential itself proved, which only an access token the secrets
- *  broker issued does, and `project` the one project key that credential lets the caller write,
- *  null where it names none. A client reads an absent `service`, `session` or `project` as a
- *  Dispatch older than that field, not as null: `service` is absent from one older than verified
- *  service tokens, and the other two from one older than broker-issued tokens.
+ *  broker issued does, and `project` the project key that credential's token names, null where
+ *  it names none. Such a token writes other projects' objects as a credential that names none
+ *  does, a private project it does not name excepted. A client reads an absent `service`,
+ *  `session` or `project` as a Dispatch older than that field, not as null: `service` is absent
+ *  from one older than verified service tokens, and the other two from one older than
+ *  broker-issued tokens.
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
  *  call: both of them for a person at a browser, the set its row names for a personal token, and

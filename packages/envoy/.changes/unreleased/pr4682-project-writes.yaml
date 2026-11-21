@@ -1,0 +1,14 @@
+kind: Changed
+custom:
+  Issue: pr4682
+body: |-
+  A broker token that names one project writes the objects of other projects that a credential
+  naming no project may write, among them an issue's claim, a project's rows (its default assignee,
+  its gated steps and its architecture sources), a comment, an issue's fields, a `blocked_by` link
+  to another project's issue, an issue made in another project, and a question asked of another
+  project or of every project. The one exception is a private project that the token does not name,
+  which `access.CredentialCovers` tests and which no project is yet. A target that resolves to no
+  project or to nothing is still refused `403 PROJECT_SCOPE`, a write of the deployment's is still
+  refused `403 PROJECT_SCOPE_DEPLOYMENT`, and the session and person checks stay. The Legion daemon
+  of another project, whose broker token proves its session `legion-daemon:<P>`, now writes the step
+  records, step ratings, plans and role holders of an issue.

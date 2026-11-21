@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The step records of an issue. The Legion daemon writes each run of each step twice, at its
@@ -255,8 +256,9 @@ func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
 	}
 }
 
-// Only the session of the issue's project's daemon writes a record: a person, the daemon of
-// another project and an agent's session are each refused, and that daemon's write lands.
+// Under a credential that proves no session, only the session of the issue's project's daemon
+// writes a record: a person, the daemon of another project and an agent's session are each
+// refused, and that daemon's write lands.
 func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
@@ -588,35 +590,166 @@ func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 	}
 }
 
-// A credential scoped to one project writes the records of that project's issues and no other's,
-// though it proves the session of that project's daemon.
-func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
+// issueRecordWrite is one of the four records of an issue that only a Legion daemon writes: a
+// step, a step's rating, a plan and the role holders. Each is built with an id of its own, so the
+// write lands as a record of its own and its read finds that record.
+type issueRecordWrite struct {
+	name string
+	// path is the write's target on issue.
+	path func(issue string) string
+	// body is the write's body, naming actor as its writer.
+	body func(actor map[string]any) map[string]any
+	// refusal is the code of the 403 a writer that is not the issue's daemon is refused with.
+	refusal string
+	// landed fails t unless the read of issue shows what the write stored.
+	landed func(t *testing.T, handler http.Handler, issue string)
+}
+
+func issueRecordWrites() []issueRecordWrite {
+	step, retro, plan := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	holders := []issueRoleHolder{{Role: "tester", Session: "ses-tester"}}
+	return []issueRecordWrite{
+		{
+			name: "a step", refusal: codeStepWriter,
+			path: func(issue string) string { return "/api/v1/issues/" + issue + "/steps/" + step },
+			body: implementerStart,
+			landed: func(t *testing.T, handler http.Handler, issue string) {
+				t.Helper()
+				if read := stepOf(t, handler, issue, step); read.StartedAt == nil || !read.StartedAt.Equal(stepStart) {
+					t.Errorf("the step read back is %s, want the run started at %s", asJSON(t, read), stepStart)
+				}
+			},
+		},
+		{
+			name: "a step rating", refusal: codeStepWriter,
+			path: func(issue string) string { return "/api/v1/issues/" + issue + "/steps/" + retro + "/rating" },
+			body: func(actor map[string]any) map[string]any {
+				return withFields(retroIdentity(actor, 1), map[string]any{"rating": 3, "rating_reason": "The plan fit the work."})
+			},
+			landed: func(t *testing.T, handler http.Handler, issue string) {
+				t.Helper()
+				if read := stepOf(t, handler, issue, retro); read.Rating == nil || *read.Rating != 3 {
+					t.Errorf("the retro read back is %s, want its rating 3", asJSON(t, read))
+				}
+			},
+		},
+		{
+			name: "a plan", refusal: codeStepWriter,
+			path: func(issue string) string { return "/api/v1/issues/" + issue + "/plans/" + plan },
+			body: func(actor map[string]any) map[string]any { return defaultPlanBody(actor, 1) },
+			landed: func(t *testing.T, handler http.Handler, issue string) {
+				t.Helper()
+				if !holdsPlan(t, handler, issue) {
+					t.Errorf("the read of %s's project lists no plan of it", issue)
+				}
+			},
+		},
+		{
+			name: "the role holders", refusal: "ROLE_HOLDER_FORBIDDEN",
+			path: func(issue string) string { return "/api/v1/issues/" + issue + "/role-holders" },
+			body: func(actor map[string]any) map[string]any { return map[string]any{"holders": holders, "actor": actor} },
+			landed: func(t *testing.T, handler http.Handler, issue string) {
+				t.Helper()
+				read := readRoleHolders(t, handler, issue)
+				if len(read.Holders) != 1 || read.Holders[0].Role != "tester" || read.Holders[0].Session != "ses-tester" {
+					t.Errorf("the role holders read back are %+v, want tester ses-tester", read.Holders)
+				}
+			},
+		},
+	}
+}
+
+// expectNoRecordWritten sends one record write and fails t unless it is refused 403 with the
+// write's code and leaves both stores as they were: the workflow store's rows (workflowRows), which
+// a step, a rating and a plan add to, and the role holders' (countRoleHolders). Each failure is
+// reported with t.Errorf, so a row shows its code and its stores together.
+func expectNoRecordWritten(t *testing.T, database *store.Store, write issueRecordWrite, send func() *httptest.ResponseRecorder) {
+	t.Helper()
+	workflow, holders := workflowRows(t, database), countRoleHolders(t, database)
+	refused := send()
+	if code, _ := refusalOf(t, refused); refused.Code != http.StatusForbidden || code != write.refusal {
+		t.Errorf("%s: status=%d body=%s, want 403 %s", write.name, refused.Code, refused.Body.String(), write.refusal)
+	}
+	if after := workflowRows(t, database); after != workflow {
+		t.Errorf("the refused write took the workflow store from %d rows to %d, want none written", workflow, after)
+	}
+	if after := countRoleHolders(t, database); after != holders {
+		t.Errorf("the refused write took the role holders from %d rows to %d, want none written", holders, after)
+	}
+}
+
+// A Legion daemon's broker token that names its project and proves that project's daemon's
+// session writes the records of another project's issue (INFRA-4799), as the daemon does when it
+// runs a claim on that issue (`legion claims spawn`): a step, a step's rating, a plan and the role
+// holders, each answered 200 and read back. Each write is a subtest of its own on an issue of its
+// own, so each answer is seen whatever the others answer, and the read of a plan, which closes the
+// issue it reads (holdsPlan), touches no other write's issue.
+func TestAnotherProjectsDaemonWritesTheRecordsOfAnIssue(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-daemon-token-of-one-project"
 	answer := liveNamedToken(caller.jkt)
 	answer.Session = legionDaemonSessionPrefix + brokerTestProject
 	rig.broker.Says(token, answer)
-	issueOf := func(project string) string {
-		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
-			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
-		}
-		issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": project, "title": "Steps of " + project})
-		if issue.Code != http.StatusCreated {
-			t.Fatalf("create an issue in %s: status=%d body=%s", project, issue.Code, issue.Body.String())
-		}
-		return decodeBody[struct {
-			Key string `json:"key"`
-		}](t, issue).Key
-	}
-	own, other := issueOf(brokerTestProject), issueOf("OTH")
+	createAdviceProject(t, rig.handler, brokerTestProject)
+	createAdviceProject(t, rig.handler, "OTH")
+	daemon := daemonSessionOf(brokerTestProject)
 
-	refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+other+"/steps/"+uuid.NewString(), token,
-		implementerStart(daemonSessionOf("OTH"))))
-	expectRefusal(t, "a write to "+other, refused, http.StatusForbidden, codeProjectScope, brokerTestProject, "OTH")
-	answered := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+own+"/steps/"+uuid.NewString(), token,
-		implementerStart(daemonSessionOf(brokerTestProject))))
-	if answered.Code != http.StatusOK {
-		t.Fatalf("the same write to %s: status=%d body=%s, want 200", own, answered.Code, answered.Body.String())
+	for _, write := range issueRecordWrites() {
+		t.Run(write.name, func(t *testing.T) {
+			issue := createAdviceIssue(t, rig.handler, "OTH", "Records of another project: "+write.name, nil).Key
+			written := rig.serve(caller.presenting(t, http.MethodPut, write.path(issue), token, write.body(daemon)))
+			if written.Code != http.StatusOK {
+				t.Errorf("%s of %s by the daemon of %s: status=%d body=%s, want 200",
+					write.name, issue, brokerTestProject, written.Code, written.Body.String())
+				return
+			}
+			write.landed(t, rig.handler, issue)
+		})
+	}
+}
+
+// A broker token that names a project and proves a session that is no Legion daemon's writes no
+// record of an issue, of its own project or of another: each of the four writes is refused 403
+// STEP_WRITER, or 403 ROLE_HOLDER_FORBIDDEN for the role holders, and stores nothing. The project
+// the token names makes no writer of these records; only the session of a daemon is one.
+func TestARoleSessionWritesNoRecordOfAnIssue(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-role-token-of-one-project"
+	rig.broker.Says(token, liveNamedToken(caller.jkt))
+	createAdviceProject(t, rig.handler, brokerTestProject)
+	createAdviceProject(t, rig.handler, "OTH")
+	session := map[string]any{"kind": "session", "id": brokerTestSession}
+
+	for _, project := range []string{brokerTestProject, "OTH"} {
+		issue := createAdviceIssue(t, rig.handler, project, "Records of "+project, nil).Key
+		for _, write := range issueRecordWrites() {
+			t.Run(write.name+" of "+issue, func(t *testing.T) {
+				expectNoRecordWritten(t, rig.database, write, func() *httptest.ResponseRecorder {
+					return rig.serve(caller.presenting(t, http.MethodPut, write.path(issue), token, write.body(session)))
+				})
+			})
+		}
+	}
+}
+
+// A credential that names no project proves no session, so a body that names the session of
+// another project's daemon makes no writer of an issue's records: the shared agent token naming
+// legion-daemon:BRK writes no step, rating, plan or role holders of an OTH issue, each refused 403
+// STEP_WRITER or 403 ROLE_HOLDER_FORBIDDEN with nothing stored, as before INFRA-4799. Only a
+// broker token proves the daemon session it writes as.
+func TestANoProjectCredentialNamingAnotherProjectsDaemonWritesNoRecord(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	createAdviceProject(t, rig.handler, "OTH")
+	issue := createAdviceIssue(t, rig.handler, "OTH", "Records of OTH", nil).Key
+	daemon := daemonSessionOf(brokerTestProject)
+
+	for _, write := range issueRecordWrites() {
+		t.Run(write.name, func(t *testing.T) {
+			expectNoRecordWritten(t, rig.database, write, func() *httptest.ResponseRecorder {
+				return sessionRequest(t, rig.handler, http.MethodPut, write.path(issue), write.body(daemon))
+			})
+		})
 	}
 }

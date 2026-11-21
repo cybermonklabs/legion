@@ -885,9 +885,10 @@ const BROKER_TOKEN_NOT_ACTIVE = "BROKER_TOKEN_NOT_ACTIVE";
 
 /**
  * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`. Its JSON is read from a clone,
- * so the body stays whole for whoever reads the answer.
+ * so the body stays whole for whoever reads the answer. Exported for `dispatch proxy`, which reads
+ * a `401` by the rule this client reads it by.
  */
-async function tokenNotLive(response: Response): Promise<boolean> {
+export async function tokenNotLive(response: Response): Promise<boolean> {
   if (response.status !== 401 || !isJson(response)) return false;
   const body: unknown = await response
     .clone()

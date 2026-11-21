@@ -744,7 +744,7 @@ func entryProjects(identity, project string, asked []string) ([]string, error) {
 // boot and then fail every trade.
 func checkGrant(where, project, person, session string, noProject bool) error {
 	if !(noProject && project == "") && strings.TrimSpace(project) == "" {
-		return fmt.Errorf("exchange: %s: the project is required, since the minted token may write one project", where)
+		return fmt.Errorf("exchange: %s: the project is required, since the minted token names one project", where)
 	}
 	if project != "" {
 		if err := oauthwire.ValidProjects([]string{project}); err != nil {

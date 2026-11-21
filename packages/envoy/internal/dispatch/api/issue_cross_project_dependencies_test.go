@@ -31,8 +31,9 @@ type dependencyEdge struct{ issue, target string }
 // dependency lock every dependency write takes exclusively, so each ends with the write applied
 // or with the cycle refusal, never with a deadlock and never with the ring committed — the pair
 // whose every target is its own project's included, which shares no project lock with the other
-// and has nothing but that one lock to order it. A caller whose credential names one project is
-// still refused a target outside it.
+// and has nothing but that one lock to order it. A caller whose credential names one project
+// links a target of another project as a caller whose credential names none does (INFRA-4799),
+// and a link to an issue that does not exist is refused it as it is refused every caller.
 func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	alpha := createListedIssues(t, handler, "ALPHA", 8)
@@ -289,7 +290,7 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 		[]dependencyEdge{{alpha[6], beta[5]}, {beta[6], alpha[7]}},
 		[]dependencyEdge{{beta[5], beta[6]}, {alpha[7], alpha[6]}})
 
-	t.Run("a credential that names one project is refused a target outside it", func(t *testing.T) {
+	t.Run("a credential that names one project links a target of another project on create, on a PATCH, and on a PATCH that keeps it", func(t *testing.T) {
 		rig := newBrokerTokenRig(t)
 		caller := newBrokerCaller(t)
 		const token = "a-token-linking-across-projects"
@@ -311,41 +312,79 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 			}
 			return decodeBody[model.Issue](t, response).Key
 		}
+		readBlockedBy := func(t *testing.T, key string) []string {
+			t.Helper()
+			read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+key, nil)
+			if read.Code != http.StatusOK {
+				t.Fatalf("read %s: status=%d body=%s", key, read.Code, read.Body.String())
+			}
+			return decodeBody[model.Issue](t, read).BlockedBy
+		}
+		patchBlockedBy := func(t *testing.T, key string, targets []string) *httptest.ResponseRecorder {
+			t.Helper()
+			return rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+key, token, map[string]any{
+				"blocked_by": targets,
+			}))
+		}
 		createProject(brokerTestProject)
 		createProject("OTH")
 		own := createIssue(brokerTestProject, "Its own project's issue")
+		kept := createIssue(brokerTestProject, "An issue already waiting on another project")
 		sibling := createIssue(brokerTestProject, "Another issue of its own project")
 		outside := createIssue("OTH", "An issue of another project")
-
-		refused := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
+		// The link the third row keeps is laid by a person, whose credential names no project, so
+		// that row starts from it whatever the rows before it answered.
+		if laid := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+kept, map[string]any{
 			"blocked_by": []string{outside},
-		}))
-		if refused.Code != http.StatusForbidden {
-			t.Fatalf("a scoped caller linking across projects: status=%d body=%s, want 403", refused.Code, refused.Body.String())
-		}
-		refusal := decodeBody[refusalAnswer](t, refused)
-		if refusal.Code != codeProjectScope {
-			t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
-		}
-		if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "OTH") {
-			t.Fatalf("refusal %q names neither the project the credential covers (%s) nor the target's (OTH)",
-				refusal.Error, brokerTestProject)
-		}
-		read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)
-		if got := decodeBody[model.Issue](t, read).BlockedBy; len(got) != 0 {
-			t.Fatalf("the refused write left blocked_by = %v, want []", got)
+		}); laid.Code != http.StatusOK {
+			t.Fatalf("a person links %s to %s: status=%d body=%s", kept, outside, laid.Code, laid.Body.String())
 		}
 
-		// The same caller still links inside its own project, so what is refused is the target
-		// outside the credential's project and not the route.
-		allowed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
-			"blocked_by": []string{sibling},
-		}))
-		if allowed.Code != http.StatusOK {
-			t.Fatalf("a scoped caller linking inside its own project: status=%d body=%s", allowed.Code, allowed.Body.String())
-		}
-		if got := decodeBody[model.Issue](t, allowed).BlockedBy; !slices.Equal(got, []string{sibling}) {
-			t.Fatalf("blocked_by = %v, want %v", got, []string{sibling})
-		}
+		t.Run("an issue made with the link is 201", func(t *testing.T) {
+			created := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+				"project": brokerTestProject, "title": "Made waiting on another project", "spec": "# Spec",
+				"blocked_by": []string{outside}, "force": true,
+			}))
+			if created.Code != http.StatusCreated {
+				t.Fatalf("a scoped caller making an issue that waits on %s: status=%d body=%s, want 201",
+					outside, created.Code, created.Body.String())
+			}
+			made := decodeBody[model.Issue](t, created).Key
+			if got := readBlockedBy(t, made); !slices.Equal(got, []string{outside}) {
+				t.Fatalf("blocked_by of %s read back = %v, want %v", made, got, []string{outside})
+			}
+		})
+
+		t.Run("a PATCH that sets the link is 200", func(t *testing.T) {
+			if set := patchBlockedBy(t, own, []string{outside}); set.Code != http.StatusOK {
+				t.Fatalf("a scoped caller linking %s to %s: status=%d body=%s, want 200", own, outside, set.Code, set.Body.String())
+			}
+			if got := readBlockedBy(t, own); !slices.Equal(got, []string{outside}) {
+				t.Fatalf("blocked_by of %s read back = %v, want %v", own, got, []string{outside})
+			}
+		})
+
+		t.Run("a PATCH that writes again a list keeping the link, with one more target, is 200", func(t *testing.T) {
+			want := []string{outside, sibling}
+			slices.Sort(want)
+			if written := patchBlockedBy(t, kept, want); written.Code != http.StatusOK {
+				t.Fatalf("a scoped caller writing %v again on %s: status=%d body=%s, want 200", want, kept, written.Code, written.Body.String())
+			}
+			if got := readBlockedBy(t, kept); !slices.Equal(got, want) {
+				t.Fatalf("blocked_by of %s read back = %v, want %v", kept, got, want)
+			}
+		})
+
+		t.Run("a link to an issue that does not exist is 400 BLOCKED_BY_INPUT", func(t *testing.T) {
+			const missing = "OTH-999"
+			refused := patchBlockedBy(t, sibling, []string{missing})
+			if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "BLOCKED_BY_INPUT" || !strings.Contains(text, missing) {
+				t.Fatalf("a scoped caller linking %s to %s: status=%d body=%s, want 400 BLOCKED_BY_INPUT naming %s",
+					sibling, missing, refused.Code, refused.Body.String(), missing)
+			}
+			if got := readBlockedBy(t, sibling); len(got) != 0 {
+				t.Fatalf("the refused write left blocked_by of %s = %v, want []", sibling, got)
+			}
+		})
 	})
 }

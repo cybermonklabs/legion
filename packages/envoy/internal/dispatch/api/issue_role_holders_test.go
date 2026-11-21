@@ -138,9 +138,10 @@ func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 	}
 }
 
-// Only the daemon's own session for the issue's project writes the set. A role session, the daemon
-// of another project and a person are each refused, and no row is written.
-func TestOnlyTheDaemonOfTheIssuesProjectNamesTheRoleHolders(t *testing.T) {
+// Under a credential that proves no session, only the daemon's own session for the issue's project
+// writes the set. A role session, the daemon of another project and a person are each refused, and
+// no row is written.
+func TestUnderACredentialThatProvesNoSessionOnlyTheIssuesDaemonNamesTheRoleHolders(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	holders := []issueRoleHolder{{Role: "tester", Session: "ses-a"}}

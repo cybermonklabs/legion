@@ -783,9 +783,9 @@ export default function envoyExtension(hostApi: PiApi): void {
   // interface's `claim` and `subscribe` refuse naming why (`requireInbound`).
   const inbound = envoy.enabled && !("off" in envoy.inbound);
   const startNotice = atStart.notice ?? "";
-  // AskGate (extensions/askgate/) reviews each Dispatch write before it posts, in a session that
-  // has Dispatch: its own envoy.json and the variables over it name one. A session or pod with no
-  // Dispatch has no write to review, so the gate binds nothing there and says nothing. A
+  // AskGate (extensions/askgate/) reviews each gated Dispatch write before it posts, in a session
+  // that has Dispatch: its own envoy.json and the variables over it name one. A session or pod
+  // with no Dispatch has no write to review, so the gate binds nothing there and says nothing. A
   // checkout's file is left out of that test: it can turn off the Dispatch of its own checkout,
   // but not the gate, which a later shell command can still pass with DISPATCH_URL. The session's
   // own envoy.json is the gate's only switch. Its one `tool_call` handler registers with this

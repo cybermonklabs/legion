@@ -486,8 +486,9 @@ type AgentSecretsLoginView struct {
 }
 
 // DispatchCredentialView is the daemon's Dispatch credential under dispatch_token_broker, as the
-// state shows it: Session, the session its own Dispatch calls run under (`legion-daemon:<project>`,
-// dispatch.DaemonSession), which the secrets broker grants a token of; TransitionLaunches, the
+// state shows it: Session, the session of the daemon's own project (`legion-daemon:<project>`,
+// dispatch.DaemonSession), which the secrets broker grants a token of and every write of the
+// daemon's names, on an issue of any project (dispatch.WritesAs); TransitionLaunches, the
 // launches since the daemon's boot that carried the transition token of
 // dispatch_token_transition_file, and LastTransitionLaunchAt, when the latest of them was sent,
 // null before the first; and LiveLaunchesWithDispatchToken, the live launches whose start carried a

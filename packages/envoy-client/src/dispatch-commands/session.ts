@@ -89,9 +89,12 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
     proved !== null && proved !== sessionId
       ? ` Your credential names session ${proved}, which is not this host session (${sessionId}): Dispatch records every write you make as ${proved}.`
       : "";
-  const writable = project !== null ? ` It may write project ${project} and no other.` : "";
+  // A token that names a project also writes other projects' objects, as a credential that
+  // names none does, except in a private project it does not name. So the line names the
+  // project and claims no limit on what the token writes.
+  const named = project !== null ? ` Its token names project ${project}.` : "";
   return {
-    text: acting + elsewhere + writable,
+    text: acting + elsewhere + named,
     details: { session, owner, service, project },
   };
 }

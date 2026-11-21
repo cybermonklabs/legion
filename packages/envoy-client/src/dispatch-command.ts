@@ -5,11 +5,17 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
+import { PROXY_COMMAND, PROXY_SENTENCE, proxyHelp } from "./dispatch-proxy-command";
 import { messageFor } from "./errors";
+
+export { PROXY_COMMAND, proxyHelp };
 
 /**
  * The `dispatch` command surface: one command per Dispatch tool spec and one flag per field, all
- * derived from each spec's JSON schema, so a new field or tool needs no edit here.
+ * derived from each spec's JSON schema, so a new field or tool needs no edit here. `dispatch
+ * proxy` is the one command outside the specs: its parser and its help are
+ * `dispatch-proxy-command.ts`'s, which `commandsHelp` lists and this module re-exports for the
+ * docs generator.
  *
  * A field's kind decides its flags:
  * - string or enum: `--<field> <value>`, and `--<field>-file <path>` (`-` reads stdin, and one
@@ -26,7 +32,7 @@ import { messageFor } from "./errors";
  * - any other object or array: `--<field>-json <json>` and `--<field>-json-file <path>`.
  * A JSON flag's help lists the keys of its object, or of each item of its list, from the same
  * schema, with each key's type, whether it is required, and its description (`shapeLines`).
- * Every command also takes `--help` and `--dry-run`.
+ * Every command also takes `--help` and `--dry-run`, `dispatch proxy` among them.
  */
 
 type ScalarArray = "string" | "number" | "number-or-null";
@@ -385,7 +391,7 @@ export function parseCommand(
   if (command === undefined || command === "--help") return { kind: "help" };
   const tool = toolForCommand(command);
   if (tool === undefined) {
-    const commands = [...toolsByCommand.keys()].join(", ");
+    const commands = [...toolsByCommand.keys(), PROXY_COMMAND].join(", ");
     return {
       kind: "refused",
       problems: [`unknown command ${quoteWord(command)}; the commands are: ${commands}`],
@@ -679,15 +685,18 @@ export function commandHelp(tool: string): string {
 
 /** Every command, with the first sentence of what it does. */
 export function commandsHelp(): string {
-  const width = Math.max(...[...toolsByCommand.keys()].map((command) => command.length));
+  const width = Math.max(
+    ...[...toolsByCommand.keys(), PROXY_COMMAND].map((command) => command.length)
+  );
   return [
     "Usage: dispatch <command> [flags]",
     ...dispatchToolSpecs.map((spec) => {
       const sentence = /^.*?[.!?](?=\s|$)/s.exec(spec.description)?.[0] ?? spec.description;
       return `  ${commandName(spec.name).padEnd(width)}  ${sentence}`;
     }),
+    `  ${PROXY_COMMAND.padEnd(width)}  ${PROXY_SENTENCE}`,
     "",
-    "Run dispatch <command> --help for its flags and an example; --dry-run checks a command's arguments as the call would and prints them as given, sending nothing, except that dispatch result's dry run of a record also prints the pull-request body line Dispatch would write for it, recording nothing.",
+    "Run dispatch <command> --help for its flags and an example; --dry-run checks a command's arguments as the call would and prints them as given, sending nothing, except that dispatch result's dry run of a record also prints the pull-request body line Dispatch would write for it, recording nothing, and dispatch proxy's dry run checks its arguments and its environment and prints the Dispatch server, the session and the socket it would use, starting nothing.",
     "",
   ].join("\n");
 }

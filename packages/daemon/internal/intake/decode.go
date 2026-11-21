@@ -302,7 +302,7 @@ func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, err
 		return nil, nil, fmt.Errorf("Dispatch durable subject key %s disagrees with event issue_key %s", key, event.IssueKey)
 	}
 	var unread []string
-	fact, err := decodeDispatchEvent(event, &unread)
+	fact, err := decodeDispatchEvent(project, event, &unread)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -319,8 +319,9 @@ func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, err
 }
 
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
-// to unread each field it took as unknown.
-func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
+// to unread each field it took as unknown. An issue event whose actor is the session of project,
+// the daemon's own Dispatch project (dispatch.DaemonSession), is the daemon's own write.
+func decodeDispatchEvent(project string, event dispatchEvent, unread *[]string) (Fact, error) {
 	switch event.Type {
 	case "issue.created", "issue.updated", "issue.closed":
 		var issue struct {
@@ -364,7 +365,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			parent = *issue.Parent
 		}
 		actorSession := ""
-		daemonActor := event.Actor.Kind == "session" && event.Actor.ID == dispatch.DaemonSession(event.IssueKey)
+		daemonActor := event.Actor.Kind == "session" && event.Actor.ID == dispatch.DaemonSession(project)
 		if event.Actor.Kind == "session" && !daemonActor {
 			actorSession = event.Actor.ID
 		}

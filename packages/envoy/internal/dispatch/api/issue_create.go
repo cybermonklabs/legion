@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -142,15 +143,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// The one write whose project its address does not name, so withinProjectScope leaves it
 	// here by its class (scopeProjectInBody). It runs the moment that project is settled —
 	// read from the body above, or from the repository the external ref names — and so before
-	// the ref is resolved to an issue already imported: a scoped caller naming one imported
-	// into another project is refused rather than answered that project's issue, which
-	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing
-	// is written before this point.
-	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step and writeBlockedBy below read it again, since a
-	// blocked_by target's project is no part of this address.
+	// the ref is resolved to an issue already imported. Nothing is written before this point.
+	// A credential that names one project creates an issue in every project that
+	// access.CredentialCovers covers. The one exception is a private project it does not name.
+	// Such a caller is refused here, so it is never answered with that project's issue, which
+	// respondWithExistingExternalIssue would also record a related-check outcome on.
+	// callerProject is empty for a credential that names none. The dependency lock step and
+	// writeBlockedBy below read it again, because a blocked_by target's project is no part of
+	// this address.
 	callerProject, scoped := s.callerProject(r)
-	if scoped && callerProject != input.Project {
+	if scoped && !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, input.Project, false) {
 		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
 		return
 	}

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# The rig of dispatch://INFRA-4425's checks K2, K3 and K4: every Dispatch client a Legion
-# deployment runs, writing with a token the secrets broker issued, against a real broker, a real
-# Dispatch and the real clients. The driver
+# The rig of dispatch://INFRA-4425's checks K2, K3 and K4, and of dispatch://INFRA-4799's C2: every
+# Dispatch client a Legion deployment runs, writing with a token the secrets broker issued, and a
+# tool's reads through `dispatch proxy`, against a real broker, a real Dispatch and the real
+# clients. The driver
 # (packages/daemon/internal/daemon/dispatch_broker_live_test.go, built with `-tags e2e`) starts the
 # broker's own test rig on PostgreSQL, builds and starts the real Dispatch server from this
 # checkout's packages/envoy on a database of its own behind a recording proxy, and drives the
@@ -9,20 +10,31 @@
 # under bun) and scripts/e2e/dispatch-broker-clients.ts, which holds the client that command
 # builds and the client the pi-envoy plugin builds:
 #   - K2, TestTheDaemonWritesAsItselfOnlyInItsProject: under dispatch_token_broker the daemon's
-#     client posts an issue message on an issue of its own project, accepted, and on an issue of
-#     another, refused 403 PROJECT_SCOPE, both under DPoP; one whose proof names an origin outside
-#     DISPATCH_PROOF_ORIGINS is refused 401 BROKER_TOKEN_PROOF_INVALID; and `dispatch whoami` in
-#     a role's environment acts for that role's person and writes its project alone. Without the
-#     setting both writes carry Bearer and are accepted, and whoami runs under the shared token.
+#     client writes on an issue of its own project and on an issue of another, an issue message
+#     on each and on the other a status and its step, rating, plan and role holder records, each
+#     accepted under DPoP; one whose proof names an origin outside DISPATCH_PROOF_ORIGINS is
+#     refused 401 BROKER_TOKEN_PROOF_INVALID; and `dispatch whoami` in a role's environment acts
+#     for that role's person and names the project its token names. Without the setting both
+#     messages carry Bearer and are accepted, and whoami runs under the shared token.
 #   - K4, TestARoleWritesEveryKindWithItsOwnToken: with a role's token of its project, every write
-#     kind a role makes, through the dispatch command and through the plugin's client, and with
-#     the daemon's token, every method of the daemon's client, each answered 2xx; with a token of
-#     another project each write that names an issue or a document of the first is refused 403
-#     PROJECT_SCOPE, and an upload into another session's conversation 403 SESSION_SCOPE.
+#     kind a role makes, through the dispatch command and through the plugin's client, three
+#     writes of the command on another project's issue, and with the daemon's token every method
+#     of the daemon's client, each answered 2xx; with a token of another project every write on
+#     the first project's objects is accepted too, but the daemon script's step record, its rating
+#     and its plan are refused 403 STEP_WRITER and its role holders 403 ROLE_HOLDER_FORBIDDEN,
+#     since that token's session is no daemon's, and an upload into another session's
+#     conversation 403 SESSION_SCOPE.
 #   - K3, TestEveryClientRenewsAndStopsOnARefusal, with LEGION_E2E_TOKEN_RENEWAL=1 and in place of
 #     the two above: the three long-lived clients write over three lifetimes of a 420 s token,
 #     renewing it with no restart, and stop with the broker's refusal once their pod's token is
 #     one the broker refuses for good, sending Dispatch nothing. It takes about fifteen minutes.
+#   - C2, TestTheProxyServesAToolRunWithOneTradeForEachRenewal, with LEGION_E2E_PROXY=1 and alone,
+#     in place of every test above, K3 included: `dispatch proxy` in a role's environment runs a
+#     Python standard-library client over its unix socket for 255 s of a 420 s token. The client
+#     reads back a file's bytes, posts one comment twice under one Idempotency-Key and makes at
+#     least 2,000 requests, each read answered 200, and the proxy trades at most 1 + T / (L - 300) times,
+#     the count its exit line names; without DISPATCH_TOKEN_BROKER it exits 2 and runs nothing.
+#     It takes about five minutes past the rig's start.
 # Each test writes its tables to TMPDIR and logs the file's path; `go test -v` prints each test's
 # own `--- PASS` or `--- FAIL` line, which is the result, since a skip prints `ok` too.
 #
@@ -67,6 +79,9 @@ export BROKER_TEST_DATABASE_URL=$LEGION_TEST_PG_DSN
 run='^(TestTheDaemonWritesAsItselfOnlyInItsProject|TestARoleWritesEveryKindWithItsOwnToken)$'
 if [ "${LEGION_E2E_TOKEN_RENEWAL:-}" = 1 ]; then
   run='^TestEveryClientRenewsAndStopsOnARefusal$'
+fi
+if [ "${LEGION_E2E_PROXY:-}" = 1 ]; then
+  run='^TestTheProxyServesAToolRunWithOneTradeForEachRenewal$'
 fi
 cd "$root/packages/daemon"
 GOCACHE=${GOCACHE:-${TMPDIR:-/tmp}/go-build} GOGC=20 GOMAXPROCS=2 \
