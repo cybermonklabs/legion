@@ -167,8 +167,8 @@ start_kept() {
 }
 
 # report_port LOG PATTERN, the port a process that bound port 0 itself reported, is
-# lib/report-port.sh's: it needs nothing of this rig's, and envoy-session-delivery.sh and
-# packages/pi-envoy/scripts/local-stack.sh source it without this file.
+# lib/report-port.sh's: it needs nothing of this rig's, and envoy-session-delivery.sh sources it
+# without this file.
 # shellcheck source-path=SCRIPTDIR source=report-port.sh
 . "$root/scripts/e2e/lib/report-port.sh"
 

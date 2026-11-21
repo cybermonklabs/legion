@@ -1,9 +1,8 @@
 # shellcheck shell=bash
-# The one reader of the port a process that bound port 0 itself logs once it listens. lib/rig.sh,
-# scripts/e2e/envoy-session-delivery.sh and packages/pi-envoy/scripts/local-stack.sh (for the two
-# smokes beside it and their role-takeover/clients.sh) source it, so a change to how such a line is
-# matched reaches every one of them. Sourced, never run: it defines report_port and reported_port,
-# and needs nothing of its caller's.
+# The one reader of the port a process that bound port 0 itself logs once it listens. lib/rig.sh
+# and scripts/e2e/envoy-session-delivery.sh source it, so a change to how such a line is matched
+# reaches both. Sourced, never run: it defines report_port and reported_port, and needs nothing of
+# its caller's.
 
 # report_port LOG PATTERN prints the port a process that bound port 0 itself reported: the digits
 # right after the first match of the extended regular expression PATTERN in LOG (nats-server -p -1:

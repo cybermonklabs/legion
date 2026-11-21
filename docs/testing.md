@@ -173,8 +173,9 @@ itself, whose tests import its sources by relative path.
   (`scripts/e2e/lib/held-port.test.ts`, `packages/claude-envoy/tests/legion-inbox.test.ts`); a
   directory a test removes itself is `mkdtemp(join(root, prefix))`
   (`packages/claude-envoy/tests/session-title.test.ts`,
-  `packages/pi-envoy/extensions/tmux-place-omp.test.ts`). `temporaryDirectory` and
-  `temporaryTmpdir` take no `root`, so a socket never goes under them. claude-envoy's mod socket
+  `packages/pi-envoy/extensions/tmux-place-omp.test.ts`). `temporaryTmpdir` takes no `root`, and
+  `temporaryDirectory`'s name holds eight random characters where the refusal counts `mkdtemp`'s
+  six, so a socket goes under neither. claude-envoy's mod socket
   has a smaller bound, 100 bytes (`MOD_SOCKET_PATH_MAX_BYTES`), so its suites take their base from
   `modSocketScratch(prefix)` (`packages/claude-envoy/tests/mod-socket-scratch.ts`), which measures
   it with the product's own `resolveModSocketPath`, and read the session's socket through

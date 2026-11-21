@@ -68,6 +68,7 @@ import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
+  memoryRoot,
   temporaryDirectories,
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
@@ -98,7 +99,6 @@ import {
   type StallWatchRecord,
 } from "../src/stall-evidence";
 import { stallExitsFile } from "../src/stall-exits";
-import { memoryRoot } from "../test/memory-root";
 import type legionEntryDefault from "./legion";
 import type {
   setLegionBootstrapExitForTests as SetLegionBootstrapExitForTests,
@@ -403,7 +403,7 @@ const jjHomeDirectory = temporaryDirectory("legion-jj-home");
 /** The repository every workspace in this file is a copy of: one `jj git init` before the tests.
  * A copy spawns no process, so a test's workspace costs none of bun's 5 s test timeout, which a
  * `jj` process, whose run time is the machine's load, would otherwise spend. The template and its
- * copies are made on the memory root (test/memory-root.ts): "a resumed worker restores its phase"
+ * copies are made on the memory root (`memoryRoot`): "a resumed worker restores its phase"
  * copies it seven times, and run alone in a 2-CPU cgroup it took 7.7-9.8 s with TMPDIR on a dev
  * box's shared disk, timing out 1 run of 3, and 2.0-2.3 s on /dev/shm. */
 let jjTemplate = "";

@@ -3,9 +3,8 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { gitBinary } from "@legion/test-fixtures/version-control-tools";
-import { memoryDirectory } from "../../test/memory-root";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
@@ -14,10 +13,10 @@ import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 // then did nothing the scenario asks is a failure.
 
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
-// On the memory root (test/memory-root.ts): the staging hook below makes 626 directories and writes
+// On the memory root (`memoryRoot`): the staging hook below makes 626 directories and writes
 // 3,726 files (1.35 MB), which took 47,248 ms on a dev box's shared disk alone in a 2-CPU cgroup
 // and 483 ms on /dev/shm, where Bun gives a hook 5 s.
-const work = memoryDirectory("skill-scenarios-score");
+const work = temporaryDirectory("skill-scenarios-score", { root: memoryRoot() });
 const runs = path.join(work, "runs");
 // The repository the pushed-code run below is cloned from. Reserved here, above the hook that
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,

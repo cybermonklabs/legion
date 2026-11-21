@@ -2279,7 +2279,9 @@ browser suite reads the shared fixture sources.
 
 ## envoy_infra_go: sockettest
 
-The natslive tests compile `packages/envoy/internal/sockettest` through the listener stack.
+The held-port wrapper's ordinary test, `packages/envoy/infra/host/heldportwrapper/main_test.go`,
+imports `packages/envoy/internal/sockettest`, and `packages/envoy/infra/scripts/race-unit.sh` runs
+every package of the module but `internal/textcheck`, that one among them.
 
 ## dispatch_two_builds: socket-root fixture
 
