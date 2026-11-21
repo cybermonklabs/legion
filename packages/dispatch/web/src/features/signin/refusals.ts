@@ -41,6 +41,13 @@ const refusals: Record<Ceremony, Partial<Record<PasskeyRefusal, CeremonyRefusal>
         "The project's access list no longer names this address, so this link cannot enroll a passkey. Ask the project's owner.",
       retry: false,
     },
+    // A passkey reads every project that names its person, so one owner binds a person from
+    // outside: a link of one owner enrolls nobody another owner's project names.
+    LISTED_BY_ANOTHER_OWNER: {
+      message:
+        "Another project's owner also names this address, so this link cannot enroll a passkey. Ask the project's owner.",
+      retry: false,
+    },
     WORKSPACE_ADDRESS: {
       message:
         "This link is for an address of the company's Google Workspace, whose people sign in with Google and never with a passkey.",
@@ -88,6 +95,10 @@ const eitherCeremony: Partial<Record<PasskeyRefusal, CeremonyRefusal>> = {
   // after another enrollment of the same address finished first. A press begins anew.
   CEREMONY_EXPIRED: {
     message: "This request ran out, or another one finished first. Press the button to try again.",
+    retry: true,
+  },
+  PASSKEY_RATE_LIMITED: {
+    message: "Too many passkey requests reached Dispatch just now. Wait a moment, then try again.",
     retry: true,
   },
 };

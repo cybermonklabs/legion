@@ -112,6 +112,11 @@ test("a link Dispatch refuses says why, and offers nothing to press", async () =
         "The project's access list no longer names this address, so this link cannot enroll a passkey. Ask the project's owner.",
       ],
       [
+        "LISTED_BY_ANOTHER_OWNER",
+        403,
+        "Another project's owner also names this address, so this link cannot enroll a passkey. Ask the project's owner.",
+      ],
+      [
         "FULL_MEMBER",
         409,
         "This address belongs to a member of the company's Google Workspace, who signs in with Google and never with a passkey.",

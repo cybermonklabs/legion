@@ -116,11 +116,11 @@ func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
 // answer at the canonical origin is what it always was. The outside origin's sign-in page then
 // offers the passkey alone and never a Google sign-in that answers 404 there; with passkey sign-in
 // off the passkey's ceremonies answer 404 too, and the page says so when the passkey is pressed.
-// The exception is identity.OutsideRule (DISPATCH_SIGNIN_OUTSIDE=1), which signs people from
-// outside in with Google at the outside origin: its 401 names no sign-in, so the page offers that
-// Google sign-in. Once OutsideRule is gone the condition is r.atOutside(req) alone.
+// The exception is a rule that serves Google there (GoogleAtOutsideOrigin: identity.OutsideRule,
+// DISPATCH_SIGNIN_OUTSIDE=1): its 401 names no sign-in, so the page offers that Google sign-in.
+// Once OutsideRule is gone the condition is r.atOutside(req) alone.
 func (r *router) whoamiSignIn(req *http.Request) string {
-	if _, outsideGoogle := r.ctx.SignInRule.(identity.OutsideRule); !outsideGoogle && r.atOutside(req) {
+	if (r.ctx.SignInRule == nil || !r.ctx.SignInRule.GoogleAtOutsideOrigin()) && r.atOutside(req) {
 		return passkeySignIn
 	}
 	return ""

@@ -134,6 +134,10 @@ test("a passkey Dispatch refuses is said in plain words beside the button, which
       "PASSKEY_UNKNOWN",
       "Dispatch does not know this passkey: it was removed, so it signs in no more. Ask a project's owner for a new link.",
     ],
+    [
+      "PASSKEY_RATE_LIMITED",
+      "Too many passkey requests reached Dispatch just now. Wait a moment, then try again.",
+    ],
   ] as const) {
     const finish = spyOn(api, "passkeySignIn").mockRejectedValue(
       new ApiError(401, { code, error: code.toLowerCase() })

@@ -44,6 +44,8 @@ function invitationRefusal(email: string, error: Error): string {
       return `No link can be made for ${email}: they sign in with Google as a member of the company's Google Workspace.`;
     case "PERSON_NOT_LISTED":
       return `No link can be made for ${email}: this project's access list no longer names them directly.`;
+    case "LISTED_BY_ANOTHER_OWNER":
+      return `No link can be made for ${email}: another project's owner also names them, and a passkey would read that project too.`;
     case "PASSKEY_SIGNIN_OFF":
       return "This deployment no longer signs anyone in with a passkey, so no link can be made.";
     default:

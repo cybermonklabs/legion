@@ -161,6 +161,8 @@ export interface PasskeySignedIn {
  * - `INVITATION_USED` (410): the link enrolled a passkey already.
  * - `INVITATION_EXPIRED` (410): 24 hours have passed since the owner made it.
  * - `INVITATION_NOT_LISTED` (403): the project's access list no longer names the address directly.
+ * - `LISTED_BY_ANOTHER_OWNER` (403): a project whose owner did not make the link names the address
+ *   directly; a passkey reads every project that names its person, so only one owner binds them.
  * - `WORKSPACE_ADDRESS` (403): the address is on a domain of the Google Workspace Dispatch signs
  *   people in for, whose people sign in with Google and never with a passkey.
  * - `FULL_MEMBER` (409): the address's people row is a full member's, who signs in with Google.
@@ -175,6 +177,8 @@ export interface PasskeySignedIn {
  *   used already: each begin's challenge is single-use, so a replayed finish, and an enrollment of
  *   the same address that another one finished first, meet it too. The page begins anew.
  * - `PASSKEY_REFUSED` (400): the credential did not verify for any other reason.
+ * - `PASSKEY_RATE_LIMITED` (429): too many begins reached Dispatch at once; the next press a moment
+ *   later begins anew.
  *
  * A step sent from a page of another origin (an `Origin` that is not the outside origin, or none
  * with a `Sec-Fetch-Site` other than `same-origin`) is refused 403 `{"error":"invalid request
@@ -185,6 +189,7 @@ export const PASSKEY_REFUSALS = [
   "INVITATION_USED",
   "INVITATION_EXPIRED",
   "INVITATION_NOT_LISTED",
+  "LISTED_BY_ANOTHER_OWNER",
   "WORKSPACE_ADDRESS",
   "FULL_MEMBER",
   "NOT_LISTED",
@@ -193,6 +198,7 @@ export const PASSKEY_REFUSALS = [
   "PASSKEY_SIGN_COUNT",
   "CEREMONY_EXPIRED",
   "PASSKEY_REFUSED",
+  "PASSKEY_RATE_LIMITED",
 ] as const;
 
 export type PasskeyRefusal = (typeof PASSKEY_REFUSALS)[number];

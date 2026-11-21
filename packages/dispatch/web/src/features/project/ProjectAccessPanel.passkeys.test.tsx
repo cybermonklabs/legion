@@ -18,7 +18,7 @@ const ana = "ana@other.example";
 function withPasskeys(overrides: Partial<ProjectAccess> = {}): ProjectAccess {
   return access({
     invitable: [ana],
-    passkeys: [{ email: ana, enrolled_at: "2026-11-20T10:00:00Z" }],
+    passkeys: [{ email: ana, enrolled_at: "2026-11-20T10:00:00Z", made_by: "alice" }],
     people: [ana, "carol@example.com"],
     ...overrides,
   });
@@ -313,7 +313,9 @@ test("a link the person used is taken out of the row once the answer lists the p
     expect(await within(personRow(ana)).findByRole("textbox", link)).toBeInTheDocument();
 
     await panel.lands(
-      withPasskeys({ passkeys: [{ email: ana, enrolled_at: "2026-11-20T10:05:00Z" }] })
+      withPasskeys({
+        passkeys: [{ email: ana, enrolled_at: "2026-11-20T10:05:00Z", made_by: "alice" }],
+      })
     )();
     await act(() => panel.queryClient.invalidateQueries());
     await waitFor(() =>
