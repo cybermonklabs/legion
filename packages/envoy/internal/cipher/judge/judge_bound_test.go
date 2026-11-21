@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // boundTransport records, for each HTTP request the judge's Dispatch client sends, whether its
@@ -130,5 +132,45 @@ func TestADispatchFailureAtTheApprovalIsNoRefusal(t *testing.T) {
 	}
 	if !strings.Contains(line, "level=WARN") || strings.Contains(line, "refused") || !errors.Is(machine.applyErr, requests.ErrProjectAccessUnavailable) {
 		t.Errorf("the approval's log line is %q; want a WARN that says Dispatch could not be asked, not that the approval was refused", line)
+	}
+}
+
+// TestAMemberKindDispatchCannotReadAtTheApprovalIsNoRefusal: an approval that fails because the
+// broker could not learn whether Dispatch calls the session's person a restricted member
+// (*projectaccess.MemberKindUncheckable, requests.Machine.restrictedOperator) is Dispatch not
+// answering, logged at WARN like the project read's failure, and never an ERROR saying the judge's
+// grant was refused; one whose read failed because the run itself gave up is logged at INFO, as
+// the API port logs such a read. The request waits for its person either way.
+func TestAMemberKindDispatchCannotReadAtTheApprovalIsNoRefusal(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		failure error
+		level   slog.Level
+	}{
+		{"Dispatch did not answer", errors.New("projectaccess: dispatch answered /api/v1/access/person 503"), slog.LevelWarn},
+		{"the run gave up", fmt.Errorf("projectaccess: ask dispatch: %w", context.Canceled), slog.LevelInfo},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var records logtest.Recorder
+			logtest.SetDefault(t, &records)
+			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
+			machine.applyErr = &projectaccess.MemberKindUncheckable{Person: "sami@example.com", Err: c.failure}
+			New(t.Context(), testOptions(t, dispatch, model, machine)).write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
+			if _, logged := machine.rows(); len(logged) != 1 {
+				t.Fatalf("the run logged %d rows; want the failed approval's row", len(logged))
+			}
+			var found bool
+			for _, r := range records.Records() {
+				if r.Level >= slog.LevelError {
+					t.Errorf("the run wrote the ERROR line %q; want none: Dispatch not answering is no refusal", r.Message)
+				}
+				if strings.Contains(r.Message, "approval") && r.Level == c.level {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("the run wrote no approval line at %v; want one", c.level)
+			}
+		})
 	}
 }

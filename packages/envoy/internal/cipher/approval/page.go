@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
@@ -596,12 +597,15 @@ const (
 // who pressed approve reads which secret refused it and why rather than one fixed sentence. A
 // record Dispatch could not say whether login may see (requests.ErrProjectAccessUnavailable) is
 // decided by nobody, and the POST's other records are decided as ever: the page it lands on says
-// that one is unavailable. A record of a private project login may not see is "no such record",
-// as for an id no record has (the machine's refusal is pgx.ErrNoRows alone), so the POST tells
-// them nothing of it. A refusal record.ErrNotApprover carries for a record whose approver line
-// names someone else is said by the page it lands on in its own words ("not yours to decide"),
-// and carries no code; one for a record login may still see and decide is the current policy's —
-// its owner, a max-grant or a withheld name moved since the page was printed.
+// that one is unavailable. An approval for which Dispatch could not say whether the request's
+// person is a restricted member (*projectaccess.MemberKindUncheckable) is decided by nobody
+// either, and its page says it could not be decided; neither writes an ERROR line. A record of a
+// private project login may not see is "no such record", as for an id no record has (the
+// machine's refusal is pgx.ErrNoRows alone), so the POST tells them nothing of it. A refusal
+// record.ErrNotApprover carries for a record whose approver line names someone else is said by the
+// page it lands on in its own words ("not yours to decide"), and carries no code; one for a record
+// login may still see and decide is the current policy's — its owner, a max-grant or a withheld
+// name moved since the page was printed.
 func (p *Page) decide(ctx context.Context, id string, approve bool, login string) (outcome, refusal string, made bool) {
 	kind, err := p.cfg.Machine.RecordKind(ctx, id)
 	switch {
@@ -634,6 +638,12 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 		return "refused: " + err.Error(), refusedPolicy, false
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
 		return "unavailable: " + err.Error(), "", false
+	case errors.As(err, new(*projectaccess.MemberKindUncheckable)):
+		// Dispatch could not say whether the request's person is a restricted member, which an
+		// approval asks (requests.Machine.restrictedOperator): nothing was decided, and the
+		// person approves again once Dispatch answers. Dispatch not answering is no fault of the
+		// page's, so no ERROR line; the decision line logs the outcome.
+		return "unavailable: " + err.Error(), refusedError, false
 	case errors.Is(err, requests.ErrJudgeHolds):
 		return "refused: the model judge is deciding this request", "", false
 	}

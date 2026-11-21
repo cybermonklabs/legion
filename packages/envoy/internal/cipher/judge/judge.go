@@ -41,6 +41,7 @@ import (
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -691,9 +692,10 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 // the policy's all answer record.ErrNotApprover. The broker stopping under the approval
 // (context.Canceled in what the approval answered), a COMMIT that failed and, by the row
 // LogJudged read, did not apply (requests.ErrCommitUncertain), Dispatch not answering the
-// approval's check, and the run's time running out before the approval landed are no refusal
-// either. Any other refusal is one the judge should not have reached at all, and is an ERROR even
-// while the broker stops.
+// approval's check, Dispatch not saying what kind of member the session's person is
+// (*projectaccess.MemberKindUncheckable), and the run's time running out before the approval
+// landed are no refusal either. Any other refusal is one the judge should not have reached at all,
+// and is an ERROR even while the broker stops.
 func (r *Runner) notApplied(p requests.PendingRequest, modelID string, err error, wrote requests.JudgedWrite) {
 	attrs := []any{"record", p.RecordID, "request", p.RequestID, "model", modelID, "err", err}
 	switch {
@@ -712,6 +714,9 @@ func (r *Runner) notApplied(p requests.PendingRequest, modelID string, err error
 			attrs...)
 	case errors.Is(err, requests.ErrProjectAccessUnavailable) || errors.Is(err, context.DeadlineExceeded):
 		slog.Warn("broker judge: the judge's approval was not applied: Dispatch could not be asked whether the request is still the judge's, or the run's time ran out; the request waits for its person",
+			attrs...)
+	case errors.As(err, new(*projectaccess.MemberKindUncheckable)):
+		slog.Warn("broker judge: the judge's approval was not applied: Dispatch could not say whether the session's person is a restricted member; the request waits for its person",
 			attrs...)
 	default:
 		slog.Error("broker judge: the judge's grant was refused", attrs...)
