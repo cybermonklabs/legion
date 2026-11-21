@@ -48,6 +48,14 @@ afterAll(() => {
     } catch {}
   }
 });
+// The row's tmux server binds its socket at $TMUX_TMPDIR/tmux-<uid>/<label>, and the kernel refuses
+// a unix socket path past 107 bytes (sun_path's 108 with its NUL): under the run's own scratch
+// directory inside a caller's deep TMPDIR it passed that and tmux refused the server ("error
+// connecting to …: Filename too long"). So the sockets go in a short directory of their own under
+// /tmp, as the live proofs' do (codex-host.sh's `mktemp -d /tmp/ncs-codex-tmux.XXXXXX`). Its
+// removal is registered after the teardowns above, so the server's kill-server reaches its socket
+// before the directory goes (Bun runs a scope's afterAll hooks in the order they were registered).
+const tmuxDir = temporaryDirectory("pdt-tmux", { root: "/tmp" });
 
 const alive = (pid: number) => {
   try {
@@ -148,8 +156,7 @@ host.test(
     const home = join(work, "home");
     const runtime = join(home, ".local/state/omp/profiles/p/run/daemons/0123456789abcdef");
     const stale = join(work, "state/omp/profiles/p/run/daemons/fedcba9876543210");
-    for (const d of [ws, home, runtime, stale, join(work, "tmux")])
-      mkdirSync(d, { recursive: true });
+    for (const d of [ws, home, runtime, stale]) mkdirSync(d, { recursive: true });
     // The stand-in broker lives outside $work; its environment, the pane's, carries a daemon pane's
     // mark.
     const broker = join(dir, "fake-broker.sh");
@@ -196,7 +203,7 @@ wait
     const env = {
       PATH: process.env.PATH ?? "",
       HOME: home,
-      TMUX_TMPDIR: join(work, "tmux"),
+      TMUX_TMPDIR: tmuxDir,
       XDG_CONFIG_HOME: join(work, "state", "home", ".config"),
     };
     const pidFile = join(runtime, "broker.pid");
