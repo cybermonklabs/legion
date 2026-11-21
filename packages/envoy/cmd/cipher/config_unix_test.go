@@ -4,7 +4,8 @@
 //
 // The settings file is read only when it is a regular file: a directory is not settings, and a
 // FIFO someone left at the path would hold every command that opens it until somebody writes to
-// it.
+// it. The read's answer is waited for with no span of its own (testwait.Receive), so a read that
+// waits on the FIFO fails by name before the test binary's deadline, and a slow read passes.
 package main
 
 import (
@@ -14,7 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestAConfigPathThatIsNotARegularFileIsRefused(t *testing.T) {
@@ -34,7 +36,8 @@ func TestAConfigPathThatIsNotARegularFileIsRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			// A FIFO with no writer holds an open for reading until one comes: should the
-			// read block, this test's cleanup is that writer, and the wait below fails it first.
+			// read block, the wait below fails the row by name, and this cleanup is that
+			// writer, so the read returns.
 			t.Cleanup(func() {
 				if f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 					f.Close()
@@ -43,12 +46,7 @@ func TestAConfigPathThatIsNotARegularFileIsRefused(t *testing.T) {
 
 			done := make(chan error, 1)
 			go func() { done <- loadClientConfig() }()
-			var err error
-			select {
-			case err = <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("loadClientConfig did not return within 5s for %s at %s", name, path)
-			}
+			err := testwait.Receive(t, "loadClientConfig over "+name+" at "+path, done)
 			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "is not a regular file") {
 				t.Fatalf("loadClientConfig = %v; want an error naming %s as not a regular file", err, path)
 			}
