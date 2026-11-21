@@ -649,10 +649,11 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 	}
 	block := runbookBlockAfter(t, brokerRestoredLead)
 	if len(block.statements) != 5 || block.statements[0] != "begin" || block.statements[4] != "commit" ||
-		!strings.HasPrefix(block.statements[1], "select u.generation from user_sessions u ") ||
-		!strings.HasPrefix(block.statements[3], "with locked as (select r.email, pg_advisory_xact_lock(") ||
-		!strings.Contains(block.statements[3], "\nupdate machine_login_revocations m ") {
-		t.Fatalf("the runbook's block for a broker restored alone is %q; want begin, a read of the addresses' session rows, the record-again, one statement that takes the members' machine-login approval locks and owes again the revocations it locked, and commit", block.statements)
+		!strings.HasPrefix(block.statements[1], "with locked as (select r.email, pg_advisory_xact_lock(") ||
+		!strings.Contains(block.statements[1], "\nupdate machine_login_revocations m ") ||
+		!strings.HasPrefix(block.statements[2], "select u.generation from user_sessions u ") ||
+		!strings.HasPrefix(block.statements[3], "update broker_revocations ") {
+		t.Fatalf("the runbook's block for a broker restored alone is %q; want begin, one statement that takes the members' machine-login approval locks and owes again the revocations it locked, a read of the addresses' session rows, the record-again, and commit", block.statements)
 	}
 	tx, err := r.dispatch.Pool.Begin(ctx)
 	if err != nil {
@@ -660,8 +661,10 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	args := pgx.NamedArgs{"backup": time.Now().Add(-time.Hour)}
-	if _, err := tx.Exec(ctx, block.statements[1], args); err != nil {
-		t.Fatalf("the block's lock of the addresses' session rows: %v", err)
+	for _, statement := range block.statements[1:3] {
+		if _, err := tx.Exec(ctx, statement, args); err != nil {
+			t.Fatalf("the block's approval locks and lock of the addresses' session rows: %v", err)
+		}
 	}
 	// A sign-out at one of those addresses, from another connection: it must wait for the commit.
 	signedOut := make(chan error, 1)
@@ -673,7 +676,7 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 		t.Fatalf("the sign-out at %s finished (%v) while the block held its session row; want it waiting for the commit", email, err)
 	case <-time.After(300 * time.Millisecond):
 	}
-	if _, err := tx.Exec(ctx, block.statements[2], args); err != nil {
+	if _, err := tx.Exec(ctx, block.statements[3], args); err != nil {
 		t.Fatalf("the block's record-again: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -690,6 +693,98 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 	if owing, err := r.revocations.Owing(ctx, email); err != nil || len(owing) != 1 {
 		t.Errorf("after the block, %s owes %+v, %v; want the revocation recorded again", email, owing, err)
 	}
+}
+
+// TestTheBrokerRestoredBlockTakesTheApprovalLockBeforeTheSessionRow: an owner's Reset or removal of
+// a restricted member holds the member's machine-login approval lock (access.LockForAccessWrite,
+// where access.RemovalOwes reads true) when ending their account writes their user_sessions row
+// (people_account_ends_sessions). The block takes the approval locks first and the session rows
+// after, the same order, so while such a write holds the approval lock, the block waits for it
+// holding no session row: the write's session row is granted, it commits, and the block then
+// commits too.
+//
+// Control: run the block's session-row read before its approval locks (the order before this
+// change), and the block holds the row while it waits for the approval lock the write holds, the
+// write waits for the row, and PostgreSQL fails one of them (40P01), and the row fails.
+func TestTheBrokerRestoredBlockTakesTheApprovalLockBeforeTheSessionRow(t *testing.T) {
+	ctx := context.Background()
+	r := newRecoveryRig(t)
+	const email = "member@other.example"
+	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", model.MemberRestricted); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", model.MemberRestricted); err != nil {
+		t.Fatal(err)
+	}
+	r.served.revokeOwedBrokerCredentials(ctx)
+	storetest.RecordMachineLoginRevocation(t, r.dispatch, email)
+	machineLogins := store.NewMachineLoginRevocations(r.dispatch.Pool)
+	claimed, err := machineLogins.Claim(ctx, time.Minute, 5)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("Claim = %+v, %v; want the member's machine-login revocation", claimed, err)
+	}
+	if settled, err := machineLogins.Settle(ctx, claimed[0], 0); err != nil || !settled {
+		t.Fatalf("Settle = %t, %v; want it settled", settled, err)
+	}
+	block := runbookBlockAfter(t, brokerRestoredLead)
+	args := pgx.NamedArgs{"backup": time.Now().Add(-time.Hour)}
+
+	// The owner's write: the member's approval lock first, as LockForAccessWrite takes it.
+	write, err := r.dispatch.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer write.Rollback(ctx)
+	if err := store.LockMachineLoginApprovals(ctx, write, email); err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan error, 1)
+	go func() { ran <- runBlockIn(r.dispatch.Pool, block.statements, args) }()
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(20 * time.Millisecond) {
+		var waiting int
+		if err := r.dispatch.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the block neither finished nor waited on a lock within a minute")
+		}
+	}
+	// Ending the member's account writes their session row, as people_account_ends_sessions does.
+	if tag, err := write.Exec(ctx, `update user_sessions set generation = generation + 1 where login = $1`, email); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("the owner's write of the member's session row while the block waits: %d rows, %v; want the row granted, the block holding no session row while it waits for the approval lock", tag.RowsAffected(), err)
+	}
+	if err := write.Commit(ctx); err != nil {
+		t.Fatalf("commit the owner's write: %v", err)
+	}
+	select {
+	case err := <-ran:
+		if err != nil {
+			t.Fatalf("the block after the owner's write committed: %v; want it to commit", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the block did not finish within 30 s of the owner's commit")
+	}
+}
+
+// runBlockIn runs a runbook block's statements, begin and commit included, on one connection of
+// pool, and answers the first error.
+func runBlockIn(pool *store.Pool, statements []string, args pgx.NamedArgs) error {
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for _, statement := range statements[1 : len(statements)-1] {
+		if _, err := tx.Exec(ctx, statement, args); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince: the block for a broker

@@ -415,18 +415,21 @@ func TestARemovalWaitsForTheAddressBeforeItLocksThePersonsSessions(t *testing.T)
 }
 
 // TestARemovalWaitsForTheAddressBeforeAGoogleSignInLocksThePersonsSessions (R5): the lock order's
-// second partner. A Google sign-in that changes the person's member kind takes their address lock,
+// second partner. A Google sign-in that makes the person restricted takes their address lock,
 // writes their row, and then, recording the projects the old kind saw, their sessions' owner lock
-// (store's signInAccountTx, then store.RecordReachedProjects), as an enrollment's finish does. So
-// the removal that takes the address before the person (lockPasskeyRemoval) is in order with it
-// too: while erin's sign-in, a restricted member's row signed in as full, is held after writing
-// her row, DELETE of erin from ACC waits for her address; once the sign-in goes on, it takes her
-// sessions' lock and commits, and the removal answers 200.
+// (store's signInAccountTx, projectsSeenAs, then store.RecordReachedProjects), as an enrollment's
+// finish does. (A sign-in that makes a person full takes no sessions lock, since a full member
+// loses no project.) So the removal that takes the address before the person
+// (lockPasskeyRemoval) is in order with it too: while erin's sign-in, a full member's row under
+// her Google account signed in again as restricted (which takesAMembersAddress allows for the same
+// account), is held after writing her row, DELETE of erin from ACC waits for her address; once the
+// sign-in goes on, it takes her sessions' lock and commits, and the removal answers 200.
 //
 // Control: remove the person before taking the links and the address (deleteProjectAccessPerson
 // calling removePerson before lockPasskeyRemoval, as at 516b5bfa981), and the removal holds her
 // sessions' lock while it waits for the address the sign-in holds; PostgreSQL fails one of them
-// (40P01), and the row fails.
+// (40P01), and the row fails. Before this row signed erin in as restricted it signed a restricted
+// row in as full, which takes no sessions lock, and the row passed under that control too.
 func TestARemovalWaitsForTheAddressBeforeAGoogleSignInLocksThePersonsSessions(t *testing.T) {
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{passkeyIssuer: passkeyOutsideOrigin, signInIssuer: "https://accounts.google.com"})
 	ctx := t.Context()
@@ -439,7 +442,10 @@ func TestARemovalWaitsForTheAddressBeforeAGoogleSignInLocksThePersonsSessions(t 
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
-	exec(`insert into people (email, member_kind) values ($1, 'restricted') on conflict (email) do update set member_kind = 'restricted'`, accessErin)
+	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	if err := people.SignInSubject(ctx, accessErin, "google-erin", "refresh-erin", model.MemberFull); err != nil {
+		t.Fatalf("erin's first sign-in as a full member: %v", err)
+	}
 	// The sign-in waits, after writing erin's row and before recording her projects, for a lock the
 	// test holds.
 	const hold = 386207
@@ -483,7 +489,7 @@ func TestARemovalWaitsForTheAddressBeforeAGoogleSignInLocksThePersonsSessions(t 
 
 	signedIn := make(chan error, 1)
 	go func() {
-		signedIn <- store.NewPgPeopleStore(database.Pool, testSigningKey, nil).SignInSubject(ctx, accessErin, "google-erin", "refresh-erin", model.MemberFull)
+		signedIn <- people.SignInSubject(ctx, accessErin, "google-erin", "refresh-erin", model.MemberRestricted)
 	}()
 	waiting(1, "erin's sign-in held after writing her row")
 	done := make(chan *httptest.ResponseRecorder, 1)
@@ -498,7 +504,7 @@ func TestARemovalWaitsForTheAddressBeforeAGoogleSignInLocksThePersonsSessions(t 
 	}
 	release()
 	if err := <-signedIn; err != nil {
-		t.Fatalf("erin's sign-in as a full member, which records her sessions' projects after her address: %v; want it to commit, the removal holding no lock of hers while it waits for her address", err)
+		t.Fatalf("erin's sign-in as a restricted member, which records her sessions' projects after her address: %v; want it to commit, the removal holding no lock of hers while it waits for her address", err)
 	}
 	if removed := <-done; removed.Code != http.StatusOK {
 		t.Fatalf("the removal of erin from ACC answered %d %s once her sign-in committed, want 200", removed.Code, removed.Body.String())

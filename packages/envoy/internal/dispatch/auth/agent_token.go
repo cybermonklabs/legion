@@ -215,7 +215,11 @@ var googleLoadBalancerRanges = []netip.Prefix{
 // previous-token log's, and the per-address rate-limit bucket the secrets broker's token check
 // keys on. Nothing admits a caller by it: no route grants access by a caller's network address
 // (routes' TestNoRouteGrantsAccessByNetworkAddress). A bound the caller's own header must not
-// pick reads BoundAddress instead, which keys a connection off the balancer on its own address.
+// pick reads BoundAddress instead, which reads X-Forwarded-For only from a front door
+// DISPATCH_TRUSTED_PROXY_RANGES names. The two readings differ for a peer outside Google's
+// ranges: this one takes the rightmost entry from any such peer, text a caller off the balancer
+// writes itself, which is why no bound a caller must not pick keys on it; it keeps the reading the
+// access log and the broker's bucket have always had, so their keys do not move.
 //
 // A connection from Google's external load balancer (googleLoadBalancerRanges) is read by the rule
 // the broker's edge reads its callers by: the second-to-last entry of the one X-Forwarded-For line,

@@ -361,8 +361,9 @@ func (r *signInRig) signIn(t *testing.T, claims map[string]any) *httptest.Respon
 }
 
 // sessionCookie is the session cookie a sign-in set, under whichever of its two names it set it
-// with a value, or nil. Which name a sign-in sets is TestASignInSetsTheSessionForItsOriginAndSetting's
-// (auth) and the walk's (cmd/dispatch) to check.
+// with a value, or nil. Which name a sign-in sets is
+// TestASignInSetsTheSessionForItsOriginAndSettingAndClearsTheOtherName's (auth) and the walk's
+// (cmd/dispatch) to check.
 func sessionCookie(response *httptest.ResponseRecorder) *http.Cookie {
 	for _, cookie := range response.Result().Cookies() {
 		if (cookie.Name == "__Host-dsession" || cookie.Name == "dsession") && cookie.Value != "" && cookie.MaxAge >= 0 {

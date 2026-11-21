@@ -211,7 +211,8 @@ func TestARemovalRevokesALoginTheBrokersClockStampsAfterIt(t *testing.T) {
 // approval holds erin's approval lock until the broker answers (relayMachineLoginApproval), so the
 // removal waits for it, and records the revocation only after the login exists; the first pass
 // after the removal then lists it and revokes it, and the revocation settles once a pass's claim
-// comes machineLoginSettleAfter after the removal.
+// comes machineLoginSettleAfter after the removal. The deployment runs passkey sign-in, so the
+// removal also takes erin's links and address and ends her account, as production's does.
 //
 // Control: access.LockForAccessWrite taking no approval lock for the person a removal takes off,
 // and the removal does not wait for the approval: the record's own try of that lock finds the
@@ -222,6 +223,7 @@ func TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked(t *testing.T) {
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
 		agentSecretsURL:  rig.server.URL,
+		passkeyIssuer:    passkeyOutsideOrigin,
 	})
 	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {

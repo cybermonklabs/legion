@@ -615,13 +615,17 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 // revocation of the old account, and ends their sign-in and deletes their passkeys
 // (store.PgPasskeys.EndAccountTx). So the person signs in again only with a new link, and nothing
 // the old account made or approved acts again, a machine login approved while the Reset ran
-// included (R5, R16). The writes lock as a removal's do: the Reset names the person to
-// access.LockForAccessWrite, which takes their machine-login approval lock before the project's
-// where the Reset owes the revocation (access.RemovalOwes: the list names them and they are a
-// restricted member), then the revocation's row, the links and the address. The person stays on the list. A full member's address is 409 FULL_MEMBER, read again
-// under the address's lock (store.PgPasskeys.EndAccountTx), and an address on a domain of the
-// company's Workspace is 400 WORKSPACE_ADDRESS, as a link for it is. It answers the project's
-// access, as the list's writes do.
+// included (R5, R16). The Reset names the person to access.LockForAccessWrite, which takes their
+// machine-login approval lock before the project's where the Reset owes the revocation
+// (access.RemovalOwes: the list names them and they are a restricted member), as a removal's does.
+// Then it writes the revocation's row, then deletes the links and takes the address's lock, and
+// last ends the account, whose sub change writes the person's session row; a removal writes the
+// revocation's row later, after access.RemovePrincipal's sessions lock. Both hold the approval
+// lock, or take it without waiting, before either row, so neither order makes a cycle. The person
+// stays on the list. A full member's address is 409 FULL_MEMBER, read again under the address's
+// lock (store.PgPasskeys.EndAccountTx), and an address on a domain of the company's Workspace is
+// 400 WORKSPACE_ADDRESS, as a link for it is. It answers the project's access, as the list's
+// writes do.
 func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
 	s.ownerWrite(w, r, "", model.CanonicalLogin(r.PathValue("email")), func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		if err := s.passkeyOwnerRefusal(by); err != nil {
@@ -765,9 +769,9 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group, remov
 // the person a removal or a Reset takes off the list or resets, and group, the group the write
 // names, each "" for none), so an owner change committed meanwhile is read rather than raced and a
 // delete of the group is ordered against the write. It publishes what the write appended once it
-// commits, and reports whether it did; a refusal is answered here. The write is handed the caller's viewer, read from the request's own
-// credential (readerOf), which a refusal it makes reads to name only what that credential sees
-// (access.SetSlackChannels).
+// commits, and reports whether it did; a refusal is answered here. The write is handed the
+// caller's viewer, read from the request's own credential (readerOf), which a refusal it makes
+// reads to name only what that credential sees (access.SetSlackChannels).
 //
 // The caller's viewer is read first: a project the caller does not see answers 404
 // PROJECT_NOT_FOUND exactly as a key no project holds, before the owner is read. Only a caller who
