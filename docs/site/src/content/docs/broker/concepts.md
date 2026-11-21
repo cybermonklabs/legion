@@ -693,14 +693,15 @@ its page, and cannot decide it ([Approve a request](/legion/broker/guides/approv
 tell, a broker with `BROKER_PROJECT_ACCESS_URL` asks Dispatch, for the person reading, about each
 project a request touches, the project of each issue key its reason names included, even in a
 deployment that tags nothing: the reason `INFRA-12: rotate the deploy key` costs one read of
-`INFRA` for that person, kept 30 seconds, and `SHA-256` in a reason reads as a key too. A new
-request whose reason names the issue keys of more than 16 projects is refused when it is made
-(`400 REQUEST_INVALID`, naming the bound), so the reads one request costs are bounded. A request
-stored before that rule whose reason names more is still shown: its keys are not read and count
-as naming no project, as every reader saw it when it was written, while its secrets' tags and its
-credential's projects are still asked, and the broker's log names its row, once every 30 seconds
-however often it is read. While Dispatch cannot answer, a request it must ask about is left out of
-the pending list, and a grant it must ask about out of the grant list of everyone but that grant's
+`INFRA` for that person, kept 30 seconds, and `SHA-256` in a reason reads as a key too. Such a
+broker refuses a new request whose reason names the issue keys of more than 16 projects when it
+is made (`400 REQUEST_INVALID`, naming the bound), so the reads one request costs are bounded; a
+broker without `BROKER_PROJECT_ACCESS_URL` reads no reason's projects and takes any reason. A
+request made before that rule, or by a broker without the setting, whose reason names more is
+read whole: each project its keys name is asked, at most 80 in a reason of 400 characters, and a
+private one among them hides it as any other does. While Dispatch cannot answer, a request it must
+ask about is left out of the pending list, and a grant it must ask about out of the grant list of
+everyone but that grant's
 approver and its session's operator, who still list it and may end it whatever project it
 touches, each with a line in the broker's log naming its record; its page answers
 503 and shows only its record id, and an approval of it decides nothing. Every other request is

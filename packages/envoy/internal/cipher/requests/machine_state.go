@@ -385,7 +385,6 @@ type Machine struct {
 	// machine's lines never silence another's.
 	channelsMissingLogged logThrottle
 	rowsUnansweredLogged  logThrottle
-	reasonsUnreadLogged   logThrottle
 	// narrowingChecks is NarrowingChecks' per-enrollment buckets, built on first use
 	// (narrowingCheckLimiter).
 	narrowingChecks     *ratelimit.Keyed
@@ -555,19 +554,20 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow, fac
 
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay
 // seam), requires iss to be this enrollment's own key and no login_hint (session requests never
-// name their own approver — that's the policy's job) and a reason naming the issue keys of no more
-// than record.MaxReasonProjects projects (record.CheckReasonProjects), rereads each name the live
-// policy does not serve (rereadMissing), and hands back a live grant for exactly these names when
-// one may be reused (reuseLiveGrant). Otherwise it decides and writes the request in one
-// transaction: it takes the advisory locks that serialize pending requests for each requested name
-// in one enrollment (lockPendingNames), then locks the enrollment live (lockLiveEnrollment), so no
-// request or grant lands on an enrollment that ended after Create first read it (such an
-// enrollment is pgx.ErrNoRows, as one that had ended before), and no withhold
-// (RevokeByApprover, which takes the same row) lands between the read of what is withheld from
-// the session and the write. It then evaluates the policy for the session and writes a granted or
-// denied request, with a granted one's grant, or a pending request and its credential-request
-// record. A second pending request that overlaps one of its names is refused, so an untrusted
-// session cannot flood an approver's Inbox by varying --ttl. A pending request whose approver is
+// name their own approver — that's the policy's job) and, on a broker that holds a project-access
+// client, a reason naming the issue keys of no more than record.MaxReasonProjects projects
+// (record.CheckReasonProjects), rereads each name the live policy does not serve (rereadMissing),
+// and hands back a live grant for exactly these names when one may be reused (reuseLiveGrant).
+// Otherwise it decides and writes the request in one transaction: it takes the advisory locks that
+// serialize pending requests for each requested name in one enrollment (lockPendingNames), then
+// locks the enrollment live (lockLiveEnrollment), so no request or grant lands on an enrollment
+// that ended after Create first read it (such an enrollment is pgx.ErrNoRows, as one that had
+// ended before), and no withhold (RevokeByApprover, which takes the same row) lands between the
+// read of what is withheld from the session and the write. It then evaluates the policy for the
+// session and writes a granted or denied request, with a granted one's grant, or a pending request
+// and its credential-request record. A second pending request that overlaps one of its names is
+// refused, so an untrusted session cannot flood an approver's Inbox by varying --ttl.
+// A pending request whose approver is
 // record.AnyoneApprover records the person responsible for the agent that made it
 // (responsiblePerson), whose Inbox alone lists it, or nobody, and then everyone's does; for a
 // Legion pod that person is its claim's issue's assignee, read from Dispatch before the
@@ -673,8 +673,13 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if len(obj.Details) == 0 || obj.Details[0].Type != record.KindAgentSecret {
 		return Request{}, fmt.Errorf("%w: this endpoint accepts only agent_secret authorization_details", record.ErrRequestInvalid)
 	}
-	if err := record.CheckReasonProjects(obj.Reason); err != nil {
-		return Request{}, err
+	// The bound on a reason's projects bounds what every reader of the request asks Dispatch, so
+	// a broker that asks Dispatch nothing (no project-access client) takes any reason, as before
+	// the bound (R9).
+	if m.Projects != nil {
+		if err := record.CheckReasonProjects(obj.Reason); err != nil {
+			return Request{}, err
+		}
 	}
 	fresh, err := m.Replay(ctx, obj.JTI, obj.Expires.Add(m.Skew+jtiRetentionMargin))
 	if err != nil {
@@ -687,10 +692,10 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 }
 
 // createChecked is Create past the rules a new request object alone is held to — its issuer, no
-// login_hint, agent_secret details, a reason naming at most record.MaxReasonProjects projects, a
-// fresh jti — and writes the request as Create's doc says. Those rules stay in Create, where a
-// request is new, and createChecked holds the rest, so a test can write through it the request a
-// broker from before one of them would have stored.
+// login_hint, agent_secret details, a reason naming at most record.MaxReasonProjects projects on a
+// broker that holds a project-access client, a fresh jti — and writes the request as Create's doc
+// says. Those rules stay in Create, where a request is new, and createChecked holds the rest, so a
+// test can write through it the request a broker from before one of them would have stored.
 func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollmentID, sessionID string, obj record.RequestObject, names []string, narrowing *secrets.GitHubNarrowing) (Request, error) {
 	set, err := m.rereadMissing(ctx, enrollmentID, names, m.Policy.Get())
 	if err != nil {

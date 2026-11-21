@@ -731,9 +731,11 @@ func ReasonProjects(reason string) []string {
 
 // CheckReasonProjects refuses, as ErrRequestInvalid, the reason of a request being created whose
 // issue keys name more than MaxReasonProjects projects (ReasonProjects). It is a rule for a new
-// request alone — requests.Machine.Create and the machine login's creation call it — and never
-// part of VerifyRequestObject, so a request stored before the rule keeps verifying wherever it is
-// read again.
+// request alone, on a broker that holds a project-access client — requests.Machine.Create and the
+// machine login's creation call it there, and a broker with none, which reads no reason's
+// projects, takes any reason — and never part of VerifyRequestObject, so a request stored before
+// the rule, or by a broker with no such client, keeps verifying wherever it is read again, and its
+// reader asks Dispatch about every project it names (requests.Machine.maySee).
 func CheckReasonProjects(reason string) error {
 	if n := len(ReasonProjects(reason)); n > MaxReasonProjects {
 		return fmt.Errorf("%w: the reason names issue keys of %d projects; a request may name at most %d", ErrRequestInvalid, n, MaxReasonProjects)

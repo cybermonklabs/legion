@@ -1604,7 +1604,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 		if instead {
 			listed, err = m.listedInStead(fallback, p, approver, notify, reads[i].sessionProjects, reads[i].reason)
 		} else {
-			listed, err = m.maySeeRecord(ctx, "record "+p.RecordID, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
+			listed, err = m.maySeeRecord(ctx, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
 		}
 		switch {
 		case err != nil && ctx.Err() != nil:
@@ -1655,12 +1655,11 @@ func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, read
 	if err := fallback.Err(); err != nil {
 		return false, err
 	}
-	row := "record " + p.RecordID
-	mine, err := m.maySeeRecord(fallback, row, reader, p.Identifiers, sessionProjects, reason)
+	mine, err := m.maySeeRecord(fallback, reader, p.Identifiers, sessionProjects, reason)
 	if err != nil || !mine {
 		return false, err
 	}
-	theirs, err := m.maySeeRecord(fallback, row, notify, p.Identifiers, sessionProjects, reason)
+	theirs, err := m.maySeeRecord(fallback, notify, p.Identifiers, sessionProjects, reason)
 	if err != nil {
 		return false, err
 	}
@@ -1773,8 +1772,9 @@ type RecordDetail struct {
 	// SessionProjects are the Dispatch projects the credentials the request has had name: the
 	// enrollment that asked, which the record names, and the one the request hangs off now, which
 	// an adoption rewrites (credentialsProjects). SecretProjects is the project of each requested
-	// secret the live policy tags with one. Both are empty for a record touching no project.
-	// The approval page shows them.
+	// secret the policy tags with one, as the person rule read it (ReadRecordFor, which alone fills
+	// it; ReadRecord leaves it empty). Both are empty for a record touching no project. The
+	// approval page shows them.
 	SessionProjects []string
 	SecretProjects  []SecretProject
 	// JudgeDeciding is whether the model judge holds the record's request now: pending, with its
@@ -1794,13 +1794,25 @@ type RecordDetail struct {
 // reading "cancelled", whenever the cancel came. ExpiresAt is the deadline recordStateSQL reads
 // (recordDeadlineSQL): a secret request's pending_expires_at, and a machine login's expires_at.
 func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail, error) {
-	var canonical, approver, kind, requestSession, enrollmentSession, state string
+	return m.readRecord(ctx, recordID, nil)
+}
+
+// readRecord is ReadRecord, and, where shown is not nil, ReadRecordFor: its one statement reads,
+// beside the record, what the person rule reads of it (rowFacts: its kind, every name its request
+// asked for, the projects of both credentials it has had and its request's reason, the columns
+// readRowFacts selects), and hands them to shown before anything else of the record is read or
+// verified. An error shown answers is readRecord's; the projects it answers are the record's
+// SecretProjects, in the order its request names its secrets.
+func (m *Machine) readRecord(ctx context.Context, recordID string, shown func(rowFacts) ([]SecretProject, error)) (RecordDetail, error) {
+	var canonical, approver, kind, requestSession, enrollmentSession, state, reason string
+	var names []string
 	var createdAt, expiresAt time.Time
 	var judgeDeciding bool
 	var asked, current enrollmentRow
 	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.approver, cr.kind, cr.created_at, `+recordDeadlineSQL+`,
 			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), coalesce(`+recordStateSQL+`, 'pending'),
-			coalesce(req.state = 'pending' and req.judge_until > now(), false), `+credentialColumns+`, `+currentCredentialColumns+`
+			coalesce(req.state = 'pending' and req.judge_until > now(), false), `+credentialColumns+`, `+currentCredentialColumns+`,
+			coalesce(req.reason, ''), `+requestNamesSQL("req", false)+`
 		from credential_requests cr
 		left join requests req on req.record_id = cr.id
 		left join enrollments enr on enr.id = cr.enrollment_id
@@ -1808,8 +1820,16 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		where cr.id=$1`, recordID).
 		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state, &judgeDeciding,
 			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
-			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
+			&current.Kind, &current.Operator, &current.Subject, &current.Projects, &reason, &names); err != nil {
 		return RecordDetail{}, err
+	}
+	sessionProjects := m.credentialsProjects(asked, current)
+	var secrets []SecretProject
+	if shown != nil {
+		var err error
+		if secrets, err = shown(rowFacts{kind: kind, names: names, sessionProjects: sessionProjects, reason: reason}); err != nil {
+			return RecordDetail{}, err
+		}
 	}
 	// A record the judge holds reads pending, with JudgeDeciding saying who decides it: the page
 	// and the lookup show an undecided record as pending or expired, and the hold beside it.
@@ -1842,12 +1862,12 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		RecordID: recordID, Kind: kind, State: state, Approver: approver, Enrollment: enr,
 		Identifiers: identifiers, Service: service, Reason: obj.Reason, LifetimeSeconds: body.LifetimeSeconds,
 		RulesVersion: body.RulesVersion, ExpiresAt: expiresAt, RequestedAt: createdAt,
-		Session: Session{Request: requestSession, Enrollment: enrollmentSession}, SessionProjects: m.credentialsProjects(asked, current),
+		Session: Session{Request: requestSession, Enrollment: enrollmentSession}, SessionProjects: sessionProjects,
 		JudgeDeciding: judgeDeciding,
 	}
-	if agentSecret {
-		if detail.SecretProjects, _, err = m.secretProjects(ctx, identifiers); err != nil {
-			return RecordDetail{}, err
+	for _, name := range identifiers {
+		if i := slices.IndexFunc(secrets, func(p SecretProject) bool { return p.Name == name }); i >= 0 {
+			detail.SecretProjects = append(detail.SecretProjects, secrets[i])
 		}
 	}
 	// Whether the record is still undecided follows PendingForApprover's rule: an agent_secret
@@ -2051,7 +2071,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 			visible = append(visible, g)
 			continue
 		}
-		ok, err := m.maySeeRecord(ctx, "grant "+g.GrantID, login, g.Names, reads[i].sessionProjects, reads[i].reason)
+		ok, err := m.maySeeRecord(ctx, login, g.Names, reads[i].sessionProjects, reads[i].reason)
 		switch {
 		case err != nil && ctx.Err() != nil:
 			// The caller went away: nothing is logged, and the grant is left off a list nobody reads.

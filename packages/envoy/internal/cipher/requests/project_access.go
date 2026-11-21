@@ -427,37 +427,6 @@ func (m *Machine) logFallbackCut(reader string, rows int, err error) {
 	}
 }
 
-// ReasonUnreadMessage is the log line for a stored row whose reason names the issue keys of more
-// projects than a new request may (record.MaxReasonProjects): the row can only be one stored before
-// Create refused such a reason, so neither rule reads any of its keys (reasonProjects), and they
-// count as naming no project, which is how every reader saw the row when it was written. Its other
-// projects are still asked.
-const ReasonUnreadMessage = "a stored request's reason names the issue keys of more projects than a new request may; its keys are not read, and count as naming no project"
-
-// logReasonUnread writes ReasonUnreadMessage for the one row row names ("record <id>" or
-// "grant <id>"), at info and once per projectaccess.CacheTTL however often the row is read. It
-// names the row and the count, never the reason's text.
-func (m *Machine) logReasonUnread(row string, projects int) {
-	if m.reasonsUnreadLogged.due(row) {
-		slog.Info(ReasonUnreadMessage, "row", row, "projects", projects, "bound", record.MaxReasonProjects)
-	}
-}
-
-// reasonProjects is the project of each issue key reason names (record.ReasonProjects), the
-// projects the person rule (maySee) and the session rule (hideFromSession) join to a row's own,
-// read for the row row names. A reason naming the keys of more than record.MaxReasonProjects
-// projects is one stored before Create refused such a reason (record.CheckReasonProjects): it
-// answers none, so its keys count as naming no project, which is how every reader saw the row when
-// it was written, and a line naming the row says so (logReasonUnread).
-func (m *Machine) reasonProjects(row, reason string) []string {
-	projects := record.ReasonProjects(reason)
-	if len(projects) > record.MaxReasonProjects {
-		m.logReasonUnread(row, len(projects))
-		return nil
-	}
-	return projects
-}
-
 // projectNotNamed is the refusal of a granted name the session may no longer have for its
 // project's sake, which ends the grant for good (errProjectNotNamed).
 func projectNotNamed(name string) error {
@@ -536,7 +505,7 @@ func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name, reason s
 		if err != nil {
 			return false, time.Time{}, err
 		}
-		may, asked, err := m.judgeMayDecide(ctx, "enrollment "+enrollmentID, facts.states, m.namedProjects(enr), reason)
+		may, asked, err := m.judgeMayDecide(ctx, facts.states, m.namedProjects(enr), reason)
 		return may, projectaccess.Oldest(facts.asked, asked), err
 	})
 	if err != nil {
@@ -597,9 +566,9 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 }
 
 // maySee is the person rule over a row's parts: candidate projects and the reason, the project of
-// each of whose issue keys (reasonProjects) joins them. It is the one statement of whose request
-// this is, for a person (mayDecide, maySeeRecord), for a session (hideFromSession) and for the
-// model judge, which asks it with no person (judgeMayDecide). A word of a key's form that is no
+// each of whose issue keys (record.ReasonProjects) joins them. It is the one statement of whose
+// request this is, for a person (mayDecide, maySeeRecord), for a session (hideFromSession) and for
+// the model judge, which asks it with no person (judgeMayDecide). A word of a key's form that is no
 // project ("SHA-256") joins them too, and Dispatch answers it as no project, which hides nothing.
 // It sorts a list of its own: the caller's may be an enrollment's or an operator entry's, which
 // nothing here owns.
@@ -609,16 +578,18 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 // hides the record, whatever its age, and is answered with no time. It decides nothing alone:
 // each caller holds its age to atDecision's bound with the facts it read before it.
 //
-// A reason naming the issue keys of more than record.MaxReasonProjects projects is one stored
-// before Create refused such a reason (record.CheckReasonProjects). Its keys are not read
-// (reasonProjects; row is "record <id>", "grant <id>" or, for the judge's own check, "enrollment
-// <id>"). The record's other projects are still asked, since its secrets' tags come of the live
-// policy, and a secret it names may have been tagged with a private project since it was stored.
-func (m *Machine) maySee(ctx context.Context, row, login string, projects []string, reason string) (bool, time.Time, error) {
+// Every project the reason names is asked, however many: a row whose reason names more than a new
+// request may (record.CheckReasonProjects) was stored before that rule, or by a broker that holds
+// no project-access client, and its reason is a private project's text as much as any other's. The
+// reads stay bounded: a reason is at most record.MaxReasonRunes (400) runes, and each issue key
+// takes at least five of them with the rune that parts it from the next ("AB-1 "), so a stored
+// reason names at most 80 projects, each answer kept projectaccess.CacheTTL per project and person.
+// A Dispatch too slow to answer them all within atDecision's bound fails closed, as for any row.
+func (m *Machine) maySee(ctx context.Context, login string, projects []string, reason string) (bool, time.Time, error) {
 	if m.Projects == nil {
 		return true, time.Time{}, nil
 	}
-	asking := slices.Concat(projects, m.reasonProjects(row, reason))
+	asking := slices.Concat(projects, record.ReasonProjects(reason))
 	slices.Sort(asking)
 	var asked time.Time
 	for _, project := range slices.Compact(asking) {
@@ -646,13 +617,13 @@ func (m *Machine) maySee(ctx context.Context, row, login string, projects []stri
 // project is public and the person rule shows it to a reader naming no person, which Dispatch
 // answers by visibility alone. The judge's own token names no person, so it may see no private
 // project. It answers maySee's time beside its answer, and no time for a state that refers it.
-func (m *Machine) judgeMayDecide(ctx context.Context, row string, states map[string]policy.ProjectState, named []string, reason string) (bool, time.Time, error) {
+func (m *Machine) judgeMayDecide(ctx context.Context, states map[string]policy.ProjectState, named []string, reason string) (bool, time.Time, error) {
 	for _, state := range states {
 		if state != policy.ProjectPublic {
 			return false, time.Time{}, nil
 		}
 	}
-	return m.maySee(ctx, row, "", named, reason)
+	return m.maySee(ctx, "", named, reason)
 }
 
 // namedProjects is the projects e's credential names: a person's session's enrollment list, the
@@ -686,14 +657,14 @@ func (m *Machine) credentialsProjects(asked, current enrollmentRow) []string {
 // mayDecide is the approve path's person rule (maySee), read before its transaction: the record's
 // tagged secrets under set, the projects the credentials it has had name (credentialsProjects),
 // and its reason. It answers maySee's time beside its answer.
-func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projectFacts, sessionProjects []string, reason string) (bool, time.Time, error) {
+func (m *Machine) mayDecide(ctx context.Context, login string, facts projectFacts, sessionProjects []string, reason string) (bool, time.Time, error) {
 	var projects []string
 	for project, state := range facts.states {
 		if state == policy.ProjectPrivate {
 			projects = append(projects, project)
 		}
 	}
-	return m.maySee(ctx, row, login, append(projects, sessionProjects...), reason)
+	return m.maySee(ctx, login, append(projects, sessionProjects...), reason)
 }
 
 // decisionFacts is what the approve path reads of Dispatch for recordID before its transaction:
@@ -740,9 +711,9 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 			for _, project := range taggedProjects(set, pre.names) {
 				tagged[project] = facts.states[project]
 			}
-			may, asked, err = m.judgeMayDecide(ctx, "record "+recordID, tagged, named, pre.reason)
+			may, asked, err = m.judgeMayDecide(ctx, tagged, named, pre.reason)
 		} else {
-			may, asked, err = m.mayDecide(ctx, "record "+recordID, who.login, facts, named, pre.reason)
+			may, asked, err = m.mayDecide(ctx, who.login, facts, named, pre.reason)
 		}
 		return decided{facts: facts, may: may}, projectaccess.Oldest(facts.asked, asked), err
 	})
@@ -766,15 +737,30 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 // Dispatch nothing, and a broker with no project-access client hides nothing, since it serves no
 // tagged secret and enrolls no session naming a project. An error is ErrProjectAccessUnavailable:
 // whether login may see the row is unknown, and a caller shows it to nobody until Dispatch answers.
-// HideUnseen, hideUnseenGrant and both approver lists read it. The names' projects and the person
-// rule's reads are one decision, held to atDecision's bound.
-func (m *Machine) maySeeRecord(ctx context.Context, row, login string, names, sessionProjects []string, reason string) (bool, error) {
-	return atDecision(ctx, m.Projects, func(ctx context.Context, _ bool) (bool, time.Time, error) {
+// Both approver lists read it, and HideUnseen and hideUnseenGrant through seenSecrets. The names'
+// projects and the person rule's reads are one decision, held to atDecision's bound.
+func (m *Machine) maySeeRecord(ctx context.Context, login string, names, sessionProjects []string, reason string) (bool, error) {
+	_, may, err := m.seenSecrets(ctx, login, names, sessionProjects, reason)
+	return may, err
+}
+
+// seenSecrets is maySeeRecord answering beside its decision the project of each of names it
+// decided on (secretProjects): the one policy version the rule read the names' tags from, and the
+// answers of Dispatch's it read their states from. A reader that shows the row (ReadRecordFor)
+// shows these and reads the policy no second time, so a tag the policy gained after the rule read
+// it never reaches a person the rule did not check it for.
+func (m *Machine) seenSecrets(ctx context.Context, login string, names, sessionProjects []string, reason string) ([]SecretProject, bool, error) {
+	type seen struct {
+		secrets []SecretProject
+		may     bool
+	}
+	got, err := atDecision(ctx, m.Projects, func(ctx context.Context, _ bool) (seen, time.Time, error) {
 		secrets, asked, err := m.secretProjects(ctx, names)
 		if err != nil {
-			return false, time.Time{}, err
+			return seen{}, time.Time{}, err
 		}
-		may, seen, err := m.maySee(ctx, row, login, append(privateProjects(secrets), sessionProjects...), reason)
-		return may, projectaccess.Oldest(asked, seen), err
+		may, at, err := m.maySee(ctx, login, append(privateProjects(secrets), sessionProjects...), reason)
+		return seen{secrets: secrets, may: may}, projectaccess.Oldest(asked, at), err
 	})
+	return got.secrets, got.may, err
 }

@@ -7,7 +7,9 @@
 // row has, pgx.ErrNoRows, and a row Dispatch could not answer for ErrProjectAccessUnavailable,
 // which the route answers 503 having written nothing. What the rule reads of a row comes of one
 // statement (readRowFacts), keyed by the row it starts from, so a column the rule reads is read
-// for every route that judges a row, and for the approve path's decision (decisionFacts) too.
+// for every route that judges a row, and for the approve path's decision (decisionFacts) too. The
+// one read of a record for a person (ReadRecordFor) judges the record from the statement that reads
+// what it answers (readRecord), which selects the same columns, so it answers the row it judged.
 package requests
 
 import (
@@ -66,17 +68,24 @@ var (
 	decisionKey = rowKey{from: requestKey.from, approver: `cr.approver`, held: `r.enrollment_id`, where: `r.record_id = $1`, released: true}
 )
 
+// requestNamesSQL is the names a private-project rule reads of the request the alias request
+// names, sorted: every name it asked for, or, released, each it was not denied. readRowFacts and
+// readRecord both select it, so every reader judges a row by the same names.
+func requestNamesSQL(request string, released bool) string {
+	where := `rs.request_id = ` + request + `.id`
+	if released {
+		where += ` and rs.decision <> 'deny'`
+	}
+	return `coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where ` + where + `), '{}')`
+}
+
 // readRowFacts is the rowFacts of the row key names by id, read on the pool in one statement, or
 // pgx.ErrNoRows when no row has the id.
 func (m *Machine) readRowFacts(ctx context.Context, key rowKey, id string) (rowFacts, error) {
-	names := `rs.request_id = r.id`
-	if key.released {
-		names += ` and rs.decision <> 'deny'`
-	}
 	var f rowFacts
 	var asked enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select coalesce(cr.kind, ''), `+key.approver+`, coalesce(`+key.held+`::text, ''), coalesce(r.reason, ''),
-			coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where `+names+`), '{}'),
+			`+requestNamesSQL("r", key.released)+`,
 			`+credentialColumns+`, `+currentCredentialColumns+`, c.service
 		from `+key.from+`
 		left join enrollments enr on enr.id = cr.enrollment_id
@@ -100,11 +109,10 @@ func (m *Machine) readRowFacts(ctx context.Context, key rowKey, id string) (rowF
 // nothing; and nil for a secret request login may see and for a machine login, which belongs to no
 // project and asks Dispatch nothing, as the pending list shows it (PendingForApprover). Every route
 // that takes a record id from a caller calls it before it answers anything else of the record, and
-// a write before its transaction, since it may ask Dispatch: the dismissal (Dismiss), the two
-// decide routes for a secret request (api.decideRecord), and the approval page through
-// ReadRecordFor, for the record it prints and for each record an outcome line names
-// (approval.Page). The approval page's decision is ApplyDecision's own, whose person rule
-// (decisionFacts) answers the same pgx.ErrNoRows.
+// a write before its transaction, since it may ask Dispatch: the dismissal (Dismiss) and the two
+// decide routes for a secret request (api.decideRecord). The approval page reads every record it
+// prints through ReadRecordFor, which asks the same rule (hideUnseenRow), and its decision is
+// ApplyDecision's own, whose person rule (decisionFacts) answers the same pgx.ErrNoRows.
 //
 // It reads what the rule asks of the record from the rows Create wrote beside it (recordKey) —
 // every name the request asked for, its signed reason, and the projects of the credentials it has
@@ -117,42 +125,51 @@ func (m *Machine) HideUnseen(ctx context.Context, recordID, login string) error 
 	if err != nil || facts.kind != record.KindAgentSecret {
 		return err
 	}
-	return m.hideUnseenRow(ctx, "record "+recordID, login, facts)
+	_, err = m.hideUnseenRow(ctx, login, facts)
+	return err
 }
 
 // ReadRecordFor is ReadRecord for login, a person: the record once the person rule shows it to
-// them (HideUnseen), and HideUnseen's own answer otherwise — pgx.ErrNoRows for a record they may
+// them, and the rule's own answer otherwise, HideUnseen's — pgx.ErrNoRows for a record they may
 // not see, as for an id no record has, and ErrProjectAccessUnavailable when Dispatch could not say
-// — with nothing of the record read. It is the one read of a record for a person, so the approval
-// page cannot print a record without the rule having shown it: the record it names and each record
-// an outcome line names. The rule is read from the record's rows before ReadRecord verifies its
-// signed request, so a record signed for another broker address answers a person it hides from
-// pgx.ErrNoRows too, not ReadRecord's error.
+// — with nothing more of the record read. It is the one read of a record for a person, so the
+// approval page cannot print a record without the rule having shown it: the record it names, each
+// other record it prints and each record an outcome line names. The rule is read from the record's
+// rows before ReadRecord verifies its signed request, so a record signed for another broker address
+// answers a person it hides from pgx.ErrNoRows too, not ReadRecord's error.
+//
+// What it answers is what the rule judged: the record's rows come of the one statement the rule
+// reads them from (readRecord), and its secrets' projects (SecretProjects) are those the rule
+// decided on (seenSecrets), of the policy version it read the tags from, so neither a tag the
+// policy gained nor a request moved to another credential after the rule read them reaches the
+// person unchecked.
 func (m *Machine) ReadRecordFor(ctx context.Context, recordID, login string) (RecordDetail, error) {
-	if err := m.HideUnseen(ctx, recordID, login); err != nil {
-		return RecordDetail{}, err
-	}
-	return m.ReadRecord(ctx, recordID)
+	return m.readRecord(ctx, recordID, func(facts rowFacts) ([]SecretProject, error) {
+		if facts.kind != record.KindAgentSecret {
+			return nil, nil
+		}
+		return m.hideUnseenRow(ctx, login, facts)
+	})
 }
 
 // hideUnseenRow is pgx.ErrNoRows for a row login may not see (maySeeRecord: its names under the
 // live policy, the projects of the credentials it has had and its reason),
-// ErrProjectAccessUnavailable when Dispatch could not say, and nil for a row login may see: the
-// one answer HideUnseen gives for a record and RevokeByApprover for a grant, so both answer a
-// person the rule hides the row from as they answer an id no row has. row names the row for the
-// rule's log line.
-func (m *Machine) hideUnseenRow(ctx context.Context, row, login string, facts rowFacts) error {
+// ErrProjectAccessUnavailable when Dispatch could not say, and for a row login may see, the project
+// of each of its names the rule decided on (seenSecrets): the one answer HideUnseen gives for a
+// record and RevokeByApprover for a grant, so both answer a person the rule hides the row from as
+// they answer an id no row has, and the projects ReadRecordFor answers the record with.
+func (m *Machine) hideUnseenRow(ctx context.Context, login string, facts rowFacts) ([]SecretProject, error) {
 	if login = record.CanonicalLogin(login); login == record.AnyoneApprover {
 		login = ""
 	}
-	may, err := m.maySeeRecord(ctx, row, login, facts.names, facts.sessionProjects, facts.reason)
+	secrets, may, err := m.seenSecrets(ctx, login, facts.names, facts.sessionProjects, facts.reason)
 	switch {
 	case err != nil:
-		return err
+		return nil, err
 	case !may:
-		return pgx.ErrNoRows
+		return nil, pgx.ErrNoRows
 	}
-	return nil
+	return secrets, nil
 }
 
 // hideUnseenGrant is the person rule over grant grantID for login, read on the pool before
@@ -181,7 +198,8 @@ func (m *Machine) hideUnseenGrant(ctx context.Context, grantID, login string) (g
 	if named, _ := namedOnGrant(login, facts.approver, m.operatorOf(facts.holder)); named {
 		return judged, nil
 	}
-	return judged, m.hideUnseenRow(ctx, "grant "+grantID, login, facts)
+	_, err = m.hideUnseenRow(ctx, login, facts)
+	return judged, err
 }
 
 // grantJudged is what hideUnseenGrant judged a grant by: the enrollment that held it and its
@@ -219,7 +237,7 @@ func (m *Machine) HideRequestFromSession(ctx context.Context, requestID, enrollm
 	if err != nil || facts.holder.ID == enrollmentID {
 		return err
 	}
-	return m.hideFromSession(ctx, "request "+requestID, enrollmentID, facts)
+	return m.hideFromSession(ctx, enrollmentID, facts)
 }
 
 // hideGrantFromSession is HideRequestFromSession for grant grantID, which Values and RevokeGrant
@@ -231,7 +249,7 @@ func (m *Machine) hideGrantFromSession(ctx context.Context, grantID, enrollmentI
 	if err != nil || facts.holder.ID == enrollmentID {
 		return err
 	}
-	return m.hideFromSession(ctx, "grant "+grantID, enrollmentID, facts)
+	return m.hideFromSession(ctx, enrollmentID, facts)
 }
 
 // hideFromSession is pgx.ErrNoRows when the row facts describe touches a private project the
@@ -245,7 +263,7 @@ func (m *Machine) hideGrantFromSession(ctx context.Context, grantID, enrollmentI
 // only to a credential that names it, and a row of one only to such a credential's session. A
 // session whose credential names no private project sees none. The answers it rests on are held to
 // atDecision's bound together.
-func (m *Machine) hideFromSession(ctx context.Context, row, enrollmentID string, facts rowFacts) error {
+func (m *Machine) hideFromSession(ctx context.Context, enrollmentID string, facts rowFacts) error {
 	var caller enrollmentRow
 	if err := m.Store.Pool.QueryRow(ctx, `select kind, operator, subject, coalesce(projects, '{}') from enrollments where id=$1`, enrollmentID).
 		Scan(&caller.Kind, &caller.Operator, &caller.Subject, &caller.Projects); err != nil {
@@ -261,18 +279,18 @@ func (m *Machine) hideFromSession(ctx context.Context, row, enrollmentID string,
 		// public or on its list; any other project for nobody, which Dispatch answers by its
 		// visibility alone, so only a public one, or a key of no project, passes.
 		var its, others []string
-		for _, project := range slices.Concat(privateProjects(tagged), facts.sessionProjects, m.reasonProjects(row, facts.reason)) {
+		for _, project := range slices.Concat(privateProjects(tagged), facts.sessionProjects, record.ReasonProjects(facts.reason)) {
 			if slices.Contains(named, project) {
 				its = append(its, project)
 			} else {
 				others = append(others, project)
 			}
 		}
-		mayIts, seenIts, err := m.maySee(ctx, row, person, its, "")
+		mayIts, seenIts, err := m.maySee(ctx, person, its, "")
 		if err != nil || !mayIts {
 			return false, time.Time{}, err
 		}
-		mayOthers, seenOthers, err := m.maySee(ctx, row, "", others, "")
+		mayOthers, seenOthers, err := m.maySee(ctx, "", others, "")
 		if err != nil || !mayOthers {
 			return false, time.Time{}, err
 		}

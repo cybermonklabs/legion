@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -73,12 +75,13 @@ func approverGrants(t *testing.T, m *Machine, login string) []string {
 }
 
 // TestANewRequestsReasonNamingMoreThanSixteenProjectsIsRefused is round 4's B9 on
-// cybermonklabs/legion#4135. A request whose reason names the issues of more than
-// record.MaxReasonProjects projects is refused when it is created, as ErrRequestInvalid naming the
-// bound — the API's 400 REQUEST_INVALID — and writes nothing, so no request or grant exists whose
-// reason no rule could read cheaply. The session's corrected retry is a request of its own that
-// its approver sees, never one joined to a hidden request. At the bound, an agent-tier secret is
-// granted at once and its person sees the grant, as with any other reason.
+// cybermonklabs/legion#4135. On a broker that holds a project-access client, a request whose
+// reason names the issues of more than record.MaxReasonProjects projects is refused when it is
+// created, as ErrRequestInvalid naming the bound — the API's 400 REQUEST_INVALID — and writes
+// nothing, so such a broker makes no request or grant whose every reader asks Dispatch about more
+// projects than that. The session's corrected retry is a request of its own that its approver
+// sees, never one joined to a hidden request. At the bound, an agent-tier secret is granted at
+// once and its person sees the grant, as with any other reason.
 func TestANewRequestsReasonNamingMoreThanSixteenProjectsIsRefused(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 
@@ -108,25 +111,53 @@ func TestANewRequestsReasonNamingMoreThanSixteenProjectsIsRefused(t *testing.T) 
 	}
 }
 
-// TestARequestStoredOverTheCapStaysVisibleAndAsksDispatchNothing: a request stored before the
-// cap with a reason naming more than record.MaxReasonProjects projects verifies as it always did,
-// its person and approvers see it — the pending request in their list and on its page, the
-// automatic grant in theirs — and reading it asks Dispatch nothing: past the bound the reason's
-// keys are not read, so they count as naming no project, which is how every reader saw the
-// record when it was written.
-func TestARequestStoredOverTheCapStaysVisibleAndAsksDispatchNothing(t *testing.T) {
-	m, enr, key, dispatch := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+// TestABrokerWithNoProjectAccessTakesAReasonNamingAnyNumberOfProjects: a broker that holds no
+// project-access client reads no reason's projects, so the bound on them is not its rule (R9). A
+// request whose reason names the issues of more than record.MaxReasonProjects projects is decided
+// as before the bound: an agent-tier secret granted at once, and a human-tier one pending on its
+// approver's list and page.
+func TestABrokerWithNoProjectAccessTakesAReasonNamingAnyNumberOfProjects(t *testing.T) {
+	m, enr, key, approver := newFixture(t)
 	over := reasonNaming(record.MaxReasonProjects + 1)
+	granted, err := m.Create(t.Context(), enr, signRequest(t, m, key, over, "AUTO_TOKEN"), "", nil)
+	if err != nil || granted.State != "granted" || granted.GrantID == nil {
+		t.Fatalf("Create(AUTO_TOKEN, a reason naming %d projects) with no project-access client = %+v, %v; want granted at once, as before the bound", record.MaxReasonProjects+1, granted, err)
+	}
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, over, "DEEL_API_KEY"), "", nil)
+	if err != nil || pending.State != "pending" || pending.RecordID == nil {
+		t.Fatalf("Create(DEEL_API_KEY, a reason naming %d projects) with no project-access client = %+v, %v; want pending", record.MaxReasonProjects+1, pending, err)
+	}
+	if listed := pendingRecords(t, m, approver); !slices.Contains(listed, *pending.RecordID) {
+		t.Errorf("PendingForApprover(%s) = %v; want the request %s", approver, listed, *pending.RecordID)
+	}
+	if detail, err := m.ReadRecordFor(t.Context(), *pending.RecordID, approver); err != nil || detail.Reason != over {
+		t.Errorf("ReadRecordFor(the request, %s) = %+v, %v; want it read", approver, detail, err)
+	}
+}
+
+// overTheCapNaming is a reason whose issue keys name record.MaxReasonProjects projects Dispatch
+// does not hold and then project, one more than a new request may name.
+func overTheCapNaming(project string) string {
+	return reasonNaming(record.MaxReasonProjects) + " " + project + "-1"
+}
+
+// TestARequestStoredOverTheCapOfNoPrivateProjectStaysVisible: a request stored before the cap,
+// with a reason naming more than record.MaxReasonProjects projects none of which is private,
+// verifies as it always did, and its person and approvers see it — the pending request in their
+// list and on its page, the automatic grant in theirs. Every project its reason names is asked
+// (maySee), and none hides it.
+func TestARequestStoredOverTheCapOfNoPrivateProjectStaysVisible(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	over := overTheCapNaming(teamProject)
 	pending := storedBeforeTheCap(t, m, enr, key, over, "DEEL_API_KEY")
 	granted := storedBeforeTheCap(t, m, enr, key, over, "AUTO_TOKEN")
 	if pending.RecordID == nil || granted.GrantID == nil {
 		t.Fatalf("the stored requests = %+v and %+v; want one pending and one granted", pending, granted)
 	}
 
-	asked := dispatch.Calls()
-	detail, err := m.ReadRecord(t.Context(), *pending.RecordID)
+	detail, err := m.ReadRecordFor(t.Context(), *pending.RecordID, fixtureOperator)
 	if err != nil || detail.Reason != over {
-		t.Fatalf("ReadRecord(the stored request) = %+v, %v; want it read and verified", detail, err)
+		t.Fatalf("ReadRecordFor(the stored request, %s) = %+v, %v; want it read and verified", fixtureOperator, detail, err)
 	}
 	if err := m.HideUnseen(t.Context(), *pending.RecordID, fixtureOperator); err != nil {
 		t.Errorf("HideUnseen(the stored request, %s) = %v; want its approver to see it", fixtureOperator, err)
@@ -137,16 +168,45 @@ func TestARequestStoredOverTheCapStaysVisibleAndAsksDispatchNothing(t *testing.T
 	if listed := approverGrants(t, m, fixtureOperator); !slices.Contains(listed, *granted.GrantID) {
 		t.Errorf("GrantsForApprover(%s) = %v; want the stored grant %s", fixtureOperator, listed, *granted.GrantID)
 	}
-	if calls := dispatch.Calls() - asked; calls != 0 {
-		t.Errorf("reading the two stored requests asked Dispatch %d times; want none: past the bound the reason is not read", calls)
+}
+
+// TestARequestStoredOverTheCapNamingAPrivateProjectIsHidden is the post-merge review's first
+// finding on cybermonklabs/legion#4135: a request stored before the cap whose reason names more
+// than record.MaxReasonProjects projects, the last of them PRIV, is PRIV's request, though nothing
+// else of it touches PRIV. A person PRIV does not list finds it in no list, and reading it answers
+// them as an id no record has; a person PRIV lists sees it.
+func TestARequestStoredOverTheCapNamingAPrivateProjectIsHidden(t *testing.T) {
+	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	// A pod that names no person, so every signed-in person's list reads its request
+	// (everyonesPod).
+	pod, podKey := everyonesPod(t, m, "pod-c-stored-private", "")
+	stored := storedBeforeTheCap(t, m, pod, podKey, overTheCapNaming(privProject), "SHARED_KEY")
+	if stored.RecordID == nil {
+		t.Fatalf("the stored request = %+v; want it pending", stored)
+	}
+
+	if listed := pendingRecords(t, m, outsider); slices.Contains(listed, *stored.RecordID) {
+		t.Errorf("PendingForApprover(%s) = %v; want no request whose reason names PRIV for a person PRIV does not list", outsider, listed)
+	}
+	if err := m.HideUnseen(t.Context(), *stored.RecordID, outsider); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("HideUnseen(the stored request, %s) = %v; want pgx.ErrNoRows", outsider, err)
+	}
+	if detail, err := m.ReadRecordFor(t.Context(), *stored.RecordID, outsider); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("ReadRecordFor(the stored request, %s) = reason %q, %v; want pgx.ErrNoRows and nothing of it", outsider, detail.Reason, err)
+	}
+	if listed := pendingRecords(t, m, insider); !slices.Contains(listed, *stored.RecordID) {
+		t.Errorf("PendingForApprover(%s) = %v; want the stored request %s, shown to a person PRIV lists", insider, listed, *stored.RecordID)
+	}
+	if _, err := m.ReadRecordFor(t.Context(), *stored.RecordID, insider); err != nil {
+		t.Errorf("ReadRecordFor(the stored request, %s) = %v; want it read", insider, err)
 	}
 }
 
-// TestARequestStoredOverTheCapOfASecretSinceTaggedPrivateStaysHidden: past the bound only the
-// reason's keys go unread. A secret a stored request names can have been tagged with a private
-// project since it was stored, and the record's tagged secrets come of the live policy, so the
-// request is the private project's from then on: an outsider no longer sees it, and a person the
-// project lists still does, whatever its reason names.
+// TestARequestStoredOverTheCapOfASecretSinceTaggedPrivateStaysHidden: a secret a stored request
+// names can have been tagged with a private project since it was stored, and the record's tagged
+// secrets come of the live policy, so the request is the private project's from then on: an
+// outsider no longer sees it, and a person the project lists still does, whatever its reason
+// names.
 func TestARequestStoredOverTheCapOfASecretSinceTaggedPrivateStaysHidden(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	// A pod that names no person, so every signed-in person's list reads its request
@@ -169,30 +229,44 @@ func TestARequestStoredOverTheCapOfASecretSinceTaggedPrivateStaysHidden(t *testi
 	}
 }
 
-// TestASessionReadsARequestStoredOverTheCapAskingDispatchNothing: the session rule a session's
-// own routes read (hideFromSession) joins a row's reason projects through the same cap as the
-// person rule (reasonProjects). A request and a grant stored before the cap, with a reason naming
-// more than record.MaxReasonProjects projects, are read by another session of the same person,
-// which does not hold them: the rule shows both, and asks Dispatch nothing, since past the bound
-// the reason's keys count as naming no project, as every reader saw the row when it was written.
-func TestASessionReadsARequestStoredOverTheCapAskingDispatchNothing(t *testing.T) {
-	m, enr, key, dispatch := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	over := reasonNaming(record.MaxReasonProjects + 1)
-	pending := storedBeforeTheCap(t, m, enr, key, over, "DEEL_API_KEY")
-	granted := storedBeforeTheCap(t, m, enr, key, over, "AUTO_TOKEN")
-	if pending.RecordID == nil || granted.GrantID == nil {
-		t.Fatalf("the stored requests = %+v and %+v; want one pending and one granted", pending, granted)
-	}
-	other, _ := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
+// TestASessionReadsARequestStoredOverTheCapByEveryProjectItsReasonNames: the session rule a
+// session's own routes read (hideFromSession) joins every project a row's reason names, as the
+// person rule does. A request and a grant stored before the cap, with a reason naming more than
+// record.MaxReasonProjects projects, are read by another session of the same person, which does
+// not hold them. Where none of those projects is private the rule shows both; where the last is
+// PRIV it hides both from a session that does not name PRIV and shows both to one that does.
+func TestASessionReadsARequestStoredOverTheCapByEveryProjectItsReasonNames(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		project string
+		named   []string
+		hidden  bool
+	}{
+		{"a reason naming no private project", teamProject, nil, false},
+		{"a reason naming PRIV, read by a session naming none", privProject, nil, true},
+		{"a reason naming PRIV, read by a session naming PRIV", privProject, []string{privProject}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+			over := overTheCapNaming(c.project)
+			pending := storedBeforeTheCap(t, m, enr, key, over, "DEEL_API_KEY")
+			granted := storedBeforeTheCap(t, m, enr, key, over, "AUTO_TOKEN")
+			if pending.RecordID == nil || granted.GrantID == nil {
+				t.Fatalf("the stored requests = %+v and %+v; want one pending and one granted", pending, granted)
+			}
+			other, _ := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
+			nameProjects(t, m, other, c.named...)
 
-	asked := dispatch.Calls()
-	if err := m.HideRequestFromSession(t.Context(), pending.ID, other); err != nil {
-		t.Errorf("HideRequestFromSession(the stored request, another session of %s) = %v; want it shown", fixtureOperator, err)
-	}
-	if err := m.hideGrantFromSession(t.Context(), *granted.GrantID, other); err != nil {
-		t.Errorf("hideGrantFromSession(the stored grant, another session of %s) = %v; want it shown", fixtureOperator, err)
-	}
-	if calls := dispatch.Calls() - asked; calls != 0 {
-		t.Errorf("the session rule's two reads of the stored rows asked Dispatch %d times; want none: past the bound the reason is not read", calls)
+			var want error
+			if c.hidden {
+				want = pgx.ErrNoRows
+			}
+			if err := m.HideRequestFromSession(t.Context(), pending.ID, other); !errors.Is(err, want) {
+				t.Errorf("HideRequestFromSession(the stored request, another session of %s naming %v) = %v; want %v", fixtureOperator, c.named, err, want)
+			}
+			if err := m.hideGrantFromSession(t.Context(), *granted.GrantID, other); !errors.Is(err, want) {
+				t.Errorf("hideGrantFromSession(the stored grant, another session of %s naming %v) = %v; want %v", fixtureOperator, c.named, err, want)
+			}
+		})
 	}
 }
