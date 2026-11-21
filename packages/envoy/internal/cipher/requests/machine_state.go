@@ -2238,17 +2238,18 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	// and makes another attempt when it moved. It is asked first, on the same reads as
 	// decisionFacts (decisionReads: one JudgeDispatch bound for the judge, afresh), so the
 	// project facts' atDecision read is the last read of Dispatch before the transaction and the
-	// facts the decision rests on are under projectaccess.CacheTTL old when it is made.
-	reads, cancel := decisionReads(ctx, who)
-	defer cancel()
+	// facts the decision rests on are under projectaccess.CacheTTL old when it is made. The
+	// judge's refusal reads neither, so it builds no reads at all.
 	var restricted bool
-	if approve {
-		if restricted, err = m.restrictedOperator(reads, pre.holder); err != nil {
-			return Decision{}, false, err
-		}
-	}
 	var facts projectFacts
 	if approve || !who.isJudge() {
+		reads, cancel := decisionReads(ctx, who)
+		defer cancel()
+		if approve {
+			if restricted, err = m.restrictedOperator(reads, pre.holder); err != nil {
+				return Decision{}, false, err
+			}
+		}
 		if facts, err = m.decisionFacts(reads, recordID, who, pre, set); err != nil {
 			return Decision{}, false, err
 		}
