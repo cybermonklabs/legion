@@ -1,8 +1,15 @@
 import { baseUrl, e2eAgentToken, sessionCookieName } from "./api";
-import { harnessPorts } from "./harness-ports";
+import {
+  canonicalWrite,
+  expectSignedIn,
+  noteRepeat,
+  open,
+  signInWithGoogle,
+  whoami,
+} from "./google-sign-in";
 import { googleOutsideOrigin, googleSignIn } from "./harness-signin";
 import { conversationTurn } from "./reference-surfaces";
-import { type BrowserContext, expect, type Page, type Response, test } from "./test";
+import { type BrowserContext, expect, test } from "./test";
 
 /**
  * Google signs in only the people of the sign-in domain, and only at Dispatch's canonical origin.
@@ -13,7 +20,9 @@ import { type BrowserContext, expect, type Page, type Response, test } from "./t
  * Google account outside the domain is refused at the canonical origin even while a project's
  * access list names it, and the outside origin serves no Google sign-in at all: its `/auth/start`
  * and `/auth/callback` answer 404. The issuer signs in nobody of its own: each sign-in below first
- * queues its person, with the claims Google gives that account, at the issuer's `/_dev/sign-in-as`.
+ * queues its person, with the claims Google gives that account, at the issuer's `/_dev/sign-in-as`
+ * (`signInWithGoogle`, e2e/google-sign-in.ts, which also makes a hop again that the host's network
+ * change abandoned).
  */
 
 const canonical = baseUrl;
@@ -23,71 +32,6 @@ const outside = googleOutsideOrigin(baseUrl);
 const alice = `alice@${googleSignIn.domain}`;
 /** A personal Google account outside the domain, which PRIV's access list names. */
 const outsider = "outsider@other.example";
-
-/** Queues `email` as the person the issuer signs in at its next authorization, with the ID token
- *  claims Google gives that account: the address as its subject, as the issuer's own default
- *  person has, a verified email, and `hd` for a Workspace account alone. */
-async function queueSignIn(email: string, hostedDomain?: string): Promise<void> {
-  const claims = {
-    email,
-    email_verified: true,
-    sub: email,
-    ...(hostedDomain === undefined ? {} : { hd: hostedDomain }),
-  };
-  const issuer = `http://127.0.0.1:${harnessPorts().signinIssuer.port}`;
-  const queued = await fetch(`${issuer}/_dev/sign-in-as`, {
-    body: JSON.stringify(claims),
-    method: "POST",
-  });
-  expect(queued.status, `the issuer queued ${email}: ${await queued.text()}`).toBe(204);
-}
-
-/** Opens Dispatch at `origin` signed out, presses its sign-in link, and returns what
- *  `/auth/callback` answered once the issuer sent the browser back there. */
-async function signInFromTheSignInPage(page: Page, origin: string): Promise<Response> {
-  await page.goto(`${origin}/`);
-  const callback = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/auth/callback"
-  );
-  await page.getByRole("link", { name: "Sign in with Google" }).click();
-  return callback;
-}
-
-/** Requires `answered` to be the callback's redirect into Dispatch, which sets the session. */
-async function expectSignedIn(answered: Response, email: string): Promise<void> {
-  // A redirect's body cannot be read; any other answer's body says why the sign-in stopped.
-  const why = answered.status() === 302 ? "" : ` ${await answered.text()}`;
-  expect(answered.status(), `/auth/callback for ${email} answered ${answered.status()}${why}`).toBe(
-    302
-  );
-}
-
-/** `GET /auth/whoami` as `page`'s own script asks it: from the page's origin, with its cookie. */
-function whoami(page: Page): Promise<{ body: unknown; status: number }> {
-  return page.evaluate(async () => {
-    const response = await fetch("/auth/whoami");
-    return { body: await response.json(), status: response.status };
-  });
-}
-
-/** A write alice makes with her session at the canonical origin, where Dispatch takes a
- *  cookie-authenticated write only with that origin as its `Origin` (enforceCookieOrigin). */
-async function aliceWrites(
-  context: BrowserContext,
-  method: "DELETE" | "POST" | "PUT",
-  path: string,
-  data?: object
-): Promise<unknown> {
-  const response = await context.request.fetch(`${canonical}${path}`, {
-    data,
-    headers: { Origin: canonical },
-    method,
-  });
-  expect(response.ok(), `${method} ${path}: ${response.status()} ${await response.text()}`).toBe(
-    true
-  );
-  return response.json();
-}
 
 // The servers mount no dev sign-in route under google (e2e/harness-signin.ts), so the default
 // context's sign-in has nothing to mint at; every context below signs in through the issuer.
@@ -108,8 +52,10 @@ test.describe("outside sign-in", () => {
 
       const { priv, pub } =
         await test.step("alice signs in at the canonical origin, makes PRIV and PUB, and lists the outsider on PRIV", async () => {
-          await queueSignIn(alice, googleSignIn.domain);
-          await expectSignedIn(await signInFromTheSignInPage(alicePage, canonical), alice);
+          await expectSignedIn(
+            await signInWithGoogle(alicePage, canonical, alice, googleSignIn.domain, noteRepeat),
+            alice
+          );
           await expect(alicePage).toHaveURL(`${canonical}/`);
           await expect(alicePage.getByText(`Signed in as ${alice}`)).toBeVisible();
           expect(await whoami(alicePage), "alice's GET /auth/whoami").toEqual({
@@ -121,21 +67,25 @@ test.describe("outside sign-in", () => {
             },
             status: 200,
           });
-          await aliceWrites(aliceContext, "POST", "/api/v1/projects", {
+          await canonicalWrite(aliceContext, "POST", "/api/v1/projects", {
             key: "PRIV",
             name: "Private work",
           });
-          await aliceWrites(aliceContext, "POST", "/api/v1/projects", {
+          await canonicalWrite(aliceContext, "POST", "/api/v1/projects", {
             key: "PUB",
             name: "Public work",
           });
           // Only the owner may name a person here, so this answering at all says alice owns PRIV.
-          await aliceWrites(aliceContext, "PUT", `/api/v1/projects/PRIV/access/people/${outsider}`);
-          const privIssue = (await aliceWrites(aliceContext, "POST", "/api/v1/issues", {
+          await canonicalWrite(
+            aliceContext,
+            "PUT",
+            `/api/v1/projects/PRIV/access/people/${outsider}`
+          );
+          const privIssue = (await canonicalWrite(aliceContext, "POST", "/api/v1/issues", {
             project: "PRIV",
             title: "The private plan",
           })) as { key: string };
-          const pubIssue = (await aliceWrites(aliceContext, "POST", "/api/v1/issues", {
+          const pubIssue = (await canonicalWrite(aliceContext, "POST", "/api/v1/issues", {
             project: "PUB",
             title: "The public plan",
           })) as { key: string };
@@ -147,8 +97,7 @@ test.describe("outside sign-in", () => {
         outsiderContexts.push(context);
         const page = await context.newPage();
         // No hd: a personal Google account, outside every Workspace.
-        await queueSignIn(outsider);
-        const answered = await signInFromTheSignInPage(page, canonical);
+        const answered = await signInWithGoogle(page, canonical, outsider, undefined, noteRepeat);
         // The page first, so a sign-in that should have been refused fails quoting what it
         // reached instead: the dashboard, signed in, where a status alone would say only 302.
         await expect(
@@ -183,15 +132,15 @@ test.describe("outside sign-in", () => {
           { name: sessionCookieName, url: outside, value: session?.value ?? "" },
         ]);
         const outsidePage = await outsideAliceContext.newPage();
-        await outsidePage.goto(`${outside}/`);
+        await open(outsidePage, `${outside}/`);
         await expect(outsidePage.getByText(`Signed in as ${alice}`)).toBeVisible();
-        const comment = (await aliceWrites(
+        const comment = (await canonicalWrite(
           aliceContext,
           "POST",
           `/api/v1/issues/${priv}/comments`,
           { body: `The plan is at ${canonical}/issues/${priv} now.` }
         )) as { id: string };
-        await outsidePage.goto(`${outside}/issues/${priv}/conversation`);
+        await open(outsidePage, `${outside}/issues/${priv}/conversation`);
         const links = conversationTurn(outsidePage, "comment", comment.id).locator(
           `a[href$="/issues/${priv}"]`
         );

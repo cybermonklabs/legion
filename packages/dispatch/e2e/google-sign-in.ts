@@ -1,6 +1,7 @@
 /** Google sign-in under `DISPATCH_E2E_SIGNIN=google` (e2e/harness-signin.ts), with the dev OIDC
- *  issuer standing in for Google, and the navigation repeat that every page load of
- *  `outside-passkey.e2e.ts` goes through.
+ *  issuer standing in for Google, and what the two drivers of that mode share
+ *  (`outside-passkey.e2e.ts`, `outside-sign-in.e2e.ts`): the navigation repeat that every page
+ *  load of theirs goes through, the sign-in's check, `whoami`, and the owner's writes.
  *
  *  Chromium fails a navigation with `net::ERR_NETWORK_CHANGED` when the host's network interfaces
  *  change while the request is still connecting: it drops its socket pools on an address change,
@@ -13,8 +14,9 @@
  *  `networkChangeRepeats` times, and the caller hears of each repeat. A navigation that fails any
  *  other way fails as it did. */
 
+import { baseUrl } from "./api";
 import { harnessPorts } from "./harness-ports";
-import type { Page, Request, Response } from "./test";
+import { type BrowserContext, expect, type Page, type Request, type Response, test } from "./test";
 
 export const NETWORK_CHANGED = "net::ERR_NETWORK_CHANGED";
 
@@ -44,17 +46,53 @@ export async function repeatOnNetworkChange<T>(
   }
 }
 
+/** Records a navigation the host's network change made a driver repeat, or a wait of `goAgain`'s
+ *  that ran out, on the row's report, so it is seen rather than silent. */
+export function noteRepeat(note: string): void {
+  test.info().annotations.push({ description: note, type: "network-change" });
+}
+
+/** Opens `url` in `page`, again if Chromium abandoned it because the host's network changed. */
+export function open(page: Page, url: string): Promise<unknown> {
+  return repeatOnNetworkChange(`GET ${url}`, () => page.goto(url), noteRepeat);
+}
+
+/** Reloads `page`, again if Chromium abandoned it because the host's network changed. */
+export function reload(page: Page): Promise<unknown> {
+  return repeatOnNetworkChange(`reload ${page.url()}`, () => page.reload(), noteRepeat);
+}
+
+/** How long `goAgain` waits for Chromium's error page of the navigation it abandoned. */
+const errorPageWaitMs = 5_000;
+
 /** Opens `url` in `page` after Chromium abandoned a navigation there. The abandoned navigation
  *  commits Chromium's error page (`chrome-error://chromewebdata/`) shortly after its request
  *  fails, and that commit would interrupt a navigation begun before it, so this waits for the
- *  error page first (5 s at most), then navigates once. Navigating again after an interrupted
- *  attempt would not do: the attempt Playwright reports interrupted can still run its redirect
- *  chain, and a second one then finds the issuer's queued person spent. */
-export async function goAgain(page: Page, url: string): Promise<void> {
+ *  error page first (`errorPageWaitMs` at most), then navigates once. A wait that runs out is
+ *  told to `onNote` before the navigation, so a navigation the late error page then interrupts
+ *  fails beside a note that says why. Navigating again after an interrupted attempt would not
+ *  do: the attempt Playwright reports interrupted can still run its redirect chain, and a second
+ *  one then finds the issuer's queued person spent. */
+export async function goAgain(
+  page: Page,
+  url: string,
+  onNote: (note: string) => void
+): Promise<void> {
   if (!page.url().startsWith("chrome-error:")) {
-    await page
-      .waitForURL((at) => at.protocol === "chrome-error:", { timeout: 5_000, waitUntil: "commit" })
-      .catch(() => undefined);
+    const committed = await page
+      .waitForURL((at) => at.protocol === "chrome-error:", {
+        timeout: errorPageWaitMs,
+        waitUntil: "commit",
+      })
+      .then(
+        () => true,
+        () => false
+      );
+    if (!committed) {
+      onNote(
+        `GET ${url}: Chromium's error page did not commit within ${errorPageWaitMs / 1000} s; navigated from ${page.url()} anyway`
+      );
+    }
   }
   await page.goto(url);
 }
@@ -66,10 +104,19 @@ export function issuerOrigin(): string {
 
 /** Queues `email` as the person the issuer signs in at its next authorization, with the ID token
  *  claims Google gives that account: the address as its subject, a verified email, and `hd` for a
- *  Workspace account. */
-export async function queueGoogleSignIn(email: string, hostedDomain: string): Promise<void> {
+ *  Workspace account alone (a `hostedDomain` of `undefined` is a personal Google account). */
+export async function queueGoogleSignIn(
+  email: string,
+  hostedDomain: string | undefined
+): Promise<void> {
+  const claims = {
+    email,
+    email_verified: true,
+    sub: email,
+    ...(hostedDomain === undefined ? {} : { hd: hostedDomain }),
+  };
   const queued = await fetch(`${issuerOrigin()}/_dev/sign-in-as`, {
-    body: JSON.stringify({ email, email_verified: true, hd: hostedDomain, sub: email }),
+    body: JSON.stringify(claims),
     method: "POST",
   });
   if (queued.status !== 204) {
@@ -95,7 +142,7 @@ export async function signInWithGoogle(
   page: Page,
   origin: string,
   email: string,
-  hostedDomain: string,
+  hostedDomain: string | undefined,
   onRepeat: (note: string) => void,
   repeatable: readonly string[] = [NETWORK_CHANGED]
 ): Promise<Response> {
@@ -141,7 +188,7 @@ export async function signInWithGoogle(
       repeats++;
       onRepeat(`${hop}: ${error}, made again`);
       // The repeat's own events settle the wait, and a failure of it reaches `failed` again.
-      void goAgain(page, request.url()).catch(() => undefined);
+      void goAgain(page, request.url(), onRepeat).catch(() => undefined);
       return;
     }
     reject(new Error(`the browser's request to ${hop} for ${email} failed: ${error}`));
@@ -169,4 +216,41 @@ export async function signInWithGoogle(
     page.off("response", received);
     page.off("requestfailed", failed);
   }
+}
+
+/** Requires `answered`, Dispatch's `/auth/callback`, to be its redirect into Dispatch, which sets
+ *  the session. */
+export async function expectSignedIn(answered: Response, email: string): Promise<void> {
+  // A redirect's body cannot be read; any other answer's body says why the sign-in stopped.
+  const why = answered.status() === 302 ? "" : ` ${await answered.text()}`;
+  expect(answered.status(), `/auth/callback for ${email} answered ${answered.status()}${why}`).toBe(
+    302
+  );
+}
+
+/** `GET /auth/whoami` as `page`'s own script asks it: from the page's origin, with its cookie. */
+export function whoami(page: Page): Promise<{ body: unknown; status: number }> {
+  return page.evaluate(async () => {
+    const response = await fetch("/auth/whoami");
+    return { body: await response.json(), status: response.status };
+  });
+}
+
+/** A write made with `context`'s session at the canonical origin, where Dispatch takes a
+ *  cookie-authenticated write only with that origin as its `Origin` (enforceCookieOrigin). */
+export async function canonicalWrite(
+  context: BrowserContext,
+  method: "DELETE" | "POST" | "PUT",
+  path: string,
+  data?: object
+): Promise<unknown> {
+  const response = await context.request.fetch(`${baseUrl}${path}`, {
+    data,
+    headers: { Origin: baseUrl },
+    method,
+  });
+  expect(response.ok(), `${method} ${path}: ${response.status()} ${await response.text()}`).toBe(
+    true
+  );
+  return response.json();
 }

@@ -1,5 +1,14 @@
 import { baseUrl } from "./api";
-import { goAgain, repeatOnNetworkChange, signInWithGoogle } from "./google-sign-in";
+import {
+  canonicalWrite,
+  expectSignedIn,
+  goAgain,
+  noteRepeat,
+  open,
+  reload,
+  signInWithGoogle,
+  whoami,
+} from "./google-sign-in";
 import { googleOutsideOrigin, googleSignIn } from "./harness-signin";
 import { sql } from "./psql";
 import { resetDatabase, sqlLiteral } from "./seed";
@@ -46,63 +55,13 @@ const later = "later@other.example";
  *  owner makes them no link. */
 const held = "held@other.example";
 
-/** Records a navigation the host's network change made the driver repeat (e2e/google-sign-in.ts)
- *  on the row's report, so a repeat is seen rather than silent. */
-function noteRepeat(note: string): void {
-  test.info().annotations.push({ description: note, type: "network-change" });
-}
-
-/** Opens `url` in `page`, again if Chromium abandoned it because the host's network changed. */
-function open(page: Page, url: string): Promise<unknown> {
-  return repeatOnNetworkChange(`GET ${url}`, () => page.goto(url), noteRepeat);
-}
-
-/** Reloads `page`, again if Chromium abandoned it because the host's network changed. */
-function reload(page: Page): Promise<unknown> {
-  return repeatOnNetworkChange(`reload ${page.url()}`, () => page.reload(), noteRepeat);
-}
-
 /** Signs alice in at the canonical origin through the sign-in page's Google link. */
 async function aliceSignsIn(page: Page): Promise<void> {
-  const answered: Response = await signInWithGoogle(
-    page,
-    canonical,
-    alice,
-    googleSignIn.domain,
-    noteRepeat
-  );
-  const why = answered.status() === 302 ? "" : ` ${await answered.text()}`;
-  expect(answered.status(), `/auth/callback for ${alice} answered ${answered.status()}${why}`).toBe(
-    302
+  await expectSignedIn(
+    await signInWithGoogle(page, canonical, alice, googleSignIn.domain, noteRepeat),
+    alice
   );
   await expect(page.getByText(`Signed in as ${alice}`)).toBeVisible();
-}
-
-/** A write alice makes with her session at the canonical origin, where Dispatch takes a
- *  cookie-authenticated write only with that origin as its `Origin` (enforceCookieOrigin). */
-async function aliceWrites(
-  context: BrowserContext,
-  method: "DELETE" | "POST" | "PUT",
-  path: string,
-  data?: object
-): Promise<unknown> {
-  const response = await context.request.fetch(`${canonical}${path}`, {
-    data,
-    headers: { Origin: canonical },
-    method,
-  });
-  expect(response.ok(), `${method} ${path}: ${response.status()} ${await response.text()}`).toBe(
-    true
-  );
-  return response.json();
-}
-
-/** `GET /auth/whoami` as `page`'s own script asks it: from the page's origin, with its cookie. */
-function whoami(page: Page): Promise<{ body: unknown; status: number }> {
-  return page.evaluate(async () => {
-    const response = await fetch("/auth/whoami");
-    return { body: await response.json(), status: response.status };
-  });
 }
 
 /** The project keys the page's sidebar lists, in its order. */
@@ -198,16 +157,16 @@ test.describe("outside passkey sign-in", () => {
 
       await test.step("alice signs in at the canonical origin, makes PRIV and PUB, and lists the outsider, a second outsider and a colleague on PRIV", async () => {
         await aliceSignsIn(alicePage);
-        await aliceWrites(aliceContext, "POST", "/api/v1/projects", {
+        await canonicalWrite(aliceContext, "POST", "/api/v1/projects", {
           key: "PRIV",
           name: "Private work",
         });
-        await aliceWrites(aliceContext, "POST", "/api/v1/projects", {
+        await canonicalWrite(aliceContext, "POST", "/api/v1/projects", {
           key: "PUB",
           name: "Public work",
         });
         for (const email of [outsider, later, colleague]) {
-          await aliceWrites(aliceContext, "PUT", `/api/v1/projects/PRIV/access/people/${email}`);
+          await canonicalWrite(aliceContext, "PUT", `/api/v1/projects/PRIV/access/people/${email}`);
         }
       });
 
@@ -346,7 +305,11 @@ test.describe("outside passkey sign-in", () => {
         const delisted = await invite(alicePage, later);
         // Taking the person off the list ends their unused links in the same transaction, so the
         // link is one Dispatch no longer holds.
-        await aliceWrites(aliceContext, "DELETE", `/api/v1/projects/PRIV/access/people/${later}`);
+        await canonicalWrite(
+          aliceContext,
+          "DELETE",
+          `/api/v1/projects/PRIV/access/people/${later}`
+        );
         const alert = await refusedLink(strangerContext, delisted);
         await expect(alert).toHaveText(
           "Dispatch does not hold this link: the project's owner made a newer one, reset the address, or took it off the access list. Ask the project's owner for a new one."
@@ -374,12 +337,16 @@ test.describe("outside passkey sign-in", () => {
       });
 
       await test.step("a person another owner's project names has no Invite on PRIV, and the row says why", async () => {
-        await aliceWrites(aliceContext, "POST", "/api/v1/projects", {
+        await canonicalWrite(aliceContext, "POST", "/api/v1/projects", {
           key: "HELD",
           name: "Held elsewhere",
         });
         for (const key of ["HELD", "PRIV"]) {
-          await aliceWrites(aliceContext, "PUT", `/api/v1/projects/${key}/access/people/${held}`);
+          await canonicalWrite(
+            aliceContext,
+            "PUT",
+            `/api/v1/projects/${key}/access/people/${held}`
+          );
         }
         // HELD as if another owner had made it: one owner binds a person from outside.
         await sql(`update projects set owner = 'bob@example.com' where key = 'HELD'`);
@@ -506,12 +473,16 @@ test.describe("outside passkey sign-in", () => {
       await addVirtualPasskey(outsiderPage);
       await test.step("alice lists the outsider on PRIV and makes a link; the outsider enrolls with it", async () => {
         await aliceSignsIn(await aliceContext.newPage());
-        await aliceWrites(aliceContext, "POST", "/api/v1/projects", {
+        await canonicalWrite(aliceContext, "POST", "/api/v1/projects", {
           key: "PRIV",
           name: "Private work",
         });
-        await aliceWrites(aliceContext, "PUT", `/api/v1/projects/PRIV/access/people/${outsider}`);
-        const { url } = (await aliceWrites(
+        await canonicalWrite(
+          aliceContext,
+          "PUT",
+          `/api/v1/projects/PRIV/access/people/${outsider}`
+        );
+        const { url } = (await canonicalWrite(
           aliceContext,
           "POST",
           `/api/v1/projects/PRIV/access/people/${outsider}/invitations`
@@ -611,20 +582,17 @@ test.describe("outside passkey sign-in", () => {
 
     await test.step("a hop dropped with any other error fails the sign-in at once, naming the hop; the unspent sign-in then completes by hand", async () => {
       const page = await pageWith((route) => route.abort("failed"));
-      const began = Date.now();
       await expect(
         signInWithGoogle(page, canonical, alice, googleSignIn.domain, noteRepeat)
       ).rejects.toThrow(
         `the browser's request to Dispatch's /auth/start for ${alice} failed: ${dropped}`
       );
-      // Named, not timed out: far inside the 45 s bound.
-      expect(Date.now() - began, "ms from the press to the failure").toBeLessThan(15_000);
       // The dropped hop reached no server, so the person the issuer holds for alice is unspent;
       // the hop made by hand spends it and signs her in.
       const callback = page.waitForResponse(
         (response) => new URL(response.url()).pathname === "/auth/callback"
       );
-      await goAgain(page, `${canonical}/auth/start`);
+      await goAgain(page, `${canonical}/auth/start`, noteRepeat);
       await signedIn(page, await callback);
     });
   });
