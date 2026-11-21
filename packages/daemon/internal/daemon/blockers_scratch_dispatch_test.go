@@ -870,7 +870,7 @@ func settled(t *testing.T, d *daemon, what string, want func(api.State) bool) (a
 	t.Helper()
 	var state api.State
 	var body []byte
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, 20*time.Second), 20*time.Millisecond, func() bool {
+	if !testwait.Holds(testwait.Remaining(t), 20*time.Millisecond, func() bool {
 		status, read := d.request(http.MethodGet, "/legion/v1/state", nil, false)
 		body = read
 		if status != http.StatusOK {
