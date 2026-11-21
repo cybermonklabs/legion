@@ -26,9 +26,9 @@ export interface NatsGate {
 /**
  * A TCP gate in front of `brokerPort`: while shut, it closes each connection at once, which
  * fails a NATS dial at once; once opened, it carries each new connection to the broker. It starts
- * shut. `accepted` is told each connection as it opens, while the client's socket is still up.
+ * shut. `carried` is told each connection it carries, as it opens.
  */
-export function natsGate(brokerPort: number, accepted?: (leg: GateLeg) => void): NatsGate {
+export function natsGate(brokerPort: number, carried?: (leg: GateLeg) => void): NatsGate {
   interface Leg {
     peer?: Socket<Leg>
     queued: Uint8Array[]
@@ -43,12 +43,12 @@ export function natsGate(brokerPort: number, accepted?: (leg: GateLeg) => void):
       open(client) {
         const leg: GateLeg = { clientPort: client.remotePort, upstreamPort: undefined }
         legs.push(leg)
-        accepted?.(leg)
         client.data = { queued: [], leg }
         if (!open) {
           client.end()
           return
         }
+        carried?.(leg)
         void Bun.connect<Leg>({
           hostname: "127.0.0.1",
           port: brokerPort,
