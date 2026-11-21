@@ -10,7 +10,7 @@ import { tradeFailureReason } from "../nats-credential";
 // What the NATS line prints of a failed trade for the session's token (`tradeFailureReason`). A
 // peer at AGENT_SECRETS_URL can put the subject token it was sent in its refusal's text, so the
 // broker's text prints only where it is one of its known refusals (#4140, S1); a trade that got
-// no answer keeps its class, which broker-client's own text already holds (#4140, S2).
+// no answer keeps its class, which cipher-client's own text already holds (#4140, S2).
 describe("tradeFailureReason", () => {
   const token = () =>
     `eyJ${randomBytes(18).toString("base64url")}.${randomBytes(24).toString("base64url")}`;

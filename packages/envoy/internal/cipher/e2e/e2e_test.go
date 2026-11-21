@@ -51,6 +51,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/groups"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -62,6 +63,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -99,6 +101,9 @@ type e2eServer struct {
 	Store   *store.Store
 	Secrets *secrets.Local
 	Log     fmt.Stringer
+	// Groups is the broker's one group reader, which the policy, the request machine, its chain
+	// check and the approval page all ask who is a member of a group.
+	Groups *groups.Reader
 	// uiToken is dispatchAccount's own projected token, the credential the routes Dispatch's
 	// server calls take.
 	uiToken string
@@ -106,12 +111,33 @@ type e2eServer struct {
 	issuer *oidctest.Issuer
 }
 
-// newE2EServer holds e2eSecrets in a fake Secrets Manager and wires the full service graph —
-// enroll.Service (+ ChainVerifier), requests.Machine, machine.Service, policy.NewCurrent — the
-// same way main.go does, minus the HTTP listener and signal handling (api.Register mounts on an
-// httptest.Server instead of a real net/http.Server, as api_test.go's newTestServer does). The
-// broker logs through slog's default handler, as main.go's does, here into Log.
+// e2eOptions are what a test points the broker's upstreams at, each what main.go reads from a
+// setting: the namespace's secrets; the Directory API (BROKER_DIRECTORY_URL) and the reader
+// account (BROKER_DIRECTORY_ACCOUNT); IAM Service Account Credentials, Google's in production;
+// Anthropic's token exchange; the bindings of BROKER_SERVICE_ACCOUNT_SECRETS; and the clock the
+// group reader dates its reads by, time.Now when nil.
+type e2eOptions struct {
+	secrets                                []secrets.LocalSecret
+	directoryURL, directoryAccount, iamURL string
+	anthropicURL                           string
+	serviceAccounts                        map[string]string
+	now                                    func() time.Time
+}
+
+// newE2EServer is newE2EServerWith over e2eSecrets, with no group reader account, as a
+// deployment that names none.
 func newE2EServer(t *testing.T) *e2eServer {
+	t.Helper()
+	return newE2EServerWith(t, e2eOptions{secrets: e2eSecrets})
+}
+
+// newE2EServerWith holds o's secrets in a fake Secrets Manager and wires the full service graph —
+// enroll.Service (+ ChainVerifier), the group reader, requests.Machine, machine.Service,
+// policy.NewCurrent — the same way main.go does, minus the HTTP listener and signal handling
+// (api.Register mounts on an httptest.Server instead of a real net/http.Server, as api_test.go's
+// newTestServer does). The broker logs through slog's default handler, as main.go's does, here
+// into Log.
+func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	t.Helper()
 	st := storetest.Open(t)
 	logged := policytest.CaptureLog(t)
@@ -123,10 +149,22 @@ func newE2EServer(t *testing.T) *e2eServer {
 	enr := &enroll.Service{Store: st, Lease: time.Hour}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 
-	local := secrets.NewLocal(e2eSecrets...)
+	local := secrets.NewLocal(o.secrets...)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	current, err := policy.NewCurrent(ctx, policytest.Loader(local), reloadInterval)
+	// The group reader as main.go's newGroupReader builds it, started on the serving context.
+	// The pod's own credential is a fixed one, which only the IAM stand-in reads.
+	reader := &groups.Reader{
+		BaseURL: o.directoryURL, Now: o.now,
+		Source: groups.NewTokenSource(groups.TokenOptions{
+			Account: o.directoryAccount, IAMCredentialsURL: o.iamURL,
+			Default: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podOwnBearer}),
+		}),
+	}
+	reader.Start(ctx)
+	loader := policytest.Loader(local)
+	loader.Groups = reader
+	current, err := policy.NewCurrent(ctx, loader, reloadInterval)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
 	}
@@ -135,8 +173,17 @@ func newE2EServer(t *testing.T) *e2eServer {
 		Store: st, Policy: current, Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
+		Groups: reader,
+		Minters: map[string]requests.Minter{
+			policy.TypeAnthropicFederation: (&secrets.AnthropicFederation{
+				Accounts:      o.serviceAccounts,
+				IdentityToken: (&ciphertoken.GoogleAccounts{Audience: secrets.AnthropicAudience, IAMCredentialsURL: o.iamURL}).Read,
+				TokenURL:      o.anthropicURL, Now: o.now,
+			}).Mint,
+		},
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
+	reqMachine.Chain.Groups = reader
 	// The caller of the routes Dispatch's server calls presents its own projected ServiceAccount
 	// token, verified against a local OIDC issuer standing in for the cluster's, as the broker
 	// verifies one in production.
@@ -169,7 +216,7 @@ func newE2EServer(t *testing.T) *e2eServer {
 	callerClaims := issuer.Claims(dispatchAccount, dispatchAudience)
 	callerClaims["iat"] = time.Now().Add(-5 * time.Second).Unix()
 	return &e2eServer{
-		URL: srv.URL, Store: st, Secrets: local, Log: logged,
+		URL: srv.URL, Store: st, Secrets: local, Log: logged, Groups: reader,
 		uiToken: issuer.Mint(t, issuerKey, callerClaims), issuer: issuer,
 	}
 }

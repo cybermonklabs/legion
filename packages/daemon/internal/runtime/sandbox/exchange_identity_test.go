@@ -179,7 +179,7 @@ func TestAKeptPodWithoutTheExchangeTokenIsToldNoIdentity(t *testing.T) {
 	if env["AGENT_SECRETS_URL"] != keptBrokerURL {
 		t.Errorf("the role's generation is told AGENT_SECRETS_URL=%q, want the enrollment its pod carries, %s", env["AGENT_SECRETS_URL"], keptBrokerURL)
 	}
-	if drifted := driftOf(t, g.ctx, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool { return strings.HasPrefix(d, agentSecretsExchangeVolume+" ") }) {
+	if drifted := driftOf(t, g, r2, loc); !slices.ContainsFunc(drifted, func(d string) bool { return strings.HasPrefix(d, agentSecretsExchangeVolume+" ") }) {
 		t.Errorf("PodDrift = %q, want the missing exchange token among it, so the update round replaces the pod", drifted)
 	}
 }

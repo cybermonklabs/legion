@@ -436,6 +436,26 @@ describe("s10_judge.py and the modules beside it", () => {
   }, 180_000);
 });
 
+describe("s10-judged-check.ts", () => {
+  const check = join(DIRECTORY, "s10-judged-check.ts");
+  const spawned = (args: string[], stdin: string) =>
+    Bun.spawnSync([process.execPath, check, ...args], { stdin: Buffer.from(stdin, "utf8") });
+
+  test("refuses more than one argument with its usage, exit 2, reading nothing", () => {
+    const run = spawned(["requests/a/outcome.json", "another"], "{}");
+    expect(run.exitCode).toBe(2);
+    expect(run.stdout.toString()).toBe("");
+    expect(run.stderr.toString()).toContain("usage: bun scripts/approval-eval/s10-judged-check.ts");
+  });
+
+  test("prints the parser's refusal of a text that is no outcome on one line of JSON, exit 0", () => {
+    const run = spawned(["requests/a/outcome.json"], "not an outcome\n");
+    expect(run.exitCode).toBe(0);
+    const { refused } = JSON.parse(run.stdout.toString()) as { refused: string | null };
+    expect(refused).toContain("requests/a/outcome.json");
+  });
+});
+
 describe("s10-judge-admit.ts", () => {
   test("admits the claim run's judging over its written inputs, each file by its sha256", async () => {
     const written = inputsFiles();
