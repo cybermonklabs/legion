@@ -245,6 +245,107 @@ func TestTheKeywordRelationGivesOneVersionPerItemAtEachTime(t *testing.T) {
 	}
 }
 
+// No read gives a deleted post's words, so the relation answers a deleted comment's and a deleted
+// message's own deleted_at on every version of it, at a cut before the delete as at one after,
+// and null on every version of a post that stands, of an issue and of an ask. A comment and a
+// message are deleted, another of each stands, and each of the four, an issue and an ask has its
+// versions written straight into the table; one more comment version names an id that is no
+// uuid, which names no post and answers null.
+func TestTheKeywordRelationAnswersEachDeletedPostsDeletedAt(t *testing.T) {
+	ctx := context.Background()
+	store := migratedEmptyStore(t)
+	seedCoreWithADefaultAssignee(t, store)
+	deletedAt := time.Date(2026, 11, 1, 10, 30, 0, 123457000, time.UTC)
+	var deletedComment, standingComment, deletedMessage, standingMessage, ask string
+	if err := store.Pool.QueryRow(ctx, `
+		with issue as (insert into issues (key, project_key, number, title, created_by, rank)
+		               values ('CORE-1', 'CORE', 1, 'Rotate the signing key', '{"kind":"user","id":"alice"}', 'A') returning key),
+		     comments as (insert into comments (issue_key, author, body, deleted_at, deleted_by)
+		                  select key, '{"kind":"user","id":"alice"}', b.body, b.deleted_at, b.deleted_by
+		                    from issue, (values ('', $1::timestamptz, '{"kind":"user","id":"alice"}'::jsonb),
+		                                        ('The old key expires on Friday.', null, null)) b (body, deleted_at, deleted_by)
+		                  returning id, deleted_at),
+		     messages as (insert into messages (issue_key, author, body, deleted_at, deleted_by)
+		                  select key, '{"kind":"user","id":"alice"}', b.body, b.deleted_at, b.deleted_by
+		                    from issue, (values ('', $1::timestamptz, '{"kind":"user","id":"alice"}'::jsonb),
+		                                        ('Rotated in staging.', null, null)) b (body, deleted_at, deleted_by)
+		                  returning id, deleted_at),
+		     asks as (insert into asks (issue_key, author, question)
+		              select key, '{"kind":"session","id":"s1"}', 'Rotate production now?' from issue returning id)
+		select (select id::text from comments where deleted_at is not null), (select id::text from comments where deleted_at is null),
+		       (select id::text from messages where deleted_at is not null), (select id::text from messages where deleted_at is null),
+		       (select id::text from asks)
+	`, deletedAt).Scan(&deletedComment, &standingComment, &deletedMessage, &standingMessage, &ask); err != nil {
+		t.Fatalf("seed the posts: %v", err)
+	}
+	base := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	at := func(minute int) time.Time { return base.Add(time.Duration(minute) * time.Minute) }
+	type row struct {
+		kind, id string
+		seq      int
+		minute   int
+		body     string
+	}
+	rows := []row{
+		{"issue", "CORE-1", 1, 5, "Rotate the signing key"},
+		{"comment", deletedComment, 2, 10, "The old key expires on Thursday."},
+		{"comment", deletedComment, 6, 30, ""},
+		{"comment", standingComment, 3, 10, "The old key expires on Friday."},
+		{"message", deletedMessage, 4, 10, "Rotated in staging and production."},
+		{"message", deletedMessage, 7, 30, ""},
+		{"message", standingMessage, 5, 10, "Rotated in staging."},
+		{"ask", ask, 8, 10, "Rotate production now? "},
+		{"comment", "c-no-uuid", 9, 10, "A version whose id names no post."},
+	}
+	for _, r := range rows {
+		if _, err := store.Pool.Exec(ctx, `
+			insert into search_text_versions (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from, search)
+			values ($1, $2, 'CORE-1', 'CORE', $3, $4, $5, $6, 'event', to_tsvector('english', $6))`,
+			r.kind, r.id, int64(r.seq), int32(r.seq), at(r.minute), r.body); err != nil {
+			t.Fatalf("insert the version of %s %s at seq %d: %v", r.kind, r.id, r.seq, err)
+		}
+	}
+
+	for _, cut := range []struct {
+		name   string
+		minute int
+	}{{"before the deletes", 20}, {"after the deletes", 40}} {
+		got := map[string]*time.Time{}
+		read, err := store.Pool.Query(ctx, `select kind, id, deleted_at from `+TextVersions{Cut: at(cut.minute)}.SQL()+` v`)
+		if err != nil {
+			t.Fatalf("read the relation %s: %v", cut.name, err)
+		}
+		for read.Next() {
+			var kind, id string
+			var deleted *time.Time
+			if err := read.Scan(&kind, &id, &deleted); err != nil {
+				t.Fatalf("scan a version %s: %v", cut.name, err)
+			}
+			got[kind+"/"+id] = deleted
+		}
+		if err := read.Err(); err != nil {
+			t.Fatalf("read the relation %s: %v", cut.name, err)
+		}
+		for key, want := range map[string]*time.Time{
+			"issue/CORE-1":               nil,
+			"comment/" + deletedComment:  &deletedAt,
+			"comment/" + standingComment: nil,
+			"message/" + deletedMessage:  &deletedAt,
+			"message/" + standingMessage: nil,
+			"ask/" + ask:                 nil,
+			"comment/c-no-uuid":          nil,
+		} {
+			deleted, held := got[key]
+			switch {
+			case !held:
+				t.Errorf("%s: the relation holds no version of %s", cut.name, key)
+			case (deleted == nil) != (want == nil) || deleted != nil && !deleted.Equal(*want):
+				t.Errorf("%s: the version of %s answers deleted_at %v, want %v", cut.name, key, deleted, want)
+			}
+		}
+	}
+}
+
 // A search over the relation reads the table's indexes: a statement shaped as the present
 // search's comment arm (match, rank and snippet over the vector and body, the comment joined by
 // its id) finds its matches through the GIN index and tests each for a later version of its item

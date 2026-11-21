@@ -30,8 +30,15 @@ type TextVersions struct {
 // the items' own tables. Its columns, in this order, are a contract its readers build on
 // (TestTheKeywordRelationAnswersTheContractColumns): kind text, id text, issue_key text,
 // project_key text, event_id bigint, event_seq integer, started_at timestamptz, body text,
-// spec_artifact_id uuid, spec_version integer, search tsvector and deleted_at timestamptz, which
-// is null until the posts carry a deleted_at of their own.
+// spec_artifact_id uuid, spec_version integer, search tsvector and deleted_at timestamptz.
+//
+// deleted_at is the post's own delete mark as it stands now (comments.deleted_at for a comment,
+// messages.deleted_at for a message), on every version of a deleted post whatever the cut, and
+// null on every version of a post that stands and of an issue or an ask: no read gives a deleted
+// post's words (R3 of dispatch://INFRA-1523), the words it held before its delete included, so a
+// reader leaves out or marks each version that carries it, as the present search stamps a
+// deleted post's hit. It is read by the post's primary key, only for a row the reader takes, and
+// an id that is no uuid, which names no post, answers null rather than failing the cast.
 //
 // A version holds at the cut when it started at or before the cut and no later version of the
 // same item, in its owner's seq order, started at or before the cut; so an item has at most one
@@ -42,12 +49,84 @@ type TextVersions struct {
 func (v TextVersions) SQL() string {
 	cut := "'" + textVersionsTime(v.Cut) + "'::timestamptz"
 	return `(select v.kind, v.id, v.issue_key, v.project_key, v.event_id, v.event_seq, v.started_at, v.body,
-        v.spec_artifact_id, v.spec_version, v.search, null::timestamptz as deleted_at
+        v.spec_artifact_id, v.spec_version, v.search,
+        case v.kind
+          when 'comment' then (select c.deleted_at from public.comments c
+                                where c.id = case when pg_input_is_valid(v.id, 'uuid') then v.id::uuid end)
+          when 'message' then (select m.deleted_at from public.messages m
+                                where m.id = case when pg_input_is_valid(v.id, 'uuid') then v.id::uuid end)
+        end as deleted_at
    from public.search_text_versions v
   where v.started_at <= ` + cut + `
     and not exists (select from public.search_text_versions l
                      where l.kind = v.kind and l.id = v.id and l.event_seq > v.event_seq
                        and l.started_at <= ` + cut + `))`
+}
+
+// A deleted pending insert suggestion's words were its comment's own and never document text, so
+// no read of a stored document version gives them (R3 of dispatch://INFRA-1523): every read masks
+// the version's text by the insert's mark (docs.MaskedVersionText). A vector cannot be masked at
+// a read, and an issue's keyword row holds the vector of the primary document version it names,
+// so the table holds that vector made from the masked text: the keyword fill makes each row's
+// vector from it (internal/dispatch/textversions), and the delete of the comment rewrites, in its
+// own transaction, the vector of each row the fill already wrote of a version that holds the
+// insert (QueueTextVersionsMask, api's deleteComment). That rewrite is the one write of a row the
+// fill did not make, and the one update of a row.
+//
+// The two take one lock, so neither misses the other: each batch of the fill holds it
+// exclusively from its start to its commit (LockTextVersionsMask), and the delete takes it shared
+// in its write phase, before the statement that rewrites the rows, and holds it to its commit. A
+// batch that began before the delete's lock commits its rows first, and the rewrite, which takes
+// its snapshot after the lock, reads and rewrites them; a batch that begins after it waits until
+// the delete commits, and then reads the comment deleted in every statement it runs, each with a
+// snapshot of its own (READ COMMITTED), the mask's read among them. Deletes share the lock, so
+// none waits on another. A batch takes no lock a delete holds: it takes no owner's or document's
+// lock, and inserts only rows a delete's snapshot did not see. So a delete, which holds its
+// owner's and its document's locks when it takes this one, waits at most for one batch, and no
+// cycle of waits forms. It is a transaction-level advisory lock in the two-key space, named as
+// this repository's others are.
+const (
+	textVersionsMaskLockQuery       = `select pg_advisory_xact_lock(hashtext('search-text-versions-mask'), 0)`
+	textVersionsMaskSharedLockQuery = `select pg_advisory_xact_lock_shared(hashtext('search-text-versions-mask'), 0)`
+)
+
+// textVersionsMaskQuery rewrites the vector of each keyword row that names a version of document
+// $1 among $2 (their numbers) from that version's masked text, $3 in the same order, with the
+// function the fill makes an issue's vector with (issue_search_vector). The rows are the issue's
+// whose primary document $1 is, read by the primary key's (kind, id): a document's issue and its
+// being primary are each written once (artifacts.issue_key, artifacts.is_primary), and every row
+// that names a version names its issue's primary document. Only the vector changes: the body is
+// the issue's title.
+const textVersionsMaskQuery = `
+	update public.search_text_versions t
+	   set search = issue_search_vector(t.id, t.body, m.markdown)
+	  from unnest($2::integer[], $3::text[]) as m (number, markdown)
+	 where t.kind = 'issue'
+	   and t.id = (select a.issue_key from public.artifacts a where a.id = $1::uuid and a.is_primary)
+	   and t.spec_artifact_id = $1::uuid and t.spec_version = m.number`
+
+// LockTextVersionsMask takes, in tx, a batch of the keyword fill, the keyword table's mask lock
+// exclusively, which tx then holds until it ends (QueueTextVersionsMask says why).
+func LockTextVersionsMask(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, textVersionsMaskLockQuery); err != nil {
+		return fmt.Errorf("take the keyword table's mask lock: %w", err)
+	}
+	return nil
+}
+
+// QueueTextVersionsMask queues on b, the write phase of the transaction that deletes the comment
+// of an insert whose words versions numbers of document artifactID hold, the rewrite of the
+// vector of each keyword row that names one of those versions from its text as every read gives
+// it once the delete commits, texts in the same order (docs.MaskedVersionsOnDelete): the mask
+// lock, shared, then one update (textVersionsMaskQuery). A delete whose versions hold none of the
+// insert's words queues nothing.
+func QueueTextVersionsMask(b *WriteBatch, artifactID string, numbers []int32, texts []string) {
+	if len(numbers) == 0 {
+		return
+	}
+	b.Queue("take the keyword table's mask lock", textVersionsMaskSharedLockQuery)
+	b.Queue(fmt.Sprintf("mask a deleted insert in the keyword rows of %d versions of document %s", len(numbers), artifactID),
+		textVersionsMaskQuery, artifactID, numbers, texts)
 }
 
 // TextVersionsNotReachedError is TextVersionsAt's refusal of a cut the keyword table's fill has

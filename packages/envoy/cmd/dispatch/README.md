@@ -2693,7 +2693,8 @@ This release also writes both again for every unpublished event a batch reads no
 
 Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
-Its key is `(kind, id, event_seq)`, and a row is never updated: a new version is a new row.
+Its key is `(kind, id, event_seq)`, and a new version is a new row.
+A row is updated in one case alone: the delete of a comment whose insert suggestion's words a stored document version holds rewrites, in its own transaction, the vector of each issue row that names such a version from the version's masked text (Search, below).
 `search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
 `search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
 `search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
@@ -2705,6 +2706,7 @@ So once the table is filled, the census refuses a later migration that names it 
 A change to its shape is a new table that the fill writes again.
 The cursor row's `rules` holds the lowest version of the event rules that wrote the rows up to the cursor: each batch keeps the lower of its own version and the one stored, so a newer build that takes the hold after an older one does not hide the older one's events.
 A later build that reads more event types reads `rules` to know which events to read again, and only that read again raises it.
+Version 2 reads, besides version 1's, `message.edited`, `comment.deleted` and `message.deleted`, which no earlier build writes; no build reads events again yet, so a version 1 fill that ran beside a version 2 build during a roll and passed events of those types leaves `rules` at 1 and those versions unwritten.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
@@ -3468,12 +3470,16 @@ Meaning search, where an embedder is configured (below), ranks by the embedding 
 For an issue it is the title, with the version of the primary document that the issue held.
 For a comment or an issue message it is the body, and for an ask it is the question, a space and `ask_search_suffix` of its options and answer.
 A version starts at the event that changed that text, and an event that changes no searchable text starts no version.
+An edit of a comment or an issue message starts a version of its new body, and a delete of one starts a version of the empty body.
+Where an event cut a post's body, the fill reads the whole body from the post's present row, else from its body history (`post_body_history`), the body the next edit or delete kept, else from a comment's first blocks.
 The functions that make the item's own `search` column make the vector of each version, so the vector of an item unchanged since its version started equals that column.
+An issue's vector reads its primary document version's text as every read of that version gives it, without the words of a pending insert suggestion whose comment was deleted.
+The delete of such a comment rewrites the vector of each row the fill already wrote of a version holding those words, and every fill batch and that delete take the advisory lock `search-text-versions-mask`, so neither misses the other's write (`internal/dispatch/store/README.md`).
 The keyword fill writes the rows from the event log while Dispatch serves (Background loops, above).
 `store.TextVersionsAt(ctx, cut)` answers `store.TextVersions`, the relation of the version of each item that held at the cut.
 A statement joins it as `from <SQL()> v` and matches, ranks and cuts snippets in itself, as the arms of the present search do over the items' own tables.
 `TextVersionsAt` refuses a cut that the fill has not reached with `*store.TextVersionsNotReachedError`, which names the reach (`internal/dispatch/store/README.md`).
-In this build the relation's `deleted_at` is null, and no route searches at a past time yet.
+The relation's `deleted_at` is the post's own delete mark on every version of a deleted comment or message, at every cut, so a reader gives no deleted post's words; no route searches at a past time yet.
 
 Meaning search embeds with Cohere Embed v4 at the place `DISPATCH_EMBEDDER` names:
 AWS Bedrock (`bedrock`, the default, on the AWS SDK's own region and credentials) or Azure AI Foundry (`azure`, the `DISPATCH_AZURE_*` settings, with the deployment's API key or a keyless sign-in that exchanges a federated token with Microsoft Entra).

@@ -30,7 +30,7 @@ import (
 // it catches up stops. A fill in a second process, with a pool and a horizon of its own, starts at
 // the cursor the first left: its first batch reads the event after the cursor first. At the end
 // every event has exactly the rows it starts, none twice and none missing, and the cursor row says
-// rules version 1 wrote them.
+// this build's rules version (rulesVersion) wrote them.
 func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)

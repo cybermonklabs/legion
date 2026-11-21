@@ -3,11 +3,13 @@
 // the comment's own text that does not follow the cleared column — the block index, each
 // block's stored excerpt, the text each revision recorded of a block, the document margin mark,
 // the quote of an insert suggestion's anchor that no accept made document text, that insert's
-// words in the quote of every other anchor on them, and the name of the document version an
-// accepted suggestion made — each rewritten in the one transaction that clears it. The
-// event log's payloads stay as written and are masked at each read (attachPostMarks), and so do
-// the stored document versions that hold a pending insert's words, which every read of a version
-// gives without them (docs.MaskedVersionText); a reply's events that quote the comment - its
+// words in the quote of every other anchor on them, the name of the document version an
+// accepted suggestion made, and the vector of each keyword row of a past version of the issue
+// whose document version holds that insert's words (store.QueueTextVersionsMask) — each
+// rewritten in the one transaction that clears it. The event log's payloads stay as written and
+// are masked at each read (attachPostMarks), and so do the stored document versions that hold a
+// pending insert's words, which every read of a version gives without them
+// (docs.MaskedVersionText); a reply's events that quote the comment - its
 // creation, and each later event of the reply but its own delete, written before this one - keep
 // the preview they froze, as another anchor's events written before this delete keep the quote
 // they froze. The delete's own comment.deleted, of a comment that is itself a reply, carries no
@@ -195,6 +197,30 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if err := ledger.Queue(clear); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// A stored version that holds the words of an insert this comment suggested gives them to no
+	// read once the delete commits (docs.MaskedVersionText), but the keyword table holds, for each
+	// past version of the issue, the vector of its primary document version's stored markdown,
+	// which a read cannot mask. The delete rewrites each such row's vector from the masked text in
+	// its own write phase, after the clear, under the lock the keyword fill's batches take, so a
+	// batch either commits its rows before the rewrite reads them or reads the comment deleted
+	// (store.QueueTextVersionsMask). An accepted insert's words are document text and stay.
+	if comment.Anchor != nil {
+		artifactID := comment.Anchor.ArtifactID
+		numbers, texts, err := docs.MaskedVersionsOnDelete(r.Context(), tx, artifactID, comment.Anchor.MarkID, comment.ID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if len(numbers) > 0 {
+			if err := ledger.Queue(func(b *store.WriteBatch) error {
+				store.QueueTextVersionsMask(b, artifactID, numbers, texts)
+				return nil
+			}); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
 	}
 	comment.Body = ""
 	comment.Suggestion = nil

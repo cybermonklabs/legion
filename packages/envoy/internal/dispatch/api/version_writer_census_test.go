@@ -61,6 +61,10 @@ var versionRowWriters = map[string]map[string]versionRowWriter{
 		"versionInsert": {fills: true, why: "every document version a server writes, its stamp's tree " +
 			"(RenderStamp.InsertTree), each stamp on versionStamps"},
 	},
+	"internal/dispatch/textversions/textversionstest/textversionstest.go": {
+		"insertVersion": {why: "a test's version of an issue's primary document for the keyword fill's tests: " +
+			"its markdown is a test string no tree was rendered from, so it holds no insert suggestion's words"},
+	},
 }
 
 // versionStampRule is what a stamp the census does not name, or one that stopped filling the

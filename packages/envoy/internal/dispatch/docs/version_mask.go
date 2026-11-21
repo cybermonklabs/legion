@@ -47,7 +47,71 @@ func InsertTree(tree *pmdoc.Node) ([]byte, error) {
 // bytes, which every read still answers as stored. q reads the comments, inside the caller's
 // transaction where it has one.
 func MaskedVersionText(ctx context.Context, q Queryer, artifactID, markdown string, insertTree []byte) (string, error) {
-	tree, masked, err := versionMask(ctx, q, artifactID, insertTree)
+	return maskedVersionText(ctx, q, artifactID, markdown, insertTree, nil)
+}
+
+// insertMarkVersionsSQL reads each version of document $1 whose insert tree holds the insert
+// suggestion mark $2 (InsertMarkPath, $3): its number, its markdown and its tree, through
+// artifact_versions' unique (artifact_id, number), each tree walked once.
+const insertMarkVersionsSQL = `
+	select v.number, coalesce(v.markdown, ''), v.insert_tree
+	  from artifact_versions v
+	 where v.artifact_id = $1::uuid and v.insert_tree is not null
+	   and jsonb_path_exists(v.insert_tree, $3::jsonpath, jsonb_build_object('ids', jsonb_build_array($2::text)))
+	 order by v.number`
+
+// MaskedVersionsOnDelete answers, of the stored versions of the document artifactID whose insert
+// tree holds the insert suggestion mark markID, each whose text a read masks once the delete of
+// comment deleting commits, with that text, the numbers and the texts in the same order. It is
+// read in the transaction that deletes the comment, in its read phase, before its write phase
+// clears it (api's deleteComment): the comment counts as deleted, and each text is the one every
+// read gives after that commit (MaskedVersionText). A version whose text a read gives as stored,
+// as where an accept made the insert's words document text, is left out. A store built from a
+// version's text that a read cannot mask is rewritten from these in the delete's own write: the
+// keyword table's rows of the issue's past versions (store.QueueTextVersionsMask).
+func MaskedVersionsOnDelete(ctx context.Context, q Queryer, artifactID, markID, deleting string) ([]int32, []string, error) {
+	if markID == "" {
+		return nil, nil, nil
+	}
+	rows, err := q.Query(ctx, insertMarkVersionsSQL, artifactID, markID, InsertMarkPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the versions of document %s holding insert %s: %w", artifactID, markID, err)
+	}
+	type stored struct {
+		number   int32
+		markdown string
+		tree     []byte
+	}
+	var held []stored
+	for rows.Next() {
+		var one stored
+		if err := rows.Scan(&one.number, &one.markdown, &one.tree); err != nil {
+			rows.Close()
+			return nil, nil, fmt.Errorf("read a version of document %s holding insert %s: %w", artifactID, markID, err)
+		}
+		held = append(held, one)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("read the versions of document %s holding insert %s: %w", artifactID, markID, err)
+	}
+	var numbers []int32
+	var texts []string
+	for _, one := range held {
+		text, err := maskedVersionText(ctx, q, artifactID, one.markdown, one.tree, &deleting)
+		if err != nil {
+			return nil, nil, err
+		}
+		if text != one.markdown {
+			numbers, texts = append(numbers, one.number), append(texts, text)
+		}
+	}
+	return numbers, texts, nil
+}
+
+// maskedVersionText is MaskedVersionText with comment deleting, when it is not nil, counted as
+// deleted (MaskedVersionsOnDelete).
+func maskedVersionText(ctx context.Context, q Queryer, artifactID, markdown string, insertTree []byte, deleting *string) (string, error) {
+	tree, masked, err := versionMask(ctx, q, artifactID, insertTree, deleting)
 	if err != nil {
 		return "", err
 	}
@@ -81,7 +145,7 @@ func MaskedVersionBlockTexts(ctx context.Context, q Queryer, artifactID string, 
 	if len(blockIDs) == 0 {
 		return nil, nil
 	}
-	tree, masked, err := versionMask(ctx, q, artifactID, insertTree)
+	tree, masked, err := versionMask(ctx, q, artifactID, insertTree, nil)
 	if err != nil || len(masked) == 0 {
 		return nil, err
 	}
@@ -113,9 +177,10 @@ func MaskedVersionBlockTexts(ctx context.Context, q Queryer, artifactID string, 
 
 // versionMask is what a version of the document artifactID is masked by: its insert tree
 // (artifact_versions.insert_tree) read back, and the marks of that tree's inserts whose words no
-// read gives (deletedInsertMarks). masked is empty where the version stores no tree or every
-// insert of it stands, and the tree is then of no use to the caller.
-func versionMask(ctx context.Context, q Queryer, artifactID string, insertTree []byte) (*pmdoc.Node, map[string]bool, error) {
+// read gives (deletedInsertMarks), with comment deleting, when it is not nil, counted as deleted.
+// masked is empty where the version stores no tree or every insert of it stands, and the tree is
+// then of no use to the caller.
+func versionMask(ctx context.Context, q Queryer, artifactID string, insertTree []byte, deleting *string) (*pmdoc.Node, map[string]bool, error) {
 	if len(insertTree) == 0 {
 		return nil, nil, nil
 	}
@@ -123,7 +188,7 @@ func versionMask(ctx context.Context, q Queryer, artifactID string, insertTree [
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the insert tree of a version of document %s: %w", artifactID, err)
 	}
-	masked, err := deletedInsertMarks(ctx, q, artifactID, insertMarkIDs(tree))
+	masked, err := deletedInsertMarks(ctx, q, artifactID, insertMarkIDs(tree), deleting)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -133,7 +198,8 @@ func versionMask(ctx context.Context, q Queryer, artifactID string, insertTree [
 // deletedInsertMarksSQL answers, of the insert suggestion marks $2 of document $1, each one whose
 // words no read gives: a comment whose anchor names the mark (anchor.mark_id, the id a suggestion
 // mark carries) is deleted, and no comment on it had its suggestion accepted. The match is by the
-// mark's id alone, never by text.
+// mark's id alone, never by text. Comment $3, when it is not null, counts as deleted: the one the
+// caller's transaction deletes and has not cleared yet (MaskedVersionsOnDelete).
 //
 // A delete clears the suggestion column (clearDeletedPostBody), so an accept is read off what
 // stays: the version the accept named records the comment (artifact_versions.accepted_from), and
@@ -151,7 +217,7 @@ func versionMask(ctx context.Context, q Queryer, artifactID string, insertTree [
 // mark all the same, so the where clause leaves it out before its comments' accepts are read.
 const deletedInsertMarksSQL = `
 	with marked as (
-		select c.anchor->>'mark_id' as mark_id, c.deleted_at is not null as deleted,
+		select c.anchor->>'mark_id' as mark_id, c.deleted_at is not null or c.id is not distinct from $3::uuid as deleted,
 			coalesce(c.suggestion->>'accepted', '') = 'true'
 				or exists (
 					select from artifact_versions v where v.artifact_id = $1::uuid and v.accepted_from = c.id
@@ -166,18 +232,19 @@ const deletedInsertMarksSQL = `
 			and c.anchor->>'mark_id' in (
 				select d.anchor->>'mark_id' from comments d
 				where (d.anchor->>'artifact_id')::uuid = $1::uuid and d.anchor->>'mark_id' = any($2::text[])
-					and d.deleted_at is not null
+					and (d.deleted_at is not null or d.id is not distinct from $3::uuid)
 			)
 	)
 	select mark_id from marked group by mark_id having bool_or(deleted) and not bool_or(accepted)`
 
 // deletedInsertMarks is the set of ids among the insert suggestion marks ids of document
-// artifactID whose words no read gives (deletedInsertMarksSQL).
-func deletedInsertMarks(ctx context.Context, q Queryer, artifactID string, ids []string) (map[string]bool, error) {
+// artifactID whose words no read gives (deletedInsertMarksSQL), with comment deleting, when it is
+// not nil, counted as deleted.
+func deletedInsertMarks(ctx context.Context, q Queryer, artifactID string, ids []string, deleting *string) (map[string]bool, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := q.Query(ctx, deletedInsertMarksSQL, artifactID, ids)
+	rows, err := q.Query(ctx, deletedInsertMarksSQL, artifactID, ids, deleting)
 	if err != nil {
 		return nil, fmt.Errorf("read the deleted comments of document %s's insert suggestions: %w", artifactID, err)
 	}
