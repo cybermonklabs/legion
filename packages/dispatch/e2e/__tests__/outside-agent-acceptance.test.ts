@@ -638,14 +638,16 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         ) {
           throw new Error("four runs, want four");
         }
-        // A write the full member's feed was not sent, or a line of another form, is no control.
-        for (const run of [undelivered, oldForm]) {
+        // A write inside the window the full member's feed was not sent is a dropped write; a line
+        // of the old form has a second stamp this leg cannot read. Neither is a control.
+        for (const [run, said] of [
+          [undelivered, "was not delivered, so the member's feed lost one"],
+          [oldForm, "the writer printed a line this leg cannot read"],
+        ] as const) {
           expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
             verdicts: { sweep: "UNKNOWN" },
           });
-          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(
-            "no write of the writer was delivered inside its live window"
-          );
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(said);
         }
         // Fills mode refuses to write a file that lacks a fill, so no fills reach the runner.
         expect({
@@ -669,31 +671,107 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the sweep counts a delivered write only when it began after the live window opened and ended before it closed, and no write that was not written",
+      "the sweep counts a delivered write only when it began after the live window opened and ended before it closed, and holds a write inside it that was not written",
       async () => {
         // The runner's window is 2026-01-01T00:00:00Z to 2026-01-01T00:00:09Z; the answered run of
         // the first test of this suite, a write from :04 to :05, is the control.
         const lines = [
-          "write 2025-12-31T23:59:59Z 2026-01-01T00:00:01Z cmt-1 msg-1 delivered",
-          "write 2026-01-01T00:00:08Z 2026-01-01T00:00:10Z cmt-1 msg-1 delivered",
-          "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z - not written",
-        ];
+          [
+            "write 2025-12-31T23:59:59Z 2026-01-01T00:00:01Z cmt-1 msg-1 delivered",
+            "no write of the writer was delivered inside its live window",
+          ],
+          [
+            "write 2026-01-01T00:00:08Z 2026-01-01T00:00:10Z cmt-1 msg-1 delivered",
+            "no write of the writer was delivered inside its live window",
+          ],
+          [
+            "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z - not written",
+            "was not delivered, so the member's feed lost one",
+          ],
+        ] as const;
         const runs = await runStandIns(
-          ...lines.map((writer) => ({ ...passingControls, sweep: { writer } }))
+          ...lines.map(([writer]) => ({ ...passingControls, sweep: { writer } }))
         );
-        lines.forEach((writer, index) => {
+        lines.forEach(([writer, said], index) => {
           const run = runs[index];
           if (run === undefined) throw new Error(`run ${index} is missing`);
           expect({ writer, verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
             verdicts: { sweep: "UNKNOWN" },
           });
-          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(
-            "no write of the writer was delivered inside its live window"
-          );
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(said);
         });
       },
       // The three runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short", "short"] })
+    );
+
+    test(
+      "a writer line whose stamps are not of date's form, or that began after it ended, holds the sweep beside a delivered write",
+      async () => {
+        // Each beside a delivered write from :04 to :05 inside the window, which alone passes (the
+        // answered run of the first test of this suite): a line this leg cannot read may hide a
+        // dropped write.
+        const good = "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 delivered";
+        const lines = [
+          "write 9999 0000 cmt-2 msg-2 delivered",
+          // Stamps of another form that compare as text inside the window and in order: only
+          // their form tells them apart.
+          "write 2026-01-01T00:00:04z 2026-01-01T00:00:05z cmt-2 msg-2 delivered",
+          "write 2026-01-01T00:00:10Z 2026-01-01T00:00:05Z cmt-2 msg-2 delivered",
+          "write 2026-01-01T00:00:06Z 2026-01-01T00:00:05Z cmt-2 msg-2 delivered",
+        ];
+        const runs = await runStandIns(
+          ...lines.map((bad) => ({ ...passingControls, sweep: { writer: `${good}\n${bad}` } }))
+        );
+        lines.forEach((bad, index) => {
+          const run = runs[index];
+          if (run === undefined) throw new Error(`run ${index} is missing`);
+          expect({ bad, verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+            verdicts: { sweep: "UNKNOWN" },
+          });
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(
+            `the writer printed a line this leg cannot read`
+          );
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(bad);
+        });
+      },
+      // The four runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    );
+
+    test(
+      "one delivered write inside the window is no control beside a dropped one, nor when its own line also says not delivered",
+      async () => {
+        const [beside, duplicated] = await runStandIns(
+          {
+            ...passingControls,
+            sweep: {
+              writer:
+                "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 delivered\nwrite 2026-01-01T00:00:06Z 2026-01-01T00:00:07Z cmt-2 msg-2 not delivered",
+            },
+          },
+          {
+            ...passingControls,
+            sweep: {
+              writer:
+                "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 not delivered\nwrite 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z cmt-1 msg-1 delivered",
+            },
+          }
+        );
+        if (beside === undefined || duplicated === undefined) throw new Error("two runs, want two");
+        // The control is the answered run of the first test of this suite: one delivered write
+        // and no other.
+        for (const run of [beside, duplicated]) {
+          expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+            verdicts: { sweep: "UNKNOWN" },
+          });
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(
+            "was not delivered, so the member's feed lost one"
+          );
+        }
+      },
+      // The two runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short"] })
     );
 
     test(

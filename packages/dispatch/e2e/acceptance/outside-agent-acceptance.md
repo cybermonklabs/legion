@@ -143,10 +143,13 @@ The tailnet leg does these steps, in this order:
    the fills' session of that project, and prints `write <began> <ended> <comment id> <message id>
    delivered` (`began` read before the comment's POST, `ended` after the message's POST answered),
    `... not delivered` when the full member's own feed was not sent both, or `write <began> <ended>
-   - not written`. Only a delivered write that began after the runner's live window opened and
-   ended before it closed counts. No full member's credential goes to the runner: the fills file
-   holds none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at
-   `2a40716f65`, fills version 4 (`restricted-sweep-fills<TAB>4`), which name the SHA-256 of the
+   - not written`. A write is inside the runner's live window when it began after the window opened
+   and ended before it closed. One delivered write inside it is the control, and only when every
+   write inside it was delivered: a dropped one beside it reads UNKNOWN, as #4608's own join reads
+   them. A line whose stamps are not of the form `date -u +%Y-%m-%dT%H:%M:%SZ` prints, or that
+   began after it ended, reads UNKNOWN too. No full member's credential goes to the runner: the
+   fills file holds none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at
+   `88cd37d95d`, fills version 4 (`restricted-sweep-fills<TAB>4`), which name the SHA-256 of the
    origin they were made at (`origin_sha256`), of the `routes.txt` they were made from (`routes`)
    and of the member's own projects' keys and creation times (`deployment`). Fills mode writes no
    file that lacks a fill,
