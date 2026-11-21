@@ -59,6 +59,52 @@ func TestAnEntryTokenActsWhateverItsPersonsAccount(t *testing.T) {
 	acts("the entry's token after B replaced A", entry)
 }
 
+// TestARestrictedMembersNamedTokenIsHeldToItsAccount: a restricted member's machine login trades
+// for a token of the named scope (exchange.Set.Machine), as an operator's entry does, but a
+// person's credential made it, and its trade recorded that credential's account and creation time
+// on it. So it is held to its account exactly as the same person's token of the person scope is,
+// not exempted as an entry's: it acts while people records its account for erin, is refused once
+// another account replaces that one, with the refusal the person scope's token gets, and a token
+// recording no account whose credential was made before the recording is refused from the first
+// recording on. An entry's named token, which records neither, still acts
+// (TestAnEntryTokenActsWhateverItsPersonsAccount).
+//
+// Control: the admission exempting every named token, as it did when only an entry's was one; the
+// token recording no account acts and the row fails naming it.
+func TestARestrictedMembersNamedTokenIsHeldToItsAccount(t *testing.T) {
+	rig := newOutsideBrokerRig(t)
+	deps := rig.offDeps
+	deps.SignInIssuer = "https://accounts.google.com"
+	deps.RestrictedAdmission = testOutsideRule(rig.database.Pool)
+	served := directServer(deps)
+	ctx := context.Background()
+	var before time.Time
+	if err := rig.database.Pool.QueryRow(ctx, `select date_trunc('second', now() - interval '20 minutes')`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	recordsA := ciphertoken.Caller{Person: accessErin, ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{"ACC"},
+		AccountIssuer: deps.SignInIssuer, AccountSubject: "account-a", CredentialCreatedAt: before}
+	personScopeRecordsA := recordsA
+	personScopeRecordsA.ProjectScope, personScopeRecordsA.Projects = ciphertoken.ProjectScopePerson, nil
+	recordsNone := ciphertoken.Caller{Person: accessErin, ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{"ACC"}, CredentialCreatedAt: before}
+	people := store.NewPgPeopleStore(rig.database.Pool, testSigningKey, nil)
+	if err := people.SignInSubject(ctx, accessErin, "account-a", "refresh-a", model.MemberRestricted); err != nil {
+		t.Fatalf("erin's first sign-in as account A: %v", err)
+	}
+	if _, err := served.brokerPersonAdmitted(ctx, recordsA); err != nil {
+		t.Fatalf("erin's agent's token recording account A while people records A: %v, want it admitted", err)
+	}
+	_, err := served.brokerPersonAdmitted(ctx, recordsNone)
+	wantAPIError(t, err, http.StatusUnauthorized, "BROKER_TOKEN_RECORDS_NO_ACCOUNT", "erin's agent's token recording no account, its credential made before the first recording")
+	if err := people.SignInSubject(ctx, accessErin, "account-b", "refresh-b", model.MemberRestricted); err != nil {
+		t.Fatalf("B's sign-in to erin's address: %v", err)
+	}
+	_, named := served.brokerPersonAdmitted(ctx, recordsA)
+	_, personScope := served.brokerPersonAdmitted(ctx, personScopeRecordsA)
+	wantAPIError(t, personScope, http.StatusUnauthorized, "BROKER_ACCOUNT_NOT_SIGNED_IN", "erin's token of the person scope recording account A once B replaced A")
+	wantAPIError(t, named, http.StatusUnauthorized, "BROKER_ACCOUNT_NOT_SIGNED_IN", "erin's agent's named token recording account A once B replaced A")
+}
+
 // TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne (the model's S1 with an account
 // of another issuer, review finding F6): a broker token whose credential records an account of
 // another issuer than Dispatch's sign-in issuer names an account Dispatch cannot compare with the

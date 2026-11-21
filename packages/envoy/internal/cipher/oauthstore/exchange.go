@@ -121,12 +121,59 @@ type ExchangeSession struct {
 	// is what lets the machine enroll afterwards. Like Principal it is no claim of the token and
 	// is not stored.
 	Fleet string `json:"-"`
+
+	// AccessLifetime is the longest the access token this exchange issues may live
+	// (exchange.Claims.Lifetime): a restricted member's machine login's is held to
+	// exchange.RestrictedLifetime, and zero leaves every other token the provider's own lifetime.
+	// The library sets the issued token's expiry through SetExpiresAt below, before it stores the
+	// token or answers expires_in, so the row, the introspection's exp and the answer all carry
+	// the shorter expiry. Like Principal it is no claim of the token and is not stored.
+	AccessLifetime time.Duration `json:"-"`
+
+	// AccessDeadline is the latest the access token may expire: AccessLifetime counted from the
+	// moment the exchange's check of the token's projects against Dispatch returned
+	// (StartAccessLifetime), not from the mint, which waits on the exchange's transaction after it.
+	// So a token held to AccessLifetime ends that long after the last answer that admitted it,
+	// however long the transaction took. Zero with a lifetime decided is a start that never ran, and
+	// its token expires at once (SetExpiresAt). Like Principal it is not stored.
+	AccessDeadline time.Time `json:"-"`
 }
 
 // NewExchangeSession is an empty exchange session with its extra claims ready to be written, the
 // shape the provider's session factory hands every request.
 func NewExchangeSession() *ExchangeSession {
 	return &ExchangeSession{DefaultSession: &oauth2.DefaultSession{Extra: map[string]any{}}}
+}
+
+// StartAccessLifetime sets AccessDeadline, AccessLifetime from checked, the moment the exchange's
+// project check returned, when the exchange decided a lifetime; it leaves every other token's alone.
+func (s *ExchangeSession) StartAccessLifetime(checked time.Time) {
+	if s.AccessLifetime > 0 {
+		s.AccessDeadline = checked.UTC().Add(s.AccessLifetime)
+	}
+}
+
+// SetExpiresAt sets the expiry of the token of kind key, as the embedded session does, except that
+// an access token's is held to AccessDeadline when the expiry asked for is later: the library asks
+// for its own lifetime, and a shorter one the exchange decided wins. It never lengthens an expiry,
+// so a token's lifetime is the lesser of the two. An exchange that decided a lifetime and never
+// started it (StartAccessLifetime) has no moment to count it from, so its token expires at once:
+// a trade that skipped the start mints a token that lives no time, which every caller and row
+// reading its expires_in sees, rather than one living the lifetime from its mint, past the bound.
+func (s *ExchangeSession) SetExpiresAt(key oauth2.TokenType, exp time.Time) {
+	if s.DefaultSession == nil {
+		s.DefaultSession = &oauth2.DefaultSession{}
+	}
+	if key == oauth2.AccessToken && s.AccessLifetime > 0 {
+		latest := s.AccessDeadline
+		if latest.IsZero() {
+			latest = time.Now().UTC()
+		}
+		if exp.After(latest) {
+			exp = latest
+		}
+	}
+	s.DefaultSession.SetExpiresAt(key, exp)
 }
 
 // SetSubjectToken records the subject token's verified claims.
@@ -173,11 +220,13 @@ func (s *ExchangeSession) Clone() oauth2.Session {
 		return nil
 	}
 	cloned := &ExchangeSession{
-		SubjectToken: maps.Clone(s.SubjectToken),
-		ActorToken:   maps.Clone(s.ActorToken),
-		Principal:    s.Principal,
-		Instance:     s.Instance,
-		Fleet:        s.Fleet,
+		SubjectToken:   maps.Clone(s.SubjectToken),
+		ActorToken:     maps.Clone(s.ActorToken),
+		Principal:      s.Principal,
+		Instance:       s.Instance,
+		Fleet:          s.Fleet,
+		AccessLifetime: s.AccessLifetime,
+		AccessDeadline: s.AccessDeadline,
 	}
 	if s.DefaultSession != nil {
 		cloned.DefaultSession, _ = s.DefaultSession.Clone().(*oauth2.DefaultSession)

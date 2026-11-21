@@ -1077,7 +1077,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. */
+    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. A restricted member looks up at their browser alone, and is answered only a machine login of their own, whose approver is them and which names no service; any other record is 403 RESTRICTED_MEMBER, naming none of its facts, and a lookup through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. */
     post: operations["postApiV1CredentialRequestsMachineLookup"];
     delete?: never;
     options?: never;
@@ -1094,7 +1094,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. */
+    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. A restricted member approves at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. While another approve of the member's is at the broker, or a removal of theirs from an access list is being recorded, their approve is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT, for them to approve again in a few seconds. While a revocation of the member's machine logins is owed after a removal from an access list, their approve is 409 MACHINE_LOGIN_REVOCATION_OWED, for them to approve again once it is paid, about a minute after the removal. */
     post: operations["postApiV1CredentialRequestsByIdApprove"];
     delete?: never;
     options?: never;
@@ -1111,7 +1111,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. */
+    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. A restricted member denies at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. */
     post: operations["postApiV1CredentialRequestsByIdDeny"];
     delete?: never;
     options?: never;
@@ -2054,7 +2054,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. */
+    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; a list through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token and any broker token of theirs do, and 403 RESTRICTED_MEMBER otherwise, as their personal token is. */
     get: operations["getApiV1MachineLogins"];
     put?: never;
     post?: never;
@@ -2073,7 +2073,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. */
+    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. A restricted member revokes at their browser alone, and only a machine login of their own, whose approver is them and which names no service; any other id is 403 RESTRICTED_MEMBER, and a revoke through a token of theirs is 403 OAUTH_SCOPE_REQUIRED where the token lacks this route's scopes, as their agent's named token does, and 403 RESTRICTED_MEMBER otherwise. */
     post: operations["postApiV1MachineLoginsByIdRevoke"];
     delete?: never;
     options?: never;
@@ -2554,14 +2554,14 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
+    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at, made_by, project?}] for each passkey of a person people names, sorted by email then enrolled_at: made_by is who made the link that enrolled it, and project that link's project, absent where the reader does not see it; invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's, and named by no project of another owner), sorted; and listed_by_another_owner, the emails of people from outside (never a full member's or a Workspace address, which no link is made for whatever else names them) a project of another owner names directly, for whom the owner makes no link until that project's owner takes them off its list, sorted; each [] for none, and all three absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
     get: operations["getApiV1ProjectsByKeyAccess"];
     put?: never;
     post?: never;
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when the deployment names no private project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when DISPATCH_PRIVATE_PROJECTS does not name this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. Appends project.access_changed and answers the project's access as GET answers it. Needs the person and approve scopes. */
+    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; where passkey sign-in is on, giving the project to another owner while a person its list names directly holds a passkey a link of someone else enrolled is 409 PASSKEY_OF_ANOTHER_OWNER, until that link's maker resets the person; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when the deployment names no private project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when DISPATCH_PRIVATE_PROJECTS does not name this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. Appends project.access_changed and answers the project's access as GET answers it. Needs the person and approve scopes. */
     patch: operations["patchApiV1ProjectsByKeyAccess"];
     trace?: never;
   };
@@ -2591,11 +2591,45 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Name a person on a project's access list by email (stored trimmed, with A-Z lowered); a person it names already stays as they were. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a value that is no email, or that holds a capital letter beyond A-Z and so names nobody who could sign in, is 400 PROJECT_ACCESS_INPUT; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
+    /** @description Name a person on a project's access list by email (stored trimmed, with A-Z lowered); a person it names already stays as they were. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a value that is no email, or that holds a capital letter beyond A-Z and so names nobody who could sign in, is 400 PROJECT_ACCESS_INPUT; a list of 500 people and groups is 409 ACCESS_LIST_FULL; where passkey sign-in is on, an address that holds a passkey a link of someone other than the project's owner enrolled is 409 PASSKEY_OF_ANOTHER_OWNER, since that passkey would read this project too, until that link's maker resets the person. Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
     put: operations["putApiV1ProjectsByKeyAccessPeopleByEmail"];
     post?: never;
-    /** @description Take a person off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
+    /** @description Take a person off a project's access list; one it does not name leaves it as it was and owes nothing. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Taking a restricted member off it records that Dispatch owes the secrets broker the revocation of every machine login the member approved, whatever other list still names them, which Dispatch pays after the commit, again until the broker confirms; the removal never waits on the broker, and waits for an approval of the member's that Dispatch is relaying, holding no lock of the project's while it does. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), it also ends the person's unused links of the project, and, once no project's owner is them and no list names them directly, ends a restricted member's account in the same transaction, as the owner's Reset does: a new passkey subject, which revokes their personal tokens and owes the broker the old account's revocation, then their sign-in ended and their passkeys deleted. Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
     delete: operations["deleteApiV1ProjectsByKeyAccessPeopleByEmail"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/access/people/{email}/invitations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Make a single-use link for a person the project's access list names directly, with which they enroll a passkey and sign in as a restricted member at the outside origin: 201 {url, expires_at}, url the outside origin's /enroll page with 32 random bytes, base64url, in its fragment, and expires_at 24 hours after now. It ends the person's earlier unused links of the project. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER; a person a project of another owner names directly is 409 LISTED_BY_ANOTHER_OWNER, since a passkey reads every project that names its person, so only an owner of every such project makes their link; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. The answer is the one time the link is shown: a repeat under its Idempotency-Key is 409 KEY_COMMITTED. Needs the person and approve scopes. */
+    post: operations["postApiV1ProjectsByKeyAccessPeopleByEmailInvitations"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/access/people/{email}/reset": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Reset a person the project's access list names directly, in one transaction: record that Dispatch owes the secrets broker the revocation of the machine logins they approved, delete their unused links of every project, give their address a new passkey account, which revokes their personal tokens and owes the broker the revocation of the old account, and end their sign-in and delete their passkeys, so they sign in again only with a new link and nothing the old account made or approved acts again; they stay on the list. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER, read again under the address's lock; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. Answers the project's access. Needs the person and approve scopes. */
+    post: operations["postApiV1ProjectsByKeyAccessPeopleByEmailReset"];
+    delete?: never;
     options?: never;
     head?: never;
     patch?: never;
@@ -5129,6 +5163,13 @@ export interface components {
       expected: string;
       scope: string;
     };
+    EnrolledPasskey: {
+      email: string;
+      /** Format: date-time */
+      enrolled_at: string;
+      made_by: string;
+      project?: string;
+    };
     ErrorBody: {
       code: string;
       error: string;
@@ -5373,6 +5414,11 @@ export interface components {
       urgency: string;
       waiting_on?: string;
       waiting_on_person?: string;
+    };
+    InvitationAnswer: {
+      /** Format: date-time */
+      expires_at: string;
+      url: string;
     };
     Issue: {
       advances: components["schemas"]["IssueAdvance"][] | null;
@@ -6330,8 +6376,11 @@ export interface components {
     };
     ProjectAccess: {
       groups: string[] | null;
+      invitable?: string[];
+      listed_by_another_owner?: string[];
       not_signed_in: string[] | null;
       owner: string;
+      passkeys?: components["schemas"]["EnrolledPasskey"][];
       people: string[] | null;
       project: string;
       slack_channels: string[] | null;
@@ -13774,6 +13823,76 @@ export interface operations {
       };
     };
   };
+  postApiV1ProjectsByKeyAccessPeopleByEmailInvitations: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        email: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["InvitationAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ProjectsByKeyAccessPeopleByEmailReset: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        email: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectAccess"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1ProjectsByKeyArchitecture: {
     parameters: {
       query?: {
@@ -15769,6 +15888,7 @@ export type EditPrecondition = components["schemas"]["EditPrecondition"];
 export type EditPreconditionCurrent = components["schemas"]["EditPreconditionCurrent"];
 export type EditPreconditionError = components["schemas"]["EditPreconditionError"];
 export type EditPreconditionMismatch = components["schemas"]["EditPreconditionMismatch"];
+export type EnrolledPasskey = components["schemas"]["EnrolledPasskey"];
 export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
 export type FinishedIssue = components["schemas"]["FinishedIssue"];
@@ -15792,6 +15912,7 @@ export type InboxIssue = components["schemas"]["InboxIssue"];
 export type InboxReadRequest = components["schemas"]["InboxReadRequest"];
 export type InboxReadResponse = components["schemas"]["InboxReadResponse"];
 export type InboxRow = components["schemas"]["InboxRow"];
+export type InvitationAnswer = components["schemas"]["InvitationAnswer"];
 export type Issue = components["schemas"]["Issue"];
 export type IssueAdvance = components["schemas"]["IssueAdvance"];
 export type IssueAskRow = components["schemas"]["IssueAskRow"];

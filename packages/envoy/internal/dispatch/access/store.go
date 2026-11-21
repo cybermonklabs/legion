@@ -86,7 +86,10 @@ func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind,
 // then the projects its delete sweeps; a write of a project's list that names a group takes the
 // same name before the project (LockForAccessWrite), so a delete of that group and the write are
 // ordered by the name: the delete waits for the write and then sweeps its row, or the write,
-// seeing the delete committed, finds no group.
+// seeing the delete committed, finds no group. A removal of a person takes that person's
+// machine-login approval lock (store.LockMachineLoginApprovals) before any of these, since it may
+// wait there for an approve the secrets broker has not answered, and holds no project's lock while
+// it does; an approval of the person's takes that lock alone, so no cycle forms through it.
 
 // LockGroupName takes, for the rest of tx, the lock that orders every write of group name.
 func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
@@ -141,6 +144,12 @@ func ReadProject(ctx context.Context, q Querier, key string, viewer any) (model.
 // see the project now, so a writer who gave the project away is still told what they wrote.
 func readProjectWritten(ctx context.Context, q Querier, key string) (model.ProjectAccess, error) {
 	return readProject(ctx, q, key, `p.key = $1`, key)
+}
+
+// ReadProjectWritten is readProjectWritten for an owner's write of the api package that changes no
+// list (api.resetProjectAccessPerson): the project's access as tx left it, after the owner's check.
+func ReadProjectWritten(ctx context.Context, tx pgx.Tx, key string) (model.ProjectAccess, error) {
+	return readProjectWritten(ctx, tx, key)
 }
 
 // readProject reads the access of the one project where names, with args, or ErrProjectNotFound.
@@ -503,6 +512,24 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 		change = model.AccessGroupRemoved
 	}
 	return appendProjectChange(ctx, tx, ev, key, change, name, by)
+}
+
+// NamesPerson reports whether project key's access list names the person email, read in tx: a
+// removal asks it before RemovePrincipal to tell a removal that took a person off the list from one
+// that left it as it was. An email that names nobody is ErrPrincipalInput, as RemovePrincipal
+// answers it.
+func NamesPerson(ctx context.Context, tx pgx.Tx, key, email string) (bool, error) {
+	name, err := principalOf(PrincipalPerson, email)
+	if err != nil {
+		return false, err
+	}
+	var named bool
+	if err := tx.QueryRow(ctx, `
+		select exists (select 1 from project_access where project_key = $1 and principal_kind = $2 and principal = $3)
+	`, key, PrincipalPerson, name).Scan(&named); err != nil {
+		return false, fmt.Errorf("read whether project %s names %s: %w", key, name, err)
+	}
+	return named, nil
 }
 
 // appendProjectChange appends the event naming change on project key, records beside it what the

@@ -82,7 +82,7 @@ func (s *outsideSignIn) routerWithSessions(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	built.Identity = requestIdentityFor(s.boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	built.Identity = requestIdentityFor(s.boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, nil)
 	appCtx, err := routes.BuildAppContext(appContextOptions(s.boot, rule, built))
 	if err != nil {
 		t.Fatalf("build the router: %v", err)

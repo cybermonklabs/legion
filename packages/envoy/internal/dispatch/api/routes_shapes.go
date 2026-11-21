@@ -646,6 +646,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/access/projects/{key}":                   {Status: http.StatusOK, Response: model.AccessAnswer{}, Params: accessPersonQuery{}},
 	"GET /api/v1/access/person":                           {Status: http.StatusOK, Response: model.PersonAnswer{}, Params: accessPersonQuery{}},
 	"GET /api/v1/access/private-projects":                 {Status: http.StatusOK, Response: privateProjectsAnswer{}},
+	// The owner's link for a person from outside, and the owner's Reset of one.
+	"POST /api/v1/projects/{key}/access/people/{email}/invitations": {Status: http.StatusCreated, Response: invitationAnswer{}},
+	"POST /api/v1/projects/{key}/access/people/{email}/reset":       {Status: http.StatusOK, Response: model.ProjectAccess{}},
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},

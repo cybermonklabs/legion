@@ -37,7 +37,7 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | --- | --- | --- |
 | Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. |
 | A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents, which sees only the public projects; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
-| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. `DISPATCH_SIGNIN_OUTSIDE=1` lets the people a project names sign in from outside the domain, and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` names the organization's other domains, whose addresses only its own accounts sign in with. [Signing people in](#signing-people-in) covers all of it. |
+| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. `DISPATCH_SIGNIN_OUTSIDE=1` lets the people a project names sign in from outside the domain with a Google account, or `DISPATCH_SIGNIN_PASSKEY=1` with a passkey, and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` names the organization's other domains, whose addresses only its own accounts sign in with. [Signing people in](#signing-people-in) covers all of it. |
 | The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. `DISPATCH_OUTSIDE_ORIGIN` is a second address, for people from outside ([People from outside the domain](#people-from-outside-the-domain)). |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
 | A stable session key | `DISPATCH_SIGNING_KEY` | Signs sign-in cookies and seals the issuer's refresh tokens Dispatch stores. It holds one key, or several separated by spaces: the first signs and seals, and every one is accepted, which is how the key is changed without signing anyone out ([Changing the session key](#changing-the-session-key)). When unset, Dispatch creates one under `~/.local/share/dispatch`; keep that directory on a volume, or every restart signs everyone out. Give every server the same keys when you run more than one: a server whose keys another running server does not share refuses to start ([Running more than one copy](#running-more-than-one-copy)). |
@@ -322,8 +322,9 @@ such as `bücher.example`, or as its A-labels, `xn--bcher-kva.example`: the two 
 and an address written either way is on it. List every other domain the organization
 owns: then a personal Google account holding one of your people's addresses cannot sign in with
 it, even before your person ever has. Your own people sign in at an address on any of them as
-before, and without `DISPATCH_SIGNIN_OUTSIDE=1` the setting changes nothing. On a domain the
-organization owns that the setting does not list, an outside account still never takes the
+before, and without `DISPATCH_SIGNIN_OUTSIDE=1` or `DISPATCH_SIGNIN_PASSKEY=1` the setting
+changes nothing. On a domain the organization owns that the setting does not list, an outside
+account still never takes the
 address of one of your people once they have signed in with it: it reaches a page saying the
 address belongs to a member of the organization, and your person stays signed in. An outside
 account that signed in with such an address before your person first did loses it at that first
@@ -339,7 +340,8 @@ more, that their address signs in only as an account of the organization, or tha
 longer signs in accounts from outside the domain. The API's `401 NO_IDENTITY` says the same, as a
 `reason` of `NOT_LISTED`, `WORKSPACE_ADDRESS` or `OUTSIDE_SIGNIN_OFF` beside their address as
 `login`. A person who signs out, or whose sign-in simply expires, is told nothing more, and a
-deployment that never sets `DISPATCH_SIGNIN_OUTSIDE` answers as it always did.
+deployment that never sets `DISPATCH_SIGNIN_OUTSIDE` or `DISPATCH_SIGNIN_PASSKEY` answers as it
+always did.
 
 The agent tokens such a person makes in **Settings → Agent tokens**, and the tokens the secrets
 broker issues to their agents, follow the very rule that signs the person in, checked at every
@@ -365,6 +367,43 @@ list; Dispatch refuses to start with any other. A request to that host is answer
 address: the sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the Google
 client lists as a second redirect URI, and a write from a page there must come from that address.
 A link to a Dispatch page written on either address opens on the address the reader is on.
+
+### People from outside with a passkey
+
+`DISPATCH_SIGNIN_PASSKEY=1`, set instead of `DISPATCH_SIGNIN_OUTSIDE=1` (Dispatch refuses to start
+with both), lets a person from outside sign in with a passkey and no Google account at all. It needs
+`DISPATCH_SIGNIN_DOMAIN` and `DISPATCH_OUTSIDE_ORIGIN`: Google then signs in your own people alone,
+and a person from outside signs in only at the outside address, where Dispatch serves no Google
+sign-in. So the Google client lists no callback on the outside address, only
+`<DISPATCH_SERVER_URL>/auth/callback`, and its consent screen's audience can stay Internal. A
+project's owner puts the person's email on the project's access list, then makes an
+invitation link for them on the project's **Access** tab and hands it over however they like. The
+link works once, within 24 hours, for that person only, and making a new one ends the old one. With
+it the person enrolls a passkey on their own device, and from then on signs in with that passkey.
+The owner sees on the Access tab when each passkey was enrolled and who made the link it came
+through, so a link someone else used first shows up there. One owner binds a person from outside:
+a passkey signs its person in to every project whose list names them, so an owner makes a link
+only for a person no other owner's project names, the enrollment checks that again, and no other
+owner can name a person on their list, or be given a project naming them, while a passkey another
+owner's link enrolled stands. The Access tab names the people another owner's project names, and
+offers no link for them; that block clears when the other project's owner takes the person off
+its list, or an operator does. **Reset** ends the person's sign-in, deletes their passkeys,
+revokes the agent tokens they made and the machine logins they approved at the secrets broker,
+ends every link still waiting for them on any project, and keeps them on the list, so they enroll
+again with a new link, under a new account. Taking the person off the last list that names them
+ends their access the same way at once, and so does Dispatch's check, at least hourly, of a person
+no list names any more, so whoever names the address later names a new account. No link is made
+for an address on a domain the organization owns (`DISPATCH_SIGNIN_DOMAIN`, a domain
+`DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists, or a subdomain of one), nor for one of your people who
+has signed in with Google. List every domain the organization owns there: a domain left out is not
+the organization's to Dispatch, so an owner can make a link for an address of one of your people
+there before they first sign in with Google, and the passkey enrolled with it keeps signing in as
+that address after your organization removes that person, since no passkey sign-in asks Google.
+While the setting is off, Dispatch refuses every such person's sign-in at their next request,
+telling them Dispatch does not sign them in now, and refuses their agent tokens as above; turned on
+again, their passkeys, sign-ins and tokens work again, so end a person's access for good with
+Reset or by taking them off the lists. Without `DISPATCH_SIGNIN_OUTSIDE=1`, the outside address
+never offers Google sign-in, with passkeys on or off.
 
 ## Behind Identity-Aware Proxy
 
@@ -570,12 +609,28 @@ sees, whatever it lists.
 A restricted member's dashboard holds only what they may read. Their rail shows Inbox, Agents,
 Delivery, their projects and Settings, with no Priorities or Pipeline and no Peek. Delivery shows
 them the pull requests whose issue they see and the deploys that shipped them, with no run's jobs,
-no setup form and no session-groups editor. The Priorities, Pipeline, broadcasts and
-machine-login pages answer **Page not found**, and Settings shows no Groups and no Delivery
-timeline. The API refuses them, and every token they make, every read of the whole deployment,
-`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`, except that they
-revoke their own credential grants and end their own sign-ins, as a full member does: the secrets
-broker decides whose each one is.
+no setup form and no session-groups editor. The Priorities, Pipeline and broadcasts pages answer
+**Page not found**, and Settings shows no Groups and no Delivery timeline. The machine-login page
+is theirs, listing their own machine logins alone: there they approve, at their browser, the device
+login of their own agents, and list and revoke their own machine logins, and Dispatch decides or
+ends for them no other credential. The API refuses them, and every token they make, every read of
+the whole deployment, `403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`,
+but for the machine-login calls at their browser, and except that they revoke their own credential
+grants and end their own sign-ins, as a full member does: the secrets broker decides whose each one
+is. The machine-login calls are theirs at their browser alone: through a token of theirs each one,
+the list `GET /api/v1/machine-logins` included, is `403 OAUTH_SCOPE_REQUIRED` where the token lacks
+the call's scopes, as their agent's token does,
+and `403 RESTRICTED_MEMBER` otherwise. The secrets broker holds their agents' tokens to one
+project, which their agents name in `AGENT_SECRETS_PROJECTS`, and a token the broker scoped to
+their person gets no scope at Dispatch. Taking such a person off a project's list ends their tokens
+for it within 325 seconds, since the broker checks every trade against Dispatch. Every removal of
+them from a project's list also has Dispatch revoke all their machine logins at the broker, whatever
+other list still names them, after the removal commits and again until the broker confirms; the
+log line `the secrets broker revoked the machine logins of a restricted member taken off an access
+list` records each. Until it is done, about a minute after the removal (the broker may still commit
+an approve it took before it), their approve of a new machine login is
+`409 MACHINE_LOGIN_REVOCATION_OWED`; a person another list still names then approves a new login
+for the projects that list them.
 
 A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
 a token that does not list it read the private project as missing. A person who sees the project

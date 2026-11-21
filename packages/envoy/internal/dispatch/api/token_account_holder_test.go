@@ -75,8 +75,8 @@ func TestAPersonalTokenOfAnAccountPeopleNoLongerRecordsActsOnNothing(t *testing.
 	standing := func(id string) (string, error) {
 		owner := carol
 		actor := model.Actor{Kind: "session", Owner: &owner, ID: carol, Act: &model.ActorAct{TokenID: id}}
-		subject, _, err := served.approverStanding(httptest.NewRequest(http.MethodPost, "/api/v1/credential-requests/x/approve", nil), actor)
-		return subject, err
+		account, _, err := served.approverStanding(httptest.NewRequest(http.MethodPost, "/api/v1/credential-requests/x/approve", nil), actor)
+		return account.subject, err
 	}
 	if _, err := standing(idA); err == nil {
 		t.Error("an approve's re-read of A's token once people records B stood, want it refused")

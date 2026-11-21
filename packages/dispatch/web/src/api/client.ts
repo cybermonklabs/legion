@@ -2090,14 +2090,15 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines',
    *  their own pods' (`person` set) and every service's, whoever approved it, that are unexpired
-   *  or expired with a session still running. */
+   *  or expired with a session still running. A restricted member is answered their own machines'
+   *  alone. */
   getMachineLogins() {
     return this.read("/api/v1/machine-logins", {});
   }
 
   /** Revoke a machine login, expired or not: a service's, one of the viewer's machines', or one
-   *  of the viewer's pods'. Dispatch names the viewer as the person revoking, and every session
-   *  the login enrolled ends with it. */
+   *  of the viewer's pods'; a restricted member revokes only one of their own machines'. Dispatch
+   *  names the viewer as the person revoking, and every session the login enrolled ends with it. */
   async revokeMachineLogin(credentialId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/machine-logins/{id}/revoke", { id: credentialId }, undefined, bounds);
   }

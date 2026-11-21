@@ -62,15 +62,22 @@ func TestAServerWithNoDatabaseReadsAsTheClosedViewer(t *testing.T) {
 // PRIV and the shared token, all open viewers, are not: a full member's credential list decides
 // only private projects, and a read of the deployment names none. GET /metrics, among the rows,
 // answers each open viewer 200. A wildcard is filled with a value no row holds, since the refusal
-// comes before any row is read.
+// comes before any row is read. The one row a restricted member's browser reads, the list of their
+// own machine logins (restrictedOwnLoginRoutes), has its own rows
+// (TestARestrictedMemberListsAndRevokesOnlyTheirOwnMachineLogins,
+// TestARestrictedMembersTokensListAndRevokeNoMachineLogin), and is the only one the walk leaves out.
 //
 // Control in access/access.go: a credential that lists projects read as not open (the listing
 // tokens are refused every row).
 func TestADeploymentReadIsRefusedToAViewerThatIsNotOpen(t *testing.T) {
 	seed := seedPrivateProject(t)
-	var walked []string
+	var walked, ownLogin []string
 	for _, route := range seed.server.routes() {
 		if route.Method != http.MethodGet || !slices.Contains(route.Reads, readclass.Deployment) {
+			continue
+		}
+		if restrictedOwnLoginRoutes[route.Method+" "+route.Pattern] {
+			ownLogin = append(ownLogin, route.Pattern)
 			continue
 		}
 		walked = append(walked, route.Pattern)
@@ -94,6 +101,9 @@ func TestADeploymentReadIsRefusedToAViewerThatIsNotOpen(t *testing.T) {
 		if !slices.Contains(walked, row) {
 			t.Fatalf("the walk read the deployment's rows %q, without GET %s", walked, row)
 		}
+	}
+	if !slices.Equal(ownLogin, []string{"/api/v1/machine-logins"}) {
+		t.Fatalf("the walk left out %q, want GET /api/v1/machine-logins alone", ownLogin)
 	}
 }
 

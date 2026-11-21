@@ -93,6 +93,11 @@ type testServerOptions struct {
 	// is Deps.RestrictedAdmission, which a restricted member's tokens are held to. False is the
 	// deployment that does not, whose server holds no such rule.
 	signInOutside bool
+	// passkeyIssuer is a deployment whose people from outside sign in with a passkey
+	// (DISPATCH_SIGNIN_PASSKEY=1) at this outside origin: Deps.Passkeys over the server's database,
+	// recording each passkey's subject under it, and the rule's check of a Workspace address
+	// (testOutsideRule's). Empty is the deployment with passkey sign-in off.
+	passkeyIssuer string
 	// privateProjects and busProjects are Deps.PrivateProjects and Deps.BusProjects: the projects
 	// the deployment has provisioned as private, and the private-projects record's writer. Nil
 	// and nil are the deployment that names no private project.
@@ -104,11 +109,14 @@ type testServerOptions struct {
 	// is the deployment with no broker, which is every test but broker_token_test.go's and
 	// project_scope_test.go's, and answers such a presentation 401 UNAUTHORIZED.
 	brokerTokens func(*store.Store) *ciphertoken.Verifier
-	// agentSecretsURL points Deps' broker relay for the credential pages at a fake secrets broker
-	// (DISPATCH_AGENT_SECRETS_URL), and the server presents the account token
-	// credentialTestAccountToken there from a file newRegisteredTestServer writes, as envoyURL's
-	// is; empty is the deployment with no broker, whose credential routes answer FEATURE_OFF.
-	agentSecretsURL string
+	// agentSecretsURL points Deps' broker relay for the credential pages at a secrets broker
+	// (DISPATCH_AGENT_SECRETS_URL), and the server presents its account token there from
+	// agentSecretsTokenFile, or, when that is empty, from a file newRegisteredTestServer writes
+	// holding credentialTestAccountToken, as envoyURL's is; an empty agentSecretsURL is the
+	// deployment with no broker, whose credential routes answer FEATURE_OFF. A real broker's rig
+	// names its own token's file (agentSecretsTokenFile).
+	agentSecretsURL       string
+	agentSecretsTokenFile string
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
 	identity identity.Identity
@@ -315,8 +323,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	case agentPublisher == nil:
 		agentPublisher = NewAgentPublishRecorder()
 	}
-	agentSecretsTokenFile := ""
-	if options.agentSecretsURL != "" {
+	agentSecretsTokenFile := options.agentSecretsTokenFile
+	if options.agentSecretsURL != "" && agentSecretsTokenFile == "" {
 		agentSecretsTokenFile = accountTokenFile(t, credentialTestAccountToken)
 	}
 	deps, err := NewDeps(DepsInput{
@@ -351,6 +359,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		OIDCAccounts:          options.oidcAccounts,
 		AccessAccounts:        options.accessAccounts,
 		SignInIssuer:          options.signInIssuer,
+		Passkeys:              passkeysOf(options, database.Pool),
+		WorkspaceAddress:      workspaceAddressOf(options.passkeyIssuer, database.Pool),
 		RestrictedAdmission:   restrictedAdmissionOf(options.signInOutside, database.Pool),
 		PrivateProjects:       options.privateProjects,
 		BusProjects:           options.busProjects,
@@ -407,6 +417,30 @@ func restrictedAdmissionOf(signInOutside bool, pool *store.Pool) identity.Restri
 		return nil
 	}
 	return testOutsideRule(pool)
+}
+
+// passkeysOf is Deps.Passkeys for a deployment whose people from outside sign in with a passkey at
+// options.passkeyIssuer, the outside origin, over pool; nil for none. Its people store owes the
+// broker the revocation of an account the Reset replaces where options configure a broker and a
+// sign-in issuer, as cmd/dispatch's peopleOptions gives the one store main shares with it.
+func passkeysOf(options testServerOptions, pool *store.Pool) *store.PgPasskeys {
+	if options.passkeyIssuer == "" {
+		return nil
+	}
+	var people []store.PeopleOption
+	if options.agentSecretsURL != "" && options.signInIssuer != "" {
+		people = append(people, store.WithBrokerRevocations(options.signInIssuer))
+	}
+	return store.NewPgPasskeys(store.NewPgPeopleStore(pool, auth.SingleSigningKey("passkey test key"), nil, people...), options.passkeyIssuer)
+}
+
+// workspaceAddressOf is Deps.WorkspaceAddress beside passkeysOf: the passkey rule's check over
+// testOutsideRule; nil with passkey sign-in off.
+func workspaceAddressOf(issuer string, pool *store.Pool) func(string) bool {
+	if issuer == "" {
+		return nil
+	}
+	return identity.PasskeyRule{OutsideRule: testOutsideRule(pool)}.WorkspaceAddress
 }
 
 // waitBackgroundOf waits out served's background work at a test's end. A test that has already

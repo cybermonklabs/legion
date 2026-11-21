@@ -214,7 +214,8 @@ var googleLoadBalancerRanges = []netip.Prefix{
 // ForwardedAddress is the caller's address as Dispatch keys it: the access log's address, the
 // previous-token log's, and the per-address rate-limit bucket the secrets broker's token check
 // keys on. Nothing admits a caller by it: no route grants access by a caller's network address
-// (routes' TestNoRouteGrantsAccessByNetworkAddress).
+// (routes' TestNoRouteGrantsAccessByNetworkAddress). A bound the caller's own header must not
+// pick reads BoundAddress instead, which keys a connection off the balancer on its own address.
 //
 // A connection from Google's external load balancer (googleLoadBalancerRanges) is read by the rule
 // the broker's edge reads its callers by: the second-to-last entry of the one X-Forwarded-For line,
@@ -258,6 +259,28 @@ func peerAddress(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// BoundAddress is the address a per-address bound keys a caller on, where the caller's own text
+// must not pick the key (the passkey ceremonies' begins, routes.limitPasskeyBegins), and whether
+// the request names one. A connection from Google's external load balancer keys on the client
+// address the balancer wrote (balancedClientAddress, as ForwardedAddress reads it), or on the
+// balancer's own address when the header holds no such entry; a request through the balancer
+// carrying more than one X-Forwarded-For line is none the balancer forwarded as it writes the
+// header, so it names no address (false). Any other connection keys on its own address, whatever
+// X-Forwarded-For it carries: that header is then the caller's own text.
+func BoundAddress(r *http.Request) (string, bool) {
+	peer := peerAddress(r)
+	if !fromGoogleLoadBalancer(peer) {
+		return peer, true
+	}
+	if len(r.Header.Values("X-Forwarded-For")) > 1 {
+		return "", false
+	}
+	if client, ok := balancedClientAddress(r); ok {
+		return client, true
+	}
+	return peer, true
 }
 
 // fromGoogleLoadBalancer reports whether peer, a connection's address without its port, is one of

@@ -272,7 +272,7 @@ func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Han
 	if err != nil {
 		t.Fatal(err)
 	}
-	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, nil)
 	appCtx, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
 	if err != nil {
 		t.Fatalf("build the router: %v", err)

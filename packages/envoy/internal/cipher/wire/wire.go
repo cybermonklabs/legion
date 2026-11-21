@@ -3,13 +3,27 @@
 // the shapes its relay routes answer. Dispatch relays them with relayBrokerResponse
 // (packages/envoy/internal/dispatch/api/credential_requests.go), which writes the broker's bytes
 // unparsed, so the shape a generated client is given has to be named from the broker's own
-// declaration rather than read off the relay.
+// declaration rather than read off the relay. It also holds how long the broker works on one
+// request (RequestDeadline, RequestWriteMargin), which cmd/cipherd serves by and Dispatch counts
+// on, so the two read one figure.
 //
 // It is a leaf: data and its doc comments, importing nothing of the broker's API package and
 // nothing holding a store, an OAuth client or a database.
 package wire
 
 import "time"
+
+// RequestDeadline is how long the broker lets one request's handler work: cmd/cipherd ends each
+// request's context this long after its handler starts (requestDeadline, withRequestDeadline), so
+// no write a handler makes under that context begins after it.
+const RequestDeadline = 45 * time.Second
+
+// RequestWriteMargin is the time past RequestDeadline that the broker's server gives a handler
+// that honours its context to finish what it already began and write its answer: cmd/cipherd's
+// http.Server WriteTimeout is the two together (writeTimeout). So a write the broker began for a
+// request, a transaction's commit among them, is over within RequestDeadline + RequestWriteMargin
+// of the handler's start, whether or not its caller is still waiting for the answer.
+const RequestWriteMargin = 15 * time.Second
 
 // PendingEntry is one undecided record in GET /v1/pending's answer: one a decision may still
 // settle, or one whose deadline passed before anybody decided it.

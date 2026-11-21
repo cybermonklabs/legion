@@ -169,6 +169,8 @@ DELETE /api/v1/projects/{key}/access/groups/{name} any
 PUT /api/v1/projects/{key}/access/groups/{name} any
 DELETE /api/v1/projects/{key}/access/people/{email} any
 PUT /api/v1/projects/{key}/access/people/{email} any
+POST /api/v1/projects/{key}/access/people/{email}/invitations any
+POST /api/v1/projects/{key}/access/people/{email}/reset any
 GET /api/v1/projects/{key}/architecture any
 GET /api/v1/projects/{key}/architecture-source any
 POST /api/v1/projects/{key}/architecture-source/sync any

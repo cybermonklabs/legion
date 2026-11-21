@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"authelia.com/provider/oauth2"
@@ -499,6 +500,9 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 		p.writeError(ctx, w, request, err)
 		return
 	}
+	// A lifetime the decision held the token to counts from here, the last answer of Dispatch that
+	// admitted it, and not from the mint, which waits on the transaction below.
+	session.StartAccessLifetime(time.Now())
 	txCtx, err := p.store.BeginTX(ctx)
 	if err != nil {
 		p.writeError(ctx, w, request, oauth2.ErrServerError.WithWrap(err).WithDebugError(err))
@@ -630,16 +634,20 @@ func (p *Provider) reserveSessions(ctx context.Context) error {
 // the session name it says it is writing under belongs to. Both paths into the exchange reach it
 // — the four JWT subject types through Store.ExchangeSubject while the library validates the
 // request, the machine access-token type from exchangeGrant once it has — so one function decides
-// for all five. It asks nothing of anything outside the request: what Dispatch says about the
-// projects it decided is projectAccess's question, asked after it.
+// for all five. The one thing it asks outside the request is the machine access-token type's:
+// what kind of member Dispatch calls the login's approver (approverKind), which decides that
+// token's scope, and which it asks before any transaction opens, as exchangeGrant calls it for
+// that type alone. What Dispatch says about the projects it decided is projectAccess's question,
+// asked after it.
 //
 // In order: the projects the request names, which must be a list (oauthwire.ParseProjects) before
 // anything else is read; the subject token's audience, which the library never checks and which a
 // token minted for another service would fail; the policy's decision, which names the session,
 // the person or the service, the project scope, the projects and the principal; and then the
 // claims themselves, onto the session, where the row the token is stored in carries them and an
-// introspection answers from them, with the principal beside them for claimSession, and the one
-// OAuth scope a decision may carry granted on the request (writeProjectScope).
+// introspection answers from them, with the principal beside them for claimSession, the
+// lifetime the token is held to (oauthstore.ExchangeSession.AccessLifetime), and the one OAuth
+// scope a decision may carry granted on the request (writeProjectScope).
 //
 // The subject the library asks for is the principal, which every decision names: a token that
 // names a service and no person has no person to be the subject of, and a subject that is
@@ -648,7 +656,7 @@ func (p *Provider) reserveSessions(ctx context.Context) error {
 //
 // Every refusal is an OAuth error the caller can act on and none repeats the subject token:
 // RFC 8693 Section 2.2.2 makes a subject token that is unacceptable on policy invalid_request.
-func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectToken map[string]any) (string, error) {
+func (p *Provider) decide(ctx context.Context, request oauth2.Requester, subjectToken map[string]any) (string, error) {
 	session, ok := request.GetSession().(*oauthstore.ExchangeSession)
 	if !ok {
 		return "", oauth2.ErrServerError.WithDebugf("the exchange ran on a %T session", request.GetSession())
@@ -691,10 +699,15 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	case tokenTypeAccessToken:
 		// A machine access token is the broker's own, so there is no issuer to check it against:
 		// the login that was issued it recorded the approver it acts for and the launcher
-		// credential it holds, and those are the identity.
+		// credential it holds, and those are the identity. What Dispatch calls that approver
+		// decides the token's scope, so it is asked first, and a refusal to answer is the trade's.
 		credential, _ := subjectToken[oauthwire.ExtraCredentialID].(string)
 		approver, _ := subjectToken["sub"].(string)
-		claims, err = p.exchange.Policy.Machine(credential, approver, name, projects)
+		kind, refused := p.approverKind(ctx, approver)
+		if refused != nil {
+			return "", refused
+		}
+		claims, err = p.exchange.Policy.Machine(credential, approver, name, projects, kind)
 	default:
 		return "", oauth2.ErrInvalidRequest.WithHintf("The '%s' token type is not one this broker exchanges.", subjectTokenType)
 	}
@@ -705,6 +718,7 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	}
 	session.Subject, session.Username = claims.Principal, claims.Principal
 	session.Principal, session.Instance, session.Fleet = claims.Principal, claims.Instance, claims.Fleet
+	session.AccessLifetime = claims.Lifetime
 	if session.Extra == nil {
 		// A session read back out of a row that carried no extra claims has none to write on.
 		session.Extra = map[string]any{}
@@ -807,29 +821,73 @@ func dispatchUnreachable(err error) error {
 	return oauth2.ErrTemporarilyUnavailable.WithHint("Dispatch could not be asked whether the token's person sees the projects it names; try again.").WithWrap(err).WithDebugError(err)
 }
 
+// approverUnreachable is a machine login's trade's refusal when Dispatch could not be asked what
+// kind of member the login's approver is, which a client asks again on.
+func approverUnreachable(err error) error {
+	return oauth2.ErrTemporarilyUnavailable.WithHint("Dispatch could not be asked what kind of member the machine login's approver is, so this broker cannot tell whether the token is held to one project; try again.").WithWrap(err).WithDebugError(err)
+}
+
+// approverKind is what Dispatch calls the approver of a machine login whose token is being traded
+// (projectaccess's MemberKind), which decides that token's scope (exchange.Set.Machine): a
+// restricted member's machine is held to the one project its trade names, and everyone else's acts
+// as its person, a full member's and that of a person Dispatch holds no row for alike. A broker
+// that checks no project against Dispatch asks nothing and answers ApproverUnrestricted, as it
+// mints every trade naming no project; a login naming no approver asks nothing either, and
+// answers ApproverUnknown, which Machine refuses after its own refusal of the missing approver.
+//
+// While Dispatch cannot be asked the trade is refused temporarily_unavailable, a list naming no
+// project included: this broker cannot tell a restricted member's machine from anyone else's then,
+// and a guess would mint a token acting as its person for one. The broker's own account token not
+// working (refusedByDispatch) and a member kind it does not know (unknownMemberKind) are refused
+// server_error, as every trade that meets them is.
+func (p *Provider) approverKind(ctx context.Context, approver string) (exchange.ApproverKind, error) {
+	if strings.TrimSpace(approver) == "" {
+		return exchange.ApproverUnknown, nil
+	}
+	if p.exchange.Projects == nil {
+		return exchange.ApproverUnrestricted, nil
+	}
+	kind, err := p.exchange.Projects.MemberKind(ctx, approver)
+	switch {
+	case errors.Is(err, projectaccess.ErrBrokerRefused):
+		return exchange.ApproverUnknown, refusedByDispatch(err)
+	case errors.Is(err, projectaccess.ErrUnknownMemberKind):
+		return exchange.ApproverUnknown, unknownMemberKind(err)
+	case err != nil:
+		return exchange.ApproverUnknown, approverUnreachable(err)
+	}
+	switch kind {
+	case projectaccess.MemberRestricted:
+		return exchange.ApproverRestricted, nil
+	case projectaccess.MemberFull, projectaccess.MemberNone:
+		return exchange.ApproverUnrestricted, nil
+	}
+	err = fmt.Errorf("%w: %q for %s", projectaccess.ErrUnknownMemberKind, kind, approver)
+	return exchange.ApproverUnknown, unknownMemberKind(err)
+}
+
 // projectAccess holds the claims decide wrote onto session to what Dispatch says, before the
 // exchange opens its transaction (exchangeGrant). It reads the claims back off the session, so
 // what it checks is exactly what the token will carry.
 //
-// A token acting as its person: every project it names must be one Dispatch says that person
-// sees (projectaccess.Visible), and a restricted member's must name at least one
-// (projectaccess.ListAllowed). A person's sign-in is taken as a full member's and asks no member
-// kind at all, since the broker verified its account against BROKER_SIGNIN_DOMAIN itself; every
-// other trade acting as its person asks.
+// A token a person's own credential made: every project it names must be one Dispatch says that
+// person sees (projectaccess.Visible). That is a token acting as its person, a sign-in's or a
+// machine login's, and a restricted member's machine login's, which names exactly one project
+// (exchange.Set.Machine). Whether the person is a restricted member was settled before it was
+// decided: a sign-in is taken as a full member's and asks no member kind at all, since the broker
+// verified its account against BROKER_SIGNIN_DOMAIN itself, and a machine login's trade asked
+// Dispatch already (approverKind), so this asks no member kind of either. A list that names no
+// project mints as it always has; one that names a project is never minted unchecked: with no
+// check configured it is refused naming the setting, and while Dispatch cannot be asked it is
+// refused temporarily_unavailable, which a client asks again on.
 //
 // A token an operator's entry maps: its one project must be one Dispatch says the entry's person
 // sees, and a pairing Dispatch refuses is refused invalid_request naming both. An account entry
 // that names no project (the shared public-session account's) is refused when Dispatch calls its
-// person a restricted member, who sees only the projects that name them (projectaccess.ListAllowed).
-// With no check configured an entry's token mints as it always has, since the operator's own
-// setting is what chose the project, or chose none.
-//
-// Either way, a list that names no project mints as it always has when Dispatch answers anything
-// but restricted, and when the broker has no check configured; while Dispatch cannot be asked
-// (projectaccess.ErrUnchecked) it mints too, and logs one line naming the principal, the session
-// and the person. A list that names a project is never minted unchecked: with no check configured
-// a person's is refused naming the setting, and while Dispatch cannot be asked either kind is
-// refused temporarily_unavailable, which a client asks again on.
+// person a restricted member, who sees only the projects that name them (projectaccess.ListAllowed),
+// and mints while Dispatch cannot be asked (projectaccess.ErrUnchecked), logging one line naming
+// the principal, the session and the person. With no check configured an entry's token mints as it
+// always has, since the operator's own setting is what chose the project, or chose none.
 //
 // The broker's own account token not working (refusedByDispatch) and a member kind the broker does
 // not know (unknownMemberKind) refuse every trade that meets them server_error: each is a
@@ -852,7 +910,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 		return oauth2.ErrServerError.WithWrap(err).WithDebugf("the decided projects %q do not parse: %v", stored, err)
 	}
 	access := p.exchange.Projects
-	if scope == oauthwire.ProjectScopeNamed {
+	if scope == oauthwire.ProjectScopeNamed && subjectTokenType != tokenTypeAccessToken {
 		if access == nil {
 			return nil
 		}
@@ -877,33 +935,21 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 			return dispatchUnreachable(err)
 		}
 	}
+	if len(projects) == 0 {
+		return nil
+	}
 	if access == nil {
-		if len(projects) == 0 {
-			return nil
-		}
 		return oauth2.ErrInvalidRequest.WithHintf("The token names projects, and this broker checks no project against Dispatch: its operator sets BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE to take a list of projects.")
 	}
-	if subjectTokenType == oauthwire.SubjectTokenTypePerson {
-		err = projectaccess.Visible(ctx, access, person, projects)
-	} else {
-		err = projectaccess.ListAllowed(ctx, access, person, projects)
-	}
+	err = projectaccess.Visible(ctx, access, person, projects)
 	var unseen *projectaccess.NotVisibleError
 	switch {
 	case err == nil:
 		return nil
 	case errors.As(err, &unseen):
 		return oauth2.ErrInvalidRequest.WithHintf("The token names a project its person cannot see: %s.", unseen.Project).WithWrap(err).WithDebugError(err)
-	case errors.Is(err, projectaccess.ErrListRequired):
-		return oauth2.ErrInvalidRequest.WithHintf("%s is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.", person).WithWrap(err).WithDebugError(err)
 	case errors.Is(err, projectaccess.ErrBrokerRefused):
 		return refusedByDispatch(err)
-	case errors.Is(err, projectaccess.ErrUnknownMemberKind):
-		return unknownMemberKind(err)
-	case errors.Is(err, projectaccess.ErrUnchecked):
-		slog.WarnContext(ctx, "broker: the token exchange goes on to mint a person's token naming no project unchecked, since Dispatch could not be asked what kind of member the person is",
-			"principal", session.Principal, "session", name, "person", person, "error", err)
-		return nil
 	default:
 		return dispatchUnreachable(err)
 	}

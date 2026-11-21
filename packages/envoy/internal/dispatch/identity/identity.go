@@ -43,7 +43,7 @@ const (
 	SignedOutNotListed = "NOT_LISTED"
 	// SignedOutOutsideOff: the person signed in from outside the sign-in domain as a restricted
 	// member, and the server signs nobody from outside in any more (DomainRule: a deployment that
-	// turned DISPATCH_SIGNIN_OUTSIDE off).
+	// turned DISPATCH_SIGNIN_OUTSIDE or DISPATCH_SIGNIN_PASSKEY off).
 	SignedOutOutsideOff = "OUTSIDE_SIGNIN_OFF"
 	// SignedOutWorkspaceAddress: the person signed in from outside the sign-in domain as a
 	// restricted member, and their address is now on a domain the Google Workspace owns
@@ -194,6 +194,14 @@ const signInUnavailableMessage = "the sign-in issuer cannot be reached; try agai
 // in, and the first request after the issuer answers is served); and 500 IDENTITY_ERROR for
 // anything else.
 func WriteError(w http.ResponseWriter, err error) {
+	WriteErrorSigningIn(w, err, "")
+}
+
+// WriteErrorSigningIn is WriteError, with signIn, when not empty, added to a 401 NO_IDENTITY as
+// `sign_in`: how the page at the request's origin signs a person in, "passkey" at the outside
+// origin of a deployment whose people from outside sign in with a passkey (GET /auth/whoami), so
+// its sign-in page offers no Google sign-in that answers 404 there.
+func WriteErrorSigningIn(w http.ResponseWriter, err error, signIn string) {
 	status := http.StatusInternalServerError
 	body := map[string]string{"error": "identity resolution failed", "code": "IDENTITY_ERROR"}
 	var signedOut *SignedOut
@@ -207,6 +215,9 @@ func WriteError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrSignInUnavailable):
 		status = http.StatusServiceUnavailable
 		body = map[string]string{"error": signInUnavailableMessage, "code": "SIGNIN_UNAVAILABLE"}
+	}
+	if status == http.StatusUnauthorized && signIn != "" {
+		body["sign_in"] = signIn
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

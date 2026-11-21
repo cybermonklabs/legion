@@ -244,8 +244,25 @@ func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.App
 	if err != nil {
 		return nil, err
 	}
-	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	passkeys, ceremonies, err := passkeySignIn(boot, pgPeople(built.People), rule)
+	if err != nil {
+		return nil, err
+	}
+	built.Passkeys = ceremonies
+	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, passkeys)
 	return routes.BuildAppContext(appContextOptions(boot, rule, built))
+}
+
+// pgPeople is the Postgres people store people is, or holds (testPeople), for the passkey store
+// main builds over the same one (passkeySignIn).
+func pgPeople(people auth.PeopleStore) *store.PgPeopleStore {
+	switch people := people.(type) {
+	case *store.PgPeopleStore:
+		return people
+	case testPeople:
+		return people.PgPeopleStore
+	}
+	return nil
 }
 
 // testPeople is a people store over a fresh test database, with the pool it writes through, so a
@@ -744,6 +761,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"DISPATCH_OUTSIDE_ORIGIN":           outsideOriginReachesItsReaders,
 		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": workspaceDomainsReachTheirReader,
+		"DISPATCH_SIGNIN_PASSKEY":           passkeySettingReachesItsReaders,
 		"DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER": func(t *testing.T) {
 			domain := map[string]string{"DISPATCH_SIGNIN_ISSUER": "http://127.0.0.1:9", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com", "DISPATCH_TEST_HOOKS": "1"}
 			refusedWith(t, domain, "DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com")

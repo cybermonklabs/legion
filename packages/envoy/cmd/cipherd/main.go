@@ -64,6 +64,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/wake"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -545,7 +546,7 @@ func main() {
 		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
 	} else {
 		slog.Info("project access check", "state", "off",
-			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a person's trade or session naming one is refused, and a secret tagged with a project is refused project-unchecked")
+			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token or a session naming no project is minted and enrolled as before, a restricted member's machine login as its person and held to no one project, a person's trade or session naming one is refused, and a secret tagged with a project is refused project-unchecked")
 	}
 	if cfg.ExchangeK8sAudience == "" && cfg.ExchangeGitHubIssuer == "" && cfg.GoogleOIDCAudience == "" {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
@@ -874,15 +875,16 @@ func secondSignalFindsServing(again <-chan os.Signal, serveStarted <-chan struct
 
 // requestDeadline bounds every request's own context, so no handler outlives its caller by more
 // than a Dispatch call's worth of time; writeTimeout sits past it so a handler that honours its
-// context always gets to write its answer.
-const requestDeadline = 45 * time.Second
+// context always gets to write its answer. It is wire's RequestDeadline, the figure Dispatch
+// counts on for how long an approve it gave up on may still commit (wire.RequestWriteMargin).
+const requestDeadline = wire.RequestDeadline
 
 // writeTimeout is the http.Server's own WriteTimeout: the request deadline plus the fifteen
-// seconds a handler that honours its context needs to write the answer it already has. Go resets
-// the write deadline once a request's headers are read, so what it bounds is the exchange after
-// the headers and not the whole accepted connection, whose header read has its own
-// ReadHeaderTimeout above.
-const writeTimeout = requestDeadline + 15*time.Second
+// seconds a handler that honours its context needs to write the answer it already has
+// (wire.RequestWriteMargin). Go resets the write deadline once a request's headers are read, so
+// what it bounds is the exchange after the headers and not the whole accepted connection, whose
+// header read has its own ReadHeaderTimeout above.
+const writeTimeout = requestDeadline + wire.RequestWriteMargin
 
 // shutdownTimeout is how long the broker waits for its in-flight requests once the drain has run
 // out, and it is the write timeout rather than a figure of its own because that is the longest

@@ -2823,6 +2823,9 @@ envoy_go_race_api:
   - 'packages/envoy/internal/cipher/policy/*'
   - 'packages/envoy/internal/cipher/policy/policytest/*'
   - 'packages/envoy/internal/cipher/projectaccess/*'
+  # The project-access stand-in the real-broker test of a restricted member's agent
+  # token serves the broker (restricted_agent_token_test.go).
+  - 'packages/envoy/internal/cipher/projectaccess/projectaccesstest/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipher/record/*'
   - 'packages/envoy/internal/cipher/requests/*'

@@ -1,0 +1,43 @@
+kind: Added
+body: |-
+  `DISPATCH_SIGNIN_PASSKEY=1` lets a person outside the Workspace domain whom a project's access
+  list names directly sign in as a restricted member with a passkey, at `DISPATCH_OUTSIDE_ORIGIN`
+  alone, with no Google account. The project's owner makes a single-use link for them in a browser
+  session (`POST /api/v1/projects/{key}/access/people/{email}/invitations`, 201 `{url,
+  expires_at}`, the token in the URL fragment), which lapses after 24 hours; with it the person
+  enrolls a passkey (`/auth/passkey/register/begin` and `/finish`) and then signs in with it
+  (`/auth/passkey/login/begin` and `/finish`): a discoverable credential, user verification
+  required, no attestation, the relying party the outside origin's host, a signature counter that
+  does not go up refused while either it or the stored one is not zero, each ceremony's answer
+  taken once (its finish records it used; a begin writes nothing), and each begin limited per
+  client address (429 `PASSKEY_RATE_LIMITED`; the address is the load balancer's client entry,
+  else the connection's own, and two `X-Forwarded-For` lines through the balancer are 400
+  `FORWARDED_FOR_INVALID`); the ceremony rides in the `__Host-dispatch_passkey_ceremony` cookie. No
+  link is made, and no passkey enrolled, for an address on a domain the Workspace owns
+  (`DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`) or for a full member's (409
+  `FULL_MEMBER`, also for a link made before its person signed in as one). One owner binds a person
+  from outside, since a passkey reads every project that names its person: a link is refused for a
+  person another owner's project names (409 `LISTED_BY_ANOTHER_OWNER`, and 403 at the enrollment
+  when such a project named them since), and a list naming, or a transfer of a project naming, a
+  person whose passkey another owner's link enrolled is 409 `PASSKEY_OF_ANOTHER_OWNER`. The hourly
+  end of a person no list names, the owner's removal of the person from the last list that names
+  them and the owner's Reset (`POST .../access/people/{email}/reset`) each end the person's account
+  in one transaction: a new passkey subject, which revokes their personal tokens and owes the
+  secrets broker the old account's revocation, then the sign-in ended and the passkeys deleted, so
+  a later owner who names the address names a new account. The Reset also ends the person's
+  unused links of every project and owes the broker the revocation of the machine logins the
+  person approved, so a machine login approved while the Reset ran is refused too. The owner's
+  access answer carries `passkeys`, each with `made_by` and its link's `project`, `invitable` and
+  `listed_by_another_owner`. Dispatch relays a passkey member's approvals to the broker under the
+  outside origin as the approving account's issuer (`people.sub_issuer`, migration
+  `20261120165538`). At the
+  outside origin `/auth/start` and `/auth/callback` now answer 404 unless
+  `DISPATCH_SIGNIN_OUTSIDE=1`, the outside origin is its host however a client writes the default
+  port or trailing dots, and the passkey routes answer 404 at `DISPATCH_SERVER_URL`. While the
+  setting is off, a passkey member's cookie is refused `401 NO_IDENTITY` with `reason`
+  `OUTSIDE_SIGNIN_OFF`, and their tokens are refused; turned on again, both work again. Boot
+  refuses the setting beside `DISPATCH_SIGNIN_OUTSIDE=1`, without `DISPATCH_SIGNIN_DOMAIN` or
+  `DISPATCH_OUTSIDE_ORIGIN`, and under IAP or header identity.
+time: 2026-11-20T20:09:36Z
+custom:
+    Issue: outside-passkeys

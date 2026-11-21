@@ -8,6 +8,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type { RecordResponse } from "../../api/types";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { MachineLoginPage } from "./MachineLoginPage";
@@ -32,8 +33,18 @@ function machineRecord(overrides: Partial<RecordResponse> = {}): RecordResponse 
   };
 }
 
-function renderPage() {
+/** The page, signed in as a restricted member when `restricted` is set: the shell holds
+ *  `/auth/whoami`'s answer before any page draws, so it is seeded here as the shell holds it. */
+function renderPage(restricted = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (restricted) {
+    queryClient.setQueryData(whoAmIQuery().queryKey, {
+      event_head: "0",
+      kind: "user",
+      login: "erin@outside.example",
+      member_kind: "restricted",
+    });
+  }
   return render(
     <MemoryRouter initialEntries={["/credentials/machine"]}>
       <QueryClientProvider client={queryClient}>
@@ -42,6 +53,60 @@ function renderPage() {
     </MemoryRouter>
   );
 }
+
+// A restricted member approves the device login of their own agents on this page, and lists and
+// revokes them there: Dispatch answers them their own machine logins alone, and no service's, so
+// the list says so rather than offering a service's login.
+test("a restricted member's page approves their own login and lists and revokes their own machine logins", async () => {
+  const user = userEvent.setup();
+  const record = machineRecord({ approver: "erin@outside.example" });
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({
+    credentials: [
+      {
+        approved_by: "erin@outside.example",
+        credential_id: "cred-erin",
+        expired: false,
+        expires_at: "2026-12-20T00:00:00Z",
+        host: "erin-laptop",
+        issued_at: "2026-11-20T00:00:00Z",
+        person: null,
+        service: null,
+        subject: null,
+      },
+    ],
+  });
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue({
+    credential_id: "cred-9",
+    state: "approved",
+  });
+  const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockResolvedValue(undefined);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+
+  try {
+    renderPage(true);
+
+    await user.click(screen.getByLabelText("Code shown on the machine"));
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+    expect(await screen.findByText("worker-7.example.com")).toBeDefined();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(approveCredentialRecord).toHaveBeenCalledTimes(1));
+
+    expect(await screen.findByText("erin-laptop")).toBeDefined();
+    expect(screen.queryByText(/every service's login/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Revoke/ }));
+    await waitFor(() => expect(revokeMachineLogin).toHaveBeenCalledTimes(1));
+    expect(revokeMachineLogin.mock.calls[0]?.[0]).toBe("cred-erin");
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
+    approveCredentialRecord.mockRestore();
+    revokeMachineLogin.mockRestore();
+    confirm.mockRestore();
+  }
+});
 
 test("code -> lookup -> Approve posts the looked-up code", async () => {
   const user = userEvent.setup();

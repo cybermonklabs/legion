@@ -195,6 +195,9 @@ func keyedMethod(method string) bool {
 // a repeat with 409 KEY_COMMITTED - made, and not shown again - and one it did not runs again.
 var answerHoldsSecret = map[string]bool{
 	http.MethodPost + " /api/v1/me/agent-tokens": true,
+	// An owner's link for a person from outside carries its 32 random bytes, which
+	// outside_invitations holds only the hash of (createInvitation).
+	http.MethodPost + " /api/v1/projects/{key}/access/people/{email}/invitations": true,
 }
 
 // requestKeyClaim is a keyed request's hold on its key: whose key, which key, and the attempt that

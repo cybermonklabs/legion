@@ -640,6 +640,10 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"PATCH /api/v1/projects/{key}/access",
 		"PUT /api/v1/projects/{key}/access/people/{email}",
 		"DELETE /api/v1/projects/{key}/access/people/{email}",
+		// The owner's link for a person from outside and the owner's Reset of one: the owner's
+		// browser alone makes either (BROWSER_SESSION_REQUIRED for any token).
+		"POST /api/v1/projects/{key}/access/people/{email}/invitations",
+		"POST /api/v1/projects/{key}/access/people/{email}/reset",
 		"PUT /api/v1/projects/{key}/access/groups/{name}",
 		"DELETE /api/v1/projects/{key}/access/groups/{name}",
 		"GET /api/v1/access-groups",

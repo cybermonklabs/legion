@@ -410,3 +410,50 @@ func TestAnApprovalWithoutAGenerationIsCounted(t *testing.T) {
 		t.Fatalf("after an approve with a generation the counter reads %d, want 1 still", n)
 	}
 }
+
+// passkeyIssuer stands for Dispatch's outside origin, the issuer Dispatch records for a restricted
+// member who signs in with a passkey (people.sub_issuer), and passkeyAccountOf for the account
+// such a sign-in records: 16 random bytes, base64url, never a Google `sub`.
+const passkeyIssuer = "https://dispatch.outside.example"
+
+func passkeyAccountOf(subject string) store.IssuerSubject {
+	return store.IssuerSubject{Issuer: passkeyIssuer, Subject: subject}
+}
+
+// TestPasskeyApproverIssuerIsRecordedAndComparedAtTheBroker (plan hardening H7): a machine-login
+// approval Dispatch relays for a restricted member who signed in with a passkey names the outside
+// origin as the approving account's issuer. The broker records that issuer on the login it mints,
+// and later compares it, issuer and subject both: a revoke that names the same subject under
+// Google's issuer ends nothing of it, the revoke naming the outside origin ends it, and an approval
+// as that account afterwards is 403 APPROVER_REPLACED and mints nothing.
+func TestPasskeyApproverIssuerIsRecordedAndComparedAtTheBroker(t *testing.T) {
+	ts := newTestServer(t)
+	member := passkeyAccountOf("Zm9yLXRoZS1wYXNza2V5IQ")
+	holder := passkeyAccountOf("bmV3LWVucm9sbG1lbnQhIQ")
+	login := ts.approvedLogin(t, testApprover, "example-host-passkey", &member)
+	if got := ts.approverAccountOf(t, login); got != member {
+		t.Fatalf("the login a passkey member approved records the approving account %+v, want %+v", got, member)
+	}
+
+	sameSubjectOfGoogle := store.IssuerSubject{Issuer: googleIssuer, Subject: member.Subject}
+	if got := ts.revokedSubject(t, testApprover, sameSubjectOfGoogle, holderOf(testApprover), 1); got.MachineLogins != 0 {
+		t.Fatalf("a revoke naming the member's subject under Google's issuer ended %d machine login(s), want none: the broker compared the subject alone", got.MachineLogins)
+	}
+	if revoked := ts.credentialRevoked(t, login); revoked {
+		t.Fatal("the passkey member's login was revoked by a revoke of another issuer's account")
+	}
+
+	if got := ts.revokedSubject(t, testApprover, member, holder, 2); got.MachineLogins != 1 {
+		t.Fatalf("the revoke naming the outside origin's account ended %d machine login(s), want the member's 1", got.MachineLogins)
+	}
+	if revoked := ts.credentialRevoked(t, login); !revoked {
+		t.Fatal("the passkey member's login stands after the revoke naming its own account")
+	}
+	recordID, code := ts.pendingMachineLogin(t, testApprover, "example-host-passkey-again")
+	if status, body := ts.approveLoginAs(t, recordID, code, testApprover, &member, nil); status != http.StatusForbidden || decode[wireError](t, body).Code != "APPROVER_REPLACED" {
+		t.Fatalf("an approval as the revoked passkey account = %d %s, want 403 APPROVER_REPLACED", status, body)
+	}
+	if n := ts.mintedFrom(t, recordID); n != 0 {
+		t.Fatalf("the refused approval minted %d credential(s), want none", n)
+	}
+}

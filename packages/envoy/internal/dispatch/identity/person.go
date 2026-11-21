@@ -33,8 +33,8 @@ var (
 	// sign-in the account already holds and fails only the request.
 	ErrMembershipUnreadable = errors.New("the access lists could not be read")
 	// ErrOutsideSignInOff means the rule signs in nobody from outside its domain (GroupRule,
-	// DomainRule: a deployment without DISPATCH_SIGNIN_OUTSIDE=1), so a restricted member it is
-	// asked about (RestrictedAdmission) is not admitted.
+	// DomainRule: a deployment with neither DISPATCH_SIGNIN_OUTSIDE=1 nor DISPATCH_SIGNIN_PASSKEY=1),
+	// so a restricted member it is asked about (RestrictedAdmission) is not admitted.
 	ErrOutsideSignInOff = errors.New("this deployment signs in nobody from outside its Google Workspace domain")
 )
 
@@ -93,6 +93,11 @@ type SignInRule interface {
 	// holding one Google session can pick another account rather than be sent straight back with
 	// the one just refused.
 	OffersAccountChooser() bool
+	// GoogleAtOutsideOrigin says whether the issuer's sign-in (/auth/start, /auth/callback) is
+	// served at the outside origin too (cmd/dispatch: DISPATCH_OUTSIDE_ORIGIN). Only OutsideRule's
+	// Google accounts from outside sign in there; under every other rule the outside origin answers
+	// those routes as a path no route serves (routes.googleSignInHere).
+	GoogleAtOutsideOrigin() bool
 	// CanRefresh says whether stored, the subject a membership's row records
 	// (auth.PersonMembership.Subject, empty when it records none), lets this rule confirm it
 	// without asking the issuer first.

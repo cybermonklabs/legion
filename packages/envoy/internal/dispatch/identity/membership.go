@@ -47,16 +47,38 @@ type Refresher interface {
 // refreshes and is served. Under OutsideRule, access lists that cannot be read
 // (ErrMembershipUnreadable) end nothing either: the request is refused with that error and the
 // sign-in kept, so a database blip signs nobody out.
+//
+// A passkey's sign-in (its row's account of the outside origin, auth.PersonMembership.Issuer)
+// has no issuer to refresh with: Passkeys confirms it. It stands only while Passkeys is set and
+// names that issuer, so turning passkey sign-in off (or moving the outside origin) refuses its
+// cookie at its next use, writing nothing. A confirmation older than MembershipMaxAge asks Rule's
+// AdmitsRestricted again and finds a passkey: a person no list names directly any more, or whose
+// address is on a domain the Workspace owns, has their sign-in ended and their passkeys deleted in
+// one transaction (PasskeySignIns.End), and a person with no passkey left has their sign-in ended
+// (PasskeySignIns.Confirm); lists that cannot be read end nothing, as above.
 type Membership struct {
 	People auth.PeopleStore
 	SignIn Refresher
 	Rule   SignInRule
+	// Passkeys confirms a passkey's sign-in hourly; nil where passkey sign-in is off.
+	Passkeys PasskeySignIns
 
 	// refreshes holds one refresh per person in flight in this process: a page load's many
 	// requests share it. Another server process refreshes on its own, so two processes that find
 	// one confirmation lapsed at once may each refresh it; each records the refresh token its
 	// issuer answered, and the later write stands.
 	refreshes singleflight.Group
+}
+
+// PasskeySignIns is the hourly confirmation's store for a passkey's sign-in (store.PgPasskeys).
+type PasskeySignIns interface {
+	// Issuer is the issuer a passkey's subject is recorded under, the outside origin.
+	Issuer() string
+	// Confirm stamps the confirmation of email's sign-in under subject while it stands and the
+	// person holds a passkey, ending it when they hold none, and reports whether it stands.
+	Confirm(ctx context.Context, email, subject string) (bool, error)
+	// End ends email's sign-in under subject and deletes their passkeys, in one transaction.
+	End(ctx context.Context, email, subject string) (bool, error)
 }
 
 // Confirm returns nil when email may still use Dispatch, ErrNoIdentity when their sign-in has
@@ -67,6 +89,9 @@ func (m *Membership) Confirm(ctx context.Context, email string) error {
 	membership, found, err := m.People.Membership(ctx, email)
 	if err != nil {
 		return err
+	}
+	if found && membership.Issuer != "" {
+		return m.confirmPasskey(ctx, email, membership)
 	}
 	if found && m.fresh(membership) {
 		return nil
@@ -79,6 +104,48 @@ func (m *Membership) Confirm(ctx context.Context, email string) error {
 		return nil, m.refresh(refreshCtx, email)
 	})
 	return err
+}
+
+// confirmPasskey is Confirm for a passkey's sign-in (Membership's own paragraph on it), membership
+// its row as read: one flight per person in this process, on a context of its own, as a refresh.
+func (m *Membership) confirmPasskey(ctx context.Context, email string, membership auth.PersonMembership) error {
+	if m.Passkeys == nil || membership.Issuer != m.Passkeys.Issuer() || !membership.Confirmed {
+		return ErrNoIdentity
+	}
+	if membership.ConfirmedAge < MembershipMaxAge {
+		return nil
+	}
+	_, err, _ := m.refreshes.Do(email, func() (any, error) {
+		confirmCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+		defer cancel()
+		return nil, m.confirmLapsedPasskey(confirmCtx, email, membership.Subject)
+	})
+	return err
+}
+
+// confirmLapsedPasskey asks Rule again whether it admits email, whose passkey sign-in under
+// subject is past MembershipMaxAge, and ends or confirms it (confirmPasskey).
+func (m *Membership) confirmLapsedPasskey(ctx context.Context, email, subject string) error {
+	err := m.Rule.AdmitsRestricted(ctx, email)
+	if errors.Is(err, ErrMembershipUnreadable) {
+		slog.Warn("dispatch: the access lists could not be read to confirm a lapsed passkey sign-in; the request is refused and the sign-in kept", "email", email, "error", err)
+		return err
+	}
+	if err != nil {
+		if _, endErr := m.Passkeys.End(ctx, email, subject); endErr != nil {
+			return endErr
+		}
+		slog.Warn("dispatch: sign-in ended: the hourly confirmation no longer admits the person", "email", email, "reason", err.Error())
+		return ErrNoIdentity
+	}
+	confirmed, err := m.Passkeys.Confirm(ctx, email, subject)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return ErrNoIdentity
+	}
+	return nil
 }
 
 func (m *Membership) refresh(ctx context.Context, email string) error {

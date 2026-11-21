@@ -34,7 +34,8 @@ func (r DomainRule) Person(_ context.Context, claims oidc.Claims) (SignedIn, err
 
 // AdmitsRestricted is ErrOutsideSignInOff: DomainRule signs in nobody from outside the domain, so
 // no restricted member's credential acts under it (a deployment that turned
-// DISPATCH_SIGNIN_OUTSIDE off). OutsideRule, which embeds this rule, answers for itself.
+// DISPATCH_SIGNIN_OUTSIDE or DISPATCH_SIGNIN_PASSKEY off). OutsideRule, which embeds this rule (as
+// PasskeyRule embeds OutsideRule), answers for itself.
 func (r DomainRule) AdmitsRestricted(_ context.Context, email string) error {
 	return fmt.Errorf("%s: %w", email, ErrOutsideSignInOff)
 }
@@ -84,6 +85,11 @@ func (r DomainRule) OffersAccountChooser() bool {
 	return false
 }
 
+// GoogleAtOutsideOrigin is false: the domain's people sign in at the canonical origin alone.
+func (r DomainRule) GoogleAtOutsideOrigin() bool {
+	return false
+}
+
 // CanRefresh is true only while stored, the account the address's row recorded, is set: a row
 // that records none (a sign-in under a group, from before the column, or any other way) has
 // nothing to check a refresh against, so the caller ends without asking Google.
@@ -126,28 +132,34 @@ func endSubject(ctx context.Context, people auth.PeopleStore, email string, read
 }
 
 // SignedOutReason is SignedOutOutsideOff for a restricted member whose sign-in no longer stands
-// (endedRestricted): DomainRule admits nobody from outside the domain, so only a deployment that
-// once signed people from outside in (OutsideRule) holds such a row, and its next hourly
-// confirmation under this rule ends it. Everyone else is told no reason, so a deployment that
-// never set DISPATCH_SIGNIN_OUTSIDE answers as it always has.
+// (endedRestricted), or whose account is a passkey's (auth.PersonMembership.Issuer): DomainRule
+// admits nobody from outside the domain, so only a deployment that once signed people from
+// outside in (OutsideRule, PasskeyRule) holds such a row. Its next hourly confirmation under this
+// rule ends a Google account's sign-in, while a passkey's cookie is refused at its next use with
+// nothing written (Membership.confirmPasskey), so its row still reads as standing and is told by
+// its account instead. Everyone else is told no reason, so a deployment that never set
+// DISPATCH_SIGNIN_OUTSIDE or DISPATCH_SIGNIN_PASSKEY answers as it always has.
 func (r DomainRule) SignedOutReason(ctx context.Context, people auth.PeopleStore, email string) (string, error) {
-	ended, err := endedRestricted(ctx, people, email)
-	if err != nil || !ended {
+	membership, found, err := people.Membership(ctx, email)
+	if err != nil || !found || membership.Kind != model.MemberRestricted {
 		return "", err
+	}
+	if membership.Issuer == "" && membership.SignInStands() {
+		return "", nil
 	}
 	return SignedOutOutsideOff, nil
 }
 
 // endedRestricted reads email's row (auth.PeopleStore.Membership) and reports whether it is a
-// restricted member's whose sign-in no longer stands: the row holds no refresh token, which the
-// hourly confirmation's end and a sign-out both forget, and a sign-in by anyone since would have
-// written again.
+// restricted member's whose sign-in no longer stands (auth.PersonMembership.SignInStands): the row
+// holds no refresh token, or a passkey's row no confirmation, which the hourly confirmation's end
+// and a sign-out both forget, and a sign-in by anyone since would have written again.
 func endedRestricted(ctx context.Context, people auth.PeopleStore, email string) (bool, error) {
 	membership, found, err := people.Membership(ctx, email)
 	if err != nil {
 		return false, err
 	}
-	return found && membership.RefreshToken == "" && membership.Kind == model.MemberRestricted, nil
+	return found && !membership.SignInStands() && membership.Kind == model.MemberRestricted, nil
 }
 
 // ConfirmCookie reads the address's row (auth.PeopleStore.Membership) and refuses with

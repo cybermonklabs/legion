@@ -66,6 +66,11 @@ func (r GroupRule) OffersAccountChooser() bool {
 	return false
 }
 
+// GoogleAtOutsideOrigin is false: a pool's people sign in at the canonical origin alone.
+func (r GroupRule) GoogleAtOutsideOrigin() bool {
+	return false
+}
+
 // CanRefresh is always true: a group's row always has something to refresh.
 func (r GroupRule) CanRefresh(stored string) bool {
 	return true

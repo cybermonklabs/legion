@@ -29,7 +29,7 @@ import (
 // refuses it anything new, and leaves the new holder's credentials alone, whenever they were made.
 //
 // Dispatch itself holds each broker token naming the address to the account its credential records
-// (brokerPersonAdmitted, brokerTokenSubject), from the replacing commit, whether or not the broker
+// (brokerPersonAdmitted, brokerTokenAccount), from the replacing commit, whether or not the broker
 // has paid: the new holder's own acts, the replaced account's is refused since people no longer
 // records its account, and one recording no account is refused when its credential was made before
 // the replacing sign-in recorded its account, which every credential the replaced account holds
@@ -135,7 +135,7 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 			SessionGeneration: revocation.SessionGeneration,
 		})
 		if err != nil {
-			slog.Error("dispatch: the secrets broker did not revoke the credentials of an account another Google account took the address of; trying again",
+			slog.Error(revokedLog(s.passkeyAccount(revocation), "did not revoke", "; trying again"),
 				"email", revocation.Email, "retry_in", brokerRevocationRetry, "error", err)
 			continue
 		}
@@ -179,17 +179,24 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 		}
 		settled, err := revocations.Settle(ctx, revocation)
 		if err != nil {
-			slog.Error("dispatch: the secrets broker revoked the credentials of an account another Google account took the address of, and the revocation could not be settled; it is paid again",
+			slog.Error(revokedLog(s.passkeyAccount(revocation), "revoked", ", and the revocation could not be settled; it is paid again"),
 				"email", revocation.Email, "error", err)
 			continue
 		}
-		slog.Warn("dispatch: the secrets broker revoked the credentials of an account another Google account took the address of",
+		slog.Warn(revokedLog(s.passkeyAccount(revocation), "revoked", ""),
 			"email", revocation.Email, "signins", revoked.SignIns, "machine_logins", revoked.MachineLogins, "tokens_ended", revoked.TokensEnded, "settled", settled)
 	}
 	wait, due, err := revocations.NextDue(ctx, brokerRevocationRetry)
+	return nextPassAt(ctx, wait, due, err, "broker revocation")
+}
+
+// nextPassAt is when the loop next needs a pass for one debt, from that debt's NextDue read (wait,
+// due, err): wait from now for one owed, the zero time when none is, and brokerRevocationRetry
+// from now when the read failed, which is logged naming what unless ctx ended.
+func nextPassAt(ctx context.Context, wait time.Duration, due bool, err error, what string) time.Time {
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Error("dispatch: read when the next broker revocation is due", "error", err)
+			slog.Error("dispatch: read when the next "+what+" is due", "error", err)
 		}
 		return time.Now().Add(brokerRevocationRetry)
 	}
@@ -199,8 +206,52 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 	return time.Now().Add(wait)
 }
 
+// passkeyAccount reports whether revocation ends a passkey's account (its issuer the outside
+// origin, Deps.Passkeys), which the project owner's Reset replaces, rather than one another Google
+// account took the address of.
+func (s *server) passkeyAccount(revocation store.OwedBrokerRevocation) bool {
+	return s.deps.Passkeys != nil && revocation.Issuer == s.deps.Passkeys.Issuer()
+}
+
+// revokedLog is the revocation pass's message for what the broker did ("revoked", "did not
+// revoke") with the credentials of the account a revocation ends, followed by then: a passkey's
+// account is named as the one an owner's Reset replaced, every other as the one another Google
+// account took the address of.
+func revokedLog(passkey bool, did, then string) string {
+	if passkey {
+		return "dispatch: the secrets broker " + did + " the credentials of a passkey account the project owner's Reset replaced" + then
+	}
+	return "dispatch: the secrets broker " + did + " the credentials of an account another Google account took the address of" + then
+}
+
 // brokerRevocationMetricsRead bounds one series' read of the owed revocations.
 const brokerRevocationMetricsRead = 2 * time.Second
+
+// registerOwedGauges puts on registry the two series of one revocation debt, each read by owed
+// (a store's Owed) when a scrape asks for it, two reads a scrape: owedName, how many the broker
+// has not confirmed, and oldestName, how long the oldest has been owed, written only while one is.
+// A read that fails writes no sample, so a database outage never reads as nothing owed, and is
+// logged naming what.
+func registerOwedGauges(registry *metrics.Registry, owed func(context.Context) (int64, time.Duration, error), what, owedName, owedHelp, oldestName, oldestHelp string) {
+	read := func() (int64, time.Duration, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), brokerRevocationMetricsRead)
+		defer cancel()
+		count, oldest, err := owed(ctx)
+		if err != nil {
+			slog.Warn("dispatch: the owed "+what+" could not be read for a metrics scrape", "error", err)
+			return 0, 0, false
+		}
+		return count, oldest, true
+	}
+	registry.NewOptionalGaugeFunc(owedName, owedHelp, func() (int64, bool) {
+		count, _, ok := read()
+		return count, ok
+	})
+	registry.NewOptionalGaugeFunc(oldestName, oldestHelp, func() (int64, bool) {
+		count, oldest, ok := read()
+		return int64(oldest / time.Second), ok && count > 0
+	})
+}
 
 // RegisterBrokerRevocationMetrics puts the broker revocations owed on registry, the process's
 // (GET /metrics), each series read from pool's broker_revocations when a scrape asks for it
@@ -217,29 +268,11 @@ const brokerRevocationMetricsRead = 2 * time.Second
 // outage never reads as nothing owed. A revocation the broker answers superseded stays owed, so
 // both show it; NewBrokerRevocationsSuperseded counts each such answer.
 func RegisterBrokerRevocationMetrics(registry *metrics.Registry, pool *store.Pool) {
-	revocations := store.NewBrokerRevocations(pool)
-	read := func() (int64, time.Duration, bool) {
-		ctx, cancel := context.WithTimeout(context.Background(), brokerRevocationMetricsRead)
-		defer cancel()
-		count, oldest, err := revocations.Owed(ctx)
-		if err != nil {
-			slog.Warn("dispatch: the owed broker revocations could not be read for a metrics scrape", "error", err)
-			return 0, 0, false
-		}
-		return count, oldest, true
-	}
-	registry.NewOptionalGaugeFunc("envoy_dispatch_broker_revocations_owed",
+	registerOwedGauges(registry, store.NewBrokerRevocations(pool).Owed, "broker revocations",
+		"envoy_dispatch_broker_revocations_owed",
 		"Revocations of a replaced account's credentials that Dispatch owes the secrets broker and the broker has not confirmed; until each settles, the broker still holds those credentials for the secret reads it serves without asking Dispatch",
-		func() (int64, bool) {
-			count, _, ok := read()
-			return count, ok
-		})
-	registry.NewOptionalGaugeFunc("envoy_dispatch_broker_revocation_oldest_owed_seconds",
-		"Seconds since the replacing sign-in of the oldest broker revocation not yet confirmed, written only while one is owed; past a few minutes the broker is not confirming it (envoy-dispatch clear-broker-revocation settles one)",
-		func() (int64, bool) {
-			count, oldest, ok := read()
-			return int64(oldest / time.Second), ok && count > 0
-		})
+		"envoy_dispatch_broker_revocation_oldest_owed_seconds",
+		"Seconds since the replacing sign-in of the oldest broker revocation not yet confirmed, written only while one is owed; past a few minutes the broker is not confirming it (envoy-dispatch clear-broker-revocation settles one)")
 }
 
 // NewBrokerRevocationsSuperseded registers envoy_dispatch_broker_revocations_superseded_total on

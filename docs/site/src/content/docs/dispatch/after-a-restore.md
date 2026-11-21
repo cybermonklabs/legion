@@ -333,13 +333,25 @@ leaves alone a row whose account holds the address again (the broker must not be
 told that the holder was replaced) and one at an address that records no account. It locks the
 session row of every address it will write first, as the single-row blocks do, so a sign-out at
 one of those addresses waits for it rather than moving a generation between this statement's read
-of it and the database's own check, which would refuse the whole statement with 23514:
+of it and the database's own check, which would refuse the whole statement with 23514. It owes
+again, too, each revocation of a restricted member's machine logins that a removal from an access
+list recorded and Dispatch settled since the same moment (`machine_login_revocations`): a broker
+restored from before it holds those logins live again, and their refresh works. The pass again
+revokes every machine login the member holds, one approved since that removal included, and until
+it has, their approve is `409 MACHINE_LOGIN_REVOCATION_OWED`; they approve a new login after it.
+First it takes each such member's approval lock, as a removal does, so it waits for an approve of
+theirs that Dispatch is relaying, and the login that approve mints is one the pass lists. It sets
+each row's `recorded_at` to its own moment, the time the debt's gauge ages it from, so a pass
+settles it only once the broker could have committed an approve it took before the block (about
+a minute), and its write of `generation` wakes the loop, as a removal's does:
 
 ```sh
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v backup='<the moment the broker''s backup was taken>' <<'SQL'
 begin;
 select u.generation from user_sessions u where u.login in (select r.email from broker_revocations r where r.done_at >= :'backup'::timestamptz - interval '1 hour' and r.done_at > coalesce((select d.at from deployment_resets d where d.mark = 'start' order by d.id desc limit 1), '-infinity'::timestamptz)) order by u.login for update;
 update broker_revocations set generation = generation + 1, holder_subject = (select sub from people where people.email = broker_revocations.email), session_generation = (select generation from user_sessions where user_sessions.login = broker_revocations.email), done_at = null, recorded_at = clock_timestamp() where done_at >= :'backup'::timestamptz - interval '1 hour' and done_at > coalesce((select d.at from deployment_resets d where d.mark = 'start' order by d.id desc limit 1), '-infinity'::timestamptz) and (select sub from people where people.email = broker_revocations.email) is not null and (select sub from people where people.email = broker_revocations.email) <> broker_revocations.subject;
+select pg_advisory_xact_lock(hashtextextended('machine_login_approvals:' || lower(btrim(r.email)), 0)) from machine_login_revocations r where r.done_at >= :'backup'::timestamptz - interval '1 hour' order by r.email;
+update machine_login_revocations set generation = generation + 1, recorded_at = clock_timestamp(), done_at = null where done_at >= :'backup'::timestamptz - interval '1 hour';
 commit;
 SQL
 ```

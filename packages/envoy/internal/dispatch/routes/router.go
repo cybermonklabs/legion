@@ -18,6 +18,7 @@ import (
 	"html"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -81,6 +82,10 @@ type AppContext struct {
 	// answer 503.
 	SignIn     *oidc.CodeFlow
 	SignInRule identity.SignInRule
+	// Passkeys runs a restricted member's passkey ceremonies at OutsideOrigin (cmd/dispatch:
+	// DISPATCH_SIGNIN_PASSKEY=1); nil where passkey sign-in is off, which mounts none of them
+	// (routes/passkey.go).
+	Passkeys *identity.Passkeys
 	// InsecureCookie drops the Secure attribute from every cookie the router sets, for browsers
 	// reaching Dispatch over plain http (cmd/dispatch: DISPATCH_INSECURE_COOKIE).
 	InsecureCookie bool
@@ -126,6 +131,10 @@ type AppContextOptions struct {
 	Store          *store.Store
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
+	// Passkeys is the passkey ceremonies where passkey sign-in is on, nil where it is off; the API
+	// is handed their store and their rule's check of a Workspace address (api.DepsInput.Passkeys,
+	// WorkspaceAddress). See AppContext.Passkeys.
+	Passkeys *identity.Passkeys
 	// NewIssueLabel and NewIssueSession configure the issue the search bar files from a person's
 	// typed words (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION); empty
 	// where the deployment configured neither. See api.DepsInput.
@@ -276,6 +285,14 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		}
 		origins = []string{canonical.Scheme + "://" + canonical.Host, outsideOrigin}
 	}
+	if opts.Passkeys != nil && outsideOrigin == "" {
+		return nil, fmt.Errorf("BuildAppContext: Passkeys needs an OutsideOrigin, the only origin a passkey signs in at")
+	}
+	var passkeyStore *store.PgPasskeys
+	var workspaceAddress func(string) bool
+	if opts.Passkeys != nil {
+		passkeyStore, workspaceAddress = opts.Passkeys.Store(), opts.Passkeys.WorkspaceAddress
+	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
 		Identity:               opts.Identity,
@@ -307,6 +324,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
 		SignInIssuer:           opts.SignInIssuer,
+		Passkeys:               passkeyStore,
+		WorkspaceAddress:       workspaceAddress,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
@@ -343,6 +362,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OutsideOrigin:  outsideOrigin,
 		SignIn:         opts.SignIn,
 		SignInRule:     opts.SignInRule,
+		Passkeys:       opts.Passkeys,
 		InsecureCookie: opts.InsecureCookie,
 		devSignInHost:  devSignInHost,
 		origins:        origins,
@@ -385,6 +405,9 @@ type router struct {
 	// context's own (AppContext's eventHead) when it names one, else the registered API server's
 	// (api.Background's EventHead).
 	eventHead func(r *http.Request) (int64, error)
+	// passkeyBegins bounds the passkey ceremonies' begins, which a caller with no credential makes
+	// and each of which writes (passkeyBeginLimiter).
+	passkeyBegins *passkeyBeginLimiter
 }
 
 // New returns an http.Handler that serves all dispatch routes, and the API server's background
@@ -416,16 +439,18 @@ func serve(ctx *AppContext) (http.Handler, *http.ServeMux, api.Background) {
 // (TestAKeyedWriteNeverRunsUnkeyed, TestEveryGETRouteHasAReadClass).
 func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 	r := &router{
-		ctx:          ctx,
-		retainedHeld: semaphore.NewWeighted(maxRetainedBytesHeld),
-		assets:       newAssetCache(maxCachedAssetBytes),
+		ctx:           ctx,
+		retainedHeld:  semaphore.NewWeighted(maxRetainedBytesHeld),
+		assets:        newAssetCache(maxCachedAssetBytes),
+		passkeyBegins: newPasskeyBeginLimiter(),
 	}
 	none := []readclass.Class{readclass.None}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
-	readclass.Handle(mux, none, "GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
-	readclass.Handle(mux, none, "GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
+	readclass.Handle(mux, none, "GET /auth/start", accesslog.HandlerFunc("/auth/start", r.googleSignInHere(r.authStart)))
+	readclass.Handle(mux, none, "GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.googleSignInHere(r.authCallback)))
 	readclass.Handle(mux, none, "POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
+	r.mountPasskeys(mux)
 	// The signed-in person's own login, member kind and the event log's head, which names no row.
 	readclass.Handle(mux, []readclass.Class{readclass.Caller}, "GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
 	// A repository's GitHub state, shown by the issues that resolve to the repository
@@ -664,7 +689,7 @@ type whoamiAnswer struct {
 // IDENTITY_UNAVAILABLE, never a whoami without it, so a restricted member is never shown a full
 // member's rail. A router with no Store, a test's, reads none.
 func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
-	email, ok := r.login(w, req)
+	email, ok := r.loginSigningIn(w, req, r.whoamiSignIn(req))
 	if !ok {
 		return
 	}
@@ -748,9 +773,15 @@ var repositoryVisibleQuery = `select ` + refs.RepositoryClause("$2::text", "$1")
 // login is the signed-in person the request's cookie names, and the caller its access-log line
 // names: the /auth routes and the GitHub proxy resolve their caller here and nowhere else.
 func (r *router) login(w http.ResponseWriter, req *http.Request) (string, bool) {
+	return r.loginSigningIn(w, req, "")
+}
+
+// loginSigningIn is login, whose 401 names signIn as the way req's origin signs a person in
+// (identity.WriteErrorSigningIn); "" names none.
+func (r *router) loginSigningIn(w http.ResponseWriter, req *http.Request, signIn string) (string, bool) {
 	login, err := r.ctx.Identity.Login(req)
 	if err != nil {
-		identity.WriteError(w, err)
+		identity.WriteErrorSigningIn(w, err, signIn)
 		return "", false
 	}
 	accesslog.Note(req.Context(), accesslog.KindUser, login)
@@ -795,13 +826,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	if isReservedPath(strings.ToLower(normalized), serverRoots) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
 		// does not exist is visible beside the callers of the routes that do.
-		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
-			api.WriteJSON(w, http.StatusNotFound, map[string]string{
-				"code":  "NOT_FOUND",
-				"error": "no route for " + req.Method + " " + req.URL.Path,
-				"hint":  "GET /api/v1, with a credential, lists every route",
-			})
-		})(w, req)
+		accesslog.HandlerFunc(unmatchedRoute, writeNoRoute)(w, req)
 		return
 	}
 	if r.ctx.WebDistDir == "" {
@@ -851,6 +876,17 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	servePage(w, req, filepath.Join(r.ctx.WebDistDir, "index.html"))
+}
+
+// writeNoRoute answers the 404 a path under serverRoots that no route serves answers. A route's
+// gate that answers as a path no route serves (atOutsideOrigin, googleSignInHere) writes it
+// directly, so the request's one access-log line is its route's own, as every request's is.
+func writeNoRoute(w http.ResponseWriter, req *http.Request) {
+	api.WriteJSON(w, http.StatusNotFound, map[string]string{
+		"code":  "NOT_FOUND",
+		"error": "no route for " + req.Method + " " + req.URL.Path,
+		"hint":  "GET /api/v1, with a credential, lists every route",
+	})
 }
 
 // isMissingFile reports whether os.Stat's err means no file is there: the path does not exist,
@@ -1111,14 +1147,12 @@ func callbackURL(serverURL, outsideOrigin string, req *http.Request) string {
 }
 
 // publicOrigin is the origin a request came to: outsideOrigin when it is set and the request's
-// Host is its host, compared without regard to case as DevSignInOrigin's host is; otherwise
-// Dispatch's configured canonical origin, serverURL, whenever it is set. A backend request's Host
-// and TLS state make the origin only for unconfigured local deployments; forwarded headers are
-// deliberately ignored.
+// Host is its host (sameHost: the name without regard to case or trailing dots, the port as a
+// number, the scheme's default none); otherwise Dispatch's configured canonical origin, serverURL,
+// whenever it is set. A backend request's Host and TLS state make the origin only for unconfigured
+// local deployments; forwarded headers are deliberately ignored.
 func publicOrigin(serverURL, outsideOrigin string, req *http.Request) string {
-	// outsideOrigin is written as weborigin.Parse returns it, scheme://host[:port] and nothing
-	// more, so what follows the scheme is its Host.
-	if _, host, ok := strings.Cut(outsideOrigin, "://"); ok && strings.EqualFold(req.Host, host) {
+	if outsideOrigin != "" && sameHost(outsideOrigin, req.Host) {
 		return outsideOrigin
 	}
 	if parsed, err := url.Parse(serverURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
@@ -1129,6 +1163,38 @@ func publicOrigin(serverURL, outsideOrigin string, req *http.Request) string {
 		scheme = "https"
 	}
 	return fmt.Sprintf("%s://%s", scheme, req.Host)
+}
+
+// sameHost reports whether host, a request's Host, is the host of origin (scheme://host[:port], as
+// weborigin.Parse writes it), compared as a URL parser reads a host: the name without regard to case
+// or trailing dots, and the port as a number, the scheme's default being no port. So
+// `outside.example:443`, `outside.example:0443` and `outside.example..` reach the https outside
+// origin as `outside.example` does, while another port, `outside.example:8443` or `:80`, is another
+// origin and is answered as the canonical one.
+func sameHost(origin, host string) bool {
+	scheme, own, ok := strings.Cut(origin, "://")
+	return ok && hostKey(scheme, own) == hostKey(scheme, host)
+}
+
+// hostKey is host, a Host header or an origin's host under scheme, as sameHost compares it: its
+// name lower case, with an IPv6 literal's brackets and every trailing dot taken off, then its port
+// as a decimal number with no leading zeros, none for the scheme's default; a port that is no
+// string of digits is kept as written, which no origin's port equals.
+func hostKey(scheme, host string) string {
+	name, port := host, ""
+	if split, splitPort, err := net.SplitHostPort(host); err == nil {
+		name, port = split, splitPort
+	}
+	name = strings.TrimRight(strings.Trim(strings.ToLower(name), "[]"), ".")
+	if port != "" && strings.Trim(port, "0123456789") == "" {
+		if number, err := strconv.ParseUint(port, 10, 16); err == nil {
+			port = strconv.FormatUint(number, 10)
+		}
+	}
+	if scheme == "https" && port == "443" || scheme == "http" && port == "80" {
+		port = ""
+	}
+	return name + " " + port
 }
 
 // enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session
