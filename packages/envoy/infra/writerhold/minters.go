@@ -30,22 +30,15 @@ const (
 // hold's tables when it ran, so the preflight takes one run less than an hour before (§3a).
 const minterReportAge = time.Hour
 
-// MinterFinding is one holder the minter script reports (#4679): a principal, the role it holds on
-// resource, that role's permissions that mint the operator's token or write the hold's tables, and
-// when the grant was made. A person never appears in the report (#4679), so no finding names one,
-// and no accepted entry does either.
+// MinterFinding is one holder the minter script reports (#4679), as it writes it: a principal,
+// Right, the script's sentence naming the permissions and where they come from, Role, the role it
+// holds on Resource, that role's Permissions that mint the operator's token or write the hold's
+// tables, and GrantedAt, the resource the binding is made on (a project, a cluster, a namespace).
+// A person never appears in the report (#4679), so no finding names one, and no accepted entry
+// does either.
 type MinterFinding struct {
-	Principal   string    `json:"principal"`
-	Role        string    `json:"role"`
-	Resource    string    `json:"resource"`
-	Permissions []string  `json:"permissions"`
-	GrantedAt   time.Time `json:"granted_at"`
-}
-
-// minterFindingJSON is a finding as the report writes it, with granted_at kept as its text, so an
-// empty one is named as a missing field rather than failing the whole decode.
-type minterFindingJSON struct {
 	Principal   string   `json:"principal"`
+	Right       string   `json:"right"`
 	Role        string   `json:"role"`
 	Resource    string   `json:"resource"`
 	Permissions []string `json:"permissions"`
@@ -59,13 +52,15 @@ type MinterUnknown struct {
 }
 
 // minterReport is the report operator-token-minters.sh --report <file> writes (plan E line 2148,
-// its findings structured by #4679): {"run_at": "<RFC 3339>", "findings": [{"principal", "role",
-// "resource", "permissions", "granted_at"}], "unknown": [{"step", "reason"}]}. Both lists are
-// pointers so that a report missing one is told from a report whose list is empty.
+// its findings structured by #4679; its own test harness writes
+// scripts/testdata/operator-token-minters-report.json): {"run_at": "<RFC 3339>", "findings":
+// [{"principal", "right", "role", "resource", "permissions", "granted_at"}], "unknown": [{"step",
+// "reason"}]}. Both lists are pointers so that a report missing one is told from a report whose
+// list is empty.
 type minterReport struct {
-	RunAt    *time.Time           `json:"run_at"`
-	Findings *[]minterFindingJSON `json:"findings"`
-	Unknown  *[]MinterUnknown     `json:"unknown"`
+	RunAt    *time.Time       `json:"run_at"`
+	Findings *[]MinterFinding `json:"findings"`
+	Unknown  *[]MinterUnknown `json:"unknown"`
 }
 
 // AcceptedMinter is one entry of the accepted list, as t-11's cluster-grants/ renders it
@@ -142,11 +137,11 @@ func (p minterPreflight) run(ctx context.Context, client kubernetes.Interface, r
 }
 
 // readMinterReport reads the report at path, strictly: one JSON object with run_at, findings and
-// unknown, no other field, each finding its principal, role, resource, permissions and granted_at
-// and no other field. So a report in the old shape, a principal and a right, does not decode. A
-// finding that leaves out or empties any of the five (a permissions list with no entry, or an empty
-// one) is UNKNOWN, naming its index and each field it lacks; a granted_at that is not RFC 3339 is
-// UNKNOWN naming it; anything else that does not read is UNKNOWN, naming the file.
+// unknown, no other field, each finding the fields the script writes (principal, right, role,
+// resource, permissions and granted_at) and no other. A finding that leaves out or empties any of
+// the structured five (a permissions list with no entry, or an empty one) is UNKNOWN, naming its
+// index and each field it lacks, so a report in the sentence form alone, a principal and a right,
+// is UNKNOWN; anything else that does not read is UNKNOWN, naming the file.
 func readMinterReport(path string) (time.Time, []MinterFinding, []MinterUnknown, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -180,11 +175,7 @@ func readMinterReport(path string) (time.Time, []MinterFinding, []MinterUnknown,
 		if len(lacks) > 0 {
 			return time.Time{}, nil, nil, unknownf(StepPreflight, nil, "the minter report %s's findings[%d] lacks its %s", path, i, joinLacks(lacks))
 		}
-		grantedAt, err := time.Parse(time.RFC3339, f.GrantedAt)
-		if err != nil {
-			return time.Time{}, nil, nil, unknownf(StepPreflight, err, "the minter report %s's findings[%d]'s granted_at %q is not RFC 3339", path, i, f.GrantedAt)
-		}
-		findings[i] = MinterFinding{Principal: f.Principal, Role: f.Role, Resource: f.Resource, Permissions: f.Permissions, GrantedAt: grantedAt}
+		findings[i] = MinterFinding(f)
 	}
 	return *report.RunAt, findings, *report.Unknown, nil
 }
