@@ -337,6 +337,45 @@ func TestAGrantAnswerThatDoesNotDecodePrintsNoBearerItEchoes(t *testing.T) {
 	}
 }
 
+// TestACredentialRefusalIsDecidedOnItsCodeAsItCame: the daemon refuses the controller's
+// credential fetch with a code the command decides on - CONTROLLER_LAUNCHED ends the refresh
+// (controllerCredentialSuperseded), GITHUB_TOKEN_SOURCE_UNAVAILABLE is a daemon with no App, on
+// which the start goes on acting as nobody - while the capability secret the request carried
+// shares a run of eight or more characters with that code, so the rule's reading of the code
+// (SendBack) is not the code. The decision is the same as with a secret that shares none: it is
+// made on the code as it came.
+func TestACredentialRefusalIsDecidedOnItsCodeAsItCame(t *testing.T) {
+	refusing := func(t *testing.T, status int, code string) *httptest.Server {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, `{"code":"`+code+`","error":"the daemon refuses the credential"}`)
+		}))
+		t.Cleanup(server.Close)
+		return server
+	}
+	for _, secret := range []struct{ name, superseded, noApp string }{
+		{"control", echoProbe, echoProbe},
+		{"shares-a-run", "ghs_CONTROLLER_LAUNCHED0123456789abcdefg", "ghs_GITHUB_TOKEN_SOURCE_UNAVAILABLE01234"},
+	} {
+		t.Run("superseded/"+secret.name, func(t *testing.T) {
+			_, _, err := fetchControllerCredential(context.Background(), refusing(t, http.StatusConflict, "CONTROLLER_LAUNCHED").URL, secret.superseded, "acme")
+			if !controllerCredentialSuperseded(err) {
+				t.Errorf("the refresh refused CONTROLLER_LAUNCHED = %v, want the refresh ended", err)
+			}
+		})
+		t.Run("no-app/"+secret.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			stop, _, _, err := controllerStartGitHubCredential(context.Background(), refusing(t, http.StatusServiceUnavailable, "GITHUB_TOKEN_SOURCE_UNAVAILABLE").URL, secret.noApp, t.TempDir(), &stderr)
+			stop()
+			if err != nil || !strings.Contains(stderr.String(), "the controller's gh acts as nobody") {
+				t.Errorf("the start refused GITHUB_TOKEN_SOURCE_UNAVAILABLE = %v, stderr %q; want it acting as nobody", err, stderr.String())
+			}
+		})
+	}
+}
+
 // echoForkRead is the path of a file of the test's own holding the fork read's capture name with
 // every old replaced by with, which must change it.
 func echoForkRead(t *testing.T, name, old, with string) string {

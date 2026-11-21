@@ -5253,6 +5253,20 @@
       "production": "legion issue status (runIssueStatus): an answer that does not decode as a grant is named by its member (grantId), never printed"
     },
     {
+      "id": "legion-cli-credential-code-as-it-came-superseded",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestACredentialRefusalIsDecidedOnItsCodeAsItCame/superseded/shares-a-run",
+      "production": "legion CLI fetchControllerCredential: the refusal's code is decided as it came (RemoteText.Equal against controllerCredentialCodes), never through SendBack, so CONTROLLER_LAUNCHED ends the refresh beside a secret that shares a run with it"
+    },
+    {
+      "id": "legion-cli-credential-code-as-it-came-no-app",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestACredentialRefusalIsDecidedOnItsCodeAsItCame/no-app/shares-a-run",
+      "production": "legion CLI fetchControllerCredential: the refusal's code is decided as it came (RemoteText.Equal against controllerCredentialCodes), never through SendBack, so GITHUB_TOKEN_SOURCE_UNAVAILABLE starts the controller acting as nobody beside a secret that shares a run with it"
+    },
+    {
       "id": "legion-cli-fork-message-echo",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
@@ -6712,6 +6726,16 @@
       "site": "legion issue status (status.go:47): an answer that did not decode as a grant printed whole",
       "source": "the review of #4368 round 5, finding 3",
       "guard": "legion-cli-grant-decode-echo"
+    },
+    {
+      "site": "legion CLI fetchControllerCredential: the refusal's code decided through SendBack, the rule's reading, which is empty beside a request value sharing a run with the code",
+      "source": "the review of #4368 round 5, finding 2 (controller_credential.go:84-91, same pattern, not probed)",
+      "guard": "legion-cli-credential-code-as-it-came-superseded"
+    },
+    {
+      "site": "legion CLI controllerStartGitHubCredential: GITHUB_TOKEN_SOURCE_UNAVAILABLE decided through SendBack, so a start beside a secret sharing a run with it failed where it acts as nobody",
+      "source": "the review of #4368 round 5, finding 2 (controller_credential.go:84-91, same pattern, not probed)",
+      "guard": "legion-cli-credential-code-as-it-came-no-app"
     },
     {
       "site": "legion git-credential readForkAnswer: GitHub's message on a refused fork read printed raw",

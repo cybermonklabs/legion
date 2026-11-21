@@ -35,13 +35,18 @@ var controllerGitHubRefreshInterval = time.Minute
 // caller tell a daemon with no GitHub App to act as (GITHUB_TOKEN_SOURCE_UNAVAILABLE,
 // GITHUB_OWNER_UNCONFIGURED) apart from a capability a later start replaced
 // (INVALID_CONTROLLER_CAPABILITY) or a daemon that launches its own controller
-// (CONTROLLER_LAUNCHED), without parsing the sentence itself.
+// (CONTROLLER_LAUNCHED), without parsing the sentence itself. The code is one of those four
+// (controllerCredentialCodes), matched with the daemon's code as it came, and "" for any other.
 type controllerCredentialFailure struct {
 	code    string
 	message string
 }
 
 func (f *controllerCredentialFailure) Error() string { return f.message }
+
+// controllerCredentialCodes are the codes of the daemon's credential refusals this command
+// decides on (controllerStartGitHubCredential, controllerCredentialSuperseded).
+var controllerCredentialCodes = []string{"GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GITHUB_OWNER_UNCONFIGURED", "INVALID_CONTROLLER_CAPABILITY", "CONTROLLER_LAUNCHED"}
 
 // controllerCredentialSuperseded says whether err is a controllerCredentialFailure that ends the
 // refresh loop rather than retries it: the capability a later `legion controller start` replaced
@@ -81,15 +86,19 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 		return ghconfig.Bundle{}, nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
 	}
 	if answered.Status()/100 != 2 {
-		// The daemon's code is read as it came, where the rule prints it unchanged, and its
-		// sentence as the rule reads it (oauth2call.CodedRefusal, the shape of api.Failure).
+		// Which refusal it is, is decided on the daemon's code as it came (RemoteText.Equal), and
+		// never on the rule's reading of it (SendBack), which is "" where a value the request
+		// carried shares a run of characters with the code; the sentence prints as the rule reads
+		// it (oauth2call.CodedRefusal, the shape of api.Failure).
 		var failure oauth2call.CodedRefusal
-		if answered.Decode(&failure) == nil {
-			if code, sent := failure.Code.SendBack(); sent {
-				return ghconfig.Bundle{}, nil, &controllerCredentialFailure{
-					code:    code,
-					message: fmt.Sprintf("%s%s: %s", daemonURL, route, failure.Error),
-				}
+		if answered.Decode(&failure) == nil && !failure.Code.IsEmpty() {
+			code := ""
+			if i := slices.IndexFunc(controllerCredentialCodes, failure.Code.Equal); i >= 0 {
+				code = controllerCredentialCodes[i]
+			}
+			return ghconfig.Bundle{}, nil, &controllerCredentialFailure{
+				code:    code,
+				message: fmt.Sprintf("%s%s: %s", daemonURL, route, failure.Error),
 			}
 		}
 		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s: %s", daemonURL, route, refusal(answered))
