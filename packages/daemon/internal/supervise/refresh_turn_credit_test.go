@@ -82,21 +82,23 @@ func TestACreditWhoseTurnIsRunningIsCountedByACorrectionMadeDuringTheTurn(t *tes
 	}
 }
 
-// A credit its machine no longer holds for a refresh wake is taken back within one sweep: the
-// first correction after it was granted keeps it, as every credit granted since the correction
-// before is kept (RefreshGate.Correct), and the second asks the machine, finds the credit no
-// longer held for a wake, takes it back and says so. The loss is planted as a path that no
-// decision's end reaches would make it: a locked section outside unlock ends the claim's refresh
-// wake, so endRefreshLane never sees the credit, and either lets the credit go without giving it
-// back or keeps it with no wake left to hold it for. The case beside them plants nothing: a
-// machine between decisions that holds its credit for the refresh wake it waits on keeps it
-// through both corrections, and no line is written.
+// A credit its machine no longer holds for a refresh wake is kept through the first correction
+// after its admission and taken back at the second: the first correction keeps it, as every
+// credit granted since the correction before is kept (RefreshGate.Correct), and the second asks
+// the machine, which is between decisions, finds the credit no longer held for a wake, takes it
+// back and says so. A machine that is deciding at the second correction keeps the credit (the
+// running-turn row above holds that) until a later correction finds it between decisions. The loss
+// is planted as a path that no decision's end reaches would make it: a locked section outside
+// unlock ends the claim's refresh wake, so endRefreshLane never sees the credit, and either lets
+// the credit go without giving it back or keeps it with no wake left to hold it for. The case
+// beside them plants nothing: a machine between decisions that holds its credit for the refresh
+// wake it waits on keeps it through both corrections, and no line is written.
 //
 // The negative controls: a correction that asks no machine (reclaimCredit never called) leaves
 // the lost credit out at the second correction; a correction that asks every machine, the credits
 // granted since the previous correction included, takes it back at the first; and a probe that
 // does not read the refresh wake the machine waits on takes back the credit it still holds.
-func TestACreditItsMachineNoLongerHoldsIsTakenBackWithinOneSweep(t *testing.T) {
+func TestACreditItsMachineNoLongerHoldsIsTakenBackAtTheSecondCorrection(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// plant is the path planted after the credited post parked its wake, nil for none.

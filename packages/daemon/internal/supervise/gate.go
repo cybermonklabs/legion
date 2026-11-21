@@ -59,9 +59,12 @@ package supervise
 // credit is taken back there and then, and logged, since a credit taken back is one a path gave
 // up without giving it back. A credit granted since the previous correction is kept whatever its
 // machine shows, so a correction never lowers the count below the admissions granted since the
-// sweep before, and a lost credit is back within one sweep. A credit still in its post has no
-// machine to ask: the decision of that post, or the stop's close of the inbox it waits in, gives
-// it back, a machine's feed decides every event it takes, and nothing else drops an inbox.
+// sweep before. A lost credit is therefore kept through the first correction after its admission
+// and taken back at the second, when its machine no longer holds it; if its machine is deciding
+// then, it is taken back at the first correction after that which finds the machine between
+// decisions. A credit still in its post has no machine to ask: the decision of that post, or the
+// stop's close of the inbox it waits in, gives it back, a machine's feed decides every event it
+// takes, and nothing else drops an inbox.
 //
 // No re-read lowers the count below the credits the correction keeps, and the order in which a
 // machine stores its view and gives a credit back cannot open a window in either direction. A
