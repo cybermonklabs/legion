@@ -380,7 +380,7 @@ export function IssuePresets({
  *  ▾: as text, it is drawn in a face of the reader's own machine, at that face's width. The
  *  control's `aria-haspopup` says it opens a menu, so the shape is hidden from assistive
  *  technology. */
-function MenuMark(): ReactNode {
+export function MenuMark(): ReactNode {
   return (
     <svg
       aria-hidden="true"

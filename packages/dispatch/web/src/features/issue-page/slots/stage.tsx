@@ -90,7 +90,7 @@ export const SLOT_FILLED: SlotsFilled = {
   conversation: true,
   decisions: false,
   plan: true,
-  spec: false,
+  spec: true,
   verification: false,
 };
 

@@ -496,9 +496,8 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, and a spec with no summary or none the head can draw whole. Each is
- * one sentence, in the simple present, saying what is absent rather than what the reader should
- * do about it.
+ * query matches nothing, and a spec with no summary. Each is one sentence, in the simple
+ * present, saying what is absent rather than what the reader should do about it.
  */
 export const EMPTY_STATE_LINES = freeze({
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
@@ -516,12 +515,6 @@ export const EMPTY_STATE_LINES = freeze({
   spec_no_decision_many: "No decision shaped these statements.",
   spec_no_decision_one: "No decision shaped this statement.",
   spec_summary: "This spec has no summary.",
-  /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
-   *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
-  spec_summary_cut: "The summary is too long to show here.",
-  /** A summary whose whole text ends in no sentence end, so it holds no sentence the head
-   *  draws. */
-  spec_summary_unended: "The summary has no complete sentence.",
   verification: "This issue has no checks yet.",
   /** What the Verification filter's table says where the state its chip narrows to holds no
    *  statement. */
@@ -638,6 +631,13 @@ export const STATE_LINES = freeze({
   plan_unreadable: "Could not load the plan.",
   verification_unreadable: "Could not load the verification document.",
   decisions_document_unreadable: "Could not load the decisions document.",
+  /** What the Spec view says over its columns, on load as much as later, of a group of its reads
+   *  that stands failed, beside one Retry for the group (`spec-filter/SpecFilterBody.tsx`): the
+   *  spec's blocks and their coverage, and the results and the Verification document's blocks.
+   *  The second is not the outline's `results_unreadable` above, which names the results read
+   *  alone. */
+  statements_unreadable: "Could not load the statements.",
+  spec_results_unreadable: "Could not load the results.",
 } as const);
 
 /**

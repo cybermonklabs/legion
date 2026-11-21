@@ -1025,6 +1025,53 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
   });
 });
 
+// R1's one-line rule ends a line at the page's one sentence end.
+test("firstLineOf runs past an abbreviation that a number follows", () => {
+  expect(firstLineOf("Use the old page (see p. 4) for now. Then more.")).toEqual({
+    cut: true,
+    line: "Use the old page (see p. 4) for now.",
+    sentence: true,
+  });
+});
+
+// A "1." after a full stop opens a numbered label only where the same text holds a "2." after a
+// full stop after it, so a page or a figure 1 ends no line, and a list of two items starts at 1.
+test("firstLineOf runs past an abbreviation that 1 follows, and a list of two items starts at its 1", () => {
+  expect(firstLineOf("See fig. 1. It shows the cut.")).toEqual({
+    cut: true,
+    line: "See fig. 1.",
+    sentence: true,
+  });
+  expect(firstLineOf("Two steps follow. 1. Open it. 2. Close it.")).toEqual({
+    cut: true,
+    line: "Two steps follow.",
+    sentence: true,
+  });
+  // The rule's accepted miss: a list of one item after a sentence ends no line before its "1.".
+  expect(firstLineOf("Two steps follow. 1. Open it.")).toEqual({
+    cut: true,
+    line: "Two steps follow. 1.",
+    sentence: true,
+  });
+});
+
+test("firstLineOf runs past an abbreviation that a word in lower case follows", () => {
+  expect(firstLineOf("Keep the memo, e.g. in the pane. Then more.")).toEqual({
+    cut: true,
+    line: "Keep the memo, e.g. in the pane.",
+    sentence: true,
+  });
+});
+
+test("firstLineOf ends a line at a question or exclamation mark before a word in lower case", () => {
+  expect(firstLineOf("Is this right? maybe not. Then more.")).toEqual({
+    cut: true,
+    line: "Is this right?",
+    sentence: true,
+  });
+  expect(firstLineOf("Stop! then go.")).toEqual({ cut: true, line: "Stop!", sentence: true });
+});
+
 // R1: a cut at the limit falls between two characters, never inside one. A character outside the
 // Basic Multilingual Plane is two UTF-16 units, and a line that ends on the first of them holds a
 // lone surrogate, which `encodeURIComponent` refuses and a row draws as a broken glyph.

@@ -651,7 +651,7 @@ const UNREADABLE_LINES: Readonly<Record<VerificationRead, string>> = {
 /** The seven states a check can be in, in the order the page declares them. */
 const CHECK_STATES = Object.keys(NODE_STATE_WORDS.check) as CheckState[];
 /** A column heading, in the prototype's `.cap`. */
-const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`;
+export const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`;
 
 /** The body's measure (the prototype's `.ver`): at 760 px and below the width of the element
  *  around it less 20 px, 10 px under what stands above it; from 761 px up 1180 px wide, or that
