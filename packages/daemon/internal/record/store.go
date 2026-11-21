@@ -2257,13 +2257,15 @@ func (s *Postgres) ControllerRegistered(ctx context.Context, tx pgx.Tx, project 
 // ControllerNoticePending reads the project's unpublished notices of this kind, narrowed to one
 // issue when the caller named one and to one role of that issue when it named a role as well:
 // the same read every way, with the issue and the role as two more terms that an empty string
-// leaves out, so a project-wide wake's answer is what it always was.
+// leaves out, so a project-wide wake's answer is what it always was. It reads the outbox kind a
+// notice of this kind is queued as (ControllerNotice.OutboxKind), which for the notices of this
+// change is a kind of their own.
 func (s *Postgres) ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox
 		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3
 		and ($4 = '' or issue = $4) and ($5 = '' or payload->>'role' = $5))`,
-		string(OutboxKindControllerNotice), project, string(kind), issue, string(role)).Scan(&pending); err != nil {
+		string(ControllerNotice{Kind: kind}.OutboxKind()), project, string(kind), issue, string(role)).Scan(&pending); err != nil {
 		return false, fmt.Errorf("read whether %s has a %s controller notice pending: %w", project, kind, err)
 	}
 	return pending, nil
@@ -2287,7 +2289,7 @@ func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, proj
 	rows, err := tx.Query(ctx, `select distinct issue from outbox
 		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3
 		and issue = any($4) and ($5 = '' or payload->>'role' = $5)`,
-		string(OutboxKindControllerNotice), project, string(kind), issues, string(role))
+		string(ControllerNotice{Kind: kind}.OutboxKind()), project, string(kind), issues, string(role))
 	if err != nil {
 		return nil, fmt.Errorf("read which of %v have a %s controller notice pending: %w", issues, kind, err)
 	}
@@ -2535,7 +2537,7 @@ func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchPro
 // outboxColumns is an outbox row as scanOutbox reads it. held_by_pause is read as 0 for the null
 // of a row no pause held (OutboxRow.HeldByPause).
 const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until,
-	coalesce(held_by_pause, 0) as held_by_pause`
+	held_at, stored_for, stored_generation, coalesce(held_by_pause, 0) as held_by_pause`
 
 func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if !json.Valid(row.Payload) {
@@ -3070,6 +3072,12 @@ func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue strin
 	return held, nil
 }
 
+// architectNoticeKinds are the outbox kinds an architect's notice is queued as (Notice.OutboxKind):
+// the ordinary one, and the one of the notices the release before this change cannot decode. The
+// reads of a tree's notices read both, so that notice is ordered among the rest and a ready
+// releases it with them.
+var architectNoticeKinds = kindNames([]OutboxKind{OutboxKindNotice, OutboxKindReachNotice})
+
 // heldRowsSQL is HeldRows' statement, built once from the outbox's rules (outboxClaimable,
 // outboxLaneFree).
 var heldRowsSQL = `select ` + outboxColumns + `, (select min(running.id) from outbox running
@@ -3176,7 +3184,7 @@ func pauseHeldClaim(project string, row OutboxRow, role string) claim.Token {
 
 func (s *Postgres) WaitingNotices(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error) {
 	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
-		where kind = $1 and next_at > $2 and split_part(issue, '-', 1) = $3 order by id`, string(OutboxKindNotice), now, project)
+		where kind = any($1) and next_at > $2 and split_part(issue, '-', 1) = $3 order by id`, architectNoticeKinds, now, project)
 	if err != nil {
 		return nil, fmt.Errorf("list waiting notices: %w", err)
 	}
@@ -3276,8 +3284,8 @@ func (s *Postgres) TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Is
 
 func (s *Postgres) EarlierNotices(ctx context.Context, tx pgx.Tx, tree string, id int64) ([]OutboxRow, error) {
 	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
-		where kind = $1 and id < $2 and issue in (select key from issues where tree = $3)
-		order by id`, string(OutboxKindNotice), id, tree)
+		where kind = any($1) and id < $2 and issue in (select key from issues where tree = $3)
+		order by id`, architectNoticeKinds, id, tree)
 	if err != nil {
 		return nil, fmt.Errorf("read the notices of %s before row %d: %w", tree, id, err)
 	}
@@ -3344,6 +3352,31 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 	if _, err := tx.Exec(ctx, `update outbox set attempts = attempts + 1, next_at = $3, last_error = $4,
 		lease_token = '', lease_until = null where id = $1 and lease_token = $2`, id, leaseToken, nextAt, storetext.FarSideError(lastErr)); err != nil {
 		return fmt.Errorf("retry outbox row %d: %w", id, err)
+	}
+	return nil
+}
+
+// HoldOutbox marks the row held for a claim that keeps its session (OutboxRow.HeldAt), at the
+// database's now, the first time a try holds it, under the try's lease and in the transaction
+// that returns the row to the outbox after that try. A later mark leaves the first as it stands.
+func (s *Postgres) HoldOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error {
+	if _, err := tx.Exec(ctx, `update outbox set held_at = coalesce(held_at, now()) where id = $1 and lease_token = $2`,
+		id, leaseToken); err != nil {
+		return fmt.Errorf("hold outbox row %d: %w", id, err)
+	}
+	return nil
+}
+
+// StoreOutboxCopy records that the listener stored the row's publish for holder
+// (OutboxRow.StoredFor), with generation the claim's process then, under the try's lease and in the
+// transaction that returns the row to the outbox after that try. A record naming the holder the row
+// already names keeps the first generation, since the copy the stream holds is the first; one
+// naming another holder replaces both. Every expression reads the row as it stood before the update.
+func (s *Postgres) StoreOutboxCopy(ctx context.Context, tx pgx.Tx, id int64, leaseToken, holder string, generation uint64) error {
+	if _, err := tx.Exec(ctx, `update outbox set stored_for = $3,
+		stored_generation = case when stored_for = $3 then stored_generation else $4 end
+		where id = $1 and lease_token = $2`, id, leaseToken, holder, int64(generation)); err != nil {
+		return fmt.Errorf("record the stored copy of outbox row %d: %w", id, err)
 	}
 	return nil
 }
@@ -3622,12 +3655,16 @@ func scanOutbox(row scanner, extra ...any) (OutboxRow, error) {
 	var out OutboxRow
 	var kind string
 	var payload []byte
+	var heldAt *time.Time
 	if err := row.Scan(append([]any{&out.ID, &kind, &out.Issue, &payload, &out.Attempts, &out.NextAt, &out.LastError,
-		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil, &out.HeldByPause}, extra...)...); err != nil {
+		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil, &heldAt, &out.StoredFor, &out.StoredGeneration, &out.HeldByPause}, extra...)...); err != nil {
 		return OutboxRow{}, err
 	}
 	out.Kind = OutboxKind(kind)
 	out.Payload = append(json.RawMessage(nil), payload...)
+	if heldAt != nil {
+		out.HeldAt = *heldAt
+	}
 	return out, nil
 }
 

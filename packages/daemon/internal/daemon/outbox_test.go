@@ -1185,7 +1185,9 @@ func TestOutboxRoleMessageKeptForAnUnresponsiveHolder(t *testing.T) {
 // every attempt until another session holds the role, and the listener's own NATS grant denies
 // every forward (403 with no reason) until an operator changes it, as a role with no holder does:
 // the row is done either way, since the message reports a moment that has passed by then. A holder
-// that did not confirm the message in time (504 receipt_timeout or delivery_failed) is retried.
+// that did not confirm the message in time (504 receipt_timeout or delivery_failed) is retried; a
+// receipt_timeout's copy the listener stored for the holder it names finishes with no new publish
+// once that session holds its role again (stored_role_message_test.go).
 func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-2", record.RoleMessage{Role: "implementer", Body: "CI settled at head"}, time.Now())
 	row.ID = 59

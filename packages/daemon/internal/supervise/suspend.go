@@ -415,7 +415,7 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, laun
 // all the same (endHeld, exit): what it ended is recorded as a suspension by by, as the stop that
 // did land records it (endSuspended, letGo), and the record goes to the store with this write.
 func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
-	m.letGo(ctx, endSuspended(by))
+	m.letGo(ctx, letGoCause{cause: endSuspended(by)})
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
 	if stop != nil {
 		return m.persistStop(ctx, *stop)
@@ -543,7 +543,7 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 		m.claim.LastDeathCause = cause
 		return err
 	}
-	m.recordEnd(ctx, endDied(m.goneCause))
+	m.recordEnd(ctx, letGoCause{cause: endDied(m.goneCause)})
 	m.sessionGone(ctx)
 	return m.letProcessGoFor(ctx, request, false, stopSent)
 }

@@ -136,6 +136,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/issues/status":                {none: controller},
 		"POST /legion/v1/claims/fresh-session":         {none: controller},
 		"POST /legion/v1/claims/compact":               {none: controller},
+		"POST /legion/v1/claims/relaunch":              {none: controller},
 		"POST /legion/v1/project/pause":                {none: controller},
 		"POST /legion/v1/project/resume":               {none: controller},
 		"POST /legion/v1/waves/release": {none: "its own status writes name children not in the workflow yet, which no run is on, so they wait for nothing; " +

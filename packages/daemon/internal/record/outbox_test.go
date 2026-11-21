@@ -267,8 +267,8 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
-		OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindReachNotice, OutboxKindReachControllerNotice, OutboxKindRoleHoldersPublish,
+		OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -307,32 +307,38 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 // stop, a write to Dispatch, a controller's notice.
 func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 	decided := map[OutboxKind]string{
-		OutboxKindSupervise:         "op start",
-		OutboxKindNotice:            "every row",
+		OutboxKindSupervise: "op start",
+		OutboxKindNotice:    "every row",
+		// An architect's notice of a claim out of reach resumes a released architect as any
+		// architect's notice does.
+		OutboxKindReachNotice:       "every row",
 		OutboxKindHookPrompt:        "every row",
 		OutboxKindRoleMessage:       "every row",
 		OutboxKindUpdateAsk:         "every row",
 		OutboxKindMergeQueueRemoval: "every row",
 		// A merge forward's message goes to one role of the issue and wakes a released one, as a
 		// hook prompt does (main's dispatch://INFRA-4374).
-		OutboxKindMergeForward:       "every row",
-		OutboxKindCheckWake:          "every row",
-		OutboxKindCheckLook:          "every row",
-		OutboxKindCheckBound:         "every row",
-		OutboxKindControllerNotice:   "",
-		OutboxKindDispatchStatus:     "",
-		OutboxKindDispatchMessage:    "",
-		OutboxKindGateSeed:           "",
-		OutboxKindLingerClose:        "",
-		OutboxKindIssueSuspend:       "",
-		OutboxKindWorkspaceRemove:    "",
-		OutboxKindIssueBranch:        "",
-		OutboxKindIssueBundle:        "",
-		OutboxKindIssueRelease:       "",
-		OutboxKindGatedStepsPublish:  "",
-		OutboxKindClaimRelease:       "",
-		OutboxKindDesignGatesPublish: "",
-		OutboxKindMergeQueueRead:     "",
+		OutboxKindMergeForward:     "every row",
+		OutboxKindCheckWake:        "every row",
+		OutboxKindCheckLook:        "every row",
+		OutboxKindCheckBound:       "every row",
+		OutboxKindControllerNotice: "",
+		// The controller's notices of claims out of reach run through, as every controller notice
+		// does: the pause never holds the controller.
+		OutboxKindReachControllerNotice: "",
+		OutboxKindDispatchStatus:        "",
+		OutboxKindDispatchMessage:       "",
+		OutboxKindGateSeed:              "",
+		OutboxKindLingerClose:           "",
+		OutboxKindIssueSuspend:          "",
+		OutboxKindWorkspaceRemove:       "",
+		OutboxKindIssueBranch:           "",
+		OutboxKindIssueBundle:           "",
+		OutboxKindIssueRelease:          "",
+		OutboxKindGatedStepsPublish:     "",
+		OutboxKindClaimRelease:          "",
+		OutboxKindDesignGatesPublish:    "",
+		OutboxKindMergeQueueRead:        "",
 		// A conflict's second read reads the pull request from GitHub and starts no turn; the merge
 		// forward its fact queues is held.
 		OutboxKindConflictConfirm: "",
@@ -1099,6 +1105,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: ClaimOutOfReachNotice, Role: claim.RoleImplementer, Phase: phase.Implementing, Claim: "legion-LEGION-208-implementer",
+			Reason: "Envoy has not heard from this claim's session since 2026-11-08T08:00:00Z, more than 20 minutes ago; it keeps its state and the controller decides whether to relaunch it"},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

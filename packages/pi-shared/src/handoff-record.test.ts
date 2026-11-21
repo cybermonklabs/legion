@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { lstat, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { LEGION_ROLES, type LegionRole } from "@legion/contracts";
@@ -823,6 +824,117 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
   );
   expect(requests).toHaveLength(2);
 });
+
+// A `handoff_complete` attempt the daemon wait gives up on hands its signal to the report read
+// too (`src/legion-phase-ops.ts`, `completeHandoff`), so the read ends with it rather than running
+// on: its jj is stopped, and its Dispatch request is ended at Dispatch.
+
+/** A jj on `PATH` that answers nothing until it is told to stop. It says it started through the
+ * `started` FIFO and, when it gets SIGTERM, says so through the `ended` FIFO and exits; a case
+ * reads each FIFO, which waits until the script writes to it. */
+async function hangingJj(root: string) {
+  const bin = path.join(root, "bin");
+  const started = path.join(root, "started");
+  const ended = path.join(root, "ended");
+  await mkdir(bin);
+  // Node has no call that makes a FIFO.
+  execFileSync("mkfifo", [started, ended]);
+  writeFileSync(
+    path.join(bin, "jj"),
+    [
+      "#!/bin/sh",
+      "sleep 300 &",
+      "child=$!",
+      `trap 'kill "$child"; echo ended > "${ended}"; exit 143' TERM`,
+      `echo started > "${started}"`,
+      'wait "$child"',
+      "",
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+  return {
+    path: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+    started: () => readFile(started, "utf8"),
+    ended: () => readFile(ended, "utf8"),
+  };
+}
+
+test("a report read whose jj does not answer stops that jj when its signal aborts, and rejects with the abort", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "legion-handoff-abort-"));
+  scratch.push(root);
+  const jj = await hangingJj(root);
+  const before = process.env.PATH;
+  process.env.PATH = jj.path;
+  try {
+    const attempt = new AbortController();
+    // The merger's completion reports the commit the workspace stands on, read with PATH's jj.
+    const report = findHandoffReport({
+      phase: "merging",
+      role: "merger",
+      env: { ...env, LEGION_WORKSPACE: root },
+      latestHandoff: async () => {
+        throw new Error("no record is read for the merger");
+      },
+      signal: attempt.signal,
+    }).catch((error: unknown) => error);
+    expect(await jj.started()).toBe("started\n");
+    const given = new Error("the attempt was given up on");
+    attempt.abort(given);
+
+    expect(await jj.ended()).toBe("ended\n");
+    expect(await report).toBe(given);
+  } finally {
+    process.env.PATH = before;
+  }
+}, 30_000);
+
+test("a report read whose Dispatch does not answer ends that request at Dispatch when its signal aborts, and rejects with the abort", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "legion-handoff-abort-"));
+  scratch.push(root);
+  const file = { path: path.join(root, "envoy.json"), error: null } as const;
+  const arrived = Promise.withResolvers<Request>();
+  const released = Promise.withResolvers<void>();
+  const dispatch = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    // The read stays open until the case releases it: Bun's own 10-second idle limit would
+    // otherwise close it for the client.
+    idleTimeout: 0,
+    fetch: async (request) => {
+      arrived.resolve(request);
+      await released.promise;
+      return Response.json(RECORD);
+    },
+  });
+  try {
+    const paneEnv = {
+      ...env,
+      DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
+      DISPATCH_TOKEN: fixtureSecret("pane"),
+    };
+    const attempt = new AbortController();
+    const report = findHandoffReport({
+      phase: "reviewing",
+      role: "reviewer",
+      env: paneEnv,
+      latestHandoff: paneLatestHandoff(file, paneEnv, root, "pane-session"),
+      signal: attempt.signal,
+    }).catch((error: unknown) => error);
+    const request = await arrived.promise;
+    const given = new Error("the attempt was given up on");
+    attempt.abort(given);
+
+    // Bun aborts a request's own signal when its client closes the connection before the answer.
+    const ended = Promise.withResolvers<void>();
+    if (request.signal.aborted) ended.resolve();
+    request.signal.addEventListener("abort", () => ended.resolve(), { once: true });
+    await ended.promise;
+    expect(await report).toBe(given);
+  } finally {
+    released.resolve();
+    dispatch.stop(true);
+  }
+}, 30_000);
 
 // The route the reviewer's `handoff_complete` failure came from: a pane whose Dispatch has no
 // bearer at all and trades its own identity at the secrets broker. There is one credential field,

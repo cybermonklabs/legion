@@ -17,8 +17,9 @@ func backstopFile(t *testing.T, body string) string {
 // A file that names no bound runs every role on twice its own bound, which is what the approved
 // spec's Design says: the daemon's backstop bound is twice the role's, so the worker acts first
 // wherever it can act at all. The implementer and the reviewer wait four hours inside one call,
-// so theirs is eight; every other role's and the controller's is two. The floor each of them
-// must clear is the role's whole ladder, which is a different number and a shorter one.
+// so theirs is eight. Every other role's two hours is below its own ladder now that a call may wait
+// an hour for a daemon that is not serving (R1), so those roles run on the floor, which is that
+// ladder.
 func TestTheStallBackstopDefaultsToTwiceTheRolesOwnBound(t *testing.T) {
 	cfg, err := Load(backstopFile(t, ""), noEnv)
 	if err != nil {
@@ -27,19 +28,19 @@ func TestTheStallBackstopDefaultsToTwiceTheRolesOwnBound(t *testing.T) {
 	if cfg.WorkerStallBackstops != nil {
 		t.Fatalf("worker_stall_backstop_hours = %v, want none named", cfg.WorkerStallBackstops)
 	}
-	shortLadder := StallCallBound + StallCallGrace + 2*StallStep
-	longLadder := StallCallBoundLong + StallCallGrace + 2*StallStep
+	shortLadder := StallCallBound + StallDaemonWait + StallCallGrace + 2*StallStep
+	longLadder := StallCallBoundLong + StallDaemonWait + StallCallGrace + 2*StallStep
 	for role, want := range map[claim.Role]struct{ backstop, ladder time.Duration }{
-		claim.RoleArchitect:   {2 * StallCallBound, shortLadder},
-		claim.RolePlanner:     {2 * StallCallBound, shortLadder},
+		claim.RoleArchitect:   {shortLadder, shortLadder},
+		claim.RolePlanner:     {shortLadder, shortLadder},
 		claim.RoleImplementer: {2 * StallCallBoundLong, longLadder},
-		claim.RoleTester:      {2 * StallCallBound, shortLadder},
+		claim.RoleTester:      {shortLadder, shortLadder},
 		claim.RoleReviewer:    {2 * StallCallBoundLong, longLadder},
-		claim.RoleMerger:      {2 * StallCallBound, shortLadder},
-		claim.RoleController:  {2 * StallCallBound, shortLadder},
+		claim.RoleMerger:      {shortLadder, shortLadder},
+		claim.RoleController:  {shortLadder, shortLadder},
 	} {
 		if got := cfg.StallBackstopFor(role); got != want.backstop {
-			t.Errorf("StallBackstopFor(%s) = %s, want twice the role's bound, %s", role, got, want.backstop)
+			t.Errorf("StallBackstopFor(%s) = %s, want %s", role, got, want.backstop)
 		}
 		if got := cfg.StallLadderFor(role); got != want.ladder {
 			t.Errorf("StallLadderFor(%s) = %s, want %s", role, got, want.ladder)
@@ -51,15 +52,15 @@ func TestTheStallBackstopDefaultsToTwiceTheRolesOwnBound(t *testing.T) {
 // role it leaves out keeps twice its own bound. The controller is a role the key may name,
 // as it is one `role_config_files` may name.
 func TestTheStallBackstopTakesAPerRoleBound(t *testing.T) {
-	cfg, err := Load(backstopFile(t, "worker_stall_backstop_hours:\n  implementer: 6\n  controller: 1.5\n"), noEnv)
+	cfg, err := Load(backstopFile(t, "worker_stall_backstop_hours:\n  implementer: 6\n  controller: 3\n"), noEnv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if got := cfg.StallBackstopFor(claim.RoleImplementer); got != 6*time.Hour {
 		t.Errorf("the implementer's bound = %s, want 6h", got)
 	}
-	if got := cfg.StallBackstopFor(claim.RoleController); got != 90*time.Minute {
-		t.Errorf("the controller's bound = %s, want 1h30m", got)
+	if got := cfg.StallBackstopFor(claim.RoleController); got != 3*time.Hour {
+		t.Errorf("the controller's bound = %s, want 3h", got)
 	}
 	if want := 2 * StallCallBoundLong; cfg.StallBackstopFor(claim.RoleReviewer) != want {
 		t.Errorf("the reviewer's bound = %s, want twice its own bound, %s", cfg.StallBackstopFor(claim.RoleReviewer), want)
@@ -78,8 +79,8 @@ func TestAZeroStallBackstopSwitchesTheRoleOff(t *testing.T) {
 			t.Errorf("StallBackstopFor(%s) = %s, want the backstop off", role, got)
 		}
 	}
-	if want := 2 * StallCallBound; cfg.StallBackstopFor(claim.RoleMerger) != want {
-		t.Errorf("the merger's bound = %s, want twice its own bound %s: 0 is one role's answer, not the file's", cfg.StallBackstopFor(claim.RoleMerger), want)
+	if want := StallCallBound + StallDaemonWait + StallCallGrace + 2*StallStep; cfg.StallBackstopFor(claim.RoleMerger) != want {
+		t.Errorf("the merger's bound = %s, want its own ladder %s: 0 is one role's answer, not the file's", cfg.StallBackstopFor(claim.RoleMerger), want)
 	}
 }
 
@@ -88,13 +89,13 @@ func TestAZeroStallBackstopSwitchesTheRoleOff(t *testing.T) {
 // passes: that is the first bound at which nothing of the plugin's is left to run.
 func TestAStallBackstopBelowTheLadderIsRefusedWithItsArithmetic(t *testing.T) {
 	_, err := Load(backstopFile(t, "worker_stall_backstop_hours: {implementer: 4}\n"), noEnv)
-	want := "worker_stall_backstop_hours.implementer (4h0m0s) is below the whole stall ladder the implementer's own plugin runs (4h0m0s + 5m0s + 2 × 2m0s = 4h9m0s, where the first number is the 4h0m0s bound a call no deadline judges runs on): the daemon's backstop would end a turn the plugin it backs up is still recovering; set 0 to switch the backstop off for that role"
+	want := "worker_stall_backstop_hours.implementer (4h0m0s) is below the whole stall ladder the implementer's own plugin runs (4h0m0s + 1h0m0s + 5m0s + 2 × 2m0s = 5h9m0s, where the first number is the 4h0m0s bound a call no deadline judges runs on and the second is the 1h0m0s a call waits for a daemon that is not serving): the daemon's backstop would end a turn the plugin it backs up is still recovering; set 0 to switch the backstop off for that role"
 	if err == nil || err.Error() != want {
 		t.Fatalf("Load = %v, want %q", err, want)
 	}
 
-	ladder := StallCallBoundLong + StallCallGrace + 2*StallStep
-	cfg, err := Load(backstopFile(t, "worker_stall_backstop_hours: {implementer: 4.15}\n"), noEnv)
+	ladder := StallCallBoundLong + StallDaemonWait + StallCallGrace + 2*StallStep
+	cfg, err := Load(backstopFile(t, "worker_stall_backstop_hours: {implementer: 5.15}\n"), noEnv)
 	if err != nil {
 		t.Fatalf("Load of the ladder's own length: %v", err)
 	}
@@ -110,10 +111,10 @@ func TestAStallBackstopBelowTheLadderIsRefusedWithItsArithmetic(t *testing.T) {
 // and the floor it leaves is still the hour's.
 func TestTheStallBackstopFloorCoversACallsOwnDeclaredDeadline(t *testing.T) {
 	env := envMap(map[string]string{"LEGION_STALL_CALL_BOUND_MS": "1800000"})
-	floor := StallDeclaredDeadlineCap + StallCallGrace + 2*StallStep
+	floor := StallDeclaredDeadlineCap + StallDaemonWait + StallCallGrace + 2*StallStep
 
 	_, err := Load(backstopFile(t, "worker_stall_backstop_hours: {tester: 1}\n"), env)
-	want := "worker_stall_backstop_hours.tester (1h0m0s) is below the whole stall ladder the tester's own plugin runs (1h0m0s + 5m0s + 2 × 2m0s = 1h9m0s, where the first number is the hour the host clamps a call's own declared deadline to, longer here than the 30m0s bound a call no deadline judges runs on): the daemon's backstop would end a turn the plugin it backs up is still recovering; set 0 to switch the backstop off for that role"
+	want := "worker_stall_backstop_hours.tester (1h0m0s) is below the whole stall ladder the tester's own plugin runs (1h0m0s + 1h0m0s + 5m0s + 2 × 2m0s = 2h9m0s, where the first number is the hour the host clamps a call's own declared deadline to, longer here than the 30m0s bound a call no deadline judges runs on and the second is the 1h0m0s a call waits for a daemon that is not serving): the daemon's backstop would end a turn the plugin it backs up is still recovering; set 0 to switch the backstop off for that role"
 	if err == nil || err.Error() != want {
 		t.Fatalf("Load = %v, want %q", err, want)
 	}
@@ -147,11 +148,13 @@ func TestAZeroedStallCallBoundIsTheWorkersWatchOffAndNotABoundOfZero(t *testing.
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	shortLadder := StallCallBound + StallDaemonWait + StallCallGrace + 2*StallStep
+	longLadder := StallCallBoundLong + StallDaemonWait + StallCallGrace + 2*StallStep
 	for role, want := range map[claim.Role]struct{ backstop, ladder time.Duration }{
-		claim.RoleImplementer: {2 * StallCallBoundLong, StallCallBoundLong + StallCallGrace + 2*StallStep},
-		claim.RoleReviewer:    {2 * StallCallBoundLong, StallCallBoundLong + StallCallGrace + 2*StallStep},
-		claim.RoleTester:      {2 * StallCallBound, StallCallBound + StallCallGrace + 2*StallStep},
-		claim.RoleController:  {2 * StallCallBound, StallCallBound + StallCallGrace + 2*StallStep},
+		claim.RoleImplementer: {2 * StallCallBoundLong, longLadder},
+		claim.RoleReviewer:    {2 * StallCallBoundLong, longLadder},
+		claim.RoleTester:      {shortLadder, shortLadder},
+		claim.RoleController:  {shortLadder, shortLadder},
 	} {
 		if got := cfg.StallBackstopFor(role); got != want.backstop {
 			t.Errorf("StallBackstopFor(%s) = %s with the worker's watch off, want the role's own %s", role, got, want.backstop)
@@ -164,7 +167,7 @@ func TestAZeroedStallCallBoundIsTheWorkersWatchOffAndNotABoundOfZero(t *testing.
 	// The floor is the role's own too, so a file that would have been refused with the watch on
 	// is refused with it off.
 	_, err = Load(backstopFile(t, "worker_stall_backstop_hours: {implementer: 4}\n"), env)
-	want := "worker_stall_backstop_hours.implementer (4h0m0s) is below the whole stall ladder the implementer's own plugin runs (4h0m0s + 5m0s + 2 × 2m0s = 4h9m0s, where the first number is the 4h0m0s bound a call no deadline judges runs on): the daemon's backstop would end a turn the plugin it backs up is still recovering; set 0 to switch the backstop off for that role"
+	want := "worker_stall_backstop_hours.implementer (4h0m0s) is below the whole stall ladder the implementer's own plugin runs (4h0m0s + 1h0m0s + 5m0s + 2 × 2m0s = 5h9m0s, where the first number is the 4h0m0s bound a call no deadline judges runs on and the second is the 1h0m0s a call waits for a daemon that is not serving): the daemon's backstop would end a turn the plugin it backs up is still recovering; set 0 to switch the backstop off for that role"
 	if err == nil || err.Error() != want {
 		t.Fatalf("Load with the worker's watch off = %v, want %q", err, want)
 	}
@@ -182,7 +185,7 @@ func TestTheStallBackstopFloorReadsTheEnvironmentsBound(t *testing.T) {
 		"LEGION_STALL_NOT_A_LIMIT_MS": "1",
 	})
 	_, err := Load(backstopFile(t, "worker_stall_backstop_hours: {tester: 5}\n"), env)
-	want := "worker_stall_backstop_hours.tester (5h0m0s) is below the whole stall ladder the tester's own plugin runs (6h0m0s + 10m0s + 2 × 3m0s = 6h16m0s, where the first number is the 6h0m0s bound a call no deadline judges runs on): the daemon's backstop would end a turn the plugin it backs up is still recovering; set 0 to switch the backstop off for that role"
+	want := "worker_stall_backstop_hours.tester (5h0m0s) is below the whole stall ladder the tester's own plugin runs (6h0m0s + 1h0m0s + 10m0s + 2 × 3m0s = 7h16m0s, where the first number is the 6h0m0s bound a call no deadline judges runs on and the second is the 1h0m0s a call waits for a daemon that is not serving): the daemon's backstop would end a turn the plugin it backs up is still recovering; set 0 to switch the backstop off for that role"
 	if err == nil || err.Error() != want {
 		t.Fatalf("Load = %v, want %q", err, want)
 	}
@@ -198,7 +201,7 @@ func TestTheStallBackstopFloorReadsTheEnvironmentsBound(t *testing.T) {
 		if got, want := cfg.StallBackstopFor(role), 12*time.Hour; got != want {
 			t.Errorf("StallBackstopFor(%s) = %s, want twice the environment's own bound, %s", role, got, want)
 		}
-		if got, want := cfg.StallLadderFor(role), 6*time.Hour+16*time.Minute; got != want {
+		if got, want := cfg.StallLadderFor(role), 7*time.Hour+16*time.Minute; got != want {
 			t.Errorf("StallLadderFor(%s) = %s, want the environment's own ladder %s", role, got, want)
 		}
 	}
@@ -210,8 +213,10 @@ func TestTheStallBackstopFloorReadsTheEnvironmentsBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load with unreadable numbers: %v", err)
 	}
-	if got, want := cfg.StallBackstopFor(claim.RoleTester), 2*StallCallBound; got != want {
-		t.Errorf("StallBackstopFor(tester) = %s, want twice the plugin's own default %s", got, want)
+	// Twice the plugin's own default hour is below that role's floor, so the floor is what it
+	// runs on: the numbers are the plugin's defaults either way, which is the point.
+	if got, want := cfg.StallBackstopFor(claim.RoleTester), StallCallBound+StallDaemonWait+StallCallGrace+2*StallStep; got != want {
+		t.Errorf("StallBackstopFor(tester) = %s, want the floor the plugin's own defaults give, %s", got, want)
 	}
 }
 

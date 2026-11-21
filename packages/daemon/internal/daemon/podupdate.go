@@ -1663,7 +1663,7 @@ func (s *supervision) replacementByIssue(issue string, live []supervise.Claim, r
 // the launch runs, so the bound is read then rather than when the claim was resumed
 // (roundPodEndsAtLaunch).
 //
-// Four things hold the pod, read in this order:
+// Five things hold the pod, read in this order:
 //
 //   - An operator's suspension of a claim the round asks (heldByOperator), whatever the round's
 //     bound: it is a person's hold (dispatch://INFRA-2981 R5).
@@ -1688,6 +1688,17 @@ func (s *supervision) replacementByIssue(issue string, live []supervise.Claim, r
 //     launch into the pod reads its own claim here too, as a claim of the group, so this reading
 //     also keeps the pod for the launch the pause still owes when that launch runs
 //     (roundPodEndsAtLaunch).
+//   - Before the round's bound, a claim of the group relaunching on its same session (R5) whose
+//     relaunch's launch has not started (relaunchesInPlace), unless the round passes the claim
+//     over (roundClock.passesOver). The relaunch asks nothing of the round before its stop (the
+//     runtime's RelaunchRefusal), and an out-of-reach claim holds no ask: the ask could not reach
+//     it (supervise.Claim.UpdateTaskedAt). Once the stop has ended its process, no process of the
+//     pod is the claim's, and between its decisions its machine holds nothing (issuePodKept): its
+//     launch may wait for a retry at the probe interval (supervise's relaunchRefused,
+//     relaunchLater) or for a restart. Without this reading the sweep would replace the pod by
+//     issue in that wait, and the launch would replace it as the round's own replacement, and with
+//     the pod would go the work on its disk that the claim had not pushed. The claim's own launch
+//     reads its claim here too, as a claim of the group (roundPodEndsAtLaunch).
 //   - Before the round's bound, a claim the round waits for that holds an ask of this round that
 //     reached its session (supervise.Claim.UpdateTaskedAt) and that it has not answered. Its
 //     process went while it held the ask, so its unpushed work may be on the pod's disk. Any
@@ -1716,6 +1727,16 @@ func roundPodEnds(group []supervise.Claim, round string, clock roundClock) (bool
 	if len(owed) > 0 {
 		return false, "a project's pause owes the " + strings.Join(namesOf(owed), ", ") +
 			" a launch, and it keeps the pod for their work until each runs again"
+	}
+	var relaunching []supervise.Claim
+	for _, c := range group {
+		if relaunchesInPlace(c, round) && !clock.passesOver(c, round) {
+			relaunching = append(relaunching, c)
+		}
+	}
+	if len(relaunching) > 0 {
+		return false, strings.Join(namesOf(relaunching), ", ") +
+			" is relaunching on its same session, whose stop ended its process in the pod before it answered the round"
 	}
 	var asked []supervise.Claim
 	for _, c := range waitingClaims(group, round, clock) {
@@ -1892,7 +1913,9 @@ func (s *supervision) issueReplacementDue(issue, round string, ended *roundEnd) 
 //     sets read the launching claim: a launch that forgot its role's lost session records no
 //     session (supervise's startFresh). The launch of any other role keeps the pod for that owed
 //     launch too. Without that, the launch would replace the pod that the pause kept for that very
-//     work.
+//     work. The launching claim's own relaunch on its same session keeps the pod the same way
+//     before the bound (relaunchesInPlace): its stop ended its process in the pod, and its work
+//     may be on the disk.
 //   - Before the bound, the launching claim holds the round's ask itself and has not answered it:
 //     its process went while it held the ask, and its work may be on the disk. That holds of the
 //     launch of a fresh session too. Such a claim records no session until its new agent
@@ -1993,8 +2016,10 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 // launchRoundPodEnds is the reading of roundPodEndsAtLaunch that the claims and the clock alone
 // answer, over group, the claims of the issue with launching, the launching claim, among them. It
 // is whether a launch into the pod of round replaces that pod, and, where it does not, why. The
-// launch keeps the pod where something holds it (roundPodEnds), or where, before the bound, the
-// launching claim holds the round's ask itself and has not answered it (holdsUnansweredAsk).
+// launch keeps the pod where something holds it (roundPodEnds) — a relaunch on a claim's same
+// session that has not answered the round among those holds, the launching claim's own included
+// (relaunchesInPlace) — or where, before the bound, the launching claim holds the round's ask
+// itself and has not answered it (holdsUnansweredAsk).
 func launchRoundPodEnds(group []supervise.Claim, launching supervise.Claim, round string, clock roundClock) (bool, string) {
 	if ends, held := roundPodEnds(group, round, clock); !ends {
 		return false, held
@@ -2003,6 +2028,16 @@ func launchRoundPodEnds(group []supervise.Claim, launching supervise.Claim, roun
 		return false, "the launching claim holds the ask of the round and has not answered it"
 	}
 	return true, ""
+}
+
+// relaunchesInPlace is whether c is relaunching on its same session (R5) with the relaunch's
+// launch still to come: its stop is recorded (supervise.Claim.LastRelaunch) and no launch has
+// written its generation beside it yet (LastRelaunchGeneration 0), which the relaunch's launch does
+// once it starts, whether at once or at a retry (supervise's launchNow). c is a member of round
+// that has neither answered it nor left its pod for another (answered, LeftPodRound).
+func relaunchesInPlace(c supervise.Claim, round string) bool {
+	return !c.LastRelaunch.IsZero() && c.LastRelaunchGeneration == 0 && c.UpdateRound == round &&
+		!answered(c, round) && !c.LeftPodRound(round)
 }
 
 // keepAtLaunch is the answer of roundPodEndsAtLaunch that keeps round's pod for token's launch, for

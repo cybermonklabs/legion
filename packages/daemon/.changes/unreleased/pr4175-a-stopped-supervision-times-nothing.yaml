@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    A daemon that has stopped no longer acts on a claim's timers. The stop disarms every timer of
+    every claim, and a timer that a decision of the stop's drain arms afterwards decides nothing
+    when it fires (`supervise: a timer fired after the machine's context ended; it decides
+    nothing`). Before, the registration deadline of a claim met mid-launch probed its process and
+    armed itself again every 30 seconds for as long as the daemon's process lived, logging
+    `supervise: timer ... context canceled` each time, and could charge a death to a process that
+    the next boot's own relaunch had replaced.
+time: 2026-11-17T13:49:09Z
+custom:
+    Issue: pr4175

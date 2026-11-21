@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -169,9 +170,15 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // openSupervision hands the daemon's one limiter to its machines. A machine takes its deps when the
 // boot restores it, so the pacing is set before that, as beforeDecision is. The zero pace is the
 // pacing off: every launch runs where it is raised.
+//
+// checkLaunch stands in for the store's own CheckLaunch in front of the real store, as the daemon's
+// overrides.checkLaunch does (gateLaunch): a test's way to have the store not answer one launch's
+// recheck, which leaves that launch waiting to be tried again at the probe interval
+// (supervise's relaunchRefused). A restart opens its store without it. nil asks the real store.
 type podUpdateRigOptions struct {
 	beforeDecision func(claim.Token, supervise.Event)
 	wakePace       supervise.WakePace
+	checkLaunch    func(context.Context, supervise.Claim) error
 }
 
 // newPodUpdateRigWith is newPodUpdateRig with the machines built with opts.
@@ -251,13 +258,19 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
+		// The orphan sweep resends the lock-out notices and sweeps the reach keeper at each tick;
+		// the rig's stream holds no lock-out and its keeper reads no Envoy list.
+		lockOuts: newLockOutNotices(lockOutOptions{log: quietLogger(), project: podUpdateProject,
+			alerts: fleetalert.New(quietLogger(), podUpdateProject)}),
+		reach: newReachKeeper(reachKeeperOptions{log: quietLogger(), project: podUpdateProject, now: clock.Now,
+			alerts: fleetalert.New(quietLogger(), podUpdateProject)}),
 	}
 	// The runtime's launches read the update round over a pod they would keep through the
 	// supervision, bound once it exists and before any machine is restored, as the daemon's boot
 	// binds the Sandbox runtime's (plan.launchRounds).
 	rt.RoundPodEnds = s.roundPodEndsAtLaunch
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
+		Runtime: rt, Conns: conns, Store: gateLaunch(st, opts.checkLaunch), Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		// The store's read of a launch's activity report, as openSupervision wires it: what a
 		// relaunch records the background work it ended from (supervise's recordEnd).
 		ClaimActivity:  st.ClaimActivity,

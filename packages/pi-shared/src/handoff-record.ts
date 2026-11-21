@@ -77,8 +77,13 @@ import { staleGitLockNote } from "./git-lock";
  */
 
 /** Runs the pane's jj with `args` against the workspace at `cwd` and answers its trimmed stdout;
- * throws on a non-zero exit. */
-export type JjRunner = (args: readonly string[], cwd: string) => Promise<string>;
+ * throws on a non-zero exit. `signal` is the asking attempt's: its abort stops the jj it started
+ * and rejects with the abort's reason. */
+export type JjRunner = (
+  args: readonly string[],
+  cwd: string,
+  signal?: AbortSignal
+) => Promise<string>;
 
 /** The newest handoff record of a phase as `LatestHandoff` answers it (envoy-client's `Handoff`
  * carries these fields among others). `body` is the record's exact text, the JSON object the
@@ -91,8 +96,12 @@ export interface LatestHandoffRecord {
 
 /** The newest handoff record of `issue`'s phase `word` (envoy-client's
  * `DispatchClient.latestHandoff`): throws Dispatch's answer, a `404 HANDOFF_NOT_FOUND` when the
- * phase has none. */
-export type LatestHandoff = (issue: string, word: string) => Promise<LatestHandoffRecord>;
+ * phase has none. `signal` is the asking attempt's: its abort ends the request at Dispatch. */
+export type LatestHandoff = (
+  issue: string,
+  word: string,
+  signal?: AbortSignal
+) => Promise<LatestHandoffRecord>;
 
 /** The fields a completion adds to its request (`LegionHandoffCompleteRequest`), each present only
  * when the completion carries it. */
@@ -113,6 +122,12 @@ export interface HandoffReportInput {
   readonly latestHandoff: LatestHandoff;
   /** PATH's jj by default, the one the pane's own shell runs. */
   readonly jj?: JjRunner;
+  /** The signal of the `handoff_complete` attempt this read is a step of
+   * (`retryWhileDaemonRestarts`). Its abort, once the agent aborted the call, stops the jj the
+   * read started and ends its Dispatch request, and the read rejects with the abort's reason
+   * rather than running on. The read runs off the attempt's limit (`OutsideTheDaemon`), so a
+   * slow read is never given up on as a daemon that does not answer. */
+  readonly signal?: AbortSignal;
 }
 
 /** The handoff a file-backed phase ends with, by the phase's word, and the role that works it:
@@ -128,15 +143,19 @@ const execFileAsync = promisify(execFile);
 
 /** PATH's jj, run as `jj -R <workspace> …` from the workspace, so a revset names the same commits
  * from any directory. The stderr of a failure is the error, followed by a note on each stale git
- * lock it names (`staleGitLockNote`). */
-export const pathJj: JjRunner = async (args, cwd) => {
+ * lock it names (`staleGitLockNote`). A jj its `signal` stops (SIGTERM, as `execFile` sends it)
+ * rejects with the abort's reason. */
+export const pathJj: JjRunner = async (args, cwd, signal) => {
+  signal?.throwIfAborted();
   try {
     const { stdout } = await execFileAsync("jj", ["-R", cwd, ...args], {
       cwd,
       maxBuffer: 16 * 1024 * 1024,
+      ...(signal === undefined ? {} : { signal }),
     });
     return stdout.trim();
   } catch (error) {
+    if (signal?.aborted) throw signal.reason;
     const detail =
       error !== null && typeof error === "object" && "stderr" in error
         ? String(error.stderr).trim()
@@ -152,7 +171,8 @@ export const pathJj: JjRunner = async (args, cwd) => {
  * The pane's Dispatch as its `dispatch` command reaches it: `file` is the session's envoy.json (the
  * one its plugin hands its shell as `ENVOY_CONFIG_FILE`), read again on each call with `env`, so a
  * file that moved its server takes effect without a restart. A pane whose Dispatch is off throws
- * why. `session` is the session this pane acts as, which a broker trade writes under.
+ * why. `session` is the session this pane acts as, which a broker trade writes under. A read's
+ * `signal` ends its request beside the client's own deadline.
  */
 export function paneLatestHandoff(
   file: SessionConfigFile,
@@ -161,33 +181,37 @@ export function paneLatestHandoff(
   session: string,
   fetchImpl: typeof fetch = fetch
 ): LatestHandoff {
-  return async (issue, word) => {
+  return async (issue, word, signal) => {
     const { dispatch } = sessionDispatchSettings(file, env, { cwd, session });
     if (!dispatch.enabled) {
       throw new Error(`Dispatch is off for this pane: ${dispatch.error ?? dispatch.notice}`);
     }
-    return new DispatchClient(dispatch.url, dispatch.credential, fetchImpl).latestHandoff(
-      issue,
-      word
-    );
+    return new DispatchClient(
+      dispatch.url,
+      dispatch.credential,
+      fetchImpl,
+      signal === undefined ? {} : { signal }
+    ).latestHandoff(issue, word);
   };
 }
 
 /** What a completion by `role` reports in the pane while the issue stands at `phase`
  * (`findHandoffReport` with the pane's environment `env` and its Dispatch,
- * `paneLatestHandoff(file, env, cwd, session)`), as each harness's `legion` tool asks it. */
+ * `paneLatestHandoff(file, env, cwd, session)`), as each harness's `legion` tool asks it.
+ * `signal` is the asking `handoff_complete` attempt's (`HandoffReportInput.signal`). */
 export function paneHandoffReport(
   file: SessionConfigFile,
   env: NodeJS.ProcessEnv,
   cwd: string,
   session: string
-): (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport> {
-  return (phase, role) =>
+): (phase: LegionPhase, role: LegionRole, signal?: AbortSignal) => Promise<HandoffReport> {
+  return (phase, role, signal) =>
     findHandoffReport({
       phase,
       role,
       env,
       latestHandoff: paneLatestHandoff(file, env, cwd, session),
+      ...(signal === undefined ? {} : { signal }),
     });
 }
 
@@ -297,10 +321,15 @@ async function standingReport(env: NodeJS.ProcessEnv, jj: JjRunner): Promise<Han
 }
 
 /** What a completion by `role` reports while the issue stands at `phase`: the report of the phase
- * the completion is of (`completedPhase`). */
+ * the completion is of (`completedPhase`). Each jj run and the Dispatch read carry the input's
+ * `signal`, and none starts once it is aborted: an aborted read rejects with its reason. */
 export async function findHandoffReport(input: HandoffReportInput): Promise<HandoffReport> {
-  const { role, env } = input;
-  const jj = input.jj ?? pathJj;
+  const { role, env, signal } = input;
+  const run = input.jj ?? pathJj;
+  const jj: JjRunner = (args, cwd) => {
+    signal?.throwIfAborted();
+    return run(args, cwd, signal);
+  };
   const of = completedPhase(role, input.phase);
   const handoff = FILE_BACKED[of];
   if (handoff === undefined || handoff.role !== role) return standingReport(env, jj);
@@ -309,8 +338,12 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
   const { issue, bookmark } = issueBranch(env, FOR_HANDOFF);
   let record: LatestHandoffRecord;
   try {
-    record = await input.latestHandoff(issue, handoff.word);
+    signal?.throwIfAborted();
+    record = await input.latestHandoff(issue, handoff.word, signal);
   } catch (error) {
+    // The agent aborted the call this read is a step of: the abort's reason is the read's whole
+    // answer.
+    if (signal?.aborted) throw signal.reason;
     if (
       error instanceof DispatchServiceError &&
       error.fromDispatch &&

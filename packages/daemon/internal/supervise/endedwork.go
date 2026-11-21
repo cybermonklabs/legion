@@ -142,6 +142,17 @@ const (
 	endStopped     = "its claim was stopped"
 )
 
+// letGoCause is why a decision lets the claim's process go, as the record of what that let-go
+// ended reads it (letGo, recordEnd): the cause, in the daemon's words (EndedWork.Cause, noEnd for
+// a let-go that records nothing), and whether the let-go is the relaunch of a claim Envoy cannot
+// reach (relaunchUnreachable). That relaunch records its cause on the claim whatever the process
+// ended, where any other let-go that ended nothing worth telling records none: the claim's record
+// is the relaunch's own account of why its process went.
+type letGoCause struct {
+	cause    string
+	relaunch bool
+}
+
 // endDied is a death's cause, with the runtime's own account of it (Claim.LastDeathCause), quoted.
 func endDied(cause string) string { return "the process died: " + strconv.Quote(cause) }
 
@@ -170,7 +181,7 @@ func endFailed(why string) string { return "its claim failed: " + strconv.Quote(
 // after "because" and carries no "because" of its own.
 func endNeverReady(never string) string { return "its agent " + never + ", so the daemon retired it" }
 
-// recordEnd records what letting the claim's process go ends, for cause, before anything of the
+// recordEnd records what letting the claim's process go ends, for why, before anything of the
 // process is cleared: letGo calls it first, and so do the two decisions that find the process
 // already gone (died, displaced), through recordGoneEnd, before they take its task back, since
 // what they find is the whole of what that process's end did and the let-go they lead to can be
@@ -193,8 +204,9 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // and none had run in this process, which can have started no background work; a process that
 // ran a turn and left no report of it is recorded as unreported rather than as having ended
 // nothing. A take-back always leaves a record of its let-go, since the task it took is sent again
-// behind that record's sentence (Delivery.message). A record still untold is replaced as the
-// union of the two (joined).
+// behind that record's sentence (Delivery.message), and so does the relaunch of a claim Envoy
+// cannot reach, whatever its process ended (letGoCause.relaunch). A record still untold is
+// replaced as the union of the two (joined).
 //
 // A claim stored working is in a turn, except where it is working for nothing that runs
 // (endState): while a compaction runs with no turn started under it, since compactStart puts the
@@ -219,16 +231,16 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
 // launch's, the suspension's, the failure's, the retirement's, or the death's charge — carries
 // it, and the untelling with it. So it costs the relaunch one read and waits for nothing else.
-func (m *Machine) recordEnd(ctx context.Context, cause string) {
+func (m *Machine) recordEnd(ctx context.Context, why letGoCause) {
 	m.untellInFlight()
-	if cause == noEnd || m.claim.Locator == nil {
+	if why.cause == noEnd || m.claim.Locator == nil {
 		return
 	}
 	if held := m.claim.EndedWork; held.Cause != "" && held.Generation == m.claim.Generation {
 		return
 	}
 	state := m.endState()
-	ended := EndedWork{Cause: cause, Generation: m.claim.Generation, Turn: state == StateWorking}
+	ended := EndedWork{Cause: why.cause, Generation: m.claim.Generation, Turn: state == StateWorking}
 	// The pending task's turn was cut off where this let-go's own decision takes the task back
 	// (interrupted, cutTurnOf), whatever the claim's state: a turn that ended before its prompt's
 	// result came leaves the claim idle with the task confirmed, and a take-back from there sends
@@ -251,17 +263,18 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	// A report read before the claim's last turn began has said nothing about that turn
 	// (claim.ReadSessionWork), so it is no report of it, though the background work it saw is
 	// kept above. LastTurnStart is the daemon's first word of the turn: its agent_start as read
-	// (beginTurn); the busy answer that recorded the turn, until that start is read
-	// (recordBusyTurn); or the agent's answer that it is streaming, which puts a restored ready or
-	// idle claim in working (sendPending's askFirst branch, answerAskFirstAfterDrop). A daemon
-	// restarted under a working claim reads the one the daemon before it stored.
+	// (beginTurn, and turnStartedWhileBusy for a turn begun under a compaction); the busy answer
+	// that recorded the turn, until that start is read (recordBusyTurn); or the agent's answer that
+	// it is streaming, which puts a restored ready or idle claim in working (sendPending's askFirst
+	// branch, answerAskFirstAfterDrop). A daemon restarted under a working claim reads the one the
+	// daemon before it stored.
 	ended.Reported = reported && !(ranTurn && report.At.Before(m.claim.LastTurnStart))
-	if !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) {
+	if !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) && !why.relaunch {
 		return
 	}
 	ended.At = m.deps.Clock.Now()
 	m.log.Warn("supervise: the relaunch ended work the agent had running",
-		"cause", cause, "generation", ended.Generation, "turn", ended.Turn, "taskTurn", ended.TaskTurn,
+		"cause", why.cause, "generation", ended.Generation, "turn", ended.Turn, "taskTurn", ended.TaskTurn,
 		"background", ended.Background, "kinds", ended.Kinds, "reported", ended.Reported,
 		"delivery", pendingID(m.claim.Pending))
 	if held := m.claim.EndedWork; held.Tells() {
@@ -283,7 +296,7 @@ func (m *Machine) recordGoneEnd(ctx context.Context, cause string) {
 	if p := m.claim.Pending; p != nil && !p.ConfirmedAt.IsZero() {
 		m.cutTurnOf = p.ID
 	}
-	m.recordEnd(ctx, cause)
+	m.recordEnd(ctx, letGoCause{cause: cause})
 }
 
 // endState is the claim's state as a let-go reads it for the turn it cuts off (recordEnd): the

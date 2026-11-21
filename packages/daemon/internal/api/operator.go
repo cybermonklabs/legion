@@ -164,6 +164,9 @@ type OperatorClaim struct {
 	// its process or failed for another reason. The controller's claim is on no claim view of the
 	// state, so these routes are where its cause is read.
 	LeakCheckCause string `json:"leakCheckCause,omitempty"`
+	// Unreachable is the daemon's mark of a claim Envoy cannot reach, as the agents' claim view
+	// carries it (ClaimView.Unreachable), and absent while it is reachable.
+	Unreachable *UnreachableView `json:"unreachable,omitempty"`
 }
 
 // BudgetsView is the claim's retry counters (`supervise.Budgets`).
@@ -325,6 +328,7 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 		Step:             StepViewOf(step),
 		Failure:          FailureViewOf(c),
 		LeakCheckCause:   c.LeakCheckCause,
+		Unreachable:      UnreachableViewOf(c.Reach),
 	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{
@@ -366,6 +370,17 @@ func (s *server) operatorAnswer(ctx context.Context, c supervise.Claim) Operator
 			"claim", c.Token, "error", err)
 		step = supervise.StepRecord{}
 	}
+	// The mark of a claim Envoy cannot reach is read the same way and for the same reason: the
+	// reach keeper writes it through a narrow call of its own and never into a machine's claim, so
+	// the machine's copy is the mark as it stood at this daemon's boot. A failed read answers the
+	// claim unmarked, with a Warn, rather than that copy.
+	reach, err := s.supervisor.Reach(ctx, c.Token)
+	if err != nil {
+		s.log.Warn("api: read the reach record of an operator's claim; answering it unmarked",
+			"claim", c.Token, "error", err)
+		reach = supervise.Reach{}
+	}
+	c.Reach = reach
 	return operatorView(c, step)
 }
 
@@ -968,10 +983,11 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(claims, func(i, j int) bool { return claims[i].Token < claims[j].Token })
 	views := make([]OperatorClaim, len(claims))
 	for i, c := range claims {
-		step := c.Step
+		step, reach := c.Step, c.Reach
 		if m, ok := s.supervisor.Machine(c.Token); ok {
 			c = m.View().Claim
 		}
+		c.Reach = reach
 		views[i] = operatorView(c, step)
 	}
 	rounds := PodUpdateRounds{}

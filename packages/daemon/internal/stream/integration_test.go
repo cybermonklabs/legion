@@ -334,15 +334,22 @@ type fakeOMPShim struct {
 	process     *exec.Cmd
 }
 
-// startFakeOMPShim starts the real shim against addr. env is appended to the environment the
-// shim inherits and passes on to the process it wraps, which is how a test names the workspace
-// the shim adopts (LEGION_WORKSPACE) and the home its jj reads its configuration from; a test
-// that needs neither passes nil.
+// startFakeOMPShim starts the real shim against addr, as the claim's current generation. env is
+// appended to the environment the shim inherits and passes on to the process it wraps, which is
+// how a test names the workspace the shim adopts (LEGION_WORKSPACE) and the home its jj reads
+// its configuration from; a test that needs neither passes nil.
 func startFakeOMPShim(t *testing.T, legion, addr string, env []string, flags ...string) *fakeOMPShim {
+	t.Helper()
+	return startFakeOMPShimAs(t, legion, addr, integrationToken, env, flags...)
+}
+
+// startFakeOMPShimAs is that shim started with a boot token of the test's choosing: what a
+// second process of one claim, of another launch generation, dials with.
+func startFakeOMPShimAs(t *testing.T, legion, addr, bootToken string, env []string, flags ...string) *fakeOMPShim {
 	t.Helper()
 	work := t.TempDir()
 	tokenPath := filepath.Join(work, "boot-token")
-	if err := os.WriteFile(tokenPath, []byte(integrationToken+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(tokenPath, []byte(bootToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	self, err := os.Executable()
@@ -581,7 +588,7 @@ func bridge(t *testing.T, legion, addr string) {
 	}
 
 	// The daemon goes away. The connection's Closed is the last thing the listener reports.
-	if rest := first.close(t); !reflect.DeepEqual(rest, []stream.Event{stream.Closed{Claim: integrationClaim}}) {
+	if rest := first.close(t); !reflect.DeepEqual(rest, []stream.Event{stream.Closed{Claim: integrationClaim, Generation: integrationGeneration}}) {
 		t.Fatalf("after the listener closed, its last events were %#v, want only Closed", rest)
 	}
 	if lines := first.warnings(); len(lines) != 0 {
@@ -638,7 +645,7 @@ func bridge(t *testing.T, legion, addr string) {
 	if err := conn.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	second.expect(t, stream.Closed{Claim: integrationClaim})
+	second.expect(t, stream.Closed{Claim: integrationClaim, Generation: integrationGeneration})
 	select {
 	case <-shim.exited:
 		var exit *exec.ExitError
@@ -702,7 +709,7 @@ func TestTheRealShimRedialsAHelloTheDaemonCouldNotResolve(t *testing.T) {
 	if err := conn.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	d.expect(t, stream.Closed{Claim: integrationClaim})
+	d.expect(t, stream.Closed{Claim: integrationClaim, Generation: integrationGeneration})
 	select {
 	case <-shim.exited:
 	case <-time.After(integrationWait):
@@ -713,5 +720,49 @@ func TestTheRealShimRedialsAHelloTheDaemonCouldNotResolve(t *testing.T) {
 	if len(lines) != 1 || !strings.Contains(lines[0], "worker-stream: could not resolve a hello's boot token; the shim redials") ||
 		!strings.Contains(lines[0], "read claim: context deadline exceeded") {
 		t.Fatalf("the listener logged %q, want only the failed read", lines)
+	}
+}
+
+// Two real shims of one claim, which is what the 12 minutes 50 seconds of 2026-11-12 were: the
+// daemon launched a newer generation once its runtime reported the older process gone, and the
+// older process was still connected (R3).
+//
+// The newer shim's first hello sends the older connection its stop frame; that shim ends its
+// wrapped process and exits with its status; the claim's binding goes with it, and the newer
+// shim's next hello is acked, spawns its own OMP and leaves no lock-out behind.
+func TestTheRealShimOfAnOlderGenerationStopsSoTheNewerBinds(t *testing.T) {
+	const newerIntegrationToken = integrationToken + "-newer"
+	legion := buildLegion(t)
+	d := listen(t, "tcp://127.0.0.1:0", func(bootToken string) (claim.Token, uint64, bool, bool, error) {
+		switch bootToken {
+		case integrationToken:
+			return integrationClaim, integrationGeneration, false, true, nil
+		case newerIntegrationToken:
+			return integrationClaim, integrationGeneration + 1, false, true, nil
+		}
+		return "", 0, false, false, nil
+	})
+
+	older := startFakeOMPShimAs(t, legion, d.listener.Addr(), integrationToken, nil)
+	d.expect(t, stream.Hello{Claim: integrationClaim, Generation: integrationGeneration})
+	testwait.Eventually(t, "the older shim to spawn OMP after its ack", older.childStarted)
+
+	newer := startFakeOMPShimAs(t, legion, d.listener.Addr(), newerIntegrationToken, nil)
+
+	select {
+	case <-older.exited:
+		var exit *exec.ExitError
+		if !errors.As(older.waitErr, &exit) || exit.ExitCode() != 128+int(syscall.SIGTERM) {
+			t.Fatalf("the older shim exited with %v, want exit status 143 (its OMP ended by SIGTERM)", older.waitErr)
+		}
+	case <-time.After(integrationWait):
+		t.Fatalf("the older shim did not end on the daemon's stop frame; its output:\n%s", older.output.String())
+	}
+	d.expect(t,
+		stream.Closed{Claim: integrationClaim, Generation: integrationGeneration},
+		stream.Hello{Claim: integrationClaim, Generation: integrationGeneration + 1})
+	testwait.Eventually(t, "the newer shim to spawn OMP once it bound", newer.childStarted)
+	if out, locked := d.listener.LockedOut(integrationClaim); locked {
+		t.Fatalf("the claim is still locked out once its current process bound: %#v", out)
 	}
 }

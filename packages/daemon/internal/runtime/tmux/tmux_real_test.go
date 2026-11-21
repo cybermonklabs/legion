@@ -2108,3 +2108,154 @@ func TestRealTmuxAPaneAStaleSweepAdoptedIsReapedByTheNextSweep(t *testing.T) {
 		t.Errorf("the pane of a claim the sweep still names did not survive: %+v", obs)
 	}
 }
+
+// The named services an agent started through Oh My Pi's worker-daemon broker end with the
+// agent's process, as they end with a role's PID namespace in an issue pod (R5): at a stop (a
+// relaunch's first half), and at the next launch after the process died. The broker runs in a
+// session of its own, so the pane's end leaves it and its services running, and a resumed session
+// would take them over. Another claim's service, of the same daemon and broker kind, is left
+// running throughout.
+func TestRealTmuxTheNamedServicesAnAgentStartedEndWithIt(t *testing.T) {
+	r := newRig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	first := r.spec("LEGION-1", "LEGION-1", claim.RoleArchitect)
+	other := r.spec("LEGION-2", "LEGION-2", claim.RoleArchitect)
+
+	start := func(spec runtime.SpawnSpec, delivery, name string) serviceRecord {
+		t.Helper()
+		conn := r.stream.await(t, spec.Claim)
+		if err := conn.Prompt(ctx, delivery, "start a service "+name); err != nil {
+			t.Fatalf("Prompt %s: %v", spec.Claim, err)
+		}
+		conn.awaitEvent(t, shimwire.TypeAgentStart)
+		record := readServiceRecord(t, r.workspace(spec.Issue), name)
+		t.Cleanup(func() { killIfServiceRuns(record.Service); killIfServiceRuns(record.Broker) })
+		if !serviceRuns(record.Service) {
+			t.Fatalf("%s's service %s (pid %d) does not run after its start", spec.Claim, name, record.Service)
+		}
+		return record
+	}
+
+	loc, err := r.rt.Spawn(ctx, first)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	registration := r.daemon.awaitReady(t, first.BootToken)
+	otherLoc, err := r.rt.Spawn(ctx, other)
+	if err != nil {
+		t.Fatalf("Spawn the other claim: %v", err)
+	}
+	r.daemon.awaitReady(t, other.BootToken)
+	kept := start(other, "other-1", "other-svc")
+
+	// A stop ends the agent's service.
+	stopped := start(first, "delivery-1", "first-svc")
+	if err := r.rt.Suspend(ctx, loc); err != nil {
+		t.Fatalf("Suspend: %v", err)
+	}
+	awaitGone(t, r.rt, loc, "suspend")
+	if !awaitServiceEnds(stopped.Service, 10*time.Second) {
+		t.Errorf("the service its agent started (pid %d, broker %d) outlived the agent's stop", stopped.Service, stopped.Broker)
+	}
+	if !serviceRuns(kept.Service) {
+		t.Errorf("another claim's service (pid %d) ended with this claim's stop", kept.Service)
+	}
+
+	// The relaunch's second half: the resumed agent starts a service, and its process dies.
+	resumed := r.spec("LEGION-1", "LEGION-1", claim.RoleArchitect)
+	resumed.ResumeSessionFile = registration.OmpSessionFile
+	loc2, err := r.rt.Resume(ctx, &loc, resumed)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	r.daemon.awaitReady(t, resumed.BootToken)
+	died := start(resumed, "delivery-2", "died-svc")
+	if err := syscall.Kill(-panePid(t, loc2), syscall.SIGKILL); err != nil {
+		t.Fatalf("kill the agent's process group: %v", err)
+	}
+	awaitGone(t, r.rt, loc2, "death")
+	if !serviceRuns(died.Service) {
+		t.Fatalf("the service (pid %d) ended with its agent's death, so this rig cannot show the next launch ending it", died.Service)
+	}
+
+	// The next launch, of the next generation, ends what the dead generation left.
+	next := r.spec("LEGION-1", "LEGION-1", claim.RoleArchitect)
+	next.Generation = resumed.Generation + 1
+	r.daemon.mu.Lock()
+	entry := r.daemon.claims[next.BootToken]
+	entry.generation = next.Generation
+	r.daemon.claims[next.BootToken] = entry
+	r.daemon.mu.Unlock()
+	next.ResumeSessionFile = registration.OmpSessionFile
+	loc3, err := r.rt.Resume(ctx, &loc2, next)
+	if err != nil {
+		t.Fatalf("Resume after the death: %v", err)
+	}
+	if !awaitServiceEnds(died.Service, 10*time.Second) {
+		t.Errorf("the service the dead agent started (pid %d, broker %d) outlived the next launch", died.Service, died.Broker)
+	}
+	if !serviceRuns(kept.Service) {
+		t.Errorf("another claim's service (pid %d) ended with this claim's next launch", kept.Service)
+	}
+	r.daemon.awaitReady(t, next.BootToken)
+	if err := r.rt.Release(ctx, runtime.Known{Claim: loc3.Claim, Locator: &loc3}); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	// Retiring the other claim ends its service too.
+	if err := r.rt.Release(ctx, runtime.Known{Claim: otherLoc.Claim, Locator: &otherLoc}); err != nil {
+		t.Fatalf("Release the other claim: %v", err)
+	}
+	if !awaitServiceEnds(kept.Service, 10*time.Second) {
+		t.Errorf("the other claim's service (pid %d) outlived its claim's release", kept.Service)
+	}
+}
+
+// serviceRecord is what the stand-in's broker writes once its service runs.
+type serviceRecord struct {
+	Service int `json:"service"`
+	Broker  int `json:"broker"`
+}
+
+func readServiceRecord(t *testing.T, workspace, name string) serviceRecord {
+	t.Helper()
+	path := filepath.Join(workspace, "service-"+name+".json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the service record %s: %v", path, err)
+	}
+	var record serviceRecord
+	if err := json.Unmarshal(raw, &record); err != nil || record.Service <= 0 || record.Broker <= 0 {
+		t.Fatalf("the service record %s = %s (%v)", path, raw, err)
+	}
+	return record
+}
+
+// serviceRuns is whether pid is a process that has not exited.
+func serviceRuns(pid int) bool {
+	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return false
+	}
+	text := string(raw)
+	end := strings.LastIndexByte(text, ')')
+	fields := strings.Fields(text[end+1:])
+	return end >= 0 && len(fields) > 0 && fields[0] != "Z" && fields[0] != "X"
+}
+
+func awaitServiceEnds(pid int, within time.Duration) bool {
+	for deadline := time.Now().Add(within); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if !serviceRuns(pid) {
+			return true
+		}
+	}
+	return false
+}
+
+// killIfServiceRuns ends a service a failed test left, by its exact pid.
+func killIfServiceRuns(pid int) {
+	if serviceRuns(pid) {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}

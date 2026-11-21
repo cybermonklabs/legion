@@ -927,30 +927,46 @@ func (r *Runtime) Suspend(ctx context.Context, loc runtime.Locator) error {
 	if err := r.checkLocator(loc); err != nil {
 		return err
 	}
-	s, err := r.storedSandbox(loc.Sandbox.Name)
+	runs, err := r.mayRun(loc)
 	if err != nil {
 		return fmt.Errorf("suspend %s: %w", loc.Claim, err)
 	}
-	if s == nil {
-		r.forgetIf(loc)
-		return nil
-	}
-	pod := r.storedPod(loc.Sandbox.Name)
-	if !ownedBy(pod, s.UID) || string(pod.UID) != loc.Sandbox.PodUID || terminal(pod) {
-		r.forgetIf(loc)
-		return nil
-	}
-	if state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID); connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
-		r.forgetIf(loc)
-		return nil
-	}
-	stopping, cancel := context.WithTimeout(ctx, r.bootTimeout+r.terminationGrace)
-	defer cancel()
-	if err := r.launchers.stop(stopping, loc.Claim, loc.Sandbox.PodUID, r.stopFrame(loc.Sandbox.Generation)); err != nil {
-		return fmt.Errorf("suspend %s: %w", loc.Claim, err)
+	if runs {
+		if err := r.stopGeneration(ctx, loc); err != nil {
+			return fmt.Errorf("suspend %s: %w", loc.Claim, err)
+		}
 	}
 	r.forgetIf(loc)
 	return nil
+}
+
+// mayRun is whether loc's process may still be running, as the stores and its launcher read: its
+// Sandbox there, its pod there, still loc's and not ended, and its launcher, where it is connected,
+// running loc's generation. A process its pod or launcher shows already ended — the Sandbox gone,
+// the pod replaced or gone, the launcher running no child or another generation — is stopped
+// already, and nothing is sent to stop it (Suspend, StopForRelaunch).
+func (r *Runtime) mayRun(loc runtime.Locator) (bool, error) {
+	s, err := r.storedSandbox(loc.Sandbox.Name)
+	if err != nil || s == nil {
+		return false, err
+	}
+	pod := r.storedPod(loc.Sandbox.Name)
+	if !ownedBy(pod, s.UID) || string(pod.UID) != loc.Sandbox.PodUID || terminal(pod) {
+		return false, nil
+	}
+	if state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID); connected && (state.Child == nil || state.Child.Generation != loc.Sandbox.Generation) {
+		return false, nil
+	}
+	return true, nil
+}
+
+// stopGeneration stops loc's generation through its role's launcher, which answers once the child
+// has exited: bounded by the boot timeout, for a launcher that has not connected yet, and the stop
+// grace the frame hands it (stopFrame).
+func (r *Runtime) stopGeneration(ctx context.Context, loc runtime.Locator) error {
+	stopping, cancel := context.WithTimeout(ctx, r.bootTimeout+r.terminationGrace)
+	defer cancel()
+	return r.launchers.stop(stopping, loc.Claim, loc.Sandbox.PodUID, r.stopFrame(loc.Sandbox.Generation))
 }
 
 // stopFrame stops generation's child within the runtime's stop grace. Its id is the generation's,

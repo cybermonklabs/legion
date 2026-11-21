@@ -2349,7 +2349,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
 		"slots":                  {"issue", "index", "admitted_at"},
 		"processed_events":       {"source", "event_id", "processed_at"},
-		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
+		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_at", "stored_for", "stored_generation", "held_by_pause"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {
@@ -2621,15 +2621,15 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	if known, err := st.PutClaimStep(ctx, tester, supervise.StepRecord{At: stepped, TurnStartedAt: turnStarted}); err != nil || !known {
 		t.Fatalf("record the step of the tester's claim = %t, %v", known, err)
 	}
-	// The activity columns are written by their own call too (store's PutClaimActivity), and a
-	// report dated ahead of the daemon's clock is bounded to it, so the fixture reports in the
-	// past: a session that found background work running with its phase reminder armed.
+	// The activity columns are written by their own call too (store's PutClaimActivity), dated by
+	// the moment the daemon received the report: a session that found background work running
+	// with its phase reminder armed, received a minute ago.
 	reported := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
 	reminder := reported.Add(10 * time.Minute)
 	if known, err := st.PutClaimActivity(ctx, tester, held.Generation, claim.SessionActivity{At: reported,
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}},
 		Phase:          claim.PhaseActivity{NextReminderAt: &reminder},
-	}); err != nil || !known {
+	}, reported); err != nil || !known {
 		t.Fatalf("record the activity of the tester's claim = %t, %v", known, err)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
@@ -2658,7 +2658,7 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 				read.Step, stepped, turnStarted)
 		}
 		if !read.ActivityAt.Equal(reported) || !read.ActivityBackground || !read.ActivityNextReminderAt.Equal(reminder) {
-			t.Fatalf("the activity of the tester's claim = %s, background %v, reminder %s, want the report of background work at %s with its reminder due at %s",
+			t.Fatalf("the activity of the tester's claim = %s, background %v, reminder %s, want the report of background work received at %s with its reminder due at %s",
 				read.ActivityAt, read.ActivityBackground, read.ActivityNextReminderAt, reported, reminder)
 		}
 		if _, found := claims[merger]; found {

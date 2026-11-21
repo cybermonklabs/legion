@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 202,
-    "caller": 202
+    "daemon": 203,
+    "caller": 203
   },
   "admission": {
     "cap": 5,
@@ -81,6 +81,10 @@
             "wake": {
               "kind": "plugin-refresh",
               "dueAt": "2026-09-22T09:17:56Z"
+            },
+            "unreachable": {
+              "since": "2026-09-22T08:51:40Z",
+              "lastSeen": "2026-09-22T08:51:40Z"
             }
           },
           "handoffCommit": "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40",

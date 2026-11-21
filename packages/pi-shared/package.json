@@ -61,6 +61,10 @@
       "types": "./src/daemon-client.ts",
       "bun": "./src/daemon-client.ts"
     },
+    "./daemon-wait": {
+      "types": "./src/daemon-wait.ts",
+      "bun": "./src/daemon-wait.ts"
+    },
     "./handoff-record": {
       "types": "./src/handoff-record.ts",
       "bun": "./src/handoff-record.ts"

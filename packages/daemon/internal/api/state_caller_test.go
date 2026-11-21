@@ -378,6 +378,38 @@ func withoutLeakCheckCauses(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutUnreachableMarks is a state body with no claim view carrying `unreachable`, which is what
+// a caller below unreachableContract is served of a state that carries one (api's
+// withoutUnreachableLocator and withoutUnreachableClaims). It serves the table below as
+// withoutLeakCheckCauses does.
+func withoutUnreachableMarks(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		issue := issue.(map[string]any)
+		views := []any{issue["architect"]}
+		for _, worker := range issue["workers"].(map[string]any) {
+			views = append(views, worker.(map[string]any)["claim"])
+		}
+		for _, view := range views {
+			if view, ok := view.(map[string]any); ok {
+				delete(view, "unreachable")
+			}
+		}
+	}
+	if locator, ok := served["controllerLocator"].(map[string]any); ok {
+		delete(locator, "unreachable")
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its unreachable marks: %v", body, err)
+	}
+	return encoded
+}
+
 // stripAnswerKeys takes the answer keys off one issue of a decoded state body: its `why`, and
 // every field of its waiting-line view beside the `place` and the `length` waitingLineContract
 // added before it. The two go together because they are one contract and one strip on the
@@ -574,6 +606,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// `repositories.refused` (repositoryAppsContract, the contract that added it), so a pod
 		// at it or above is served the key and every older pod is not.
 		apps bool
+		// unreachable is whether the caller is served a claim view's `unreachable`
+		// (unreachableContract), this daemon's own contract.
+		unreachable bool
 		// pause is whether the caller is served the project's pause, `paused` here
 		// (pauseContract, the contract that added it beside `lastPause`), so a pod at it or above
 		// is served the key and every older pod is not.
@@ -633,34 +668,37 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: mergeWaitContract},
 		// The band from assignmentsContract to below entryTimesContract: the assignments are
 		// served too, and the entry times and the architect-stalled arms, the repositories'
-		// `apps`, the pause, and the claim views' keys of contract 193, are the four bands left
-		// above it, at the band's foot and at its top alike.
+		// `apps`, the pause, the claim views' keys of contract 193 and the claim views'
+		// `unreachable` are the five bands left above it, at the band's foot and at its top alike.
 		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: assignmentsContract, assigned: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: entryTimesContract - 1, assigned: true},
 		// The band from entryTimesContract to below repositoryAppsContract: the entry times and
-		// the architect-stalled arms are served too, and the repositories' `apps`, the pause and the
-		// claim views' keys of contract 193 are the three bands left above it, at the band's foot
-		// and at its top alike.
+		// the architect-stalled arms are served too, and the repositories' `apps`, the pause, the
+		// claim views' keys of contract 193 and their `unreachable` are the four bands left above
+		// it, at the band's foot and at its top alike.
 		{name: "a pod at entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: entryTimesContract, assigned: true, times: true},
 		{name: "a pod just below repositoryAppsContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryAppsContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: repositoryAppsContract - 1, assigned: true, times: true},
 		// The band from repositoryAppsContract to below pauseContract: the repositories' `apps`
-		// are served too, and the pause and the claim views' keys of contract 193 are the two bands
-		// left above it, at the band's foot and at its top alike.
+		// are served too, and the pause, the claim views' keys of contract 193, the repositories
+		// block this daemon writes and the claim views' `unreachable` are the four bands left above
+		// it, at the band's foot and at its top alike.
 		{name: "a pod at repositoryAppsContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryAppsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: repositoryAppsContract, assigned: true, times: true, apps: true},
 		{name: "a pod just below pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract - 1, assigned: true, times: true, apps: true},
 		// The band from pauseContract to below shapedAnswersContract: the project's pause is served
-		// too, and the claim views' keys of contract 193 and the repositories block this daemon
-		// writes, which is served in contract 152's shape, are the two bands left above it.
+		// too, and the claim views' keys of contract 193, the repositories block this daemon writes,
+		// which is served in contract 152's shape, and the claim views' `unreachable` are the three
+		// bands left above it.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract, assigned: true, times: true, apps: true, pause: true},
 		// A pod whose claims record shapedAnswersContract, from which every build states its
 		// contract in the header. Such a pod is in no pod reading: podContracts leaves out a claim
 		// at shapedAnswersContract or above, for that reason. So the reading falls through to the
 		// body this daemon writes, which carries every key, the repositories block this contract
-		// writes among them, and the row names DaemonAPIVersion: a later contract than
-		// shapedAnswersContract has landed, so the two are no longer equal.
-		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true},
+		// writes and `unreachable` among them, and the row names DaemonAPIVersion: a later contract
+		// than shapedAnswersContract has landed, so the two are no longer equal.
+		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, unreachable: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, unreachable: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, unreachable: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, unreachable: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -738,6 +776,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				}
 				if !tc.apps {
 					want = withoutRepositoryAppsKey(t, want)
+				}
+				if !tc.unreachable {
+					want = withoutUnreachableMarks(t, want)
 				}
 				if !tc.pause {
 					want = withoutPausedKey(t, want)
@@ -853,11 +894,13 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					// Every row that reaches here is below shapedAnswersContract, below
 					// leakCheckCauseContract and below recordFieldsContract too, so none of its
 					// callers is served the two keys contract 193 added to a claim view, the
-					// `leakCheckCause` contract 87 added or the six the decided record added.
+					// `leakCheckCause` contract 87 added, the six the decided record added or the
+					// `unreachable` contract 203 added.
 					for _, key := range roundReportKeys {
 						delete(view, key)
 					}
 					delete(view, "leakCheckCause")
+					delete(view, "unreachable")
 					for _, key := range recordFieldClaimKeys {
 						delete(view, key)
 					}

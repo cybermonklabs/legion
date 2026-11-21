@@ -200,7 +200,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// instead is older than every time this test asserts and is hidden by the same monotone rule,
 	// which no fixture whose stamps run ahead of real time can show.
 	if known, err := records.PutClaimActivity(ctx, awaitingArchitect(t, movedIssue), 1,
-		claim.SessionActivity{At: ahead, BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"subagent"}}}); err != nil || !known {
+		claim.SessionActivity{At: ahead, BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"subagent"}}}, ahead); err != nil || !known {
 		t.Fatalf("report the activity of the architect claim of %s = %t, %v", movedIssue, known, err)
 	}
 	assertMoved("a claim's session activity report carrying a time ahead of the record's", at(6))

@@ -349,6 +349,12 @@ interface StandinHooks {
    */
   readonly ready?: Hold;
   /**
+   * Called with the body of each `POST /legion/v1/claims/activity` the controller sends, which
+   * the stand-in answers 204 as the daemon does: the activity report the daemon-launched controller
+   * makes as a worker does (R5).
+   */
+  readonly onActivity?: (body: Record<string, unknown>) => void;
+  /**
    * Called with the session's id and the topics of each listener registration
    * (`/v1/interests/subscribe`) as it arrives. The Response it answers with, when it gives one,
    * is the listener's own in place of the interest the stand-in would give: a refusal there is
@@ -472,6 +478,10 @@ async function serveController(
     }
     if (url.pathname === "/legion/v1/claims/ready") {
       await hooks.ready?.wait();
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname === "/legion/v1/claims/activity") {
+      hooks.onActivity?.(body);
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/legion/v1/grants") {
@@ -1809,6 +1819,64 @@ test.skipIf(skip)(
       (await session.state()).isSettled ? true : undefined
     );
     expect(session.turns).toHaveLength(2);
+  },
+  CASE_TIMEOUT_MS
+);
+
+// R5: the daemon relaunches its own controller when Envoy cannot reach it, under the guard that
+// reads the claim's last activity report since its launch, so on the real Oh My Pi the controller
+// it launched reports as a worker does, under the claim token, session and secret its registration
+// answered: between turns on its interval when what it says has changed, and at the end of every
+// turn whatever it says. The case waits for the interval's first report before it starts a turn;
+// nothing changes between turns after that, so the second report is the start turn's own.
+test.skipIf(skip)(
+  "the daemon-launched controller reports its activity under its registration, between turns and at its start turn's end",
+  async () => {
+    const reports: Record<string, unknown>[] = [];
+    let sid: string | undefined;
+    const session = await startDaemonController({
+      onRoleClaim: (claimed) => {
+        sid = claimed;
+      },
+      onActivity: (body) => {
+        reports.push(body);
+      },
+    });
+    const claimed = await session.until("the controller role's claim", () => sid);
+    const { secret } = z
+      .looseObject({ secret: z.string() })
+      .parse(
+        JSON.parse(
+          await readFile(
+            path.resolve(
+              import.meta.dir,
+              "../../contracts/fixtures/daemon-api/register-controller.json"
+            ),
+            "utf8"
+          )
+        )
+      );
+    const idle = {
+      claimToken: controllerToken(PROJECT),
+      sessionId: claimed,
+      secret,
+      activity: {
+        at: expect.any(String),
+        backgroundWork: { running: false, kinds: [] },
+        phase: { nextReminderAt: null },
+      },
+    };
+    await session.until("the interval's first activity report", () =>
+      reports.length > 0 ? true : undefined
+    );
+    expect(reports).toEqual([idle]);
+
+    session.deliver(START_MESSAGE);
+    (await session.nextTurn("the start turn's model request")).reply("Start procedure done.");
+    await session.until("the start turn's activity report", () =>
+      reports.length > 1 ? true : undefined
+    );
+    expect(reports).toEqual([idle, idle]);
   },
   CASE_TIMEOUT_MS
 );

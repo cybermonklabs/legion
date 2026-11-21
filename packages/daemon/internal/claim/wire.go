@@ -186,12 +186,13 @@ type TurnOutcomeResponse struct {
 	Failed     bool `json:"failed"`
 }
 
-// ActivityRequest is a live role's session reporting what it is doing, after each of its turns
-// and whenever the report's content changes, so the idle rule can decide whether the session's
-// pod may be released (INFRA-945). It carries no generation: it decides nothing about the claim,
-// and a relaunch mints a secret of its own, so the secret the registration issued is the whole
-// fence. A claim with no report after its last turn is never released, which is what makes a host
-// that cannot report safe.
+// ActivityRequest is a live role's session reporting what it is doing, after each of its turns,
+// whenever the report's content changes and, on Oh My Pi, every 5 minutes while a turn is open
+// whatever it says, so the idle rule can decide whether the session's pod may be released and the
+// relaunch guard can read a turn as still running (R5, supervise.RelaunchGuard). It carries no
+// generation: it decides nothing about the claim, and a relaunch mints a secret of its own, so the
+// secret the registration issued is the whole fence. A claim with no report after its last turn
+// is never released, which is what makes a host that cannot report safe.
 type ActivityRequest struct {
 	ClaimToken Token           `json:"claimToken"`
 	SessionID  string          `json:"sessionId"`

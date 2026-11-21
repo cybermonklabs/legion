@@ -40,11 +40,12 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   So does every server `packages/envoy/internal/testnats` and `packages/daemon/internal/testnats` start: an in-process server's relay and nats-server's own client, monitoring and route listeners, and a container's published client port (the daemon's containers' monitoring port too), so a leftover client cannot reach it, whichever port it gets.
   So do the `nats-server` processes `packages/envoy/infra/gcp`'s natslive tests run as the clustered hub's pods: each test's servers listen at one such address (`-a`), with their ports reserved there (`reservePortsOn`).
   A port another process binds, such as the host side of a port Docker publishes, is chosen by the kernel on that address (`testport.LoopbackPorts`): Docker asked for port 0 picks from its own record of what it has published there, and in envoy-infra-go it picked a port already held. The probe is released before the bind, so a start a taken port refuses (`testport.AddressInUse`) is tried again on a fresh address and port.
-  Four listeners stay where they were, each for its own reason.
+  Five exceptions stay where they were, each for its own reason.
   `internal/testnats/cmd/natsd`, the standalone server of the scripts and the TypeScript stacks, stays on `127.0.0.1`: no Go test runs it.
   `internal/smoke`'s NATS container keeps Docker's default binding: envoy-smoke runs that binary alone on its runner, and its one client, the listener container, reaches it over the Docker network.
   `infra/core`'s `nats_monitor_test.go` server keeps the address its start script binds, which is what that test checks.
   `infra/host/heldportwrapper`'s test address accepts no connection, so a stranger changes nothing it checks.
+  `internal/daemon`'s live rig server (`rig_nats_live_test.go`) and `internal/testenvoy`'s Envoy listener (`ENVOY_LISTEN_HOST`, its port handed over as `ENVOY_LISTEN_FD`) stay on `127.0.0.1`: the rig's file is tagged `e2e`, so only `scripts/e2e`'s live-rig scripts build it, never `go test ./...`, and it holds its server's client port bound while that server is stopped (`holdClientPort`); outside the rig, a testenvoy listener's only clients are its own test's one-off HTTP requests, which redial nothing.
   A test still closes every client it opens before its server, and registers the close as soon as the connect succeeds, so a setup that fails closes it too: `cmd/listener`'s `setupTestNATS` left ten tests' bus clients dialing for minutes after their tests had ended, and they reached the test servers of other packages' binaries.
 
 - A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
@@ -515,6 +516,33 @@ database they are given).
 A test that needs one of envoy's binaries takes it from
 `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test
 process and removes the directory when `testbuild.Main` ends the run.
+
+A test that needs the Envoy listener itself, rather than the stand-in the daemon's live proofs
+read their own publishes back from, takes it from `packages/daemon/internal/testenvoy`'s `Start`,
+naming the binary it runs: `Start` runs it as its own process against a NATS server the test
+names, as the NATS user whose seed file the test names (`NATSSeedFile`) or as none, holds the
+loopback port open until the listener binds it, and returns once `/healthz` says healthy.
+The three session windows a check may move are its options
+(`ENVOY_SESSION_LIVE_WINDOW`, `ENVOY_SESSION_GONE_HORIZON` and `ENVOY_SESSION_MAX_AGE`), so a
+check that must watch a session read `unresponsive` in seconds says so rather than waiting out
+production's five minutes.
+The helper's own tests run this checkout's listener (`EnvoyBinary(t, "./cmd/listener")`).
+The live checks w1 to w5 of this change run on the rig that
+`packages/daemon/internal/daemon/RIG.md` describes: a listener that `scripts/e2e/lib/live-rig.sh`
+builds from a detached worktree and names in `LEGION_E2E_ENVOY_LISTENER`, a real nats-server with
+the grants that listener's commit renders, and the whole daemon with real Oh My Pi workers. The
+driver takes the listener from `testenvoy.RigBinary`.
+w1, w3, w4 and w5, and the rig's own smoke check, run the listener production pins
+(`testenvoy.PinnedBinary`): `pinned.go` records the image the deployment repository's
+`envoy-cluster/Pulumi.prod.yaml` pins, the commit its revision label names and the build, and
+refuses a binary whose Go build information names another commit or a modified tree.
+They run the pinned listener because a fix in the session's plugin has to work with the
+listener production runs, and because the daemon reads that listener's own session list to say
+which of its claims are out of reach.
+w2 (`scripts/e2e/cut-turn-note.sh`) sets `LEGION_E2E_LISTENER_FROM_CHECKOUT=1` and runs the
+listener of the checkout's own commit instead, built the same way: it tests this change's plugins
+and listener together, and the pinned listener predates the one that lets a controller register
+its notice lane.
 
 A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): the server
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on

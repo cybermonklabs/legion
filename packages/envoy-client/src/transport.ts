@@ -30,7 +30,9 @@ const ENVOY_URL_SETTING = "the configured Envoy URL";
  * past it and inside the gone horizon (an hour), `gone` past that or with no record at all. An
  * unresponsive session is not dead — it keeps its role and issue claims, a message sent to it is
  * stored for it, a message to a role it holds is kept for that role for an hour, and nothing
- * starts a replacement for it.
+ * starts a replacement for it while its last registration is `ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS`
+ * (20 minutes) old or less (`UNRESPONSIVE_RULE`). A Legion claim whose session is older than that
+ * is relaunched on that same session by the controller or the daemon, never replaced by a new one.
  */
 const SessionStateSchema = z.enum(["live", "unresponsive", "gone"]);
 

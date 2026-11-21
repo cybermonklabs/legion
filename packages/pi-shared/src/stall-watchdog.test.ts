@@ -1,8 +1,9 @@
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 // The import above is the whole of this file's merge-base check: on the merge base there is no
 // `./stall-watchdog`, so every test here fails to resolve rather than passing vacuously.
+import { daemonWaitBegan, forgetDaemonWaitsForTests } from "./daemon-wait";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs, type StallLimits } from "./stall-limits";
 import {
   callOverdue,
@@ -21,6 +22,12 @@ import {
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
 const HOUR = 60 * MINUTE;
+
+// The waits a session spent on a daemon that was not serving are process state (the two sides
+// never meet: `src/daemon-wait.ts`), so each case starts with none of another's.
+beforeEach(() => {
+  forgetDaemonWaitsForTests();
+});
 
 /** A wall-clock moment to count from, so every number a failure prints is a difference. */
 const START = 1_793_000_000_000;
@@ -408,6 +415,82 @@ test("an implementer's subagent call open three hours is inside that role's boun
   expect(
     callOverdue(r.watchdog.openCalls()[0] as StallCall, r.now(), limitsFor("implementer"))?.rule
   ).toEqual({ kind: "bound", boundMs: 4 * HOUR });
+});
+
+// A call that waits out a daemon that is not serving is open with no step for as long as the outage
+// lasts (R1), and that is the shape this watch judges. So the time the session spent waiting comes
+// off the call's clock, and the daemon's own backstop floor is raised by the same hour, so a paused
+// watch still finishes first.
+test("a call is not overdue for the time its session spent waiting for a daemon that was not serving", () => {
+  const limits = limitsFor("tester");
+  const call: StallCall = {
+    toolCallId: "toolu_1",
+    toolName: "legion",
+    input: { operation: "handoff_complete" },
+    startedAt: START,
+    deadlineMs: undefined,
+    step: 0,
+    steppedAt: undefined,
+    told: undefined,
+  };
+
+  // Open 90 minutes, 45 of them waiting: 45 minutes of work, inside the role's hour.
+  expect(callOverdue(call, START + 90 * MINUTE, limits, 45 * MINUTE)).toBeUndefined();
+  // Open 90 minutes with no wait at all is the same call overdue by half an hour.
+  expect(callOverdue(call, START + 90 * MINUTE, limits)?.rule).toEqual({
+    kind: "bound",
+    boundMs: HOUR,
+  });
+  // Past the bound again once the work beyond the wait passes the hour.
+  const overdue = callOverdue(call, START + 105 * MINUTE + SECOND, limits, 45 * MINUTE);
+  expect(overdue?.rule).toEqual({ kind: "bound", boundMs: HOUR });
+  // What the owner is told is the time the call was working, not the time it was waiting.
+  expect(overdue?.openMs).toBe(HOUR + SECOND);
+
+  // A call with a deadline of its own is judged the same way.
+  const declared: StallCall = { ...call, deadlineMs: 2 * MINUTE };
+  expect(callOverdue(declared, START + 50 * MINUTE, limits, 45 * MINUTE)).toBeUndefined();
+  expect(callOverdue(declared, START + 50 * MINUTE, limits)?.rule).toEqual({
+    kind: "deadline",
+    deadlineMs: 2 * MINUTE,
+    graceMs: 5 * MINUTE,
+  });
+});
+
+test("the sweep takes the waits this process recorded, with no dep of its own", async () => {
+  forgetDaemonWaitsForTests();
+  const r = rig();
+  running(r.watchdog, "legion", { operation: "handoff_complete" }, "toolu_legion");
+
+  // The daemon stopped serving five minutes in and came back 50 minutes later; the call waited
+  // for it (`src/daemon-client.ts`, retryWhileDaemonRestarts) and went on.
+  daemonWaitBegan("toolu_legion", START + 5 * MINUTE).ended(START + 50 * MINUTE);
+
+  r.tick(HOUR + MINUTE);
+  await r.watchdog.sweep();
+  expect(r.told).toEqual([]);
+  expect(r.steps).toEqual([]);
+
+  // 45 minutes later the same call has been working for an hour, and the watch acts.
+  r.tick(45 * MINUTE);
+  await r.watchdog.sweep();
+  expect(r.told).toHaveLength(1);
+  expect(r.steps.map((step) => step.step)).toEqual(["end-processes"]);
+});
+
+// The pause is the waiting call's alone: a wedged `pty` shell call beside a `legion` call that
+// waits out the daemon is stuck for its own reasons and is still reached. (A wait no tool call
+// owns — the boot's, a role regain's `claims/ready` — records nothing at all:
+// `src/daemon-client.test.ts`.)
+test("a call that is not itself waiting for the daemon is judged as though nothing waited", async () => {
+  forgetDaemonWaitsForTests();
+  const r = rig();
+  running(r.watchdog, "bash", { command: "sleep 100000", pty: true, timeout: 0 }, "toolu_bash");
+  daemonWaitBegan("toolu_legion", START);
+
+  r.tick(HOUR + MINUTE);
+  await r.watchdog.sweep();
+  expect(r.told.map((told) => told.call.toolCallId)).toEqual(["toolu_bash"]);
 });
 
 /** k7's negative control, as it is written: "A worker whose bound is 0 records no call and ends
@@ -976,13 +1059,16 @@ test("the module imports no Oh My Pi module and no node: module", () => {
   const statements = [...source.matchAll(/^import[^"']*["']([^"']+)["']/gm)].map(
     ([statement, specifier]) => ({ specifier, typeOnly: statement.startsWith("import type ") })
   );
-  // Three imports: two of this package's own leaf modules, type-only, and the error coercion
+  // Four imports: three of this package's own leaf modules — `./daemon-wait`, which imports
+  // nothing at all and holds the waits no rule judges a call by, and two type-only ones — and
+  // the error coercion
   // `@legion/envoy-client/errors`, which `src/phase-reminder.ts` imports the same way and which
   // itself imports nothing at all. Nothing of this module reaches a host module or a Node
   // builtin, so the bundle `packages/claude-envoy` builds with no node_modules keeps resolving
   // (`src/envoy-notice.ts`).
   expect(statements).toEqual([
     { specifier: "@legion/envoy-client/errors", typeOnly: false },
+    { specifier: "./daemon-wait", typeOnly: false },
     { specifier: "./pi-types", typeOnly: true },
     { specifier: "./stall-limits", typeOnly: true },
   ]);

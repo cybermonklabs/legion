@@ -12,6 +12,13 @@
 // <cwd>/standin-<pid>.json once registered, for the test to read. A prompt whose message is
 // "ignore SIGTERM" makes it ignore SIGTERM from then on: a process that will not end itself, so a
 // stop has to fall back to killing its pane.
+//
+// A prompt "start a service <name>" does what Oh My Pi's bash tool does for a named service
+// (launch/services.ts, launch/broker.ts at the pin): it starts a broker, a process of its own
+// session whose command line carries `__omp_worker_daemon_broker`, which starts the service,
+// `sleep`, in a session of its own with the environment the agent was started with, and writes
+// <cwd>/service-<name>.json, naming the service's pid and the broker's, for the test to read. The
+// broker, like Oh My Pi's, outlives the agent that started it and stops its service on SIGTERM.
 package main
 
 import (
@@ -23,11 +30,13 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -49,6 +58,13 @@ type Report struct {
 }
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == brokerArg {
+		if err := runBroker(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, "omp-standin broker:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "omp-standin:", err)
 		os.Exit(1)
@@ -198,6 +214,11 @@ func serve(in io.Reader, out io.Writer) error {
 			if f.Message == "ignore SIGTERM" {
 				signal.Ignore(syscall.SIGTERM)
 			}
+			if name, ok := strings.CutPrefix(f.Message, "start a service "); ok {
+				if err := startService(strings.TrimSpace(name)); err != nil {
+					return fmt.Errorf("start the service %s: %w", name, err)
+				}
+			}
 			// OMP acknowledges before the turn starts, which is why the ack is not a delivery.
 			if err = writer.WriteFrame(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true}); err == nil {
 				if err = writer.WriteFrame(shimwire.AgentStart{}); err == nil {
@@ -211,4 +232,68 @@ func serve(in io.Reader, out io.Writer) error {
 			return err
 		}
 	}
+}
+
+// brokerArg is the argument Oh My Pi's broker runs under (launch/broker.ts).
+const brokerArg = "__omp_worker_daemon_broker"
+
+// ServiceRecord is what the broker writes once its service runs.
+type ServiceRecord struct {
+	Service int `json:"service"`
+	Broker  int `json:"broker"`
+}
+
+// startService starts a broker for the named service, in a session of its own, and waits until
+// it has written the service's record.
+func startService(name string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	record := filepath.Join(cwd, "service-"+name+".json")
+	_ = os.Remove(record)
+	broker := exec.Command(os.Args[0], brokerArg, record)
+	broker.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := broker.Start(); err != nil {
+		return err
+	}
+	_ = broker.Process.Release()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if raw, err := os.ReadFile(record); err == nil && len(raw) > 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("the broker wrote no record of %s", name)
+}
+
+// runBroker starts the service in a session of its own, writes its record, and stops the service
+// when it is sent SIGTERM; it stays until then, as Oh My Pi's broker stays while it has clients.
+func runBroker(record string) error {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM)
+	service := exec.Command("sleep", "100000")
+	service.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := service.Start(); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(ServiceRecord{Service: service.Process.Pid, Broker: os.Getpid()})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(record+".tmp", encoded, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(record+".tmp", record); err != nil {
+		return err
+	}
+	exited := make(chan struct{})
+	go func() { _ = service.Wait(); close(exited) }()
+	select {
+	case <-signals:
+		_ = syscall.Kill(-service.Process.Pid, syscall.SIGTERM)
+		<-exited
+	case <-exited:
+		<-signals
+	}
+	return nil
 }

@@ -2390,7 +2390,8 @@ delete from outbox where kind = 'phase_ended';
 #### Rolling back the release that publishes each issue's role sessions to Dispatch
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
-That migration writes the whole list, and its version stands above `20261114031356`, so it writes the list last on any database.
+That migration writes the whole list, and its version stands above `20261114031356` and `20261116082000_reach_notice_kinds`; the later kind lists stand above it in turn, each writing the whole list again, the step records' `20261117000528_outbox_kinds_with_the_step_record`, the plan records' `20261117023932_outbox_kinds_with_the_plan_record` and the merge forward's `20261119003157_conflict_reads_and_merge_forward`, which writes the list last on a database that applies them together, a fresh one among them.
+A database at main's `20261119003157` that has not recorded the release that reports claims out of reach applies that release's `20261116082000` last instead, and that list names `role_holders_publish`, `step_record`, `plan_record`, `conflict_confirm` and `merge_forward` too ([Rolling back the release that reports claims out of reach](#rolling-back-the-release-that-reports-claims-out-of-reach)).
 A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
 The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
 The migration changes no column.
@@ -2432,6 +2433,54 @@ While no Dispatch release reads `issue_role_holders` to record a result, the rol
 After such a release is live, an earlier daemon publishes nothing, and each new or relaunched session records its results with no role.
 So roll Dispatch back first, to the release before that one, and then roll back the daemon.
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
+
+#### Rolling back the release that reports claims out of reach
+
+This release's six migrations add the daemon's record of which claims Envoy cannot reach, of what it told and did about them, of which of its fleet alert lines are open, and of when the daemon received each activity report.
+`20261116012459_claim_reach_and_prior_boot_tokens` adds the columns `claims.reach` and `claims.relaunched_at`, the table `claim_boot_tokens` and the trigger `claims_archive_boot_token`.
+`20261116082000_reach_notice_kinds` adds the outbox kinds `reach_notice` and `reach_controller_notice` to the outbox's kind check (`outbox_kind_check`).
+Its list names `role_holders_publish`, `step_record`, `plan_record`, `conflict_confirm` and `merge_forward` too, and the lists of `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record` and `20261119003157_conflict_reads_and_merge_forward` name both reach kinds, so the check admits every kind whichever of them a database applies last: a database at main's `20261119003157` applies `20261116082000` last, over the rows of those five kinds its outbox holds.
+`20261116092312_reach_records_kept_with_their_acts` adds the columns `outbox.held_at` and `claims.relaunch_generation` and the table `reach_project_notices`.
+`20261116164153_outbox_copy_stored_for_its_session` adds the columns `outbox.stored_for` and `outbox.stored_generation`: the session the listener stored a role message's or hook prompt's publish for (a 504 `receipt_timeout` naming that holder), which reads it from its own consumer, so the row finishes with no new publish once a newer process of the claim says ready on that session.
+`20261118133133_fleet_alert_lines` adds the table `fleet_alert_lines`, one row for each `LEGION FLEET ALERT` line that is open: its project, its case and the claim it names.
+`20261118134019_claim_activity_sent_at` adds the columns `claims.activity_sent_at` and `claims.activity_sent_generation`: the session's own time of its last activity report, and the launch that report was of.
+From this release `claims.activity_at` is the time the daemon received the report, on the daemon's clock, where it was the session's time.
+A rollback needs one SQL statement, the one in **Activity reports go back to the session's time** below.
+
+- **The columns and the tables stay as they stand.**
+  An earlier release names none of `claims.reach`, `claims.relaunched_at`, `claims.relaunch_generation`, `claims.activity_sent_at`, `claims.activity_sent_generation`, `outbox.held_at`, `outbox.stored_for`, `outbox.stored_generation`, `claim_boot_tokens`, `reach_project_notices` or `fleet_alert_lines` in any statement.
+  So its upserts and its outbox retries leave each column as it stands, no statement of its own writes a row of those tables (the trigger below writes `claim_boot_tokens` for it), and a daemon rolled forward again reads all of it back.
+
+- **A rolled-back daemon's launches are archived too.**
+  The trigger `claims_archive_boot_token` keeps, in `claim_boot_tokens`, the boot token hash that a write of `claims.boot_token_hash` replaces, in the statement that replaces it, whatever binary makes that write.
+  So the launches the earlier release makes during the rollback are archived as this release's are, and at the roll forward the worker stream tells the shim of each of those launches to stop instead of reading its token as one no launch minted.
+
+- **The new notices wait for the roll forward.**
+  The eight notices this release adds wait in rows of kind `reach_notice` and `reach_controller_notice`, and an earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and the row holds back no other row.
+  At the roll forward each is delivered once; `scripts/e2e/rollback-notices.sh` is the proof.
+
+- **A held role message is not held by the earlier release.**
+  An earlier release reads no `held_at`: it publishes a role message or a hook prompt that this release held as soon as a session holds its role, and finishes it undelivered while no session does.
+  Nor does it read `stored_for`: it publishes such a row again under the same key, and the listener keeps answering 504 `receipt_timeout` for the copy the stream already holds, so the row runs on its backoff until the roll forward finishes it.
+
+- **No fleet alert line is written during the rollback.**
+  The earlier release has no `LEGION FLEET ALERT` line at all and reads no row of `fleet_alert_lines`, so no case of this release reaches a person while it runs.
+  At the roll forward, every sweep closes the stored lines of each case this configuration does not judge (the controller's when the daemon does not run its controller, every list and controller line when no session list is read), and each controller line whose controller is not marked out of reach.
+  The session list's two lines close at the first list read that answers: one that answers closes the unreadable line, and one that answers with a live session closes the no-live line.
+  So a case that ended during the rollback does not silence the next line of the same case and claim.
+  A stored line whose case still holds stays open, and the daemon does not write it again.
+
+- **Activity reports go back to the session's time.**
+  The earlier release keeps a report only where the session's time of it is no earlier than `claims.activity_at`, which this release wrote as the time the daemon received the last report.
+  Without the statement below, a pod whose clock runs X behind the daemon's has its reports dropped for up to X after the rollback, and the idle rule reads that claim's last report until then.
+  Run it with the daemon stopped, before you start the earlier release:
+
+  ```sh
+  psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -c 'update claims set activity_at = activity_sent_at where activity_sent_at is not null and activity_sent_generation = generation'
+  ```
+
+  The generation condition keeps a report of an earlier launch from being written onto a later launch that has not reported.
+  A daemon rolled forward again orders a claim's reports by `activity_sent_at` from its next report on.
 
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
 
@@ -3194,15 +3243,21 @@ The migrations recorded above this one are these.
 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 20261115194357_project_pause, of dispatch://INFRA-3759, adds the tables `project_pauses`, `project_pause_stops` and `project_pause_pod_holds`, two columns of `pod_resumes` and one of `outbox`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the steps of its own section, [Rolling back the project pause](#rolling-back-the-project-pause), come before the earlier image is pinned.
+20261116012459_claim_reach_and_prior_boot_tokens adds `claims.reach`, `claims.relaunched_at`, the table `claim_boot_tokens` and the trigger `claims_archive_boot_token`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that reports claims out of reach](#rolling-back-the-release-that-reports-claims-out-of-reach).
+20261116082000_reach_notice_kinds adds `reach_notice` and `reach_controller_notice` to `outbox_kind_check` and moves the notices of those kinds an earlier build of its release queued under `notice` and `controller_notice` onto them, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of the same section.
+20261116092312_reach_records_kept_with_their_acts adds `outbox.held_at`, `claims.relaunch_generation` and the table `reach_project_notices`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of the same section.
 20261116144907_claim_sessions adds the table `claim_sessions`, which holds each name of a session to the claim that first recorded it, and fills it from each claim's session and the session it last abandoned; it touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement, and at the roll forward each boot holds again every name no row holds that a claim's row still records, its current session and file and the session it last abandoned (`HoldRecordedSessions`), not a session the earlier release recorded and then replaced.
+20261116164153_outbox_copy_stored_for_its_session adds `outbox.stored_for` and `outbox.stored_generation`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of the same section.
 20261116165926_role_holders_publish adds `role_holders_publish` to `outbox_kind_check` and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).
 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and `pending_task_deliveries.round_named`, and appends the review round's two sentences to each task a reviewer's row stores in `phases.entry_task`, one of the six, building nothing on it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the two columns again at their defaults and, after this block's own roll-forward fills the tasks afresh, appends the sentences to them.
-20261117000528_outbox_kinds_with_the_step_record writes the outbox's kind check again with `step_record` added to the role-holders publication's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
+20261117000528_outbox_kinds_with_the_step_record writes the outbox's kind check again with `step_record` added to the role-holders publication's list and to the two reach notice kinds, and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
 20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads `phases.entry` and writes none of the six, so the block holds over it and leaves the three standing, which the earlier release names in no statement; the way back of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), runs before the block, while `phases.entry` stands.
 20261117023932_outbox_kinds_with_the_plan_record writes the outbox's kind check again with `plan_record` added to the step record's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).
 20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, reads `phases.entry` through `step_run_witness` and writes none of the six, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
+20261118133133_fleet_alert_lines adds the table `fleet_alert_lines`, and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that reports claims out of reach](#rolling-back-the-release-that-reports-claims-out-of-reach)).
+20261118134019_claim_activity_sent_at adds `claims.activity_sent_at` and `claims.activity_sent_generation`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the one statement of the same section.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
@@ -7045,13 +7100,14 @@ The wakes are these:
   If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
   While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
   One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running.
-  The daemon sets `keep: false` on each of its publishes but one, a hook prompt, which it publishes with `keep: true`.
+  The daemon sets `keep: false` on each of its publishes but one: a hook prompt whose claim no longer keeps the session it recorded, which it publishes with `keep: true`.
+  A hook prompt whose claim keeps its session, such as a claim that is launching on it after a wake, is published with `keep: false`, and the daemon holds its row until a session holds the role again, the claim ends, or the issue leaves the phase the prompt was for.
   Its informational role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role, except one that a project's pause held for a role that a pause stopped, which it publishes after the resume and sends again until the role's session holds its topic ([Pausing a project](#pausing-a-project)).
   Its other messages to a role (a notice, a hook prompt, a merge-queue removal message, a merge-forward message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
   While the wake pacing holds such a resume for its turn, the claim reads `launching` with no process, and each of these messages waits rather than publishing, because a kept copy's hour runs from its publish and can end before the pod starts.
   It looks again at its turn or five minutes later, whichever comes first, so a park that ends early, through an operator's resume or a restart, delays the message by five minutes at most.
-  A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps it for that session; a merge-queue removal message and a merge-forward message wait instead until the woken session holds the role.
-  A listener before #4079 keeps nothing for a claim whose holder is not live and answers a hook prompt `404`: its outbox row ends with it undelivered when that holder is `gone`, and retries while it is `unresponsive`;
+  A hook prompt whose claim keeps its session waits in the daemon's outbox until the woken session holds the role, and is published then; a merge-queue removal message and a merge-forward message wait too until the woken session holds the role.
+  A listener before #4079 keeps nothing for a claim whose holder is not live and answers a hook prompt `404`: its outbox row ends with it undelivered when that holder is `gone`, and retries while it is `unresponsive`, except a hook prompt whose claim keeps its session, whose row the daemon holds as it does on every listener;
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 

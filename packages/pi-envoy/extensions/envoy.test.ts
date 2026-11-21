@@ -43,6 +43,7 @@ import {
 } from "@legion/envoy-client/askgate-marker";
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { renderInbound } from "@legion/envoy-client/delivery";
 import type {
   DeliveryLedgerHost,
   DeliveryLedgerOptions,
@@ -101,6 +102,7 @@ import envelopeWithoutRole from "../../contracts/fixtures/envelope-without-role.
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
+import { watchdogCheckMs } from "../src/registration-watchdog";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 import { runSessionPod } from "../test/session-pod-report";
 import {
@@ -23353,6 +23355,40 @@ describe("consumer delivery", () => {
     expect(renewed?.delivery?.resume).toEqual({ stream_id: STREAM, seq: 7 });
   });
 
+  // A resumed session Legion drives whose previous process ended in a turn, and whose next turn a
+  // card starts. The host writes each message it is handed with no turn, the note among them, in
+  // the order it is handed them while idle (`#dispatchCustomMessage`,
+  // packages/coding-agent/src/session/agent-session.ts:11225-11244, 11353-11384 at the pin), and
+  // the card that starts a turn opens it: the note must be in the transcript before that card.
+  test("a card that starts a resumed session's next turn comes after the cut turn's note", async () => {
+    const session = await bootConsumer("cut-turn-order-card", {
+      entries: [
+        { type: "custom", customType: "legion-managed-session", data: { session_id: SESSION } },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "take the issue through" }] },
+        },
+        { type: "message", message: { role: "assistant", stopReason: "toolUse", content: [] } },
+      ],
+    });
+    try {
+      session.relay(1, peer("cut-turn-card"));
+      await until(() => session.cards("evt-cut-turn-card").length > 0, "the relayed card");
+      await settle();
+
+      const written = session
+        .entries()
+        .map((entry) => JSON.stringify(entry))
+        .filter((entry) => entry.includes('"custom_message"'));
+      const note = written.findIndex((entry) => entry.includes("previous turn interrupted"));
+      const card = written.findIndex((entry) => entry.includes("evt-cut-turn-card"));
+      expect(note).toBeGreaterThanOrEqual(0);
+      expect(card).toBeGreaterThan(note);
+    } finally {
+      await session.stop();
+    }
+  });
+
   test("a relay subject whose connection closes under its round trip is closed, and the next tick opens it", async () => {
     // `retryRelay` bails while `owner.subscription` is set and `pumpRelay` starts no retry for a
     // subscription whose owner no longer names it, so an open that gave up and left the field set
@@ -24455,6 +24491,692 @@ describe("the send and publish answers", () => {
       }
     });
   }
+});
+
+// A process that ends in a turn leaves that turn with no end in the transcript, and the resumed
+// session is told so before it runs its next turn (R2). The note's own rules are
+// `../src/cut-turn`'s; these rows are the wiring: which sessions get it, what it names, and that no
+// delivery of the cut turn is shown again.
+describe("the note a cut turn leaves", () => {
+  const SESSION = "ses_cut_turn";
+
+  /** The entry a session Legion drives carries from the process that claimed its role. */
+  const legionManaged = {
+    type: "custom",
+    customType: "legion-managed-session",
+    data: { session_id: SESSION },
+  };
+
+  /** An assistant message as the host wrote it: `stopReason` says what ended it, and a provider
+   *  error, an interrupt or an abort carries `errorMessage` as well. */
+  function assistant(stopReason: string, errorMessage?: string): Record<string, unknown> {
+    return {
+      type: "message",
+      message: {
+        role: "assistant",
+        stopReason,
+        content: [],
+        ...(errorMessage === undefined ? {} : { errorMessage }),
+      },
+    };
+  }
+
+  /** A user message as the host wrote it: a person's turn, or the daemon's task prompt. */
+  function user(text: string): Record<string, unknown> {
+    return { type: "message", message: { role: "user", content: [{ type: "text", text }] } };
+  }
+
+  /** A delivery card as the host wrote it into the transcript of the turn that was cut. */
+  function writtenCard(eventID: string, summary: string): Record<string, unknown> {
+    return {
+      type: "custom_message",
+      customType: "envoy-message",
+      display: true,
+      details: { event_id: eventID },
+      content: renderInbound(
+        JSON.stringify({
+          event_id: eventID,
+          source: "agent",
+          source_session: "ses_sender",
+          topic: `notifications.agent.${SESSION}`,
+          issued_at: 1,
+          payload_summary: summary,
+        }),
+        SESSION
+      ).content,
+    };
+  }
+
+  /** Boots a resumed session whose transcript is `branch`, and answers what the host was handed. */
+  async function bootResumed(query: string, branch: readonly unknown[]) {
+    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const fixture = createPi();
+    const base = sessionContext(SESSION);
+    const context: SessionContext = {
+      ...base,
+      sessionManager: {
+        ...base.sessionManager,
+        getBranch: () => [...branch, ...fixture.entries],
+        getEntries: () => [...branch, ...fixture.entries],
+      },
+    };
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    return {
+      fixture,
+      context,
+      /** A second start of the same session, as `/reload-plugins` runs one. */
+      startAgain: async () => fixture.handlers.get("session_start")?.({}, context),
+      /** The cut-turn notes the session was handed, in send order. */
+      notes: () =>
+        fixture.deliveries.filter((delivery) =>
+          delivery.content.includes("previous turn interrupted")
+        ),
+    };
+  }
+
+  test("a cut turn gets one note before the next turn", async () => {
+    const session = await bootResumed("cut-turn-note", [
+      legionManaged,
+      user("take the issue through its phase"),
+      writtenCard("evt-tick", "tick wake for the controller"),
+      assistant("toolUse"),
+    ]);
+
+    expect(session.notes()).toHaveLength(1);
+    const note = session.notes()[0];
+    // A message sent with no options, so no `deliverAs` and no turn: an idle host writes it into
+    // the transcript and the model's context at once, and emits its `message_end`
+    // (`#dispatchCustomMessage`, packages/coding-agent/src/session/agent-session.ts:11353-11384
+    // at the pin). It starts none.
+    expect(note?.options).toBeUndefined();
+    expect(note?.content).toContain("Your previous turn was interrupted.");
+    expect(note?.content).toContain("evt-tick");
+    expect(note?.content).toContain("tick wake for the controller");
+    expect(note?.content).toContain(
+      "Before you start any of that work again, check what it already did."
+    );
+  });
+
+  // A person's Send that the session accepted as their own turn is no card: the session records
+  // the attempt it handled (`envoy-dispatch-handled-attempt`) and the host writes the person's
+  // user message with the Dispatch message id as its `tag`. The process ended in that turn, and
+  // the resumed session's note names the message by that id, as it names each card.
+  test("a turn a person's Send started, cut and resumed, gets a note naming that Send", async () => {
+    const session = await bootResumed("cut-turn-person-send", [
+      legionManaged,
+      user("take the issue through its phase"),
+      assistant("endTurn"),
+      {
+        type: "custom",
+        customType: "envoy-dispatch-handled-attempt",
+        data: { message_id: "msg-person-send", attempt: 1 },
+      },
+      {
+        type: "message",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "rebase onto main first" }],
+          tag: "msg-person-send",
+        },
+      },
+      assistant("toolUse"),
+    ]);
+
+    expect(session.notes()).toHaveLength(1);
+    const note = session.notes()[0];
+    expect(note?.content).toContain("msg-person-send");
+    expect(note?.content).toContain("Those messages started or joined that turn.");
+  });
+
+  // The daemon's task reaches the host as an RPC `prompt`, which the host hands to every `input`
+  // handler and prompts only once they all return (`dispatchOrderedUserInput`,
+  // packages/coding-agent/src/modes/rpc/rpc-mode.ts:1871-1958 at the pin), and a person's typed
+  // input goes the same way. The note sent at `session_start` is held until startup discovery has
+  // run, and RPC mode starts reading commands without waiting for it to land
+  // (`initializeExtensions`, modes/runtime-init.ts:546-559; `drainSends: false`,
+  // modes/rpc/rpc-mode.ts:1793). A prompt that is set up before the note reaches the session takes
+  // it after its own opening message (session/agent-session.ts:9844-9851, 11182-11184), which is
+  // after the turn started. So the task's prompt waits for the note's `message_end`.
+  test("a task that starts the next turn is prompted only after the note is written", async () => {
+    const session = await bootResumed("cut-turn-order-task", [
+      legionManaged,
+      user("take the issue through its phase"),
+      writtenCard("evt-tick", "tick wake for the controller"),
+      assistant("toolUse"),
+    ]);
+    const note = session.notes()[0];
+    if (note === undefined) throw new Error("the session was handed no note");
+    const transcript: string[] = [];
+
+    // The daemon's task arrives while the note's send is still on its way to the session.
+    const prompted = Promise.resolve(
+      session.fixture.handlers.get("input")?.(
+        { text: "implement the plan", source: "rpc" },
+        session.context
+      )
+    ).then(() => {
+      transcript.push("task prompt");
+    });
+    await settle();
+    // The send reaches the idle session: the host writes the note, then ends its message.
+    transcript.push("note");
+    await session.fixture.handlers.get("message_end")?.(
+      {
+        message: {
+          role: "custom",
+          customType: note.customType,
+          content: note.content,
+          display: true,
+          details: note.details,
+        },
+      },
+      session.context
+    );
+    await prompted;
+
+    expect(transcript).toEqual(["note", "task prompt"]);
+  });
+
+  test("a prompt in a session told no note waits for nothing", async () => {
+    const session = await bootResumed("cut-turn-order-none", [
+      legionManaged,
+      user("take the issue through its phase"),
+      assistant("endTurn"),
+    ]);
+    const transcript: string[] = [];
+
+    const prompted = Promise.resolve(
+      session.fixture.handlers.get("input")?.(
+        { text: "implement the plan", source: "rpc" },
+        session.context
+      )
+    ).then(() => {
+      transcript.push("task prompt");
+    });
+    await settle();
+
+    expect(transcript).toEqual(["task prompt"]);
+    await prompted;
+  });
+
+  test("a cut turn a task started gets the plugin's note naming the delivery that joined it", async () => {
+    const session = await bootResumed("cut-turn-task", [
+      legionManaged,
+      // The daemon's own cut-turn note rides in front of the task it re-sent; this one is the
+      // task prompt of the turn that was cut.
+      user("implement the plan"),
+      writtenCard("evt-joined", "a role message that joined the turn"),
+      assistant("toolUse"),
+    ]);
+
+    expect(session.notes()).toHaveLength(1);
+    expect(session.notes()[0]?.content).toContain("evt-joined");
+    // The daemon's note is the daemon's: the plugin starts no turn and sends no prompt of its own.
+    expect(session.fixture.userMessages).toEqual([]);
+  });
+
+  test("a session that holds no Legion claim gets no note", async () => {
+    const session = await bootResumed("cut-turn-unmanaged", [
+      user("do the thing"),
+      writtenCard("evt-personal", "a peer's message"),
+      assistant("toolUse"),
+    ]);
+
+    expect(session.notes()).toEqual([]);
+  });
+
+  test("a session started again in the same process is told once", async () => {
+    const session = await bootResumed("cut-turn-once", [
+      legionManaged,
+      user("take the issue through its phase"),
+      writtenCard("evt-tick", "tick wake for the controller"),
+      assistant("toolUse"),
+    ]);
+    expect(session.notes()).toHaveLength(1);
+
+    // `/reload-plugins` starts the session again, and the turn is still the one that was cut:
+    // the session reads one note, not one per start.
+    await session.startAgain();
+
+    expect(session.notes()).toHaveLength(1);
+  });
+
+  test("a session whose last turn ended gets no note", async () => {
+    const session = await bootResumed("cut-turn-ended", [
+      legionManaged,
+      user("take the issue through its phase"),
+      writtenCard("evt-tick", "tick wake for the controller"),
+      assistant("endTurn"),
+    ]);
+
+    expect(session.notes()).toEqual([]);
+  });
+
+  test("no delivery of the cut turn is sent again", async () => {
+    const session = await bootResumed("cut-turn-no-resend", [
+      legionManaged,
+      writtenCard("evt-tick", "tick wake for the controller"),
+      assistant("toolUse"),
+    ]);
+
+    // One message, the note. The card of the cut turn is in the transcript, and the session is
+    // handed no copy of it.
+    expect(session.fixture.deliveries).toHaveLength(1);
+    expect(session.notes()).toHaveLength(1);
+    expect(
+      session.fixture.deliveries.filter(
+        (delivery) =>
+          delivery.details !== undefined &&
+          typeof delivery.details === "object" &&
+          "event_id" in delivery.details
+      )
+    ).toEqual([]);
+  });
+
+  test("a completed turn, then a new delivery, then the process ends: the note names that delivery", async () => {
+    const session = await bootResumed("cut-turn-next-delivery", [
+      legionManaged,
+      user("take the issue through its phase"),
+      writtenCard("evt-done", "the tick the completed turn answered"),
+      assistant("endTurn"),
+      writtenCard("evt-next", "the tick that started the next turn"),
+    ]);
+
+    expect(session.notes()).toHaveLength(1);
+    const note = session.notes()[0]?.content ?? "";
+    expect(note).toContain("evt-next");
+    // A delivery of the turn that ended is not the cut turn's.
+    expect(note).not.toContain("evt-done");
+  });
+
+  test("a completed turn, then a new user message, then the process ends: one note", async () => {
+    const session = await bootResumed("cut-turn-next-user", [
+      legionManaged,
+      user("take the issue through its phase"),
+      assistant("endTurn"),
+      user("the daemon's next task"),
+    ]);
+
+    expect(session.notes()).toHaveLength(1);
+    expect(session.notes()[0]?.content).toContain("Your previous turn was interrupted.");
+  });
+
+  // A session Legion drives marks each run's start and its settle, so a run with no end mark is a
+  // cut turn whatever its last reply carries. That matters most for a failed attempt the host is
+  // retrying: it reads like any provider error, since Oh My Pi marks it retried only once the
+  // retry closes (`#markPendingRetryErrors`, `packages/coding-agent/src/session/
+  // turn-recovery.ts:1076` at the pin).
+  /**
+   * One process of a session Legion drives that runs one run and then ends: it boots on
+   * `history`, the host starts the run (`agent_start`), writes the run's entries (`run`) while
+   * `duringRun` emits whatever else the host emits then, and, when `end` is given, settles it
+   * (`agent_end` with `end`). Answers the branch the next process resumes: `history`, then what
+   * the plugin wrote up to the run's start, the run's entries, and what the plugin wrote after
+   * them.
+   */
+  async function oneRun(
+    query: string,
+    history: readonly unknown[],
+    run: readonly unknown[],
+    options: {
+      readonly duringRun?: (
+        emit: (event: string, payload: object) => Promise<unknown>
+      ) => Promise<void>;
+      readonly end?: { readonly willContinue?: boolean };
+    } = {}
+  ): Promise<unknown[]> {
+    const first = await bootResumed(query, history);
+    const emit = async (event: string, payload: object): Promise<unknown> =>
+      first.fixture.handlers.get(event)?.(payload, first.context);
+    await emit("agent_start", {});
+    const atStart = first.fixture.entries.length;
+    await options.duringRun?.(emit);
+    if (options.end !== undefined) await emit("agent_end", { messages: [], ...options.end });
+    return [
+      ...history,
+      ...first.fixture.entries.slice(0, atStart),
+      ...run,
+      ...first.fixture.entries.slice(atStart),
+    ];
+  }
+
+  test("a turn killed during a provider-retry backoff gets the note", async () => {
+    const resumed = await oneRun(
+      "cut-turn-retry-first",
+      [legionManaged],
+      [
+        user("take the issue through its phase"),
+        writtenCard("evt-tick", "tick wake for the controller"),
+        assistant("error", "Overloaded"),
+      ],
+      {
+        // The host announces the retry and sleeps; the process ends in that sleep.
+        duringRun: async (emit) => {
+          await emit("auto_retry_start", {
+            type: "auto_retry_start",
+            attempt: 1,
+            maxAttempts: 3,
+            delayMs: 2_000,
+            errorMessage: "Overloaded",
+          });
+        },
+      }
+    );
+
+    const next = await bootResumed("cut-turn-retry-next", resumed);
+
+    expect(next.notes()).toHaveLength(1);
+    expect(next.notes()[0]?.content).toContain("evt-tick");
+  });
+
+  // Before it announces a retry, Oh My Pi can redeem a saved usage reset or wait out another
+  // account's short block (`#applyRetryPolicy`, packages/coding-agent/src/session/
+  // turn-recovery.ts:2975-3131 at the pin), and emits nothing there: the failed attempt is the
+  // run's last entry.
+  test("a turn killed in a usage reset's redemption or an account rotation gets the note", async () => {
+    const resumed = await oneRun(
+      "cut-turn-credential-wait",
+      [legionManaged],
+      [
+        user("take the issue through its phase"),
+        writtenCard("evt-tick", "tick wake for the controller"),
+        assistant("error", "429 usage limit reached for this account"),
+      ]
+    );
+
+    const next = await bootResumed("cut-turn-credential-wait-next", resumed);
+
+    expect(next.notes()).toHaveLength(1);
+    expect(next.notes()[0]?.content).toContain("evt-tick");
+  });
+
+  // The host saves the failed attempt before it decides on a retry and announces it, so a process
+  // killed between the two leaves the attempt and nothing the retry would have added.
+  test("a turn killed after its failed attempt was saved and before any retry entry gets the note", async () => {
+    const resumed = await oneRun(
+      "cut-turn-saved-error",
+      [legionManaged],
+      [
+        user("take the issue through its phase"),
+        writtenCard("evt-tick", "tick wake for the controller"),
+        assistant("error", "Overloaded"),
+      ]
+    );
+
+    const next = await bootResumed("cut-turn-saved-error-next", resumed);
+
+    expect(next.notes()).toHaveLength(1);
+    expect(next.notes()[0]?.content).toContain("evt-tick");
+  });
+
+  test("a provider retry that was cancelled leaves the turn ended, and no note", async () => {
+    const resumed = await oneRun(
+      "cut-turn-retry-cancelled",
+      [legionManaged],
+      [
+        user("take the issue through its phase"),
+        writtenCard("evt-tick", "tick wake for the controller"),
+        assistant("error", "Overloaded"),
+      ],
+      // A person's interrupt or the daemon's abort in the backoff cancels the retry, and the run
+      // settles with no continuation to come.
+      { end: {} }
+    );
+
+    const next = await bootResumed("cut-turn-retry-cancelled-next", resumed);
+
+    expect(next.notes()).toEqual([]);
+  });
+
+  test("a run that ended with its continuation still to come gets the note when killed", async () => {
+    const resumed = await oneRun(
+      "cut-turn-continuation",
+      [legionManaged],
+      [user("take the issue through its phase"), assistant("endTurn")],
+      // A background job's result, a retry or a reminder continues the run.
+      { end: { willContinue: true } }
+    );
+
+    const next = await bootResumed("cut-turn-continuation-next", resumed);
+
+    expect(next.notes()).toHaveLength(1);
+  });
+
+  test("a run that settled leaves its end mark, and the next process is told nothing", async () => {
+    const resumed = await oneRun(
+      "cut-turn-settled",
+      [legionManaged],
+      [
+        user("take the issue through its phase"),
+        writtenCard("evt-tick", "tick wake for the controller"),
+        assistant("endTurn"),
+      ],
+      { end: {} }
+    );
+
+    const next = await bootResumed("cut-turn-settled-next", resumed);
+
+    expect(next.notes()).toEqual([]);
+  });
+
+  test("a session that holds no Legion claim writes no turn marks", async () => {
+    const resumed = await oneRun(
+      "cut-turn-unmanaged-marks",
+      [],
+      [user("do the thing"), assistant("endTurn")],
+      { end: {} }
+    );
+
+    expect(
+      resumed.filter(
+        (entry) =>
+          typeof entry === "object" &&
+          entry !== null &&
+          "customType" in entry &&
+          entry.customType === "envoy-turn-mark"
+      )
+    ).toEqual([]);
+  });
+
+  test("a turn the resumed host closed because its process exited gets the note", async () => {
+    const session = await bootResumed("cut-turn-host-closed", [
+      legionManaged,
+      user("take the issue through its phase"),
+      writtenCard("evt-tick", "tick wake for the controller"),
+      assistant("toolUse"),
+      // What Oh My Pi writes at resume after a process that recorded its exit, a SIGTERM's among
+      // them (`packages/coding-agent/src/sdk.ts:2245` at the pin).
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "bash",
+          content: [
+            {
+              type: "text",
+              text: "Previous OMP process exited before this tool returned; its outcome is unknown.",
+            },
+          ],
+          isError: true,
+        },
+      },
+      assistant("aborted", "Previous OMP process exited before completing the turn."),
+    ]);
+
+    expect(session.notes()).toHaveLength(1);
+    expect(session.notes()[0]?.content).toContain("evt-tick");
+  });
+});
+
+// A heartbeat timer that stops leaves the process running and unregistered, and every message
+// published to its role reaches a session Envoy no longer lists (R4). The watchdog's own rules are
+// `../src/registration-watchdog`'s; these rows are the wiring: the heartbeat comes back and
+// registers, a heartbeat that still ticks is left alone, the NATS connection is not redialled for
+// it, and a session stopped cleanly stays stopped.
+describe("the watchdog over a heartbeat that stopped", () => {
+  const SESSION = "ses_watchdog";
+  /** Short enough that a case drives whole windows in milliseconds, as the pane drives one in
+   *  five minutes. Its tenth is the watchdog's own reading interval (`watchdogCheckMs`). */
+  const WINDOW_MS = 100;
+
+  /**
+   * Boots a session whose heartbeat timer is collected and never run — the end this watchdog
+   * exists for — against a listener that accepts every registration until `refuse()`.
+   */
+  async function bootWatchdog(query: string) {
+    process.env.ENVOY_REGISTRATION_WATCHDOG_MS = String(WINDOW_MS);
+    let refusing = false;
+    const registrations: number[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/v1/interests/subscribe") {
+        registrations.push(Date.now());
+        if (refusing) throw new Error("the listener does not answer");
+      }
+      return responseWithRegistration(input, init, []);
+    }) as typeof fetch;
+    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const fixture = createPi();
+    const intervals: (() => void)[] = [];
+    const context: SessionContext = {
+      ...sessionContext(SESSION),
+      setInterval: (callback) => intervals.push(callback),
+      ui: { ...sessionContext().ui, notify: () => undefined },
+    };
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    await until(() => registrations.length > 0, "the first registration");
+    return {
+      fixture,
+      context,
+      intervals,
+      registrations,
+      refuse: () => {
+        refusing = true;
+      },
+      /** One tick of every heartbeat interval the session armed. */
+      tick: () => {
+        for (const interval of intervals) interval();
+      },
+      stop: async () => {
+        await fixture.handlers.get("session_shutdown")?.({}, context);
+      },
+    };
+  }
+
+  test("a stopped heartbeat timer is armed again and the session registers inside the window", async () => {
+    const session = await bootWatchdog("watchdog-restart");
+    try {
+      const dialled = natsState.connects.length;
+      const registered = session.registrations.length;
+      // Nothing runs the heartbeat from here: the timer stopped, as it does for the rest of a
+      // process's life once the host's interval is gone.
+      await until(
+        () => session.registrations.length > registered,
+        "the registration the watchdog's restart sends",
+        5_000
+      );
+      // The heartbeat is armed again, so the session's own cadence is back.
+      expect(session.intervals.length).toBeGreaterThan(1);
+      // The NATS connection was never down, so it is neither closed nor dialled again: a
+      // listener outage must make no session redial NATS.
+      expect(natsState.connects.length).toBe(dialled);
+      expect(natsState.closedNames).toEqual([]);
+    } finally {
+      await session.stop();
+    }
+  });
+
+  // The watchdog judges a window by `Date.now` (`armRegistrationWatchdog`, and the registration's
+  // own stamp in `../src/registration-state`), so this row steps that clock itself, from before
+  // the session starts: half a window per tick, which is a heartbeat that ticks through every
+  // window. Read off the real clock, a loaded box that stops this process for longer than a window
+  // between two ticks shows a heartbeat that missed one, and the watchdog rightly arms another.
+  test("a heartbeat that still ticks is left alone through a listener outage", async () => {
+    let now = Date.now();
+    setSystemTime(new Date(now));
+    try {
+      const session = await bootWatchdog("watchdog-ticking");
+      try {
+        session.refuse();
+        const armed = session.intervals.length;
+        // Whole windows pass with no registration accepted, and the heartbeat ticks through them:
+        // its own one extra call per interval is the retry, and the watchdog arms no second
+        // heartbeat.
+        for (let step = 0; step < 4; step += 1) {
+          now += WINDOW_MS / 2;
+          setSystemTime(new Date(now));
+          session.tick();
+          // The watchdog reads on this process's own timer, which the row leaves real so that it
+          // is the timer production runs; so the row waits real time for a few of its reads. The
+          // clock those reads judge by stands still meanwhile, so a wait that runs long ages
+          // nothing.
+          await Bun.sleep(watchdogCheckMs(WINDOW_MS) * 3);
+        }
+        await settle();
+        expect(session.intervals.length).toBe(armed);
+        // The control: the same watchdog on the same clock arms a heartbeat again once a whole
+        // window passes with no tick, so the reads above judged the stepped clock and found the
+        // heartbeat ticking.
+        now += WINDOW_MS;
+        setSystemTime(new Date(now));
+        await until(
+          () => session.intervals.length > armed,
+          "the restart once the ticks stop",
+          5_000
+        );
+      } finally {
+        await session.stop();
+      }
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  test("after two restarts, timers that come back run one registration loop, not one per heartbeat armed", async () => {
+    const session = await bootWatchdog("watchdog-two-restarts");
+    try {
+      const armed = session.intervals.length;
+      // The watchdog finds the stopped heartbeat and arms it again, twice: each restart's own
+      // registration goes stale a window later with no tick of the host's timer in between.
+      await until(
+        () => session.intervals.length >= armed + 2,
+        "the watchdog's second restart",
+        5_000
+      );
+      await settle();
+      // The host's timers come back: every interval armed in this process fires, the stopped
+      // one and both restarts' among them.
+      const before = session.registrations.length;
+      session.tick();
+      await settle();
+      // One heartbeat is live, so one registration goes out for one round of the timers.
+      expect(session.registrations.length - before).toBe(1);
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("a session stopped cleanly does not come back", async () => {
+    const session = await bootWatchdog("watchdog-stopped");
+    await session.stop();
+    const registered = session.registrations.length;
+    const armed = session.intervals.length;
+
+    // Whole windows of the real clock, because the watchdog's own timer is this process's and
+    // the end it would act on is that nothing happens: a session whose heartbeat stopped looks
+    // exactly like one that stopped cleanly, bar the shutdown, so only the passing of its window
+    // tells the two apart.
+    await Bun.sleep(WINDOW_MS * 4);
+    await settle();
+
+    // Nothing registers, and no heartbeat is armed again: a restart arms one before it registers,
+    // so a watchdog still acting on this session would show here whatever the listener answered.
+    expect(session.registrations.length).toBe(registered);
+    expect(session.intervals.length).toBe(armed);
+  });
 });
 
 // Every reader of an envelope a listener delivers in this extension, given one that carries

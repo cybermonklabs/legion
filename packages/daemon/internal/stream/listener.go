@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -86,6 +87,17 @@ type Options struct {
 	LauncherWait time.Duration
 	// Log receives the listener's lines; nil is slog.Default().
 	Log *slog.Logger
+	// Clock is the time a lock-out waits on, its report and its older connection's silence; nil
+	// is the wall clock.
+	Clock Clock
+	// Alerts writes R6's line for a lock-out that has lasted LockOutReportAfter
+	// (fleetalert.NewerProcessRefused), opened once and closed when the lock-out ends; nil
+	// writes none.
+	Alerts *fleetalert.Writer
+	// ReportLockOut is told of each lock-out once, LockOutReportAfter after the newer process's
+	// first refused hello, so the daemon can tell the project's controller
+	// (record.WorkerLockedOutNotice, whose text is LockOut.Reason); nil tells nobody.
+	ReportLockOut func(LockOut)
 }
 
 // Listener accepts shim connections and keeps the live one for each claim. Its life is the
@@ -124,6 +136,13 @@ type Listener struct {
 	narrowed bool
 	// registrations numbers the connections in the order they were registered (Conn.Sequence).
 	registrations uint64
+	// lockOuts is every claim whose current process the stream is refusing because an older
+	// generation's connection is still bound (lockout.go); clock is the time their waits run on,
+	// and alerts and reportLocked are what their reports are made to.
+	lockOuts     map[claim.Token]*lockOut
+	clock        Clock
+	alerts       *fleetalert.Writer
+	reportLocked func(LockOut)
 
 	wg sync.WaitGroup
 }
@@ -153,6 +172,10 @@ func Listen(ctx context.Context, addr string, resolve HelloResolver, opts Option
 	if launcherWait <= 0 {
 		launcherWait = defaultLauncherWait
 	}
+	var clock Clock = wallClock{}
+	if opts.Clock != nil {
+		clock = opts.Clock
+	}
 	l := &Listener{
 		addr:              network + "://" + ln.Addr().String(),
 		ln:                ln,
@@ -166,6 +189,10 @@ func Listen(ctx context.Context, addr string, resolve HelloResolver, opts Option
 		launcherInstalled: make(chan struct{}),
 		launcherWait:      launcherWait,
 		started:           time.Now(),
+		lockOuts:          map[claim.Token]*lockOut{},
+		clock:             clock,
+		alerts:            opts.Alerts,
+		reportLocked:      opts.ReportLockOut,
 	}
 	l.wg.Add(1)
 	go l.accept()
@@ -327,6 +354,7 @@ func (l *Listener) accept() {
 			continue
 		}
 		delay = 0
+		l.tune(nc)
 		l.mu.Lock()
 		if l.closed {
 			l.mu.Unlock()
@@ -355,10 +383,10 @@ func (l *Listener) serve(nc net.Conn) {
 	// (worker-stream-listener.ts:11-13). The frames after the hello are read through the same
 	// buffer, so bytes that followed the hello in its own write are not lost.
 	src := bufio.NewReaderSize(nc, shimwire.MaxHelloBytes+1)
-	conn, launcher, reason := l.hello(nc, src)
+	conn, launcher, refused := l.hello(nc, src)
 	if conn == nil && launcher == nil {
-		if reason != "" {
-			l.log.Warn("worker-stream: rejected hello (" + reason + ")")
+		if refused.reason != "" {
+			l.log.Warn("worker-stream: rejected hello ("+refused.reason+")", refused.attrs...)
 		}
 		return
 	}
@@ -373,64 +401,81 @@ func (l *Listener) serve(nc net.Conn) {
 	// while this one is registered.
 	conn.finish()
 	l.mu.Lock()
-	l.events.push(Closed{Claim: conn.claim})
+	l.events.push(Closed{Claim: conn.claim, Generation: conn.generation})
 	delete(l.conns, conn.claim)
+	// The older connection of a lock-out closing is what frees the claim for the newer process,
+	// and so is where the lock-out ends (lockout.go).
+	reported := l.endLockOut(conn.claim)
 	l.mu.Unlock()
+	if reported && l.alerts != nil {
+		l.alerts.Close(fleetalert.NewerProcessRefused, string(conn.claim))
+	}
 }
 
+// refusal is why a hello was refused, and what an operator needs beside it: the claim it named
+// and the generations of both connections, where the daemon knows them. The 314 refusals of
+// 2026-11-12 named none of the three, so the lines said nothing about which claim was locked out or
+// by what (R3). An empty reason is nothing to say at all.
+type refusal struct {
+	reason string
+	attrs  []any
+}
+
+func because(reason string, attrs ...any) refusal { return refusal{reason: reason, attrs: attrs} }
+
 // hello reads and judges the connection's first line. It returns a registered child shim
-// connection, an independent launcher handler, or the reason it refused — empty when there is
-// nothing to say: the peer went away, the listener is ending, or a child shim's boot token could
-// not be resolved, which is no refusal and is logged here (worker-stream-listener.ts:107-173).
-func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler, string) {
+// connection, an independent launcher handler, or the refusal — empty when there is nothing to
+// say: the peer went away, the listener is ending, or a child shim's boot token could not be
+// resolved, which is no refusal and is logged here (worker-stream-listener.ts:107-173).
+func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler, refusal) {
 	// The instant the hello's own read deadline falls, kept because a launcher hello that waits
 	// for an acceptor is bounded by it too: a parked hello never outlives the deadline the
 	// connection carrying it was given.
 	deadline := time.Now().Add(l.timeout)
 	if err := nc.SetReadDeadline(deadline); err != nil {
-		return nil, nil, ""
+		return nil, nil, refusal{}
 	}
 	line, err := src.ReadSlice('\n')
 	switch {
 	case errors.Is(err, bufio.ErrBufferFull):
-		return nil, nil, "hello too long"
+		return nil, nil, because("hello too long")
 	case errors.Is(err, os.ErrDeadlineExceeded) && !l.isClosed():
 		// The byte bound never fires on silence, and a connection that never finishes its hello
 		// would hold its descriptor for ever (worker-stream-listener.ts:54-57).
-		return nil, nil, "hello timeout"
+		return nil, nil, because("hello timeout")
 	case err != nil:
-		return nil, nil, ""
+		return nil, nil, refusal{}
 	}
 	line = bytes.TrimSpace(line)
 	if !json.Valid(line) {
-		return nil, nil, "not json"
+		return nil, nil, because("not json")
 	}
 	frame, err := shimwire.Decode(line)
 	if err != nil {
-		return nil, nil, "malformed hello"
+		return nil, nil, because("malformed hello")
 	}
 	if launcherHello, ok := frame.(shimwire.LauncherHello); ok {
 		if err := launcherHello.Validate(); err != nil {
-			return nil, nil, "malformed launcher hello"
+			return nil, nil, because("malformed launcher hello")
 		}
 		resolver, reason := l.awaitLauncherResolver(deadline)
 		if resolver == nil {
-			return nil, nil, reason
+			return nil, nil, because(reason)
 		}
 		handler, ack, reason := resolver(launcherHello)
 		if handler == nil {
 			if reason == "" {
 				reason = "launcher refused"
 			}
-			return nil, nil, reason
+			return nil, nil, because(reason)
 		}
 		if err := nc.SetReadDeadline(time.Time{}); err != nil {
-			return nil, nil, "connection closed before launcher_hello_ack"
+			return nil, nil, because("connection closed before launcher_hello_ack")
 		}
 		if err := shimwire.NewWriter(nc).WriteFrame(ack); err != nil {
-			return nil, nil, "connection closed before launcher_hello_ack"
+			return nil, nil, because("connection closed before launcher_hello_ack")
 		}
-		return nil, handler, ""
+		return nil, handler, refusal{}
 	}
 	var hello shimwire.Hello2
 	switch f := frame.(type) {
@@ -440,16 +485,16 @@ func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler
 		// The shim that sent it predates DaemonAPIVersion 8 (hello2): the worker image or the pane's
 		// legion binary is older than this daemon. The image probe refuses such an image at boot; a
 		// pane's shim is this daemon's own binary. Either way the fix is the newer build, named here.
-		return nil, nil, "hello v1: the shim predates hello2 (daemon API contract 8); rebuild the worker image or the pane's legion binary from this daemon's commit"
+		return nil, nil, because("hello v1: the shim predates hello2 (daemon API contract 8); rebuild the worker image or the pane's legion binary from this daemon's commit")
 	default:
-		return nil, nil, "malformed hello"
+		return nil, nil, because("malformed hello")
 	}
 	if hello.Validate() != nil {
-		return nil, nil, "malformed hello"
+		return nil, nil, because("malformed hello")
 	}
 	if l.isNarrowed() {
 		// The daemon is stopping: the shim keeps what its agent says and redials the next daemon.
-		return nil, nil, ""
+		return nil, nil, refusal{}
 	}
 	token, generation, stale, known, err := l.resolve(hello.BootToken)
 	switch {
@@ -457,21 +502,52 @@ func (l *Listener) hello(nc net.Conn, src *bufio.Reader) (*Conn, LauncherHandler
 		// The stop began while the token was resolved, and whatever the resolver answered (an error,
 		// a hold the stop released, a generation since replaced) is the stop's, not the shim's.
 		l.log.Info("worker-stream: the daemon's stop began while a hello's boot token was resolved; the shim redials the next daemon")
-		return nil, nil, ""
+		return nil, nil, refusal{}
 	case err != nil:
 		l.log.Warn("worker-stream: could not resolve a hello's boot token; the shim redials", "error", err)
-		return nil, nil, ""
+		return nil, nil, refusal{}
 	case !known:
-		return nil, nil, "unknown boot token"
+		// A token no launch of this daemon minted. The shim is told nothing and keeps running,
+		// because an unknown token can also mean a wrong or restored database, or another
+		// project's daemon, where stopping the shim would end a live worker.
+		return nil, nil, because("unknown boot token")
 	case stale:
-		return nil, nil, "stale worker generation"
+		// A generation the claim has left. Its process must stop rather than dial on: this is the
+		// older process of a lock-out whose connection the network or a daemon restart cut, which
+		// would otherwise come back the moment the newer one had bound.
+		l.tellToStop(nc, deadline)
+		return nil, nil, because("stale worker generation", l.generationAttrs(token, generation)...)
 	}
 	var identity *AgentSecretsIdentity
 	if hello.AgentSecrets != nil {
 		identity = &AgentSecretsIdentity{Thumbprint: hello.AgentSecrets.Thumbprint, PodToken: hello.AgentSecrets.PodToken}
 	}
-	conn, reason := l.register(nc, token, generation, identity)
-	return conn, nil, reason
+	conn, refused := l.register(nc, token, generation, identity)
+	return conn, nil, refused
+}
+
+// tellToStop writes the stop frame to a connection whose hello is refused, before that
+// connection closes. The frame is the one a bound shim acts on, which ends the wrapped process
+// within the shim's grace; a shim that has none yet ends itself.
+func (l *Listener) tellToStop(nc net.Conn, deadline time.Time) {
+	if err := nc.SetWriteDeadline(deadline); err != nil {
+		return
+	}
+	if err := shimwire.NewWriter(nc).WriteFrame(shimwire.Shutdown{}); err != nil {
+		l.log.Warn("worker-stream: could not tell a shim of a generation its claim has left to stop", "error", err)
+	}
+}
+
+// generationAttrs names the claim and the generations of both connections, where the daemon
+// knows them: a claim with no connection bound has only the hello's own.
+func (l *Listener) generationAttrs(token claim.Token, generation uint64) []any {
+	attrs := []any{"claim", token, "generation", generation}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if bound, ok := l.conns[token]; ok {
+		attrs = append(attrs, "boundGeneration", bound.generation)
+	}
+	return attrs
 }
 
 // awaitLauncherResolver is the launcher acceptor: the one the pod runtime has installed, else the
@@ -525,34 +601,38 @@ func (l *Listener) awaitLauncherResolver(deadline time.Time) (LauncherResolver, 
 // register binds the claim to this connection, unless a live connection already holds it — the
 // shim of a pane that has not died is not displaced by a second dial. A claim whose connection
 // has closed is free again, which is the reconnect case.
-func (l *Listener) register(nc net.Conn, token claim.Token, generation uint64, identity *AgentSecretsIdentity) (*Conn, string) {
+//
+// A hello of a newer generation than the bound connection's is refused too, and is what starts
+// the claim's lock-out: the older connection is told to stop, and the newer process binds on a
+// later hello, once that connection has closed (refuseBound, lockout.go).
+func (l *Listener) register(nc net.Conn, token claim.Token, generation uint64, identity *AgentSecretsIdentity) (*Conn, refusal) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.closed || l.narrowed {
-		return nil, ""
+		return nil, refusal{}
 	}
-	if _, bound := l.conns[token]; bound {
-		return nil, "already bound to a live stream"
+	if bound, already := l.conns[token]; already {
+		return nil, l.refuseBound(bound, token, generation)
 	}
 	if err := nc.SetReadDeadline(time.Time{}); err != nil {
-		return nil, "connection closed before hello_ack"
+		return nil, because("connection closed before hello_ack")
 	}
-	conn := newConn(nc, token, l.timeout, l.log, l.events)
+	conn := newConn(nc, token, generation, l.timeout, l.log, l.events)
 	l.registrations++
-	conn.seq, conn.generation = l.registrations, generation
+	conn.seq = l.registrations
 	// The ack is written before the connection is registered, so it reaches the shim ahead of any
 	// frame a caller sends the moment Conn or Await returns it — a shim drops every line that
 	// precedes its hello_ack (worker-shim.ts:492-497). The lock is held across the write because
 	// it cannot wait on the peer: a fresh connection's send buffer is empty, and a write that
 	// fails means the connection is already gone (worker-stream-listener.ts:88-94).
 	if err := conn.writer.WriteFrame(shimwire.HelloAck{}); err != nil {
-		return nil, "connection closed before hello_ack"
+		return nil, because("connection closed before hello_ack")
 	}
 	l.conns[token] = conn
 	l.events.push(Hello{Claim: token, Generation: generation, AgentSecrets: identity})
 	close(l.registered)
 	l.registered = make(chan struct{})
-	return conn, ""
+	return conn, refusal{}
 }
 
 func (l *Listener) isClosed() bool {

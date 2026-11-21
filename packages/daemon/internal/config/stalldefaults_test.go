@@ -25,6 +25,11 @@ type stallDefaults struct {
 	// backstop floor is reckoned from it, so it is a copy of a plugin number like the three
 	// above and is held to the plugin's own DECLARED_DEADLINE_MOST_MS the same way.
 	DeclaredDeadlineMostMs int64 `json:"declaredDeadlineMostMs"`
+	// DaemonWaitBudgetMs is the longest a worker's call waits for a daemon that is not serving
+	// (StallDaemonWait), which no LEGION_STALL_* variable moves either: the worker's own stall
+	// watch does not count that wait against the call, so the daemon's floor carries it and is
+	// held to the plugin's own DAEMON_RESTART_BUDGET_MS by this fixture.
+	DaemonWaitBudgetMs int64 `json:"daemonWaitBudgetMs"`
 	// CallBoundMsByRole is the bound's default for every role a session can hold, the controller
 	// among them, since the bound's default is the role's and the daemon's floor is per role.
 	CallBoundMsByRole map[claim.Role]int64 `json:"callBoundMsByRole"`
@@ -48,6 +53,7 @@ func TestStallDefaultsGolden(t *testing.T) {
 		CallBoundMs:            StallCallBound.Milliseconds(),
 		StepMs:                 StallStep.Milliseconds(),
 		DeclaredDeadlineMostMs: StallDeclaredDeadlineCap.Milliseconds(),
+		DaemonWaitBudgetMs:     StallDaemonWait.Milliseconds(),
 		CallBoundMsByRole:      byRole,
 	})
 }

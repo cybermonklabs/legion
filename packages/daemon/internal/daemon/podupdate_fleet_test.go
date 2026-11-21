@@ -370,7 +370,8 @@ func (r *fleetRig) signal(issue string, role claim.Role, head string) {
 	}); err != nil {
 		r.t.Fatalf("%s's %s answered the update round: %v", issue, role, err)
 	}
-	known, err := r.sup.store.PutClaimActivity(r.ctx, c.Token, c.Generation, claim.SessionActivity{At: r.clock.Now().UTC()})
+	now := r.clock.Now().UTC()
+	known, err := r.sup.store.PutClaimActivity(r.ctx, c.Token, c.Generation, claim.SessionActivity{At: now}, now)
 	if err != nil || !known {
 		r.t.Fatalf("report that nothing of %s's %s runs: known %v, %v", issue, role, known, err)
 	}

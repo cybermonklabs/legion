@@ -186,6 +186,7 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestExit":          {RequestExit{}},
 		"RequestTurnOutcome":   {RequestTurnOutcome{}},
 		"RequestCompact":       {RequestCompact{}},
+		"RequestRelaunch":      {RequestRelaunch{}},
 		"ResumePause":          {ResumePause{}},
 		"CompactEnded":         {CompactEnded{}},
 	}
@@ -396,6 +397,8 @@ func fenced(ev Event, c Claim) Event {
 		return RequestTurnOutcome{Claim: c.Token, Generation: c.Generation, Sequence: 1}
 	case RequestCompact:
 		return RequestCompact{Claim: c.Token}
+	case RequestRelaunch:
+		return RequestRelaunch{Claim: c.Token, Cause: "Envoy could not reach its session"}
 	case CompactEnded:
 		return CompactEnded{Claim: c.Token, Generation: c.Generation, Compacted: true}
 	}
@@ -516,7 +519,7 @@ func wantsRefusal(ev Event) bool {
 	switch ev.(type) {
 	case RequestSpawn, RequestRegister, RequestReady, RequestSuspend, RequestResume, RequestStop,
 		RequestRetry, RequestOperatorRetry, RequestForgetSession, RequestDeliver, RequestExit, RequestCompact,
-		RequestTurnOutcome, PodUpdateSignalled:
+		RequestTurnOutcome, RequestRelaunch, PodUpdateSignalled:
 		return true
 	}
 	return false
