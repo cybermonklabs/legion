@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -218,19 +221,50 @@ func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 }
 
 // putBacksUnderReaper is how many put-backs TestPutBacksPIDOneHelper makes through the guard, and
-// controlPutBacks how many its control may try with no guard before one loses an exit.
+// controlPutBacks how many it makes with no guard. Every command of each meets the reaper
+// (metTheReaper), so each put-back is a race the reaper has run, not a chance at one.
 const (
-	putBacksUnderReaper = 20
+	putBacksUnderReaper = 5
 	controlPutBacks     = 5
 )
 
+// metTheReaper is start with the race between PID 1's reaper and a put-back's own wait run to its
+// end before that wait reads the command's exit: once start has started the command, the answer
+// waits for the command to exit and then for a whole pass of the reaper that began after it
+// (passed). By then a command the guard holds is still its own wait's, and any other's exit is
+// the reaper's, so its own wait answers ECHILD. The row once left the race to the machine: its
+// control needed a pass to land between an unguarded command's exit and its wait within five
+// put-backs, and failed whenever none did (CI's daemon-go, 2026-11-21: "none of 5 put-backs with
+// no guard lost an exit to the reaper"). A command that never exits, or a reaper that never
+// finishes a pass, fails t by name.
+func metTheReaper(t *testing.T, start procgroup.Starter, passed func() bool) procgroup.Starter {
+	return func(cmd *exec.Cmd) (func(), error) {
+		done, err := start(cmd)
+		if err != nil {
+			return done, err
+		}
+		pid := cmd.Process.Pid
+		ended := func() bool {
+			_, err := os.Stat(filepath.Join("/proc", strconv.Itoa(pid)))
+			return errors.Is(err, os.ErrNotExist) || zombie(pid)
+		}
+		switch {
+		case !testwait.Holds(testwait.Bounded(t, time.Minute, 30*time.Second), time.Millisecond, ended):
+			t.Errorf("the put-back's command %d (%s) never exited", pid, strings.Join(cmd.Args, " "))
+		case !passed():
+			t.Errorf("the reaper finished no pass after the put-back's command %d exited", pid)
+		}
+		return done, nil
+	}
+}
+
 // TestPutBacksPIDOneHelper is TestPutBacksUnderThePodsReaperKeepTheirExitStatus's body, run as PID
-// 1 under relentlessReaper, which starts a new pass as soon as it ends one. Every put-back through
-// the guard must answer with the whole of what was saved. The control comes after them, with the
-// reaper still running: the same put-back started with procgroup.NoReaper, as a put-back outside a
-// launcher runs it, must lose a command's exit to the reaper within controlPutBacks tries, or the
-// reaper never met an exit and the put-backs before it prove nothing. The fixture's own jj and git
-// run only while the reaper is stopped, before it starts and after it stops.
+// 1 under relentlessReaper, which starts a new pass as soon as it ends one. Every command of every
+// put-back meets the reaper before its own wait reads its exit (metTheReaper). Each put-back
+// through the guard must answer with the whole of what was saved, and each of the control's, the
+// same put-back started with procgroup.NoReaper as a put-back outside a launcher runs it, must lose
+// its first command's exit to the reaper. The fixture's own jj and git run only while the reaper is
+// stopped, before it starts and after it stops.
 func TestPutBacksPIDOneHelper(t *testing.T) {
 	if os.Getenv(pidOneHelperEnv) != "1" {
 		return
@@ -256,30 +290,30 @@ func TestPutBacksPIDOneHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stop := relentlessReaper(t, managers, guard)
+	stop, passed := relentlessReaper(t, managers, guard)
 	type answer struct {
 		restored bool
 		notice   string
 	}
 	answers := make([]answer, len(guarded))
 	for index, dir := range guarded {
-		answers[index].restored, answers[index].notice = restoreWorkspace(context.Background(), managers[0].restore.start, dir, f.env, bundleRelease, saved)
+		answers[index].restored, answers[index].notice = restoreWorkspace(context.Background(), metTheReaper(t, managers[0].restore.start, passed), dir, f.env, bundleRelease, saved)
 	}
-	controlTries, controlNotice := 0, ""
-	for _, dir := range control {
-		controlTries++
-		restored, notice := restoreWorkspace(context.Background(), procgroup.NoReaper, dir, f.env, bundleRelease, saved)
-		if !restored && (strings.Contains(notice, "no child processes") || strings.Contains(notice, "no such process")) {
-			controlNotice = notice
-			break
-		}
+	controls := make([]answer, len(control))
+	for index, dir := range control {
+		controls[index].restored, controls[index].notice = restoreWorkspace(context.Background(), metTheReaper(t, procgroup.NoReaper, passed), dir, f.env, bundleRelease, saved)
 	}
 	stop()
 
-	if controlNotice == "" {
-		t.Fatalf("none of %d put-backs with no guard lost an exit to the reaper: it never met one, so the put-backs through the guard prove nothing", controlTries)
+	lost := 0
+	for index, got := range controls {
+		if !got.restored && (strings.Contains(got.notice, "no child processes") || strings.Contains(got.notice, "no such process")) {
+			lost++
+			continue
+		}
+		t.Errorf("the put-back with no guard into %s answered %v, %q; want its command's exit lost to the reaper, which met it", control[index], got.restored, got.notice)
 	}
-	t.Logf("control: put-back %d with no guard lost an exit: %s", controlTries, controlNotice)
+	t.Logf("control: %d of %d put-backs with no guard lost an exit to the reaper", lost, len(control))
 	for index, got := range answers {
 		if !got.restored || !strings.Contains(got.notice, "is restored") || strings.Contains(got.notice, "would not take") ||
 			strings.Contains(got.notice, "no child processes") || strings.Contains(got.notice, "no such process") {

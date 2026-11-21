@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -542,7 +543,15 @@ func testerRolesDir(t *testing.T) string {
 // process may have taken by then. The reaper takes every exited child of the test process, so a
 // test that runs it is not parallel, and runs its own commands through guard or while the reaper
 // is stopped.
-func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop func()) {
+//
+// passed waits until a whole pass of the reaper that began after the call has ended, and reports
+// whether one did before its bound. The signals channel holds one SIGCHLD, so a send completes
+// only once the reaper has taken the one before it, and the reaper takes the next only once its
+// pass is over. When passed is called, n sends are counted: send n+2 completes after the call (the
+// count of send n+1 had not been made, and the sender counts each send before it makes the next),
+// so the pass that takes it begins after the call, and send n+4 completes only once the reaper has
+// taken send n+3, after that pass ended.
+func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop func(), passed func() bool) {
 	t.Helper()
 	orphan := exec.Command("/bin/sh", "-c", "exit 0")
 	if err := orphan.Start(); err != nil {
@@ -550,6 +559,7 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	signals := make(chan os.Signal, 1)
+	var sent atomic.Uint64
 	var reaping sync.WaitGroup
 	reaping.Go(func() { reapOrphans(ctx, signals, managers, guard) })
 	reaping.Go(func() {
@@ -558,10 +568,11 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 			case <-ctx.Done():
 				return
 			case signals <- syscall.SIGCHLD:
+				sent.Add(1)
 			}
 		}
 	})
-	return func() {
+	stop = func() {
 		t.Helper()
 		cancel()
 		reaping.Wait()
@@ -569,6 +580,11 @@ func relentlessReaper(t *testing.T, managers []*manager, guard *pidGuard) (stop 
 			t.Errorf("the orphan %d's own wait answered %v, want ECHILD or ESRCH: the reaper left it unreaped, so it never ran while the test's commands did", orphan.Process.Pid, err)
 		}
 	}
+	passed = func() bool {
+		from := sent.Load()
+		return testwait.Holds(testwait.Bounded(t, time.Minute, 30*time.Second), time.Millisecond, func() bool { return sent.Load() >= from+4 })
+	}
+	return stop, passed
 }
 
 // While the install's verification runs — the served check's `--help`, a child of the launcher,
@@ -676,7 +692,7 @@ func TestLeakCheckInstallPIDOneHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stop := relentlessReaper(t, managers, guard)
+	stop, _ := relentlessReaper(t, managers, guard)
 
 	var refused []string
 	for index := range installsUnderReaper {
