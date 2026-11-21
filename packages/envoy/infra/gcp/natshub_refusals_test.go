@@ -682,13 +682,14 @@ func requireResolverRefusals(t *testing.T, cases []resolverRefusal) {
 			args := exampleArgs()
 			c.edit(args)
 			err := gcp.ResolveNatsHub(args)
-			var refused *core.InputError
-			require.ErrorAs(t, err, &refused)
-			require.Equal(t, c.input, refused.Input, "%v", err)
+			require.Error(t, err)
 			for _, want := range c.err {
 				require.ErrorContains(t, err, want)
 			}
 			require.NotContains(t, err.Error(), authKey)
+			var refused *core.InputError
+			require.ErrorAs(t, err, &refused)
+			require.Equal(t, c.input, refused.Input, "%v", err)
 		})
 	}
 }
