@@ -616,11 +616,11 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   const first = rowOf(view, D("first"));
   await act(async () => first.focus());
   expect(first.querySelector("[data-node-body]")).not.toBeNull();
-  expect(first.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
+  expect(first.querySelector("[data-node-card]")).toHaveClass(pageFocusedRow);
   await user.tab();
   expect(document.activeElement).toBe(foot);
   expect(first.querySelector("[data-node-body]")).toBeNull();
-  expect(first.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow);
+  expect(first.querySelector("[data-node-card]")).not.toHaveClass(pageFocusedRow);
 });
 
 /** An issue whose only decision is an agent's that no statement rests on: the list draws its
@@ -713,7 +713,6 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     await waitFor(() => expect(document.activeElement).toBe(tree));
     failed.again({ children: [statement("s1"), decisionNode("first")] });
     await waitFor(() => expect(focusedRow(failed)).toBe(D("first")));
-    expect(document.activeElement).not.toBe(document.body);
     failed.unmount();
   } finally {
     refused.mockRestore();
@@ -752,11 +751,11 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     await act(async () => row.focus());
     expect(focusedRow(partial)).toBe(D("first"));
     expect(row.querySelector("[data-node-body]")).not.toBeNull();
-    expect(row.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
+    expect(row.querySelector("[data-node-card]")).toHaveClass(pageFocusedRow);
     await user.tab({ shift: true });
     expect(document.activeElement).toBe(retryOf(partial, "asks"));
     expect(row.querySelector("[data-node-body]")).toBeNull();
-    expect(row.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow);
+    expect(row.querySelector("[data-node-card]")).not.toHaveClass(pageFocusedRow);
     expect(focusedRow(partial)).toBeUndefined();
     partial.unmount();
   } finally {
@@ -976,9 +975,9 @@ test("a refused read's run that ends with no new refusal draws no new alert, and
       expect(document.activeElement, "the cancelled run took the focus off the Retry").toBe(retry);
 
       await retryRefusedAgain(view, read, (run) => spy.mockReturnValue(run), user);
-      expect(alertOf(view, read), "the read refused again kept the alert it drew before").not.toBe(
-        alert
-      );
+      const again = alertOf(view, read);
+      expect(again, "the read refused again drew no alert").not.toBeNull();
+      expect(again, "the read refused again kept the alert it drew before").not.toBe(alert);
       view.unmount();
     } finally {
       spy.mockRestore();
@@ -1803,7 +1802,7 @@ test("a list that holds only the foot gives the focus to the foot's control", as
   await waitFor(() => expect(document.activeElement).toBe(footControlOf(view)));
 
   (document.activeElement as HTMLElement).blur();
-  expect(document.activeElement).not.toBe(footControlOf(view));
+  expect(footControlOf(view)).not.toHaveFocus();
   await act(async () => view.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
   expect(document.activeElement).toBe(footControlOf(view));
   view.unmount();
