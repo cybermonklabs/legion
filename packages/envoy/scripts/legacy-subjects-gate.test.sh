@@ -418,7 +418,10 @@ false	notifications.dispatch.issue.ACME-12.>	["notifications.dispatch.issue.ACME
 true	notifications.dispatch.*.*.comment.created	["notifications.dispatch.*.*.comment.created","notifications.dispatch.*.*.*.comment.created"]
 true	notifications.role.legion-priv-priv-1-architect	["notifications.role.legion-priv-priv-1-architect","notifications.role.PRIV.legion-priv-priv-1-architect"]
 false	notifications.role.legion-priv-priv-1-architect	["notifications.role.legion-priv-priv-1-architect","notifications.role.ACME.legion-priv-priv-1-architect"]
-true	notifications.envoy.kept.role.lead-reviewer	["notifications.envoy.kept.role.lead-reviewer","notifications.envoy.kept.role._.lead-reviewer"]
+false	notifications.envoy.kept.role.lead-reviewer	["notifications.envoy.kept.role.lead-reviewer","notifications.envoy.kept.role._.lead-reviewer"]
+true	notifications.envoy.kept.role.lead-reviewer	["notifications.envoy.kept.role.lead-reviewer","notifications.envoy.kept.role.*.lead-reviewer"]
+false	notifications.role.lead-reviewer	["notifications.role.lead-reviewer","notifications.role._.lead-reviewer"]
+true	notifications.envoy.kept.role.legion-priv-priv-1-architect	["notifications.envoy.kept.role.legion-priv-priv-1-architect","notifications.envoy.kept.role.PRIV.legion-priv-priv-1-architect"]
 true	notifications.envoy.exceptions.notifications.agent.ses_a	["notifications.envoy.exceptions.notifications.agent.ses_a","notifications.envoy.exceptions.notifications.agent.*.ses_a"]
 ROWS
 [ "$(jq -n -L "$here/lib" 'include "legacy-subjects-gate-forms"; "a\u0007b\nc" | printable')" = '"a\\x07b\\x0ac"' ] ||

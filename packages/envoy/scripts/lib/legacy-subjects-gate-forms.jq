@@ -82,20 +82,23 @@ def role_project:
 
 # twin_slot is where an old-form filter's new-form twin puts its project token, and the one
 # project every name the filter matches carries, when there is one: an issue key's own project (an
-# issue key belongs to one project), a role's own project (role_project), and none for an agent's
-# name or a wildcard key or role, whose names carry any project. Null for a filter of no family the
-# rename moved.
+# issue key belongs to one project) and a Legion role's own project (role_project), and none for an
+# agent's name, a wildcard key or role, or a free-form role (lead-reviewer), whose names carry any
+# project: a free-form role's kept lane is keyed by the project of the event it keeps
+# (notifications.envoy.kept.role.PUB.reviewer), so `_` there covers some of its copies alone. Null
+# for a filter of no family the rename moved.
 def twin_slot:
+  # role_owner is a role token's one project: a Legion role's own, and none (null) for a free-form
+  # role or a wildcard.
+  def role_owner: if . == "*" or . == ">" then null else role_project | if . == "_" then null else . end end;
   if startswith("notifications.envoy.exceptions.") then
     (ltrimstr("notifications.envoy.exceptions.") | twin_slot) as $s
     | if $s == null then null else {at: ($s.at + 3), project: $s.project} end
   elif issue_family_rest != null then
     {at: 3, project: (split(".")[3] // "" | if test("^[A-Z][A-Z0-9]{1,9}-[0-9]+$") then split("-")[0] else null end)}
   elif startswith("notifications.agent.") then {at: 2, project: null}
-  elif startswith("notifications.role.") then
-    {at: 2, project: (split(".")[2] // "" | if . == "*" or . == ">" then null else role_project end)}
-  elif test("^notifications\\.envoy\\.kept\\.(role|cursor)\\.") then
-    {at: 4, project: (split(".")[4] // "" | if . == "*" or . == ">" then null else role_project end)}
+  elif startswith("notifications.role.") then {at: 2, project: (split(".")[2] // "" | role_owner)}
+  elif test("^notifications\\.envoy\\.kept\\.(role|cursor)\\.") then {at: 4, project: (split(".")[4] // "" | role_owner)}
   else null
   end;
 
