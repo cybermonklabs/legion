@@ -1,0 +1,29 @@
+kind: Added
+body: |-
+  The broker's NATS auth service holds a service whose `BROKER_NATS_SERVICES` entry takes its
+  exchange projects (`-`) to the projects the broker's exchange entry for its account lists
+  (`natsgrant.WithinProjects`), where before it refused every such entry; the person that
+  exchange entry acts for must see each project, as the token exchange requires of that account's
+  token. The grant keeps every repository's GitHub events, since a GitHub event is a message of no
+  project. No connection waits on Dispatch: the broker asks it at its start and every 20 seconds
+  after about every such project, and holds each project's answer on its own, the newest it got,
+  however old; a question that fails keeps the answer held about it. It refuses, naming the reason
+  and counting it under a label of its own, an account no exchange entry lists
+  (`no_exchange_entry`), an entry naming no project (`no_exchange_projects`), a project Dispatch
+  has not yet answered about (`project_access_unknown`, which the client retries), Dispatch
+  refusing the broker's own account token (a 401 or 403) on any question of a refresh, until a
+  later refresh gets no such refusal and holds an answer whose question was asked after the
+  refusal was seen; an answer a trade left in the broker's 30-second store after the refusal
+  clears it, while one kept from before it, a not-found or a refresh that cannot reach Dispatch
+  keeps it (`project_access_refused`, logged at error once a refresh, as the token exchange
+  refuses every trade then), a project Dispatch does not hold (`project_not_found`), one the
+  entry's person cannot see (`project_not_visible`), and a grant that cannot be held to projects
+  (`grant_not_holdable`). A dispatch or listener entry with `-` is now refused at startup, as a
+  measurement entry's is. A daemon entry with `*` is also granted its account's own reply prefix.
+  List a Legion daemon with `*` until every reading of the release gate holds for a daemon that
+  opens its consumers per project: `daemon-release-gate.sh`'s listener and daemon legs (each with
+  `--deployment <owner/repo>`, which the script requires), the stored-wake read, the
+  running-daemon read (`daemon-running-gate.sh`, which comes with that daemon, printing that every
+  running daemon is at or after that release; the release gate's legs read the repository alone)
+  and the consumer-filter read (each daemon durable on its own kind's filter): `-` names consumers
+  today's daemon does not open, and reads a wider durable whole.

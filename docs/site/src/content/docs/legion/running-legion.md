@@ -707,6 +707,17 @@ What each part is for:
   pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
+- **`nats_daemon_service_token_file`** (optional) names a projected ServiceAccount token the
+  daemon's own NATS connection presents, in place of a seed, to a hub whose connections the
+  Secrets Broker's NATS auth service admits. The broker's `BROKER_NATS_SERVICES` must list the
+  token's account as a `daemon` with `*` (the daemon's whole grant) until every reading of the
+  release gate holds for a daemon that opens its consumers per project: `daemon-release-gate.sh`'s
+  listener and daemon legs (each with `--deployment <owner/repo>`, which the script requires), the
+  stored-wake read, the running-daemon read (`daemon-running-gate.sh`, which comes with that daemon,
+  printing that every running daemon is at or after that release; the release gate's legs read the
+  repository alone, not the daemons running) and the consumer-filter read (each daemon durable on
+  its own kind's filter). The connection waits out a refusal of the auth service at boot and while
+  running, logging each one, and a daemon seed beside it refuses boot.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
   [Secrets Broker](/legion/broker/): `url` is the broker, and `token_file` is where the daemon's own
   projected ServiceAccount token for the broker's audience is mounted. The daemon logs in with that

@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
+
+	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -79,7 +82,7 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	if err != nil {
 		return bootReads{}, err
 	}
-	if r.nats, err = chooseNATSConnection(daemonSeed, paneSeed, r.paneNatsUser); err != nil {
+	if r.nats, err = chooseNATSConnection(cfg.NatsDaemonServiceTokenFile, daemonSeed, paneSeed, r.paneNatsUser); err != nil {
 		return bootReads{}, err
 	}
 	if cfg.InstructionsPath != "" {
@@ -149,29 +152,44 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	return r, nil
 }
 
-// natsConnection is the NATS user the daemon's own connection authenticates as: its own seed
+// natsConnection is the credential the daemon's own NATS connection presents: its platform identity
+// token (config's NatsDaemonServiceTokenFile) when it names one, else its own seed
 // (natsauth.DaemonSeed) when it has one, else the pane seed every pane receives (launchSecrets),
 // else no credential. No launch carries it.
 type natsConnection struct {
-	seed     string         // "" for no credential
-	user     string         // seed's user's public key, "" with no seed
-	source   natsSeedSource // where seed came from
-	paneUser bool           // whether user is the pane seed's user, as when the daemon seed is the pane seed
+	seed      string         // "" for no seed
+	tokenFile string         // the platform identity token's file, "" for none
+	user      string         // seed's user's public key, or the account the token names; "" with neither
+	source    natsSeedSource // where the credential came from
+	paneUser  bool           // whether user is the pane seed's user, as when the daemon seed is the pane seed
 }
 
-// natsSeedSource is where the daemon's own connection's seed came from, as its boot line names it.
+// natsSeedSource is where the daemon's own connection's credential came from, as its boot line
+// names it.
 type natsSeedSource string
 
 const (
-	natsSeedDaemon natsSeedSource = "daemon" // natsauth.DaemonSeed
-	natsSeedPane   natsSeedSource = "pane"   // the pane seed every pane receives
-	natsSeedNone   natsSeedSource = "none"   // no seed: no credential
+	natsServiceToken natsSeedSource = "service-token" // nats_daemon_service_token_file
+	natsSeedDaemon   natsSeedSource = "daemon"        // natsauth.DaemonSeed
+	natsSeedPane     natsSeedSource = "pane"          // the pane seed every pane receives
+	natsSeedNone     natsSeedSource = "none"          // no seed: no credential
 )
 
-// chooseNATSConnection is the connection over daemonSeed and paneSeed, each "" for none, where
-// paneUser is paneSeed's user's public key, already read.
-func chooseNATSConnection(daemonSeed, paneSeed, paneUser string) (natsConnection, error) {
+// chooseNATSConnection is the connection over tokenFile, daemonSeed and paneSeed, each "" for none,
+// where paneUser is paneSeed's user's public key, already read. A token file and a daemon seed
+// together are refused naming both, since one connection presents one credential; the token file
+// is read here (natsauth.ServiceIdentity), so a missing or unreadable token refuses boot.
+func chooseNATSConnection(tokenFile, daemonSeed, paneSeed, paneUser string) (natsConnection, error) {
 	switch {
+	case tokenFile != "" && daemonSeed != "":
+		return natsConnection{}, fmt.Errorf("%s and a daemon seed (%s, %s or %s) are both set: the daemon's own NATS connection presents one credential, so name one of them",
+			natsauth.ServiceTokenFileKey, natsauth.DaemonSeedFileKey, natsauth.DaemonSeedFileVariable, natsauth.DaemonSeedVariable)
+	case tokenFile != "":
+		account, err := natsauth.ServiceIdentity(tokenFile)
+		if err != nil {
+			return natsConnection{}, err
+		}
+		return natsConnection{tokenFile: tokenFile, user: account, source: natsServiceToken}, nil
 	case daemonSeed != "":
 		user, err := natsauth.PublicKey(daemonSeed)
 		if err != nil {
@@ -185,10 +203,39 @@ func chooseNATSConnection(daemonSeed, paneSeed, paneUser string) (natsConnection
 	}
 }
 
-// log logs, once, the user the connection authenticates as, by public key, whether that is the pane
-// user, and where its seed came from; never the seed.
+// log logs, once, who the connection authenticates as, never the credential: for a seed, the user
+// by public key, whether that is the pane user, and where its seed came from; for the service
+// token, the account the token names, and seed=service-token.
 func (c natsConnection) log(log *slog.Logger) {
 	log.Info("legion daemon connects to NATS", "user", c.user, "paneUser", c.paneUser, "seed", string(c.source))
+}
+
+// waitsOut reports whether the boot waits a failed connect on this connection out, retrying it on
+// readinessRetry and logging each failure with its reason (bootprobe.Run), rather than refusing
+// the boot: an unreachable NATS for every credential (natsauth.Unreachable), and, for the service
+// token alone, a refusal (natsauth.Refused). The NATS auth service refuses a token while it is
+// away or holds no answer a decision needs yet, so the token's connection waits that out at boot as
+// it does while running (natsauth.ConnectService, and options' reconnect delay), and the daemon,
+// which serves nothing while its boot runs, reads as not ready meanwhile rather than exiting into a
+// restart. A seed's refusal, or a refusal of no credential, is a misconfiguration no wait fixes,
+// and refuses the boot as before.
+func (c natsConnection) waitsOut(err error) bool {
+	return natsauth.Unreachable(err) || c.tokenFile != "" && natsauth.Refused(err)
+}
+
+// options are the connection options the daemon's own connection dials with, after its
+// credential: what the server reports, logged (natsauth.LogEvents), and reconnects that never give
+// up (natsauth.ReconnectForever). The service token's connection also waits its reconnects out on
+// the boot's own schedule, readinessRetry, which waitsOut holds the boot's connect to: one rule,
+// bootprobe.Retry.Delay, waits a refusal of the auth service out at boot and while running. nats.go
+// counts a reconnect's attempts from one, and Delay its retries from none. A seed's keeps nats.go's
+// own reconnect wait.
+func (c natsConnection) options(log *slog.Logger) []nats.Option {
+	options := []nats.Option{natsauth.LogEvents(log), natsauth.ReconnectForever()}
+	if c.tokenFile != "" {
+		options = append(options, nats.CustomReconnectDelay(func(attempts int) time.Duration { return readinessRetry.Delay(attempts - 1) }))
+	}
+	return options
 }
 
 // tmuxReads is what a daemon on this host needs that readBoot reads: a launch for each harness its
@@ -254,30 +301,41 @@ func checkRoleConfigFiles(cfg config.Config) error {
 	return nil
 }
 
+// CheckedNATS is who the daemon's NATS credentials authenticate as, as CheckStart read them: the
+// pane seed's user and the daemon seed's user by public key, and the account the daemon's service
+// token names (nats_daemon_service_token_file), each "" when the daemon has no such credential;
+// never a seed or a token.
+type CheckedNATS struct {
+	PaneUser, DaemonUser, DaemonServiceAccount string
+}
+
 // CheckStart is `legion config check`'s reading of what boot reads before it writes
 // anything (readBoot), over the daemon's environment (lookup, and the process's for the OMP
 // invocation), then of postgres_dsn as the store reads it before it opens a connection
 // (store.PoolConfig, which parses the DSN and opens nothing): nil when boot would get past every
-// such refusal, and the public keys of the pane seed's user and the daemon seed's user, each ""
-// when the daemon has no such seed, never a seed. The store refuses a postgres_dsn pgx cannot
-// parse, such as a malformed URL, a bad pool_* key or an sslrootcert, sslcert or sslkey file it
-// cannot read, and one whose default_query_exec_mode the store's text rule cannot run in. pgx
-// fills what the DSN leaves unset from the process's own PG* environment variables, whatever
-// lookup holds, as it does at boot. Each such refusal is store.ConnectError, as store.Open wraps
-// it: the DSN's address and the driver's detail, never the DSN's password. The driver's detail of
-// a DSN pgx cannot parse quotes the DSN with its user name and its query, which
-// `legion config check` and `legion start` both remove when they write the refusal (printRefusal,
-// the URL rule).
-func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, err error) {
+// such refusal, and who the daemon's NATS credentials authenticate as (CheckedNATS). The store
+// refuses a postgres_dsn pgx cannot parse, such as a malformed URL, a bad pool_* key or an
+// sslrootcert, sslcert or sslkey file it cannot read, and one whose default_query_exec_mode the
+// store's text rule cannot run in. pgx fills what the DSN leaves unset from the process's own PG*
+// environment variables, whatever lookup holds, as it does at boot. Each such refusal is
+// store.ConnectError, as store.Open wraps it: the DSN's address and the driver's detail, never the
+// DSN's password. The driver's detail of a DSN pgx cannot parse quotes the DSN with its user name
+// and its query, which `legion config check` and `legion start` both remove when they write the
+// refusal (printRefusal, the URL rule).
+func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (CheckedNATS, error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {
-		return "", "", err
+		return CheckedNATS{}, err
 	}
 	if _, err := store.PoolConfig(cfg.PostgresDSN); err != nil {
-		return "", "", store.ConnectError(cfg.PostgresDSN, err)
+		return CheckedNATS{}, store.ConnectError(cfg.PostgresDSN, err)
 	}
-	if r.nats.source == natsSeedDaemon {
-		daemonNatsUser = r.nats.user
+	checked := CheckedNATS{PaneUser: r.paneNatsUser}
+	switch r.nats.source {
+	case natsSeedDaemon:
+		checked.DaemonUser = r.nats.user
+	case natsServiceToken:
+		checked.DaemonServiceAccount = r.nats.user
 	}
-	return r.paneNatsUser, daemonNatsUser, nil
+	return checked, nil
 }

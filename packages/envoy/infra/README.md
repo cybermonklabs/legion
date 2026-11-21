@@ -3939,9 +3939,9 @@ on the server gets, key-value reads and watch updates included, such as the list
 this set; its seed belongs to the daemon, not to a host or session.
 
 `natsgrant.WithinProjects` (`packages/envoy/natsgrant/projects.go`) holds a Legion daemon's grant
-to its projects. The NATS auth service uses it from #4197 on; until then it refuses a daemon entry
-held to projects. Its reply inboxes become the daemon account's own prefix
-(`natsgrant.InboxPrefix`) in place of `_INBOX.>`; its issue, role-exception and Legion lanes become
+to its projects, and the NATS auth service answers a daemon entry held to projects with it. Its
+reply inboxes become the daemon account's own prefix (`natsgrant.InboxPrefix`) in place of
+`_INBOX.>`; its issue, role-exception and Legion lanes become
 those of its projects; and its consumer calls become the calls on its own
 `legion-go-<project>-<kind>` consumers, each create subject naming its one filter. It keeps every
 repository's GitHub events (`notifications.github.>`) whole, since a GitHub event is a message of

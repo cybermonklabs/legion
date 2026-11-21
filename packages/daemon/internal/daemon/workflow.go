@@ -895,7 +895,9 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 // connect opens Envoy's JetStream and this project's durable consumers, so a missing
 // notification stream refuses boot rather than leaving a daemon that reads no events. Boot runs it
 // before reconcile, whose Dispatch listing covers only what precedes a consumer created now. It
-// connects as nc, the user readBoot chose (natsConnection), and logs what the server reports about
+// connects as nc, the credential readBoot chose (natsConnection): its platform identity token
+// through natsauth.ConnectService, which retries a refusal of the NATS auth service, else its seed
+// or none through natsauth.Connect. It logs what the server reports about
 // the connection: every permission it refuses at error, every disconnect at warn and every
 // reconnect at info (natsauth.LogEvents), under natsauth.ReconnectForever so a reconnect never
 // gives up: a NATS outage mid-run never closes the connection for good. A failed attempt here
@@ -905,7 +907,14 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 // looks once the connection reports itself closed, and Close does not clear what the connection
 // last recorded.
 func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc natsConnection) error {
-	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, "legion-daemon "+cfg.Project, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
+	name, options := "legion-daemon "+cfg.Project, nc.options(w.log)
+	var conn *nats.Conn
+	var err error
+	if nc.tokenFile != "" {
+		conn, err = natsauth.ConnectService(cfg.NatsURLs, nc.tokenFile, name, options...)
+	} else {
+		conn, err = natsauth.Connect(cfg.NatsURLs, nc.seed, name, options...)
+	}
 	if err != nil {
 		return fmt.Errorf("connect Envoy NATS: %w", err)
 	}

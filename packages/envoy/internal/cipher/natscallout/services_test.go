@@ -41,6 +41,21 @@ func TestParseServicesRefusesProjectsForMeasure(t *testing.T) {
 	require.True(t, services[0].AllProjects)
 }
 
+// A dispatch or listener entry held to its exchange projects is refused at start, naming the
+// entry: each grant reads and writes KV buckets every project shares, which
+// natsgrant.WithinProjects refuses, so such an entry would be refused at every connection instead.
+// The same entries with * are taken.
+func TestParseServicesRefusesProjectsForDispatchAndListener(t *testing.T) {
+	for _, kind := range []string{"dispatch/example-dispatch", "listener/example-hub"} {
+		_, err := ParseServices(kind + "/-=" + listenerAccount)
+		require.ErrorContains(t, err, "BROKER_NATS_SERVICES entry \""+kind+"/-=")
+		require.ErrorContains(t, err, "which its grant cannot be held to")
+		services, err := ParseServices(kind + "/*=" + listenerAccount)
+		require.NoError(t, err)
+		require.True(t, services[0].AllProjects)
+	}
+}
+
 // Every entry the broker could not serve is refused at start, naming the entry.
 func TestParseServicesRefusals(t *testing.T) {
 	for name, raw := range map[string]string{

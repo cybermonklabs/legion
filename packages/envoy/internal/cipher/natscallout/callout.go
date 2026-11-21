@@ -150,6 +150,10 @@ type Service struct {
 	// wait counts the requests deliver started on goroutines of their own, waiting for a slot,
 	// deciding or being refused, which Close waits out.
 	wait sync.WaitGroup
+	// stopHeld ends the asks about the projects a held entry can name (heldAccess.run), and
+	// heldDone is closed once they have ended.
+	stopHeld context.CancelFunc
+	heldDone chan struct{}
 	// waiting counts the requests waiting for a decision slot, which maxWaiting bounds, and
 	// refusing the requests being refused past it, which maxRefusing bounds. Each is counted on
 	// the delivery goroutine before the request's own goroutine starts, so it includes requests
@@ -251,7 +255,7 @@ func Start(ctx context.Context, settings Settings, deps Deps) (*Service, error) 
 	return start(ctx, settings, deps, Decide)
 }
 
-func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (*Service, error) {
+func start(ctx context.Context, settings Settings, deps Deps, decide decideFunc) (*Service, error) {
 	issuer, err := config.ReadSeedFile("BROKER_NATS_ISSUER_SEED_FILE", settings.IssuerSeedFile, nkeys.PrefixByteAccount)
 	if err != nil {
 		return nil, err
@@ -284,6 +288,11 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	if err != nil {
 		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
 	}
+	// Dispatch's answers about the projects of the entries held to their exchange projects are
+	// read in the background once the service runs, so no decision waits on Dispatch (scopeGrant).
+	// The answerer's copy of deps holds them; a decision before the first answer refuses
+	// project_access_unknown, and its client retries.
+	deps.held = newHeldAccess(deps, settings.Services)
 	s := &Service{
 		conn: conn,
 		answer: &answerer{issuer: issuer, xkey: xkey, deps: deps, services: settings.Services, decide: decide,
@@ -295,6 +304,7 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 		counted:    make(chan struct{}),
 		stopReport: make(chan struct{}),
 		reported:   make(chan struct{}),
+		heldDone:   make(chan struct{}),
 		settings: replicaSettings{tick: livenessTick, bound: livenessBound, budget: decideBudget,
 			maxWaiting: maxWaiting, maxRefusing: maxRefusing},
 	}
@@ -321,6 +331,9 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	go s.beatWhileTurning()
 	go s.countWhileRunning()
 	go s.reportWhileRunning()
+	var asks context.Context
+	asks, s.stopHeld = context.WithCancel(context.WithoutCancel(ctx))
+	go func() { defer close(s.heldDone); deps.held.run(asks) }()
 	return s, nil
 }
 
@@ -438,6 +451,8 @@ func (s *Service) close() {
 	}
 	s.awaitDelivered()
 	s.wait.Wait()
+	s.stopHeld()
+	<-s.heldDone
 	// The drops counted while the last requests were answered, which the reporter's last report
 	// then logs.
 	s.countDrops()

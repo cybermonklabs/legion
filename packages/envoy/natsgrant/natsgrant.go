@@ -7,9 +7,9 @@
 // Each call returns lists of its own, so a caller may narrow a grant without changing another's.
 //
 // WithinProjects (projects.go) holds a grant to a Scope: the projects a token lists and the
-// account the token names. Nothing calls it yet: today the auth service refuses a Legion daemon
-// whose entry is held to projects, and from #4197 on it answers that daemon with this grant. It
-// writes _INBOX.> as the account's own reply prefix (InboxPrefix, which the client sets with
+// account the token names. The auth service answers a Legion daemon whose entry is held to
+// projects with it (internal/cipher/natscallout's scopeGrant). It writes _INBOX.> as the
+// account's own reply prefix (InboxPrefix, which the client sets with
 // nats.CustomInboxPrefix; it keeps [A-Za-z0-9-] and writes every other byte, '_' included, as '_'
 // and two hex digits, so no two accounts share one), each issue, role-exception and Legion lane as
 // the scope's projects', and each consumer call on the stream as the calls on the daemon's own

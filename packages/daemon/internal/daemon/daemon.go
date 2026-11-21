@@ -39,7 +39,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -580,7 +579,8 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// listing misses (a move published while it is read) the consumer delivers. Both wait out
 		// an unreachable dependency on ctx, not the bounded boot budget just spent on everything
 		// before them, through the same bootprobe.Run mechanism mintAtBoot already uses, here with
-		// Attempts left at its unbounded zero. natsauth.Unreachable and dispatch.Unreachable each
+		// Attempts left at its unbounded zero. natsConnection.waitsOut (natsauth.Unreachable, and
+		// for the service token natsauth.Refused too) and dispatch.Unreachable each
 		// judge their own dependency; their own docs are the record of what each one waits on and
 		// what it still refuses loud. reconcile's own Postgres transaction is judged by neither: a
 		// design choice, not an inability to tell its failures apart from NATS's or Dispatch's — the
@@ -607,7 +607,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			err = bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
 				readinessAttempt(func(attempt context.Context) error {
 					return workflow.connect(attempt, cfg, plan.nats)
-				}, bootTimeout, natsauth.Unreachable))
+				}, bootTimeout, plan.nats.waitsOut))
 		}
 		if err == nil {
 			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,

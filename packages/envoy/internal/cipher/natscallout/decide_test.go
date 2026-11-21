@@ -132,7 +132,8 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 }
 
 // A service's platform token, from an account the deployment lists, is answered with its kind's
-// grant from natsgrant, named <kind>/<machine id or account>, expiring with the token.
+// grant from natsgrant, a daemon's with its account's own reply prefix beside it (serviceGrant),
+// named <kind>/<machine id or account>, expiring with the token.
 func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
@@ -145,7 +146,7 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	for raw, want := range map[string]Decision{
 		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)},
 		"listener-token": {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
-		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)},
+		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: daemonCalloutGrant(daemonAccount), Expires: now.Add(30 * time.Minute)},
 		"measure-token":  {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
 	} {
 		t.Run(raw, func(t *testing.T) {

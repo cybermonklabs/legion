@@ -298,6 +298,7 @@ envoy_url: http://127.0.0.1:19020
 nats_urls: [nats://127.0.0.1:4222, nats://127.0.0.1:4223, nats://127.0.0.1:4222]
 envoy_token_file: /run/legion/ENVOY_TOKEN
 nats_nkey_seed_file: secrets/legion-pane.nk
+nats_daemon_service_token_file: secrets/nats-token
 `)
 	dir := filepath.Dir(path)
 
@@ -337,6 +338,7 @@ nats_nkey_seed_file: secrets/legion-pane.nk
 	want.NatsURLs = []string{"nats://127.0.0.1:4222", "nats://127.0.0.1:4223"}
 	want.EnvoyTokenFile = "/run/legion/ENVOY_TOKEN"
 	want.NatsNkeySeedFile = filepath.Join(dir, "secrets/legion-pane.nk")
+	want.NatsDaemonServiceTokenFile = filepath.Join(dir, "secrets/nats-token")
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("Load =\n%+v\nwant\n%+v", cfg, want)
 	}
@@ -1696,7 +1698,8 @@ func TestLoadReadsRuntimeAsItsDiscriminator(t *testing.T) {
 }
 
 // Every top-level key of the earlier schema (38 keys, nats_daemon_nkey_seed_file among them since
-// #1494) plus the new postgres_dsn and the wake pacing's two keys, and the class it is in. No
+// #1494) plus the new postgres_dsn, the wake pacing's two keys and nats_daemon_service_token_file,
+// and the class it is in. No
 // shipped key may fall through to the typo refusal, and none is accepted without being modelled,
 // but for a warned key, which is accepted, read for nothing, and answered with a warning rather
 // than a refusal.
@@ -1743,6 +1746,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "envoy_token_file", line: "envoy_token_file: /var/run/legion/ENVOY_TOKEN", class: modelled},
 		{key: "nats_nkey_seed_file", line: "nats_nkey_seed_file: /var/run/legion/NATS_NKEY_SEED", class: modelled},
 		{key: "nats_daemon_nkey_seed_file", line: "nats_daemon_nkey_seed_file: /var/run/legion/NATS_DAEMON_NKEY_SEED", class: modelled},
+		{key: "nats_daemon_service_token_file", line: "nats_daemon_service_token_file: /var/run/secrets/legion/nats-token", class: modelled},
 		{key: "nats_urls", line: "nats_urls: [nats://127.0.0.1:4222]", class: modelled},
 		{key: "operator_token_file", line: "operator_token_file: /var/run/legion/OPERATOR_TOKEN", class: modelled},
 		{key: "worker_wakes_per_minute", line: "worker_wakes_per_minute: 8", class: modelled},
