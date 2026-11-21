@@ -493,3 +493,62 @@ func TestTheJJWrapperReadsTheRepositoryNamedAfterTheSubcommand(t *testing.T) {
 		})
 	}
 }
+
+// A configuration file can set git.executable-path inside a `[[--scope]]` whose `--when.commands`
+// names the push alone: jj applies such a scope to the command it names and to no other, so the
+// jj wrapper's read of the value, a `jj config get`, answers the bare `git` while the push itself
+// runs the other git, with `--no-verify` and no git wrapper in front of it, so no pre-push hook and
+// no leak check. It is the one setting the wrapper refuses when it is written unscoped, here in the
+// repository's own configuration as a role could write it. Whatever the wrapper does about it,
+// refuse the push or run it through the git wrapper, the other git must never run.
+func TestTheJJWrapperKeepsACommandScopedGitOffThePush(t *testing.T) {
+	f := newJJWrapper(t)
+	otherLog := filepath.Join(f.dir, "other-argv")
+	other := logging(t, filepath.Join(f.dir, "other-git"), otherLog)
+	// A change and a bookmark on it, so a push the wrapper lets through has something to send and
+	// runs a git, made by the test's own jj.
+	repo := f.repo("repo")
+	if err := os.WriteFile(filepath.Join(repo, "file"), []byte("a change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.setup.Run(repo, "jj", "describe", "-m", "a change")
+	f.setup.Run(repo, "jj", "bookmark", "create", "probe", "-r", "@")
+	repoConfig := f.setup.Run(repo, "jj", "config", "path", "--repo")
+
+	for _, tc := range []struct {
+		name, command string
+		args          []string
+	}{
+		{name: "a jj git push", command: "git push", args: []string{"git", "push", "--bookmark", "probe"}},
+		{name: "a jj gerrit upload", command: "gerrit upload", args: []string{"gerrit", "upload", "-r", "@", "--remote-branch", "main"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, log := range []string{f.log, otherLog} {
+				if err := os.Remove(log); err != nil && !errors.Is(err, os.ErrNotExist) {
+					t.Fatal(err)
+				}
+			}
+			scoped := fmt.Sprintf("[[--scope]]\n--when.commands = [%q]\n[--scope.git]\nexecutable-path = %q\n", tc.command, other)
+			if err := os.MkdirAll(filepath.Dir(repoConfig), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(repoConfig, []byte(scoped), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, err := f.run.Try(repo, append([]string{f.script}, tc.args...)...)
+			if _, statErr := os.Stat(otherLog); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("the push ran the git that a scope on %q names, as %q, with no git wrapper and so no leak check: %v\n%s",
+					tc.command, ranAs(t, otherLog), err, out)
+			}
+			if strings.Contains(out, "LEAK CHECK SETUP ERROR") {
+				assertRefused(t, out, err, "git.executable-path")
+				return
+			}
+			got := ranAs(t, f.log)
+			at := slices.Index(got, "push")
+			if at < 2 || !slices.Equal(got[at-2:at], []string{"-c", "core.hooksPath=/opt/legion/githooks"}) {
+				t.Fatalf("the wrapper neither refused the push nor ran it through the git wrapper: it reached the git wrapper's git as %q: %v\n%s", got, err, out)
+			}
+		})
+	}
+}
