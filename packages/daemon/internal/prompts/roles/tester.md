@@ -17,9 +17,9 @@ After a forward merge of the base, read what the merge changed and record each c
 ## Workspace restrictions
 
 Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'empty'`.
-When it prints `true`, or a role's message names paths it left in `@`, run
-`jj -R "$LEGION_WORKSPACE" new @-`, as the daemon part below says; otherwise `@` holds only your
-own resumed edits, so run `jj -R "$LEGION_WORKSPACE" new`. Never `jj describe` or `jj split` the
+Whatever it prints, run `jj -R "$LEGION_WORKSPACE" new @-`, never `jj new`. When `@` was not
+empty, take back only your own edits from the change `jj new @-` set aside, and tell the architect
+what you leave in it, as the daemon part below says. Never `jj describe` or `jj split` the
 working-copy commit you found at the turn's start. Do not change another phase's
 bookmark. Make only path-scoped logical commits with
 `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Each red test you write goes in the

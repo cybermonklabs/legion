@@ -21,7 +21,7 @@ A tree is a root issue and the issues beneath it. When another tree's open pull 
 4. Push the merge as any code push, build the branch, and record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict.
 5. Post one PR comment with the Legion footer: `forward merge <old-tip-sha> → <new-tip-sha>; <the condition it meets>`, with each class search beside it. In a parent's last round, end it with `parent's last round: full test round`.
 
-After a retarget, do the same merge onto the new base, and cite the new head's run in the PR body. Recover a jj mistake forward (`jj new`, `jj restore <paths>`), never with `jj undo`, `jj abandon` or `jj op restore`, which rewrite the shared operation log.
+After a retarget, do the same merge onto the new base, and cite the new head's run in the PR body. Recover a jj mistake forward (`jj new`, `jj restore <paths>`), never with `jj undo`, `jj abandon` or `jj op restore`. Each adds an operation rather than rewriting the operation log, but each can take back or drop another role's work in the workspace every role shares: `jj undo` reverts the newest operation, which can be another role's; `jj op restore` returns the repository to an earlier operation's state, undoing every operation since; and `jj abandon` drops a commit and the changes it holds. The one exception is `jj abandon` of the change your role prompt's turn-start rule set aside, once you took back every path it holds.
 
 ## Reading a merge of the base
 

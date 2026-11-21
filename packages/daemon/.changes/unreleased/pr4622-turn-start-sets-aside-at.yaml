@@ -1,0 +1,6 @@
+kind: Changed
+custom:
+  Issue: pr4622
+body: |-
+  The role prompts' turn-start step now always runs `jj new @-`, never `jj new`, and takes back
+  only the role's own edits from the change it sets aside, telling the architect the rest.

@@ -28,15 +28,24 @@ Read a piped command's status with `${PIPESTATUS[0]}`, or with `set -o pipefail`
 Make your own scratch with `mktemp -d` and delete only the paths you made, each by its exact path. Never delete by a glob in a shared directory: every role of this issue writes into the same `$TMPDIR` on the issue's volume, so a sweep like `rm -rf "$TMPDIR"/tmp.*` deletes directories another role has open.
 
 Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'empty'`.
-If it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`. If a role's message names paths it
-left in `@`, run `jj -R "$LEGION_WORKSPACE" new @-` too, not `jj new`: that leaves the change aside
-and loses nothing. Take what you need from it with
-`jj -R "$LEGION_WORKSPACE" restore --from <change id> <paths>`, the change id and paths that
-message names, and tell the architect what you took. When neither holds, `@` holds only your own
-resumed edits, so run `jj -R "$LEGION_WORKSPACE" new`. Never `jj describe` or `jj split` the
-working-copy commit you found at the turn's start: it can hold another role's edits, which a
-`jj describe` would put under your trailers. Every role of an issue shares the workspace, so every
-commit you push must be one you made in this turn.
+If it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`. If it prints `false`, first read the
+change id of `@` with `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'change_id.short()'`, then
+run `jj -R "$LEGION_WORKSPACE" new @-` too, never `jj new`: `@` can hold another role's edits,
+since a role whose phase ends leaves them there. `jj new @-` sets that change aside, and nothing
+is lost. Before you take back a path, read its diff in that change:
+`jj -R "$LEGION_WORKSPACE" diff -r <change id> <path>` (`--name-only` in place of `<path>` lists
+every path the change holds). Take back with
+`jj -R "$LEGION_WORKSPACE" restore --from <change id> <path>` only a path whose every hunk is
+yours: an edit you made yourself, in this turn or an earlier one of your own. For a path that also
+holds another role's hunks, put your own hunks back by hand. Tell the architect the change id and
+every path you did not take back with `jj restore`, each path whose hunks you put back by hand
+included. If you took back every path the change holds, run
+`jj -R "$LEGION_WORKSPACE" abandon <change id>`: it is a side head with no descendants, so nothing
+else moves, and a head no longer piles up each turn. Leave a change that still holds another
+role's hunks as it is. Never `jj describe` or `jj split` the working-copy commit you found at the
+turn's start: it can hold another role's edits, which a `jj describe` would put under your
+trailers. Every role of an issue shares the workspace, so every commit you push must be one you
+made in this turn.
 
 Push the issue branch yourself, with the plain `jj` of your pane (`git`, like `gh`, acts as your role's App from `GH_CONFIG_DIR`; `<issue>` is your `LEGION_ISSUE`): `cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" bookmark set legion/<issue> -r @- && jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<issue>`. Only work goes to the branch — code, red tests, a forward merge, and the empty commit that carries the pull request onto the commit you pushed (below) — and never a handoff, which is a record on the Dispatch issue (below). No commit message carries a line or keyword that stops GitHub's workflows, such as GitHub's bracket keywords (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`), which start no workflow wherever they stand: every head you push needs its checks, and a base that requires a check will not merge a head whose checks never ran. `jj git push` refuses a remote branch that moved because another role pushed: report the refusal to the architect with its output, and never force. A pushed commit is never rewritten: answer a wrong one with a follow-up commit or a line in the pull request body (`skill://legion-worker/references/conflicts-and-rewrites.md`, "A wrong pushed commit").
 

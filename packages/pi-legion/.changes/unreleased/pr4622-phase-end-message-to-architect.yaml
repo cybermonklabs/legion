@@ -1,0 +1,6 @@
+kind: Changed
+custom:
+  Issue: pr4622
+body: |-
+  A role whose phase ends with uncommitted edits names each path and the change id of `@` to its
+  architect, not to the role that holds the phase.
