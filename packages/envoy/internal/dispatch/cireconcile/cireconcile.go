@@ -219,6 +219,10 @@ type Reconciler struct {
 	// of it. reconcile is the one place that writes it, from the ending the walk of the order
 	// answered with.
 	resume cursor
+	// starved says the pass's own bound ended a pass before it reached a head, and no pass has
+	// reached one since: the passes in between read at the floor, and gap says why. Pass is the
+	// one place that writes it.
+	starved bool
 	// seenRows, seenRepositories and seenHeads are everything the passes of the cycle now
 	// running have reached, keyed as the maps above are. They are what the pass closing the
 	// cycle forgets by, and they are cleared with it.
