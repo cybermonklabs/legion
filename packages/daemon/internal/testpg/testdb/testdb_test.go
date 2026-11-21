@@ -3,6 +3,8 @@ package testdb
 import (
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // The cases for DatabaseURL, the rewrite of LEGION_TEST_PG_DSN a test binary of this module
@@ -227,6 +229,39 @@ func TestDatabaseURLRefusesARewriteThatMovesTheConnection(t *testing.T) {
 			}
 			if tc.secret != "" && strings.Contains(err.Error(), tc.secret) {
 				t.Fatalf("the refusal of %s prints the password:\n%v", tc.name, err)
+			}
+		})
+	}
+}
+
+// PoolBounded holds every pool pgxpool opens on the URL to PoolConns connections, and keeps the
+// size a DSN sets itself, as internal/daemon's daemonDSN sets one connection.
+func TestPoolBoundedHoldsThePoolUnlessTheDSNSizesItItself(t *testing.T) {
+	t.Setenv("PGPORT", "")
+	t.Setenv("PGUSER", "legion_test")
+	for _, tc := range []struct {
+		name, dsn, want string
+		conns           int32
+	}{
+		{"a DSN that sets no size", "postgres://legion_test@127.0.0.1:5433/run?sslmode=disable",
+			"postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=4&sslmode=disable", PoolConns},
+		{"a DSN that sets its own size", "postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=1&sslmode=disable",
+			"postgres://legion_test@127.0.0.1:5433/run?pool_max_conns=1&sslmode=disable", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := PoolBounded("LEGION_TEST_PG_DSN", tc.dsn)
+			if err != nil {
+				t.Fatalf("PoolBounded refused %s: %v", tc.dsn, err)
+			}
+			if got != tc.want {
+				t.Fatalf("PoolBounded(%s) = %s, want %s", tc.dsn, got, tc.want)
+			}
+			config, err := pgxpool.ParseConfig(got)
+			if err != nil {
+				t.Fatalf("pgxpool refused %s: %v", got, err)
+			}
+			if config.MaxConns != tc.conns {
+				t.Fatalf("a pool on %s holds %d connections, want %d", got, config.MaxConns, tc.conns)
 			}
 		})
 	}
