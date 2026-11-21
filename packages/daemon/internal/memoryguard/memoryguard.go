@@ -275,13 +275,14 @@
 // reading went about 2 MB below the mark and came back, and a guard that let them go below the mark
 // saw no growth since the dip and ended the probe's 4.8 GB parent first, which freed about 6 MB.
 // In this tier alone, a process the guard never read before that kill counts from firstReadSince's
-// size: from 0 where none of its reads at the reading of its first read after that kill is a fork's
-// read, its parent read there before or after it, and from that first read where one is
-// (firstReadSince; INFRA-3368's architect's decision of 2026-11-20T08:13Z on INFRA-3531 R1 of spec
-// version 43): at 28732f65, in `8g-latepool-r2`, the guard first read five of six growers after the
-// stay's first kill, kept those reads, saw none grown since, and its third kill ended the probe's
-// 4.8 GB parent by rule=largest while four of them lived. The go-on keeps that first read, so below
-// the urgent share a process that never grew still cannot make the guard go on.
+// size: from 0 where its first read after that kill is no fork's read, and from that first read
+// where it is one, its parent read at that reading before or after it (firstReadSince;
+// INFRA-3368's architect's decision of 2026-11-20T08:13Z on INFRA-3531 R1 of spec version 43, and
+// its rule of 2026-11-21T16:43Z, item 1, by which the flag is that read's own): at 28732f65, in
+// `8g-latepool-r2`, the guard first read five of six growers after the stay's first kill, kept
+// those reads, saw none grown since, and its third kill ended the probe's 4.8 GB parent by
+// rule=largest while four of them lived. The go-on keeps that first read, so below the urgent
+// share a process that never grew still cannot make the guard go on.
 //
 // A process's size, by which the guard measures its growth and ranks it, is the sum of the
 // `Anonymous:` lines of its smaps, the `Rss:` of its shared mappings of memory-backed files (a
@@ -588,8 +589,12 @@ type sizeRead struct {
 // (asOfKill), each read with whether it was a fork's read: before, its last read at a reading
 // before that one, where it has one (readBefore); and atReading, its reads at that reading in the
 // order the guard made them, the newest last, of which the first beforeKill came before that
-// reading's first kill. For a process the guard first read after the stay's first kill, atReading
-// is also what firstReadSince takes its size as of that kill from, and firstTaken is whether
+// reading's first kill, and programs, the program each of them found, in step with atReading. A
+// read of atReading holds the flag discountFork set at it; its own flag by the fork-flag rule is
+// read's, which programs gives, since a read made before its parent's read at that reading has no
+// flag from discountFork and is a fork's read all the same where it found the program of a read
+// there that is one. For a process the guard first read after the stay's first kill, atReading is
+// also what firstReadSince takes its size as of that kill from, and firstTaken is whether
 // atFirstKill holds the size firstReadSince took from these reads (takeFirstSince). forkProgram is
 // the executable and arguments its latest read that passed the fork test found it running, an empty
 // executable where it has had none in this stay: while it runs that program, a later read of it is
@@ -601,6 +606,7 @@ type procReads struct {
 	readBefore  bool
 	firstTaken  bool
 	atReading   []forkRead
+	programs    []program
 	beforeKill  int
 	forkProgram program
 }
@@ -1167,8 +1173,9 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 			// sinceStayKill has just dropped (dropEnded) and which none of these processes is
 			// (seeds 11 and 97 of TestMemoryGuardKeepsTheRulesOfR1WhereGrowersStepAtRandomInstants).
 			// These reads give a size as of the kill only to a process the guard never read before
-			// it, but a fork's read among them makes each read of its process at this reading a
-			// fork's read, whatever process it is (keepKillSizes, forkAtReading).
+			// it, but a fork's read among them makes each earlier read of its process at this
+			// reading that found the same program a fork's read too (keepKillSizes,
+			// procReads.read).
 			if a, ok := g.assessAt(now, readAgain{}); ok {
 				if g.sinceStayKill(a.endable, a.table) {
 					rank(a.endable)
@@ -2190,10 +2197,10 @@ type readAgain struct {
 // stay, and in again (readAgain); and the fork discount and the growth since the stay's first kill
 // are set again by it (discountFork, atFirstKill), which the first kill's rule names. One whose
 // smaps it cannot read it leaves to the full read. The first kill starts the wait afresh on the
-// wait's storage (sendFirst), so it copies the wait's kills before it and, once it is sent, closes
-// their handles, which nothing asks again, and keeps the keys of those that had not exited, which
-// the full read leaves out as the wait did. It answers whether it sent a kill, that history, and
-// those keys (left).
+// wait's storage (sendFirst), so it copies the wait's kills before it and, where it is sent, once
+// its reads are done closes their handles, which nothing asks again, and keeps the keys of those
+// that had not exited, which the full read leaves out as the wait did. It answers whether it sent a
+// kill, that history, and those keys (left).
 //
 // This is INFRA-3531 R1 of spec version 43 in the order verification version 36 states: "at an
 // urgent reading after a kill, every process the guard already knows grew since the previous kill
@@ -2219,14 +2226,14 @@ type readAgain struct {
 // the full read's endUrgent ended pid 401, flat with memory of its own, by rule=urgent 200 ms
 // later: the time the full read took for the one smaps the reads again had not read, as the full
 // read of the tester's run r17 took 205 ms (thread PRRT_kwDORFy7ds66UWBx of review round 5 of
-// cybermonklabs/legion#4273;
+// cybermonklabs/legion#4273; the subtest "401 ranks after 400" of
 // TestMemoryGuardEndsAtAnUrgentReadingOfTheWaitTheSetsItReadAgainBeforeItReadsOneNotNewToTheStayBeforeTheFullRead;
 // INFRA-3531 R1 of spec version 48; INFRA-3368's architect, 2026-11-21T08:54Z, item 1: "The early
 // kills at the wait's urgent reading must not wait for the full read"). The processes it read
 // before the first kill end with that kill because the order can put one of the sets before the
 // first process that grew since the kill: the reading before ranks the new tier by size, so pid 401
-// of 350 MiB is read before pid 400 of 300 MiB, which then grows
-// (TestMemoryGuardEndsAtAnUrgentReadingOfTheWaitTheSetsItReadAgainBeforeTheFirstKillWithThatKill).
+// of 350 MiB is read before pid 400 of 300 MiB, which then grows (the subtest "401 ranks before
+// 400" of the same test).
 //
 // At 98207b42 it took the history on the processes the reading before read, before any read, so a
 // process that had ended since still counted, and the answer turned on rank alone: where pid 300,
@@ -2250,6 +2257,10 @@ func (g *Guard) endKnown(now time.Time, s Settings, reading, limit uint64, again
 	})
 	var cache argsCache
 	kept := known[:0]
+	// before are the wait's kills before the first kill, and swept how many reads of kept the
+	// sweep below has passed on since that kill.
+	var before []killedProc
+	swept := 0
 	for i, c := range known {
 		key := procKey{pid: c.PID, start: c.StartTime}
 		size, err := g.size(c.PID, again.memfds)
@@ -2262,34 +2273,33 @@ func (g *Guard) endKnown(now time.Time, s Settings, reading, limit uint64, again
 		g.discountFork(now, &c, g.lastTable, &cache)
 		c.sinceFirstKill = g.growthSinceStayKill(&c)
 		kept = append(kept, c)
-		grown := keepGrowth(g.atKill, &c) > 0
-		switch {
-		case sent:
-			if grown || g.urgentEnds(&c, history) {
-				g.sendUrgent(c)
+		if !sent && keepGrowth(g.atKill, &c) > 0 && sizeSum(kept)+sizeSum(known[i+1:]) >= floor {
+			before = slices.Clone(g.wait.kills)
+			sent = g.sendFirst(now, s, reading, c)
+		}
+		if !sent {
+			continue
+		}
+		// Who ends with the first kill and after it, by one test, before the next read: at the
+		// first kill each process read so far, those at whose read the floor did not hold among
+		// them, and after it the read in hand, where it grew since the previous kill or the urgent
+		// rule ends it (INFRA-3531 R1 of spec version 43, verification version 36). keepGrowth
+		// answers as it did at that read: atKill has held the process's key since then, and
+		// nothing keeps sizes as of a kill before endRest (keepKillSizes). triedHere passes over
+		// the first kill, the wait's one kill since sendFirst, and over each process read before
+		// it whose own kill failed (noteKillFailure): a retry would send that kill again and log a
+		// second kill-failed line.
+		for ; swept < len(kept); swept++ {
+			if p := &kept[swept]; !g.triedHere(p) && (keepGrowth(g.atKill, p) > 0 || g.urgentEnds(p, history)) {
+				g.sendUrgent(*p)
 			}
-		case grown && sizeSum(kept)+sizeSum(known[i+1:]) >= floor:
-			before := slices.Clone(g.wait.kills)
-			if sent = g.sendFirst(now, s, reading, c); sent {
-				// Each process read before this kill that grew since the previous kill, at whose
-				// read the floor did not hold, or that the urgent rule ends goes with it, before the
-				// next read (INFRA-3531 R1 of spec version 43, verification version 36). keepGrowth
-				// answers as it did at that read: atKill has held the process's key since then, and
-				// nothing keeps sizes as of a kill before endRest (keepKillSizes). triedHere passes
-				// over this kill, now the wait's one kill, and over each process read before it
-				// whose own kill failed (noteKillFailure): a retry would send that kill again and
-				// log a second kill-failed line.
-				for j := range kept {
-					if p := &kept[j]; !g.triedHere(p) && (keepGrowth(g.atKill, p) > 0 || g.urgentEnds(p, history)) {
-						g.sendUrgent(*p)
-					}
-				}
-				for _, k := range before {
-					_ = k.handle.Close()
-					if !k.exited {
-						left = append(left, k.key)
-					}
-				}
+		}
+	}
+	if sent {
+		for _, k := range before {
+			_ = k.handle.Close()
+			if !k.exited {
+				left = append(left, k.key)
 			}
 		}
 	}
@@ -2835,7 +2845,11 @@ func (c *candidate) inNewTier() bool { return c.newToStay && !c.unreached && c.r
 // of spec version 43, item 1). A read is a fork's read where it passes the same test, or where the
 // process still runs the executable and arguments that a read which passed it found (forkProgram),
 // its parent gone or not (the architect's answer of 2026-11-20T09:24Z); lessParent follows the
-// test alone (discountFork).
+// test alone (discountFork). It sets that read's flag alone. Each read has its own flag, never one
+// copied from a read of another program, and an earlier read at now that found the program of a
+// read it flags is a fork's read too by procReads.read, from the programs keepSize keeps
+// (INFRA-3368's architect's rule of 2026-11-21T16:43Z on INFRA-3531 R1 of spec version 48, item 1,
+// whose table asOfKill states).
 func (g *Guard) discountForks(now time.Time, cs []candidate, t *Table, cache *argsCache) {
 	for i := range cs {
 		g.discountFork(now, &cs[i], t, cache)
@@ -2847,7 +2861,9 @@ func (g *Guard) discountForks(now time.Time, cs []candidate, t *Table, cache *ar
 // that read (keepSize), so it sees the parent's reads as the discount does: a parent read at now
 // counts as read in this stay for the flag as for lessParent, whether keepSizes kept its read
 // before or after c's; and a fork the search read before its parent has both set again once that
-// parent is read (startedSince).
+// parent is read (startedSince). A later pass of the reading that reads the parent after c's read,
+// as the full read after a kill, flags only its own read of c: c's earlier read there is a fork's
+// read where it found the program of that read (procReads.read).
 //
 // A process stays a fork after a read that passed the test for as long as it runs the executable
 // and arguments that read found (forkProgram), its parent gone or not: its fork flag stays set,
@@ -3074,26 +3090,29 @@ func (g *Guard) keepSizes(now time.Time, cs []candidate, t *Table) {
 // and the two before the one decided on at any later reading of the rise.
 //
 // It keeps too what c's size as of a kill sent at now is taken from (asOfKill): at the first read
-// of c at now, its newest read before it, with that read's fork flag, as its last read before this
-// reading (before); and every read of c at now, in the order the guard makes them (atReading),
-// counting those before this reading's first kill (sendFirst, which sets the wait's at to now) in
-// beforeKill. That first read clears firstTaken (takeFirstSince). A reading can read c more than
-// once before its kill: at the mark, the reads again (rereadHeld) and, where they send no kill
-// (endHeld), the assessment act decides on, and a step between two of them is growth since the
-// kill. So a read after a kill at the mark replaces the decision's read in the window, and not in
-// atReading. Which of those reads are of another program than the one c runs now asOfKill says,
-// by the fork test over c's reads at this reading, a fork's reads where any of them is one
-// (forkAtReading), since a read is of another program only where it was a fork's read and the
-// later one is not (anotherProgram; INFRA-3368's architect's decision of 2026-11-20T08:13Z on
-// INFRA-3531 R1 of spec version 43, and its ruling of 2026-11-21T08:54Z, item 2). Whether this
-// read is a fork's read discountFork says, after this, once every read it compares the parent's
-// with is kept: keepSizes keeps a whole reading's reads before discountForks runs, and the search
-// finds a fork's parent after the fork (startedSince). A reading reads c at most twice: once at
-// the mark, where each read there (rereadHeld, readHeldNew, startedSince, readOn) takes only a
-// process no read before it reached at now, or in the wait before its full read (endKnown), and
-// once by its assessment (assess), which a reading makes once (decide, watch), act reading nothing
-// after it. So c's first read gives atReading room for two, and all of it keeps its storage: a
-// process read before allocates nothing.
+// of c at now, its newest read before it, with that read's own fork flag (procReads.read), as its
+// last read before this reading (before); and every read of c at now, in the order the guard makes
+// them (atReading), counting those before this reading's first kill (sendFirst, which sets the
+// wait's at to now) in beforeKill, each with the program it found (programs). That first read
+// clears firstTaken (takeFirstSince). A reading can read c more than once before its kill: at the
+// mark, the reads again (rereadHeld) and, where they send no kill (endHeld), the assessment act
+// decides on, and a step between two of them is growth since the kill. So a read after a kill at
+// the mark replaces the decision's read in the window, and not in atReading. Which of those reads
+// are of another program than the one c runs now asOfKill says, by each read's own fork flag,
+// since a read is of another program only where it was a fork's read and the later one is not
+// (anotherProgram; INFRA-3368's architect's decision of 2026-11-20T08:13Z on INFRA-3531 R1 of spec
+// version 43, and its rule of 2026-11-21T16:43Z, item 1). Whether this read is a fork's read
+// discountFork says, after this, once every read it compares the parent's with is kept: keepSizes
+// keeps a whole reading's reads before discountForks runs, and the search finds a fork's parent
+// after the fork (startedSince). Where a later pass of this reading reads the parent after c,
+// discountFork flags only that pass's read of c, and c's earlier read here is a fork's read where
+// it found the same program: so each read keeps the program it found. A reading reads c at most
+// twice: once at the mark, where each read there (rereadHeld, readHeldNew, startedSince, readOn)
+// takes only a process no read before it reached at now, or in the wait before its full read
+// (endKnown), and once by its assessment (assess), which a reading makes once (decide, watch), act
+// reading nothing after it. So c's first read gives atReading and programs room for two each, and
+// all of it keeps its storage: a process read before allocates nothing. A program holds the read's
+// own executable and list of arguments and copies neither (programOf).
 func (g *Guard) keepSize(now time.Time, c *candidate) {
 	key := procKey{pid: c.PID, start: c.StartTime}
 	r := g.sizes[key]
@@ -3103,17 +3122,17 @@ func (g *Guard) keepSize(now time.Time, c *candidate) {
 	if !again {
 		r.readBefore = len(r.window) > 0
 		if r.readBefore {
-			r.before = r.atReading[len(r.atReading)-1]
+			r.before = r.read(len(r.atReading) - 1)
 		} else {
-			r.atReading = make([]forkRead, 0, 2)
+			r.atReading, r.programs = make([]forkRead, 0, 2), make([]program, 0, 2)
 		}
-		r.atReading, r.beforeKill, r.firstTaken = r.atReading[:0], 0, false
+		r.atReading, r.programs, r.beforeKill, r.firstTaken = r.atReading[:0], r.programs[:0], 0, false
 	}
 	// A reading's reads before its first kill come before every read after it.
 	if !g.wait.at.Equal(now) {
 		r.beforeKill++
 	}
-	r.atReading = append(r.atReading, forkRead{size: c.size})
+	r.atReading, r.programs = append(r.atReading, forkRead{size: c.size}), append(r.programs, programOf(c.Process))
 	c.newToStay = r.newToStayAt(now)
 	reads := r.window[:copy(r.window, r.window[windowStart(r.window, now):])]
 	if again {
@@ -3218,14 +3237,17 @@ func (g *Guard) forgetSizes() {
 // "Another program" is R1's own fork test, by INFRA-3368's architect's decision of
 // 2026-11-20T08:13Z on INFRA-3531 R1 of spec version 43: a read is of another program than a
 // later one only where it was a fork's read and the later one is not (anotherProgram). Each size
-// is kept with whether the read it came from was a fork's read. At the kills' reading each of a
-// process's reads is a fork's read where any of them is one, its parent read there before or
-// after it (forkAtReading), as firstReadSince takes them; a read before that reading keeps its
-// own flag. A size from a fork's read counts only while the process is still a fork: at a reading
-// that finds it no longer one, its size as of the kills is 0 (keepGrowth). A process read as a
-// fork stays one, its parent gone or not, until its executable or arguments differ from what that
-// read found (discountFork; the architect's answer of 2026-11-20T09:24Z). A size from any other
-// read counts whatever the process's executable or arguments become.
+// is kept with whether the read it came from was a fork's read, by that read's own flag
+// (procReads.read; INFRA-3368's architect's rule of 2026-11-21T16:43Z, item 1, whose table
+// asOfKill states): a read at the kills' reading is a fork's read where it found its parent's
+// program, its parent read there before or after it, and its flag is never copied from a read of
+// another program; a read before that reading keeps the flag it had at its own reading.
+// firstReadSince takes the same flag. A size from a fork's read counts only while the process is
+// still a fork: at a reading that finds it no longer one, its size as of the kills is 0
+// (keepGrowth). A process read as a fork stays one, its parent gone or not, until its executable or
+// arguments differ from what that read found (discountFork; the architect's answer of
+// 2026-11-20T09:24Z). A size from any other read counts whatever the process's executable or
+// arguments become.
 //
 // Each size is kept as the size as of the previous kill of the rise (atKill), from which
 // grownSinceKill measures growth until the next kill, a go-on; the sizes of the kill before go.
@@ -3240,9 +3262,9 @@ func (g *Guard) forgetSizes() {
 //
 // So a size as of the kills is never above a process's last read of its program before the kills'
 // reading, and a step after that read counts as growth since the kills; a read after the first
-// kill gives a size only to a process never read before, but its fork flag counts for each read
-// of its process at the kills' reading (forkAtReading). These runs and tests measured what a later
-// read or another identity hides:
+// kill gives a size only to a process never read before, but where it is a fork's read it makes
+// each read of the same program at the kills' reading one too (procReads.read). These runs and
+// tests measured what a later read or another identity hides:
 //   - At 7356e0f6, in `8g-latepool-q56hm`, the growers stepped between the reading at the mark and
 //     the guard's read after its kill. A guard that kept that read saw no growth at the next two
 //     readings, not fallen and 28 MiB above the kill's reading, and waited.
@@ -3275,12 +3297,21 @@ func (g *Guard) forgetSizes() {
 //     after it read the parent and flagged only its own read of the fork. A guard that took the
 //     search's read by its own flag kept the fork's 305 MiB, its parent's shared pages, as a size
 //     that counts whatever the fork runs; once the fork ran a program of its own that came to hold
-//     140 MiB, it saw no growth since the kill and did not go on. Every read of the fork at the
-//     kill's reading is a fork's read (forkAtReading), so that size counts from 0 once it runs a
-//     program of its own (thread PRRT_kwDORFy7ds66UWB0 of review round 5 of
-//     cybermonklabs/legion#4273;
+//     140 MiB, it saw no growth since the kill and did not go on. The search's read found the
+//     program of the full read's read, a fork's read, so it is a fork's read too (procReads.read),
+//     and that size counts from 0 once the fork runs a program of its own (thread
+//     PRRT_kwDORFy7ds66UWB0 of review round 5 of cybermonklabs/legion#4273;
 //     TestMemoryGuardCountsItsProgramsGrowthSinceTheKillForAForkTheSearchReadBeforeItsParentBeforeTheKill;
 //     INFRA-3368's architect, 2026-11-21T08:54Z, item 2).
+//   - At 6b8c4d9b, in the deep review's probe of round 6, the reads again at a mark read a fork
+//     that runs its parent's program, a fork's read, and the fork ran a program of its own, at
+//     150 MiB, before the assessment's read of the same reading, which act's kill followed. A
+//     guard that gave each read of the kill's reading the flag of any of them kept 150 MiB from a
+//     fork's read, which counts from 0 once the process is no fork, saw 150 MiB of growth since
+//     the kill where nothing grew, and ended the fork by rule=grew-since-kill. Each read keeps its
+//     own flag, so the fork's read is of another program and that size is the new program's read,
+//     no fork's (thread PRRT_kwDORFy7ds66ZPu6 of review round 6 of cybermonklabs/legion#4273;
+//     TestMemoryGuardTakesNoGrowthSinceAKillFromAForkThatRunsItsOwnProgramBetweenTwoReadsOfTheKillsReading).
 func (g *Guard) keepKillSizes() {
 	first := !g.firstKillKept
 	g.firstKillKept = true
@@ -3294,8 +3325,13 @@ func (g *Guard) keepKillSizes() {
 		case first:
 			g.atFirstKill[key] = asOf
 		case r.firstTaken:
-			// A size firstReadSince took from these reads: all of them are made now, so it is taken
-			// again, whether atFirstKill still holds it or not, since the outcome is the same.
+			// A size firstReadSince took from the reads of the process's newest read's reading,
+			// whether or not that is this kill's: the next reading that reads the process clears
+			// the mark (keepSize), so a process this kill's reading listed and did not read keeps
+			// it, and its size is taken again from an earlier reading's reads. Taken from the reads
+			// the process has, the size is the same either way, and where those reads are an
+			// earlier reading's it is the one atFirstKill already holds. So it is taken again,
+			// whether atFirstKill still holds it or not, since the outcome is the same.
 			// firstTaken is set only by takeFirstSince, which keeps the size in atFirstKill with
 			// it, and atFirstKill loses a size only where the stay ends (forgetSizes), which
 			// empties sizes too, or by dropEnded, which drops a key the reading's table does not
@@ -3309,7 +3345,7 @@ func (g *Guard) keepKillSizes() {
 			// (growthSinceStayKill and keepGrowth, by a candidate's key), so nothing reads that
 			// size, and the next sinceStayKill drops it (dropEnded), or the stay's end does, as the
 			// stay's first kill keeps one above
-			// (TestMemoryGuardKeepsUntilTheNextReadingTheFirstSizeOfAProcessThatEndedBeforeTheFullReadAtALaterMark;
+			// (TestMemoryGuardGoesOnWithTheThirdTierCountedFromNothingWhereAProcessReadAtALaterMarkEndedBeforeTheFullRead;
 			// INFRA-3368's architect, 2026-11-21T10:09Z; thread PRRT_kwDORFy7ds66UWB6 of review
 			// round 5 of cybermonklabs/legion#4273).
 			g.takeFirstSince(key, r)
@@ -3320,22 +3356,23 @@ func (g *Guard) keepKillSizes() {
 // asOfKill is the size as of a kill sent at the reading taken at at of the process whose reads r
 // are, r's newest read being at that reading or before it (keepKillSizes), with whether the read
 // it came from was a fork's read; and afterKill, whether it is the process's first read after the
-// kill. At that reading each of its reads is a fork's read where any of them is one, its parent
-// read there before or after it (forkAtReading), so all of them are of one program, the one it
-// runs now. Its last read before that reading keeps its own flag, and is of another program only
-// where it was a fork's read and those at that reading are not (anotherProgram).
+// kill. Each read has its own fork flag (read): a read at that reading is a fork's read where it
+// found its parent's program, its parent read there before or after it, and its last read before
+// that reading keeps the flag it had at its own reading. The program the process runs now is its
+// newest read's, and a read is of another program only where it was a fork's read and the newest
+// is not (anotherProgram).
 //   - Where that reading did not read it, its newest read is its last before that reading, and
 //     that read is its size.
 //   - Where it did, its size is the lowest of its reads of the program it runs now among its last
 //     read before that reading (before) and its reads at that reading before the reading's first
-//     kill (the first beforeKill of atReading).
-//   - Where it has no read at that reading before the kill and its last read before that reading
-//     is of another program, as where the band read it between its fork and its exec, it has run a
-//     new program since, and its size is 0: all that program holds came after that read.
+//     kill (the first beforeKill of atReading), with that read's own flag.
+//   - Where each of those reads is of another program, as where the band read it between its fork
+//     and its exec, it has run a new program since, and its size is 0: all that program holds came
+//     after those reads.
 //   - Where it has neither of those reads, the guard never read it before the kill, and its size
-//     is its first read after the kill. Only that process takes a read after the kill, since a
-//     fork reports its parent's shared pages as its own. At the stay's first kill keepKillSizes
-//     takes firstReadSince's size in its place.
+//     is its first read after the kill, with that read's own flag. Only that process takes a read
+//     after the kill, since a fork reports its parent's shared pages as its own. At the stay's
+//     first kill keepKillSizes takes firstReadSince's size in its place.
 //
 // At c1c86b9e it took each read at that reading by the flag of the process's newest read. Where
 // the search at a mark read a fork before its parent and stopped, and the full read after the kill
@@ -3418,68 +3455,74 @@ func (g *Guard) keepKillSizes() {
 //     earlier process (600) nor that process's flag (a fork's). Test: the subtest "its pid names a
 //     process started since" of the same test.
 func (r *procReads) asOfKill(at time.Time) (asOf forkRead, afterKill bool) {
+	newest := len(r.atReading) - 1
 	if !r.readAt(at) {
-		return r.atReading[len(r.atReading)-1], false
+		return r.read(newest), false
 	}
-	fork := forkAtReading(r.atReading)
-	decided := r.atReading[:r.beforeKill]
-	if !r.readBefore && len(decided) == 0 {
-		return forkRead{size: r.atReading[0].size, fork: fork}, true
+	if !r.readBefore && r.beforeKill == 0 {
+		return r.read(0), true
 	}
+	fork := r.read(newest).fork
 	found := r.readBefore && !anotherProgram(r.before.fork, fork)
 	if found {
 		asOf = r.before
 	}
-	// Each read at the reading is of the program the process runs now, with the reading's flag.
-	for _, read := range decided {
-		if !found || read.size < asOf.size {
-			asOf, found = forkRead{size: read.size, fork: fork}, true
+	for i := range r.beforeKill {
+		if read := r.read(i); !anotherProgram(read.fork, fork) && (!found || read.size < asOf.size) {
+			asOf, found = read, true
 		}
 	}
 	return asOf, false
 }
 
-// forkAtReading is whether reads, a process's reads at one reading (procReads.atReading), are a
-// fork's reads: each of them is one where any of them is one, the last included, and not by its
-// own flag alone. A parent read at that reading makes the process a fork there whether its read
-// came before or after the process's (discountFork), but a read made before the parent's has no
-// flag unless the same search reads the parent after it (startedSince): a later pass, as the full
-// read after the kill, flags only its own read. It is the one fork test of the reads a size as of
-// a kill is taken from: asOfKill's at the kill's reading, and firstReadSince's at the reading of a
-// process's first read after the stay's first kill (INFRA-3531 R1 of spec version 48; INFRA-3368's
-// architect, 2026-11-20T19:50Z, and 2026-11-21T08:54Z, item 2).
-func forkAtReading(reads []forkRead) bool {
-	return slices.ContainsFunc(reads, func(f forkRead) bool { return f.fork })
+// read is r's read i at its newest read's reading (atReading) with its own fork flag, by
+// INFRA-3368's architect's rule of 2026-11-21T16:43Z on INFRA-3531 R1 of spec version 48, item 1
+// (asOfKill's table): a fork's read where the program it found is its parent's program, as read
+// anywhere at that reading or earlier in the stay. discountFork flags a read that finds so when the
+// read is made. A read made before its parent's read at that reading has no flag from it unless
+// the same search reads the parent after it (startedSince): a later pass, as the full read after a
+// kill, flags only its own read. So a read is a fork's read too where a read there that
+// discountFork flagged found the same program, compared as forkProgram is (programs), since that
+// program is the parent's. The flag is never taken from a read of another program: where the
+// process runs a program of its own between two reads of the reading, its read of that program is
+// no fork's read, and its read of its parent's program keeps its flag. It allocates nothing.
+func (r *procReads) read(i int) forkRead {
+	read := r.atReading[i]
+	for j := 0; !read.fork && j < len(r.atReading); j++ {
+		read.fork = r.atReading[j].fork && r.programs[j].is(r.programs[i])
+	}
+	return read
 }
 
 // firstReadSince is the size as of the stay's first kill of a process the guard never read before
-// that kill, from reads, its reads at the reading of its first read after the kill, the oldest
-// first (procReads.atReading; takeFirstSince, growthSinceStayKill): its first read there, as a
-// fork's read, where those reads are a fork's reads (forkAtReading), since a fork reports its
-// parent's shared pages as its own; and 0 where they are not. By INFRA-3368's architect's decision
-// of 2026-11-20T08:13Z on INFRA-3531 R1 of spec version 43, item 2, a process that is no fork there
-// holds memory of its own, and the order's third tier is there so that a grower ranks before a
-// process that never grew. It is for that tier alone: the go-on's sizes as of a kill (atKill) keep
-// that first read, so below the urgent share a process that never grew still cannot make the
-// guard go on.
+// that kill, from r's reads at the reading of its first read after the kill (atReading;
+// takeFirstSince, growthSinceStayKill): its first read there, as a fork's read, where that read is
+// a fork's read by its own flag (read), its parent read at that reading before or after it, since
+// a fork reports its parent's shared pages as its own; and 0 where it is not. By INFRA-3368's
+// architect's decision of 2026-11-20T08:13Z on INFRA-3531 R1 of spec version 43, item 2, a process
+// that is no fork there holds memory of its own, and the order's third tier is there so that a
+// grower ranks before a process that never grew. It is for that tier alone: the go-on's sizes as of
+// a kill (atKill) keep that first read, so below the urgent share a process that never grew still
+// cannot make the guard go on.
 //
 // The size is the first read's, the one nearest the kill, so a step after it counts as growth
-// since the kill: every read there is of one program, since they share one flag (forkAtReading).
-// Its callers take it again while these reads are the process's (takeFirstSince). asOfKill takes
-// the same fork test at a kill's reading for a process the guard read before that kill
-// (INFRA-3368's architect, 2026-11-21T08:54Z, item 2).
+// since the kill. Its flag is that read's own and never a later read's of another program, by
+// INFRA-3368's architect's rule of 2026-11-21T16:43Z, item 1, which asOfKill takes at a kill's
+// reading too. A later read there can show that the first was a fork's read, where it is one and
+// found the same program, so the callers take it again while these reads are the process's
+// (takeFirstSince).
 //
-// At 98207b42 it took the first read's own flag. Where the search read a fork before its parent
-// and stopped, at the stay's first kill or at a later mark, the fork counted its whole size as
-// growth since that kill, and the guard ended it by rule=grew-since-kill or rule=urgent while its
-// parent lived (thread PRRT_kwDORFy7ds66JVV0 of review round 4 of cybermonklabs/legion#4273;
+// At 98207b42 it took the flag discountFork set on the first read. Where the search read a fork
+// before its parent and stopped, at the stay's first kill or at a later mark, the fork counted its
+// whole size as growth since that kill, and the guard ended it by rule=grew-since-kill or
+// rule=urgent while its parent lived (thread PRRT_kwDORFy7ds66JVV0 of review round 4 of
+// cybermonklabs/legion#4273;
 // TestMemoryGuardCountsNoGrowthSinceTheStaysFirstKillForAForkTheSearchReadBeforeItsParent;
 // INFRA-3531 R1 of spec version 48; INFRA-3368's architect, 2026-11-20T19:50Z).
-func firstReadSince(reads []forkRead) forkRead {
-	// reads[0] panics where reads is empty: every caller keeps a read first (growthSinceStayKill).
-	read := reads[0]
-	read.fork = forkAtReading(reads)
-	if read.fork {
+func (r *procReads) firstReadSince() forkRead {
+	// read(0) panics where atReading is empty: every caller keeps a read first
+	// (growthSinceStayKill).
+	if read := r.read(0); read.fork {
 		return read
 	}
 	return forkRead{}
@@ -3557,13 +3600,14 @@ func (g *Guard) growthSinceStayKill(c *candidate) uint64 {
 // newest read (procReads.atReading), the size as of the stay's first kill of the process key names,
 // which the guard never read before that kill, and marks it (procReads.firstTaken). A marked size
 // is taken again while r's reads are those of the reading it was taken at, since a later read there
-// can be a fork's read where an earlier one was not, as where the search at the mark read a fork
-// before its parent: growthSinceStayKill takes it again at each measure, and keepKillSizes at each
-// kill, after the last read of that kill's reading. The next reading that reads the process clears
-// the mark (keepSize), and the size then stays as taken. A size from a read before the stay's first
-// kill (asOfKill) is never marked, and never taken again.
+// that is a fork's read makes the first one a fork's read too where it found the same program
+// (procReads.read), as where the search at the mark read a fork before its parent:
+// growthSinceStayKill takes it again at each measure, and keepKillSizes at each kill, after the
+// last read of that kill's reading. The next reading that reads the process clears the mark
+// (keepSize), and the size then stays as taken. A size from a read before the stay's first kill
+// (asOfKill) is never marked, and never taken again.
 func (g *Guard) takeFirstSince(key procKey, r procReads) {
-	g.atFirstKill[key] = firstReadSince(r.atReading)
+	g.atFirstKill[key] = r.firstReadSince()
 	if !r.firstTaken {
 		r.firstTaken = true
 		g.sizes[key] = r
