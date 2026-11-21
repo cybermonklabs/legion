@@ -45,9 +45,9 @@ const connectionProbeTimeout = 1 * time.Second
 // connected. The request is one core NATS request bounded by connectionProbeTimeout within ctx
 // (bus.Client.RequestCore), carrying bus.ConnectionProbeHeader and no body, on a reply subject of
 // its own that names the session (bus.SessionReplySubject under a new inbox), so its answer never
-// reaches the relay's reply handler, and the session may still answer it once natsgrant.Session
+// reaches the relay's reply handler, and a session on its own grant (natsgrant.Session), which
 // publishes bus.SessionReplies, its replies under its own id alone, in place of every _INBOX.
-// subject.
+// subject, answers it.
 //
 // Only NATS's no-responders status (nats.ErrNoResponders) is stopped: no subscription on this
 // server's cluster holds the subject, which is what a plugin whose connection closed leaves. A

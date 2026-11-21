@@ -87,15 +87,18 @@ func TestMeasureMatchesTheDeployedList(t *testing.T) {
 	requireSet(t, deployed, natsgrant.Measure(), "Measure()")
 }
 
-// A session's grant names its own subjects and no other session's, and an id that is not one
-// subject token is refused, because a dot, a wildcard or a space in it would widen the grant.
+// A session's grant names its own subjects and no other session's - its replies too, under
+// _INBOX.*.<id>.>, where the shared pattern publishes every _INBOX. subject - and an id that is not
+// one subject token is refused, because a dot, a wildcard or a space in it would widen the grant.
 func TestSessionGrantNamesOnlyItsOwnSession(t *testing.T) {
 	grant, err := natsgrant.Session("ses_a")
 	require.NoError(t, err)
 	require.Equal(t, natsgrant.Permissions{
-		Publish:   []string{"_INBOX.>", contracts.AgentStreamFramesSubject("ses_a")},
+		Publish:   []string{"_INBOX.*.ses_a.>", contracts.AgentStreamFramesSubject("ses_a")},
 		Subscribe: []string{bus.DeliverSubject("ses_a"), contracts.AgentStreamControlSubject("ses_a")},
 	}, grant)
+	require.Equal(t, bus.SessionReplies("ses_a"), grant.Publish[0])
+	require.Equal(t, "_INBOX.>", natsgrant.SessionPattern().Publish[0], "the shared pattern keeps every reply inbox")
 	for _, id := range []string{"a.b", "*", ">", "", "a b", "a\tb", "a\x00b"} {
 		_, err := natsgrant.Session(id)
 		require.ErrorContains(t, err, strconv.Quote(id), "Session(%q)", id)
