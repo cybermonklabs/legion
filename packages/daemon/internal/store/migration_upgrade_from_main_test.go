@@ -65,9 +65,10 @@ import (
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-3178's 20261120012547,
-// dispatch://INFRA-4108's 20261120042902 and dispatch://INFRA-4729's 20261120055717, so an upgrade
-// of a database main migrated applies it just before them. It adds pull_requests.statuses
-// at its default, the empty list, and it touches no outbox_kind_check.
+// dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717 and the copy's
+// applied sequence, 20261121170714, so an upgrade of a database main migrated applies it just
+// before them. It adds pull_requests.statuses at its default, the empty list, and it touches no
+// outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), and it touches no outbox_kind_check.
