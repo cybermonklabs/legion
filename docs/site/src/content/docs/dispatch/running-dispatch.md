@@ -926,22 +926,27 @@ project's owner puts the person's email on the project's access list, then makes
 invitation link for them on the project's **Access** tab and hands it over however they like. The
 link works once, within 24 hours, for that person only, and making a new one ends the old one. With
 it the person enrolls a passkey on their own device, and from then on signs in with that passkey.
-The owner sees on the Access tab when each passkey was enrolled, so a link someone else used first
-shows up there. **Reset** ends the person's sign-in, deletes their passkeys, revokes the agent
-tokens they made and the machine logins they approved at the secrets broker, ends every link still
-waiting for them on any project, and keeps them on the list, so they enroll again with a new link.
-Taking the person off the last list that names them ends the sign-in and deletes the passkeys at
-once, and Dispatch also checks at least hourly, as above. No link is made for an address on a
-domain the organization owns (`DISPATCH_SIGNIN_DOMAIN`, a domain `DISPATCH_SIGNIN_WORKSPACE_DOMAINS`
-lists, or a subdomain of one), nor for one of your people who has signed in with Google. List
-every domain the organization owns there: a domain left out is not the organization's to Dispatch,
-so an owner can make a link for an address of one of your people there before they first sign in
-with Google,
-and the passkey enrolled with it keeps signing in as that address after your organization removes
-that person, since no passkey sign-in asks Google. Turning the setting off signs every such person
-out at their next request, telling them Dispatch no longer signs them in, and stops their agent
-tokens as above. Without `DISPATCH_SIGNIN_OUTSIDE=1`, the outside address never offers Google
-sign-in, with passkeys on or off.
+The owner sees on the Access tab when each passkey was enrolled and who made the link it came
+through, so a link someone else used first shows up there. One owner binds a person from outside:
+a passkey signs its person in to every project whose list names them, so an owner makes a link
+only for a person no other owner's project names, the enrollment checks that again, and no other
+owner can name a person on their list, or be given a project naming them, while a passkey another
+owner's link enrolled stands. **Reset** ends the person's sign-in, deletes their passkeys, revokes
+the agent tokens they made and the machine logins they approved at the secrets broker, ends every
+link still waiting for them on any project, and keeps them on the list, so they enroll again with
+a new link. Taking the person off the last list that names them ends the sign-in and deletes the
+passkeys at once, and Dispatch also checks at least hourly, as above. No link is made for an
+address on a domain the organization owns (`DISPATCH_SIGNIN_DOMAIN`, a domain
+`DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists, or a subdomain of one), nor for one of your people who
+has signed in with Google. List every domain the organization owns there: a domain left out is not
+the organization's to Dispatch, so an owner can make a link for an address of one of your people
+there before they first sign in with Google, and the passkey enrolled with it keeps signing in as
+that address after your organization removes that person, since no passkey sign-in asks Google.
+While the setting is off, Dispatch refuses every such person's sign-in at their next request,
+telling them Dispatch does not sign them in now, and refuses their agent tokens as above; turned on
+again, their passkeys, sign-ins and tokens work again, so end a person's access for good with
+Reset or by taking them off the lists. Without `DISPATCH_SIGNIN_OUTSIDE=1`, the outside address
+never offers Google sign-in, with passkeys on or off.
 
 ## Behind Identity-Aware Proxy
 

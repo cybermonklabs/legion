@@ -451,10 +451,15 @@ type ProjectAccess struct {
 	Invitable *[]string `json:"invitable,omitempty"`
 }
 
-// EnrolledPasskey is when one passkey of a person was enrolled (ProjectAccess.Passkeys).
+// EnrolledPasskey is one passkey of a person (ProjectAccess.Passkeys): when it was enrolled, who
+// made the link that enrolled it, and that link's project, which only a reader who sees it is
+// answered (nil otherwise), so the owner sees whose link a passkey came through before the person
+// reads their project.
 type EnrolledPasskey struct {
 	Email      string    `json:"email"`
 	EnrolledAt time.Time `json:"enrolled_at"`
+	MadeBy     string    `json:"made_by"`
+	Project    *string   `json:"project,omitempty"`
 }
 
 // AccessGroup is a named list of full members that an access list can name: its one owner, the

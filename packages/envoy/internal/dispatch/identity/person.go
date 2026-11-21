@@ -93,6 +93,11 @@ type SignInRule interface {
 	// holding one Google session can pick another account rather than be sent straight back with
 	// the one just refused.
 	OffersAccountChooser() bool
+	// GoogleAtOutsideOrigin says whether the issuer's sign-in (/auth/start, /auth/callback) is
+	// served at the outside origin too (cmd/dispatch: DISPATCH_OUTSIDE_ORIGIN). Only OutsideRule's
+	// Google accounts from outside sign in there; under every other rule the outside origin answers
+	// those routes as a path no route serves (routes.googleSignInHere).
+	GoogleAtOutsideOrigin() bool
 	// CanRefresh says whether stored, the subject a membership's row records
 	// (auth.PersonMembership.Subject, empty when it records none), lets this rule confirm it
 	// without asking the issuer first.

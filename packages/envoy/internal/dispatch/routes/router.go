@@ -378,6 +378,9 @@ type router struct {
 	// context's own (AppContext's eventHead) when it names one, else the registered API server's
 	// (api.Background's EventHead).
 	eventHead func(r *http.Request) (int64, error)
+	// passkeyBegins bounds the passkey ceremonies' begins, which a caller with no credential makes
+	// and each of which writes (passkeyBeginLimiter).
+	passkeyBegins *passkeyBeginLimiter
 }
 
 // New returns an http.Handler that serves all dispatch routes, and the API server's background
@@ -409,9 +412,10 @@ func serve(ctx *AppContext) (http.Handler, *http.ServeMux, api.Background) {
 // (TestAKeyedWriteNeverRunsUnkeyed, TestEveryGETRouteHasAReadClass).
 func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 	r := &router{
-		ctx:          ctx,
-		retainedHeld: semaphore.NewWeighted(maxRetainedBytesHeld),
-		assets:       newAssetCache(maxCachedAssetBytes),
+		ctx:           ctx,
+		retainedHeld:  semaphore.NewWeighted(maxRetainedBytesHeld),
+		assets:        newAssetCache(maxCachedAssetBytes),
+		passkeyBegins: newPasskeyBeginLimiter(),
 	}
 	none := []readclass.Class{readclass.None}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
@@ -1128,11 +1132,10 @@ func callbackURL(serverURL, outsideOrigin string, req *http.Request) string {
 }
 
 // publicOrigin is the origin a request came to: outsideOrigin when it is set and the request's
-// Host is its host (sameHost: without regard to case, one trailing dot or the scheme's default
-// port, as DevSignInOrigin's host is compared without regard to case); otherwise Dispatch's
-// configured canonical origin, serverURL, whenever it is set. A backend request's Host and TLS
-// state make the origin only for unconfigured local deployments; forwarded headers are
-// deliberately ignored.
+// Host is its host (sameHost: the name without regard to case or trailing dots, the port as a
+// number, the scheme's default none); otherwise Dispatch's configured canonical origin, serverURL,
+// whenever it is set. A backend request's Host and TLS state make the origin only for unconfigured
+// local deployments; forwarded headers are deliberately ignored.
 func publicOrigin(serverURL, outsideOrigin string, req *http.Request) string {
 	if outsideOrigin != "" && sameHost(outsideOrigin, req.Host) {
 		return outsideOrigin
@@ -1147,26 +1150,32 @@ func publicOrigin(serverURL, outsideOrigin string, req *http.Request) string {
 	return fmt.Sprintf("%s://%s", scheme, req.Host)
 }
 
-// sameHost reports whether host, a request's Host, names the host of origin, which is written as
-// weborigin.Parse returns it (scheme://host[:port] and nothing more). The two are compared as one
-// host however a client spells it: without regard to case, with one trailing dot on the name and
-// the scheme's default port dropped on either side, so `outside.example:443` and
-// `outside.example.` reach the outside origin as `outside.example` does.
+// sameHost reports whether host, a request's Host, is the host of origin (scheme://host[:port], as
+// weborigin.Parse writes it), compared as a URL parser reads a host: the name without regard to case
+// or trailing dots, and the port as a number, the scheme's default being no port. So
+// `outside.example:443`, `outside.example:0443` and `outside.example..` reach the https outside
+// origin as `outside.example` does, while another port, `outside.example:8443` or `:80`, is another
+// origin and is answered as the canonical one.
 func sameHost(origin, host string) bool {
 	scheme, own, ok := strings.Cut(origin, "://")
 	return ok && hostKey(scheme, own) == hostKey(scheme, host)
 }
 
 // hostKey is host, a Host header or an origin's host under scheme, as sameHost compares it: its
-// name lower case, with one trailing dot and an IPv6 literal's brackets taken off, and its port,
-// none for the scheme's default.
+// name lower case, with an IPv6 literal's brackets and every trailing dot taken off, then its port
+// as a decimal number with no leading zeros, none for the scheme's default; a port that is no
+// string of digits is kept as written, which no origin's port equals.
 func hostKey(scheme, host string) string {
 	name, port := host, ""
 	if split, splitPort, err := net.SplitHostPort(host); err == nil {
 		name, port = split, splitPort
 	}
-	name = strings.TrimSuffix(strings.TrimPrefix(strings.ToLower(name), "["), "]")
-	name = strings.TrimSuffix(name, ".")
+	name = strings.TrimRight(strings.Trim(strings.ToLower(name), "[]"), ".")
+	if port != "" && strings.Trim(port, "0123456789") == "" {
+		if number, err := strconv.ParseUint(port, 10, 16); err == nil {
+			port = strconv.FormatUint(number, 10)
+		}
+	}
 	if scheme == "https" && port == "443" || scheme == "http" && port == "80" {
 		port = ""
 	}

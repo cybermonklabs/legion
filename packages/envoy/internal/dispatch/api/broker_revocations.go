@@ -138,7 +138,7 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 			SessionGeneration: revocation.SessionGeneration,
 		})
 		if err != nil {
-			slog.Error("dispatch: the secrets broker did not revoke the credentials of an account another Google account took the address of; trying again",
+			slog.Error(revokedLog(s.passkeyAccount(revocation), "did not revoke", "; trying again"),
 				"email", revocation.Email, "retry_in", brokerRevocationRetry, "error", err)
 			continue
 		}
@@ -182,11 +182,11 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 		}
 		settled, err := revocations.Settle(ctx, revocation)
 		if err != nil {
-			slog.Error("dispatch: the secrets broker revoked the credentials of an account another Google account took the address of, and the revocation could not be settled; it is paid again",
+			slog.Error(revokedLog(s.passkeyAccount(revocation), "revoked", ", and the revocation could not be settled; it is paid again"),
 				"email", revocation.Email, "error", err)
 			continue
 		}
-		slog.Warn("dispatch: the secrets broker revoked the credentials of an account another Google account took the address of",
+		slog.Warn(revokedLog(s.passkeyAccount(revocation), "revoked", ""),
 			"email", revocation.Email, "signins", revoked.SignIns, "machine_logins", revoked.MachineLogins, "tokens_ended", revoked.TokensEnded, "settled", settled)
 	}
 	wait, due, err := revocations.NextDue(ctx, brokerRevocationRetry)
@@ -200,6 +200,24 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 		return time.Time{}
 	}
 	return time.Now().Add(wait)
+}
+
+// passkeyAccount reports whether revocation ends a passkey's account (its issuer the outside
+// origin, Deps.Passkeys), which the project owner's Reset replaces, rather than one another Google
+// account took the address of.
+func (s *server) passkeyAccount(revocation store.OwedBrokerRevocation) bool {
+	return s.deps.Passkeys != nil && revocation.Issuer == s.deps.Passkeys.Issuer()
+}
+
+// revokedLog is the revocation pass's message for what the broker did ("revoked", "did not
+// revoke") with the credentials of the account a revocation ends, followed by then: a passkey's
+// account is named as the one an owner's Reset replaced, every other as the one another Google
+// account took the address of.
+func revokedLog(passkey bool, did, then string) string {
+	if passkey {
+		return "dispatch: the secrets broker " + did + " the credentials of a passkey account the project owner's Reset replaced" + then
+	}
+	return "dispatch: the secrets broker " + did + " the credentials of an account another Google account took the address of" + then
 }
 
 // brokerRevocationMetricsRead bounds one series' read of the owed revocations.

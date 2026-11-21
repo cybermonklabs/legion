@@ -211,6 +211,12 @@ func (r OutsideRule) OffersAccountChooser() bool {
 	return true
 }
 
+// GoogleAtOutsideOrigin is true: an account outside the domain signs in with Google at the
+// outside origin, which its people reach Dispatch at.
+func (r OutsideRule) GoogleAtOutsideOrigin() bool {
+	return true
+}
+
 // End is DomainRule.End, logged in words that fit both kinds of person this rule signs in: one
 // from outside the domain was never admitted by a Workspace membership, so "Google did not confirm
 // the person's membership of the domain" would misname why it ended. The reason names what the

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -14,8 +15,10 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -116,25 +119,51 @@ func (r *passkeyRig) asOwner(method, path string, body any) *httptest.ResponseRe
 // the link's token, its URL fragment.
 func (r *passkeyRig) invite(t *testing.T, email string) string {
 	t.Helper()
-	response := r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+url.PathEscape(email)+"/invitations", nil)
+	return linkToken(t, "alice's link for "+email, r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+url.PathEscape(email)+"/invitations", nil))
+}
+
+// linkToken is the token of the link response answers, failing the test naming what for any
+// answer but 201 {url, expires_at} with a url of the outside origin's enrollment page.
+func linkToken(t *testing.T, what string, response *httptest.ResponseRecorder) string {
+	t.Helper()
 	var answer struct {
 		URL       string `json:"url"`
 		ExpiresAt string `json:"expires_at"`
 	}
 	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &answer) != nil {
-		t.Fatalf("alice's link for %s answered %d %s, want 201 {url, expires_at}", email, response.Code, response.Body.String())
+		t.Fatalf("%s answered %d %s, want 201 {url, expires_at}", what, response.Code, response.Body.String())
 	}
 	page, token, ok := strings.Cut(answer.URL, "#")
 	if !ok || page != passkeyOrigin+"/enroll" || len(token) != 43 || answer.ExpiresAt == "" {
-		t.Fatalf("alice's link for %s is %+v, want %s/enroll#<43 characters> and when it lapses", email, answer, passkeyOrigin)
+		t.Fatalf("%s is %+v, want %s/enroll#<43 characters> and when it lapses", what, answer, passkeyOrigin)
 	}
 	return token
 }
 
-// ceremonyCookie is the ceremony cookie a begin set.
+// ownerOf signs email in with Google as a full member of example.com and makes them the owner of a
+// new project key; it answers their session cookie.
+func (r *passkeyRig) ownerOf(t *testing.T, key, email string) *http.Cookie {
+	t.Helper()
+	signedIn := codeFlowSignIn(t, r.handler, r.pool, map[string]any{"sub": "google-" + key, "email": email, "email_verified": true, "hd": "example.com"})
+	cookie := sessionCookieOf(t, email+"'s Google sign-in", signedIn)
+	if _, err := r.database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee, owner) values ($1, $1, $2, $2)`, key, email); err != nil {
+		t.Fatalf("seed %s: %v", key, err)
+	}
+	return cookie
+}
+
+// personOn is owner's request, at the canonical origin, to method project key's list's entry for
+// email: PUT names them, DELETE takes them off, and POST .../invitations and .../reset are the
+// link and the Reset.
+func personOn(handler http.Handler, owner *http.Cookie, method, key, email, then string) *httptest.ResponseRecorder {
+	return call(handler, canonicalOrigin, method, "/api/v1/projects/"+key+"/access/people/"+url.PathEscape(email)+then, nil, owner)
+}
+
+// ceremonyCookie is the ceremony cookie a begin set, the `__Host-` one the rig's Secure cookies
+// carry.
 func ceremonyCookie(response *httptest.ResponseRecorder) *http.Cookie {
 	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == "dispatch_passkey_ceremony" && cookie.Value != "" {
+		if cookie.Name == "__Host-dispatch_passkey_ceremony" && cookie.Value != "" {
 			return cookie
 		}
 	}
@@ -577,17 +606,21 @@ func TestTheOutsideOriginServesNoGoogleSignIn(t *testing.T) {
 	}
 }
 
-// TestTheOutsideOriginIsItsHostHoweverSpelled (R5): a request whose Host is the outside origin's
-// host written with its default port (`:443`), with a trailing dot, or in capitals, is answered as
+// TestTheOutsideOriginIsItsHostHoweverSpelled (R5): a request whose Host names the outside origin's
+// host with its default port (`:443`, `:0443`), with trailing dots, or in capitals, is answered as
 // the outside origin: GET /auth/start is its 404, not the canonical origin's redirect to Google, and
 // a passkey sign-in begins there. The canonical origin's own host still starts Google's sign-in.
 //
 // Control: compare the Host with the outside origin's host as written (publicOrigin's
 // strings.EqualFold alone), and `/auth/start` at `outside.example.com:443` answers 302 and the row
-// fails.
+// fails; strip one trailing dot and the port written `443` alone, and `outside.example.com..`
+// answers 302 and the row fails.
 func TestTheOutsideOriginIsItsHostHoweverSpelled(t *testing.T) {
 	r := newPasskeyRig(t, nil)
-	for _, host := range []string{passkeyRPID + ":443", passkeyRPID + ".", "OUTSIDE.Example.COM", "outside.example.com.:443"} {
+	for _, host := range []string{
+		passkeyRPID + ":443", passkeyRPID + ":0443", passkeyRPID + ".", passkeyRPID + "..",
+		"OUTSIDE.Example.COM", "outside.example.com.:443",
+	} {
 		start := httptest.NewRequest(http.MethodGet, "https://"+host+"/auth/start", nil)
 		started := httptest.NewRecorder()
 		r.handler.ServeHTTP(started, start)
@@ -936,4 +969,232 @@ func TestPasskeySettingsRefusals(t *testing.T) {
 		"DISPATCH_SIGNIN_ISSUER": "", "DISPATCH_SIGNIN_CLIENT_ID": "", "DISPATCH_SIGNIN_CLIENT_SECRET": "", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "",
 		"DISPATCH_SIGNIN_PASSKEY": "1",
 	}, "DISPATCH_SIGNIN_PASSKEY")
+}
+
+// TestOnlyTheOwnerOfEveryProjectNamingAPersonMakesTheirLink (R5): a passkey signs its person in to
+// every project that names them, so its link binds them for every such project's owner. Mallory, a
+// full member who owns MAL, names alice's outsider on MAL: her link for them, before they enroll
+// with alice's link, is 409 LISTED_BY_ANOTHER_OWNER, since PRIV, alice's, names them too, and so
+// is alice's own while MAL names them. Once the outsider enrolled with alice's link, Mallory's list
+// cannot name them again (409 PASSKEY_OF_ANOTHER_OWNER), so no link of hers ever reaches their
+// account. An owner of every project that names a person still makes their link: alice names the
+// outsider on OTHER, hers too, and links them there.
+//
+// Control: make the link without asking who else names the person (createInvitation skipping
+// store.ListedByAnotherOwner), and Mallory's link before the outsider's enrollment answers 201 and
+// the row fails.
+func TestOnlyTheOwnerOfEveryProjectNamingAPersonMakesTheirLink(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	const mallory = "mallory@example.com"
+	malloryCookie := r.ownerOf(t, "MAL", mallory)
+	if listed := personOn(r.handler, malloryCookie, http.MethodPut, "MAL", outsiderEmail, ""); listed.Code != http.StatusOK {
+		t.Fatalf("Mallory names the outsider on MAL: %d %s, want 200", listed.Code, listed.Body.String())
+	}
+	wantCode(t, "Mallory's link for the outsider, before their enrollment", personOn(r.handler, malloryCookie, http.MethodPost, "MAL", outsiderEmail, "/invitations"), http.StatusConflict, "LISTED_BY_ANOTHER_OWNER")
+	wantCode(t, "alice's link for the outsider while MAL names them", r.asOwner(http.MethodPost, "/api/v1/projects/PRIV/access/people/"+outsiderEmail+"/invitations", nil), http.StatusConflict, "LISTED_BY_ANOTHER_OWNER")
+
+	if removed := personOn(r.handler, malloryCookie, http.MethodDelete, "MAL", outsiderEmail, ""); removed.Code != http.StatusOK {
+		t.Fatalf("Mallory takes the outsider off MAL: %d %s, want 200", removed.Code, removed.Body.String())
+	}
+	r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
+	wantCode(t, "Mallory's list naming the outsider, after their enrollment with alice's link", personOn(r.handler, malloryCookie, http.MethodPut, "MAL", outsiderEmail, ""), http.StatusConflict, "PASSKEY_OF_ANOTHER_OWNER")
+	wantCode(t, "Mallory's link for the outsider, after their enrollment", personOn(r.handler, malloryCookie, http.MethodPost, "MAL", outsiderEmail, "/invitations"), http.StatusConflict, "PERSON_NOT_LISTED")
+
+	if _, err := r.database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee, owner) values ('OTHER', 'Other', $1, $1)`, privOwner); err != nil {
+		t.Fatalf("seed OTHER: %v", err)
+	}
+	if listed := personOn(r.handler, r.alice, http.MethodPut, "OTHER", outsiderEmail, ""); listed.Code != http.StatusOK {
+		t.Fatalf("alice names the outsider on OTHER, hers too: %d %s, want 200", listed.Code, listed.Body.String())
+	}
+	linkToken(t, "alice's link for the outsider on OTHER", personOn(r.handler, r.alice, http.MethodPost, "OTHER", outsiderEmail, "/invitations"))
+}
+
+// TestAListRefusesAPersonWhosePasskeyAnotherOwnersLinkEnrolled (R5): Mallory names
+// solo@other.example on MAL, which no other list names, and solo enrolls with her link; alice's list
+// naming solo afterwards is 409 PASSKEY_OF_ANOTHER_OWNER, so Mallory's passkey never reads PRIV.
+// Mallory's access answer names her as the passkey's link maker and MAL as its project. Once
+// Mallory resets solo, alice names them.
+//
+// Control: name the person without reading whose link enrolled their passkeys
+// (putProjectAccessPerson skipping refusePasskeyOfAnotherOwner), and alice's list names solo, 200,
+// and the row fails.
+func TestAListRefusesAPersonWhosePasskeyAnotherOwnersLinkEnrolled(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	const mallory, solo = "mallory@example.com", "solo@other.example"
+	malloryCookie := r.ownerOf(t, "MAL", mallory)
+	if listed := personOn(r.handler, malloryCookie, http.MethodPut, "MAL", solo, ""); listed.Code != http.StatusOK {
+		t.Fatalf("Mallory names solo on MAL: %d %s, want 200", listed.Code, listed.Body.String())
+	}
+	r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), linkToken(t, "Mallory's link for solo", personOn(r.handler, malloryCookie, http.MethodPost, "MAL", solo, "/invitations")), solo)
+
+	wantCode(t, "alice's list naming solo, whose passkey Mallory's link enrolled", personOn(r.handler, r.alice, http.MethodPut, "PRIV", solo, ""), http.StatusConflict, "PASSKEY_OF_ANOTHER_OWNER")
+	var answer struct {
+		Passkeys []struct {
+			Email   string  `json:"email"`
+			MadeBy  string  `json:"made_by"`
+			Project *string `json:"project"`
+		} `json:"passkeys"`
+	}
+	read := call(r.handler, canonicalOrigin, http.MethodGet, "/api/v1/projects/MAL/access", nil, malloryCookie)
+	if read.Code != http.StatusOK || json.Unmarshal(read.Body.Bytes(), &answer) != nil || len(answer.Passkeys) != 1 ||
+		answer.Passkeys[0].MadeBy != mallory || answer.Passkeys[0].Project == nil || *answer.Passkeys[0].Project != "MAL" {
+		t.Fatalf("Mallory's read of MAL's access: %d %s, want solo's passkey made by her through MAL", read.Code, read.Body.String())
+	}
+
+	if reset := personOn(r.handler, malloryCookie, http.MethodPost, "MAL", solo, "/reset"); reset.Code != http.StatusOK {
+		t.Fatalf("Mallory resets solo: %d %s, want 200", reset.Code, reset.Body.String())
+	}
+	if listed := personOn(r.handler, r.alice, http.MethodPut, "PRIV", solo, ""); listed.Code != http.StatusOK {
+		t.Fatalf("alice names solo once Mallory reset them: %d %s, want 200", listed.Code, listed.Body.String())
+	}
+}
+
+// TestALinkUsedAfterAnotherOwnerNamesThePersonEnrollsNothing (R5): alice makes a link while PRIV
+// alone names the outsider, and their enrollment begins; Mallory then names them on MAL. The
+// enrollment's finish, which reads the lists again under the address's lock (store.PgPasskeys's
+// Enroll), is 403 LISTED_BY_ANOTHER_OWNER and stores no passkey, and a new begin with the link is
+// refused alike.
+//
+// Control: drop Enroll's read of who else names the person, and the finish answers 200 and the row
+// fails.
+func TestALinkUsedAfterAnotherOwnerNamesThePersonEnrollsNothing(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	token := r.invite(t, outsiderEmail)
+	begun := r.beginEnrollment(r.handler, token)
+	if begun.Code != http.StatusOK {
+		t.Fatalf("the outsider's enrollment begins: %d %s, want 200", begun.Code, begun.Body.String())
+	}
+	malloryCookie := r.ownerOf(t, "MAL", "mallory@example.com")
+	if listed := personOn(r.handler, malloryCookie, http.MethodPut, "MAL", outsiderEmail, ""); listed.Code != http.StatusOK {
+		t.Fatalf("Mallory names the outsider on MAL: %d %s, want 200", listed.Code, listed.Body.String())
+	}
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	finished := call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/register/finish", device.register(t, begun.Body.Bytes()), ceremonyCookie(begun))
+	wantCode(t, "the enrollment's finish once MAL names the outsider", finished, http.StatusForbidden, "LISTED_BY_ANOTHER_OWNER")
+	if n := r.passkeysOf(t, outsiderEmail); n != 0 {
+		t.Fatalf("the outsider holds %d passkey(s), want none", n)
+	}
+	wantCode(t, "a new begin with alice's link once MAL names the outsider", r.beginEnrollment(r.handler, token), http.StatusForbidden, "LISTED_BY_ANOTHER_OWNER")
+}
+
+// TestTheOwnersResetRefusesAWorkspaceAddress: the owner's Reset of an address on a domain of the
+// company's Workspace that the list names is 400 WORKSPACE_ADDRESS, as a link for it is: such an
+// address signs in with Google, so it holds no passkey to reset.
+//
+// Control: drop the Reset's Workspace check (resetProjectAccessPerson), and the Reset answers 200
+// and the row fails.
+func TestTheOwnersResetRefusesAWorkspaceAddress(t *testing.T) {
+	r := newPasskeyRig(t, map[string]string{"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": "example.ai"})
+	const workspace = "someone@example.ai"
+	r.listOn(t, "PRIV", access.PrincipalPerson, workspace)
+	wantCode(t, "alice's Reset of "+workspace, personOn(r.handler, r.alice, http.MethodPost, "PRIV", workspace, "/reset"), http.StatusBadRequest, "WORKSPACE_ADDRESS")
+}
+
+// TestAResetUnderTheAddressLockRefusesAFullMember: store.PgPasskeys's ResetTx reads the member
+// kind again under the address's lock, which a Google sign-in takes too, so a full member whose
+// first sign-in committed after the Reset's handler read the list is auth.ErrAddressHeldByMember,
+// and the Reset writes nothing: their personal tokens and account stand.
+//
+// Control: drop ResetTx's member-kind read, and the Reset revokes the full member's account and
+// answers nil, and the row fails.
+func TestAResetUnderTheAddressLockRefusesAFullMember(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	sessionCookieOf(t, outsiderEmail+"'s Google sign-in as a Workspace account", codeFlowSignIn(t, r.handler, r.pool, map[string]any{
+		"sub": "google-outsider", "email": outsiderEmail, "email_verified": true, "hd": "example.com",
+	}))
+	ctx := context.Background()
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := store.NewPgPasskeys(r.people.PgPeopleStore, passkeyOrigin).ResetTx(ctx, tx, outsiderEmail, "cmVzZXQtb2YtYS1tZW1iZXIh"); !errors.Is(err, auth.ErrAddressHeldByMember) {
+		t.Fatalf("ResetTx of a full member's address answered %v, want auth.ErrAddressHeldByMember", err)
+	}
+}
+
+// TestThePasskeyBeginsAreBoundedPerAddress: a ceremony's begin takes no credential and writes, so
+// one client address gets ten at once and then one a second: the eleventh at once is 429
+// PASSKEY_RATE_LIMITED with Retry-After, while another address still begins.
+//
+// Control: mount the begins without limitPasskeyBegins, and the eleventh begin answers 200 and the
+// row fails.
+func TestThePasskeyBeginsAreBoundedPerAddress(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	begin := func(address string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, passkeyOrigin+"/auth/passkey/login/begin", strings.NewReader("{}"))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", passkeyOrigin)
+		request.Header.Set("X-Forwarded-For", address)
+		response := httptest.NewRecorder()
+		r.handler.ServeHTTP(response, request)
+		return response
+	}
+	for n := range 10 {
+		if begun := begin("198.51.100.7"); begun.Code != http.StatusOK {
+			t.Fatalf("begin %d from 198.51.100.7 answered %d %s, want 200", n+1, begun.Code, begun.Body.String())
+		}
+	}
+	limited := begin("198.51.100.7")
+	wantCode(t, "the eleventh begin from 198.51.100.7 at once", limited, http.StatusTooManyRequests, "PASSKEY_RATE_LIMITED")
+	if limited.Header().Get("Retry-After") == "" {
+		t.Errorf("the 429 carries no Retry-After")
+	}
+	if other := begin("198.51.100.8"); other.Code != http.StatusOK {
+		t.Fatalf("a begin from 198.51.100.8 answered %d %s, want 200", other.Code, other.Body.String())
+	}
+}
+
+// TestTheCeremonyCookieIsTheHostsAlone: the ceremony cookie is `__Host-dispatch_passkey_ceremony`,
+// Secure, HttpOnly, SameSite=Strict, with Path=/ and no Domain, which a browser takes only from the
+// outside origin's own host, so no other host under its domain can plant a ceremony; a finish
+// carrying the same value under the plain name is 400 CEREMONY_EXPIRED. Under
+// DISPATCH_INSECURE_COOKIE, which a browser refuses a `__Host-` cookie with, it is the plain name,
+// not Secure.
+//
+// Control: name the cookie `dispatch_passkey_ceremony` with Path=/auth/passkey, and the begin sets
+// no `__Host-` cookie and the row fails.
+func TestTheCeremonyCookieIsTheHostsAlone(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
+	begun := r.beginEnrollment(r.handler, r.invite(t, outsiderEmail))
+	cookie := ceremonyCookie(begun)
+	if begun.Code != http.StatusOK || cookie == nil || !cookie.Secure || !cookie.HttpOnly || cookie.Path != "/" || cookie.Domain != "" || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("the begin answered %d and set %+v, want a Secure, HttpOnly, SameSite=Strict __Host- cookie with Path=/ and no Domain", begun.Code, begun.Result().Cookies())
+	}
+	plain := &http.Cookie{Name: "dispatch_passkey_ceremony", Value: cookie.Value}
+	wantCode(t, "a finish carrying the ceremony under the plain name", call(r.handler, passkeyOrigin, http.MethodPost, "/auth/passkey/register/finish", device.register(t, begun.Body.Bytes()), plain), http.StatusBadRequest, "CEREMONY_EXPIRED")
+
+	insecure, _ := r.serverWith(t, map[string]string{"DISPATCH_INSECURE_COOKIE": "1"})
+	set := call(insecure, passkeyOrigin, http.MethodPost, "/auth/passkey/login/begin", map[string]string{}).Result().Cookies()
+	if len(set) != 1 || set[0].Name != "dispatch_passkey_ceremony" || set[0].Secure || set[0].Path != "/" {
+		t.Fatalf("the begin under DISPATCH_INSECURE_COOKIE set %+v, want one plain dispatch_passkey_ceremony cookie, not Secure, with Path=/", set)
+	}
+}
+
+// TestATransferRefusesAProjectNamingAnotherOwnersPasskey (R5): alice's link enrolled the outsider's
+// passkey, so handing PRIV to bob would leave alice, PRIV's owner until then, an account of her own
+// binding that reads bob's project: the transfer is 409 PASSKEY_OF_ANOTHER_OWNER and PRIV stays
+// hers. Once alice resets the outsider, the transfer goes through.
+//
+// Control: give the project away without reading whose links enrolled its people's passkeys
+// (patchProjectAccess skipping refuseTransferOfAnotherOwnersPasskey), and the transfer answers 200
+// and the row fails.
+func TestATransferRefusesAProjectNamingAnotherOwnersPasskey(t *testing.T) {
+	r := newPasskeyRig(t, nil)
+	r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
+	const bob = "bob@example.com"
+	r.ownerOf(t, "BOB", bob)
+	give := map[string]string{"owner": bob}
+	wantCode(t, "alice's transfer of PRIV to bob while the outsider holds her link's passkey", r.asOwner(http.MethodPatch, "/api/v1/projects/PRIV/access", give), http.StatusConflict, "PASSKEY_OF_ANOTHER_OWNER")
+	var owner string
+	if err := r.database.Pool.QueryRow(context.Background(), `select owner from projects where key = 'PRIV'`).Scan(&owner); err != nil || owner != privOwner {
+		t.Fatalf("PRIV's owner after the refused transfer is %q (%v), want %s", owner, err, privOwner)
+	}
+	if reset := personOn(r.handler, r.alice, http.MethodPost, "PRIV", outsiderEmail, "/reset"); reset.Code != http.StatusOK {
+		t.Fatalf("alice resets the outsider: %d %s, want 200", reset.Code, reset.Body.String())
+	}
+	if given := r.asOwner(http.MethodPatch, "/api/v1/projects/PRIV/access", give); given.Code != http.StatusOK {
+		t.Fatalf("alice's transfer of PRIV to bob after the Reset: %d %s, want 200", given.Code, given.Body.String())
+	}
 }

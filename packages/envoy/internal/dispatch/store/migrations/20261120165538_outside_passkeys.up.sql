@@ -5,13 +5,17 @@
 --     link itself carries them in its URL fragment, and no row holds them), the email and project
 --     it is for, who made it and when, when it lapses (24 hours after), and when it was used. A
 --     link is used once: the enrollment that uses it sets used_at in its own transaction. A new
---     link for the same person and project, a removal from that project's list, and the owner's
---     Reset delete the person's unused links of that project (store.PgPasskeys).
+--     link for the same person and project and a removal from that project's list delete the
+--     person's unused links of that project, and the owner's Reset every unused link of the person
+--     (store.PgPasskeys).
 --   - passkeys holds each WebAuthn credential a person enrolled with such a link: its id, the
 --     person's email, the user handle the authenticator stores with it (the person's subject), the
 --     COSE public key, the signature counter, the AAGUID, the transports the browser reported, the
 --     credential's flags as go-webauthn packs them into one byte (webauthn.CredentialFlags:
---     backup eligible is checked at every sign-in), and when it was enrolled and last used. The
+--     backup eligible is checked at every sign-in), the project of the link that enrolled it and
+--     who made that link, and when it was enrolled and last used. A passkey reads every project
+--     that names its person, so one owner binds an outside person: a list of another owner refuses
+--     an address whose passkey a link of someone else enrolled (api.putProjectAccessPerson). The
 --     owner's Reset, a removal from the last list that names the person and the hourly check of a
 --     person no list names delete them, in the transaction that ends the sign-in.
 --   - people.sub_issuer is the issuer of the account people.sub records: null for an account of
@@ -63,6 +67,10 @@ create table passkeys (
   aaguid bytea not null check (octet_length(aaguid) in (0, 16)),
   transports text[] not null default '{}',
   flags smallint not null check (flags between 0 and 255),
+  -- The link's project and maker, which the owner's access answer shows. No foreign key to
+  -- projects: a project deleted later leaves the record of whose link enrolled the passkey.
+  project_key text not null check (project_key <> ''),
+  made_by text not null check (made_by <> ''),
   created_at timestamptz not null default now(),
   last_used_at timestamptz
 );

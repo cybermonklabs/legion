@@ -58,6 +58,12 @@ func (r PasskeyRule) OffersAccountChooser() bool {
 	return r.DomainRule.OffersAccountChooser()
 }
 
+// GoogleAtOutsideOrigin is DomainRule's: a person from outside signs in at the outside origin
+// with a passkey, never with Google.
+func (r PasskeyRule) GoogleAtOutsideOrigin() bool {
+	return r.DomainRule.GoogleAtOutsideOrigin()
+}
+
 // WorkspaceAddress reports whether email is an address on a domain the Workspace owns (Domain, one
 // of WorkspaceDomains, or a subdomain of either), which AdmitsRestricted refuses
 // (ErrWorkspaceAddress) without reading the lists: the owner's link is refused for it, and the
@@ -202,7 +208,8 @@ func NewPasskeySubject() (string, error) {
 
 // invitedPerson reads the link token names and the person it is for, and refuses it as its finish
 // would: no such link (store.ErrInvitationUnknown), used, lapsed, the project's list no longer
-// naming its email directly, the rule no longer admitting the address (ErrWorkspaceAddress,
+// naming its email directly, a project of another owner than the link's maker naming it
+// (store.ErrListedByAnotherOwner), the rule no longer admitting the address (ErrWorkspaceAddress,
 // ErrNotListed, or ErrMembershipUnreadable, which is no refusal), or a full member's address
 // (auth.ErrAddressHeldByMember, as the finish's account binding refuses it: the person signed in
 // with Google as a full member after the owner made the link).
@@ -224,6 +231,11 @@ func (p *Passkeys) invitedPerson(ctx context.Context, token string) ([32]byte, s
 	}
 	if !named {
 		return [32]byte{}, store.Invitation{}, store.PasskeyAccount{}, store.ErrInvitationNotListed
+	}
+	if other, err := p.store.ListedByAnotherOwner(ctx, invitation.Email, invitation.MadeBy); err != nil {
+		return [32]byte{}, store.Invitation{}, store.PasskeyAccount{}, err
+	} else if other {
+		return [32]byte{}, store.Invitation{}, store.PasskeyAccount{}, store.ErrListedByAnotherOwner
 	}
 	if err := p.rule.AdmitsRestricted(ctx, invitation.Email); err != nil {
 		return [32]byte{}, store.Invitation{}, store.PasskeyAccount{}, err

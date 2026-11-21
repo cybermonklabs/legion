@@ -83,17 +83,17 @@ func (s *server) revokeOwedMachineLogins(ctx context.Context) time.Time {
 			continue
 		}
 		if err != nil {
-			slog.Error("dispatch: the machine logins of a restricted member taken off an access list were not revoked: the secrets broker did not confirm, or the claim could not be read; trying again",
+			slog.Error("dispatch: the machine logins of a restricted member taken off an access list or reset by a project's owner were not revoked: the secrets broker did not confirm, or the claim could not be read; trying again",
 				"email", revocation.Email, "revoked", revoked, "retry_in", brokerRevocationRetry, "error", err)
 			continue
 		}
 		settled, err := revocations.Settle(ctx, revocation)
 		if err != nil {
-			slog.Error("dispatch: the secrets broker revoked the machine logins of a restricted member taken off an access list, and the revocation could not be settled; it is paid again",
+			slog.Error("dispatch: the secrets broker revoked the machine logins of a restricted member taken off an access list or reset by a project's owner, and the revocation could not be settled; it is paid again",
 				"email", revocation.Email, "error", err)
 			continue
 		}
-		slog.Warn("dispatch: the secrets broker revoked the machine logins of a restricted member taken off an access list",
+		slog.Warn("dispatch: the secrets broker revoked the machine logins of a restricted member taken off an access list or reset by a project's owner",
 			"email", revocation.Email, "machine_logins", revoked, "settled", settled)
 	}
 	wait, due, err := revocations.NextDue(ctx, brokerRevocationRetry)

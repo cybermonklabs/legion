@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -31,6 +32,9 @@ var (
 	// while this one was in flight, so the user handle this one's authenticator stored is not the
 	// address's: the person starts over.
 	ErrEnrollmentSuperseded = errors.New("another enrollment of this address finished first")
+	// ErrListedByAnotherOwner means a project whose owner did not make the link names the
+	// person directly: the passkey would read that project too, so its owner did not agree to it.
+	ErrListedByAnotherOwner = errors.New("another owner's project names this person: only an owner of every project that names them makes their link")
 	// ErrPasskeyUnknown means no passkey has the credential id: never enrolled, or deleted by the
 	// owner's Reset, a removal from the last list or the hourly check.
 	ErrPasskeyUnknown = errors.New("no passkey has this credential")
@@ -48,8 +52,8 @@ var (
 const InvitationLifetime = 24 * time.Hour
 
 // Invitation is one link an owner made (outside_invitations), as its token's hash reads it: the
-// email and project it is for, the login of the owner who made it, whether it was used, and
-// whether the database's clock is at or past when it lapses.
+// email and project it is for, who made it, whether it was used, and whether the database's clock
+// is at or past when it lapses.
 type Invitation struct {
 	Email   string
 	Project string
@@ -236,15 +240,22 @@ func LockAddressTx(ctx context.Context, tx pgx.Tx, email string) error {
 // every later approve that names it or an older generation. An address that records no passkey's
 // account has its personal tokens revoked alone. Last it ends the sign-in and deletes the passkeys
 // (EndPasskeySignInTx), so nobody signs in as the person until they enroll with a new link, under
-// the new account. It answers how many passkeys it deleted.
+// the new account. It answers how many passkeys it deleted. A full member's row, read under the
+// address's lock, is auth.ErrAddressHeldByMember and writes nothing.
 func (p *PgPasskeys) ResetTx(ctx context.Context, tx pgx.Tx, email, subject string) (int64, error) {
 	login := model.CanonicalLogin(email)
 	if _, err := tx.Exec(ctx, addressLockSQL, login); err != nil {
 		return 0, fmt.Errorf("reset the person: lock the address: %w", err)
 	}
-	var recorded bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from people where email = $1 and sub_issuer = $2)`, login, p.issuer).Scan(&recorded); err != nil {
+	var recorded, full bool
+	if err := tx.QueryRow(ctx, `select coalesce(bool_or(sub_issuer = $2), false), coalesce(bool_or(member_kind = 'full'), false)
+		from people where email = $1`, login, p.issuer).Scan(&recorded, &full); err != nil {
 		return 0, fmt.Errorf("reset the person: read their account: %w", err)
+	}
+	// Read under the address's lock, which a Google sign-in takes too: a full member whose first
+	// sign-in committed after the caller checked the member kind is no one's to reset.
+	if full {
+		return 0, auth.ErrAddressHeldByMember
 	}
 	if recorded {
 		if _, err := p.people.signInAccountTx(ctx, tx, login, signInAccount{issuer: p.issuer, subject: subject}, nil, model.MemberRestricted); err != nil {
@@ -256,20 +267,89 @@ func (p *PgPasskeys) ResetTx(ctx context.Context, tx pgx.Tx, email, subject stri
 	return EndPasskeySignInTx(ctx, tx, login)
 }
 
-// EnrolledPasskeys answers when each passkey of the people emails names was enrolled, sorted by
-// email and then by that time; empty, never nil, for none.
+// ListedByAnotherOwner reports whether a project whose owner is not owner names email directly on
+// its access list, read through q. A passkey signs its person in to every project that names them,
+// so only an owner of every such project makes a link for them, and an enrollment uses a link only
+// while its maker still is (R5: no project's owner binds a passkey that reads another owner's
+// project).
+func ListedByAnotherOwner(ctx context.Context, q PasskeyReader, email, owner string) (bool, error) {
+	var other bool
+	if err := q.QueryRow(ctx, `select exists (select 1 from project_access a join projects p on p.key = a.project_key
+		where a.principal_kind = 'person' and a.principal = $1 and canonical_login(coalesce(p.owner, '')) <> canonical_login($2))`,
+		model.CanonicalLogin(email), owner).Scan(&other); err != nil {
+		return false, fmt.Errorf("read whether another owner's project names %s: %w", model.CanonicalLogin(email), err)
+	}
+	return other, nil
+}
+
+// ListedByAnotherOwner is the package's ListedByAnotherOwner over the people store's pool, for an
+// enrollment's begin (identity.Passkeys), which reads before any transaction.
+func (p *PgPasskeys) ListedByAnotherOwner(ctx context.Context, email, owner string) (bool, error) {
+	return ListedByAnotherOwner(ctx, p.people.pool, email, owner)
+}
+
+// HeldByAnotherOwnersPasskey reports whether email's address holds a passkey enrolled through a
+// link someone other than owner made, read through q: a list of owner's that named the person then
+// would let that passkey read owner's project, which owner never agreed to, so the list refuses it
+// (api.putProjectAccessPerson) until the link's maker resets the person.
+func HeldByAnotherOwnersPasskey(ctx context.Context, q PasskeyReader, email, owner string) (bool, error) {
+	var held bool
+	if err := q.QueryRow(ctx, `select exists (select 1 from passkeys
+		where email = $1 and canonical_login(made_by) <> canonical_login($2))`, model.CanonicalLogin(email), owner).Scan(&held); err != nil {
+		return false, fmt.Errorf("read whether another owner's link enrolled a passkey of %s: %w", model.CanonicalLogin(email), err)
+	}
+	return held, nil
+}
+
+// ProjectNamesAnotherOwnersPasskey reports whether a person project key's list names directly holds
+// a passkey enrolled through a link someone other than owner made, read in tx after taking each such
+// person's address lock, in the order of their addresses: an enrollment takes the same lock before
+// it reads who owns the projects that name its person (Enroll), so a transfer of the project to
+// owner and an enrollment through the old owner's link read one after the other.
+func ProjectNamesAnotherOwnersPasskey(ctx context.Context, tx pgx.Tx, key, owner string) (bool, error) {
+	rows, err := tx.Query(ctx, `select principal from project_access where project_key = $1 and principal_kind = 'person'
+		order by principal collate "C"`, key)
+	if err != nil {
+		return false, fmt.Errorf("read the people project %s names: %w", key, err)
+	}
+	people, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return false, fmt.Errorf("read the people project %s names: %w", key, err)
+	}
+	for _, person := range people {
+		if err := LockAddressTx(ctx, tx, person); err != nil {
+			return false, err
+		}
+	}
+	var held bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from passkeys
+		where email = any($1) and canonical_login(made_by) <> canonical_login($2))`, people, owner).Scan(&held); err != nil {
+		return false, fmt.Errorf("read whether another owner's link enrolled a passkey of a person project %s names: %w", key, err)
+	}
+	return held, nil
+}
+
+// EnrolledPasskeys answers each passkey of the people emails names: when it was enrolled, the
+// project whose link enrolled it and who made that link, sorted by email and then by that time;
+// empty, never nil, for none.
 func EnrolledPasskeys(ctx context.Context, q PasskeyReader, emails []string) ([]model.EnrolledPasskey, error) {
 	enrolled := []model.EnrolledPasskey{}
 	if len(emails) == 0 {
 		return enrolled, nil
 	}
-	rows, err := q.Query(ctx, `select email, created_at from passkeys where email = any($1) order by email collate "C", created_at, credential_id`, emails)
+	rows, err := q.Query(ctx, `select email, created_at, project_key, made_by from passkeys where email = any($1)
+		order by email collate "C", created_at, credential_id`, emails)
 	if err != nil {
 		return nil, fmt.Errorf("read the passkeys' enrollment times: %w", err)
 	}
 	read, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.EnrolledPasskey, error) {
 		var passkey model.EnrolledPasskey
-		return passkey, row.Scan(&passkey.Email, &passkey.EnrolledAt)
+		var project string
+		if err := row.Scan(&passkey.Email, &passkey.EnrolledAt, &project, &passkey.MadeBy); err != nil {
+			return passkey, err
+		}
+		passkey.Project = &project
+		return passkey, nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read the passkeys' enrollment times: %w", err)
@@ -399,13 +479,21 @@ func (p *PgPasskeys) Enroll(ctx context.Context, tokenHash [32]byte, email, subj
 	if err := p.refuseAnotherPasskeySubject(ctx, tx, login, subject); err != nil {
 		return err
 	}
+	// Read again under the address's lock: a project of another owner that named the person
+	// between the link and its use is no project the link's maker may bind a passkey to.
+	if other, err := ListedByAnotherOwner(ctx, tx, login, invitation.MadeBy); err != nil {
+		return err
+	} else if other {
+		return ErrListedByAnotherOwner
+	}
 	recorded, err := p.people.signInAccountTx(ctx, tx, login, signInAccount{issuer: p.issuer, subject: subject}, nil, model.MemberRestricted)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `insert into passkeys (credential_id, email, user_handle, public_key, sign_count, aaguid, transports, flags)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		credential.ID, login, credential.UserHandle, credential.PublicKey, int64(credential.SignCount), aaguidOf(credential.AAGUID), transportsOf(credential.Transports), int16(credential.Flags)); err != nil {
+	if _, err := tx.Exec(ctx, `insert into passkeys (credential_id, email, user_handle, public_key, sign_count, aaguid, transports, flags, project_key, made_by)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		credential.ID, login, credential.UserHandle, credential.PublicKey, int64(credential.SignCount), aaguidOf(credential.AAGUID), transportsOf(credential.Transports), int16(credential.Flags),
+		invitation.Project, invitation.MadeBy); err != nil {
 		return fmt.Errorf("store the passkey: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
