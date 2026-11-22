@@ -261,7 +261,8 @@ jobs:
           CI_FILTERS_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
         run: .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"
       # The lint job holds the filters this run computed to the tsc programs and the image builds
-      # (check-ts-filters.sh, check-image-trigger-paths.sh), so it reads this file.
+      # (check-ts-filters.sh, check-image-trigger-paths.sh), and the test job's filter-check and
+      # router-outputs harnesses read them, so they read this file.
       - name: Keep the filters this run computed
         timeout-minutes: 3
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -22,10 +22,12 @@ generate` and writes every filter into the runner's temporary directory; its one
 dorny/paths-filter step reads that path (an expression with no colon, which the action reads as
 the path of a file, `isPathInput` in its src/main.ts, and opens with `fs.readFileSync` from the
 workspace). The job uploads the filters as computed (`ci-filters.computed.yaml`) as the run's
-`ci-filters` artifact, which the lint job holds to the tsc programs and the image builds. On
-pull_request dorny/paths-filter reads the file list from the API, a rename read as the delete of
-the old name and the add of the new one; on a merge group it diffs base_sha..head_sha with git. A
-dispatched run computes the file too and filters nothing.
+`ci-filters` artifact, which the lint job holds to the tsc programs and the image builds, and
+from which the test job's router outputs' harness reads the filter names. A script run by hand
+computes them with `.github/scripts/check-ci-filters.sh generate <file>`. On pull_request
+dorny/paths-filter reads the file list from the API, a rename read as the delete of the old name
+and the add of the new one; on a merge group it diffs base_sha..head_sha with git. A dispatched run
+computes the file too and filters nothing.
 
 A change to the computation itself - the engine or the shared read table under .github/scripts,
 the two scripts that run them, or a file they read such as package.json (the generate mode lists

@@ -12,6 +12,11 @@
 # nothing. Two copies of ci.yaml, each with one label literal broken, show that a broken term
 # fails its case rather than leaving the set.
 #
+# The filter names the outputs read verdicts of are the changes job's filters, which no file of the
+# repository holds: the job computes them when it runs. The script reads them from the file
+# CI_FILTERS_FILE names - the test job hands it the file this run's changes job computed - and,
+# with none given, from this tree's, computed here with `check-ci-filters.sh generate`.
+#
 # Run from anywhere: .github/scripts/ci-router-outputs.test.sh
 # CI runs it in ci.yaml's test job.
 set -euo pipefail
@@ -26,12 +31,23 @@ source "$script_dir/test-lib.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+filters=${CI_FILTERS_FILE:-}
+if [ -z "$filters" ]; then
+  filters=$work/computed-filters.yaml
+  if ! "$script_dir/check-ci-filters.sh" generate "$filters" > "$work/generate.log" 2>&1; then
+    tail -20 "$work/generate.log" >&2
+    echo "ci-router-outputs.test.sh: no CI_FILTERS_FILE is given, and \`check-ci-filters.sh generate\` could not compute the changes job's filters" >&2
+    exit 1
+  fi
+fi
+
 # outputs_of <workflow> <argument>...: every output as `name=value`, sorted, for one event and set
-# of labels; outputs <argument>... reads this repository's own ci.yaml.
+# of labels, the filter names read from the computed filters; outputs <argument>... reads this
+# repository's own ci.yaml.
 outputs_of() {
   local workflow=$1
   shift
-  "$script_dir/ci_router_outputs.py" "$workflow" "$@" | sort
+  "$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" "$@" | sort
 }
 outputs() { outputs_of "$repo/.github/workflows/ci.yaml" "$@"; }
 # value <outputs text> <name>: one output's value.
@@ -119,12 +135,20 @@ for label in lane:no_such_output lane:typecheck lane:envoy-go "lane:${held[0]}x"
   check "$label leaves every output as an unlabelled pull request has it" "$(is "$got" "$baseline")"
 done
 
-# broken_copy <dir> <output> <text> <replacement>: a copy of this repository's ci.yaml and filters
-# under <dir> with <text> changed to <replacement> on that output's line alone (neither holds a
-# `|`, which the sed below delimits with).
+echo "case: a verdict for a filter the computed filters do not hold is refused, naming their file"
+set +e
+err=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --filters "$filters" \
+  --event pull_request --verdict no_such_filter=false 2>&1 >/dev/null)
+status=$?
+set -e
+check "exits 2" "$(is "$status" 2)"
+check "names the verdict and the file" "$(contains "$err" "--verdict no_such_filter=false names no filter of $filters\$")"
+
+# broken_copy <dir> <output> <text> <replacement>: a copy of this repository's ci.yaml under <dir>
+# with <text> changed to <replacement> on that output's line alone (neither holds a `|`, which the
+# sed below delimits with).
 broken_copy() {
   mkdir -p "$1/.github/workflows"
-  cp "$repo/.github/ci-filters.yaml" "$1/.github/ci-filters.yaml"
   sed -E "/^ +$2: /s|$3|$4|" "$repo/.github/workflows/ci.yaml" > "$1/.github/workflows/ci.yaml"
   cmp -s "$repo/.github/workflows/ci.yaml" "$1/.github/workflows/ci.yaml" && echo "broken_copy: $2 has no $3" >&2
   echo "$1/.github/workflows/ci.yaml"
@@ -155,7 +179,7 @@ broken=$(broken_copy "$work/whole-pr" envoy_smoke \
   "contains(toJSON(github.event.pull_request), 'lane:envoy_smoke')")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 set +e
-err=$("$script_dir/ci_router_outputs.py" "$broken" --event pull_request 2>&1 >/dev/null)
+err=$("$script_dir/ci_router_outputs.py" "$broken" --filters "$filters" --event pull_request 2>&1 >/dev/null)
 status=$?
 set -e
 check "exits 2" "$(is "$status" 2)"
@@ -164,7 +188,7 @@ check "names envoy_smoke and the read" \
 
 echo "case: an expression this reader does not model is refused, never read as false"
 mkdir -p "$work/.github/workflows"
-printf 'f: []\n' > "$work/.github/ci-filters.yaml"
+printf 'f: []\n' > "$work/filters.yaml"
 cat > "$work/.github/workflows/ci.yaml" <<'YAML'
 jobs:
   changes:
@@ -172,7 +196,7 @@ jobs:
       x: ${{ github.actor == 'someone' && 'true' || 'false' }}
 YAML
 set +e
-err=$("$script_dir/ci_router_outputs.py" "$work/.github/workflows/ci.yaml" --event pull_request 2>&1 >/dev/null)
+err=$("$script_dir/ci_router_outputs.py" "$work/.github/workflows/ci.yaml" --filters "$work/filters.yaml" --event pull_request 2>&1 >/dev/null)
 status=$?
 set -e
 check "exits 2" "$(is "$status" 2)"
