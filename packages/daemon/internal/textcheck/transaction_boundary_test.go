@@ -159,6 +159,7 @@ func (g *boundaryGuard) run(overlay map[string][]byte) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("UNKNOWN: %w", err)
 	}
+	named := namedBodies(loaded)
 	calls := map[allowanceKey][]string{}
 	var lines []string
 	for _, pkg := range loaded {
@@ -188,7 +189,7 @@ func (g *boundaryGuard) run(overlay map[string][]byte) ([]string, error) {
 					return true
 				})
 				key := allowanceKey{pkg: within, function: function, rule: "R4"}
-				for _, at := range mixedContexts(pkg.TypesInfo, decl) {
+				for _, at := range mixedContexts(pkg.TypesInfo, decl, named) {
 					calls[key] = append(calls[key], fmt.Sprintf("%s:%d R4 in %s.%s", path,
 						pkg.Fset.Position(at).Line, pkg.Name, function))
 				}
@@ -239,40 +240,114 @@ func pgxTx(loaded []*packages.Package) (*types.Interface, error) {
 // own context (R4): a variable declared outside the body, a local that holds one, or any other
 // expression, such as r.Context() (bodyContexts). Such a call runs outside the commit scope, so a
 // hook it registers panics, a wake it sends comes before the commit, and a transaction it opens is
-// its own. A body is every function literal of a transaction body's type (isBody), whatever
+// its own. A body is every function literal of a transaction body's type (isBodyType), whatever
 // function it is passed to: store.Transact, store.ReadOnly, a wrapper such as serializedTx, or a
-// variable. A function literal inside a body is not walked: a hook runs once the commit is over,
-// and a literal that is itself a body is checked as one.
-func mixedContexts(info *types.Info, decl ast.Decl) []token.Pos {
+// variable; and decl itself when it declares a function the module names where a body goes
+// (namedBodies), such as store.ReadOnly(ctx, pool, "read claims", readClaims).
+func mixedContexts(info *types.Info, decl ast.Decl, named map[*types.Func]bool) []token.Pos {
 	var found []token.Pos
-	ast.Inspect(decl, func(node ast.Node) bool {
-		body, ok := node.(*ast.FuncLit)
-		if !ok || !isBody(info, body) {
-			return true
+	if function, ok := decl.(*ast.FuncDecl); ok && function.Body != nil {
+		if object, ok := info.Defs[function.Name].(*types.Func); ok && named[object] {
+			found = append(found, bodyMixes(info, function.Type, function.Body)...)
 		}
-		contexts := newBodyContexts(info, body)
-		ast.Inspect(body.Body, func(inner ast.Node) bool {
-			switch inner := inner.(type) {
-			case *ast.FuncLit:
-				return false
-			case *ast.CallExpr:
-				if len(inner.Args) > 0 && takesContextFirst(info, inner) && !contexts.admits(inner.Args[0]) {
-					found = append(found, inner.Args[0].Pos())
-				}
-			}
-			return true
-		})
+	}
+	ast.Inspect(decl, func(node ast.Node) bool {
+		if lit, ok := node.(*ast.FuncLit); ok && isBodyType(info.TypeOf(lit)) {
+			found = append(found, bodyMixes(info, lit.Type, lit.Body)...)
+		}
 		return true
 	})
 	return found
 }
 
-// isBody reports whether lit has a transaction body's type: it takes (context.Context, pgx.Tx) and
-// its last result is an error. That is the body store.TransactWith runs,
+// bodyMixes is every call of one transaction body, given by its signature and its statements,
+// whose context argument the body's bodyContexts does not admit. A function literal nested in the
+// body runs before the commit — a deferred literal, a literal called at once, a callback a
+// synchronous call runs — so its calls are checked with the body's contexts. Two are skipped: a
+// literal that is itself a body, which is checked as one, and a hook given to store.OnCommit,
+// which runs once the commit is over.
+func bodyMixes(info *types.Info, signature *ast.FuncType, body *ast.BlockStmt) []token.Pos {
+	var found []token.Pos
+	contexts := newBodyContexts(info, signature, body)
+	hooks := map[*ast.FuncLit]bool{}
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.FuncLit:
+			return !hooks[node] && !isBodyType(info.TypeOf(node))
+		case *ast.CallExpr:
+			if len(node.Args) > 0 && takesContextFirst(info, node) && !contexts.admits(node.Args[0]) {
+				found = append(found, node.Args[0].Pos())
+			}
+			if calledFunction(info, node) == onCommit {
+				for _, arg := range node.Args {
+					if lit, ok := ast.Unparen(arg).(*ast.FuncLit); ok {
+						hooks[lit] = true
+					}
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// onCommit is store.OnCommit's full name: the hook given to it runs once the commit is over.
+const onCommit = modulePath + "/internal/store.OnCommit"
+
+// calledFunction is the full name of the function or method call names, "" for a call of a
+// function value.
+func calledFunction(info *types.Info, call *ast.CallExpr) string {
+	var name *ast.Ident
+	switch fun := ast.Unparen(call.Fun).(type) {
+	case *ast.Ident:
+		name = fun
+	case *ast.SelectorExpr:
+		name = fun.Sel
+	default:
+		return ""
+	}
+	if function, ok := info.Uses[name].(*types.Func); ok {
+		return function.FullName()
+	}
+	return ""
+}
+
+// namedBodies is every function or method of a transaction body's type that the loaded code names
+// as a value rather than calling it: a named function given where a body goes, as
+// store.ReadOnly(ctx, pool, "read claims", readClaims) gives readClaims.
+func namedBodies(loaded []*packages.Package) map[*types.Func]bool {
+	named := map[*types.Func]bool{}
+	for _, pkg := range loaded {
+		for _, file := range pkg.Syntax {
+			called := map[*ast.Ident]bool{}
+			ast.Inspect(file, func(node ast.Node) bool {
+				switch node := node.(type) {
+				case *ast.CallExpr:
+					switch fun := ast.Unparen(node.Fun).(type) {
+					case *ast.Ident:
+						called[fun] = true
+					case *ast.SelectorExpr:
+						called[fun.Sel] = true
+					}
+				case *ast.Ident:
+					function, ok := pkg.TypesInfo.Uses[node].(*types.Func)
+					if ok && !called[node] && isBodyType(function.Type()) {
+						named[function] = true
+					}
+				}
+				return true
+			})
+		}
+	}
+	return named
+}
+
+// isBodyType reports whether t is a transaction body's type: it takes (context.Context, pgx.Tx)
+// and its last result is an error. That is the body store.TransactWith runs,
 // func(context.Context, pgx.Tx) error, and the one store.ReadOnly runs,
 // func(context.Context, pgx.Tx) (T, error).
-func isBody(info *types.Info, lit *ast.FuncLit) bool {
-	signature, ok := info.TypeOf(lit).(*types.Signature)
+func isBodyType(t types.Type) bool {
+	signature, ok := t.(*types.Signature)
 	if !ok || signature.Params().Len() != 2 || signature.Results().Len() == 0 {
 		return false
 	}
@@ -302,9 +377,11 @@ var contextDerivations = []string{modulePath + "/internal/intake.OpenSettlers"}
 // admitted context. A local whose value is anything else — another context, r.Context(), a
 // derivation of either — is not admitted, wherever it is declared.
 type bodyContexts struct {
-	info  *types.Info
-	lit   *ast.FuncLit
-	param *types.Var
+	info *types.Info
+	// from and to bound the body, its signature included: a variable declared between them is the
+	// body's own.
+	from, to token.Pos
+	param    *types.Var
 	// values is each value the body gives a variable, in its body or in a function literal inside
 	// it, nil for a value the guard cannot read: a result of a call other than the first, or a
 	// declaration with no value.
@@ -312,14 +389,14 @@ type bodyContexts struct {
 	decided map[*types.Var]bool
 }
 
-func newBodyContexts(info *types.Info, lit *ast.FuncLit) *bodyContexts {
-	b := &bodyContexts{info: info, lit: lit, values: map[*types.Var][]ast.Expr{}, decided: map[*types.Var]bool{}}
-	if params := lit.Type.Params.List; len(params) > 0 && len(params[0].Names) > 0 {
+func newBodyContexts(info *types.Info, signature *ast.FuncType, body *ast.BlockStmt) *bodyContexts {
+	b := &bodyContexts{info: info, from: signature.Pos(), to: body.End(), values: map[*types.Var][]ast.Expr{}, decided: map[*types.Var]bool{}}
+	if params := signature.Params.List; len(params) > 0 && len(params[0].Names) > 0 {
 		if param, ok := info.Defs[params[0].Names[0]].(*types.Var); ok && param.Type().String() == "context.Context" {
 			b.param = param
 		}
 	}
-	ast.Inspect(lit.Body, func(node ast.Node) bool {
+	ast.Inspect(body, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.AssignStmt:
 			b.record(node.Lhs, node.Rhs)
@@ -369,7 +446,7 @@ func (b *bodyContexts) admits(expr ast.Expr) bool {
 		return b.admits(expr.X)
 	case *ast.Ident:
 		variable, ok := b.info.Uses[expr].(*types.Var)
-		if !ok || (variable != b.param && (variable.Pos() < b.lit.Pos() || variable.Pos() >= b.lit.End())) {
+		if !ok || (variable != b.param && (variable.Pos() < b.from || variable.Pos() >= b.to)) {
 			return false
 		}
 		return b.admitsVariable(variable)
@@ -562,8 +639,9 @@ func plantedDotOwner(ctx context.Context, raw *pgxpool.Pool) error {
 `
 
 // plantedContextTransaction is a third overlay file of package daemon, whose transaction bodies,
-// one passed straight to store.Transact, one a wrapper runs and one store.ReadOnly runs, pass
-// contexts from outside the body to calls inside it (R4), beside the forms R4 admits.
+// one passed straight to store.Transact, one a wrapper runs, one store.ReadOnly runs and one a
+// named function given where a body goes, pass contexts from outside the body to calls inside it
+// and inside literals nested in it (R4), beside the forms R4 admits.
 const plantedContextTransaction = `package daemon
 
 import (
@@ -614,17 +692,41 @@ func plantedMixed(ctx context.Context, pool *store.Pool, r *http.Request) error 
 		if err := settle(settled, tx); err != nil { // the same derived context, passed on
 			return err
 		}
-		defer func() { _ = listing.Err() }() // a deferred literal, which is not the body's statement
+		if err := func() error {
+			_, err := tx.Exec(listing, "select 1") // L21 reported: R4, a literal called at once, which runs before the commit
+			return err
+		}(); err != nil {
+			return err
+		}
+		defer func() { plantedNote(listing) }() // L22 reported: R4, a deferred literal, which runs before the commit
+		func() { plantedNote(ctx) }() // a nested literal passing the body's own context
 		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			_, err := tx.Exec(ctx, "select 1") // a nested body's own context
 			return err
 		}); err != nil {
 			return err
 		}
-		store.OnCommit(ctx, func() { _ = listing.Err() }) // a hook, which runs once the commit is over
-		_, err := tx.Exec(ctx, "select 1")                // the body's own context
+		store.OnCommit(ctx, func() { plantedNote(listing) }) // a hook, which runs once the commit is over
+		_, err := tx.Exec(ctx, "select 1") // the body's own context
 		return err
 	})
+}
+
+// plantedNote takes a context, as a call inside a body does.
+func plantedNote(ctx context.Context) { _ = ctx.Err() }
+
+// plantedOther is a context from outside every body.
+var plantedOther = context.Background()
+
+func plantedNamedBody(ctx context.Context, tx pgx.Tx) (int, error) {
+	var n int
+	err := tx.QueryRow(plantedOther, "select 1").Scan(&n) // L23 reported: R4, a named function given where a body goes
+	return n, err
+}
+
+func plantedNamedOwner(ctx context.Context, pool *store.Pool) error {
+	_, err := store.ReadOnly(ctx, pool, "read the planted named body", plantedNamedBody)
+	return err
 }
 `
 
@@ -643,7 +745,12 @@ var plantedFiles = []plantedFile{
 		return "plantedOwner"
 	}},
 	{"planted_dot_transaction.go", plantedDotTransaction, func(string) string { return "plantedDotOwner" }},
-	{"planted_context_transaction.go", plantedContextTransaction, func(string) string { return "plantedMixed" }},
+	{"planted_context_transaction.go", plantedContextTransaction, func(mark string) string {
+		if mark == "L23" {
+			return "plantedNamedBody"
+		}
+		return "plantedMixed"
+	}},
 }
 
 // plantedMark is a planted line's mark: its name and the rule it must be reported under.
@@ -651,13 +758,14 @@ var plantedMark = regexp.MustCompile(`// (L[0-9]+) reported: (R[0-9])`)
 
 // TestNoTransactionOrStatementBypassesTheBoundary runs the guard over the module with the planted
 // files added. The production code must add no line; the planted files must add exactly their
-// twenty marked lines. A real call outside the boundary fails by being listed, a guard blind to a
-// receiver kind, a method, a method value, a method expression, a context of another type,
+// twenty-three marked lines. A real call outside the boundary fails by being listed, a guard blind
+// to a receiver kind, a method, a method value, a method expression, a context of another type,
 // database/sql, a dot import, a context from outside a transaction's body, a local that holds one,
-// a body a wrapper runs, a body that returns a value, or a package fails by a missing marked line,
-// and a guard that reaches into the boundary fails by listing the TransactWith body, the
-// savepoint, the statement in a transaction, a context the body derived, a nested body's own
-// context, a deferred literal or a hook.
+// a body a wrapper runs, a body that returns a value, a literal nested in a body, a named function
+// given where a body goes, or a package fails by a missing marked line, and a guard that reaches
+// into the boundary fails by listing the TransactWith body, the savepoint, the statement in a
+// transaction, a context the body derived, a nested body's own context, a nested literal that
+// passes the body's own context or a hook.
 func TestNoTransactionOrStatementBypassesTheBoundary(t *testing.T) {
 	dir := moduleDir(t)
 	overlay := map[string][]byte{}
@@ -676,8 +784,8 @@ func TestNoTransactionOrStatementBypassesTheBoundary(t *testing.T) {
 			want = append(want, "internal/daemon/"+file.name+":"+strconv.Itoa(number+1)+" "+mark[2]+" in daemon."+file.function(mark[1]))
 		}
 	}
-	if len(want) != 20 {
-		t.Fatalf("the planted files mark %d lines, want 20", len(want))
+	if len(want) != 23 {
+		t.Fatalf("the planted files mark %d lines, want 23", len(want))
 	}
 	slices.Sort(want)
 
