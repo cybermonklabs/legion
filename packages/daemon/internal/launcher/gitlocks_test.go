@@ -881,10 +881,8 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 	// gitLockRemove answers, the one place a pass can be held (the second row of
 	// TestTheFirstPassRunsBeforeTheBundleRestore). Run must not return while that pass is held,
 	// and when it returns the pass has taken its lock: the ticker that ran it has returned
-	// (gitLockSweep.serve), so no pass is left to run after Run. The row once ended Run between
-	// passes and then watched half a second for a pass, which a Run that does not wait for its
-	// sweep passed twenty times of twenty: the ticker ends with the context at once unless a pass
-	// is under way.
+	// (gitLockSweep.serve), so no pass is left to run after Run. Ending Run between passes cannot
+	// test this wait: the ticker ends with the context unless a pass is under way.
 	t.Run("Run waits for the ticker", func(t *testing.T) {
 		c := newLockClone(t)
 		shortGitLockClock(t, 20*time.Millisecond, time.Millisecond)

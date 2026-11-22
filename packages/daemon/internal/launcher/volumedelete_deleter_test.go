@@ -561,15 +561,11 @@ const ownHoldEntries = 2000
 // the root: a process standing in a root is no hold on it (usedPaths.Holds,
 // TestAProcessStandingInARootIsNoHoldOnIt).
 //
-// The child's fixture, its 2000 entries among it, is on a memory filesystem of the child's own
-// mount namespace, over the empty temporary directory the case gives it
-// (TestASweepsOwnDeleterIsNoHoldHelper). The case's deadline is a hang guard over the child, and
-// on the machine's disk the child's time was the disk's: building the 2000 entries and removing
-// them again cost seconds to minutes, as busy as the disk was, and the control whose sweep deletes
-// none left all 2000 to its cleanup, after its sweep. On 2026-11-21, kernel 7.0.0-1017-gcp, under
-// go1.27.3, that control's child was killed by the three-minute guard after a sweep that had
-// returned in 6.38 s, and a child run alone took 25 s to build its entries and 24 s to remove
-// them, around a sweep of 0.19 s.
+// Build and remove the child's fixture on a memory filesystem in its own mount namespace
+// (TestASweepsOwnDeleterIsNoHoldHelper). The separate-holder control leaves all 2000 entries to
+// cleanup, so putting them on the machine's disk would make fixture I/O, not the sweep, consume
+// the child's three-minute hang guard. refreshMidway forces the used-path refresh independently
+// of the filesystem's speed.
 func TestASweepsOwnDeleterIsNoHoldOnTheRootsItDeletesFrom(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()

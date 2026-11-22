@@ -886,9 +886,7 @@ func TestTheLauncherHelloSaysItResumesBySession(t *testing.T) {
 // from a clock of the case's. The stop returns once the tester's generation has been waited for,
 // so its last beat is the one read then. The reviewer's beats must then go on for half a second
 // of their own timestamps, which the case waits for under its hang guard, and the tester's must
-// not move in that time. A fixed half-second sleep once stood in for the reviewer's beats: on a
-// loaded machine the reviewer's beat did not move inside it, and the case failed, in a whole run of
-// the package at a load average of about 800 on 2026-11-21, while it passed five of five alone.
+// not move in that time. A fixed sleep cannot establish that the reviewer's child ran.
 func TestAStopOfOneRolesGenerationLeavesTheOtherRoleRunning(t *testing.T) {
 	requireRoleNamespaces(t)
 	f := newFleet(t, 10*time.Second, "tester", "reviewer")

@@ -40,10 +40,7 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 	}
 	// Each held child's exit depends on its own child, as the install's does (its --help run is
 	// bash running python): a drain that ends that child makes the shell exit 9, not 5. The child
-	// waits for the case to release it, after the drain, so it runs when the drain begins and
-	// until the drain has returned, however loaded the machine is: it once lived by `sleep 2`, and
-	// a machine slower than two seconds between the setup and the drain let it end first, so the
-	// case passed without the drain ever meeting it.
+	// waits for release after the drain, so the drain must encounter it even on a loaded machine.
 	const waiter = `sh -c 'while [ ! -e "$1" ]; do sleep 0.01; done' sh "$1"`
 	for _, tc := range []struct{ name, script string }{
 		// SIGTERM at its default: a SIGTERM the drain sends every process reaches it.
@@ -64,10 +61,7 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The drain begins once the held child is under way, with a child of its own, as the
-			// install's --help run is: bash, and the python it runs. The wait is for that fact,
-			// under the test's hang guard: how long a loaded machine takes to start it is not what
-			// the case reads.
+			// Wait for the held child's own child before testing the drain; setup is not timed.
 			children := fmt.Sprintf("/proc/%d/task/%d/children", pid, pid)
 			testwait.Eventually(t, "the held child's own child to start", func() bool {
 				body, err := os.ReadFile(children)
@@ -94,13 +88,9 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 		m := &manager{cfg: Config{StopGrace: time.Second}, guard: guard}
 		marks := t.TempDir()
 		started, released, finished := filepath.Join(marks, "started"), filepath.Join(marks, "released"), filepath.Join(marks, "finished")
-		// The member writes its own pid, and the drain begins only once PID 1 has adopted it, so
-		// it is no descendant of the held child and only the group clause can spare it. Nothing
-		// here is timed: the member finishes once the case releases it, after the drain, and the
-		// held child exits 5 once the member has finished, or 9 once the member is gone without
-		// finishing, as it is when the drain ended it. The member once finished a second after it
-		// started and the held child read it two seconds after, so a machine slower than that to
-		// show the adoption failed the case before the drain. The context is a hang guard alone.
+		// Wait for PID 1 to adopt the member so only the group clause can spare it. The member
+		// finishes on release after the drain; the held child exits 5 when it finishes, or 9 if
+		// the drain ends the member. The context bounds a hang, not the drain's behavior.
 		ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
 		defer cancel()
 		held := exec.CommandContext(ctx, "/bin/sh", "-c", `( sh -c 'echo $$ >"$1"; while [ ! -e "$3" ]; do sleep 0.01; done; : >"$2"' sh "$1" "$2" "$3" & )
@@ -279,11 +269,7 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 				t.Fatal(err)
 			}
 			var orphan int
-			// The pass under test needs both exits in place, and nothing here is timed: the wait
-			// is for the facts, under the test's hang guard (testwait.Eventually). It once allowed
-			// five seconds, which a loaded machine spent on starting the shell and its sleep: the
-			// case failed in this setup, before the pass it is about, on 2026-11-21 in a whole run
-			// of the package at a load average of about 800, and passed five of five alone.
+			// Both exits must be in place before the pass; setup is not timed.
 			testwait.Eventually(t, "the held child and its orphan to exit", func() bool {
 				body, err := os.ReadFile(orphanFile)
 				if err != nil {
