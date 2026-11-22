@@ -109,12 +109,13 @@
 # LEGION_E2E_AGENT_SECRETS_ACCOUNT
 # (<namespace>/<name> of a ServiceAccount of the proof's own, which the broker's
 # BROKER_SERVICE_LOGINS lets log in as legion-daemon and no pod runs as: each account holds one
-# launcher credential, so logging in as a running daemon's account would take that daemon's). The
-# run logs in as the daemon does, with that account's token, which the operator context mints with
-# `kubectl create token` for the broker's audience, an hour long, and mints again every half hour
-# while the run lasts; no person approves it. The run asks nothing of a person: secrets-approval-ask
-# cancels the one request it makes rather than waiting for an approval. See
-# scripts/e2e/README.md's Stage 4a section.
+# launcher credential, so logging in as a running daemon's account would take that daemon's).
+# LEGION_E2E_AGENT_SECRETS_AUDIENCE, the token audience that broker verifies, is required with
+# either of the URL or the account. The run logs in as the daemon does, with that account's token,
+# which the operator context mints with `kubectl create token` for that audience, an hour long, and
+# mints again every half hour while the run lasts; no person approves it. The run asks nothing of a
+# person: secrets-approval-ask cancels the one request it makes rather than waiting for an
+# approval. See scripts/e2e/README.md's Stage 4a section.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -145,6 +146,7 @@ storage_class=${LEGION_E2E_STORAGE_CLASS:-}
 agent_secrets_url=${LEGION_E2E_AGENT_SECRETS_URL:-}
 agent_secrets_auto_sha=${LEGION_E2E_AGENT_SECRETS_AUTO_SHA256:-}
 agent_secrets_account=${LEGION_E2E_AGENT_SECRETS_ACCOUNT:-}
+agent_secrets_audience=${LEGION_E2E_AGENT_SECRETS_AUDIENCE:-}
 from=${STAGE4A_FROM:-}
 evidence=${STAGE4A_EVIDENCE_DIR:-$(mktemp -d /tmp/legion-e2e4a-evidence.XXXXXXXX)}
 work=$(mktemp -d /tmp/legion-e2e4a.XXXXXXXX)
@@ -218,6 +220,10 @@ gke-autopilot | eks) ;;
 esac
 case "$image" in *@sha256:*) ;; *) fail "LEGION_E2E_IMAGE must be the worker image pinned by digest (…@sha256:…), not '$image'" ;; esac
 [ -n "$storage_class" ] || fail "LEGION_E2E_STORAGE_CLASS is unset: name the issue volumes' StorageClass (the cluster has no default to fall back on)"
+if [ -n "$agent_secrets_url" ] || [ -n "$agent_secrets_account" ]; then
+  [ -n "$agent_secrets_audience" ] ||
+    fail "LEGION_E2E_AGENT_SECRETS_AUDIENCE is unset: name the token audience the broker verifies (its BROKER_K8S_OIDC_AUDIENCE), which the run's login token and every enrolled pod's token carry"
+fi
 pod_service_account=$(bash "$root/scripts/e2e/lib/pod-service-account.sh") ||
   fail "LEGION_E2E_POD_SERVICE_ACCOUNT is not a ServiceAccount name the operator route's pod.yml can carry (the reason is above)"
 case "$model_route" in
@@ -304,7 +310,7 @@ built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root") || fail "lib/built-f
 while IFS= read -r line; do note "$line"; done <<<"$built"
 [ -z "$from" ] || note "STAGE4A_FROM=$from: a development run, never the proof"
 if [ -n "$agent_secrets_url" ]; then
-  note "agent-secrets: $agent_secrets_url"
+  note "agent-secrets: $agent_secrets_url, token audience $agent_secrets_audience"
 else
   note "agent-secrets: none (the secrets-* checks report SKIPPED-BLOCKED)"
 fi
@@ -327,7 +333,7 @@ if [ -n "$agent_secrets_account" ]; then
   mint_agent_secrets_token() {
     (
       umask 077
-      timeout --foreground 300 kubectl --context "$operator" -n "$account_namespace" create token "$account_name" --audience agent-secrets --duration 1h >"$agent_secrets_token_file.next"
+      timeout --foreground 300 kubectl --context "$operator" -n "$account_namespace" create token "$account_name" --audience "$agent_secrets_audience" --duration 1h >"$agent_secrets_token_file.next"
     ) && mv -f "$agent_secrets_token_file.next" "$agent_secrets_token_file"
   }
   mint_agent_secrets_token || fail "the operator could not mint a token for $agent_secrets_account"
@@ -521,6 +527,7 @@ env \
   LEGION_E2E_OPERATOR_POD="$work/pod.yml" \
   LEGION_E2E_OPERATOR_CONFIGMAP="$route_configmap" \
   LEGION_E2E_AGENT_SECRETS_URL="$agent_secrets_url" \
+  LEGION_E2E_AGENT_SECRETS_AUDIENCE="$agent_secrets_audience" \
   LEGION_E2E_AGENT_SECRETS_AUTO_SHA256="$agent_secrets_auto_sha" \
   LEGION_E2E_AGENT_SECRETS_BIN="$work/agent-secrets" \
   LEGION_E2E_AGENT_SECRETS_TOKEN_FILE="$agent_secrets_token_file" \
