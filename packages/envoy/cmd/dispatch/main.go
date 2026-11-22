@@ -2021,8 +2021,10 @@ func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
 // `select exists(select 1 from public.<table>)`, which reads no column and stops at the first
 // visible row; it may scan dead rows before that one, which searchFillTableStatementTimeout bounds.
 // It reads in a read-only transaction of its own that first sets the bounds above, local to that
-// transaction. The read takes ACCESS SHARE on the table for its statement: row writes go on beside
-// it, but a TRUNCATE or another statement that wants ACCESS EXCLUSIVE waits behind it.
+// transaction. The read takes ACCESS SHARE on the table and holds it until that transaction rolls
+// back (the deferred Rollback) or its connection ends, normally milliseconds after the read; no
+// statement timeout bounds how long it holds it. Row writes go on beside it, but a TRUNCATE or
+// another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
 func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, table string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, searchFillTableReadTimeout)
 	defer cancel()
