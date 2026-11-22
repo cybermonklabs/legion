@@ -39,38 +39,50 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 		t.Fatal("the drain helper is not PID 1")
 	}
 	// Each held child's exit depends on its own child, as the install's does (its --help run is
-	// bash running python): a drain that ends the sleep makes the shell exit 9, not 5.
+	// bash running python): a drain that ends that child makes the shell exit 9, not 5. The child
+	// waits for the case to release it, after the drain, so it runs when the drain begins and
+	// until the drain has returned, however loaded the machine is: it once lived by `sleep 2`, and
+	// a machine slower than two seconds between the setup and the drain let it end first, so the
+	// case passed without the drain ever meeting it.
+	const waiter = `sh -c 'while [ ! -e "$1" ]; do sleep 0.01; done' sh "$1"`
 	for _, tc := range []struct{ name, script string }{
 		// SIGTERM at its default: a SIGTERM the drain sends every process reaches it.
-		{"a held child", "sleep 2 && exit 5; exit 9"},
-		// SIGTERM ignored, by its sleep too, which the guard does not hold: a drain that counts the
-		// sleep as left kills every process once the stop grace is over.
-		{"a held child that ignores SIGTERM", "trap '' TERM; sleep 2 && exit 5; exit 9"},
+		{"a held child", waiter + " && exit 5; exit 9"},
+		// SIGTERM ignored, by its child too, which the guard does not hold: a drain that counts
+		// the child as left kills every process once the stop grace is over.
+		{"a held child that ignores SIGTERM", "trap '' TERM; " + waiter + " && exit 5; exit 9"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			guard := &pidGuard{}
 			m := &manager{cfg: Config{StopGrace: time.Second}, guard: guard}
-			held := exec.Command("/bin/sh", "-c", tc.script)
+			released := filepath.Join(t.TempDir(), "released")
+			// The context is a hang guard alone.
+			ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
+			defer cancel()
+			held := exec.CommandContext(ctx, "/bin/sh", "-c", tc.script, "sh", released)
 			pid, err := guard.start(held)
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The drain begins once the held child is under way, with a child of its own (its sleep),
-			// as the install's --help run is: bash, and the python it runs. The wait is for that
-			// fact, under the test's hang guard: how long a loaded machine takes to start it is not
-			// what the case reads.
+			// The drain begins once the held child is under way, with a child of its own, as the
+			// install's --help run is: bash, and the python it runs. The wait is for that fact,
+			// under the test's hang guard: how long a loaded machine takes to start it is not what
+			// the case reads.
 			children := fmt.Sprintf("/proc/%d/task/%d/children", pid, pid)
-			testwait.Eventually(t, "the held child's sleep to start", func() bool {
+			testwait.Eventually(t, "the held child's own child to start", func() bool {
 				body, err := os.ReadFile(children)
 				return err == nil && strings.TrimSpace(string(body)) != ""
 			})
 			began := time.Now()
 			m.cleanExitedGeneration()
 			t.Logf("the drain returned after %s", time.Since(began).Round(time.Millisecond))
+			if err := os.WriteFile(released, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
 			err = held.Wait()
 			guard.done(pid)
 			if held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
-				t.Errorf("the held child, still running when the drain began, reads %v (%v), want its own exit 5: the drain ended it or its sleep", held.ProcessState, err)
+				t.Errorf("the held child, still running when the drain began, reads %v (%v), want its own exit 5: the drain ended it or its child", held.ProcessState, err)
 			}
 		})
 	}
@@ -163,18 +175,26 @@ exit 5`, "sh", started, finished, released)
 	// While a child is held the drain signals process by process rather than with kill(-1), and it
 	// still ends what the generation left: a setsid'd process that ignores SIGTERM outlives the
 	// drain's SIGTERM, is killed at the end of the grace and is reaped, while the held child beside
-	// it runs to its own exit.
+	// it runs to its own exit. The held child exits once the case releases it, after the drain, so
+	// it runs beside the drain however loaded the machine is (it once lived by `sleep 2`, which a
+	// slow machine let end before the drain began). The left process outlives any wait of the
+	// case, so the drain returns only by killing it: the drain's return and the left process's
+	// reap are waited for under the test's hang guard, where the case once allowed the drain ten
+	// seconds past its grace.
 	t.Run("what the generation left is ended around a held child", func(t *testing.T) {
 		grace := 500 * time.Millisecond
 		guard := &pidGuard{}
 		m := &manager{cfg: Config{StopGrace: grace}, guard: guard}
-		held := exec.Command("/bin/sh", "-c", "sleep 2; exit 5")
+		released := filepath.Join(t.TempDir(), "released")
+		ctx, cancel := context.WithTimeout(context.Background(), testwait.Bounded(t, time.Minute, time.Second))
+		defer cancel()
+		held := exec.CommandContext(ctx, "/bin/sh", "-c", `while [ ! -e "$1" ]; do sleep 0.01; done; exit 5`, "sh", released)
 		pid, err := guard.start(held)
 		if err != nil {
 			t.Fatal(err)
 		}
 		ignoring := filepath.Join(t.TempDir(), "ignoring")
-		left := exec.Command("/usr/bin/setsid", "/bin/sh", "-c", `trap '' TERM; : >"$1"; exec sleep 30`, "sh", ignoring)
+		left := exec.Command("/usr/bin/setsid", "/bin/sh", "-c", `trap '' TERM; : >"$1"; exec sleep 3600`, "sh", ignoring)
 		if err := left.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -182,17 +202,30 @@ exit 5`, "sh", started, finished, released)
 			_, err := os.Stat(ignoring)
 			return err == nil
 		})
+		drained := make(chan time.Duration, 1)
 		began := time.Now()
-		m.cleanExitedGeneration()
-		took := time.Since(began)
-		t.Logf("the drain returned after %s", took.Round(time.Millisecond))
-		// The left process sleeps 30s, so a drain that never signals it waits for that and fails
-		// here too.
-		if took < grace || took > grace+10*time.Second {
-			t.Errorf("the drain returned after %s, want past its %s grace (the process it left ignores SIGTERM) and well before that process's 30s sleep ends: the drain did not kill it", took, grace)
+		go func() {
+			m.cleanExitedGeneration()
+			drained <- time.Since(began)
+		}()
+		var took time.Duration
+		select {
+		case took = <-drained:
+		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+			t.Fatal("the drain had not returned under the test's hang guard: it did not kill the process the generation left, which ignores SIGTERM and outlives the guard")
 		}
+		t.Logf("the drain returned after %s", took.Round(time.Millisecond))
+		if took < grace {
+			t.Errorf("the drain returned after %s, want past its %s grace: the process it left ignores SIGTERM", took, grace)
+		}
+		testwait.Eventually(t, "the process the generation left to be ended and reaped", func() bool {
+			return errors.Is(syscall.Kill(left.Process.Pid, 0), syscall.ESRCH)
+		})
 		if err := left.Wait(); !reapedByAnother(err) {
 			t.Errorf("the process the generation left answered its own wait with %v, want ECHILD or ESRCH: the drain did not end and reap it", err)
+		}
+		if err := os.WriteFile(released, nil, 0o600); err != nil {
+			t.Fatal(err)
 		}
 		err = held.Wait()
 		guard.done(pid)
