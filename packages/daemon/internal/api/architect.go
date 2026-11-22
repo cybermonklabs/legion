@@ -1801,12 +1801,14 @@ func (s *server) writeAtRead(ctx context.Context, read dispatch.Issue, write fun
 // Two limits stand at this undo, each documented and neither observed. Each needs a sign_off's or
 // a close_root's Dispatch write that its fact then refuses, so that this write back undoes it:
 //
-//   - sign_off: while Dispatch showed the ancestor retro, the pending-basis seed of another
-//     project's daemon read it with the person's approval of the version present, and ended that
-//     project's root's pending registration on the ancestor (workflow's pendingBasisRead; that
-//     daemon reads only Dispatch's status of an issue of this project). Its root's architect gets a
-//     basis-ended notice naming the ancestor retro, and registers again once the ancestor is open,
-//     which the write back makes it.
+//   - sign_off: while Dispatch showed the ancestor retro, a root's pending registration on the
+//     ancestor may end on either of two paths. Another project's pending-basis seed reads the
+//     ancestor retro with the person's approval of the version present (workflow's
+//     pendingBasisRead; that daemon reads only Dispatch's status of an issue of this project). Or,
+//     once this daemon's own retro event has reached the shared mirror, a person's approval of the
+//     ancestor's document ends the wait as the ancestor having left R1's first condition
+//     (workflow's ancestorLeftInStore). The root's architect gets a basis-ended notice naming the
+//     ancestor, and registers again once the ancestor is open, which the write back makes it.
 //   - close_root: Dispatch's done withdrew the ancestor's open approval requests, and that
 //     withdrawal ended every root's pending registration on them (workflow's
 //     endPendingOnRequest), here and in other projects. Each root's architect gets a basis-ended
