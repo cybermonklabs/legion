@@ -7,11 +7,16 @@ body: |-
   the write while a child of another project is open under the issue (any status but `done` and
   `icebox`, as `record.ChildOpen` reads it), also a child filed after the last controller tick.
   The daemon answers that refusal `409 SIGNOFF_CHILD_OPEN`, naming each such child with its
-  project and status, and records nothing. The write is made at the sequence of the route's own
-  read of the issue (`expected_sequence`): where a person moved the issue since, nothing is
-  written over the move, nothing is recorded, and the route answers `409 ISSUE_CHANGED` naming the
-  status Dispatch shows; an event that kept the status, a message, only has the route read again
-  and write at the new sequence. Each route first judges the act read-only as the
+  project and status, and records nothing. Before it writes, the route compares the status
+  Dispatch shows with what its record has taken: a status past the newest event the record
+  applied that is neither the status that event showed nor the one the daemon holds the issue at
+  is a person's move the consumer has not applied yet, such as a close or a park, and the route
+  answers `409 ISSUE_CHANGED` naming it and writes nothing over it. The write is made at the
+  sequence of the route's own read of the issue (`expected_sequence`): where a person moved the
+  issue since, nothing is written over the move, nothing is recorded, and the route answers
+  `409 ISSUE_CHANGED` naming the status Dispatch shows; an event that kept the status, a message,
+  only has the route read again and write at the new sequence. Each route first judges the act
+  read-only as the
   workflow records the issue (`workflow.Engine.SignOffRefusal`, `CloseRootRefusal`), so a refusal
   the workflow makes writes nothing in Dispatch; a fact that refuses or fails after the write
   writes back the status Dispatch showed before it, and records that write so the event of the
@@ -24,8 +29,12 @@ body: |-
   is made, so two of them of one issue run one after the other; each outbox status row takes it
   around its reads and its write, and finishes without writing where Dispatch shows `retro` and
   the record holds the issue accepted; and the status repair leaves an issue whose acceptance is
-  under way, naming it in its run line's `accepting` list. A caller that goes away does
-  not stop the write back. The reason of a `close_root` is posted by the close's
+  under way, naming it in its run line's `accepting` list. From its Dispatch write on, the act runs
+  to its end whether or not its caller is still there: a caller that goes away does not stop its
+  fact or its write back. A Dispatch refusal of the write that names no code, such as a proxy's
+  5xx, answers `502 DISPATCH_FAILED`. While Dispatch cannot be reached, `sign_off` and
+  `close_root` answer a coded `502` (`DISPATCH_FAILED`) and record nothing; the plugin does not
+  retry a coded 502, so the architect calls again. The reason of a `close_root` is posted by the close's
   status row after the status, which Dispatch takes on a closed issue; where the event of the
   route's own `done` write reaches the record before the close's fact, the fact posts the reason
   and is taken. The daemon's Dispatch client gains `SetAcceptanceStatus`, which needs a Dispatch

@@ -6,10 +6,23 @@ body: |-
   open approval request, so the person's approval opens it at the next tick, and a gate seed for a
   step that stands open on its approval, so a changes request on that version reaches the root's
   architect as `basis-changes-requested` at the next tick and the step stays open. The boot queues
-  its pending-basis seeds through the same pass (`queueBasisSeeds`), as before. A daemon queues no
-  notice keyed by an issue of another project (`resting-root`, `basis-changes-requested`), even
-  where its record shares that issue's row with the other project's daemon: that project's daemon
-  runs the issue's tree.
+  its pending-basis seeds through the same pass (`queueBasisSeeds`), as before. The tick queues no
+  seed for a step that a seed of its kind still in the outbox reads (`record.Store.QueuedSeedSteps`),
+  as one waiting out its backoff while Dispatch is down does, and none for a root out of the
+  workflow or whose tree lingers (`record.Stopped`). The tick's read of each started parent's
+  children in every project reads no child of another project that the list shows done or in
+  icebox and the daemon's mirror already holds closed. A daemon queues no notice keyed by an issue
+  of another project (`resting-root`, `basis-changes-requested`), even where its record shares
+  that issue's row with the other project's daemon: that project's daemon runs the issue's tree.
+  On the database every project's daemon shares, a root of another project whose step rests on an
+  issue's approval holds that issue's `sign_off` and `close_root` while it is in the workflow, as a
+  root of the issue's own project does, also where it is no Dispatch child of the issue
+  (`workflow.RestingRoots` reads each resting root's record whatever its project); and a
+  registration on an ancestor whose own project's daemon records it accepted is refused
+  `BASIS_ACCEPTED` (`record.BasisAcceptance` reads the ancestor's record whatever its project).
+  The event of a `sign_off`'s own `retro` write ends no step's wait on the issue's request while
+  the daemon does not record the issue accepted; the sign-off's fact, once taken, ends those waits,
+  so a refused fact's write back leaves them standing.
 time: 2026-11-21T19:54:29.000000000Z
 custom:
     Issue: parent-across-projects
