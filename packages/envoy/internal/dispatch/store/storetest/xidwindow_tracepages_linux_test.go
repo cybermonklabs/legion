@@ -390,9 +390,12 @@ func TestAWaitOnAPHandedToALockedThreadDecidesNothing(t *testing.T) {
 // queued for a CPU till then, which its run_delay counts - thread 8 starts that P and stops it at
 // 10.2 ms, handing it on, and thread 7 starts it and runs the goroutine at 10.3 ms; then the
 // goroutine sleeps 6 ms in a system call. Over the 16.5 ms gap the thread ran 0.3 ms, queued
-// 10.1 ms and slept 6.1 ms. Taking 0.1 to 10.2 ms out of the thread's sleep as the handoff's took
-// the queue out twice and the 6 ms sleep with it: 8a194a509e read 0.3 ms made, and the window
-// passed. The gap is the code's 6.3 ms, and the window breaks D6.
+// 10.1 ms and slept 6.1 ms. The gap is the code's 6.3 ms, and the window breaks D6. This row checks
+// Made's arithmetic on that shape - no wait on the runtime erases the sleep - not 8a194a509e's rule:
+// that rule deducted only where it knew the process's Ps, which it read from the trace's
+// gomaxprocs metric, and a reading built through transition() has none, so on 8a194a509e this
+// input reads no deduction and the row stays green. Given the Ps, 8a194a509e read 10.1 ms handed
+// off and 0.3 ms made, and the window passed (the reviewer's replay, 2026-11-21).
 func TestASleepAfterARuntimeHandoffIsNotErasedByIt(t *testing.T) {
 	RequireXidGapJudgment(t)
 	base := time.Now()
