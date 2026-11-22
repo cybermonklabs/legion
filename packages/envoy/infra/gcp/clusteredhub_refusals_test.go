@@ -409,15 +409,15 @@ func clusteredSeedRows() []clusteredSeedRow {
 			a.AuthCallout = authCallout()
 			a.AuthCallout.ServiceUser = splitSeed(s, "-")
 		}},
-		{"routeAuthorization.secretName", "routeAuthorization.secretName", func(a *A, s string) {
+		{"routeAuthorization.secretName", "routeAuthorization.secretName", "routeAuthorization.secretName", func(a *A, s string) {
 			a.RouteAuthorization = routeAuthorization("env")
 			a.RouteAuthorization.SecretName = strings.ToLower(s)
 		}},
-		{"routeAuthorization.secretKey", "routeAuthorization.secretKey", func(a *A, s string) {
+		{"routeAuthorization.secretKey", "routeAuthorization.secretKey", "routeAuthorization.secretKey", func(a *A, s string) {
 			a.RouteAuthorization = routeAuthorization("env")
 			a.RouteAuthorization.SecretKey = s
 		}},
-		{"routeAuthorization.stage", "routeAuthorization.stage", func(a *A, s string) {
+		{"routeAuthorization.stage", "routeAuthorization.stage", "routeAuthorization.stage", func(a *A, s string) {
 			a.RouteAuthorization = routeAuthorization("env")
 			a.RouteAuthorization.Stage = s
 		}},
