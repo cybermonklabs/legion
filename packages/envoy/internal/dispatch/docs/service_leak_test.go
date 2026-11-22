@@ -37,6 +37,11 @@ const leakCheckMargin = 30 * time.Second
 // binaryStarted is when this test binary began, from which its -test.timeout counts.
 var binaryStarted = time.Now()
 
+// leakCheckStarted is closed when the end-of-run check begins (reportLeakedServices), so a test
+// of the check can time what it holds from the check's start rather than from its own end: the
+// database drops storetest.Run waits for come between the two.
+var leakCheckStarted = make(chan struct{})
+
 // builtService is one service New built, named by the test that built it.
 type builtService struct {
 	service weak.Pointer[Service]
@@ -123,6 +128,7 @@ func leakCheckDeadline() (time.Time, bool) {
 // that was shut down is waited for until it is collected, or until the binary's deadline is near
 // (leakCheckDeadline): one still reachable then is held by something after its shutdown.
 func reportLeakedServices() bool {
+	close(leakCheckStarted)
 	start := time.Now()
 	deadline, bounded := leakCheckDeadline()
 	var built int

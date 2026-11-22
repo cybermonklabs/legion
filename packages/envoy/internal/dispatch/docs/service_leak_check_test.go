@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -19,15 +20,22 @@ const leakCheckChildEnv = "DOCS_LEAK_CHECK_CHILD"
 // leakCheckHeld keeps the never-shut-down child's service alive until its binary exits.
 var leakCheckHeld *Service
 
+// leakCheckReported reads how long the check waited before it wrote its count.
+var leakCheckReported = regexp.MustCompile(`still alive after (\S+)\n`)
+
 // The end-of-run leak check (reportLeakedServices) fails a run for a service its test never shut
 // down, and only for that. A service whose test shut it down is waited for until the collector
 // has freed it, under the binary's own deadline, however long the loaded machine takes: under
 // the race detector on a loaded runner a shut-down service has stayed reachable past the 30 s the
 // check once gave every service, with no goroutine, finalizer or cleanup holding it, and the run
 // failed for a test that had shut its service down. Each case runs this binary again with one
-// test (TestLeakCheckChild) and reads the check's exit code and lines: one service shut down and
-// then held for longer than leakWaitBudget, which the check waits out and passes; and one service
-// never shut down, which it still fails, by the name of the test that built it.
+// test (TestLeakCheckChild) and reads the check's exit code, its lines and how long it waited:
+//   - one service shut down and then held for longer than leakWaitBudget, counted from the
+//     check's own start (leakCheckStarted) and not from the test's end, so the database drops
+//     storetest.Run waits for in between cannot shorten it: the check waits it out and passes;
+//   - one service never shut down: the check fails it by the name of the test that built it, and
+//     no later than leakWaitBudget allows, far sooner than the child's deadline, at which a
+//     shut-down service would be given up on.
 func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing.T) {
 	if os.Getenv("DISPATCH_TEST_DATABASE_URL") == "" {
 		t.Skip("DISPATCH_TEST_DATABASE_URL is unset, so the child builds no service and nothing here is tested")
@@ -36,13 +44,15 @@ func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing
 		child    string
 		wantExit int
 		want     []string
+		// reportedWithin, when set, bounds how long the check waited before it reported.
+		reportedWithin time.Duration
 	}{
 		{child: "shut-down-held", wantExit: 0, want: []string{"docs: 1 services built, 0 still alive after"}},
 		{child: "never-shut-down", wantExit: 1, want: []string{
 			"docs: 1 services built, 1 still alive after",
 			"docs: a service built by docs.TestLeakCheckChild is still alive and was never shut down",
 			"docs: a service still alive fails this run",
-		}},
+		}, reportedWithin: leakWaitBudget + 30*time.Second},
 	} {
 		t.Run(test.child, func(t *testing.T) {
 			t.Parallel()
@@ -67,8 +77,29 @@ func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing
 					t.Fatalf("the child's output lacks %q:\n%s", line, output)
 				}
 			}
+			if test.reportedWithin > 0 {
+				waited := leakCheckWaited(t, output)
+				if waited > test.reportedWithin {
+					t.Fatalf("the check reported the service never shut down after %s, want within %s:\n%s", waited, test.reportedWithin, output)
+				}
+			}
 		})
 	}
+}
+
+// leakCheckWaited is how long the child's check waited before it wrote its count, read from the
+// count's line.
+func leakCheckWaited(t *testing.T, output []byte) time.Duration {
+	t.Helper()
+	match := leakCheckReported.FindSubmatch(output)
+	if match == nil {
+		t.Fatalf("the child's output has no count line:\n%s", output)
+	}
+	waited, err := time.ParseDuration(string(match[1]))
+	if err != nil {
+		t.Fatalf("read how long the check waited from %q: %v", match[1], err)
+	}
+	return waited
 }
 
 // TestLeakCheckChild is the child of TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown:
@@ -91,14 +122,20 @@ func TestLeakCheckChild(t *testing.T) {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Fatalf("shutdown document service: %v", err)
 		}
-		// Reachable past the budget the check once gave every service, then let go.
-		go func() {
-			time.Sleep(leakWaitBudget + 5*time.Second)
-			runtime.KeepAlive(service)
-		}()
+		holdFromTheCheck(service, leakWaitBudget+5*time.Second)
 	case "never-shut-down":
 		leakCheckHeld = service
 	default:
 		t.Fatalf("unknown %s case %q", leakCheckChildEnv, child)
 	}
+}
+
+// holdFromTheCheck keeps service reachable until hold has passed since the end-of-run check began,
+// then lets it go.
+func holdFromTheCheck(service *Service, hold time.Duration) {
+	go func() {
+		<-leakCheckStarted
+		time.Sleep(hold)
+		runtime.KeepAlive(service)
+	}()
 }
