@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } fro
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
 import { collected, exitBeforeTheGuard, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 import { unresolvedNames } from "./unresolved-names"
@@ -977,3 +978,21 @@ test("keeps the session's own export when a later run of the same id has no jj t
     await rm(scratch, { recursive: true, force: true })
   }
 }, 60_000)
+
+// Claude Code kills the open-asks hook at the timeout hooks.json gives it, and the session then
+// loses its exports and its summary. The hook runs its jj wait and its Dispatch read one after the
+// other, so their bounds must end inside that timeout together: a fact of the two constants and
+// the file, which no clock of this machine's could show. The jj rows above hold only that the
+// hook gives up; this row holds when.
+test("the hook's jj and Dispatch bounds end inside the timeout hooks.json gives open-asks", async () => {
+  const config = JSON.parse(
+    await readFile(resolve(import.meta.dir, "..", "hooks", "hooks.json"), "utf8"),
+  ) as { hooks: Record<string, { hooks: { args?: string[]; timeout?: number }[] }[]> }
+  const timeouts = Object.values(config.hooks)
+    .flat()
+    .flatMap((group) => group.hooks)
+    .filter((hook) => hook.args?.at(-1) === "open-asks")
+    .map((hook) => hook.timeout)
+  expect(timeouts).toHaveLength(1)
+  expect(JJ_BASE_CHAIN_TIMEOUT_MS + OPEN_ASKS_TIMEOUT_MS).toBeLessThan((timeouts[0] ?? 0) * 1000)
+})
