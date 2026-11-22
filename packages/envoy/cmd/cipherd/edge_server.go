@@ -80,10 +80,14 @@ func edgeAccessLog(next http.Handler, log *slog.Logger) http.Handler {
 }
 
 // edgeAnswer is one edge request's response writer as its access log reads it: the status the
-// answer went out with. It passes everything else on to the server's writer, with Flush, which
-// the edge's answer recorder takes that writer for, and Unwrap for http.ResponseController. The
-// edge's routes neither take the connection nor stream a file, so it carries no Hijack and no
-// ReadFrom: the answer recorder copies a body through Write without the second.
+// answer went out with. It overrides WriteHeader alone of the writer's own methods: the edge's
+// answer recorder, always inside it (edgeHandler), sets each answer's status with WriteHeader
+// before the answer's first byte, so a Write of its own would only pass the handlers' bytes on,
+// and code scanning reads every such pass-through as one more place a caller's text is written
+// (go/reflected-xss). It adds Flush, which the answer recorder takes the writer for, and Unwrap
+// for http.ResponseController. The edge's routes neither take the connection nor stream a file,
+// so it carries no Hijack and no ReadFrom: the answer recorder copies a body through Write
+// without the second.
 type edgeAnswer struct {
 	http.ResponseWriter
 	// status is the answer's final status, 0 until one has gone out.
@@ -97,13 +101,6 @@ func (a *edgeAnswer) WriteHeader(status int) {
 		a.status = status
 	}
 	a.ResponseWriter.WriteHeader(status)
-}
-
-func (a *edgeAnswer) Write(body []byte) (int, error) {
-	if a.status == 0 {
-		a.status = http.StatusOK
-	}
-	return a.ResponseWriter.Write(body)
 }
 
 // Flush sends what has been written, its status 200 when none was set, as net/http's writer does.
