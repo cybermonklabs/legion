@@ -385,6 +385,7 @@ func TestARepairMidScanKeepsAKeyWrittenAfterTheScanPassedIt(t *testing.T) {
 	}
 	held.let()
 	wait(t, held.handled, "the scheduled read's end to be handled")
+	eventually(t, "the scheduled read's completion", func() bool { return w.Following() && len(into.completions()) == 2 })
 	if !w.Following() || len(into.completions()) != 2 {
 		t.Fatalf("after the scheduled read's end: Following %v, %d reads completed; want following, the start's and the scheduled read completed",
 			w.Following(), len(into.completions()))

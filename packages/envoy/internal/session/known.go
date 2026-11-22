@@ -659,6 +659,23 @@ func (s *KnownSessions) Opened() bool {
 	return watcher != nil && watcher.Servable() == nil
 }
 
+// ReadErr is the store's watcher's kvwatch.Watcher.ReadErr: its reads have failed, or are still
+// waiting, to settle past their barrier for the stale bound with none completing, counted from
+// when the first of them began waiting past its barrier, and the error names the store's watcher
+// and bucket (TestKnownSessionsReadErrReportsReadsThatCannotReadPastABarrier). It is nil before
+// the store opens its bucket, before the bound, and once the run or the wait ends (a completed
+// read ends a run). A read whose scan timed out, or whose stream check at completion failed after
+// its barrier and leader reads succeeded, is read again uncounted; kvwatch.Watcher.ReadErr names
+// every path that counts and the test that pins it. The store is none of the listener's
+// caches, so the self-health monitor never restarts a listener over it, and /healthz answers this
+// degraded, with the fields of a healthy answer, rather than unhealthy.
+func (s *KnownSessions) ReadErr() error {
+	if watcher := s.watch(); watcher != nil {
+		return watcher.ReadErr()
+	}
+	return nil
+}
+
 // logger is the logger WithKnownSessionLogger set, or the default one.
 func (s *KnownSessions) logger() *slog.Logger {
 	if s.log == nil {
@@ -928,36 +945,6 @@ func (s *KnownSessions) stopSweep() {
 // out of KnownSessionRetention.
 func (s *KnownSessions) cutoff() int64 {
 	return s.now().Add(-KnownSessionRetention).UnixMilli()
-}
-
-// knownCache is the store as the cache its watcher feeds (kvwatch.Cache). The hooks are its own
-// type's, not the store's methods, so nothing but the watcher calls them.
-type knownCache struct{ s *KnownSessions }
-
-// BeginRead starts a read of the bucket (kvwatch.Copy.BeginRead). Every record stays through it.
-func (c knownCache) BeginRead(read kvwatch.Read) {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	c.s.records.BeginRead(read)
-}
-
-// Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could
-// not decode, which removed the session's record.
-func (c knownCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	if err := c.s.records.Delivered(entry); err != nil {
-		c.s.logger().Warn("known session store evicted a malformed record",
-			slog.String("key", entry.Key), slog.Uint64("revision", entry.Revision), slog.String("error", err.Error()))
-	}
-}
-
-// CompleteRead removes every record the read found no evidence of, and its topics from the index:
-// the bucket no longer holds that session's record.
-func (c knownCache) CompleteRead(kvwatch.Read) {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	c.s.records.CompleteRead()
 }
 
 // sweepUntilStopped runs the one periodic pass until the store is stopped.

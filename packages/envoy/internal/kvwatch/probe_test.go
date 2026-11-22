@@ -428,6 +428,9 @@ func TestACompletionWhoseStreamChangedUnderTheScanSweepsNothing(t *testing.T) {
 	recreate(t, conn, "fresh")
 	held.let()
 	wait(t, held.handled, "the first read's end to be handled")
+	// The read ends once its consumer is past the barrier its end writes: then the check of the
+	// stream finds the new bucket and arms the re-read.
+	eventually(t, "the first read's re-read to be armed", func() bool { return len(timers.armed(rereadNow)) == 1 })
 	if len(into.completions()) != 0 || !into.has("held-by-the-copy") || !into.has("ghost") || w.Following() {
 		t.Fatalf("after the scan ended on a recreated bucket: %d reads completed, held key kept %v, ghost kept %v, Following %v; want none completed, everything kept, not following",
 			len(into.completions()), into.has("held-by-the-copy"), into.has("ghost"), w.Following())

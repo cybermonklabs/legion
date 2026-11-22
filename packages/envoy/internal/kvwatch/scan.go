@@ -120,7 +120,9 @@ func drainScan(ctx context.Context, watcher jetstream.KeyWatcher, what string, i
 			}
 			timer.Reset(idle)
 			live := JetStreamEntry(entry)
-			if !scan.count(live) {
+			// A read barrier (bus.BarrierKey) is no record of the bucket's: no scan counts or
+			// visits it.
+			if live.Key == bus.BarrierKey || !scan.count(live) {
 				continue
 			}
 			if err := visitLive(live); err != nil {

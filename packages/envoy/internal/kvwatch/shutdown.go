@@ -32,6 +32,7 @@ func (w *Watcher) Stop() {
 	w.clearScheduledArm()
 	w.clearProbeArm()
 	w.clearIdleArm()
+	w.clearSettleLocked()
 	w.generation++
 	// A stopped watcher completes no read, so a caller waiting for a copy it can serve stops
 	// waiting (WaitComplete).

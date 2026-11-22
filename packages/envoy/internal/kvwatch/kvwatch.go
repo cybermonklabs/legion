@@ -71,9 +71,26 @@ type Cache interface {
 	// revisions number from 1 again, so the cache drops its revision fence (and keeps its entries).
 	BeginRead(read Read)
 	// CompleteRead says the read delivered every record of its bucket: the cache removes the entries
-	// the read found no evidence of (Copy.CompleteRead). A read that times out or ends before its
-	// end marker never completes, and removes nothing.
+	// the read found no evidence of (Copy.CompleteRead). The watcher calls it only once the read
+	// has passed its barrier: once the scan has ended the read writes a delete marker on the
+	// reserved key bus.BarrierKey (bus.KeyValue.WriteBarrier), its own consumer delivers a record
+	// at or past that marker's stream sequence (settling), and the stream's leader answers for
+	// every key Unmarked names (finishSettle, verifyUnmarked). A read that times out or ends
+	// before its end marker never completes, and neither does one whose barrier is not written,
+	// whose consumer does not reach the barrier within the idle timeout, or whose key list or
+	// leader reads fail (settleFailed): none removes anything.
 	CompleteRead(read Read)
+	// Unmarked names the keys the read has no evidence of among the entries the cache holds,
+	// which CompleteRead would remove now, and among stored, the keys the bucket's stream holds a
+	// message on, delete markers included, which the cache may never have held (Copy.Unmarked).
+	// The watcher asks once the read's own consumer has delivered a record at or past the read's
+	// barrier (bus.KeyValue.WriteBarrier), with stored listed from the stream's leader once it has
+	// stored through the barrier (bus.KeyValue.StoredKeys). It reads each named key from the
+	// stream's leader (bus.KeyValue.HeldFromLeader) before the read completes and applies each
+	// record found through Apply, so the completed read holds every key the bucket held at the
+	// read's barrier, and CompleteRead removes only a row whose key the leader answered it holds
+	// no record of (verifyUnmarked). A cache that keeps no copy names none.
+	Unmarked(stored []string) []string
 }
 
 // Read names one read of the bucket: the watcher generation that reads it, as the cache sees it.
@@ -203,6 +220,21 @@ type Watcher struct {
 	// epoch is the current read's Read.Epoch, and bound its stale bound (boundFor).
 	epoch uint64
 	bound time.Duration
+	// unverifiedSince is when the first of an unbroken run of reads whose settlement past their
+	// barrier failed (settleFailed: the barrier was not written, the consumer did not reach it in
+	// time, or the key list or a leader read after it failed) began waiting past it (settle), on
+	// now, zero once a read completes; unverifiedErr is the last of their errors and
+	// unverifiedRuns how many there were. The run spaces its re-reads apart (readAgainUnverified),
+	// and ReadErr reports it once it outlasts the stale bound. settleSince is when the current read
+	// began waiting past its barrier, zero when none is waiting, so ReadErr reports a wait that
+	// outlasts the bound before it has failed.
+	unverifiedSince time.Time
+	unverifiedErr   error
+	unverifiedRuns  int
+	settleSince     time.Time
+	// settleDeadline is when the armed bound on the current read's wait past its barrier runs
+	// out (armSettle, settleExpired).
+	settleDeadline time.Time
 
 	// completedOnce is set by the first read that completed, and following while the copy follows
 	// the bucket: from a read's completion until the next stop (stopFollowing, watch). staleSince is
@@ -391,9 +423,13 @@ func (w *Watcher) Err() error {
 	return w.err
 }
 
-// Ready reports whether the cache is ready: the current watcher's scan ended (complete or timed
-// out) or the watcher ended on its own, or the first start failed with no watcher current. It is
-// the one-shot release of a startup's warm-up, not whether the copy can be served (Servable).
+// Ready reports whether the cache is ready. Readiness is released when the current watcher's read
+// ends one way or another: its scan timed out (endScan), or its scan completed and the wait past
+// its barrier and the leader's reads of what it did not deliver then completed the read
+// (finishSettle) or failed it (settleFailed), or the barrier found its bucket replaced
+// (settleReplaced). It is released too when the watcher ended on its own (closed), or the first
+// start failed with no watcher current. It is the one-shot release of a startup's warm-up, not
+// whether the copy can be served (Servable).
 func (w *Watcher) Ready() bool {
 	select {
 	case <-w.ready:
@@ -523,6 +559,9 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 		w.epoch++
 	}
 	w.generation++
+	// A read the new generation replaces waits for nothing now, so its wait's start goes with it:
+	// ReadErr would otherwise measure from a wait nobody is in.
+	w.clearSettleLocked()
 	generation := w.generation
 	w.watcher = sub
 	w.kv = kv
@@ -581,19 +620,24 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 
 // consume feeds the cache what the watcher of generation delivers, as the read read, and reads it
 // until nats.go closes its updates, whether or not it is still current. The first nil ends the
-// read's scan: a complete scan completes the read (completeRead). A scan that delivers nothing for
-// the idle timeout, counted from since (when its idle wait was armed) and then from its last entry,
-// ends as timed out instead (idleExpired, signalled on idle by the scan's idle wait): the read
-// completes nothing and is read again (readAgainLater), and the watcher goes on applying what it
-// delivers, its scan's nil included as nothing more than a late marker. A watcher that ends before
-// its scan's nil completes nothing either: the cache removes nothing for a read it cannot vouch
-// for. A record delivered after the read completed waits for a read of the bucket's stream when
-// the latest confirmation of it is too old to vouch for the record (applyCurrent).
+// read's scan, and a complete scan does not complete the read on its own: the read then waits past
+// a barrier (settle) until its own consumer has delivered a record at or past the barrier's
+// sequence, and completes once the stream's leader was asked about every key it has no evidence
+// of, whether the copy holds it or only the stream does (finishSettle, completeRead). Every record
+// delivered until then is applied as the read's. A scan that delivers nothing for the idle
+// timeout, counted from since (when its idle wait was armed) and then from its last entry, ends as
+// timed out instead (idleExpired, signalled on idle by the scan's idle wait): the read completes
+// nothing and is read again (readAgainLater), and the watcher goes on applying what it delivers,
+// its scan's nil included as nothing more than a late marker. A watcher that ends before its read
+// completes completes nothing either: the cache removes nothing for a read it cannot vouch for. A
+// record delivered after the read completed waits for a read of the bucket's stream when the
+// latest confirmation of it is too old to vouch for the record (applyCurrent).
 func (w *Watcher) consume(sub *subscription, generation uint64, read Read, started time.Time, idle chan struct{}, since time.Time) {
 	var scan KeyScan
 	scanning := true
 	last := since
 	updates := sub.watcher.Updates()
+	var settle *settling
 	for {
 		var delivered jetstream.KeyValueEntry
 		select {
@@ -604,39 +648,85 @@ func (w *Watcher) consume(sub *subscription, generation uint64, read Read, start
 			}
 			delivered = entry
 		case <-idle:
-			if scanning && w.idleExpired(generation, last, idle) {
+			switch {
+			case scanning && w.idleExpired(generation, last, idle):
 				scanning = false
-				w.endScan(generation, read, scan, started, true)
+				w.endScan(generation, scan, started, true)
+			case settle != nil && settle.barrier != 0 && w.settleExpired(generation, idle):
+				// A consumer left on a bucket deleted and created again never reaches a barrier
+				// written to the new one: the stream check says so, and reads the new bucket.
+				if w.confirmStream(generation) == streamReplaced {
+					w.settleReplaced(generation)
+				} else {
+					w.settleFailed(generation, read, settle.since, fmt.Errorf("%w: no record at or past the read barrier at %d within %s",
+						errSettleTimedOut, settle.barrier, w.scanIdle))
+				}
+				settle = nil
+			}
+			continue
+		case ack := <-settleAcks(settle):
+			switch {
+			case ack.err != nil:
+				w.settleFailed(generation, read, settle.since, fmt.Errorf("write the read barrier of KV bucket %s: %w", w.bucket, ack.err))
+				settle = nil
+			case settle.caughtUp(ack.sequence):
+				since := settle.since
+				settle = nil
+				w.finishSettle(generation, read, since, ack.sequence)
+			case w.confirmStream(generation) == streamReplaced:
+				// The barrier went to a bucket other than the one the read was installed on, which
+				// was deleted and created again during the scan: the check has stopped the copy
+				// following and arms the read of the new bucket, so this read waits for nothing.
+				settle = nil
+				w.settleReplaced(generation)
+			default:
+				settle.barrier = ack.sequence
+				w.armSettle(generation, idle)
 			}
 			continue
 		}
 		if delivered == nil {
-			// The watcher sends a nil once it has delivered the current value of every key. Only
-			// the current watcher's completes a read, releases readiness, or logs: a replaced
-			// one's scan says nothing about what the current watcher has delivered. A nil past
-			// the scan's end -- one that came after its idle wait ended it -- says nothing more.
+			// The watcher sends a nil once it has delivered as many records as were pending when
+			// its consumer was made (nats.go v1.53.1 jetstream/kv.go:1322-1328), which is no proof
+			// it has delivered every key: a later record it counts can stand in for one the
+			// bucket replaced before delivering it. So the nil ends the scan, and the read then
+			// waits past a barrier (settle). Only the current watcher's scan does: a replaced
+			// one's says nothing about what the current watcher has delivered. A nil past the
+			// scan's end -- one that came after its idle wait ended it -- says nothing more.
 			if scanning {
 				scanning = false
-				w.endScan(generation, read, scan, started, false)
+				w.endScan(generation, scan, started, false)
+				settle = w.beginSettle(generation, read)
 			}
 			continue
 		}
 		entry := JetStreamEntry(delivered)
 		if scanning {
-			scan.count(entry)
 			last = w.now()
 		}
-		w.applyCurrent(entry, generation, read)
+		// A read barrier (bus.BarrierKey) is no record of the bucket's: no cache sees it, and no
+		// scan counts it. It still counts toward the settle below, as every delivery does.
+		if entry.Key != bus.BarrierKey {
+			if scanning {
+				scan.count(entry)
+			}
+			w.applyCurrent(entry, generation, read)
+		}
+		if settle != nil && settle.delivered(delivered) {
+			since, barrier := settle.since, settle.barrier
+			settle = nil
+			w.finishSettle(generation, read, since, barrier)
+		}
 	}
 }
 
 // endScan ends generation's scan, which delivered scan, at its nil or, when timedOut, at its idle
-// wait. The current generation's scan disarms that wait, logs its warm-up line and releases
-// readiness. A complete scan completes the read (completeRead). A timed-out one is logged and
-// never recorded as the watcher's error: the watcher is still running, so Err(), Ping(), /healthz
-// and the self-health rebuild must not read it as dead, and the watcher reads the bucket again
-// itself (readAgainLater).
-func (w *Watcher) endScan(generation uint64, read Read, scan KeyScan, started time.Time, timedOut bool) {
+// wait. The current generation's scan disarms that wait and logs its warm-up line. A complete scan
+// leaves its read to consume, which waits past a barrier before the read completes (beginSettle).
+// A timed-out one is logged and never recorded as the watcher's error: the watcher is still
+// running, so Err(), Ping(), /healthz and the self-health rebuild must not read it as dead, and the
+// watcher reads the bucket again itself (readAgainLater) and releases readiness.
+func (w *Watcher) endScan(generation uint64, scan KeyScan, started time.Time, timedOut bool) {
 	w.mu.Lock()
 	current := generation == w.generation
 	if current {
@@ -646,11 +736,10 @@ func (w *Watcher) endScan(generation uint64, read Read, scan KeyScan, started ti
 	if current {
 		w.logWarmUp(scan, time.Since(started), timedOut)
 	}
-	if timedOut {
-		w.readAgainLater(generation, timedOutCause)
-	} else {
-		w.completeRead(generation, read)
+	if !timedOut {
+		return
 	}
+	w.readAgainLater(generation, timedOutCause)
 	if w.current(generation) {
 		w.signalReady()
 	}
@@ -669,6 +758,7 @@ func (w *Watcher) closed(sub *subscription, generation uint64) {
 	}
 	w.watcher = nil
 	w.clearIdleArm()
+	w.clearSettleLocked()
 	// Only a Rewatch repairs a watcher that ended on its own, and a scheduled read would install
 	// over the terminal error recorded here, on the handle whose connection may be the one that
 	// closed.
@@ -741,18 +831,21 @@ func (w *Watcher) clearIdleArm() {
 	w.idleTimer = nil
 }
 
-// completeRead completes generation's read, whose scan delivered every record. While the read may
-// complete, it first reads the bucket's stream, outside the locks (confirmStream): nats.go's ordered
-// consumer can move onto a bucket recreated during the scan and end the scan with records of two
-// streams, so a read is complete only of the stream it was installed on. Another stream, or none,
-// stops the copy following and completes nothing, and the new bucket is read again; a stream read
-// that fails completes nothing and is read again after rereadDelay, as a timed-out scan is. Then,
-// under applyMu, so no other hook runs between the check and the state write, it checks the read
-// may still complete (completes), has the cache sweep what the read did not find (CompleteRead),
-// and only then records that the copy follows its bucket, so expiry that waits on following
-// resumes only after the sweep. A recreate found, or a disconnect, between the sweep and the state
-// write skips the write: the read did deliver every record of the stream it read, so its sweep
-// stands, and the copy stays not following until the next read. A read that completes arms the
+// completeRead completes generation's read, whose consumer has delivered a record at or past the
+// read's barrier, and whose every row without evidence the stream's leader was asked about
+// (finishSettle, verifyUnmarked). While the read may complete, it first reads the bucket's stream,
+// outside the locks (confirmStream): nats.go's ordered consumer can move onto a bucket recreated
+// during the scan and end the scan with records of two streams, so a read is complete only of the
+// stream it was installed on, and that read comes after the barrier's and the leader's reads, so it
+// vouches for both. Another stream, or none, stops the copy
+// following and completes nothing, and the new bucket is read again; a stream read that fails
+// completes nothing and is read again after rereadDelay, as a timed-out scan is. Then, under
+// applyMu, so no other hook runs between the check and the state write, it checks the read may
+// still complete (completes), has the cache sweep what the read did not find (CompleteRead), and
+// only then records that the copy follows its bucket, so expiry that waits on following resumes
+// only after the sweep. A recreate found, or a disconnect, between the sweep and the state write
+// skips the write: the read did deliver every record of the stream it read, so its sweep stands,
+// and the copy stays not following until the next read. A read that completes arms the
 // generation's scheduled read (WithScheduledRead), so its wait counts from this completion.
 func (w *Watcher) completeRead(generation uint64, read Read) {
 	w.mu.RLock()
@@ -793,6 +886,7 @@ func (w *Watcher) completeRead(generation uint64, read Read) {
 		w.following = true
 		w.completedOnce = true
 		w.staleSince = time.Time{}
+		w.unverifiedSince, w.unverifiedErr, w.unverifiedRuns = time.Time{}, nil, 0
 		w.armScheduledRead(generation)
 		// The copy can be served now, so a caller waiting for one (WaitComplete) is released.
 		w.wakeComplete()

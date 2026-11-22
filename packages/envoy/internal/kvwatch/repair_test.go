@@ -277,13 +277,18 @@ func TestAWatcherNothingRepairsLogsWhenItsMinutePasses(t *testing.T) {
 // has stopped too and armed a wait of its own. Without knowing its stop, that late callback took
 // the second stop's report: an ERROR saying no repair came within a minute of a stop moments
 // old, and the second wait, finding the stop reported, then said nothing when its minute passed.
+//
+// The test counts and fires the repair waits alone, those of a minute (pending.armed). The
+// Rewatch's read can still be waiting past its barrier when the test deletes the bucket again, and
+// then fails and arms its 5 s re-read before the stop is seen: a wait of the read's, not of a
+// repair.
 func TestAWaitARepairClearedReportsNotTheNextStop(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	arm := &armed{}
+	timers := &pending{}
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", kv, newSeen(),
-		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
+		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStreamProbeInterval(0))
 	w.Start()
 	eventually(t, "the first scan", w.Ready)
 
@@ -296,17 +301,18 @@ func TestAWaitARepairClearedReportsNotTheNextStop(t *testing.T) {
 	}
 	deleteTestBucket(t, js)
 	waitForStopWarns(t, records, 2)
-	if got := arm.waits(); got != 2 {
-		t.Fatalf("two stops armed %d repair waits, want two", got)
+	repairs := timers.armed(time.Minute)
+	if len(repairs) != 2 {
+		t.Fatalf("two stops armed %d repair waits, want two", len(repairs))
 	}
 
 	// The repair cleared the first wait; its callback runs now, as one already started would.
-	arm.fireAt(t, 0)
+	repairs[0].fire()
 	if errs := matching(records(), "ERROR", unrepairedErr); len(errs) != 0 {
 		t.Fatalf("the repaired stop's wait logged %d %q errors, want none: %v", len(errs), unrepairedErr, errs)
 	}
 
-	arm.fireAt(t, 1)
+	repairs[1].fire()
 	errs := matching(records(), "ERROR", unrepairedErr)
 	if len(errs) != 1 {
 		t.Fatalf("the second stop's passed wait logged %d %q errors, want one: %v", len(errs), unrepairedErr, errs)

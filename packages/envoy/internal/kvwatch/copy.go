@@ -108,11 +108,32 @@ func (c *Copy[V]) Delivered(entry Entry) error {
 
 // CompleteRead removes every entry and fence entry the read found no evidence of, handing each
 // removed entry to Rows.Removed, and ends the read's marks (Cache.CompleteRead): the bucket no
-// longer holds those keys.
+// longer holds those keys. The watcher has read each entry Unmarked named from the stream's
+// leader before it calls this, and applied each record found, so an entry it removes is one whose
+// key the leader answered it holds no record of (Watcher.verifyUnmarked).
 func (c *Copy[V]) CompleteRead() {
 	sweep(&c.marks, c.entries, c.rows.Removed)
 	sweep(&c.marks, c.revisions, nil)
 	c.marks.end()
+}
+
+// Unmarked is the keys the read under way has no evidence of (Cache.Unmarked): the keys of the
+// entries CompleteRead would remove now, and the keys of stored, the bucket's stream's keys, that
+// the copy holds no entry for. A fence entry with no row is not one: removing it takes no row from
+// the copy.
+func (c *Copy[V]) Unmarked(stored []string) []string {
+	var keys []string
+	for key := range c.entries {
+		if !c.marks.marked(key) {
+			keys = append(keys, key)
+		}
+	}
+	for _, key := range stored {
+		if _, held := c.entries[key]; !held && !c.marks.marked(key) {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 // Put takes value, written for key at revision through a handle of epoch (Watcher.Handle): a

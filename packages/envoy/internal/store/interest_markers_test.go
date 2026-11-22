@@ -175,8 +175,10 @@ func TestAPassCollectsTheDeleteMarkersAndKeepsEveryLiveKey(t *testing.T) {
 		t.Fatalf("the warm-up line says entries=%v delete_markers=%v, want %d live keys behind %d markers: %v",
 			warmUp["entries"], warmUp["delete_markers"], live, markers, warmUp)
 	}
-	if before := bucketState(t, js, bus.InterestBucket); before.NumSubjects != markers+live {
-		t.Fatalf("the seeded bucket carries %d subjects, want %d", before.NumSubjects, markers+live)
+	// One more subject than the seed: the read barrier the registry's first read wrote
+	// (bus.BarrierKey), a delete marker above every seeded record, which no pass purges.
+	if before := bucketState(t, js, bus.InterestBucket); before.NumSubjects != markers+live+1 {
+		t.Fatalf("the seeded bucket carries %d subjects, want %d and the read barrier", before.NumSubjects, markers+live)
 	}
 
 	collector := collectorOf(registry)
@@ -188,8 +190,8 @@ func TestAPassCollectsTheDeleteMarkersAndKeepsEveryLiveKey(t *testing.T) {
 		t.Fatalf("the pass purged %d messages, want the %d delete markers", purged, markers)
 	}
 	after := bucketState(t, js, bus.InterestBucket)
-	if after.NumSubjects != live {
-		t.Fatalf("after one pass the bucket carries %d subjects, want the %d live keys", after.NumSubjects, live)
+	if after.NumSubjects != live+1 {
+		t.Fatalf("after one pass the bucket carries %d subjects, want the %d live keys and the read barrier", after.NumSubjects, live)
 	}
 	for key, revision := range revisions {
 		entry, err := kv.Get(key)
@@ -212,9 +214,11 @@ func TestAPassCollectsTheDeleteMarkersAndKeepsEveryLiveKey(t *testing.T) {
 		}
 	}
 	collected := jsonRecord(t, records(), "interest markers collected")
+	// The read barrier the registry's first read wrote is the stream's last message, one past the
+	// live keys, and it stays: it is above the floor.
 	for field, want := range map[string]uint64{
-		"floor": floor, "purged": markers, "purged_first_seq": floor, "purged_msgs": live,
-		"read1_last_seq": floor + live - 1, "read2_last_seq": floor + live - 1,
+		"floor": floor, "purged": markers, "purged_first_seq": floor, "purged_msgs": live + 1,
+		"read1_last_seq": floor + live, "read2_last_seq": floor + live,
 	} {
 		if collected[field] != float64(want) {
 			t.Fatalf("the collection line's %s = %v, want %d: %v", field, collected[field], want, collected)
@@ -402,8 +406,9 @@ func TestAPassWhoseStreamWasReplacedFromTheSameFirstSequencePurgesNothing(t *tes
 	seedLive(t, kv, 2)
 	records := captureJSONLogs(t)
 	registry := openRegistry(t, conn)
-	if original := bucketState(t, js, bus.InterestBucket); original.FirstSeq != 1 || original.LastSeq != 3 {
-		t.Fatalf("the original stream runs %d-%d, want 1-3", original.FirstSeq, original.LastSeq)
+	// The registry's first read wrote its read barrier at sequence 4 (bus.BarrierKey).
+	if original := bucketState(t, js, bus.InterestBucket); original.FirstSeq != 1 || original.LastSeq != 4 {
+		t.Fatalf("the original stream runs %d-%d, want 1-4, the read barrier last", original.FirstSeq, original.LastSeq)
 	}
 
 	var replacement map[string]uint64
@@ -559,8 +564,8 @@ func TestAnUndecodableLiveValueIsKept(t *testing.T) {
 	if entry.Revision() != undecodable {
 		t.Fatalf("the undecodable live key is at revision %d, want its stored %d", entry.Revision(), undecodable)
 	}
-	if state := bucketState(t, js, bus.InterestBucket); state.NumSubjects != 3 {
-		t.Fatalf("after the pass the bucket carries %d subjects, want the 3 live keys", state.NumSubjects)
+	if state := bucketState(t, js, bus.InterestBucket); state.NumSubjects != 4 {
+		t.Fatalf("after the pass the bucket carries %d subjects, want the 3 live keys and the read barrier", state.NumSubjects)
 	}
 }
 
